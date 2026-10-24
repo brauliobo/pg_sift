@@ -170,4 +170,28 @@ INSERT INTO ok_grp SELECT g, 't' || g % 3, g FROM generate_series(0, 14) g WHERE
 CREATE TABLE ok_ts (k date, tag text, w int) WITH (autovacuum_enabled = false);
 INSERT INTO ok_ts SELECT date '2025-01-01' + d, 't' || d % 5, d % 17 FROM generate_series(0, 420, 3) d;
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, kcut_a, kcut_b, kcut_c;
+-- a soft-delete stamp NULL in all but a few rows of a unit (the exceptions of column format minor 19), floats of a wide spread, equal in some units, NULL now and then,
+-- in the rows and in the elements of a map and of a list; a unit is 256 pages, a row a page
+CREATE TABLE exf (id int, org int, kind text, amount int, val float8, dec float8, stamp timestamptz, metrics_a jsonb, parts jsonb, pad text) WITH (autovacuum_enabled = false, fillfactor = 10);
+CREATE FUNCTION fz.gen_exf(lo bigint, hi bigint, salt int) RETURNS SETOF exf LANGUAGE sql AS $$
+	SELECT i::int, fz.h(i, 100 + salt) % 7,
+	       CASE WHEN fz.h(i, 101 + salt) % 100 < 4 THEN NULL ELSE 'k' || fz.h(i, 102 + salt) % 5 END,
+	       CASE WHEN fz.h(i, 103 + salt) % 100 < 4 THEN NULL ELSE fz.h(i, 104 + salt) % 1000 END,
+	       CASE WHEN i / 256 % 7 = 3 THEN 1.5 WHEN fz.h(i, 105 + salt) % 100 < 6 THEN NULL
+	            ELSE (fz.h(i, 106 + salt) % 2001 - 1000) * power(2, fz.h(i, 107 + salt) % 11 - 5)::float8 / 4 END,
+	       CASE WHEN fz.h(i, 108 + salt) % 100 < 6 THEN NULL ELSE (fz.h(i, 109 + salt) % 10000) / 100.0 - 50 END,
+	       CASE WHEN i / 256 % 5 = 1 AND fz.h(i, 110 + salt) % 60 = 0 THEN timestamptz '2025-06-01' + (fz.h(i, 111 + salt) % 100) * interval '1 day'
+	            WHEN i / 256 % 5 = 4 AND fz.h(i, 112 + salt) % 2 = 0 THEN timestamptz '2025-07-01'
+	            WHEN fz.h(i, 113 + salt) % 400 = 0 THEN timestamptz '2025-08-01' END,
+	       CASE WHEN fz.h(i, 114 + salt) % 100 < 5 THEN NULL
+	            ELSE jsonb_build_object('a', (fz.h(i, 115 + salt) % 2001 - 1000) * power(2, fz.h(i, 116 + salt) % 11 - 5)::float8 / 4, 'b', (fz.h(i, 117 + salt) % 10000) / 100.0 - 50)
+	                 || CASE WHEN fz.h(i, 118 + salt) % 3 = 0 THEN jsonb_build_object('c', 2.5) ELSE '{}' END END,
+	       CASE WHEN fz.h(i, 119 + salt) % 100 < 5 THEN NULL
+	            ELSE jsonb_build_array(jsonb_build_object('cat', 'c' || fz.h(i, 120 + salt) % 4, 'score', (fz.h(i, 121 + salt) % 10000) / 100.0 - 50),
+	                                   jsonb_build_object('cat', 'c' || fz.h(i, 122 + salt) % 4, 'score', (fz.h(i, 123 + salt) % 2001 - 1000) * power(2, fz.h(i, 124 + salt) % 11 - 5)::float8 / 4)) END,
+	       repeat('x', 600)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO exf SELECT * FROM fz.gen_exf(1, @ROWS@, 0);
+CREATE INDEX exf_col ON exf USING sift_col (id, org, kind, amount, val, dec, stamp, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}', superunit = 0);
+
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, kcut_a, kcut_b, kcut_c;

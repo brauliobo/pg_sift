@@ -95,3 +95,4 @@ lateral_comma_agg	`FROM x, LATERAL (SELECT sum(f.a) FROM f WHERE f.k = x.k)` (th
 exists_decor	`EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..)` and `NOT EXISTS` where PostgreSQL leaves a sub-plan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 index_pick	a table with several `sift_col` indexes is planned through the cheapest index	orders	default	Index: orders_col	native	-	ms	faster33	no
 window_first_rows	the first N rows of each group asked with a window function	orders	default+id	.	native	agg_forced:sift.agg_force = on	ms	faster33	no
+soft_delete_exceptions	`WHERE stamp IS NULL` is answered from the pre-aggregates	orders	default	Filters: removed_at IS NULL	native	-	ms	faster33	no

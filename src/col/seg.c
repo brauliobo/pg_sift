@@ -1066,6 +1066,12 @@ pagg_header(SiftColSegment *seg)
 		if (ver > 4 && PAGG_RUNS(h) &&
 			(PAGG_RUNS(h) % 8 != 0 || PAGG_RUNS_BYTES(h) < sizeof(RunsHeader) + sizeof(RunsLeaf) || !within(s->len - end, PAGG_RUNS(h), PAGG_RUNS_BYTES(h), 0)))
 			corrupt(seg, "The sorted runs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_RUNS_BYTES(h)), ULL(PAGG_RUNS(h)));
+		if (ver > 5 && PAGG_XCUBEDIR(h) &&
+			(PAGG_XCUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_XCUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_XCUBE_BYTES(h))))
+			corrupt(seg, "The exception cubes (%llu bytes at %llu) lie outside the section.", ULL(PAGG_XCUBE_BYTES(h)), ULL(PAGG_XCUBEDIR(h)));
+		if (ver > 5 && PAGG_XECUBEDIR(h) &&
+			(PAGG_XECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_XECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_XECUBE_BYTES(h))))
+			corrupt(seg, "The exception element blobs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_XECUBE_BYTES(h)), ULL(PAGG_XECUBEDIR(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -1160,6 +1166,36 @@ sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len)
 		return NULL;
 	}
 	return unit_blob(seg, seg->nsb, u, PAGG_ECUBEDIR(h), PAGG_ECUBE_BYTES(h), &pv->ecubedir, &pv->ecubebuf, &pv->ecubecap, len);
+}
+
+/* The exception cube of unit u (docs/COL-PREAGG.md 11): the cube of the rows where the unit's exception leaf is not NULL, with the dims of the unit's own cube */
+const uint8 *
+sift_cseg_xcube(SiftColSegment *seg, uint32 u, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h = pagg_header(seg);
+
+	if (h->version < 6)
+	{
+		*len = 0;
+		return NULL;
+	}
+	return unit_blob(seg, seg->nsb, u, PAGG_XCUBEDIR(h), PAGG_XCUBE_BYTES(h), &pv->xcubedir, &pv->xcubebuf, &pv->xcubecap, len);
+}
+
+/* The same for the element blob */
+const uint8 *
+sift_cseg_xecube(SiftColSegment *seg, uint32 u, uint32 *len)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h = pagg_header(seg);
+
+	if (h->version < 6)
+	{
+		*len = 0;
+		return NULL;
+	}
+	return unit_blob(seg, seg->nsb, u, PAGG_XECUBEDIR(h), PAGG_XECUBE_BYTES(h), &pv->xecubedir, &pv->xecubebuf, &pv->xecubecap, len);
 }
 
 const uint8 *

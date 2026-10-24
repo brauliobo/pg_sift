@@ -10,7 +10,7 @@
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 40 4)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
-plan $((ITERS + 6))
+plan $((ITERS + 8))
 node_init crash 1 "checkpoint_timeout = 30s
 max_wal_size = 256MB
 autovacuum = off"
@@ -39,10 +39,20 @@ sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 			END LOOP;
 			RETURN true;
 		END \$\$" \
-	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, price float8, doc jsonb)" \
-	"INSERT INTO orders (tenant_id, status, qty, price, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, i / 4.0,
+	"CREATE FUNCTION gone_same() RETURNS bool LANGUAGE plpgsql AS \$\$
+		DECLARE q text := \$q\$SELECT coalesce(string_agg(status || ':' || n || ':' || s, ',' ORDER BY status), '') FROM (SELECT status, count(*) AS n, sum(qty) AS s FROM orders WHERE gone IS NULL GROUP BY 1) x\$q\$; a text; b text;
+		BEGIN
+			SET LOCAL seq_page_cost = 10000;
+			SET LOCAL sift.enable_agg = on;
+			EXECUTE q INTO a;
+			SET LOCAL sift.enable_agg = off;
+			EXECUTE q INTO b;
+			RETURN a IS NOT DISTINCT FROM b;
+		END \$\$" \
+	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, price float8, gone bigint, doc jsonb)" \
+	"INSERT INTO orders (tenant_id, status, qty, price, gone, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, i / 4.0, CASE WHEN i % 500 = 0 THEN i END,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, price, doc)
+	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, price, gone, doc)
 		WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
 			preagg = 'cube(tenant_id: qty, price; status: qty) rollup(doc.items[].category: doc.items[].qty)')" >/dev/null || bail "setup failed"
 ok "setup"
@@ -56,6 +66,7 @@ EOF
 cat >"$D/upd.sql" <<'EOF'
 \set id random(1, 100000)
 UPDATE orders SET tenant_id = coalesce(tenant_id, 0) + 1 WHERE id BETWEEN :id AND :id + 200;
+UPDATE orders SET gone = id WHERE id = :id;
 EOF
 cat >"$D/del.sql" <<'EOF'
 \set id random(1, 100000)
@@ -71,15 +82,15 @@ FILES=(-f "$D/ins.sql@40" -f "$D/upd.sql@10" -f "$D/del.sql@5" -f "$D/vac.sql@1"
 
 VERIFY="SELECT sift.col_verify('o_col', true), (SELECT count(*) FROM sift._test_col_tids('o_col', '')) = (SELECT count(*) FROM orders),
 	(SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid')) = (SELECT count(*) FROM orders WHERE tenant_id < 10 AND status = 'paid'),
-	pg_relation_size('o_col') / 1048576, typeof_same()"
+	pg_relation_size('o_col') / 1048576, typeof_same(), gone_same()"
 
 for i in $(seq "$ITERS"); do
 	crash_cycle crash "iteration $i" 3 8 "${FILES[@]}" || break
 	out=$(sql crash "$VERIFY" 2>&1)
-	IFS='|' read -r _ same same_filtered mb typed <<<"$out"
+	IFS='|' read -r _ same same_filtered mb typed goneok <<<"$out"
 	used=$(node_mb crash)
 	elems=$(elem_groups crash on)
-	if [[ $same == t && $same_filtered == t && $typed == t && $used -lt $MAX_MB && -n $elems && $elems == "$(elem_groups crash off)" ]]; then
+	if [[ $same == t && $same_filtered == t && $typed == t && $goneok == t && $used -lt $MAX_MB && -n $elems && $elems == "$(elem_groups crash off)" ]]; then
 		ok "iteration $i: verified, index $mb MB, node $used MB"
 	else
 		not_ok "iteration $i"
@@ -90,6 +101,8 @@ done
 sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" "SELECT sift.col_merge('o_col', true)" >/dev/null
 check "the element cubes of the merged segment answer the groups of the elements" test "$(elem_groups crash on)" == "$(elem_groups crash off)"
 check "the element cubes answer units of the merged segment" grep -qE "Units From Pre-aggregates: [1-9]" <<<"$(elem_groups crash on explain)"
+check "the soft-delete filter returns what the heap returns" test "$(sql crash "SELECT gone_same()")" == t
+check "and the exceptions of the merged segment answer its units" grep -qE "Units Net Of Exceptions: [1-9]" <<<"$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1")"
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
 finish

@@ -436,9 +436,9 @@ in_leaves(const int *arr, int n, int leaf)
  * answered by the rollup of the rows the same way, where every conjunct tests dims.
  */
 static SiftPaWhy
-preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, bool nullz, SiftAggPaShape *out)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, nullz);
 	int			group = s->group,
 				nd = 0,
 				nm = 0,
@@ -494,7 +494,7 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	for (int i = 0; i < nm; i++)
 		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
 			return SPW_MEAS_NOT_STORED;
-	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .rows = group < 0, .ndims = nd, .nmeas = nm};
+	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .rows = group < 0, .ndims = nd, .nmeas = nm, .nullz = nullz};
 	memcpy(out->rdim, dims, nd * sizeof(int));
 	memcpy(out->rmeas, meas, nm * sizeof(int));
 	return SPW_OK;
@@ -761,18 +761,26 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	if (s->topn)
 		return SPW_TOPN;
 	if (s->group >= 0)
-		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
+	{
+		if (lay->leaf[s->group].kind != SCL_ARRAY && lay->leaf[s->group].kind != SCL_OBJECT)
+			return SPW_NOT_LIST;
+		why = preagg_rollup(s, lay, nbase, pa, false, out);
+		/* a NULL test of a column of the rows (WHERE deleted_at IS NULL) is decided by the zone of each unit, or by the exceptions the unit kept (unit_preagg.c) */
+		if (why == SPW_PRED && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
+			why = preagg_rollup(s, lay, nbase, pa, true, out);
+		return why;
+	}
 	why = preagg_rows(s, lay, nbase, pa, false, out);
 	/* a NULL test of a column that is no dim of the shape (WHERE deleted_at IS NULL): the zone's NULL count decides it for each unit, as a comparison is decided */
 	if (why != SPW_OK && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
 	{
 		SiftAggPaShape nz;
 
-		if (preagg_rows(s, lay, nbase, pa, true, &nz) == SPW_OK)
-		{
+		SiftPaWhy	nwhy = preagg_rows(s, lay, nbase, pa, true, &nz);
+
+		if (nwhy == SPW_OK)
 			*out = nz;
-			why = SPW_OK;
-		}
+		why = nwhy;
 	}
 	/*
 	 * What the histograms cannot give (two keys, a key and a test of another column), or give only for the units inside a comparison, the rollup of the
@@ -782,7 +790,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		if (pa->rollup[r].list < 0 && (why != SPW_OK || rows_zone_bound(s, lay, nbase, out)))
 		{
 			SiftAggPaShape rows;
-			SiftPaWhy	rwhy = preagg_rollup(s, lay, nbase, pa, &rows);
+			SiftPaWhy	rwhy = preagg_rollup(s, lay, nbase, pa, false, &rows);
 
 			if (rwhy == SPW_OK)
 				*out = rows;

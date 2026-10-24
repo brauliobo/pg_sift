@@ -336,6 +336,75 @@ peek_rollup(const SiftColSchema *s, const uint8 *p, uint32 len, int *nd, int16 *
 	return true;
 }
 
+/*
+ * The spec that builds, over other rows of the unit, the dims and rollups its own blobs hold: the same leaves, measures and calendar grains, no byte budget
+ * and no minimum and maximum. false when a blob does not decode or holds something the spec does not name.
+ */
+bool
+sift_cpagg_mirror(const SiftColSchema *s, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, SiftCPaggSpec *out)
+{
+	int			nd;
+	int			leaf[SIFT_PAGG_SPEC_DIMS];
+	uint32		blen[SIFT_PAGG_SPEC_DIMS];
+	const uint8 *p;
+
+	*out = *spec;
+	out->ndims = out->nrollups = 0;
+	out->fixed = out->rfixed = true;
+	out->minmax = false;
+	out->permille = 0;
+	if (len > 0)
+	{
+		if (!read_dir(s, blob, len, SIFT_PAGG_MAX_DIMS, true, &nd, leaf, blen, &p))
+			return false;
+		for (int d = 0; d < nd; p += blen[d++])
+		{
+			SiftCPaggDim *to;
+			int16		meas[SIFT_PAGG_MAX_MEAS];
+			int			nm,
+						k = 0;
+			uint8		fl;
+
+			while (k < spec->ndims && (spec->dim[k].cal ? leaf[d] < SIFT_PAGG_CAL || leaf[d] % SIFT_PAGG_CAL != spec->dim[k].leaf : spec->dim[k].leaf != leaf[d]))
+				k++;
+			if (k == spec->ndims || !peek_dim(s, p, blen[d], &fl, meas, &nm))
+				return false;
+			to = &out->dim[out->ndims++];
+			*to = spec->dim[k];
+			to->grain = spec->dim[k].cal ? leaf[d] / SIFT_PAGG_CAL : 0;
+			to->lean = 0;
+			to->nmeas = nm;
+			memcpy(to->meas, meas, nm * sizeof(int16));
+		}
+	}
+	if (elen > 0)
+	{
+		if (!read_dir(s, eblob, elen, SIFT_PAGG_SPEC_DIMS, false, &nd, leaf, blen, &p))
+			return false;
+		for (int i = 0; i < nd; p += blen[i++])
+		{
+			SiftCPaggRollup *to;
+			int16		dim[SIFT_PAGG_MAX_RDIMS],
+						meas[SIFT_PAGG_MAX_MEAS];
+			int			nrd,
+						nm,
+						k = 0;
+
+			while (k < spec->nrollups && spec->rollup[k].list != leaf[i])
+				k++;
+			if (k == spec->nrollups || !peek_rollup(s, p, blen[i], &nrd, dim, &nm, meas))
+				return false;
+			to = &out->rollup[out->nrollups++];
+			*to = spec->rollup[k];
+			to->ndims = nrd;
+			memcpy(to->dim, dim, nrd * sizeof(int16));
+			to->nmeas = nm;
+			memcpy(to->meas, meas, nm * sizeof(int16));
+		}
+	}
+	return true;
+}
+
 /* Are all of have among the spec's (and, when exact, no other)? */
 static bool
 leaves_within(const int16 *have, int nhave, const int16 *spec, int nspec, bool exact)
@@ -898,5 +967,28 @@ sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows,
 	ok = same_bytes(&again, blob, len) && same_bytes(&eagain, eblob, elen);
 	pfree(again.data);
 	pfree(eagain.data);
+	return ok;
+}
+
+/* The exceptions a unit stores are what sift_cpagg_excepts makes of its columns and its own blobs (none: none stored) */
+bool
+sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, const uint8 *blob, uint32 len,
+						 const uint8 *eblob, uint32 elen, int format, const uint8 *xblob, uint32 xlen, const uint8 *xeblob, uint32 xelen)
+{
+	SiftCPaggSpec spec;
+	StringInfoData xa,
+				xb;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
+	bool		ok = spec_of(s, blob, len, eblob, elen, format, cx, &spec);
+
+	MemoryContextDelete(cx);
+	if (!ok)
+		return false;
+	initStringInfo(&xa);
+	initStringInfo(&xb);
+	sift_cpagg_excepts(s, &spec, cols, eoff, nrows, blob, len, eblob, elen, &xa, &xb);
+	ok = same_bytes(&xa, xblob, xlen) && same_bytes(&xb, xeblob, xelen);
+	pfree(xa.data);
+	pfree(xb.data);
 	return ok;
 }

@@ -120,6 +120,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 16 | `point_tid_columns` (option, off): the point directory lists heap addresses | `sift.col_format_minor` 14 or less (then it lists rows, minor 14) |
 | 17 | `key_cut` (option, off): the units are cut by the range of a declared key and list heap addresses | `ALTER INDEX x RESET (key_cut)` and `REINDEX`; `sift.col_format_minor` 14 or less also writes superblock units |
 | 18 | `order_columns` (option, off): the sorted runs also hold their heads (the best keys at each end of a unit with their heap addresses) | `ALTER INDEX x RESET (order_columns)` and `REINDEX`, or `sift.col_format_minor` 14 or less (the runs are written without heads, minor 13) and `REINDEX` |
+| 19 | a leaf NULL in nearly every row of a unit (a soft-delete stamp): the unit also keeps the pre-aggregates of the rows where it is not NULL, so that `leaf IS NULL` is answered from the pre-aggregates | `REINDEX` (a merge writes them too), or `sift.col_format_minor` 14 or less (written without) and `REINDEX` |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the server (`ALTER SYSTEM`, as in "Going back to 3.2") or the database, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
@@ -186,7 +187,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16 and 3.4 up to 18; the default setting is 15, and minors 16, 17 and 18 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16 and 3.4 up to 19; the default setting is 15, and minors 16, 17 and 18 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 

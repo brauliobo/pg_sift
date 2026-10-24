@@ -37,7 +37,8 @@
 #define SIFT_COL_FORMAT_POINTTID	16		/* 3.3: the segment has a point directory whose slots list the heap addresses of the rows, not their numbers in the segment; written only for an index with the reloption point_tid_columns, for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_KEYED	17			/* 3.4: the segment's units are cut by the range of the declared key (the reloption key_cut), not by superblock, and list their TIDs; written only for an index with the reloption key_cut and sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_HEADS	18			/* 3.4: the sorted runs of the segment also hold their heads, the first and last keys with the heap addresses of their rows; written for an index with the reloption order_columns whose segment is not key-cut, under sift.col_format_minor 15 or more */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_HEADS	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_EXCEPT	19		/* 3.4: a unit also holds the cube and the element rollups of its few rows where one NULL-heavy leaf is not NULL (the exceptions), so that a filter IS NULL on it is answered as the unit minus them; written when a unit has exceptions, under sift.col_format_minor 19 (docs/COL-PREAGG.md 11) */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_EXCEPT	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -492,6 +493,7 @@ typedef struct SiftColUnit
 	uint32		nrows;
 	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
 	uint32		nsu;			/* a superunit (sift_col_super): the units it stands for, whose merged pre-aggregates are all it has; 0 for a unit */
+	int			except;			/* sift_col_unit_except: the leaf whose NULL rows the histograms and rollups of the unit answer for; -1: the unit's own rows */
 	void	   *priv;
 } SiftColUnit;
 

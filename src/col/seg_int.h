@@ -20,7 +20,8 @@
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
 #define PAGG_SUPER_MINOR	SIFT_COL_FORMAT_SUPER	/* the column format minor that adds the superunit summaries: directory version 4 */
 #define PAGG_RUNS_MINOR		SIFT_COL_FORMAT_RUNS	/* the column format minor that adds the sorted runs: directory version 5 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_EXCEPT_MINOR	SIFT_COL_FORMAT_EXCEPT	/* the column format minor that adds the exception cubes: directory version 6 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_EXCEPT_MINOR ? 6 : (minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 #define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates */
 #define RUNS_MAGIC		0x524C4F43		/* "COLR": the sorted runs, after the small-set summaries */
 
@@ -83,7 +84,7 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0) + ((ver) > 5 ? 4 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 #define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
@@ -117,6 +118,11 @@ StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-
 /* Version 5 (column format minor 13) adds two more: the offset of the sorted runs and their bytes (0: none), the section laid out like the small-set summaries */
 #define PAGG_RUNS(h)			((h)->lagg_off[(h)->ncols + 6])
 #define PAGG_RUNS_BYTES(h)		((h)->lagg_off[(h)->ncols + 7])
+/* Version 6 (column format minor 19) adds four: the directory and bytes of the exception cubes and of the exception element blobs, laid out like the cubes (0: none) */
+#define PAGG_XCUBEDIR(h)		((h)->lagg_off[(h)->ncols + 8])
+#define PAGG_XCUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 9])
+#define PAGG_XECUBEDIR(h)		((h)->lagg_off[(h)->ncols + 10])
+#define PAGG_XECUBE_BYTES(h)	((h)->lagg_off[(h)->ncols + 11])
 
 /*
  * The superunit block (docs/COL-PREAGG.md section 10): the units of the segment in groups of `fan` consecutive ones (the last group may be shorter,
@@ -235,6 +241,12 @@ typedef struct SegPriv
 	uint64	   *ecubedir;		/* the same for the element blobs */
 	uint8	   *ecubebuf;
 	Size		ecubecap;
+	uint64	   *xcubedir;		/* the same for the exception cubes and element blobs (version 6) */
+	uint8	   *xcubebuf;
+	Size		xcubecap;
+	uint64	   *xecubedir;
+	uint8	   *xecubebuf;
+	Size		xecubecap;
 	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
 	SetsLeaf   *sets;			/* [ncols] the small-set record of each leaf (dir_off 0: none), read on first use */
 	uint64    **setdir;			/* [ncols] its directory, once read */

@@ -391,6 +391,35 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 	}
 	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
+	if (seg->entry.format >= SIFT_COL_FORMAT_EXCEPT)
+	{
+		uint32		xlen,
+					xelen;
+		const uint8 *xcube = sift_cseg_xcube(seg, u, &xlen);
+		const uint8 *xecube = sift_cseg_xecube(seg, u, &xelen);
+		const uint32 **eoff = palloc0(sc->ncols * sizeof(uint32 *));
+		uint32	  **own = palloc0(sc->ncols * sizeof(uint32 *));
+		bool		same;
+
+		for (int c = 0; c < sc->ncols; c++)
+		{
+			int			g = sc->cols[c].parent;
+
+			if (g < 0 || !need[g])
+				continue;
+			if (own[g] == NULL)
+			{
+				own[g] = palloc((Size) (r->nrows + 1) * sizeof(uint32));
+				own[g][0] = 0;
+				for (uint32 i = 0; i < r->nrows; i++)
+					own[g][i + 1] = own[g][i] + (uint32) kept[g][i];
+			}
+			eoff[c] = own[g];
+		}
+		same = sift_cpagg_check_excepts(sc, pcol, eoff, r->nrows, cube, clen, ecube, elen, seg->entry.format, xcube, xcube ? xlen : 0, xecube, xecube ? xelen : 0);
+		if (!same)
+			corrupt(seg, "The exceptions of the unit of SB %u differ from its chunks.", r->sb);
+	}
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])
 			pfree(kept[c]);

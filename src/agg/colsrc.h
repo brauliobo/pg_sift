@@ -551,6 +551,12 @@ typedef struct SiftSrcProvider
 	/* Optional (NULL: no unit has pre-aggregates), see SiftSrcUnitAgg; `preagg` is the planner's, over the index relation */
 	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
+	/*
+	 * Optional (NULL: no unit has exceptions). Leaf >= 0: when the exact unit holds the pre-aggregates of its rows where `leaf` is not NULL (docs/COL-PREAGG.md 11), the
+	 * next unit_hist and unit_rollup calls on it return what the rows where `leaf` IS NULL add up to (counts and sums net of those rows, no minimum or maximum; false
+	 * from them when they cannot tell) and this returns true. Leaf -1: the unit's own rows again. unit_agg and unit_presence refuse a unit set to a leaf.
+	 */
+	bool		(*unit_except) (void *impl, const SiftSrcUnit *unit, int leaf);
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
 	/* Optional (NULL: none): the presence of an exact unit's leaf of SiftSrcPreagg.pres, valid until the next call; false when the unit has none */
@@ -779,6 +785,12 @@ static inline bool
 sift_colsrc_unit_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
 {
 	return src->prov->unit_exact != NULL && src->prov->unit_exact(src->impl, unit);
+}
+
+static inline bool
+sift_colsrc_unit_except(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
+{
+	return src->prov->unit_except != NULL && src->prov->unit_except(src->impl, unit, leaf);
 }
 
 static inline bool

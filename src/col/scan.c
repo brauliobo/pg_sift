@@ -1093,6 +1093,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = mem;
 	unit->nsu = cu->nsu;
+	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -1118,6 +1119,7 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = true;
 	unit->nsu = 0;
+	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 }
