@@ -385,15 +385,35 @@ point_keys(const SiftCTest *t, int *nkeys)
 				keys[i] = (int64) ((uint64) t->lo + i);
 			break;
 		case SIFT_CT_LUT:
-			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
-				n += sift_col_bit_test(t->lut, (uint32) k);
-			if (n == 0 || n > SIFT_CPOINT_MAX_KEYS)
-				return NULL;
-			keys = palloc(n * sizeof(int64));
-			n = 0;
-			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
-				if (sift_col_bit_test(t->lut, (uint32) k))
-					keys[n++] = k;
+			{
+				/* by words: a table of the codes of a large dictionary costs its words, not a test of every code */
+				uint32		w0,
+							w1;
+
+				if (t->hi < 0 || t->lo >= t->lutbits)
+					return NULL;
+				w0 = (uint32) Max(t->lo, 0) / 64;
+				w1 = (uint32) Min(t->hi, t->lutbits - 1) / 64 + 1;
+				for (uint32 w = w0; w < w1; w++)
+					n += pg_popcount64(t->lut[w]);
+				if (n == 0 || n > SIFT_CPOINT_MAX_KEYS)
+					return NULL;
+				keys = palloc(n * sizeof(int64));
+				n = 0;
+				for (uint32 w = w0; w < w1; w++)
+					for (uint64 bits = t->lut[w]; bits; bits &= bits - 1)
+					{
+						int64		k = (int64) w * 64 + pg_rightmost_one_pos64(bits);
+
+						if (k >= Max(t->lo, 0) && k <= t->hi)
+							keys[n++] = k;
+					}
+				if (n == 0)
+				{
+					pfree(keys);
+					return NULL;
+				}
+			}
 			break;
 		default:
 			return NULL;

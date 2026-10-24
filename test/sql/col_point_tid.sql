@@ -119,6 +119,20 @@ SELECT sift.col_verify('pt_t', true);
 SELECT n, preds, pt_cover('pt_t', preds, heapwhere) FROM pt_q ORDER BY n;
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
 
+-- a LIKE or ^@ with a literal prefix: the dictionary names the keys with the prefix and the directory lists their rows; the planner prices it as the probes of those keys, so a count of them is the access method's
+SELECT w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches
+FROM (VALUES ('s LIKE ''s12%'''), ('s ^@ ''s12'''), ('s LIKE ''s1%'''), ('s LIKE ''s4321'''), ('s LIKE ''%12'''), ('s LIKE ''s\_1%''')) v(w);
+CREATE FUNCTION pt_plan(q text) RETURNS text LANGUAGE plpgsql SET sift.enable_col_scan = on SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '^\s*(->\s*)?(Aggregate|Custom Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Bitmap Index Scan|Seq Scan)' THEN r := r || ' ' || trim(regexp_replace(l, '^\s*->\s*', '')); END IF;
+	END LOOP;
+	RETURN trim(r);
+END $$;
+SELECT pt_plan('SELECT count(*) FROM pt WHERE s LIKE ''s5999%''') AS prefix_count, pt_plan('SELECT count(*) FROM pt WHERE s ^@ ''s4321''') AS starts_with_count;
+DROP FUNCTION pt_plan(text);
+
 -- one damage at a time in the directories, through a fresh open and the check of the segment (meaningful under SANITIZE=1)
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pt_t', 1000000000);
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 997);
