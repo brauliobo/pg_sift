@@ -253,6 +253,20 @@ extern bool sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, u
 extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out);
 /* The head of the run (r->heads > 0): sift_crun_head_counts entries, the low end first, then the high end from the last of the run */
 extern void sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHeadEnt *out);
+/*
+ * The page mask and the run head of leaf col in unit u, the two reads of a head bypass (col/scan_unit.c), kept by the backend for the next query (col/dictcache.c:
+ * a segment never changes). False when the segment has no page masks; else has: the unit has a head, nlo + nhi entries of ent (sift_cseg_run_heads).
+ */
+typedef struct SiftCSbHead
+{
+	bool		has;
+	uint32		nlo;
+	uint32		nhi;
+	uint64		pm[SIFT_PAGEMASK_WORDS];
+	SiftCHeadEnt ent[2 * SIFT_CRUN_HEAD_MAX];
+} SiftCSbHead;
+
+extern bool sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out);
 /* The whole stored run with its head, sift_crun_total(r) bytes (the verifier) */
 extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
