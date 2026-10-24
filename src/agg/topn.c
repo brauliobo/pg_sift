@@ -686,11 +686,14 @@ ent_cmp(const SiftTopN *t, const TopEnt *a, const TopEnt *b)
 	return c != 0 ? c : SIFT_CMP3(a->tie, b->tie);
 }
 
-static int
-ent_cmp_arg(const void *a, const void *b, void *arg)
-{
-	return ent_cmp(arg, a, b);
-}
+#define ST_SORT sort_ents
+#define ST_ELEMENT_TYPE TopEnt
+#define ST_COMPARE_ARG_TYPE SiftTopN
+#define ST_COMPARE(a, b, t) ent_cmp(t, a, b)
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
 
 /* the heap keeps its worst entry at h[0]: a parent sorts after its children */
 static void
@@ -1161,6 +1164,15 @@ res_push(SiftTopN *t, const TopEnt *e)
 
 	if (t->nblob == 0)
 	{
+		/* the entries are kept as they come until there are n of them, then made a heap: the fill costs one comparison an entry less log n */
+		if (t->n < t->limit)
+		{
+			t->heap[t->n++] = *e;
+			if (t->n == t->limit)
+				for (int i = t->n / 2 - 1; i >= 0; i--)
+					heap_down(t, t->heap, t->n, i);
+			return;
+		}
 		heap_push(t, t->heap, &t->n, e);
 		return;
 	}
@@ -1178,13 +1190,31 @@ res_push(SiftTopN *t, const TopEnt *e)
 	heap_push(t, t->heap, &t->n, &c);
 }
 
-static int
-row_cmp(const void *a, const void *b)
-{
-	uint32		x = *(const uint32 *) a,
-				y = *(const uint32 *) b;
+#define ST_SORT sort_rows
+#define ST_ELEMENT_TYPE uint32
+#define ST_COMPARE(a, b) SIFT_CMP3(*(a), *(b))
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
 
-	return SIFT_CMP3(x, y);
+/* the place of row in the ascending rows[0, n), which holds it */
+static inline uint32
+row_at(const uint32 *rows, int n, uint32 row)
+{
+	int			lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+
+		if (rows[mid] < row)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
 }
 
 static uint64
@@ -1264,21 +1294,27 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
-	for (int x = 0; x < nc; x++)
-		heap_push(t, t->lh, &t->ln, &t->ce[x]);
+	if (nc <= t->limit)
+	{
+		/* the unit has no more rows than the heap holds: all of them go on */
+		memcpy(t->lh, t->ce, nc * sizeof(TopEnt));
+		t->ln = nc;
+	}
+	else
+		for (int x = 0; x < nc; x++)
+			heap_push(t, t->lh, &t->ln, &t->ce[x]);
 	if (t->ln == 0)
 		return;
 	for (int i = 0; i < t->ln; i++)
 		t->rows[i] = t->lh[i].row;
-	qsort(t->rows, t->ln, sizeof(uint32), row_cmp);
+	sort_rows(t->rows, t->ln);
 	sift_colsrc_tids(src, unit, t->rows, t->ln, t->tids);
 	part = unit_part(t, src);
 	for (int i = 0; i < t->ln; i++)
 	{
 		TopEnt	   *e = &t->lh[i];
-		uint32	   *at = bsearch(&e->row, t->rows, t->ln, sizeof(uint32), row_cmp);
 
-		e->tid = t->tids[at - t->rows];
+		e->tid = t->tids[row_at(t->rows, t->ln, e->row)];
 		e->part = part;
 		e->tie = tie_key(&e->tid, part);
 		res_push(t, e);
@@ -1826,7 +1862,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 			t->cand[w.nc++] = row;
 		}
 	}
-	qsort(t->cand, w.nc, sizeof(uint32), row_cmp);
+	sort_rows(t->cand, w.nc);
 	if (key0 == NULL && w.nc > 0)
 		sift_colsrc_read_rows(src, unit, k0->leaf, t->cand, w.nc, &cv);
 	for (int q = 0; q < w.nc; q++)
@@ -2865,7 +2901,7 @@ sift_topn_finish(SiftTopN *t)
 	else
 	{
 		t->res = t->heap;
-		qsort_arg(t->res, t->n, sizeof(TopEnt), ent_cmp_arg, t);
+		sort_ents(t->res, t->n, t);
 	}
 }
 

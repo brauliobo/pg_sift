@@ -10,6 +10,7 @@
 #include "core/host.h"
 
 #include "col/compress.h"
+#include "col/hll.h"
 #include "col/point.h"
 #include "col/preagg.h"
 #include "col/seg.h"
@@ -1072,6 +1073,9 @@ pagg_header(SiftColSegment *seg)
 		if (ver > 5 && PAGG_XECUBEDIR(h) &&
 			(PAGG_XECUBEDIR(h) % 8 != 0 || !within(s->len - end, PAGG_XECUBEDIR(h), (seg->nsb + 1) * sizeof(uint64), PAGG_XECUBE_BYTES(h))))
 			corrupt(seg, "The exception element blobs (%llu bytes at %llu) lie outside the section.", ULL(PAGG_XECUBE_BYTES(h)), ULL(PAGG_XECUBEDIR(h)));
+		if (ver > 6 && PAGG_HLL(h) &&
+			(PAGG_HLL(h) % 8 != 0 || PAGG_HLL_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_HLL(h), PAGG_HLL_BYTES(h), 0)))
+			corrupt(seg, "The sketches (%llu bytes at %llu) lie outside the section.", ULL(PAGG_HLL_BYTES(h)), ULL(PAGG_HLL(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -1384,13 +1388,67 @@ sift_cseg_run_bytes(SiftColSegment *seg)
 }
 
 uint64
+sift_cseg_hll_bytes(SiftColSegment *seg)
+{
+	const PaggHeader *h = pagg_header(seg);
+
+	return h->version > 6 ? PAGG_HLL_BYTES(h) : 0;
+}
+
+uint64
 sift_cseg_preagg_bytes(SiftColSegment *seg)
 {
 	pagg_header(seg);
-	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg) - sift_cseg_run_bytes(seg);
+	return sec(seg, SIFT_SEC_DICTIDX)->len - PRIV(seg)->pagg_end - sift_cseg_set_bytes(seg) - sift_cseg_run_bytes(seg) - sift_cseg_hll_bytes(seg);
 }
 
 /* ---------- small-set summaries ---------- */
+
+/*
+ * The records of a section of blobs per leaf and unit (small-set summaries, sorted runs, sketches), read and checked with the whole section on first use: the
+ * record of each leaf in an array of ncols (dir_off 0: the leaf has none)
+ */
+static SetsLeaf *
+blob_records(SiftColSegment *seg, const char *what, uint32 magic, uint64 off, uint64 room, uint32 flags_ok,
+			 bool (*leaf_ok) (const SiftColSchema *, const SiftColDef *))
+{
+	int			ncols = seg->schema->ncols;
+	const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
+	uint64		at = s->off + PRIV(seg)->pagg_end + off,
+				lowest;
+	SetsHeader	sh;
+	SetsLeaf   *rec,
+			   *out;
+	int			prev = -1;
+
+	seg_read(seg, at, sizeof(sh), &sh);
+	if (sh.magic != magic || sh.version != 1 || sh.nsb != seg->nsb || sh.nleaves < 1 || sh.nleaves > (uint32) ncols ||
+		sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf) > room)
+		corrupt(seg, "The %s start with 0x%08x, version %u, %u leaves, %u units.", what, sh.magic, sh.version, sh.nleaves, sh.nsb);
+	rec = palloc(sh.nleaves * sizeof(SetsLeaf));
+	seg_read(seg, at + sizeof(sh), sh.nleaves * sizeof(SetsLeaf), rec);
+	lowest = off + sizeof(sh) + sh.nleaves * sizeof(SetsLeaf);
+	out = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(SetsLeaf));
+	for (uint32 i = 0; i < sh.nleaves; i++)
+	{
+		const SetsLeaf *r = &rec[i];
+		uint64		rel = r->dir_off - off;
+
+		if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~flags_ok) || !leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
+			corrupt(seg, "The %s record %u names leaf %u, which cannot have one.", what, i, r->leaf);
+		if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
+			!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
+			corrupt(seg, "The %s of leaf %u (%llu bytes at %llu) lie outside the section.", what, r->leaf, ULL(r->bytes), ULL(r->dir_off));
+		lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
+		prev = r->leaf;
+		out[r->leaf] = *r;
+	}
+	/* the records are all there are: one fewer would leave the last leaf's blobs unread and unnoticed */
+	if (lowest != off + room)
+		corrupt(seg, "The %s end at %llu, not at the %llu the section has.", what, ULL(lowest), ULL(off + room));
+	pfree(rec);
+	return out;
+}
 
 /* The record of leaf col in the section, read and checked with the whole section on first use; NULL when the leaf has no summary in any unit */
 static const SetsLeaf *
@@ -1398,7 +1456,6 @@ set_leaf(SiftColSegment *seg, int col)
 {
 	SegPriv    *pv = PRIV(seg);
 	const PaggHeader *h;
-	int			ncols = seg->schema->ncols;
 
 	if (seg->entry.format < SIFT_COL_FORMAT_SETS)
 		return NULL;
@@ -1407,43 +1464,8 @@ set_leaf(SiftColSegment *seg, int col)
 		return NULL;
 	if (pv->sets == NULL)
 	{
-		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
-		uint64		at = s->off + pv->pagg_end + PAGG_SETS(h),
-					room = PAGG_SETS_BYTES(h),
-					lowest;
-		SetsHeader	sh;
-		SetsLeaf   *rec,
-				   *sets;
-		int			prev = -1;
-
-		seg_read(seg, at, sizeof(sh), &sh);
-		if (sh.magic != SETS_MAGIC || sh.version != 1 || sh.nsb != seg->nsb || sh.nleaves < 1 || sh.nleaves > (uint32) ncols ||
-			sizeof(sh) + (uint64) sh.nleaves * sizeof(SetsLeaf) > room)
-			corrupt(seg, "The small-set summaries start with 0x%08x, version %u, %u leaves, %u units.", sh.magic, sh.version, sh.nleaves, sh.nsb);
-		rec = palloc(sh.nleaves * sizeof(SetsLeaf));
-		seg_read(seg, at + sizeof(sh), sh.nleaves * sizeof(SetsLeaf), rec);
-		lowest = PAGG_SETS(h) + sizeof(sh) + sh.nleaves * sizeof(SetsLeaf);
-		sets = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(SetsLeaf));
-		for (uint32 i = 0; i < sh.nleaves; i++)
-		{
-			const SetsLeaf *r = &rec[i];
-			uint64		rel = r->dir_off - PAGG_SETS(h);
-
-			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(SETS_EXACT | SETS_BLOOM | SETS_PRES)) || !sift_cset_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
-				corrupt(seg, "The small-set record %u names leaf %u, which cannot have one.", i, r->leaf);
-			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
-				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
-				corrupt(seg, "The small-sets of leaf %u (%llu bytes at %llu) lie outside the section.", r->leaf, ULL(r->bytes), ULL(r->dir_off));
-			lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
-			prev = r->leaf;
-			sets[r->leaf] = *r;
-		}
-		/* the records are all there are: one fewer would leave the last leaf's summaries unread and unnoticed */
-		if (lowest != PAGG_SETS(h) + room)
-			corrupt(seg, "The small-set summaries end at %llu, not at the %llu the section has.", ULL(lowest), ULL(PAGG_SETS(h) + room));
-		pfree(rec);
-		pv->setdir = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
-		pv->sets = sets;
+		pv->sets = blob_records(seg, "small-set summaries", SETS_MAGIC, PAGG_SETS(h), PAGG_SETS_BYTES(h), SETS_EXACT | SETS_BLOOM | SETS_PRES, sift_cset_leaf_ok);
+		pv->setdir = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(uint64 *));
 	}
 	return pv->sets[col].dir_off ? &pv->sets[col] : NULL;
 }
@@ -1492,6 +1514,53 @@ sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPresence *p)
 	return true;
 }
 
+/* ---------- HyperLogLog sketches ---------- */
+
+static const SetsLeaf *
+hll_leaf(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	const PaggHeader *h;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_HLL)
+		return NULL;
+	h = pagg_header(seg);
+	if (h->version < 7 || !PAGG_HLL(h))
+		return NULL;
+	if (pv->hlls == NULL)
+	{
+		pv->hlls = blob_records(seg, "sketches", HLL_MAGIC, PAGG_HLL(h), PAGG_HLL_BYTES(h), HLL_LIST | HLL_DENSE, sift_hll_leaf_ok);
+		pv->hlldir = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(uint64 *));
+	}
+	return pv->hlls[col].dir_off ? &pv->hlls[col] : NULL;
+}
+
+const uint8 *
+sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len)
+{
+	const SetsLeaf *sl = hll_leaf(seg, col);
+	SegPriv    *pv = PRIV(seg);
+	const uint8 *blob;
+
+	*len = 0;
+	if (sl == NULL)
+		return NULL;
+	blob = unit_blob(seg, seg->nsb, u, sl->dir_off, sl->bytes, &pv->hlldir[col], &pv->hllbuf, &pv->hllcap, len);
+	if (pv->hlldir[col][seg->nsb] != sl->bytes)
+		corrupt(seg, "The directory of the sketches of leaf %d ends at %llu, not at %llu.", col, ULL(pv->hlldir[col][seg->nsb]), ULL(sl->bytes));
+	if (blob != NULL && !sift_hll_check(blob, *len))
+		corrupt(seg, "The sketch of leaf %d in unit %u is malformed.", col, u);
+	return blob;
+}
+
+uint32
+sift_cseg_hll_kinds(SiftColSegment *seg, int col)
+{
+	const SetsLeaf *sl = hll_leaf(seg, col);
+
+	return sl ? sl->flags : 0;
+}
+
 /* ---------- sorted runs ---------- */
 
 /* The record of leaf col in the section, read and checked with the whole section on first use; NULL when the leaf has no run in any unit */
@@ -1500,7 +1569,6 @@ run_leaf(SiftColSegment *seg, int col)
 {
 	SegPriv    *pv = PRIV(seg);
 	const PaggHeader *h;
-	int			ncols = seg->schema->ncols;
 
 	if (seg->entry.format < SIFT_COL_FORMAT_RUNS)
 		return NULL;
@@ -1509,40 +1577,8 @@ run_leaf(SiftColSegment *seg, int col)
 		return NULL;
 	if (pv->runs == NULL)
 	{
-		const SiftSectionRef *s = sec(seg, SIFT_SEC_DICTIDX);
-		uint64		at = s->off + pv->pagg_end + PAGG_RUNS(h),
-					room = PAGG_RUNS_BYTES(h),
-					lowest;
-		RunsHeader	rh;
-		RunsLeaf   *rec,
-				   *runs;
-		int			prev = -1;
-
-		seg_read(seg, at, sizeof(rh), &rh);
-		if (rh.magic != RUNS_MAGIC || rh.version != 1 || rh.nsb != seg->nsb || rh.nleaves < 1 || rh.nleaves > (uint32) ncols ||
-			sizeof(rh) + (uint64) rh.nleaves * sizeof(RunsLeaf) > room)
-			corrupt(seg, "The sorted runs start with 0x%08x, version %u, %u leaves, %u units.", rh.magic, rh.version, rh.nleaves, rh.nsb);
-		rec = palloc(rh.nleaves * sizeof(RunsLeaf));
-		seg_read(seg, at + sizeof(rh), rh.nleaves * sizeof(RunsLeaf), rec);
-		lowest = PAGG_RUNS(h) + sizeof(rh) + rh.nleaves * sizeof(RunsLeaf);
-		runs = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(RunsLeaf));
-		for (uint32 i = 0; i < rh.nleaves; i++)
-		{
-			const RunsLeaf *r = &rec[i];
-			uint64		rel = r->dir_off - PAGG_RUNS(h);
-
-			if (r->leaf >= (uint32) ncols || (int) r->leaf <= prev || r->flags == 0 || (r->flags & ~(RUNS_ORD | RUNS_IDENT)) || !sift_crun_leaf_ok(seg->schema, &seg->schema->cols[r->leaf]))
-				corrupt(seg, "The sorted-run record %u names leaf %u, which cannot have one.", i, r->leaf);
-			if (r->dir_off < lowest || r->dir_off % 8 != 0 ||
-				!within(room, rel, (uint64) (seg->nsb + 1) * sizeof(uint64), r->bytes))
-				corrupt(seg, "The sorted runs of leaf %u (%llu bytes at %llu) lie outside the section.", r->leaf, ULL(r->bytes), ULL(r->dir_off));
-			lowest = ALIGN8(r->dir_off + (uint64) (seg->nsb + 1) * sizeof(uint64) + r->bytes);
-			prev = r->leaf;
-			runs[r->leaf] = *r;
-		}
-		pfree(rec);
-		pv->rundir = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
-		pv->runs = runs;
+		pv->runs = blob_records(seg, "sorted runs", RUNS_MAGIC, PAGG_RUNS(h), PAGG_RUNS_BYTES(h), RUNS_ORD | RUNS_IDENT, sift_crun_leaf_ok);
+		pv->rundir = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(uint64 *));
 	}
 	return pv->runs[col].dir_off ? &pv->runs[col] : NULL;
 }

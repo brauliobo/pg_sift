@@ -76,6 +76,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "agg/gen_int.h"
 
 /* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */
 
@@ -86,7 +87,7 @@ pa_leaf(const SiftAggAgg *a)
 	sift_i128	mul,
 				add;
 
-	return a->kind == SAA_COUNT_STAR ? -1 : a->num.n ? sift_aggnum_linear(&a->num, &mul, &add) : a->leaf;
+	return a->kind == SAA_COUNT_STAR ? -1 : a->kind == SAA_GEN ? a->gen->hll : a->num.n ? sift_aggnum_linear(&a->num, &mul, &add) : a->leaf;
 }
 
 /* v into the state of aggregate ai in group g, as the rows it stands for would have been added */
@@ -102,6 +103,7 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 			acc->n[g] += v->rows;
 			break;
 		case SAA_COUNT_DISTINCT:		/* its values are added by the histogram's fold (preagg_hist) */
+		case SAA_GEN:				/* its sketch is merged by preagg_hll */
 			break;
 		case SAA_COUNT:
 			acc->n[g] += v->nn;
@@ -223,6 +225,18 @@ preagg_presence(AggExec *ex, int ai, int leaf)
 	return true;
 }
 
+/* sift.approx_count_distinct of a leaf: the unit's stored sketch merged into the aggregate's state (the merge is idempotent, like the sets of preagg_presence) */
+static bool
+preagg_hll(AggExec *ex, int ai, int leaf)
+{
+	const uint8 *blob;
+
+	if (!sift_colsrc_unit_hll(ex->src, &ex->unit, leaf, &blob))
+		return false;
+	gen_merge_hll(ex, ai, blob);
+	return true;
+}
+
 /* no key: the unit's rows are one group, from the sums of the leaves */
 static bool
 preagg_sums(AggExec *ex)
@@ -245,6 +259,12 @@ preagg_sums(AggExec *ex)
 		if (a->kind == SAA_COUNT_DISTINCT)
 		{
 			if (!preagg_presence(ex, ai, leaf))
+				return false;
+			continue;
+		}
+		if (a->kind == SAA_GEN)
+		{
+			if (!preagg_hll(ex, ai, leaf))
 				return false;
 			continue;
 		}

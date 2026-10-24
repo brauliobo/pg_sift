@@ -95,6 +95,7 @@
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
 #define AGG_UNIT_COST		200.0
+#define AGG_PREAGG_HLL		40000.0	/* a unit's stored sketch merged into the aggregate's: up to 16,384 registers unpacked and maxed (about 60 us for a dense one) */
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_START_COST		210000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units, charged 0.6 ms because the arms of a pass open them once, which a selective btree plan does not pay */
 #define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
@@ -1210,7 +1211,13 @@ preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double row
 	SiftAggPaShape shape;
 
 	if (s->group < 0 && (!sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !shape.rows))
-		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP;
+	{
+		double		sketches = 0;
+
+		for (int i = 0; i < s->naggs; i++)
+			sketches += s->agg[i].kind == SAA_GEN && s->agg[i].gen->hll >= 0 ? AGG_PREAGG_HLL : 0.0;
+		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP + sketches;
+	}
 	for (int r = 0; r < c->pa.nrollups; r++)
 		if (c->pa.rollup[r].list == s->group)
 			for (int d = 0; d < c->pa.rollup[r].ndims; d++)
@@ -1522,7 +1529,8 @@ join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
 		*row_cost = AGG_IDX_ROW;
 		return Min(Max(jrel->rows, 1.0), tuples);
 	}
-	*row_cost = AGG_JOIN_ROW;
+	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
+	*row_cost = AGG_JOIN_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	return tuples;
 }
 
@@ -1825,13 +1833,16 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 				buffered = Min(NBuffers / pages, 1.0),
 				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
 				touched,
+				seq,
 				disk,
 				op = AGG_SCAN_SPEED * cpu_operator_cost;
 
 	if (vet_pages <= 0)
 		return 0;
 	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
-	disk = seq_page_cost + (random_page_cost - seq_page_cost) * (1.0 - touched / vet_pages);
+	/* the pages are read in order and skip the all-visible ones: never dearer than the random fetch of the same pages, where a configuration prices a sequential page above a random one */
+	seq = Min(seq_page_cost, random_page_cost);
+	disk = seq + (random_page_cost - seq) * (1.0 - touched / vet_pages);
 	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
 }
 

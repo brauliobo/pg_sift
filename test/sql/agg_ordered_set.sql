@@ -19,9 +19,10 @@ SELECT i, CASE WHEN i % 11 = 0 THEN 0 WHEN i < 50 THEN i ELSE 1 + i % 37 END, i 
 	   CASE WHEN i % 977 = 0 THEN NULL ELSE timestamptz '2020-06-01 00:00:00+00' + (i * 31 % 5003) * interval '1 hour' END,
 	   CASE WHEN i % 971 = 0 THEN NULL WHEN i % 967 = 0 THEN 'NaN' WHEN i % 5 = 0 THEN (i % 13) ELSE ((i * 7919) % 1000003 - 500000) / 7.0 END
 FROM generate_series(1, 20000) i;
--- groups of one and of two values
+-- groups of one and of two values, and one of -0 only
 INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm) VALUES (100001, 9001, 1, 5.5, 1.5, '2024-01-01', 3, 7, '2024-01-01', '2024-01-01+00', 1.5), (100002, 9002, 1, 1.5, 2.5, '2024-01-02', 1, -9223372036854775807 - 1, '2024-01-02', '2024-01-02+00', -2.25),
-	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5);
+	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5),
+	(100004, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0), (100005, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0);
 CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n, i8, ts, tz, nm);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) os;
 
@@ -37,9 +38,11 @@ END $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT t::text AS j FROM (%s) t', q);
+	-- -0 and 0 are one value to float8: which of them a percentile returns among rows that tie is the sort's pick (the normal plan gives another with the order of the rows,
+	-- a parallel scan changes it from run to run), and the scan keeps one zero: the sign of a zero is not compared
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT regexp_replace(t::text, ''(?<=[(,])-0(?=[,)])'', ''0'', ''g'') AS j FROM (%s) t', q);
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT t::text AS j FROM (%s) t', q);
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT regexp_replace(t::text, ''(?<=[(,])-0(?=[,)])'', ''0'', ''g'') AS j FROM (%s) t', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT count(*) FROM r_on);
 	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);

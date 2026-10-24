@@ -244,6 +244,11 @@ extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 /* The bytes the sorted runs of the segment take */
 extern uint64 sift_cseg_run_bytes(SiftColSegment *seg);
+extern uint64 sift_cseg_hll_bytes(SiftColSegment *seg);
+/* The stored sketch of leaf col in unit u (len bytes, well formed: sift_hll_check), NULL when the unit has none; valid until the next call */
+extern const uint8 *sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len);
+/* HLL_LIST | HLL_DENSE: the forms of sketch some unit of the leaf has (0: none) */
+extern uint32 sift_cseg_hll_kinds(SiftColSegment *seg, int col);
 /* The kinds (RUNS_ORD, RUNS_IDENT) the record of the leaf says some unit has; 0 when the leaf has no run */
 extern uint32 sift_cseg_run_kinds(SiftColSegment *seg, int col);
 /* the kinds (SETS_EXACT, SETS_BLOOM, SETS_PRES) the record of leaf col in the small-set summaries lists */

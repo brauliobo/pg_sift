@@ -427,6 +427,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `key_cut` | `sift_col` | '' (new in 3.4) | opt-in | up to 4 integer, date, timestamp, numeric or float columns of the index, most significant first | the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17; default none: a unit is a superblock) | format minor 17; a 3.2 library cannot read it; the index 17% smaller to 16% larger for narrow rows (units list their TIDs) and 0.2% larger for wide ones; the build CPU 3.4 to 4.1 times (the sort), a promotion and a merge about 3.5 times; a build writes a sorted segment for each half of maintenance_work_mem of rows and a merge streams them (one unit of each input in memory); segments are minor 17, which 3.2 and older refuse |
 | `key_cut_rows` | `sift_col` | 0 (new in 3.4) | default | int 0..32768 | Rows a key-cut unit aims at (0: as many as an average superblock of the table holds) | format minor 17; a 3.2 library cannot read it; fewer rows, more units; more rows, a coarser range per unit |
 | `order_columns` | `sift_col` | '' | opt-in | integer, date, timestamp, numeric or float columns | the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none) | format minor 18; a 3.2 library cannot read it; the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units) |
+| `hll_columns` | `sift_col` | '' (new in 3.4) | opt-in | int2, int4, int8, date, timestamp, timestamptz, text, varchar or uuid columns | the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none) | format minor 20; a 3.2 library cannot read it; a sketch of 8 B + 3 B a register to 12,296 B a unit and column (169 B for 50 values, 8,209 B for 2,700, 12,307 B above 4,096): the index 23% larger for four columns of a million rows, the build 70% longer; segments are minor 20, which 3.3 and older refuse |
 | `return_columns` | `sift_col` | '' | opt-in | text, varchar or uuid columns | the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap) | no extra storage: the strings are the dictionary the index keeps [COL-SCAN](COL-SCAN.md#how-it-works) |
 | `superunit` | `sift_col` | 16 | default | int 0..256 | Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16) | format minor 12; +1.0% of the index (groups of 64: +0.8%, of 4 to 8: +1.3% to +1.5%); a range query on a 2-unit table 0.10 to 0.13-0.15 ms [COL-PREAGG 10](COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16) |
 <!-- sift-reloptions:end -->
@@ -702,6 +703,29 @@ per role, or a `random_page_cost` that reflects the storage are the supported ov
 
 The first statement of a session that has not preloaded the library (`session_preload_libraries = 'pg_sift'` does it at the start) is planned again through the hook when it is a `SELECT`, an `EXPLAIN` or a
 `CREATE TABLE AS` (see Install above); a diagnosis that starts with `EXPLAIN (ANALYZE)` in a fresh session therefore shows the plan the next statement gets.
+
+### Approximate distinct counts
+
+`count(DISTINCT x)` is exact in every plan, whatever the settings and the options of the index: nothing rewrites it into an estimate. When an estimate is enough (the distinct visitors of a
+dashboard), `sift.approx_count_distinct(x)` is an ordinary aggregate that returns a `bigint`: a HyperLogLog sketch of 16,384 registers, relative standard error 0.81% (the estimate is within
+1.6% of the count in 95 cases of 100 and within 2.4% in 99.7). Measured on 40 sets of each size: the mean error was 0.44% (300 distinct values), 0.43% (6,000) and 0.53% (120,000), and the largest
+1.33%, 1.35% and 1.96%. It is not exact for few values either: 2,000 distinct values gave 1,987.
+
+- It takes any type that has a hash operator class (`int`, `bigint`, `text`, `uuid`, `date`, `timestamptz`, ...); a type without one is an error. A `NULL` is not counted; no row, or only `NULL`s, gives 0 (not `NULL`).
+- The number is a function of the set of values (their extended hash with seed 0), so it is the same in every plan, with workers or without, by partition, from a scan of the heap or of a column index, and for any
+  order of the rows. The partial states are mergeable (parallel aggregates, partitionwise aggregates and `sift_col` units all use the same combine function). `DISTINCT` and `FILTER` in the call are allowed.
+- An index with `hll_columns = 'col, col'` stores the sketch of each unit of those columns, and the aggregate over the units a query reads whole is the merge of their sketches,
+  not a hash of every row: on 100,000 to 1,600,000 rows of two columns (50,000 to 200,000 distinct values) it took 0.8 to 5.4 ms, against 12 to 63 ms for the normal plan and 38 to 153 ms for the scan of the rows;
+  `count(DISTINCT)` of the same columns took 58 to 880 ms by the normal plan. A sketch costs 8 bytes and 3 per register (169 bytes for 50 values, 8,209 for 2,700, 12,307 above 4,096) a unit and column; four columns of a
+  million rows made the index 23% larger and the build 70% longer. An index without the option is the one it was, and the aggregate then hashes the rows (the scan and the normal plan give the same number).
+- `EXPLAIN` of the scan says `Approximate Distinct` and `Units Without The Sketch` (the units read by their rows: a page not yet all-visible, a test that cuts the unit, an older unit); `sift.explain_why` and `EXPLAIN (VERBOSE)`
+  say `approx_no_sketch` when the index keeps no sketch of the column or the query groups the aggregate. `sift.upgrade_commands()` lists an index whose option is newer than its units as a gain from `REINDEX`.
+
+```sql
+CREATE INDEX visits_col ON visits USING sift_col (day, site_id, visitor_id) WITH (hll_columns = 'visitor_id');
+SELECT site_id, sift.approx_count_distinct(visitor_id) FROM visits WHERE day >= date '2026-01-01' GROUP BY site_id;   -- an estimate, 0.81% relative standard error
+SELECT count(DISTINCT visitor_id) FROM visits;                                                                       -- exact, always
+```
 
 ### Set filters
 

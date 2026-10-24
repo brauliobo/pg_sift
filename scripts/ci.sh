@@ -646,7 +646,7 @@ if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
 	portable=$!
 	step neutral neutral "$S/check-neutral.sh" &
 	neutral=$!
-	step errors errors bash -c "\"$S/check-errors.sh\" && \"$S/check-memory.sh\" && \"$S/check-memory.sh\" --selftest" &
+	step errors errors bash -c "\"$S/check-errors.sh\" && \"$S/check-memory.sh\" && \"$S/check-memory.sh\" --selftest && \"$S/check-approx.sh\"" &
 	errors=$!
 	step reference reference "$S/gen-reference.sh" --check &
 	reference=$!

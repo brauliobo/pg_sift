@@ -7,6 +7,9 @@ SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
+-- PostgreSQL 19 offers an index-only scan of the sift_col index, which prices a filter that prunes every unit (k BETWEEN 500 AND 600) under the fixed charge of the
+-- scan; the statements here are about the scan, so the other plan is off
+SET enable_indexonlyscan = off;
 
 CREATE TABLE zw (id int, k int, j int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO zw SELECT i, i / 256, CASE WHEN i / 256 % 3 = 0 THEN NULL ELSE i / 256 % 17 END, repeat('x', 600) FROM generate_series(0, 130 * 256 - 1) i;

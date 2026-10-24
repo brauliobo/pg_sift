@@ -387,6 +387,7 @@ typedef struct SiftSrcPreagg
 	bool		aggs;
 	int			npres;			/* the integer leaves whose units keep every distinct value as a key list or bitmap (key_columns), answered by unit_presence */
 	int			pres[SIFT_SRC_MAX_DIMS];
+	bool		hll[SIFT_SRC_CAL];	/* by leaf: the leaves whose units keep a HyperLogLog sketch (hll_columns), answered by unit_hll */
 	int			ndims;
 	struct
 	{
@@ -561,6 +562,8 @@ typedef struct SiftSrcProvider
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
 	/* Optional (NULL: none): the presence of an exact unit's leaf of SiftSrcPreagg.pres, valid until the next call; false when the unit has none */
 	bool		(*unit_presence) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p);
+	/* Optional (NULL: none): the HyperLogLog sketch of an exact unit's leaf of SiftSrcPreagg.hll (col/hll.h), valid until the next call; false when the unit has none */
+	bool		(*unit_hll) (void *impl, const SiftSrcUnit *unit, int leaf, const uint8 **blob);
 	uint32		(*unit_rollup_tuples) (void *impl, const SiftSrcUnit *unit, int list);
 	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* Optional: the consumer scanned an exact unit because its rollup lacks what the query reads; the source may arrange for the unit to get it. True: a refresh is queued for it */
@@ -797,6 +800,12 @@ static inline bool
 sift_colsrc_unit_agg(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
 	return src->prov->unit_agg != NULL && src->prov->unit_agg(src->impl, unit, leaf, agg);
+}
+
+static inline bool
+sift_colsrc_unit_hll(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint8 **blob)
+{
+	return src->prov->unit_hll != NULL && src->prov->unit_hll(src->impl, unit, leaf, blob);
 }
 
 static inline bool

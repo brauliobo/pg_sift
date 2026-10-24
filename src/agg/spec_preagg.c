@@ -169,6 +169,7 @@ static const struct
 	[SPW_AGG_KIND] = {"aggregate not additive over tuples", "aggregate_kind"},
 	[SPW_AGG_ARG] = {"aggregate argument is not a plain leaf", "aggregate_argument"},
 	[SPW_AGG_TYPE] = {"aggregate type not summed", "aggregate_type"},
+	[SPW_AGG_APPROX] = {"approx_count_distinct without a stored sketch", "approx_no_sketch"},
 	[SPW_DIM_NOT_STORED] = {"dim not in the rollup", "dim_not_stored"},
 	[SPW_MEAS_NOT_STORED] = {"measure not in the rollup", "measure_not_stored"},
 	[SPW_ROW_KEYS] = {"rows: several group keys", "rows_several_keys"},
@@ -297,6 +298,9 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 	int			leaf;
 	SiftPaWhy	why;
 
+	/* sift.approx_count_distinct of a leaf with stored sketches: the unit's sketch, not a group's */
+	if (a->kind == SAA_GEN && a->gen->hll >= 0)
+		return d < 0 && pa->hll[a->gen->hll] ? SPW_OK : SPW_AGG_APPROX;
 	if (distinct_leaf(a, lay))
 		return (d >= 0 && a->leaf == pa->dim[d].leaf) || (d < 0 && pa_pres(pa, a->leaf)) ? SPW_OK : SPW_AGG_DISTINCT;
 	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);

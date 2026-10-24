@@ -2,7 +2,7 @@
 
 Generated from `sql/pg_sift--3.4.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
 
-Schema `sift`: 50 functions, 5 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
+Schema `sift`: 51 functions, 5 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
 
 Settings (`sift.*`) are in the table of [Maintenance and operations](USAGE.md#maintenance-and-operations); the fixed limits are in [LIMITS.md](LIMITS.md).
 
@@ -13,6 +13,7 @@ The `sift` index (BM25): the operator, ranking, query helpers, facets and the in
 | Object | Kind | Returns | Since | Description |
 |---|---|---|---|---|
 | `text @@> text` | operator | `bool` | 1.0 | Full-text match of a text against a SiftQL query (words, phrases, prefixes, fuzzy terms, NOT, fields); a sift index answers it, with BM25 ranking through sift.score. See [Ranking, filters and joins](USAGE.md#ranking-filters-and-joins). |
+| `sift.approx_count_distinct_deserial(bytea, internal)` | function | `internal` | 3.4 | Deserial function of sift.approx_count_distinct: the sketch of a worker. |
 | `sift.cluster_advice(rel regclass DEFAULT NULL, min_rows int8 DEFAULT 100000, key text DEFAULT NULL)` | function | `setof (tbl regclass, index regclass, order_by text, units int8, units_now float8, units_after float8, saved_rows int8, churn_pct float8, verdict text, reason text, command text)` | 3.3 | Which physical order of a table (CLUSTER, pg_repack --order-by) would let the scans of its sift_col index skip the most units, one row per index: units read now and after, rows saved, churn, a verdict with its reason, and the pg_repack call with the VACUUM (ANALYZE) that follows; key asks about your own list of leaves. See [Maintenance and operations](USAGE.md#maintenance-and-operations). |
 | `sift.facet_counts(tbl regclass, key text, query text, facets jsonb, filter text DEFAULT NULL, hits bool DEFAULT false)` | function | `setof (facet text, kind text, value text, lo text, hi text, count int8)` | 3.1 | Facet counts over a search: terms, range, histogram and date_histogram facets of any column type, several in one call. See [Facets](USAGE.md#facets). |
 | `sift.facet_sql(tbl regclass, key text, query text, facets jsonb, filter text DEFAULT NULL, hits bool DEFAULT false)` | function | `text` | 3.1 | The SQL statement that facet_counts runs, one scan per facet. See [Facets](USAGE.md#facets). |
@@ -98,10 +99,10 @@ Session statistics, why a query kept the normal plan, what an upgrade leaves to 
 | `sift.refusal_slugs()` | function | `setof (slug text, class text, reason text)` | 3.3 | The slugs that sift.explain_why and sift.stats() name, with their class (limit: the query has more of something than a fixed limit of the extension allows; semantic: otherwise) and the reason. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.stats()` | function | `setof (name text, value int8)` | 3.3 | What the aggregate pushdown (Custom Scan (SiftAgg)) scans of this session did: one row per counter and per refusal slug. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.stats_reset()` | function | `void` | 3.3 | Resets the session counters that sift.stats() reports. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
-| `sift.upgrade_commands()` | function | `setof (kind text, object regclass, reason text, command text, required bool)` | 3.3 | What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing. |
+| `sift.upgrade_commands()` | function | `setof (kind text, object regclass, reason text, command text, required bool)` | 3.3 | What an update leaves to do for the indexes and tables the caller owns or may maintain, one row per command, the cheapest first: kind (reindex, rewrite), the index or table, the reason and the statement; required when queries miss rows until it runs. Changes nothing. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.version()` | function | `text` | 1.2 | Version of the loaded library (the installed extension version is in pg_extension). See [Maintenance and operations](USAGE.md#maintenance-and-operations). |
 
 ## Internal
 
-Not meant to be called: `sift.col_handler`, `sift.col_ops_unused`, `sift.facet_cap`, `sift.facet_part`, `sift.match_support`, `sift.matchsel`, `sift.publication_check`, `sift.sift_handler`, `sift.table_ddl_check`, `sift.table_handler`, `sift.table_paths_check`, `sift.table_paths_drop`. Names starting with `_` are for the tests.
+Not meant to be called: `sift.approx_count_distinct_combine`, `sift.approx_count_distinct_final`, `sift.approx_count_distinct_serial`, `sift.approx_count_distinct_trans`, `sift.col_handler`, `sift.col_ops_unused`, `sift.facet_cap`, `sift.facet_part`, `sift.match_support`, `sift.matchsel`, `sift.publication_check`, `sift.sift_handler`, `sift.table_ddl_check`, `sift.table_handler`, `sift.table_paths_check`, `sift.table_paths_drop`. Names starting with `_` are for the tests.
 

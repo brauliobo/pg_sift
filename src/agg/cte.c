@@ -78,19 +78,26 @@ has_column_index(Oid relid)
 	return found;
 }
 
-/* does the query select from a table that has a column index, itself or through a CTE of the same WITH (which PostgreSQL inlines when one query reads it)? */
+/*
+ * does the query select from a table that has a column index, itself, through a sub-select or through a CTE of the same WITH (which PostgreSQL
+ * inlines when one query reads it)? level: how many query levels the query is below the WITH
+ */
 static bool
-reads_indexed_table(Query *q, List *siblings, int depth)
+reads_indexed_table(Query *q, List *siblings, int depth, int level)
 {
 	foreach_node(RangeTblEntry, rte, q->rtable)
 	{
 		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
 			return true;
-		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != 1 || depth <= 0)
+		if (depth <= 0)
+			continue;
+		if (rte->rtekind == RTE_SUBQUERY && reads_indexed_table(rte->subquery, siblings, depth - 1, level + 1))
+			return true;
+		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != level)
 			continue;
 		foreach_node(CommonTableExpr, sib, siblings)
 			if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query) &&
-				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1))
+				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1, 1))
 				return true;
 	}
 	return false;
@@ -104,7 +111,7 @@ shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 
 	if (cte->cterecursive || cte->cterefcount < 2 || cte->ctematerialized != CTEMaterializeDefault || q->commandType != CMD_SELECT)
 		return false;
-	return reads_indexed_table(q, siblings, 4);
+	return reads_indexed_table(q, siblings, 4, 1);
 }
 
 /* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
@@ -807,6 +814,8 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards).
 	 */
 	parse = copyObject(parse);
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && parse->rowMarks == NIL && reads_column_index(parse))
+		sift_agg_preinline(parse);
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));

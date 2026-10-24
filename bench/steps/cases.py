@@ -45,6 +45,9 @@ INDEX_COLUMNS = ', '.join(COLUMNS[1:8] + DERIVED)
 DB = 'cases'
 FIELDS = ['id', 'changelog', 'dataset', 'index', 'plan', 'baselines', 'variants', 'metric', 'block', 'headline']
 TIMEOUT = 60
+LANE_BUDGET = 20.0   # seconds of timed runs after which a lane stops repeating (it has MIN_RUNS or more); --lane-budget
+MIN_RUNS = 3
+TIMES = {}   # case id -> [build seconds, run seconds] of the last point
 
 
 def die(msg):
@@ -70,6 +73,7 @@ class Case:
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
         self.metrics = self.metric.split(',')
         self.headline = self.headline == 'yes'
+        self.share = None   # read_registry: the name of the table that cases with the same index and setup read together
 
     def statement(self, lane):
         if lane == 'pg_duckdb':
@@ -77,7 +81,7 @@ class Case:
         return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
 
     def schema(self):
-        return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + self.id
+        return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + (self.share or self.id)
 
     def table_index(self):
         m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
@@ -94,7 +98,24 @@ def read_registry(root=REPO):
         if not os.path.exists(path):
             die('bench/cases.tsv: %s has no file bench/cases/%s.sql' % (r[0], r[0]))
         cases.append(Case(r, open(path).read()))
+    share_builds(cases)
     return cases
+
+
+READ_ONLY = re.compile(r'\b(insert|update|delete|alter|create|drop|truncate|copy)\b', re.I)
+
+
+def share_builds(cases):
+    """the cases on `orders` that only read it and have the same index and setup are one build: `orders` is made, indexed and vacuumed once (the build is most of the time of a case at 1M
+    rows), in a schema named after the first case of the group; a case that writes, loads or has its own dataset keeps a table of its own"""
+    groups = {}
+    for c in cases:
+        if c.dataset == 'orders' and not c.load and not any(READ_ONLY.search(c.sec.get(k, '')) for k in ('pg', 'sift', 'duck')):
+            groups.setdefault((c.index, c.sec.get('setup', ''), c.opt.get('vacuum', 'yes')), []).append(c)
+    for g in groups.values():
+        if len(g) > 1:
+            for c in g:
+                c.share = 's_' + g[0].id
 
 
 # --- the server
@@ -147,15 +168,18 @@ def build(case, rows):
         if case.sec.get('setup'):
             psql('SET search_path = %s, public;\n' % schema + case.sec['setup'] + ';\n')
         return
-    ddl = ['DROP SCHEMA IF EXISTS c_{0} CASCADE', 'CREATE SCHEMA c_{0}', 'SET search_path = c_{0}, public',
+    if case.share and (case.schema(), rows) in BUILT:
+        return
+    ddl = ['DROP SCHEMA IF EXISTS {0} CASCADE', 'CREATE SCHEMA {0}', 'SET search_path = {0}, public',
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
-    sql = ';\n'.join(d.format(case.id) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
+    sql = ';\n'.join(d.format(case.schema()) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
     if case.opt.get('vacuum', 'yes') == 'yes':
         sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
     psql(sql)
     psql('CHECKPOINT')
+    BUILT.add((case.schema(), rows))
 
 
 def server_session(timeout):
@@ -263,6 +287,8 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         order = order[r % len(order):] + order[:r % len(order)] if order else order
         for lane in order:
             for _ in range(runs):
+                if sum(times[lane]) / 1000 > LANE_BUDGET and len(times[lane]) >= MIN_RUNS:   # a lane of seconds a run: the median of a few runs, not of fifteen
+                    break
                 times[lane].append(lanes[lane].run(sql[lane])[0])
     return times, notes, errors
 
@@ -347,26 +373,40 @@ def run_point(args, cases, rows, engines, results, failed):
     """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
     scaled = bool(args.scales)
     tag = '@%d' % rows if scaled else ''
+    t0 = time.time()
     csv = dataset(rows)
+    TIMES['(dataset)' + tag] = [round(time.time() - t0, 1), 0]
     if args.duck_port:
+        t0 = time.time()
         load_duck(args.duck_port, csv)
+        TIMES['(pg_duckdb load)' + tag] = [round(time.time() - t0, 1), 0]
     point = []
+    left = {}   # the cases still to read each shared table: it is dropped after the last
+    for c in cases:
+        if c.share:
+            left[c.schema()] = left.get(c.schema(), 0) + 1
     for c in cases:
         log('%s%s: %s' % (c.id, ' at %s rows' % format(rows, ',') if scaled else '', c.label))
+        t0 = time.time()
         build(c, rows)
+        built = time.time() - t0
         if not args.no_wait:
             wait_quiet(args.wait)
         noisy = busy()
         load = server_load()
         if c.load:
+            t1 = time.time()
             out, plans, errors = measure_load(c, csv, args.rounds, rows)
+            TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
                     point.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
+        t1 = time.time()
         times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not scaled)
+        TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         for lane in lanes:
             if lane in errors:
                 if lane in ('sift', 'native') or errors[lane].startswith(('PLAN', 'RESULT')):
@@ -375,23 +415,32 @@ def run_point(args, cases, rows, engines, results, failed):
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
             lanes[lane].close()
-        if scaled and c.dataset not in DATASETS:   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
+        if c.share:
+            left[c.schema()] -= 1
+        if c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
             psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
+            BUILT.discard((c.schema(), rows))
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
 
 
 def cmd_run(args):
-    global TIMEOUT
+    global TIMEOUT, LANE_BUDGET
+    LANE_BUDGET = args.lane_budget
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     if not cases:
         die('no case matches %s' % ','.join(args.cases))
+    if args.no_share:
+        for c in cases:
+            c.share = None
     TIMEOUT = args.timeout
     engines = args.engines.split(',')
     load_before = host_load()
     results, failed = [], []
     for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
         run_point(args, cases, args.rows * scale, engines, results, failed)
+    log('time: %.0f s of builds (the dataset and the copy in pg_duckdb included), %.0f s of timed runs, %d cases, %d tables built for them' % (
+        sum(b for b, _ in TIMES.values()), sum(r for _, r in TIMES.values()), len(cases), len({c.schema() for c in cases if c.dataset not in DATASETS})))
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results, load_before)
@@ -403,7 +452,7 @@ def cmd_run(args):
 
 
 def cmd_plan(args):
-    """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates from the 200,000-row trials: linear in the rows, a floor on a loaded host)"""
+    """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates fitted to the 1,000,000-row run of 2026-10-24, 86 cases in 17 min with shared tables: linear in the rows, a floor on a loaded host)"""
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
     events = sum(c.dataset in DATASETS for c in cases)
@@ -417,7 +466,7 @@ def cmd_plan(args):
         len(cases), len(cases) - events, events, len(scales), 's' * (len(scales) > 1), ' x '.join([format(args.rows, ','), str(scales)]), args.rounds, args.runs, args.timeout))
     for sc in scales:
         n = args.rows * sc
-        t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 10e-6 + 5.0 * sc)
+        t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 8e-6 + 4.0 * sc)
         gb = (n * (120 + 85 + 350) + (n * 1000 if events else 0)) / 2**30 + 4
         seconds, peak = seconds + t, max(peak, gb)
         print('  %14s orders (%dx): generate%s, %d builds and measures, about %4.0f min, up to %4.0f GB of scratch' % (format(n, ','), sc, ' orders and events' if events else ' orders', len(cases), t / 60, gb))
@@ -459,6 +508,28 @@ def write_results(args, cases, results, load_before):
     if args.scales:
         meta['scales'] = args.scales
     extras.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
+    log('wrote %s' % path)
+    if args.docs or args.times:
+        write_times(args, cases)
+
+
+def write_times(args, cases):
+    """bench/results/cases-time.tsv: the seconds each case took (its build: the table, indexes and setup, zero for a case that reads a table another one built; its timed runs on every lane),
+    which the budget table of bench/README.md is made from; the rows of the cases that ran replace theirs"""
+    path = args.times or os.path.join(REPO, 'bench', 'results', 'cases-time-scale.tsv' if args.scales else 'cases-time.tsv')
+    old = {}
+    if os.path.exists(path):
+        for l in open(path):
+            f = l.rstrip('\n').split('\t')
+            if not l.startswith('#') and f[0] != 'case' and len(f) == 4:
+                old[f[0]] = f
+    for k, (b, r) in TIMES.items():
+        old[k] = [k, str(args.rows), str(b), str(r)]
+    lines = ['# Seconds of each case of bench/cases.tsv (steps/cases.py, bench/bench cases --docs): build (the table, its indexes and setup; 0 for a case that reads the table of an earlier one), run (the timed runs of every lane,',
+             '# %d rounds of %d runs, a lane stops repeating after %g s), at the orders of the row. (dataset): generating the orders; (pg_duckdb load): the copy in the container.' % (args.rounds, args.runs, args.lane_budget),
+             '# measured %s on %s, host load before %s.' % (datetime.date.today().isoformat(), host(), host_load()),
+             'case\torders\tbuild_s\trun_s'] + ['\t'.join(v) for v in old.values()]
+    open(path, 'w').write('\n'.join(lines) + '\n')
     log('wrote %s' % path)
 
 
@@ -574,6 +645,9 @@ def main():
     ap.add_argument('--scales', help='run every case at ROWS times each of these (1,10,100): the curve of bench/results/cases-scale.tsv, the planner\'s plan at each size')
     ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
     ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large server 4GB): written to the file as the work_mem meta')
+    ap.add_argument('--lane-budget', type=float, default=LANE_BUDGET, help='seconds of timed runs after which a lane stops repeating, with at least %d runs (0: always the full rounds x runs); a case whose statement takes seconds is not run fifteen times' % MIN_RUNS)
+    ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
+    ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)

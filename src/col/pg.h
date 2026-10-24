@@ -117,6 +117,7 @@ typedef struct SiftColOptions
 	int			key_cut;		/* offset of the "key_cut" string, 0 = none */
 	int			key_cut_rows;	/* rows a key-cut unit aims at, 0 = as many as an average superblock holds */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
+	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
@@ -142,6 +143,7 @@ extern const char *sift_col_options_point_columns(Relation index);	/* "" when no
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);

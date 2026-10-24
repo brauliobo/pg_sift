@@ -32,6 +32,7 @@
 #include "col/build.h"
 #include "col/seg.h"
 #include "col/point.h"
+#include "col/hll.h"
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "core/cpu.h"
@@ -185,6 +186,15 @@ sift_col_validate_order_columns(const char *value)
 
 	if (err)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_hll_columns(const char *value)
+{
+	const char *err = sift_hll_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option \"%s\": %s", value, err)));
 }
 
 void
@@ -374,6 +384,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "hll_columns",
+						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
+						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
 						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
@@ -408,6 +421,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
 	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
@@ -557,6 +571,14 @@ sift_col_options_order_columns(Relation index)
 }
 
 const char *
+sift_col_options_hll_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->hll_columns ? (const char *) o + o->hll_columns : "";
+}
+
+const char *
 sift_col_options_return_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
@@ -685,6 +707,23 @@ build_rel(Relation index, MemoryContext mcxt)
 		r->pagg.super = sift_col_options(index)->superunit;
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
+		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			if (r->pagg.hll[i])
+			{
+				Oid			t = TupleDescAttr(desc, defs[i].attno - 1)->atttypid;
+
+				if (t != INT2OID && t != INT4OID && t != INT8OID && t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID && t != TEXTOID && t != VARCHAROID && t != UUIDOID)
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t))));
+				if ((t == TEXTOID || t == VARCHAROID) && !get_collation_isdeterministic(TupleDescAttr(desc, defs[i].attno - 1)->attcollation))
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i])));
+				/* a column the build chose for its key list (key_columns 'auto') gives it up: a leaf has one blob a unit in the set section, and the user asked for the sketch */
+				if (r->pagg.set[i] && r->pagg.keyauto)
+					r->pagg.set[i] = r->pagg.pres[i] = false;
+				else if (r->pagg.set[i])
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is in key_columns, which keeps its distinct keys exactly", names[i])));
+			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)

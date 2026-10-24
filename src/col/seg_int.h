@@ -19,10 +19,14 @@
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
 #define PAGG_SUPER_MINOR	SIFT_COL_FORMAT_SUPER	/* the column format minor that adds the superunit summaries: directory version 4 */
+#define PAGG_HLL_MINOR		SIFT_COL_FORMAT_HLL	/* the column format minor that adds the HyperLogLog sketches: directory version 7 */
 #define PAGG_RUNS_MINOR		SIFT_COL_FORMAT_RUNS	/* the column format minor that adds the sorted runs: directory version 5 */
 #define PAGG_EXCEPT_MINOR	SIFT_COL_FORMAT_EXCEPT	/* the column format minor that adds the exception cubes: directory version 6 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_EXCEPT_MINOR ? 6 : (minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_VERSION(minor)	((minor) >= PAGG_HLL_MINOR ? 7 : (minor) >= PAGG_EXCEPT_MINOR ? 6 : (minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 #define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates */
+#define HLL_LIST		0x1				/* SetsLeaf.flags of the sketches: SIFT_HLL_LIST, SIFT_HLL_DENSE (col/hll.h) */
+#define HLL_DENSE		0x2
+#define HLL_MAGIC		0x484C4F43		/* "COLH": the HyperLogLog sketches, after the sorted runs */
 #define RUNS_MAGIC		0x524C4F43		/* "COLR": the sorted runs, after the small-set summaries */
 
 #define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
@@ -84,7 +88,7 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0) + ((ver) > 5 ? 4 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0) + ((ver) > 5 ? 4 : 0) + ((ver) > 6 ? 2 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 #define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
@@ -123,6 +127,9 @@ StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-
 #define PAGG_XCUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 9])
 #define PAGG_XECUBEDIR(h)		((h)->lagg_off[(h)->ncols + 10])
 #define PAGG_XECUBE_BYTES(h)	((h)->lagg_off[(h)->ncols + 11])
+/* Version 7 (column format minor 20) adds two more: the offset of the HyperLogLog sketches and their bytes (0: none), the section laid out like the small-set summaries (HLL_LIST, HLL_DENSE: the forms of sketch some unit has) */
+#define PAGG_HLL(h)				((h)->lagg_off[(h)->ncols + 12])
+#define PAGG_HLL_BYTES(h)		((h)->lagg_off[(h)->ncols + 13])
 
 /*
  * The superunit block (docs/COL-PREAGG.md section 10): the units of the segment in groups of `fan` consecutive ones (the last group may be shorter,
@@ -252,6 +259,10 @@ typedef struct SegPriv
 	uint64    **setdir;			/* [ncols] its directory, once read */
 	uint8	   *setbuf;
 	Size		setcap;
+	SetsLeaf   *hlls;			/* [ncols] the sketch record of each leaf (dir_off 0: none), read on first use */
+	uint64    **hlldir;			/* [ncols] its directory, once read */
+	uint8	   *hllbuf;
+	Size		hllcap;
 	RunsLeaf   *runs;			/* [ncols] the sorted-run record of each leaf (dir_off 0: none), read on first use */
 	uint64    **rundir;			/* [ncols] its directory, once read */
 	Size		vers_at;		/* offset of the version section in the DOCMAP section; vers_len 0: there is none */

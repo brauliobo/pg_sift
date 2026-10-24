@@ -126,6 +126,7 @@ jobs:
       - run: scripts/gen-reference.sh --check
       - run: scripts/gen-options.sh --check
       - run: scripts/check-errors.sh
+      - run: scripts/check-approx.sh
       - run: scripts/check-memory.sh && scripts/check-memory.sh --selftest
       - run: scripts/check-bench-fresh.sh
       - run: git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" || true; scripts/check-bench-cases.sh

@@ -65,7 +65,7 @@ if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *:\?= *\([0-9]*\).*/\1/p' "$REPO/Make
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan $((20 + (${#OLD_REF} ? 3 : 0)))
+plan $((21 + (${#OLD_REF} ? 3 : 0)))
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
@@ -106,8 +106,8 @@ LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/
 TSDDL=; TSC=
 if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"; TSC="TABLESPACE ts1"; fi
 
-# the options of this tree's column index; a released library has none of them (cube_minmax, order_columns and key_columns are 3.3's)
-FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g')"
+# the options of this tree's column index; a released library has none of them (cube_minmax, order_columns and key_columns are 3.3's, hll_columns 3.4's)
+FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g', hll_columns = 'id')"
 [[ -z $OLD_REF ]] || FACTS_OPTS=
 # the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
 FACTS_COLS='id, g, n, t, w, u, ts'
@@ -221,6 +221,9 @@ check "the stored settings of the database and of the role in it survived pg_upg
 check "sift.verify and sift.col_verify pass on every index" quiet q new postgres "$VERIFY_SQL"
 AFTER=$(fingerprint new)
 check "BM25 answers and metrics_a are identical" test "$(head -n 1 <<<"$AFTER")" == "$(head -n 1 <<<"$BEFORE")"
+# the units of an index written by a release have no sketch and are read by their rows; those of this tree's have it: the same number as the normal plan either way
+check "sift.approx_count_distinct on the column index is what the normal plan gives" test "$(q new postgres "SET sift.agg_force = on" "SET sift.agg_preagg = on" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")" == \
+	"$(q new postgres "SET sift.enable_agg = off" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"
 # the cluster runs with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf), which the preflight warns about: its session has the shipped values

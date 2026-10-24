@@ -5,7 +5,7 @@
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
 # (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
 # REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 key_columns (a summary), 12 superunit,
-# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory), 17 key_cut (units cut by a key), 18 order_columns at the default setting (the runs with their heads), 19 a NULL-heavy integer leaf (the exceptions of its units)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory), 17 key_cut (units cut by a key), 18 order_columns at the default setting (the runs with their heads), 19 a NULL-heavy integer leaf (the exceptions of its units), 20 hll_columns (a sketch of a column in every unit)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
 # and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
@@ -183,16 +183,16 @@ sift.async_maintenance = off'
 	[[ $newest == 3 ]] || formats+=("hi $newest")
 	((newest > 4)) && formats+=("h4 4")
 	((newest >= 4)) && formats+=("ke 4")
-	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "kc 17" "hd 18" "ex 19" "df 12")
+	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "kc 17" "hd 18" "ex 19" "hl 20" "df 12")
 	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [ex]="*, CASE WHEN id % 500 = 0 THEN id END AS z" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ex]="id, g, n, z" [ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
-	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex df "
-	refused=" cm ca rd sc su rn dk kp pt kc hd ex df "
+	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex hl df "
+	refused=" cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != hd && $fmt != ex ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 18 or 19 at the default setting (15)
+		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != hd && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 18, 19 or 20 at the default setting (15)
 		q "$set" \
 			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \

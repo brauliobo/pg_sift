@@ -660,6 +660,8 @@ part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 	a.npres = b.npres = 0;
 	memset(a.pres, 0, sizeof(a.pres));
 	memset(b.pres, 0, sizeof(b.pres));
+	memset(a.hll, 0, sizeof(a.hll));
+	memset(b.hll, 0, sizeof(b.hll));
 	if (memcmp(&a, &b, sizeof(a)) != 0)
 		return false;
 	for (int p = 0; p < acc->npres; p++)
@@ -667,6 +669,8 @@ part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 			if (acc->pres[p] == pa->pres[q])
 				acc->pres[n++] = acc->pres[p];
 	memset(acc->pres + n, 0, (acc->npres - n) * sizeof(acc->pres[0]));
+	for (int c = 0; c < SIFT_SRC_CAL; c++)
+		acc->hll[c] &= pa->hll[c];
 	acc->npres = n;
 	return true;
 }
