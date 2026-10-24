@@ -152,6 +152,9 @@ CREATE INDEX pb_t ON pb USING sift_col (k sift.col_int4_ops, id sift.col_int4_op
 SELECT sift.col_verify('pb_t', true);
 SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read FROM sift._test_col_counters('pb_t', '0:eq:3', 24) p;
 SELECT (SELECT count(*) FROM sift._test_col_tids('pb_t', '0:eq:3', 24)) >= (SELECT count(*) FROM pb WHERE k = 3) AS all_rows_listed;
+-- a key in every unit with a range on another column: the zones of the range cut the units first, and the directory lists the addresses of the kept units only
+SELECT t.listed < (SELECT count(*) FROM pb WHERE k = 3) AS fewer_than_the_key, t.listed >= (SELECT count(*) FROM pb WHERE k = 3 AND id BETWEEN 100000 AND 101000) AS all_rows_of_the_range
+FROM (SELECT count(*) AS listed FROM sift._test_col_tids('pb_t', '0:eq:3;1:ge:100000;1:le:101000', 24)) t;
 -- 85,000 rows are more than a lookup takes (65,536): the units answer
 SELECT p.units > 0 AS units_answer, p.rows = f.rows AS same_rows FROM sift._test_col_counters('pb_t', '0:in:1|2|3', 24) p, sift._test_col_counters('pb_t', '0:in:1|2|3', 0) f;
 DROP TABLE pb;
