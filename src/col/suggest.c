@@ -25,6 +25,7 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 
+#include "col/am.h"
 #include "col/pg.h"
 #include "col/shred.h"
 
@@ -341,16 +342,14 @@ emit(Ctx *cx, SNode *n, const char *prefix, StringInfo out)
 	}
 }
 
-Datum
-sift_col_suggest_paths(PG_FUNCTION_ARGS)
+/*
+ * The spec of column col (attribute attno of heap) read from sample of its documents; NULL when no key qualifies. *ncols and *ngroups count what earlier calls
+ * of the same index took of the limits of a spec. The caller holds a lock and a snapshot.
+ */
+char *
+sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups)
 {
-	Oid			relid = PG_GETARG_OID(0);
-	text	   *colname = PG_GETARG_TEXT_PP(1);
-	int			sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
-	char	   *col = text_to_cstring(colname);
-	Relation	rel;
-	AttrNumber	attno;
-	Ctx			cx = {.tree = AllocSetContextCreate(CurrentMemoryContext, "sift suggest paths", ALLOCSET_DEFAULT_SIZES)};
+	Ctx			cx = {.tree = AllocSetContextCreate(CurrentMemoryContext, "sift suggest paths", ALLOCSET_DEFAULT_SIZES), .ncols = *ncols, .ngroups = *ngroups};
 	MemoryContext doc_cx = AllocSetContextCreate(CurrentMemoryContext, "sift suggest document", ALLOCSET_SMALL_SIZES);
 	SNode	   *root;
 	BlockNumber nblocks;
@@ -360,21 +359,6 @@ sift_col_suggest_paths(PG_FUNCTION_ARGS)
 	StringInfoData out;
 	char	   *result;
 
-	if (sample < 1 || sample > 100000)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sample must be between 1 and 100000")));
-	rel = table_open(relid, AccessShareLock);
-	if (rel->rd_rel->relkind != RELKIND_RELATION && rel->rd_rel->relkind != RELKIND_MATVIEW)
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a table", RelationGetRelationName(rel))));
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
-	if (check_enable_rls(relid, InvalidOid, false) == RLS_ENABLED)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" has row-level security", RelationGetRelationName(rel)),
-						errhint("Declare the paths by hand: the documents are not read past a policy.")));
-	attno = get_attnum(relid, col);
-	if (attno == InvalidAttrNumber)
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column \"%s\" does not exist", col)));
-	if (TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
-		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%s\" is not jsonb", col)));
 	root = node_new(&cx, NULL);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	nchunks = (int) Min(SAMPLE_CHUNKS, nblocks);
@@ -419,22 +403,53 @@ sift_col_suggest_paths(PG_FUNCTION_ARGS)
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	initStringInfo(&out);
-	{
-		StringInfoData inner;
-
-		initStringInfo(&inner);
-		emit(&cx, root, col, &inner);
-		result = inner.data;
-	}
+	emit(&cx, root, col, &out);
+	result = out.data;
 	if (result[0] != '\0')
 	{
 		/* the answer is a spec the option accepts: a spec the parser refuses is a bug here, not in the documents */
 		(void) sift_shred_spec_parse(result);
 	}
-	table_close(rel, AccessShareLock);
 	MemoryContextDelete(doc_cx);
 	MemoryContextDelete(cx.tree);
-	if (result[0] == '\0')
+	*ncols = cx.ncols;
+	*ngroups = cx.ngroups;
+	return result[0] == '\0' ? NULL : result;
+}
+
+Datum
+sift_col_suggest_paths(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int			sample = PG_ARGISNULL(2) ? 2000 : PG_GETARG_INT32(2);
+	char	   *col = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	Relation	rel;
+	AttrNumber	attno;
+	int			ncols = 0,
+				ngroups = 0;
+	char	   *result;
+
+	if (sample < 1 || sample > 100000)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sample must be between 1 and 100000")));
+	rel = table_open(relid, AccessShareLock);
+	if (rel->rd_rel->relkind != RELKIND_RELATION && rel->rd_rel->relkind != RELKIND_MATVIEW)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a table", RelationGetRelationName(rel))));
+	if (pg_class_aclcheck(relid, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
+		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
+	if (check_enable_rls(relid, InvalidOid, false) == RLS_ENABLED)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" has row-level security", RelationGetRelationName(rel)),
+						errhint("Declare the paths by hand: the documents are not read past a policy.")));
+	attno = get_attnum(relid, col);
+	if (attno == InvalidAttrNumber)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column \"%s\" does not exist", col)));
+	if (TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
+		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%s\" is not jsonb", col)));
+	result = sift_col_suggest_spec(rel, attno, col, sample, &ncols, &ngroups);
+	/* the answer is a spec the option accepts: a spec the parser refuses is a bug here, not in the documents */
+	if (result != NULL)
+		(void) sift_shred_spec_parse(result);
+	table_close(rel, AccessShareLock);
+	if (result == NULL)
 		PG_RETURN_NULL();
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }

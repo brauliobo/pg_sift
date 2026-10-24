@@ -13,6 +13,7 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
@@ -71,9 +72,9 @@ ends_in_id(const char *name)
 	return n > 3 && strcmp(name + n - 3, "_id") == 0;
 }
 
-/* The option key_columns of index set to value; visible to the relcache entry at once */
-static void
-set_option(Relation index, const char *value)
+/* The option name of index set to value; visible to the relcache entry at once */
+void
+sift_col_set_option(Relation index, const char *name, const char *value)
 {
 	Relation	pgclass = table_open(RelationRelationId, RowExclusiveLock);
 	HeapTuple	tuple,
@@ -84,7 +85,7 @@ set_option(Relation index, const char *value)
 	bool		isnull,
 				nulls[Natts_pg_class] = {false},
 				repl[Natts_pg_class] = {false};
-	List	   *def = list_make1(makeDefElem("key_columns", (Node *) makeString(pstrdup(value)), -1));
+	List	   *def = list_make1(makeDefElem((char *) name, (Node *) makeString(pstrdup(value)), -1));
 
 	/* the lock an update of an index's pg_class row expects on its table (checked in assert builds); the ShareLock of the build already excludes every other holder of it */
 	LockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock);
@@ -152,12 +153,12 @@ set_chosen(Relation index, const StringInfoData *list)
 
 	if (list->len == 0)
 	{
-		set_option(index, "auto");
+		sift_col_set_option(index, "key_columns", "auto");
 		return;
 	}
 	initStringInfo(&v);
 	appendStringInfo(&v, "auto: %s", list->data);
-	set_option(index, v.data);
+	sift_col_set_option(index, "key_columns", v.data);
 	pfree(v.data);
 }
 
@@ -307,4 +308,50 @@ sift_col_auto_keys_report(Relation index)
 	}
 	MemoryContextDelete(cx);
 	pfree(snap);
+}
+
+/*
+ * Before a build: an index with jsonb columns and no paths option (a jsonb column needs paths, so that was an error), or with paths = 'auto', has its paths
+ * decided here, once, from a sample of the documents (sift.suggest_paths, col/suggest.c): the spec is written to the option as 'auto: spec', so that the schema
+ * of the build, of its workers and of every later REINDEX is the same (an 'auto: spec' of an earlier build is kept), and a NOTICE says what was read. When no
+ * key qualifies nothing is written and the build refuses the jsonb column as before.
+ */
+void
+sift_col_auto_paths(Relation heap, Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+	StringInfoData spec;
+	int			ncols = 0,
+				ngroups = 0;
+
+	/* paths by hand, and the paths an earlier build chose, stay */
+	if (opt[0] != '\0' && (!sift_col_paths_auto(opt) || opt[4] == ':'))
+		return;
+	initStringInfo(&spec);
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+		AttrNumber	hatt = index->rd_index->indkey.values[i];
+		char	   *one;
+
+		if (att->atttypid != JSONBOID || hatt == 0)
+			continue;
+		one = sift_col_suggest_spec(heap, hatt, NameStr(att->attname), SIFT_COL_AUTO_PATHS_SAMPLE, &ncols, &ngroups);
+		if (one != NULL)
+			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", one);
+	}
+	if (spec.len == 0)
+		return;
+	{
+		StringInfoData v;
+		const char *name = quote_identifier(RelationGetRelationName(index));
+
+		initStringInfo(&v);
+		appendStringInfo(&v, "auto: %s", spec.data);
+		sift_col_set_option(index, "paths", v.data);
+		ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
+						 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and sift.suggest_paths reads the documents again.",
+								   SIFT_COL_AUTO_PATHS_SAMPLE),
+						 errhint("Write paths = '...' to fix them by hand.")));
+	}
 }

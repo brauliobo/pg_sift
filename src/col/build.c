@@ -452,6 +452,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 #endif
+	sift_col_auto_paths(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
 	if (info->ii_ParallelWorkers > 0)
 		res = sift_colp_build(heap, index, info);

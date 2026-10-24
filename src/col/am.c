@@ -439,11 +439,29 @@ sift_col_options(Relation index)
 }
 
 const char *
-sift_col_options_paths(Relation index)
+sift_col_options_paths_raw(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->paths ? (const char *) o + o->paths : "";
+}
+
+/* 'auto' (decided at the build) or 'auto: spec' (decided by an earlier build); a spec starts with a key and a type, so it never reads like this */
+bool
+sift_col_paths_auto(const char *opt)
+{
+	return strncmp(opt, "auto", 4) == 0 && (opt[4] == '\0' || opt[4] == ':');
+}
+
+/* The spec the shredder parses: the option, or what follows 'auto:' ("" while 'auto' has not been decided) */
+const char *
+sift_col_options_paths(Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+
+	if (!sift_col_paths_auto(opt))
+		return opt;
+	return opt[4] == ':' ? opt + 5 + strspn(opt + 5, " ") : "";
 }
 
 const char *
