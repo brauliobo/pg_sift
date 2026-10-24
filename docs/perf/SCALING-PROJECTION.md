@@ -36,3 +36,20 @@ What one request costs as the number of keys grows, from the slopes and constant
 - **The layout is the larger risk.** A heap in arrival order, where a key's rows are spread over the table, reads units in proportion to keys^0.65 (measured over one decade):
   seconds at 100k keys, a minute at 10M, whatever the index. It must be clustered by key (an ordered load, `CLUSTER`, or one partition per key range with ordered partitions).
 - Not covered: the cost of the write path and of maintenance at these sizes, the cost model's choice of plan (the cost agent), statements that touch every key, and a cold cache.
+
+## Measured: the size of the request, 10x data (3,160 keys, 31.7M rows)
+
+The same replay of 237 captured analytic statements (every third one, 13-14 per family), one client, `work_mem = 4GB`, warm, execution time summed in seconds; a statement that
+reaches the 60 s timeout counts 60 s, so the plain figure is a lower bound where it timed out. Natural = the planner's own choice with sift; the keys of the request are spread over the table.
+
+| family | 32 keys: plain / natural | 500 keys: plain / natural | 3,160 keys (all): plain / natural |
+|---|---|---|---|
+| json average per group, by source | 11.7 / **3.6** (11 of 13 statements on SiftAgg) | 195 / **36.5** (13 of 13) | 729 (12 timeouts) / **135** (11 of 13, 2 timeouts) |
+| the same, overall only | 9.9 / **4.5** (10 of 14) | 187 / **74** (13 of 14) | 778 (12) / **191** (11 of 14) |
+| json documents with nested lists | 46.3 / **38.9** (2 of 14) | 580 (2) / **76** (13 of 14) | 785 (12) / **168** (13 of 14) |
+| two-level scans over nested lists | 67.1 / 67.2 (1 of 13) | 737 (10) / **106** (12 of 13) | 741 (12) / **186** (12 of 13) |
+
+- From 500 keys up the natural plan is the forced SiftAgg plan in 12-13 of 13-14 statements of every family; the plain engine times out in up to 12 of 13.
+- Natural cost per key falls with the size of the request: the first family takes 0.11 s a key at 32 keys, 0.073 at 500 and 0.043 at 3,160 (the fixed cost of a statement is shared; the scan is linear in the
+  units the request reads, so the per-key cost cannot fall below the decode of a key's units).
+- At 32 keys the last two families are not faster than plain (1-2 statements on SiftAgg): a small request does not pay for the scan of these shapes yet.
