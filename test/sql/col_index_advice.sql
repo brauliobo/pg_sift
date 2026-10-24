@@ -31,11 +31,17 @@ CREATE INDEX ad_pair ON ad USING sift_col (id, source, label, val) WITH (rollup_
 CREATE INDEX ad_over ON ad USING sift_col (id, source, region, val) WITH (rollup_dims = 'source, region: val', key_columns = 'off');
 SET client_min_messages = warning;
 
+-- a covered column that looks rewritten often: its UPDATEs are not HOT
+CREATE TABLE ad_vol (id int, set_id int, updated_at timestamptz, a_count int, val int) WITH (autovacuum_enabled = off);
+INSERT INTO ad_vol SELECT i, i % 7, now(), i % 5, i FROM generate_series(1, 2000) i;
+CREATE INDEX ad_vol_col ON ad_vol USING sift_col (id, set_id, updated_at, a_count, val);
+SELECT leaf, kind, advice FROM sift.index_advice('ad_vol_col') WHERE advice LIKE '%HOT%' ORDER BY leaf;
+
 -- no unit yet, a wrong object
 CREATE TABLE ad_empty (id int, k int) WITH (autovacuum_enabled = off);
 CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k);
 SELECT leaf, kind, held, sampled, share, advice FROM sift.index_advice('ad_empty_col');
 SELECT * FROM sift.index_advice('ad_pkey');
 
-DROP TABLE ad, ad_empty;
+DROP TABLE ad, ad_empty, ad_vol;
 DROP EXTENSION pg_sift CASCADE;

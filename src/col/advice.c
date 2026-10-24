@@ -380,6 +380,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 							 nplain > SIFT_PAGG_MAX_DIMS ? " (or ask preagg = 'auto' for the columns that fit)" : "", leaf[c].small, leaf[c].seen, DIM_GROUPS);
 		else if (strcmp(kind, "key") == 0 && !rel->pagg.pres[c] && cube_pct < SIFT_COL_AUTO_KEEP_PCT)
 			appendStringInfo(&advice, "key_columns = 'auto' keeps a key list or bitmap of it for count(DISTINCT)");
+		else if (sift_col_volatile_name(NameStr(TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attname)))
+			appendStringInfo(&advice, "an UPDATE of it is not a HOT update while the index covers it: leave it out if it is rewritten far more often than it is aggregated");
 		v[0] = CStringGetTextDatum(leaf_label(index, d));
 		v[1] = CStringGetTextDatum(kind);
 		v[2] = held ? CStringGetTextDatum(held) : (Datum) 0;

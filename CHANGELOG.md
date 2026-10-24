@@ -5,6 +5,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## Unreleased
 
 - Added: pg_sift: `docs/OPTIONS.md` has a table "Upgrading from 3.3": the options that are new, have another default or write a newer column format minor than 3.3 reads, and those whose behavior this release changes, with what a 3.3 user gets after `ALTER EXTENSION pg_sift UPDATE` and whether it needs a `REINDEX`. No default changed since 3.3.
+- `col_index_advice`.
 - Changed: pg_sift: a lookup join on one column of the scanned table (a text, integer, date, int8 or float8 column) resolves its rows in a loop of the column's kind with the cache of matches probed inline, and reads a row's value once for all of its elements; with the key ids shared by grouping sets, reports with grouping sets over such joins run in 9.5% fewer cycles (10.3% fewer instructions; x0.1 replay statements, one backend).
 - Changed: pg_sift: under `GROUPING SETS` whose groups are kept in a hash table (keys of many values), the aggregate scan prepares the key ids of a chunk once for all the sets that read its rows, where it prepared every key again for each set.
 - Added: pg_sift: `scripts/plangate.sh --lane tuned` runs the plan-choice gate with the planner settings of a tuned server (`seq_page_cost` 100, `random_page_cost` 4, 8 workers per gather, `work_mem` 4GB): the results must agree and a lose fails, the expected plans and cost bands stay those of the stock lane (a different plan is printed, a band drift is a warning); the CI tiers run it as `plan-gate-tuned`.

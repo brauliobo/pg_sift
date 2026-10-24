@@ -534,8 +534,8 @@ notice_pkey(Relation heap, Relation index)
  * 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update. The columns that look rewritten often (a timestamp of the last change, a
  * counter, a version) are named once; leaving one out is the choice that keeps updates HOT, covering it the choice that keeps its aggregates.
  */
-static bool
-volatile_name(const char *name)
+bool
+sift_col_volatile_name(const char *name)
 {
 	static const char *const suffix[] = {"updated_at", "updated_on", "modified_at", "modified_on", "touched_at", "synced_at", "checked_at", "_count", "_counter", "_version"};
 	static const char *const exact[] = {"version", "likes", "views", "hits", "counter", "count"};
@@ -566,7 +566,7 @@ notice_volatile(Relation heap, Relation index)
 		AttrNumber	attno = index->rd_index->indkey.values[i];
 		const char *name = attno > 0 ? get_attname(RelationGetRelid(heap), attno, true) : NULL;
 
-		if (name != NULL && volatile_name(name))
+		if (name != NULL && sift_col_volatile_name(name))
 			appendStringInfo(&cols, "%s%s", n++ ? ", " : "", name);
 	}
 	if (n == 0)
