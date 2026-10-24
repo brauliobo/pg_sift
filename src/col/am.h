@@ -45,6 +45,13 @@ extern void sift_col_report_caps(Relation index);
 /* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
+/* paths = 'auto' (col/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
+#define SIFT_COL_AUTO_PATHS_SAMPLE	2000
+extern void sift_col_auto_paths(Relation heap, Relation index);
+extern void sift_col_set_option(Relation index, const char *name, const char *value);
+extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
+extern const char *sift_col_options_paths_raw(Relation index);
+extern bool sift_col_paths_auto(const char *opt);
 extern void sift_col_auto_keys_report(Relation index);
 /* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
