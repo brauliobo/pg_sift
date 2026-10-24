@@ -394,7 +394,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 	for (int i = 0; i < n; i++)
 	{
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = ent[i].format == SIFT_COL_FORMAT_KEYED,
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = sift_cseg_keyed(&ent[i]),
 							 .buf = {sift_cbatch_create(cx, schema), sift_cbatch_create(cx, schema)}};
 		m.in[i].pos = m.in[i].n = 0;
 	}
