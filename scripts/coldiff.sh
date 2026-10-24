@@ -5,6 +5,7 @@
 # Custom Scan (SiftAgg).
 #
 #   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep]
+#   scripts/coldiff.sh [--slice K/N] [--list]   one of N disjoint slices of the corpus (the Kth of every N queries in name order); --list prints the queries the options select and stops
 #   scripts/coldiff.sh --selftest
 #
 #   --suite S           fixtures: the small orders table of test/col/fixture.sql, the corpus test/col/fixtures/*.sql and the scenarios
@@ -48,7 +49,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL=
+VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_role text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -56,7 +57,8 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 
 while (( $# )); do
 	case $1 in
-		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; --list) LIST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,40p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
@@ -106,10 +108,15 @@ resolve_am() {
 }
 
 # ---------- corpus ----------
-# files SUITE: the corpus files of the suite whose name matches --corpus, one per line
+# files FILE...: those whose name matches --corpus, and of them the Kth of every N (--slice K/N), one per line. The slices of a corpus are disjoint
+# and together all of it, so that N jobs with --slice 1/N .. N/N test what one job without it tests (scripts/ci.sh --selftest checks it)
 files() {
-	local f
-	for f in "$@"; do [[ -z $CORPUS || $(basename "$f" .sql) =~ $CORPUS ]] && echo "$f"; done
+	local f i=0
+	for f in "$@"; do
+		[[ -z $CORPUS || $(basename "$f" .sql) =~ $CORPUS ]] || continue
+		(( i++ % SLICE_N == SLICE_K - 1 )) && echo "$f"
+	done
+	return 0
 }
 
 # run_corpus SCEN FILES...: the files in one psql session of the database $DB, each in a transaction of its own (isolation of its tag);
@@ -455,6 +462,7 @@ selftest() {
 	[[ -z ${VERBOSE:-} ]] || table -c "SELECT scenario, name, variant, left(detail, 100) FROM coldiff.results WHERE NOT ok ORDER BY id LIMIT 20"
 }
 
+if [[ -n $LIST ]]; then files "$REPO"/test/col/fixtures/*.sql | xargs -r -n1 basename; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
 [[ $SUITE == fixtures ]] || analytics_suite

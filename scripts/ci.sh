@@ -114,6 +114,7 @@ if [[ $MODE == affected ]]; then
 	esac
 	exit 0
 fi
+COL_SLICES=4   # slices of the column differential jobs of the full tier (below)
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
@@ -158,6 +159,37 @@ if [[ $MODE == --selftest ]]; then
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done
+	# the column differential jobs of the full tier are slices of one corpus: K/N for K = 1..N, nothing else different between them (no subset of the variants,
+	# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
+	plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan full)
+	for prefix in difftest-col difftest-col-tbl; do
+		n=0 ks='' rest='' union='' cd=''
+		while read -r id _ _ cmd; do
+			[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
+			eval "args=($cmd)"
+			cd=${args[0]}; k=''; mine=()
+			for (( i = 1; i < ${#args[@]}; i++ )); do
+				if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
+			done
+			[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
+			[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --scenario-slices "* && " ${mine[*]} " != *" --corpus "* ]] ||
+				{ echo "FAIL: $id runs a subset of the variants, scenarios or queries"; bad=1; }
+			[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
+			rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
+			[[ ${BASH_REMATCH[2]} == "$COL_SLICES" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $COL_SLICES"; bad=1; }
+			part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
+			[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
+			union+=$part$'\n'
+		done <<<"$plan"
+		(( n == COL_SLICES )) || { echo "FAIL: $n slices of $prefix in the full plan, want $COL_SLICES"; bad=1; }
+		[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$COL_SLICES") " ]] || { echo "FAIL: the slices of $prefix are not 1..$COL_SLICES:$ks"; bad=1; }
+		if [[ -n $cd ]]; then
+			whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
+			[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
+			[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
+		fi
+	done
+	grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 	(cd "$REPO" && scripts/sha256.sh --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 	# scripts/leftovers.allow: a test that exists, an object and a reason on every line
@@ -188,7 +220,7 @@ if [[ $MODE == --selftest ]]; then
 	out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
 	rm -f "$t"
-	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv"
+	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv; the column differential slices are the whole corpus"
 	exit $bad
 fi
 PLAN=
@@ -280,8 +312,14 @@ if [[ $MODE == full ]]; then
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 5000 --queries 150 --rounds 4
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
 	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 20000
-	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500
+	# the two differential tests of the column index take 160 minutes of one lane each on PostgreSQL 18, and more on 17, longer than the rest of the tier together
+	# in four lanes: they are cut into COL_SLICES disjoint slices of the corpus (coldiff.sh --slice K/N) that the lanes and the shards take like any other job. Every
+	# slice runs every variant and scenario on its share of the queries (--selftest proves the slices are the whole corpus, each query once)
+	for (( k = 1; k <= COL_SLICES; k++ )); do
+		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500
+		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500
+	done
+	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --suite analytics --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; a timing that loses only warns (hosted runners are noisy)
 	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
