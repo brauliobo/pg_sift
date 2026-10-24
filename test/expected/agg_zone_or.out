@@ -221,7 +221,7 @@ SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021
 SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day IS NULL$$);
            plan           | result_rows | vs_normal_plan 
 --------------------------+-------------+----------------
- SiftAgg read 39 pruned 0 |           4 |              0
+ SiftAgg read 4 pruned 35 |           4 |              0
 (1 row)
 
 -- units answered from the pre-aggregates (a grouped dictionary leaf, no test) and the OR that scans: the same rows

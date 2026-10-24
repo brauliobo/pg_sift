@@ -626,13 +626,41 @@ and `sift.col_format_minor` 13 or less are read by the releases that read their 
 the minors 7 to 12 that 3.3 writes by default are). An index written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new
 forms where the setting allows it. The merge of segments of the new forms with others makes a new dictionary and gives it a form by the same rule.
 
+### 2.16 Units cut by a declared key (column format minor 17, 3.4; opt-in)
+
+A unit is a superblock, 256 consecutive heap pages, so the rows of one tenant or one account are in the units of every part of the heap that was written while it was active, and a b-tree on that key
+reads fewer pages than the zones of the units can cut once the table has churned or has been repacked. An index with the reloption `key_cut = 'col, col'` (up to 4 integer, date, timestamp, numeric or
+float columns of the index, most significant first) sorts the rows of a build, a promotion or a merge by the key and cuts the units by its range, whatever their heap pages: the zones of the key in a unit are
+then tight, and a lookup or a range of the key reads the units of its range only (the units of an index without the option: every part of the heap; in the test, 1 of 100 units for one key value against 8 of
+8 for the same rows by superblock). A NULL key sorts last. The rows of a unit are in TID order, and the unit lists its TIDs (a lazy TID directory, which the head read of the unit covers whatever its length) because its rows are no longer those of a block range: a scan, a top-N and a point lookup of the index read the addresses from it, and the dirty-page list of a unit (the heap pages that
+changed since it was written) is kept as for a superblock.
+
+`key_cut_rows` (64 to 32,768) is the rows a unit aims at (at most 32,768, which is a superblock of rows of about 11 bytes); the default is the rows of an average superblock of the table (`reltuples / relpages * 256` from `pg_class`, 1,024 when the table was not analyzed), so
+the number of units, and the per-unit costs the planner uses, stay what the superblock cut gave. A unit is cut where the first key changes when that is within a quarter of the aim, so one key value is in as few
+units as it can be. The segments are column format minor 17, written only for an index with the option and `sift.col_format_minor` 15 or more; the setting stays 15. The groups of units have their summaries (the superunits of docs/COL-PREAGG.md section 10, with the first and last block of each unit where a page mask would be), and the cube of a unit is budgeted
+as that of a unit of the page cut: a scan that does not use the key reads about the units of the page cut and answers from the same pre-aggregates (1,200,000 rows of four integer columns: 37 units against 26, whole-table
+`sum` 0.09 ms against 0.09, `GROUP BY` of a cube column 0.17 ms against 0.45, a key value 0.11 ms against 0.64). Cost, 200,000 rows to 2,000,000 rows: the index 17% smaller to 16% larger (narrow rows; wide rows
++0.2%), the build CPU 3.4 to 4.1 times (the sort), a promotion and a merge about 3.5 times.
+A unit is answered from its pre-aggregates only when every page it has rows on is all-visible, and a unit holds rows from pages all over the table: a page not yet vacuumed (the last page of the table, once it is extended; the rows of a merge before their VACUUM) takes every unit it has a row in out of the pre-aggregates, where the page cut loses the one superblock that holds it. With `sift.col_auto_merge` the worker vacuums the table and merges after the VACUUM, so the window is the time to that VACUUM: 200,000 rows inserted into 1,000,000 are exact again about five `sift.maintenance_naptime` (10 s) after the insert ends, and a `sum` over the table takes 1.5 times and a `GROUP BY` 2.3 times the page cut meanwhile (a merge forced before the VACUUM: 3 and 4 times). Under a steady trickle of inserts the two cuts take the same time.
+
+**The key cut is for the one key a workload looks rows up by.** The zones of every other column widen: a unit holds the rows of a key range from the whole heap, so a range of a column that follows the heap (an id, a timestamp of arrival) reads every unit, where the superblocks of the page cut read the few of its range. 800,000 rows, `key_cut = 'rnd'` (a random column), the same index with the page cut and a btree on each column: a narrow range of `id` (800 rows) 8.2 ms against 0.147 ms and 0.054 ms for the btree; a range of `ts` 8.8 ms against 0.108 ms (btree 0.215 ms, 41 times); a `grp = 7` and `ts` range count 1.9 ms against 0.15 ms. A lookup or range of the key itself is faster than the page cut (ORDER BY the key `LIMIT 1000` 0.66 ms against 4.8 ms, a range of the key 0.29 ms against 1.6 ms, a btree 0.10 ms and 0.10 ms), and a scan that reads every unit anyway is not slower. So the option goes on an index whose workload filters by the key and not also by ranges of columns that follow the arrival order; `CLUSTER` on the key and `key_cut` on the same columns is the case it was written for.
+
+The option applies to the units written afterwards: the build, `REINDEX`, a promotion of the write buffer (its rows are cut into units of their own segment), and a merge, which cuts the live rows of its
+inputs again by the key, so the overlays of the churn fold back into the range they belong to. The memory does not grow with the table. A build holds the rows of the superblocks it has read until they pass its
+budget (half of `maintenance_work_mem`, at least 64 MB), then sorts them and writes them as a segment of their own, a run; the runs overlap in the key, and a merge of them is a k-way merge of the
+units of each (a key-cut segment is in the order of the key from one unit to the next), which holds one unit of each input and a window of about 1.25 units of the output, whatever the number of rows. A build
+needs as many runs as the table is large over its budget, and stops with an error that says so when that passes the segments a build may write (121): raise `maintenance_work_mem`. The segments written before the
+option was set are not in the order of the key: a merge loads one whole and sorts it, up to `maintenance_work_mem` (an error with the `REINDEX` hint beyond it). A segment that is not in the order of the
+current key (the option was changed to other columns) stops a merge with the same hint. `sift.col_refresh`, `VACUUM` and `REINDEX` keep the option. An index with older units reads them as before until a
+`REINDEX` (`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4).
+
 ### 2.17 Point directory of a leaf in a segment (column format minor 14, 3.3; opt-in)
 
 The zones and the keys of a unit (section 2.13) cut the units that cannot hold a value; the units that can still cost a read and a test of every row of each, which is most of the time of an equality
 on a column of random keys (an id, a uuid, a text of distinct values) against a b-tree. An index with the reloption `point_columns = 'col, col'` (plain integer-like, text and uuid columns of the top level,
 the leaves of `key_columns`) writes, for each of these leaves, a table of its rows by value at the end of the DICT section of the segment: an open addressing table with a slot for each distinct key (the code of a
 dictionary leaf), 8 bytes, at most three quarters full, linear probing: the low 32 bits of a hash of the key over the key's only row (the segment's row number), or over the offset of the list of its rows when it has
-several. A lookup of an equality, an `IN` list of up to 64 keys or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
+several. A lookup of an equality, an `IN` list of up to 65,536 keys (more than 64 only while they are under a sixteenth of the rows of the segment) or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
 ascending, without reading a chunk: the units that hold none are cut, and in the others only those rows are selected.
 
 This lookup path (the directory and the access-method scan that reads it) is the part of sift that is meant to replace a b-tree for point lookups, and the part that is to be tuned for it: its size, and the gap to a b-tree below, are what that work
@@ -682,8 +710,8 @@ The block of an address says the unit (`block >> 8` is the superblock), so a loo
 so the table is a filter (about 1 in 65,000 for each other key in the probe sequence): the access method returns the addresses with the heap check of the condition
 (`xs_recheck`, a bitmap scan's recheck), as for rows. Three rules keep the answer the heap's. The units whose rows may have died are read instead (a unit with a dead
 row, `sift_cseg_dirty`: VACUUM frees an address to be used again by another row, listed under another key or none), as a segment without the directory would be. A scan that
-wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 64 keys,
-is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
+wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 65,536 keys
+(or more than 64 that are a sixteenth of the rows), is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
 row of each unit is listed under its key.
 
 An index written at `sift.col_format_minor` 14 or below lists the rows (minor 14), whatever the option (the default setting, 15, writes the addresses for a leaf of the option and stamps only that segment minor 16), and one written before the option is read as before: `REINDEX`
@@ -695,7 +723,7 @@ sort of the keys of five leaves), a promotion of the write buffer 5% more (92 ms
 A lookup of one row costs 11 to 13 microseconds at 26,700, 100,000 and 1,000,000 rows (6 for a btree), flat in the units, where the directory of rows grows from 15 to 22
 with the units (bench/col_scan.py, kind point_tid); 10 keys cost 22 against 52 and 13 for a btree; a uuid 42 against 78 and 7; a text 126 against 154 and 10 (its string is
 found in the dictionary first). It does not give an order: the table is a hash, so ORDER BY, ranges and `min`/`max` stay with the zones, the sorted runs and the top-N of the
-aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 64 keys, `EXISTS` and semi-joins on a key:
+aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 65,536 keys, `EXISTS` and semi-joins on a key:
 lookups of a few rows by value; the single key, the `IN` list and the nested loop are the ones measured).
 
 ## 3. MVCC: when a row may be read from the index
@@ -968,7 +996,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 
 ## 10. Limits
 
-BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
+BLCKSZ 8192, heap tables only, PostgreSQL 17, 18 and 19. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
 integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, time, enums, uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit (section 2.12), float4/8, text-like. A group's elements: any number, one level. Not supported:
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_exact`).

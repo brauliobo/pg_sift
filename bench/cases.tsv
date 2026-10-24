@@ -9,7 +9,7 @@
 # variants: name:SET a = b;SET c = d, further sift lanes with settings (the optimization turned off, or a lane without a pre-aggregate)
 # metric: the number the README table shows: ms (warm median) or wal_bytes (per row)
 # block: the generated block of README.md / docs/BENCHMARKS.md the case feeds (<!-- bench:NAME:begin -->)
-# headline: yes puts the case in "Performance highlights"
+# headline: yes puts the case in the README's table of application-shaped cases
 topn_page_totals	a page of rows with the total of its set	orders	default	Top-N: created_at DESC.*Pushed Aggregates: count\(\*\), sum	native,pg_duckdb	-	ms	faster33	yes
 topn_coalesce	`ORDER BY coalesce(<int2, int4, int8, date, timestamp or timestamptz column>	orders	default	Top-N: coalesce\(customer_id, 0\) DESC	native,pg_duckdb	-	ms	faster33	yes
 topn_lower	`lower(<text or varchar column>)` and `upper(<text or varchar column>)`	orders	default	Top-N: lower\(category\)	native,pg_duckdb	-	ms	faster33	no
@@ -35,11 +35,11 @@ partitions_scan	the planner prices the opening of the partitions of a partitione
 partitions_many	3,200 takes it too	orders	default	Append|Seq Scan	native	-	ms	faster33	no
 topn_join_filter	a top-N over an inner join to a table that only filters	events	-	Top-N	native	-	ms	faster33	no
 spine_array_key	takes each element of an integer, date or text type that equals a column of the joined table as a hash key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-lateral_first_row	a `LIMIT 1` child with an `ORDER BY`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+lateral_first_row	a `LIMIT 1` child with an `ORDER BY`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes
 lateral_dim_test	a `LIMIT 1` child that tests its row besides the unique key	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes
 filter_few_rows	when the filters of the source keep under a 32nd of a unit's rows	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes
 topn_sorted_runs_filter	a top-N scan with `order_columns` reads the sorted run of a unit also when a `WHERE` leaves few of its rows	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	no
 superunit_total	the merged sums and cube of every group of that many consecutive units of a segment are stored once more	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Seq Scan on orders	native	-	ms	faster33	no
@@ -47,8 +47,8 @@ topn_six_keys	each key past the first is read at every row (4.8 operators a row	
 partitions_tiny	A query over 5,000 partitions of 6 rows each	orders	default	Seq Scan	native	-	ms	faster33	no
 dirty_share_few	A table with a few percent of dirty documents keeps the scan	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 dirty_share_half	one with a third or more keeps the normal plan, which is cheaper there	events	-	Seq Scan	native	-	ms	faster33	no
-cte_series_arms	Three `UNION ALL` arms over the elements of a jsonb array, counted `DISTINCT` above a spine, 100,000 rows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
-keys_in_wide_50k	is tested by a bit table instead of a hash table	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+cte_series_arms	Three `UNION ALL` arms over the elements of a jsonb array, counted `DISTINCT` above a spine, 100,000 rows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	yes
+keys_in_wide_50k	is tested by a bit table instead of a hash table	keys	-	Custom Scan \(SiftAgg|Bitmap Heap Scan on events_w	native	-	ms	faster33	no
 keys_in_wide_500k	the zone test of a set travels to the column layer up to twice the units of the scan	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 keys_in_narrow_500k	the selectivity of the list is the one the planner kept for the condition	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 keys_subq_500k	the rows a lookup join loads (`IN (SELECT ..)`, `EXISTS`, a join) are read by the heap scan	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
@@ -61,3 +61,23 @@ topn_numeric_wide	takes the column as a sort key, as it took a numeric of up to 
 topn_enum_key	takes an enum column as a sort key, in the order of its type	orders	default	Top-N: lvl	native,pg_duckdb	-	ms	faster33	no
 topn_interval_key	takes an interval column as a sort key	orders	default	Top-N: lead	native,pg_duckdb	-	ms	faster33	no
 count_distinct_wide_keys	starts as a hash set, not a bitmap	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+grouping_sets_report	grouping_sets_report	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+ranked_top_per_group	ranked_top_per_group	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+window_json_report	window_json_report	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+two_level_spend	two_level_spend	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+group_by_id_top	group_by_id_top	orders	default+id	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+count_distinct_unique	count_distinct_unique	orders	default+id	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+semi_exists_self	semi_exists_self	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+anti_not_in_self	anti_not_in_self	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+keyset_page	keyset_page	orders	default+id	.	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	yes
+point_agg_fk	point_agg_fk	orders	default WITH (point_tid_columns = 'customer_id')	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes
+point_agg_id	point_agg_id	orders	default+id WITH (point_tid_columns = 'id')	.	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	yes
+keycut_customer_agg	`key_cut` (`sift_col` reloption, default none	orders	default WITH (key_cut = 'customer_id')	Units Pruned: [1-9]	native,pg_duckdb	-	ms	faster33	yes
+keycut_customer_btree	`key_cut` (`sift_col` reloption, default none	orders	default WITH (key_cut = 'customer_id')	.	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	no
+keycut_customer_range	`key_cut` (`sift_col` reloption, default none	orders	default WITH (key_cut = 'customer_id')	Units Pruned: [1-9]	native	-	ms	faster33	no
+jsonb_each_member	jsonb_each_member	events	-	Pushed Aggregates	native	-	ms	faster33	yes
+softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+softdel_deleted_list	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units Pruned: [1-9]	native,pg_duckdb	-	ms	faster33	no
+point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	yes
+point_in_1000	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no
+bigdict_point_probes	dictionary the cache cannot hold is no longer parsed again for every test	orders	default	orders_col	native	-	ms	faster33	no

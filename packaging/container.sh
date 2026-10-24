@@ -8,6 +8,8 @@ set -euo pipefail
 PG=18
 JOBS=4
 command -v apt-get >/dev/null && FMT=deb || FMT=rpm
+# shellcheck source=/dev/null
+. /net.sh
 . /etc/os-release
 
 pgdg_repo() {

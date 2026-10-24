@@ -223,8 +223,40 @@ arm_private_rte(RTEKind kind)
  * one scan, which keeps the outer join for the arm that needs it and tests the NOT NULL for the others: *outer gets the children that b joins by
  * an outer join where a joins them by an inner one.
  */
+/*
+ * The conditions of a tree of joins that filter its tables as one WHERE does: those of the FROM lists and the inner joins, wherever they sit in the
+ * tree (PostgreSQL leaves a condition at the join that makes it evaluable, which an outer join made inner changes), but not those of a nullable side.
+ */
+static List *
+from_conds(Node *n, List *acc)
+{
+	if (n == NULL)
+		return acc;
+	if (IsA(n, List))
+		foreach_ptr(Node, x, (List *) n)
+			acc = from_conds(x, acc);
+	else if (IsA(n, FromExpr))
+	{
+		acc = from_conds((Node *) ((FromExpr *) n)->fromlist, acc);
+		acc = list_concat(acc, list_copy((List *) ((FromExpr *) n)->quals));
+	}
+	else if (IsA(n, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+
+		acc = from_conds(j->larg, acc);
+		if (j->jointype == JOIN_INNER)
+		{
+			acc = from_conds(j->rarg, acc);
+			if (j->quals != NULL)
+				acc = list_concat(acc, IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals));
+		}
+	}
+	return acc;
+}
+
 static bool
-from_same(PlannerInfo *pa, Node *a, Node *b, Relids *outer)
+from_same(PlannerInfo *pa, Node *a, Node *b, Relids *outer, bool nullable)
 {
 	if (a == NULL || b == NULL)
 		return a == b;
@@ -236,13 +268,13 @@ from_same(PlannerInfo *pa, Node *a, Node *b, Relids *outer)
 		if (!IsA(b, List) || list_length((List *) a) != list_length((List *) b))
 			return false;
 		forboth(la, (List *) a, lb, (List *) b)
-			if (!from_same(pa, lfirst(la), lfirst(lb), outer))
+			if (!from_same(pa, lfirst(la), lfirst(lb), outer, nullable))
 				return false;
 		return true;
 	}
 	if (IsA(a, FromExpr))
-		return IsA(b, FromExpr) && equal(((FromExpr *) a)->quals, ((FromExpr *) b)->quals) &&
-			from_same(pa, (Node *) ((FromExpr *) a)->fromlist, (Node *) ((FromExpr *) b)->fromlist, outer);
+		return IsA(b, FromExpr) && (!nullable || equal(((FromExpr *) a)->quals, ((FromExpr *) b)->quals)) &&
+			from_same(pa, (Node *) ((FromExpr *) a)->fromlist, (Node *) ((FromExpr *) b)->fromlist, outer, nullable);
 	if (IsA(a, JoinExpr))
 	{
 		JoinExpr   *ja = (JoinExpr *) a,
@@ -264,9 +296,14 @@ from_same(PlannerInfo *pa, Node *a, Node *b, Relids *outer)
 			if (jb->jointype == JOIN_LEFT)
 				*outer = bms_add_member(*outer, ((RangeTblRef *) ja->rarg)->rtindex);
 		}
+		/* the conditions of inner joins are compared as one WHERE (same_scan); an outer join's ON is its own, and one that the other has inner has none */
 		return ja->isNatural == jb->isNatural && ja->rtindex == jb->rtindex && equal(ja->usingClause, jb->usingClause) &&
-			equal(ja->quals, jb->quals) && equal(ja->alias, jb->alias) &&
-			from_same(pa, ja->larg, jb->larg, outer) && from_same(pa, ja->rarg, jb->rarg, outer);
+			(ja->jointype == JOIN_INNER && jb->jointype == JOIN_INNER && !nullable ? true :
+			 ja->jointype == JOIN_INNER && !nullable ? jb->quals == NULL :
+			 jb->jointype == JOIN_INNER && !nullable ? ja->quals == NULL : equal(ja->quals, jb->quals)) &&
+			equal(ja->alias, jb->alias) &&
+			from_same(pa, ja->larg, jb->larg, outer, nullable) &&
+			from_same(pa, ja->rarg, jb->rarg, outer, nullable || ja->jointype != JOIN_INNER || jb->jointype != JOIN_INNER);
 	}
 	return equal(a, b);
 }
@@ -279,9 +316,20 @@ same_scan(PlannerInfo *a, PlannerInfo *b, Relids *outer)
 	Relids		live;
 	Index		rti = 0;
 
+	List	   *ca,
+			   *cb;
+
 	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) ||
-		!from_same(a, (Node *) a->parse->jointree->fromlist, (Node *) b->parse->jointree->fromlist, outer))
+		!from_same(a, (Node *) a->parse->jointree->fromlist, (Node *) b->parse->jointree->fromlist, outer, false))
 		return false;
+	ca = from_conds((Node *) a->parse->jointree->fromlist, NIL);
+	cb = from_conds((Node *) b->parse->jointree->fromlist, NIL);
+	foreach_ptr(Node, q, ca)
+		if (!list_member(cb, q))
+			return false;
+	foreach_ptr(Node, q, cb)
+		if (!list_member(ca, q))
+			return false;
 	live = get_relids_in_jointree((Node *) a->parse->jointree, false, false);
 	forboth(la, a->parse->rtable, lb, b->parse->rtable)
 	{

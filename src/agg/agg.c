@@ -95,6 +95,7 @@
 #include "agg/agg_int.h"
 
 bool		sift_enable_agg = true;
+bool		sift_agg_force = false;
 double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
 bool		sift_agg_super = true;
@@ -127,6 +128,11 @@ sift_agg_init(void)
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_force",
+							 "A diagnostic: takes the aggregate scan wherever one is possible, whatever the plans cost (an arm that is refused for its shape stays refused).",
+							 "The scan is priced as free and the inline plan of a shared CTE is kept when it has a scan, to time the plan the cost model refused.",
+							 &sift_agg_force, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.agg_scale_horizon",
 							 "Size, as a multiple of the table, up to which an inline shared CTE that is a close call must stay the better plan (1: only the size it is).",
 							 "Used where the scans of the inline plan cost less than the work of the shared CTE but not by the margin: the plans are made again at the square root of the horizon and at the horizon times the rows (sift.plan_scale), and the inline one is kept if it wins at both.",
@@ -718,15 +724,7 @@ topn_run(AggExec *ex)
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
 	{
 		/* the match set of a search restarts when it is asked for superblocks it has passed: only the scans without one are walked */
-		sift_topn_walk_begin(t, nsb);
-		for (uint32 sb = 0; sb < nsb; sb++)
-		{
-			SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
-			uint32		units = topn_walk_zones(ex, sb, zs);
-
-			sift_topn_walk_add(t, sb, units, zs);
-		}
-		sift_topn_walk_sort(t);
+		sift_topn_walk_setup(t);
 		if (parallel)
 		{
 			ex->vorder = (uint32 *) sift_topn_walk_order(t);

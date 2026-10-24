@@ -45,6 +45,8 @@ struct ColBuild
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
 	SiftColBatch *batch;		/* the rows of the current superblock, flushed at the next one */
+	MemoryContext heldcxt;		/* the batches in held */
+	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
 	SiftColSegWriter *w;
 	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
@@ -95,11 +97,48 @@ next_gen(ColBuild *b)
 	return b->shared ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
+/*
+ * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/order.c), so the build holds
+ * about its budget however large the table is. The segments of the runs overlap in the key, a merge of them (sift_colk_merge) streams them into one.
+ */
+static void
+write_run(ColBuild *b, bool last)
+{
+	int			n = list_length(b->held);
+	SiftColBatch **in = palloc_array(SiftColBatch *, n);
+	int			i = 0;
+	ListCell   *lc;
+
+	if (!last && b->nsegs + 1 >= b->maxsegs)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build with key_cut needs more than %d segments", b->maxsegs),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	foreach(lc, b->held)
+		in[i++] = lfirst(lc);
+	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+	b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+	sift_colw_set_preagg(b->w, &b->r->pagg);
+	sift_colw_set_keyed(b->w, sift_colk_aim_rows(b->index));
+	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->index), b->wcxt);
+	end_segment(b);
+	pfree(in);
+	list_free(b->held);
+	b->held = NIL;
+	MemoryContextReset(b->heldcxt);
+}
+
 static void
 flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	if (sift_col_key_cut(b->r))
+	{
+		b->held = lappend(b->held, b->batch);
+		if (MemoryContextMemAllocated(b->heldcxt, true) > b->budget)
+			write_run(b, false);
+		b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);
+		return;
+	}
 	if (b->w == NULL)
 	{
 		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
@@ -239,7 +278,9 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	if (sift_test_col_segment_kb > 0)
 		b->budget = (Size) sift_test_col_segment_kb * 1024;
 #endif
-	b->batch = sift_cbatch_create(cxt, b->r->schema);
+	if (sift_col_key_cut(b->r))
+		b->heldcxt = AllocSetContextCreate(cxt, "sift_col build rows", ALLOCSET_DEFAULT_SIZES);
+	b->batch = sift_cbatch_create(b->heldcxt ? b->heldcxt : cxt, b->r->schema);
 	b->maxrows = 512;
 	b->rows = MemoryContextAlloc(cxt, b->maxrows * sizeof(SiftColRow));
 	b->page = InvalidBlockNumber;
@@ -286,6 +327,8 @@ sift_colb_end(ColBuild *b)
 {
 	flush_page(b);
 	flush_batch(b);
+	if (b->held != NIL)
+		write_run(b, true);
 	end_segment(b);
 	report_rows(b);
 	return b->nsegs;
@@ -452,8 +495,9 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 #endif
+	sift_col_auto_paths(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
-	if (info->ii_ParallelWorkers > 0)
+	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);

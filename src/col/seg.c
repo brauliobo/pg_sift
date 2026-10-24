@@ -251,6 +251,17 @@ sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail)
 	*len = r->len;
 	*avail = Min(r->len, SIFT_COL_UNIT_HEAD);
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + r->off, *avail, pv->unitbuf);
+	/* the directory of a key-cut unit of many rows ends beyond the head, and the chunk table follows it */
+	if (*avail < r->len)
+	{
+		uint32		need = sift_cunit_head_need(pv->unitbuf, *avail, r->len, seg->schema->ncols);
+
+		if (need > 0)
+		{
+			sift_cseg_unit_fill(seg, u, *avail, need - *avail);
+			*avail = need;
+		}
+	}
 	if (*avail == r->len)
 		memset(pv->unitbuf + r->len, 0, SIFT_COL_PAD);
 	return pv->unitbuf;
@@ -636,8 +647,8 @@ sift_cseg_dict_search(SiftColSegment *seg, int col)
 	if (pv->dict[col] != NULL)
 		return pv->dict[col];
 	l = dict_look(seg, col);
-	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order */
-	if (l && l->searchable && sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER)
+	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost */
+	if (l && l->searchable && (sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
 	return sift_cseg_dict(seg, col);
 }

@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="438" viewBox="0 0 880 438" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="354" viewBox="0 0 880 354" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Gain from 1 to 3 CPUs per question</title>
 <desc id="d">Warm median at 1 CPU divided by the median at 3 CPUs, per question and system.</desc>
-<rect x="0.5" y="0.5" width="879" height="437" rx="6" fill="#0d1117" stroke="#30363d"/>
+<rect x="0.5" y="0.5" width="879" height="353" rx="6" fill="#0d1117" stroke="#30363d"/>
 <text x="20" y="30" font-size="16" text-anchor="start" fill="#e6edf3" font-weight="bold">What a second and third CPU buys</text>
 <text x="20" y="48" font-size="12" text-anchor="start" fill="#9198a1">warm median at 1 CPU divided by the median at 3 CPUs per server; 1× means no gain, 3× a perfect one, orange: slower with 3 CPUs</text>
 <rect x="205.5" y="61.5" width="9" height="9" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"></rect>
@@ -23,9 +23,6 @@
 <text x="22" y="210" font-size="12" text-anchor="start" fill="#e6edf3">Q05 average shipped order</text>
 <text x="22" y="238" font-size="12" text-anchor="start" fill="#e6edf3">Q06 customers per month</text>
 <text x="22" y="266" font-size="12" text-anchor="start" fill="#e6edf3">Q07 big recent orders</text>
-<text x="22" y="294" font-size="12" text-anchor="start" fill="#e6edf3">Q08 search count</text>
-<text x="22" y="322" font-size="12" text-anchor="start" fill="#e6edf3">Q09 search facets</text>
-<text x="22" y="350" font-size="12" text-anchor="start" fill="#e6edf3">Q10 search newest</text>
 <rect x="201" y="81" width="98" height="26" fill="#7f4029" rx="3"><title>Q01 point lookup: PostgreSQL takes 1.74× the time with 3 CPUs that it takes with 1</title></rect>
 <text x="250" y="98" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.57×</text>
 <rect x="301" y="81" width="98" height="26" fill="#60372b" rx="3"><title>Q01 point lookup: pg_sift sift_col takes 1.31× the time with 3 CPUs that it takes with 1</title></rect>
@@ -110,43 +107,7 @@
 <text x="650" y="266" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.95×</text>
 <rect x="701" y="249" width="98" height="26" fill="#21262d" rx="3"><title>Q07 big recent orders: Citus columnar takes 1.00× the time with 3 CPUs that it takes with 1</title></rect>
 <text x="750" y="266" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="201" y="277" width="98" height="26" fill="#55342b" rx="3"><title>Q08 search count: PostgreSQL takes 1.19× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="250" y="294" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.84×</text>
-<rect x="301" y="277" width="98" height="26" fill="#21262d" rx="3"><title>Q08 search count: pg_sift sift_col takes 1.04× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="350" y="294" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="401" y="277" width="98" height="26" fill="#21262d" rx="3"><title>Q08 search count: pg_sift sift_table takes 1.02× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="450" y="294" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="501" y="277" width="98" height="26" fill="#21262d" rx="3"><title>Q08 search count: Elasticsearch takes 0.96× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="550" y="294" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="601" y="277" width="98" height="26" fill="#21262d" rx="3"><title>Q08 search count: ClickHouse takes 0.91× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="650" y="294" font-size="12" text-anchor="middle" fill="#ffffff">1.1×</text>
-<rect x="701" y="277" width="98" height="26" fill="#294568" rx="3"><title>Q08 search count: Citus columnar takes 0.79× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="750" y="294" font-size="12" text-anchor="middle" fill="#ffffff">1.3×</text>
-<rect x="201" y="305" width="98" height="26" fill="#51332b" rx="3"><title>Q09 search facets: PostgreSQL takes 1.15× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="250" y="322" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.87×</text>
-<rect x="301" y="305" width="98" height="26" fill="#21262d" rx="3"><title>Q09 search facets: pg_sift sift_col takes 1.03× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="350" y="322" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="401" y="305" width="98" height="26" fill="#21262d" rx="3"><title>Q09 search facets: pg_sift sift_table takes 1.06× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="450" y="322" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.95×</text>
-<rect x="501" y="305" width="98" height="26" fill="#21262d" rx="3"><title>Q09 search facets: Elasticsearch takes 0.97× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="550" y="322" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="601" y="305" width="98" height="26" fill="#2d5586" rx="3"><title>Q09 search facets: ClickHouse takes 0.60× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="650" y="322" font-size="12" text-anchor="middle" fill="#ffffff">1.7×</text>
-<rect x="701" y="305" width="98" height="26" fill="#21262d" rx="3"><title>Q09 search facets: Citus columnar takes 0.99× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="750" y="322" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="201" y="333" width="98" height="26" fill="#d95926" rx="3"><title>Q10 search newest: PostgreSQL takes 22.65× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="250" y="350" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.04×</text>
-<rect x="301" y="333" width="98" height="26" fill="#21262d" rx="3"><title>Q10 search newest: pg_sift sift_col takes 1.02× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="350" y="350" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<rect x="401" y="333" width="98" height="26" fill="#21262d" rx="3"><title>Q10 search newest: pg_sift sift_table takes 1.07× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="450" y="350" font-size="12" text-anchor="middle" fill="#ffffff" font-weight="bold">0.93×</text>
-<rect x="501" y="333" width="98" height="26" fill="#294568" rx="3"><title>Q10 search newest: Elasticsearch takes 0.79× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="550" y="350" font-size="12" text-anchor="middle" fill="#ffffff">1.3×</text>
-<rect x="601" y="333" width="98" height="26" fill="#3064a2" rx="3"><title>Q10 search newest: ClickHouse takes 0.46× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="650" y="350" font-size="12" text-anchor="middle" fill="#ffffff">2.2×</text>
-<rect x="701" y="333" width="98" height="26" fill="#21262d" rx="3"><title>Q10 search newest: Citus columnar takes 0.99× the time with 3 CPUs that it takes with 1</title></rect>
-<text x="750" y="350" font-size="12" text-anchor="middle" fill="#ffffff">1.0×</text>
-<text x="20" y="384" font-size="11" text-anchor="start" fill="#9198a1">Data: docs/results/store.json, 2026-10-22. Host: AMD Ryzen 7 9700X, 16 threads, 8g per server.</text>
-<text x="20" y="400" font-size="11" text-anchor="start" fill="#9198a1">PostgreSQL 18.6, pg_sift 3.3, Elasticsearch 9.5.5, ClickHouse 26.9.19.9, Citus 14.2-1. Questions that finish in about a millisecond have</text>
-<text x="20" y="416" font-size="11" text-anchor="start" fill="#9198a1">nothing left to split across CPUs. PostgreSQL Q10 takes 23x as long at 3 CPUs: the planner chose a different plan.</text>
+<text x="20" y="300" font-size="11" text-anchor="start" fill="#9198a1">Data: docs/results/store.json, 2026-10-22. Host: AMD Ryzen 7 9700X, 16 threads, 8g per server.</text>
+<text x="20" y="316" font-size="11" text-anchor="start" fill="#9198a1">PostgreSQL 18.6, pg_sift 3.3, Elasticsearch 9.5.5, ClickHouse 26.9.19.9, Citus 14.2-1. Questions that finish in about a millisecond have</text>
+<text x="20" y="332" font-size="11" text-anchor="start" fill="#9198a1">nothing left to split across CPUs.</text>
 </svg>

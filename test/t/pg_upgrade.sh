@@ -36,7 +36,8 @@ overlay() {
 build_old() {
 	local src=$TAPDIR/old-src
 	mkdir -p "$src"
-	tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"
+	if [[ -n $OLD_REF ]]; then git -C "$REPO" archive "$OLD_REF" | tar -x -C "$src"
+	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
 	{ nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= && make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= DESTDIR="$2" install; } \
 		>"$TAPDIR/old-build.log" 2>&1
 }
@@ -48,21 +49,30 @@ if [[ -z $OLDBIN ]]; then
 		[[ -x $c/pg_config ]] && { OLDBIN=$c; break; }
 	done
 fi
+# SIFT_PG_OLD_REF: the old cluster runs a released library (a tag or a release branch, built for the old major from its archive) and the objects it wrote with
+# the options it has; after pg_upgrade the extension is updated to this tree's version as a user does. Unset: this tree on both sides.
+OLD_REF=${SIFT_PG_OLD_REF:-}
+if [[ -n $OLD_REF ]]; then
+	git -C "$REPO" rev-parse --verify -q "$OLD_REF^{commit}" >/dev/null || { echo "1..0 # SKIP $OLD_REF is not in this repository"; exit 0; }
+	[[ $(uname -m) == x86_64 || $(printf '%s\n' "${OLD_REF#v}" 3.2.0 | sort -V | head -1) == 3.2.0 ]] || { echo "1..0 # SKIP $OLD_REF builds on x86-64 only"; exit 0; }
+fi
 OLDCFG=${OLDBIN:+$OLDBIN/pg_config}
 OLDCFG=${OLDCFG:-$NEWCFG}
 OLD_MAJOR=$("$OLDCFG" --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+# a server image can carry a major pg_sift does not support (the Makefile's PG_MIN_MAJOR): the upgrade then runs within the major
+if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *:\?= *\([0-9]*\).*/\1/p' "$REPO/Makefile" | head -n 1))); then OLDCFG=$NEWCFG; OLD_MAJOR=$PG_MAJOR; fi
 
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
 trap 'pg_ctl -D "$(dir old)/data" -m immediate stop >/dev/null 2>&1; cleanup; ((NFAIL)) || rm -rf "$(dir old)" "$OV" "$TS" "$TAPDIR/old-src"' EXIT
-plan 19
+plan $((20 + (${#OLD_REF} ? 3 : 0)))
 rm -rf "$TS" "$OV"
 mkdir -p "$TS" "$OV"
 diag "pg_upgrade from PostgreSQL $OLD_MAJOR to $PG_MAJOR"
 
 # the servers: this major from the staged install, the old one from the same or a build of this tree for its major
 overlay "$NEWCFG" "$OV/new" "$ROOT"
-if ((OLD_MAJOR == PG_MAJOR)); then
+if ((OLD_MAJOR == PG_MAJOR)) && [[ -z $OLD_REF ]]; then
 	overlay "$OLDCFG" "$OV/old" "$ROOT"
 else
 	build_old "$OLDCFG" "$OV/oldroot" || { tail -n 20 "$TAPDIR/old-build.log"; bail "pg_sift does not build for PostgreSQL $OLD_MAJOR"; }
@@ -90,12 +100,18 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
-"$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
+LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
 
 # a tablespace needs two catalog versions (pg_upgrade refuses the same one)
 TSDDL=; TSC=
 if ((OLD_MAJOR != PG_MAJOR)); then TSDDL="CREATE TABLESPACE ts1 LOCATION '$TS';"; TSC="TABLESPACE ts1"; fi
 
+# the options of this tree's column index; a released library has none of them (cube_minmax, order_columns and key_columns are 3.3's)
+FACTS_OPTS="WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g')"
+[[ -z $OLD_REF ]] || FACTS_OPTS=
+# the wide leaves (an enum, an interval, a uuid) are 3.2's: the index of the older releases covers the numbers
+FACTS_COLS='id, g, n, t, w, u, ts'
+[[ ! ${OLD_REF#v} =~ ^3\.[01]\. ]] || FACTS_COLS='id, g, n'
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
 SETUP=$(cat <<SQL
 CREATE EXTENSION pg_sift;
@@ -112,7 +128,7 @@ CREATE TABLE facts (id int, g int, n numeric(12,2), t tone, w interval, u uuid, 
 INSERT INTO facts SELECT g, g % 9, g % 1000 / 8.0, (ARRAY['lo', 'mid', 'hi'])[g % 3 + 1]::tone, make_interval(secs => g), md5(g::text)::uuid,
 	timestamptz '2026-01-01' + g * interval '1 minute',
 	jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || g % 4, 'qty', g % 5))) FROM generate_series(1, 5000) g;
-CREATE INDEX facts_col ON facts USING sift_col (id, g, n, t, w, u, ts) WITH (cube_minmax = true, order_columns = 'g, n', key_columns = 'g');
+CREATE INDEX facts_col ON facts USING sift_col ($FACTS_COLS) $FACTS_OPTS;
 CREATE INDEX facts_json ON facts USING sift_col (id, doc) WITH (paths = 'doc.items[]{category text, qty int4}') $TSC;
 CREATE TABLE tbl (id int, g int, n numeric(12,2), t tone) USING sift_table;
 INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0, (ARRAY['lo', 'mid', 'hi'])[g % 3 + 1]::tone FROM generate_series(1, 5000) g;
@@ -159,6 +175,8 @@ CREATE FUNCTION tblq_off(t regclass) RETURNS text LANGUAGE sql SET sift.enable_a
 SQL
 )
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
+# stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals
+q old postgres "ALTER DATABASE postgres SET sift.simd = 'scalar'" "ALTER ROLE postgres IN DATABASE postgres SET sift.enable_agg = on" >/dev/null || bail "stored settings"
 VERIFY_SQL="SELECT sift.verify('docs_idx', true), sift.verify('docs_ts_idx', true), sift.col_verify('facts_col', true), sift.col_verify('facts_json', true)"
 fingerprint() { q "$1" postgres "SELECT bm25q()" "SELECT colq_on() = colq_off()" "SELECT colq_off()" "SELECT tblq_off('tbl')" "SELECT tblq_on('tbl') = tblq_off('tbl')" \
 	"SELECT tblq_off('tbl_ts')" "SELECT tblq_on('tbl_ts') = tblq_off('tbl_ts')"; }
@@ -173,11 +191,11 @@ else skip 1 "pg_upgrade to the same major cannot carry a tablespace"; fi
 
 # pg_upgrade --check changes nothing, the upgrade follows
 UPG=("$NEWB/pg_upgrade" -b "$OLDB" -B "$NEWB" -d "$(dir old)/data" -D "$(dir new)/data" -U postgres -p "$(port old)" -P "$(port new)" -s "$(dir new)/sock")
-(cd "$(dir new)" && "${UPG[@]}" --check >"$(dir new)/pg_upgrade_check.log" 2>&1)
+(cd "$(dir new)" && LD_PRELOAD=${SIFT_PRELOAD:-} "${UPG[@]}" --check >"$(dir new)/pg_upgrade_check.log" 2>&1)
 checked=$?
 check "pg_upgrade --check passes" test $checked -eq 0
 [[ $checked -eq 0 ]] || diag "$(tail -n 20 "$(dir new)/pg_upgrade_check.log"; cat "$(dir new)"/data/pg_upgrade_output.d/*/loadable_libraries.txt 2>/dev/null)"
-(cd "$(dir new)" && "${UPG[@]}" >"$(dir new)/pg_upgrade.log" 2>&1)
+(cd "$(dir new)" && LD_PRELOAD=${SIFT_PRELOAD:-} "${UPG[@]}" >"$(dir new)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade succeeds" test $upgraded -eq 0
 if [[ $upgraded -ne 0 ]]; then
@@ -186,18 +204,32 @@ if [[ $upgraded -ne 0 ]]; then
 fi
 node_start new || bail "the upgraded cluster does not start"
 
-check "the extension and the library are the ones of before" test "$(q new postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSIONS"
+if [[ -z $OLD_REF ]]; then
+	check "the extension and the library are the ones of before" test "$(q new postgres "SELECT extversion || ' ' || sift.version() FROM pg_extension WHERE extname = 'pg_sift'")" == "$VERSIONS"
+else
+	# the catalog still says the release (pg_upgrade carries the extension as it was), the library is this tree's: the update is the user's next step
+	check "the extension is the release's" test "$(q new postgres "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$(cut -d' ' -f1 <<<"$VERSIONS")"
+	check "the library is this tree's" test "$(q new postgres "SELECT sift.version()")" != "$(cut -d' ' -f2 <<<"$VERSIONS")"
+	check "the answers are the same before the extension is updated" test "$(fingerprint new)" == "$BEFORE"
+	check "ALTER EXTENSION UPDATE brings the extension to the version of this tree" test "$(q new postgres "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion = default_version FROM pg_extension e, pg_available_extensions a WHERE e.extname = 'pg_sift' AND a.name = 'pg_sift'" | tail -n 1)" == t
+fi
 if [[ -n $TSC ]]; then
 	check "the relations of the tablespace are under it, with the same file names" test "$(q new postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')" |
 	sed 's#PG_[0-9]*_[0-9]*#V#g')" == "$(sed 's#PG_[0-9]*_[0-9]*#V#g' <<<"$FILES_BEFORE")"
 else skip 1 "no tablespace"; fi
+check "the stored settings of the database and of the role in it survived pg_upgrade" test "$(q new postgres "LOAD 'pg_sift'" "SHOW sift.simd" "SHOW sift.enable_agg" | tr '\n' ' ')" == "scalar on "
 check "sift.verify and sift.col_verify pass on every index" quiet q new postgres "$VERIFY_SQL"
 AFTER=$(fingerprint new)
 check "BM25 answers and scores are identical" test "$(head -n 1 <<<"$AFTER")" == "$(head -n 1 <<<"$BEFORE")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"
 # the cluster runs with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf), which the preflight warns about: its session has the shipped values
-check "the preflight finds nothing to fix" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
+if [[ -z $OLD_REF ]]; then
+	check "the preflight finds nothing to fix" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
+else
+	# the objects of a release name what the update leaves to REINDEX or VACUUM FULL (warnings), and nothing blocks
+	check "the preflight lists nothing that blocks" quiet env PGOPTIONS="-c sift.table_auto_defrag=on -c sift.col_auto_merge=on" PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" postgres
+fi
 
 # writes, VACUUM, promotion and merges on what the old cluster wrote
 q new postgres "INSERT INTO docs SELECT g, 'alpha3 postupgrade ' || g FROM generate_series(7001, 7300) g" "UPDATE docs SET body = 'beta5 again' WHERE id % 101 = 0" \

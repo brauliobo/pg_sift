@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="711" viewBox="0 0 1000 711" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Distribution of the speed-up</title>
+<desc id="d">Share of benchmark cases and of real query shapes at least as fast as x times PostgreSQL.</desc>
+<rect x="0.5" y="0.5" width="999" height="710" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">How many cases get how much faster</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">The share of cases whose speed-up over PostgreSQL is at least x, on a logarithmic axis. A curve that stays high to the right wins</text>
+<text x="20" y="72" font-size="13" text-anchor="start" fill="#59636e">by a lot on most cases; the part left of 1× are the cases where pg_sift is slower.</text>
+<line x1="90" y1="584" x2="960" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="82" y="588" font-size="12" text-anchor="end" fill="#59636e">0%</text>
+<line x1="90" y1="469" x2="960" y2="469" stroke="#e3e7eb" stroke-width="1"/>
+<text x="82" y="473" font-size="12" text-anchor="end" fill="#59636e">25%</text>
+<line x1="90" y1="354" x2="960" y2="354" stroke="#e3e7eb" stroke-width="1"/>
+<text x="82" y="358" font-size="12" text-anchor="end" fill="#59636e">50%</text>
+<line x1="90" y1="239" x2="960" y2="239" stroke="#e3e7eb" stroke-width="1"/>
+<text x="82" y="243" font-size="12" text-anchor="end" fill="#59636e">75%</text>
+<line x1="90" y1="124" x2="960" y2="124" stroke="#e3e7eb" stroke-width="1"/>
+<text x="82" y="128" font-size="12" text-anchor="end" fill="#59636e">100%</text>
+<line x1="118.1" y1="124" x2="118.1" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="118.1" y="604" font-size="12" text-anchor="middle" fill="#59636e">0.5×</text>
+<line x1="205.4" y1="124" x2="205.4" y2="584" stroke="#59636e" stroke-width="1.5"/>
+<text x="205.4" y="604" font-size="12" text-anchor="middle" fill="#59636e">1×</text>
+<line x1="292.7" y1="124" x2="292.7" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="292.7" y="604" font-size="12" text-anchor="middle" fill="#59636e">2×</text>
+<line x1="408.1" y1="124" x2="408.1" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="408.1" y="604" font-size="12" text-anchor="middle" fill="#59636e">5×</text>
+<line x1="495.4" y1="124" x2="495.4" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="495.4" y="604" font-size="12" text-anchor="middle" fill="#59636e">10×</text>
+<line x1="582.7" y1="124" x2="582.7" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="582.7" y="604" font-size="12" text-anchor="middle" fill="#59636e">20×</text>
+<line x1="698.1" y1="124" x2="698.1" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="698.1" y="604" font-size="12" text-anchor="middle" fill="#59636e">50×</text>
+<line x1="785.4" y1="124" x2="785.4" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="785.4" y="604" font-size="12" text-anchor="middle" fill="#59636e">100×</text>
+<line x1="872.7" y1="124" x2="872.7" y2="584" stroke="#e3e7eb" stroke-width="1"/>
+<text x="872.7" y="604" font-size="12" text-anchor="middle" fill="#59636e">200×</text>
+<text x="525" y="628" font-size="12" text-anchor="middle" fill="#59636e">speed-up over PostgreSQL (time of PostgreSQL / time of pg_sift)</text>
+<polyline fill="none" stroke="#2a78d6" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="121.9,124 121.9,124 121.9,124 132.1,124 132.1,130.6 163.2,130.6 163.2,137.1 171.6,137.1 171.6,143.7 172,143.7 172,150.3 178.4,150.3 178.4,156.9 200.7,156.9 200.7,163.4 203.9,163.4 203.9,170 205,170 205,176.6 205.1,176.6 205.1,183.1 206.1,183.1 206.1,189.7 206.8,189.7 206.8,196.3 207.2,196.3 207.2,202.9 208.4,202.9 208.4,209.4 210.8,209.4 210.8,216 259,216 259,222.6 260.7,222.6 260.7,229.1 265,229.1 265,235.7 277.5,235.7 277.5,242.3 310.9,242.3 310.9,248.9 329.5,248.9 329.5,255.4 334.5,255.4 334.5,262 366.6,262 366.6,268.6 401.7,268.6 401.7,275.1 406.7,275.1 406.7,281.7 418.9,281.7 418.9,288.3 443.8,288.3 443.8,294.9 448.8,294.9 448.8,301.4 454.8,301.4 454.8,308 471.9,308 471.9,314.6 474.4,314.6 474.4,321.1 489.7,321.1 489.7,327.7 498.9,327.7 498.9,334.3 507.9,334.3 507.9,340.9 511.5,340.9 511.5,347.4 539.2,347.4 539.2,354 543.3,354 543.3,360.6 555.6,360.6 555.6,367.1 557.6,367.1 557.6,373.7 558.8,373.7 558.8,380.3 572.9,380.3 572.9,386.9 577.3,386.9 577.3,393.4 579.2,393.4 579.2,400 580.8,400 580.8,406.6 588.1,406.6 588.1,413.1 588.8,413.1 588.8,419.7 588.9,419.7 588.9,426.3 590.8,426.3 590.8,432.9 606.2,432.9 606.2,439.4 611.4,439.4 611.4,446 611.7,446 611.7,452.6 616.8,452.6 616.8,459.1 620.3,459.1 620.3,465.7 625.8,465.7 625.8,472.3 655.4,472.3 655.4,478.9 661.6,478.9 661.6,485.4 663.8,485.4 663.8,492 694.3,492 694.3,498.6 748,498.6 748,505.1 800.4,505.1 800.4,511.7 831.8,511.7 831.8,518.3 859.5,518.3 859.5,524.9 895.6,524.9 895.6,531.4 913.7,531.4 913.7,538 916.1,538 916.1,544.6 960,544.6 960,551.1 960,551.1 960,557.7 960,557.7 960,564.3 960,564.3 960,570.9 960,570.9 960,577.4 960,584"/>
+<circle cx="526.1" cy="354" r="5.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>70 benchmark cases, 1,000,000 orders: median 13×</title></circle>
+<circle cx="630" cy="144" r="4.5" fill="#2a78d6" stroke="#ffffff" stroke-width="2" paint-order="stroke"></circle>
+<text x="644" y="148" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">70 benchmark cases, 1,000,000 orders</text>
+<text x="644" y="166" font-size="12" text-anchor="start" fill="#59636e">median 13×, slower on 6 (9%)</text>
+<polyline fill="none" stroke="#1baf7a" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" points="122.8,124 122.8,124 122.8,124 173.7,124 173.7,139.9 175.8,139.9 175.8,155.7 188.1,155.7 188.1,171.6 196.5,171.6 196.5,187.4 198.4,187.4 198.4,203.3 198.5,203.3 198.5,219.2 201.4,219.2 201.4,235 202.9,235 202.9,250.9 203.9,250.9 203.9,266.8 204.3,266.8 204.3,282.6 237.6,282.6 237.6,298.5 291.7,298.5 291.7,314.3 292.2,314.3 292.2,330.2 351.1,330.2 351.1,346.1 367.2,346.1 367.2,361.9 413.4,361.9 413.4,377.8 442,377.8 442,393.7 470.7,393.7 470.7,409.5 499.2,409.5 499.2,425.4 506.1,425.4 506.1,441.2 554,441.2 554,457.1 583.7,457.1 583.7,473 695.4,473 695.4,488.8 699.4,488.8 699.4,504.7 734.3,504.7 734.3,520.6 749.2,520.6 749.2,536.4 803,536.4 803,552.3 913.5,552.3 913.5,568.1 913.5,584"/>
+<polygon points="351.1,346.9 358.3,354 351.1,361.1 344,354" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"><title>29 real query shapes, 1.2M orders: median 3.2×</title></polygon>
+<polygon points="630,184.2 635.9,190 630,195.8 624.1,190" fill="#1baf7a" stroke="#ffffff" stroke-width="2" paint-order="stroke"></polygon>
+<text x="644" y="194" font-size="13" text-anchor="start" fill="#1f2328" font-weight="bold">29 real query shapes, 1.2M orders</text>
+<text x="644" y="212" font-size="12" text-anchor="start" fill="#59636e">median 3.2×, slower on 7 (24%)</text>
+<text x="20" y="652" font-size="12" text-anchor="start" fill="#59636e">Data: docs/results/cases.tsv (one backend, no parallel workers, PostgreSQL = the same table with sift.enable_agg = off) and</text>
+<text x="20" y="669" font-size="12" text-anchor="start" fill="#59636e">docs/results/analytics.json (shapes G1-G8 at one filter and S1-S7 at three filter sizes, wall time of one backend). The two sets are different</text>
+<text x="20" y="686" font-size="12" text-anchor="start" fill="#59636e">workloads.</text>
+</svg>

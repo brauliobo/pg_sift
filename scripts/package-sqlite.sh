@@ -36,7 +36,7 @@ build() { # build REF OUTDIR
 	src=$(mktemp -d -p "$TMP")
 	git -C "$REPO" archive "$ref" sqlite src scripts LICENSE NOTICE | tar x -C "$src"
 	docker run --rm --cpus 4 -e VER="$ver" -e EPOCH="$epoch" -e HOST_UID="$(id -u)" \
-		-v "$REPO/packaging/sqlite:/pkg:ro" -v "$src:/src:ro" -v "$out:/out" "$BUILD_IMAGE" /pkg/container.sh build
+		-v "$REPO/packaging/sqlite:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$src:/src:ro" -v "$out:/out" "$BUILD_IMAGE" /pkg/container.sh build
 	echo "built $out/sift-sqlite-$ver-linux-x86_64.tar.gz"
 }
 
@@ -49,7 +49,7 @@ test_tarball() { # test_tarball TARBALL [IMAGE...]
 			echo "== host: sqlite $(sqlite3 --version 2>/dev/null | cut -d' ' -f1 || true)"
 			python3 -I "$REPO/sqlite/tests/smoke.py" "$dir/$base/sift.so" "$ver"
 		else
-			docker run --rm -e VER="$ver" -e TARBALL="$(basename "$tarball")" -v "$REPO/packaging/sqlite:/pkg:ro" \
+			docker run --rm -e VER="$ver" -e TARBALL="$(basename "$tarball")" -v "$REPO/packaging/sqlite:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" \
 				-v "$REPO/sqlite/tests/smoke.py:/smoke.py:ro" -v "$(dirname "$tarball"):/out:ro" "$image" /pkg/container.sh test
 		fi
 	done

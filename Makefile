@@ -48,12 +48,18 @@ TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += tbl_wide_rows col_wildcard_keys
 TESTING_REGRESS += col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths
-TESTING_REGRESS += col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir col_point_tid col_zone_window col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_suggest_paths agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build agg_row_compare col_skip_map
+TESTING_REGRESS += col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir col_point_tid col_zone_window col_key_cut col_key_cut_units col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_paths_auto col_suggest_paths agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build agg_row_compare col_skip_map col_topn_walk_cache
 TESTING_REGRESS += col_census_sample
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow
 TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure
+ifdef SIFT_SB_SHIFT
+ifndef SIFT_TESTING
+$(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
+endif
+PG_CPPFLAGS += -DSIFT_SB_SHIFT=$(SIFT_SB_SHIFT)
+endif
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql

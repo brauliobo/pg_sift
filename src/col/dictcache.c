@@ -268,12 +268,13 @@ typedef struct AskEnt
 {
 	DictKey		key;
 	uint32		asks;
+	bool		nokeep;			/* the parsed dictionary did not fit the cache: parsing it again for every query would cost more than all the searches of the stream */
 } AskEnt;
 
 static HTAB *asks;
 
-uint32
-sift_cseg_dict_asked(SiftColSegment *seg, int col)
+static AskEnt *
+ask_ent(SiftColSegment *seg, int col)
 {
 	DictKey		k;
 	AskEnt	   *e;
@@ -292,13 +293,28 @@ sift_cseg_dict_asked(SiftColSegment *seg, int col)
 	{
 		hash_destroy(asks);
 		asks = NULL;
-		return sift_cseg_dict_asked(seg, col);
+		return ask_ent(seg, col);
 	}
 	dict_key(&k, seg, col, UINT32_MAX);
 	e = hash_search(asks, &k, HASH_ENTER, &found);
 	if (!found)
+	{
 		e->asks = 0;
-	return ++e->asks;
+		e->nokeep = false;
+	}
+	return e;
+}
+
+uint32
+sift_cseg_dict_asked(SiftColSegment *seg, int col)
+{
+	return ++ask_ent(seg, col)->asks;
+}
+
+bool
+sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
+{
+	return ask_ent(seg, col)->nokeep;
 }
 
 SiftCDict *
@@ -341,7 +357,10 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
 	CDICT_STAT(loads);
 	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	{
+		ask_ent(seg, col)->nokeep = true;
 		return d;
+	}
 	MemoryContextSetParent(cx, cache_cx);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);
 	e->cx = cx;

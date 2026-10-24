@@ -7,6 +7,7 @@
 #include "col/enc.h"
 
 #define COLU_MAGIC		0x554C4F43	/* "COLU" */
+#define COLK_MAGIC		0x4B4C4F43	/* "COLK": the unit of a key-cut segment, explicit TIDs */
 #define CODEC_BLOCK		4096	/* values unpacked at a time (a multiple of 64) */
 
 static inline uint32

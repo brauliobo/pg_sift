@@ -130,7 +130,7 @@ SELECT * FROM pa_sum('ap');
 SELECT * FROM pa_sum('ao');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |       2 |        1 |      1
+      21 |      0 |       2 |        1 |      2
 (1 row)
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
@@ -174,7 +174,7 @@ SELECT * FROM pa_sum('ap');
 SELECT * FROM pa_sum('ao');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |       0 |        3 |      1
+      21 |      0 |       0 |        3 |      2
 (1 row)
 
 -- 3. vacuumed (the index is vacuumed too: with few dead rows VACUUM would skip it): the units that lost rows stay scanned until a merge rewrites them
@@ -384,14 +384,14 @@ DELETE FROM ao WHERE id BETWEEN 1 AND 100;
 SELECT * FROM pa_sum('ao');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |       0 |        3 |      1
+      21 |      0 |       0 |        3 |      2
 (1 row)
 
 ROLLBACK;
 SELECT * FROM pa_sum('ao');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      21 |      0 |       0 |        3 |      1
+      21 |      0 |       0 |        3 |      2
 (1 row)
 
 -- values the index cannot store (a numeric NaN): the units that hold them are scanned, as they are without pre-aggregates

@@ -35,7 +35,8 @@
 #define SIFT_COL_FORMAT_DICTIDX	14			/* 3.3: the segment has a dictionary stored in blocks that are read in place (DICT_BLOCKS), and for the leaves that ask for it with the codes in byte order to search the strings in place (DICT_LOOKUP); written for the dictionaries of CDICT_LOOKUP_MIN strings or more under sift.col_format_minor 14 where the blocks add at most 3% to the segment, for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_PRESENCE	15		/* 3.3: the segment has the key list or bitmap (every distinct key) of some leaf in some unit; written only for an index whose key_columns keep a key list or bitmap, and then for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_POINTTID	16		/* 3.3: the segment has a point directory whose slots list the heap addresses of the rows, not their numbers in the segment; written only for an index with the reloption point_tid_columns, for a schema that has no shredded leaves or whose every kind is known */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_POINTTID	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_KEYED	17			/* 3.4: the segment's units are cut by the range of the declared key (the reloption key_cut), not by superblock, and list their TIDs (docs/COL.md 2.16); written only for an index with the reloption key_cut and sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_KEYED	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -759,6 +760,14 @@ extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint
 extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
 /* The zone of leaf col over every unit of the superblocks [sb_lo, sb_hi) as stored (a write buffer unit in the range makes it unbounded), from the segment headers: no unit is opened. Returns the units counted */
 extern uint32 sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+extern uint32 sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+typedef struct SiftColWalkStamp
+{
+	Oid			index;
+	uint32		file;
+	uint32		version;
+} SiftColWalkStamp;
+extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 /* Is every page of the unit all-visible: sift_col_vet has nothing to check */
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);

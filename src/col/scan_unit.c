@@ -18,6 +18,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "core/cmp.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -116,9 +117,39 @@ segments_current(SiftColSource *src)
 	return src->dir_current;
 }
 
+/* A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible) */
+static const uint64 *
+unit_allvisible_keyed(ColUnit *cu)
+{
+	if (!cu->av_ready)
+	{
+		uint32		nw;
+
+		/* no page between the first and the last of the unit is unclean (the list of those pages is made once per scan): the directory is not needed */
+		if (!cu->lane && sift_vis_range_allvisible(&cu->src->vis, cu->v.kblk0, cu->v.kblk1) &&
+			!(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src)))
+		{
+			cu->avk = NULL;
+			cu->av_ready = true;
+			return NULL;
+		}
+		sift_cunit_keyed_load(&cu->v);
+		nw = (cu->v.npages + 63) / 64;
+		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
+		if (!cu->lane && cu->src->vis.heap != NULL)
+			sift_vis_blocks_allvisible(&cu->src->vis, cu->v.blocks, cu->v.npages, cu->avk);
+		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+			memset(cu->avk, 0, Max(nw, 1) * sizeof(uint64));
+		cu->av_ready = true;
+	}
+	return cu->avk;
+}
+
 const uint64 *
 unit_allvisible(ColUnit *cu)
 {
+	if (cu->v.keyed)
+		return unit_allvisible_keyed(cu);
 	if (!cu->av_ready)
 	{
 		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
@@ -243,8 +274,8 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 	zone->has_ovf = (z.flags & SIFT_COLZ_OVERFLOW) != 0;
 }
 
-uint32
-sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+static uint32
+zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone, bool wbuf)
 {
 	uint32		units = 0;
 
@@ -270,6 +301,8 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 			zone->max = Max(zone->max, z.flags & SIFT_COLZ_INLINE ? PG_INT64_MAX : z.max);
 		}
 	}
+	if (!wbuf)
+		return units;
 	/* the units of the write buffers are encoded when read, and not loaded before a begin: they are read */
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		zone->has_ovf = true;
@@ -282,6 +315,55 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 	return units;
 }
 
+uint32
+sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	return zone_range(src, col, sb_lo, sb_hi, zone, true);
+}
+
+/* The same over the segments alone, the units of the write buffers left out (sift_col_walk_stamp lists their superblocks) */
+uint32
+sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	return zone_range(src, col, sb_lo, sb_hi, zone, false);
+}
+
+static int
+sb_cmp(const void *a, const void *b)
+{
+	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/*
+ * What the zones of the segments of an index source depend on: its file and the version of the directory it read. The superblocks that hold rows of the
+ * write buffers are listed in mem (ascending, nmem of them); false when the source is not that of an index, its buffers are not loaded, or more than cap
+ * superblocks hold such rows.
+ */
+bool
+sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	int			n = 0;
+
+	if ((src->flags & COLO_TABLE) || !src->mem_loaded)
+		return false;
+	for (int i = 0; i < src->nmem; i++)
+		if (src->mem[i].b->nrows > 0)
+		{
+			if (n == cap)
+				return false;
+			mem[n++] = src->mem[i].b->sb;
+		}
+	qsort(mem, n, sizeof(uint32), sb_cmp);
+	*nmem = 0;
+	for (int i = 0; i < n; i++)
+		if (i == 0 || mem[i] != mem[i - 1])
+			mem[(*nmem)++] = mem[i];
+	st->index = RelationGetRelid(src->index);
+	st->file = src->index->rd_locator.relNumber;
+	st->version = src->dir.version;
+	return true;
+}
+
 bool
 sift_col_unit_allvisible(const SiftColUnit *unit)
 {
@@ -290,6 +372,15 @@ sift_col_unit_allvisible(const SiftColUnit *unit)
 
 	if (!unit_clean(cu))
 		return false;
+	if (cu->v.keyed)
+	{
+		if (av == NULL)			/* every page of the table is all-visible */
+			return true;
+		for (uint32 p = 0; p < cu->v.npages; p++)
+			if (!sift_col_bit_test(av, p))
+				return false;
+		return true;
+	}
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (cu->v.pagemask[w] & ~av[w])
 			return false;
@@ -326,13 +417,25 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		if (!sift_col_bit_test(c->keep, c->cur + i))
 			return false;
 	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
-	for (uint32 i = 0; i < n; i++)
+	if (seg->entry.format == SIFT_COL_FORMAT_KEYED)
 	{
-		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
-		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+		/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
+		for (uint32 i = 0; i < n; i++)
+		{
+			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
+
+			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
 				return false;
+		}
 	}
+	else
+		for (uint32 i = 0; i < n; i++)
+		{
+			src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
+			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+				if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+					return false;
+		}
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();

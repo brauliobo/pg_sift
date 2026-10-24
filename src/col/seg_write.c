@@ -73,6 +73,8 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
+	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
+	bool		keyed;			/* the units are key-cut (docs/COL.md 2.16): the segment is column format minor 17 */
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
 	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
@@ -261,6 +263,14 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 			}
 }
 
+void
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
+{
+	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
+	w->keyed = true;
+	w->aim_rows = aim_rows;
+}
+
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
 static void
 add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys)
@@ -410,7 +420,8 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	}
 	w->cubeoff[w->nsb] = w->cube.len;
 	w->ecubeoff[w->nsb] = w->ecube.len;
-	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
+	/* a key-cut unit holds fewer rows than a superblock: its cube may take what the cube of the unit of that many rows would. With less, the dims that fit differ from unit to unit and the groups of units (superunits) keep none */
+	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, w->keyed && b->nrows < w->aim_rows ? (Size) ((uint64) unit_bytes * w->aim_rows / b->nrows) : unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_sets(w, cols, unit_bytes);
@@ -509,7 +520,14 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
-	memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
+	if (b->keyed)
+	{
+		/* a key-cut unit has no page mask: its slot holds the first and last block of the unit (its head), which a group of units tests against the visibility map at once */
+		memset(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
+		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), 2 * sizeof(uint32));
+	}
+	else
+		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
 	add_vers(w, b);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
@@ -807,11 +825,12 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		return false;
 	for (int c = 0; c < ncols; c++)
 		h.nleaf += super_leaf_ok(&w->schema->cols[c]);
+	/* what the merge of one group allocates is freed with the group: a segment of many units has thousands of groups */
 	cx = AllocSetContextCreate(w->mcxt, "sift col superunits", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(cx);
 	ua = palloc(fan * sizeof(SiftCAgg));
 	cdir = palloc((nsu + 1) * sizeof(uint64));
 	initStringInfo(&cubes);
+	old = MemoryContextSwitchTo(cx);
 	for (uint32 k = 0; k < nsu; k++)
 	{
 		uint32		n = Min(fan, nsb - k * fan);
@@ -831,8 +850,7 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		}
 		if (n >= 2 && anycube && !sift_cpagg_super_cube(w->schema, blob, len, n, &cubes))
 			cubes.len = before;
-		pfree(blob);
-		pfree(len);
+		MemoryContextReset(cx);
 	}
 	cdir[nsu] = cubes.len;
 	h.cubedir_off = cubes.len > 0 ? ALIGN8(sizeof(SuperHeader) + (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (Size) h.nleaf * nsu * sizeof(SiftCSuperLeaf)) : 0;
@@ -863,6 +881,9 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		appendBinaryStringInfo(out, cubes.data, cubes.len);
 	}
 	MemoryContextDelete(cx);
+	pfree(ua);
+	pfree(cdir);
+	pfree(cubes.data);
 	return true;
 }
 
@@ -1078,6 +1099,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
+	if (w->keyed)
+		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{

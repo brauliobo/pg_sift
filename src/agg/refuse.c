@@ -25,6 +25,7 @@
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
 
+#include "agg/agg.h"
 #include "agg/refuse.h"
 #include "agg/stats.h"
 #include "core/limits.h"
@@ -254,7 +255,7 @@ agg_arm_end(void)
 	{
 		foreach_ptr(Path, p, a->paths)
 			a->used |= list_member_ptr(a->rel->pathlist, p);
-		a->used &= a->cheaper;
+		a->used &= a->cheaper || sift_agg_force;
 		if (!a->used)
 		{
 			/* the memory decided it when the scan, without the spill, is no dearer than the normal plan */
@@ -305,7 +306,7 @@ report(const ArmNote *a)
 	if (why_store != NULL)
 	{
 		Datum		v[6];
-		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL, a->paths == NIL};
+		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL && a->scan == 0, a->paths == NIL && a->scan == 0};
 
 		v[0] = CStringGetTextDatum(a->name);
 		v[1] = BoolGetDatum(a->used);
@@ -321,9 +322,9 @@ report(const ArmNote *a)
 
 /* a decision outside the arms of the planner hook (the plan of the statement as a whole) */
 void
-agg_report(const char *name, AggRefusal why, const char *detail, bool used)
+agg_report(const char *name, AggRefusal why, const char *detail, bool used, double scan, double normal)
 {
-	ArmNote		a = {.why = why, .detail = detail, .used = used, .paths = NIL};
+	ArmNote		a = {.why = why, .detail = detail, .used = used, .paths = NIL, .scan = scan, .normal = normal};
 
 	if (!sift_explain_refusals)
 		return;

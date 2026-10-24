@@ -134,6 +134,14 @@ typedef struct SiftSrcStamp
 	uint32		visible;
 } SiftSrcStamp;
 
+/* What the zones of the stored units of an index source depend on (SiftSrcProvider.walk_stamp) */
+typedef struct SiftSrcWalkStamp
+{
+	Oid			index;
+	uint32		file;
+	uint32		version;
+} SiftSrcWalkStamp;
+
 /* ---- executor side ---- */
 
 typedef struct SiftSrcSource SiftSrcSource;
@@ -203,7 +211,10 @@ typedef struct SiftSrcPrune
 	bool		any;
 	int			nkids;
 	const struct SiftSrcPrune *kids;
+	int			nulltest;		/* SSN_ISNULL / SSN_NOTNULL: the entry tests the NULLs of the unit's zone (a unit with none, or with only NULLs, is skipped); lo and hi are unused */
 } SiftSrcPrune;
+#define SSN_ISNULL		1
+#define SSN_NOTNULL		2
 
 /*
  * A test on a text leaf (SCV_CODE, top level scalar) that a source may run on the encoded form of its units instead of the executor
@@ -551,6 +562,13 @@ typedef struct SiftSrcProvider
 	void		(*zone) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 	/* zone_range: the zone of a leaf over all the units of the superblocks [lo, hi) together, without opening them; returns how many units it counts (required with tids) */
 	uint32		(*zone_range) (void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+	/*
+	 * Optional (both or neither): the zone of the stored units alone, and what those zones depend on, so that a top-N may keep the order of its walk between queries:
+	 * walk_stamp fills the identity of the stored units (a REINDEX or any change of the segments gives another) and lists, ascending, the superblocks that also hold
+	 * rows of a write buffer (at most cap); false: the zones of this source are not kept
+	 */
+	uint32		(*zone_range_segs) (void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+	bool		(*walk_stamp) (void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem);
 	/* optional (NULL: none does): can the unit the source is at hold, in `leaf`, a value the source cannot store (SiftSrcVec.ovf)? */
 	bool		(*overflow) (void *impl, const SiftSrcUnit *unit, int leaf);
 	/*
@@ -721,6 +739,8 @@ extern bool sift_colsrc_can_tids(Oid relam, bool index);
 extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 extern uint32 sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+extern uint32 sift_colsrc_zone_range_segs(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
+extern bool sift_colsrc_walk_stamp(SiftSrcSource *src, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem);
 /* Does the source give the zone of a range of superblocks (zone_range is optional: a source without a top-N has none)? */
 extern bool sift_colsrc_has_zone_range(SiftSrcSource *src);
 extern bool sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);

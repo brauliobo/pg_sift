@@ -207,6 +207,10 @@ if [[ $MODE == full ]]; then
 else
 	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-$(( 2 * BUDGET_MB ))}
 fi
+# CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 3000, full 7200; the slowest job of a shard takes 2100 and 4700 on a loaded runner), so that a
+# stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
+JOB_TIMEOUT=()
+for tm in timeout gtimeout; do command -v $tm >/dev/null && { JOB_TIMEOUT=($tm -k 20 "${CI_JOB_TIMEOUT:-$([[ $MODE == full ]] && echo 7200 || echo 3000)}"); break; }; done
 
 # ---------- the jobs ----------
 # job ID SUITE CLUSTER CMD...: queued in the order of the calls, so the longest come first (a job queued twice keeps its first
@@ -239,7 +243,7 @@ rest() {
 }
 # The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (SIFT_CI_STATS=1 lists it per job). The
 # jobs below grow the store (the churn of the store tests, WAL of the WAL tests, spill of a large build) and are the only ones above JOB_MB.
-declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=950 [installcheck-tbl_writepath]=500 [tap-shell-old_lib_refusal]=150 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=500 [tap-006_truncate]=550 [tap-010_tbl_settings]=420
+declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=950 [installcheck-tbl_writepath]=500 [tap-shell-old_lib_refusal]=150 [tap-shell-scaling_slope]=1400 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=500 [tap-006_truncate]=550 [tap-010_tbl_settings]=420
 	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [tap-shell-extension_lifecycle]=260 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
 	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140)
@@ -406,6 +410,7 @@ claim_locked() {
 		mkdir "$BASE/claims/$id"
 		echo "$est" >"$BASE/running/$id"
 		echo "$LANE" >"$BASE/claims/$id/lane"
+		echo "$SECONDS" >"$BASE/claims/$id/start"
 		CLAIMED=$id
 		return 0
 	done
@@ -461,10 +466,26 @@ watchdog() { # stops every postmaster under $BASE once the scratch directory pas
 }
 watchdog &
 WATCHDOG=$!
+# a job that runs long (difftest-col takes two to three hours in the full tier) is silent in the live log until it ends: every 5 minutes the jobs past
+# 10 minutes are listed with the last line of their own log, so that a long run is told from a hang by whether that line moves
+heartbeat() {
+	local f id s
+	while sleep 300; do
+		for f in "$BASE"/running/*; do
+			[[ -e $f ]] || continue
+			id=${f##*/}
+			[[ -f $BASE/claims/$id/start ]] || continue
+			s=$(<"$BASE/claims/$id/start")
+			(( SECONDS - s >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - s))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
+		done
+	done
+}
+heartbeat &
+HEARTBEAT=$!
 # SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
 [[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
 cleanup() {
-	kill "$WATCHDOG" ${STATS:-} 2>/dev/null
+	kill "$WATCHDOG" "$HEARTBEAT" ${STATS:-} 2>/dev/null
 	if [[ -z ${KEEP:-} && ${failed:-1} == 0 ]]; then rm -rf "$BASE"; else echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
@@ -478,15 +499,21 @@ lane_cpu() {
 # step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
 # to the results and returns its status
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
 	c0=$(lane_cpu "$id")
-	"$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	${JOB_TIMEOUT[@]+"${JOB_TIMEOUT[@]}"} "$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || { rc=$?; status=FAIL; }
+	if (( rc == 124 || rc == 137 )); then
+		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$id.log"; } | tee -a "$LOG/$id.log"
+	fi
 	c1=$(lane_cpu "$id")
 	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
+	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
 	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
 		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
+	# the log of a run that is cut (a timeout, a hang) names the jobs that had finished: the results are in the logs artifact of a failed run only
+	printf 'ci: %-44s %s %5ss lane %s\n' "$id" "$status" $((SECONDS - t)) "$LANE"
 	[[ $status == PASS ]]
 }
 

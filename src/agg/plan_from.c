@@ -251,6 +251,14 @@ scan_from(Node *n, FromScan *f)
 		lj->kind = j->jointype == JOIN_SEMI ? SJ_SEMI : j->jointype == JOIN_ANTI ? SJ_ANTI : SJ_LEFT;
 		lj->rti = r->rtindex;
 		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+		/* an inner join the scan joins outer: what it says of the other tables only is the WHERE of the scan, not the ON of the outer join */
+		if (j->jointype == JOIN_INNER)
+			foreach_ptr(Node, q, list_copy(lj->quals))
+				if (!bms_is_member(r->rtindex, pull_varnos(NULL, q)))
+				{
+					lj->quals = list_delete_ptr(lj->quals, q);
+					f->quals = lappend(f->quals, q);
+				}
 		/* the WHERE of a pulled up sub-select that is the right side filters the table's rows before the join: more of the ON clause */
 		if (IsA(j->rarg, FromExpr) && ((FromExpr *) j->rarg)->quals)
 			lj->quals = list_concat(lj->quals, list_copy((List *) ((FromExpr *) j->rarg)->quals));
@@ -813,7 +821,7 @@ part_source(AggCtx *c)
 		if (!part_has_index(c, leaf))
 			return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
 	/* opening the partitions alone can cost more than the normal plan: nothing of them is read to find that out */
-	if (agg_open_cost(n) > agg_stage_normal)
+	if (agg_open_cost(n) > agg_stage_normal && !sift_agg_force)
 		return agg_refuse_f(COST, "opening %d partitions costs the scan %.2f, the normal plan %.2f", n, agg_open_cost(n), agg_stage_normal);
 	if (!part_prune_clauses(c))
 		return agg_refuse_on(PARTITION_SOURCE, "a condition on the partition key cannot be evaluated when the scan starts");

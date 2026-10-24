@@ -29,6 +29,7 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 		dicts[c] = sift_cseg_dict(seg, c);
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->sb);
+	dst->keyed = v.keyed;
 	sift_cunit_decode(&v, r->sb, dicts, dirty ? live : NULL, dst);
 	pfree(dicts);
 	if (sift_cseg_vers(seg))
@@ -331,7 +332,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->sb);
 	sift_cunit_keys(&v, r->sb, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
-		if (sift_block_sb(sift_key_block(keys[i])) != r->sb || (i > 0 && keys[i] <= keys[i - 1]) ||
+		if ((!v.keyed && sift_block_sb(sift_key_block(keys[i])) != r->sb) || (i > 0 && keys[i] <= keys[i - 1]) ||
 			(keys[i] & 0xFFFF) == 0)
 			corrupt(seg, "Row %u of the unit of SB %u has key %llx out of order or outside the SB.", i, r->sb, ULL(keys[i]));
 	for (int c = 0; c < sc->ncols; c++)
@@ -498,7 +499,8 @@ sift_cseg_verify_super(SiftColSegment *seg)
 			const uint8 *rec = sift_cseg_unit(seg, k * fan + i, &ulen);
 			const uint8 *cube;
 
-			if (!sift_cunit_parse(rec, ulen, sc, &v) || memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0)
+			if (!sift_cunit_parse(rec, ulen, sc, &v) ||
+				(v.keyed ? (pm[i * SIFT_PAGEMASK_WORDS] != ((uint64) v.kblk1 << 32 | v.kblk0)) : memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0))
 				corrupt(seg, "The page mask of unit %u in superunit %u is not the unit's.", k * fan + i, k);
 			cube = sift_cseg_cube(seg, k * fan + i, &len[i]);
 			blob[i] = len[i] ? memcpy(palloc(len[i]), cube, len[i]) : NULL;

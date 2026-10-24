@@ -284,6 +284,8 @@ prune_may(StubSource *src, const SiftSrcPrune *p)
 		return !p->any;
 	}
 	lf = &src->lay->l.leaf[p->leaf];
+	if (p->nulltest)
+		return true;
 	if (lf->parent >= 0 || lf->kind != SCL_SCALAR || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64))
 		return true;
 	v = &src_slot(src, p->leaf)->vec;

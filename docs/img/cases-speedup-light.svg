@@ -1,0 +1,248 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1826" viewBox="0 0 1000 1826" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Speed-up of every benchmark case</title>
+<desc id="d">Bars: PostgreSQL time over pg_sift time for each case, grouped by family.</desc>
+<rect x="0.5" y="0.5" width="999" height="1825" rx="6" fill="#ffffff" stroke="#d1d9e0"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#1f2328" font-weight="bold">71 cases of query shapes: pg_sift against PostgreSQL on the same rows</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#59636e">PostgreSQL's median time over pg_sift's, 1,000,000 orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the</text>
+<text x="20" y="72" font-size="13" text-anchor="start" fill="#59636e">planner kept PostgreSQL's plan (the bar shows the cost of deciding, if any).</text>
+<line x1="270.7" y1="122" x2="270.7" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="270.7" y="116" font-size="11" text-anchor="middle" fill="#59636e">0.5×</text>
+<line x1="334.9" y1="122" x2="334.9" y2="1758" stroke="#59636e" stroke-width="1.5"/>
+<text x="334.9" y="116" font-size="11" text-anchor="middle" fill="#59636e">1×</text>
+<line x1="399.1" y1="122" x2="399.1" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="399.1" y="116" font-size="11" text-anchor="middle" fill="#59636e">2×</text>
+<line x1="484" y1="122" x2="484" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="484" y="116" font-size="11" text-anchor="middle" fill="#59636e">5×</text>
+<line x1="548.2" y1="122" x2="548.2" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="548.2" y="116" font-size="11" text-anchor="middle" fill="#59636e">10×</text>
+<line x1="612.4" y1="122" x2="612.4" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="612.4" y="116" font-size="11" text-anchor="middle" fill="#59636e">20×</text>
+<line x1="697.3" y1="122" x2="697.3" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="697.3" y="116" font-size="11" text-anchor="middle" fill="#59636e">50×</text>
+<line x1="761.6" y1="122" x2="761.6" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="761.6" y="116" font-size="11" text-anchor="middle" fill="#59636e">100×</text>
+<line x1="825.8" y1="122" x2="825.8" y2="1758" stroke="#e3e7eb" stroke-width="1"/>
+<text x="825.8" y="116" font-size="11" text-anchor="middle" fill="#59636e">200×</text>
+<rect x="19" y="134" width="45.2" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="148" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Top-N</text>
+<rect x="725.6" y="136" width="261.4" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="148" font-size="12" text-anchor="end" fill="#59636e">16 cases, median 10×, from 1.6× to 74×</text>
+<text x="34" y="176.5" font-size="12" text-anchor="start" fill="#1f2328">topn_coalesce</text>
+<rect x="334.9" y="165" width="399.1" height="15" fill="#2a78d6" rx="2"><title>topn_coalesce: PostgreSQL 73.9 ms, pg_sift 0.995 ms (74×)</title></rect>
+<text x="740" y="176.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">74×</text>
+<text x="34" y="197.5" font-size="12" text-anchor="start" fill="#1f2328">topn_sorted_runs</text>
+<rect x="334.9" y="186" width="305.2" height="15" fill="#2a78d6" rx="2"><title>topn_sorted_runs: PostgreSQL 37.9 ms, pg_sift 1.41 ms (27×)</title></rect>
+<text x="646.1" y="197.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">27×</text>
+<text x="34" y="218.5" font-size="12" text-anchor="start" fill="#1f2328">topn_lower</text>
+<rect x="334.9" y="207" width="294.9" height="15" fill="#2a78d6" rx="2"><title>topn_lower: PostgreSQL 120 ms, pg_sift 4.97 ms (24×)</title></rect>
+<text x="635.7" y="218.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">24×</text>
+<text x="34" y="239.5" font-size="12" text-anchor="start" fill="#1f2328">topn_page_totals</text>
+<rect x="334.9" y="228" width="275" height="15" fill="#2a78d6" rx="2"><title>topn_page_totals: PostgreSQL 85.1 ms, pg_sift 4.37 ms (19×)</title></rect>
+<text x="615.9" y="239.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">19×</text>
+<text x="34" y="260.5" font-size="12" text-anchor="start" fill="#1f2328">topn_sorted_runs_filter</text>
+<rect x="334.9" y="249" width="257.6" height="15" fill="#2a78d6" rx="2"><title>topn_sorted_runs_filter: PostgreSQL 22.1 ms, pg_sift 1.37 ms (16×)</title></rect>
+<text x="598.5" y="260.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">16×</text>
+<text x="34" y="281.5" font-size="12" text-anchor="start" fill="#1f2328">topn_zone_keys</text>
+<rect x="334.9" y="270" width="248.6" height="15" fill="#2a78d6" rx="2"><title>topn_zone_keys: PostgreSQL 82.8 ms, pg_sift 5.66 ms (15×)</title></rect>
+<text x="589.5" y="281.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">15×</text>
+<text x="34" y="302.5" font-size="12" text-anchor="start" fill="#1f2328">topn_text_code</text>
+<rect x="334.9" y="291" width="215.9" height="15" fill="#2a78d6" rx="2"><title>topn_text_code: PostgreSQL 119 ms, pg_sift 11.6 ms (10×)</title></rect>
+<text x="556.8" y="302.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">10×</text>
+<text x="34" y="323.5" font-size="12" text-anchor="start" fill="#1f2328">topn_enum_key</text>
+<rect x="334.9" y="312" width="196" height="15" fill="#2a78d6" rx="2"><title>topn_enum_key: PostgreSQL 62.6 ms, pg_sift 7.54 ms (8.3×)</title></rect>
+<text x="536.9" y="323.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">8.3×</text>
+<text x="34" y="344.5" font-size="12" text-anchor="start" fill="#1f2328">topn_text_key</text>
+<rect x="334.9" y="333" width="183.5" height="15" fill="#2a78d6" rx="2"><title>topn_text_key: PostgreSQL 58 ms, pg_sift 8.01 ms (7.2×)</title></rect>
+<text x="524.4" y="344.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">7.2×</text>
+<text x="34" y="365.5" font-size="12" text-anchor="start" fill="#1f2328">topn_uuid_key</text>
+<rect x="334.9" y="354" width="175.3" height="15" fill="#2a78d6" rx="2"><title>topn_uuid_key: PostgreSQL 73 ms, pg_sift 11 ms (6.6×)</title></rect>
+<text x="516.2" y="365.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">6.6×</text>
+<text x="34" y="386.5" font-size="12" text-anchor="start" fill="#1f2328">topn_big_offset</text>
+<rect x="334.9" y="375" width="95" height="15" fill="#2a78d6" rx="2"><title>topn_big_offset: PostgreSQL 470 ms, pg_sift 169 ms (2.8×)</title></rect>
+<text x="435.9" y="386.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">2.8×</text>
+<text x="34" y="407.5" font-size="12" text-anchor="start" fill="#1f2328">topn_interval_key</text>
+<rect x="334.9" y="396" width="53.1" height="15" fill="#2a78d6" rx="2"><title>topn_interval_key: PostgreSQL 71.8 ms, pg_sift 40.5 ms (1.8×)</title></rect>
+<text x="393.9" y="407.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.8×</text>
+<text x="34" y="428.5" font-size="12" text-anchor="start" fill="#1f2328">topn_numeric_wide</text>
+<rect x="334.9" y="417" width="43.9" height="15" fill="#2a78d6" rx="2"><title>topn_numeric_wide: PostgreSQL 93.7 ms, pg_sift 58.4 ms (1.6×)</title></rect>
+<text x="384.8" y="428.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.6×</text>
+<text x="34" y="449.5" font-size="12" text-anchor="start" fill="#1f2328">topn_six_keys</text>
+<rect x="334.7" y="438" width="0.2" height="15" fill="#eef0f2" rx="2"><title>topn_six_keys: PostgreSQL 104 ms, pg_sift 104 ms (1.00×) (same plan)</title></rect>
+<text x="328.7" y="449.5" font-size="12" text-anchor="end" fill="#1f2328">same plan</text>
+<text x="34" y="470.5" font-size="12" text-anchor="start" fill="#1f2328">topn_many_keys</text>
+<rect x="334.6" y="459" width="0.3" height="15" fill="#eef0f2" rx="2"><title>topn_many_keys: PostgreSQL 101 ms, pg_sift 102 ms (1.00×) (same plan)</title></rect>
+<text x="328.6" y="470.5" font-size="12" text-anchor="end" fill="#1f2328">same plan</text>
+<text x="34" y="491.5" font-size="12" text-anchor="start" fill="#1f2328">topn_sorted_runs_btree</text>
+<rect x="315.1" y="480" width="19.8" height="15" fill="#eef0f2" rx="2"><title>topn_sorted_runs_btree: PostgreSQL 0.155 ms, pg_sift 0.192 ms (0.81×) (same plan)</title></rect>
+<text x="309.1" y="491.5" font-size="12" text-anchor="end" fill="#1f2328">same plan, 1.2× slower</text>
+<rect x="19" y="512" width="319.6" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="526" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Pre-aggregates, cubes and calendar cells</text>
+<rect x="698.8" y="514" width="288.2" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="526" font-size="12" text-anchor="end" fill="#59636e">11 cases, median 165×, from 0.72× to 1109×</text>
+<text x="34" y="554.5" font-size="12" text-anchor="start" fill="#1f2328">group_numeric_key</text>
+<rect x="334.9" y="543" width="555.1" height="15" fill="#2a78d6" rx="2"><title>group_numeric_key: PostgreSQL 163 ms, pg_sift 0.147 ms (1109×)</title></rect>
+<text x="896" y="554.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1109×</text>
+<text x="34" y="575.5" font-size="12" text-anchor="start" fill="#1f2328">cube_minmax_groupby</text>
+<rect x="334.9" y="564" width="555.1" height="15" fill="#2a78d6" rx="2"><title>cube_minmax_groupby: PostgreSQL 115 ms, pg_sift 0.195 ms (591×)</title></rect>
+<text x="896" y="575.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">591×</text>
+<text x="34" y="596.5" font-size="12" text-anchor="start" fill="#1f2328">superunit_total</text>
+<rect x="334.9" y="585" width="555.1" height="15" fill="#2a78d6" rx="2"><title>superunit_total: PostgreSQL 60.6 ms, pg_sift 0.114 ms (532×)</title></rect>
+<text x="896" y="596.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">532×</text>
+<text x="34" y="617.5" font-size="12" text-anchor="start" fill="#1f2328">calendar_month</text>
+<rect x="334.9" y="606" width="555.1" height="15" fill="#2a78d6" rx="2"><title>calendar_month: PostgreSQL 320 ms, pg_sift 0.74 ms (433×)</title></rect>
+<text x="896" y="617.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">433×</text>
+<text x="34" y="638.5" font-size="12" text-anchor="start" fill="#1f2328">key_presence_distinct</text>
+<rect x="334.9" y="627" width="522.8" height="15" fill="#2a78d6" rx="2"><title>key_presence_distinct: PostgreSQL 108 ms, pg_sift 0.384 ms (282×)</title></rect>
+<text x="863.7" y="638.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">282×</text>
+<text x="34" y="659.5" font-size="12" text-anchor="start" fill="#1f2328">rollup_dims</text>
+<rect x="334.9" y="648" width="359.6" height="15" fill="#2a78d6" rx="2"><title>rollup_dims: PostgreSQL 172 ms, pg_sift 3.54 ms (49×)</title></rect>
+<text x="700.5" y="659.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">49×</text>
+<text x="34" y="680.5" font-size="12" text-anchor="start" fill="#1f2328">count_distinct_wide_keys</text>
+<rect x="334.9" y="669" width="282" height="15" fill="#2a78d6" rx="2"><title>count_distinct_wide_keys: PostgreSQL 268 ms, pg_sift 12.7 ms (21×)</title></rect>
+<text x="622.9" y="680.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">21×</text>
+<text x="34" y="701.5" font-size="12" text-anchor="start" fill="#1f2328">count_distinct_hist</text>
+<rect x="334.9" y="690" width="270.3" height="15" fill="#2a78d6" rx="2"><title>count_distinct_hist: PostgreSQL 122 ms, pg_sift 6.6 ms (18×)</title></rect>
+<text x="611.2" y="701.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">18×</text>
+<text x="34" y="722.5" font-size="12" text-anchor="start" fill="#1f2328">cluster_visibility_map</text>
+<rect x="334.9" y="711" width="157.1" height="15" fill="#2a78d6" rx="2"><title>cluster_visibility_map: PostgreSQL 17.6 ms, pg_sift 3.24 ms (5.4×)</title></rect>
+<text x="498" y="722.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">5.4×</text>
+<text x="34" y="743.5" font-size="12" text-anchor="start" fill="#1f2328">numeric_sum</text>
+<rect x="334.9" y="732" width="1" height="15" fill="#eef0f2" rx="2"><title>numeric_sum: PostgreSQL 140 ms, pg_sift 139 ms (1.0×) (same plan)</title></rect>
+<text x="341.9" y="743.5" font-size="12" text-anchor="start" fill="#1f2328">same plan</text>
+<text x="34" y="764.5" font-size="12" text-anchor="start" fill="#1f2328">count_distinct_spill</text>
+<rect x="303.8" y="753" width="31.1" height="15" fill="#eb6834" rx="2"><title>count_distinct_spill: PostgreSQL 282 ms, pg_sift 394 ms (0.72×)</title></rect>
+<text x="297.8" y="764.5" font-size="12" text-anchor="end" fill="#eb6834" font-weight="bold">1.4× slower</text>
+<rect x="19" y="785" width="358.8" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="799" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Reports, windows and aggregates of aggregates</text>
+<rect x="725.6" y="787" width="261.4" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="799" font-size="12" text-anchor="end" fill="#59636e">7 cases, median 13×, from 2.3× to 240×</text>
+<text x="34" y="827.5" font-size="12" text-anchor="start" fill="#1f2328">count_distinct_unique</text>
+<rect x="334.9" y="816" width="507.7" height="15" fill="#2a78d6" rx="2"><title>count_distinct_unique: PostgreSQL 897 ms, pg_sift 3.74 ms (240×)</title></rect>
+<text x="848.6" y="827.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">240×</text>
+<text x="34" y="848.5" font-size="12" text-anchor="start" fill="#1f2328">ranked_top_per_group</text>
+<rect x="334.9" y="837" width="282.1" height="15" fill="#2a78d6" rx="2"><title>ranked_top_per_group: PostgreSQL 163 ms, pg_sift 7.74 ms (21×)</title></rect>
+<text x="623" y="848.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">21×</text>
+<text x="34" y="869.5" font-size="12" text-anchor="start" fill="#1f2328">window_json_report</text>
+<rect x="334.9" y="858" width="276.1" height="15" fill="#2a78d6" rx="2"><title>window_json_report: PostgreSQL 195 ms, pg_sift 9.9 ms (20×)</title></rect>
+<text x="617" y="869.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">20×</text>
+<text x="34" y="890.5" font-size="12" text-anchor="start" fill="#1f2328">grouping_sets_report</text>
+<rect x="334.9" y="879" width="179" height="15" fill="#2a78d6" rx="2"><title>grouping_sets_report: PostgreSQL 207 ms, pg_sift 29.9 ms (6.9×)</title></rect>
+<text x="519.9" y="890.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">6.9×</text>
+<text x="34" y="911.5" font-size="12" text-anchor="start" fill="#1f2328">two_level_spend</text>
+<rect x="334.9" y="900" width="144.4" height="15" fill="#2a78d6" rx="2"><title>two_level_spend: PostgreSQL 428 ms, pg_sift 90.1 ms (4.8×)</title></rect>
+<text x="485.3" y="911.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">4.8×</text>
+<text x="34" y="932.5" font-size="12" text-anchor="start" fill="#1f2328">group_by_id_top</text>
+<rect x="334.9" y="921" width="77.6" height="15" fill="#2a78d6" rx="2"><title>group_by_id_top: PostgreSQL 401 ms, pg_sift 174 ms (2.3×)</title></rect>
+<text x="418.5" y="932.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">2.3×</text>
+<text x="34" y="953.5" font-size="12" text-anchor="start" fill="#1f2328">text_key_filtered</text>
+<rect x="334.9" y="942" width="4" height="15" fill="#eef0f2" rx="2"><title>text_key_filtered: PostgreSQL 41.7 ms, pg_sift 40 ms (1.0×) (same plan)</title></rect>
+<text x="344.9" y="953.5" font-size="12" text-anchor="start" fill="#1f2328">same plan</text>
+<rect x="19" y="974" width="296.1" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="988" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Dictionary strings and lookups by key</text>
+<rect x="732.4" y="976" width="254.6" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="988" font-size="12" text-anchor="end" fill="#59636e">7 cases, median 28×, from 16× to 180×</text>
+<text x="34" y="1016.5" font-size="12" text-anchor="start" fill="#1f2328">point_in_100</text>
+<rect x="334.9" y="1005" width="481.1" height="15" fill="#2a78d6" rx="2"><title>point_in_100: PostgreSQL 45.7 ms, pg_sift 0.254 ms (180×)</title></rect>
+<text x="822" y="1016.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">180×</text>
+<text x="34" y="1037.5" font-size="12" text-anchor="start" fill="#1f2328">dict_equality</text>
+<rect x="334.9" y="1026" width="337.2" height="15" fill="#2a78d6" rx="2"><title>dict_equality: PostgreSQL 46.4 ms, pg_sift 1.22 ms (38×)</title></rect>
+<text x="678.1" y="1037.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">38×</text>
+<text x="34" y="1058.5" font-size="12" text-anchor="start" fill="#1f2328">point_agg_fk</text>
+<rect x="334.9" y="1047" width="309.2" height="15" fill="#2a78d6" rx="2"><title>point_agg_fk: PostgreSQL 33.6 ms, pg_sift 1.2 ms (28×)</title></rect>
+<text x="650.1" y="1058.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">28×</text>
+<text x="34" y="1079.5" font-size="12" text-anchor="start" fill="#1f2328">point_in_1000</text>
+<rect x="334.9" y="1068" width="302.6" height="15" fill="#2a78d6" rx="2"><title>point_in_1000: PostgreSQL 45.9 ms, pg_sift 1.75 ms (26×)</title></rect>
+<text x="643.5" y="1079.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">26×</text>
+<text x="34" y="1100.5" font-size="12" text-anchor="start" fill="#1f2328">dict_prefix</text>
+<rect x="334.9" y="1089" width="259.1" height="15" fill="#2a78d6" rx="2"><title>dict_prefix: PostgreSQL 54.8 ms, pg_sift 3.34 ms (16×)</title></rect>
+<text x="600" y="1100.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">16×</text>
+<text x="34" y="1121.5" font-size="12" text-anchor="start" fill="#1f2328">keyset_page</text>
+<rect x="310.3" y="1110" width="24.6" height="15" fill="#eef0f2" rx="2"><title>keyset_page: PostgreSQL 0.135 ms, pg_sift 0.176 ms (0.77×) (same plan)</title></rect>
+<text x="304.3" y="1121.5" font-size="12" text-anchor="end" fill="#1f2328">same plan, 1.3× slower</text>
+<text x="34" y="1142.5" font-size="12" text-anchor="start" fill="#1f2328">point_agg_id</text>
+<rect x="281" y="1131" width="53.9" height="15" fill="#eef0f2" rx="2"><title>point_agg_id: PostgreSQL 0.057 ms, pg_sift 0.102 ms (0.56×) (same plan)</title></rect>
+<text x="275" y="1142.5" font-size="12" text-anchor="end" fill="#1f2328">same plan, 1.8× slower</text>
+<rect x="19" y="1163" width="311.8" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="1177" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Joins, semi joins, key sets and lookups</text>
+<rect x="725.6" y="1165" width="261.4" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="1177" font-size="12" text-anchor="end" fill="#59636e">10 cases, median 11×, from 1.5× to 21×</text>
+<text x="34" y="1205.5" font-size="12" text-anchor="start" fill="#1f2328">keys_subq_500k</text>
+<rect x="334.9" y="1194" width="283.5" height="15" fill="#2a78d6" rx="2"><title>keys_subq_500k: PostgreSQL 338 ms, pg_sift 15.8 ms (21×)</title></rect>
+<text x="624.4" y="1205.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">21×</text>
+<text x="34" y="1226.5" font-size="12" text-anchor="start" fill="#1f2328">keys_exists_500k</text>
+<rect x="334.9" y="1215" width="281.5" height="15" fill="#2a78d6" rx="2"><title>keys_exists_500k: PostgreSQL 348 ms, pg_sift 16.7 ms (21×)</title></rect>
+<text x="622.4" y="1226.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">21×</text>
+<text x="34" y="1247.5" font-size="12" text-anchor="start" fill="#1f2328">keys_join_500k</text>
+<rect x="334.9" y="1236" width="273.6" height="15" fill="#2a78d6" rx="2"><title>keys_join_500k: PostgreSQL 307 ms, pg_sift 16 ms (19×)</title></rect>
+<text x="614.5" y="1247.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">19×</text>
+<text x="34" y="1268.5" font-size="12" text-anchor="start" fill="#1f2328">topn_join_filter</text>
+<rect x="334.9" y="1257" width="225.2" height="15" fill="#2a78d6" rx="2"><title>topn_join_filter: PostgreSQL 24 ms, pg_sift 2.11 ms (11×)</title></rect>
+<text x="566.1" y="1268.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">11×</text>
+<text x="34" y="1289.5" font-size="12" text-anchor="start" fill="#1f2328">semi_exists_self</text>
+<rect x="334.9" y="1278" width="222.5" height="15" fill="#2a78d6" rx="2"><title>semi_exists_self: PostgreSQL 128 ms, pg_sift 11.6 ms (11×)</title></rect>
+<text x="563.4" y="1289.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">11×</text>
+<text x="34" y="1310.5" font-size="12" text-anchor="start" fill="#1f2328">anti_not_in_self</text>
+<rect x="334.9" y="1299" width="118.6" height="15" fill="#2a78d6" rx="2"><title>anti_not_in_self: PostgreSQL 144 ms, pg_sift 40 ms (3.6×)</title></rect>
+<text x="459.5" y="1310.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">3.6×</text>
+<text x="34" y="1331.5" font-size="12" text-anchor="start" fill="#1f2328">keys_in_narrow_500k</text>
+<rect x="334.9" y="1320" width="40.7" height="15" fill="#2a78d6" rx="2"><title>keys_in_narrow_500k: PostgreSQL 274 ms, pg_sift 177 ms (1.6×)</title></rect>
+<text x="381.6" y="1331.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.6×</text>
+<text x="34" y="1352.5" font-size="12" text-anchor="start" fill="#1f2328">keys_in_wide_500k</text>
+<rect x="334.9" y="1341" width="39.5" height="15" fill="#2a78d6" rx="2"><title>keys_in_wide_500k: PostgreSQL 278 ms, pg_sift 182 ms (1.5×)</title></rect>
+<text x="380.4" y="1352.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">1.5×</text>
+<text x="34" y="1373.5" font-size="12" text-anchor="start" fill="#1f2328">keys_in_wide_50k</text>
+<rect x="334.9" y="1362" width="2.2" height="15" fill="#eef0f2" rx="2"><title>keys_in_wide_50k: PostgreSQL 39.9 ms, pg_sift 39 ms (1.0×) (same plan)</title></rect>
+<text x="343.1" y="1373.5" font-size="12" text-anchor="start" fill="#1f2328">same plan</text>
+<text x="34" y="1394.5" font-size="12" text-anchor="start" fill="#1f2328">keys_in_few_256</text>
+<rect x="334.9" y="1383" width="0.5" height="15" fill="#eef0f2" rx="2"><title>keys_in_few_256: PostgreSQL 0.508 ms, pg_sift 0.505 ms (1.0×) (same plan)</title></rect>
+<text x="341.4" y="1394.5" font-size="12" text-anchor="start" fill="#1f2328">same plan</text>
+<rect x="19" y="1415" width="303.9" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="1429" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">JSON arrays, laterals, CTEs and series</text>
+<rect x="725.6" y="1417" width="261.4" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="1429" font-size="12" text-anchor="end" fill="#59636e">9 cases, median 15×, from 0.52× to 37×</text>
+<text x="34" y="1457.5" font-size="12" text-anchor="start" fill="#1f2328">list_elements</text>
+<rect x="334.9" y="1446" width="335.6" height="15" fill="#2a78d6" rx="2"><title>list_elements: PostgreSQL 303 ms, pg_sift 8.1 ms (37×)</title></rect>
+<text x="676.5" y="1457.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">37×</text>
+<text x="34" y="1478.5" font-size="12" text-anchor="start" fill="#1f2328">cte_two_readers</text>
+<rect x="334.9" y="1467" width="298.9" height="15" fill="#2a78d6" rx="2"><title>cte_two_readers: PostgreSQL 239 ms, pg_sift 9.5 ms (25×)</title></rect>
+<text x="639.8" y="1478.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">25×</text>
+<text x="34" y="1499.5" font-size="12" text-anchor="start" fill="#1f2328">lateral_dim_test</text>
+<rect x="334.9" y="1488" width="298.7" height="15" fill="#2a78d6" rx="2"><title>lateral_dim_test: PostgreSQL 247 ms, pg_sift 9.83 ms (25×)</title></rect>
+<text x="639.5" y="1499.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">25×</text>
+<text x="34" y="1520.5" font-size="12" text-anchor="start" fill="#1f2328">spine_array_key</text>
+<rect x="334.9" y="1509" width="260" height="15" fill="#2a78d6" rx="2"><title>spine_array_key: PostgreSQL 1,509 ms, pg_sift 91.2 ms (17×)</title></rect>
+<text x="600.9" y="1520.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">17×</text>
+<text x="34" y="1541.5" font-size="12" text-anchor="start" fill="#1f2328">lateral_first_row</text>
+<rect x="334.9" y="1530" width="245.6" height="15" fill="#2a78d6" rx="2"><title>lateral_first_row: PostgreSQL 258 ms, pg_sift 18.3 ms (14×)</title></rect>
+<text x="586.4" y="1541.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">14×</text>
+<text x="34" y="1562.5" font-size="12" text-anchor="start" fill="#1f2328">dirty_share_few</text>
+<rect x="334.9" y="1551" width="209.1" height="15" fill="#2a78d6" rx="2"><title>dirty_share_few: PostgreSQL 20.7 ms, pg_sift 2.17 ms (10×)</title></rect>
+<text x="550" y="1562.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">10×</text>
+<text x="34" y="1583.5" font-size="12" text-anchor="start" fill="#1f2328">cte_series_arms</text>
+<rect x="334.9" y="1572" width="91.3" height="15" fill="#2a78d6" rx="2"><title>cte_series_arms: PostgreSQL 218 ms, pg_sift 81.3 ms (2.7×)</title></rect>
+<text x="432.2" y="1583.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">2.7×</text>
+<text x="34" y="1604.5" font-size="12" text-anchor="start" fill="#1f2328">dirty_share_half</text>
+<rect x="334.9" y="1593" width="1.4" height="15" fill="#eef0f2" rx="2"><title>dirty_share_half: PostgreSQL 20.4 ms, pg_sift 20.1 ms (1.0×) (same plan)</title></rect>
+<text x="342.3" y="1604.5" font-size="12" text-anchor="start" fill="#1f2328">same plan</text>
+<text x="34" y="1625.5" font-size="12" text-anchor="start" fill="#1f2328">filter_few_rows</text>
+<rect x="273.5" y="1614" width="61.4" height="15" fill="#eb6834" rx="2"><title>filter_few_rows: PostgreSQL 0.933 ms, pg_sift 1.81 ms (0.52×)</title></rect>
+<text x="267.5" y="1625.5" font-size="12" text-anchor="end" fill="#eb6834" font-weight="bold">1.9× slower</text>
+<rect x="19" y="1646" width="170.6" height="19" fill="#ffffff" rx="3"/>
+<text x="22" y="1660" font-size="14" text-anchor="start" fill="#1f2328" font-weight="bold">Partitions and writes</text>
+<rect x="718.9" y="1648" width="268.1" height="17" fill="#ffffff" rx="3"/>
+<text x="984" y="1660" font-size="12" text-anchor="end" fill="#59636e">4 cases, median 7.0×, from 5.5× to 8.5×</text>
+<text x="34" y="1688.5" font-size="12" text-anchor="start" fill="#1f2328">partitions_scan</text>
+<rect x="334.9" y="1677" width="197.9" height="15" fill="#2a78d6" rx="2"><title>partitions_scan: PostgreSQL 146 ms, pg_sift 17.2 ms (8.5×)</title></rect>
+<text x="538.8" y="1688.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">8.5×</text>
+<text x="34" y="1709.5" font-size="12" text-anchor="start" fill="#1f2328">bulk_copy_wal</text>
+<rect x="334.9" y="1698" width="158.3" height="15" fill="#2a78d6" rx="2"><title>bulk_copy_wal: PostgreSQL 84.5 ms, pg_sift 15.3 ms (5.5×)</title></rect>
+<text x="499.2" y="1709.5" font-size="12" text-anchor="start" fill="#1f2328" font-weight="bold">5.5× less WAL</text>
+<text x="34" y="1730.5" font-size="12" text-anchor="start" fill="#1f2328">partitions_many</text>
+<rect x="333.8" y="1719" width="1.1" height="15" fill="#eef0f2" rx="2"><title>partitions_many: PostgreSQL 181 ms, pg_sift 183 ms (0.99×) (same plan)</title></rect>
+<text x="327.8" y="1730.5" font-size="12" text-anchor="end" fill="#1f2328">same plan</text>
+<text x="34" y="1751.5" font-size="12" text-anchor="start" fill="#1f2328">partitions_tiny</text>
+<rect x="331.4" y="1740" width="3.5" height="15" fill="#eef0f2" rx="2"><title>partitions_tiny: PostgreSQL 76.2 ms, pg_sift 79.1 ms (0.96×) (same plan)</title></rect>
+<text x="325.4" y="1751.5" font-size="12" text-anchor="end" fill="#1f2328">same plan</text>
+<text x="20" y="1784" font-size="12" text-anchor="start" fill="#59636e">Data: docs/results/cases.tsv, bench/cases.tsv; measured 2026-10-24 on AMD Ryzen 9 5900XT 16-Core Processor; PostgreSQL 18.6, pg_sift 3.3. The</text>
+<text x="20" y="1801" font-size="12" text-anchor="start" fill="#59636e">milliseconds are in the table of docs/BENCHMARKS.md.</text>
+</svg>

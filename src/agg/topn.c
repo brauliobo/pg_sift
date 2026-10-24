@@ -306,9 +306,11 @@ struct SiftTopN
 	}			probe[TOPN_PROBES];
 	/* the walk (sift_topn_walk_*): the zone and the number of units of every superblock, and the superblocks by their best bound */
 	int			wkeys;				/* leading sort keys whose zones bound the walk */
-	Rank	   *wbound;			/* wkeys per superblock: the best rank its zone allows for that key */
-	uint32	   *wunits;
-	uint32	   *word;
+	const struct WalkBase *wb;	/* the bounds of the superblocks and their order (kept between queries when the source can tell what they depend on) */
+	uint32	   *whead;			/* the superblocks that hold rows of a write buffer, which the walk visits first: their zones are not exact */
+	int			nhead;
+	int			hpos;
+	uint32	   *wfull;			/* the whole order, for a parallel scan, when there is a head */
 	uint32		wpos;
 	Snapshot	snap;
 	SiftSrcSource *src;
@@ -2365,8 +2367,8 @@ sift_topn_skip(SiftTopN *t)
 
 /*
  * The walk: for a first sort column that does not follow the table (the probes disagree) the superblocks are visited by the best value of
- * their zone, not in table order. Every superblock's zone is read first (sift_topn_walk_add, headers only), the superblocks are sorted by the
- * best row they can hold (sift_topn_walk_sort), and sift_topn_walk_next hands them out until the zone of the next cannot beat the n-th best:
+ * their zone, not in table order. Every superblock's zone is read first (sift_topn_walk_setup, headers only), the superblocks are sorted by the
+ * best row they can hold, and sift_topn_walk_next hands them out until the zone of the next cannot beat the n-th best:
  * the zones after it are no better, so the walk ends there. The result does not depend on the order: a superblock is left out only when no
  * row in it can sort before the n-th (a bound equal to it is kept: ties go on to the other keys and the TID).
  */
@@ -2374,20 +2376,6 @@ bool
 sift_topn_follows(const SiftTopN *t)
 {
 	return t->follows;
-}
-
-void
-sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
-{
-	MemoryContext cxt = GetMemoryChunkContext(t);
-
-	t->nsb = nsb;
-	t->wbound = MemoryContextAllocZero(cxt, (Size) nsb * t->wkeys * sizeof(Rank));
-	t->wunits = MemoryContextAllocZero(cxt, nsb * sizeof(uint32));
-	t->word = MemoryContextAlloc(cxt, nsb * sizeof(uint32));
-	for (uint32 i = 0; i < nsb; i++)
-		t->word[i] = i;
-	t->wpos = 0;
 }
 
 int
@@ -2410,15 +2398,6 @@ zone_best(const TopKey *k, const SiftSrcZone *zone)
 	return rank_of(k, false, k->desc ? z->max : z->min);
 }
 
-/* z: the zones of the first sift_topn_walk_keys keys of superblock sb */
-void
-sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z)
-{
-	for (int j = 0; j < t->wkeys; j++)
-		t->wbound[(Size) sb * t->wkeys + j] = zone_best(&t->key[j], &z[j]);
-	t->wunits[sb] = units;
-}
-
 static int
 rank_cmp(Rank a, Rank b)
 {
@@ -2426,16 +2405,22 @@ rank_cmp(Rank a, Rank b)
 }
 
 /* The superblocks by the best row they can hold, key by key: a unit whose bound on the keys so far ties with another is ordered by the next key */
+typedef struct WalkSort
+{
+	const Rank *bound;
+	int			wkeys;
+} WalkSort;
+
 static int
 walk_cmp(const void *pa, const void *pb, void *arg)
 {
-	const SiftTopN *t = arg;
+	const WalkSort *w = arg;
 	uint32		a = *(const uint32 *) pa,
 				b = *(const uint32 *) pb;
 
-	for (int j = 0; j < t->wkeys; j++)
+	for (int j = 0; j < w->wkeys; j++)
 	{
-		int			c = rank_cmp(t->wbound[(Size) a * t->wkeys + j], t->wbound[(Size) b * t->wkeys + j]);
+		int			c = rank_cmp(w->bound[(Size) a * w->wkeys + j], w->bound[(Size) b * w->wkeys + j]);
 
 		if (c != 0)
 			return c;
@@ -2466,12 +2451,6 @@ bounds_viable(const SiftTopN *t, const Rank *bound)
 	return true;
 }
 
-static bool
-walk_viable(const SiftTopN *t, uint32 sb)
-{
-	return bounds_viable(t, &t->wbound[(Size) sb * t->wkeys]);
-}
-
 /*
  * The walk of a parallel scan, where a participant has no table of the bounds (the leader's order is all it gets): the superblock it takes
  * next, by the zones z of its leading keys. The first key is tested against the bound of every participant, all of them against the n-th row
@@ -2489,26 +2468,258 @@ sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
 	return bounds_viable(t, bound);
 }
 
-void
-sift_topn_walk_sort(SiftTopN *t)
+/*
+ * The order of the walk, kept by the backend: the bounds of all the superblocks and the order of their best rows depend on the zones of the stored units alone,
+ * and a query that sorts by the same keys of the same units (the same file and version of the directory) walks the same order. Reading every zone and sorting
+ * the superblocks cost O(units) for each such query; the kept order costs the superblocks it visits. The superblocks that hold rows of a write buffer are
+ * not in the zones (the buffers change with no new version): each query lists them (sift_colsrc_walk_stamp) and visits them first, as their bound, which is
+ * none, puts them.
+ */
+#define WALK_CACHED		4			/* orders kept */
+#define WALK_MEM_SBS	64			/* superblocks with write buffer rows beyond which an order is not kept */
+#define WALK_KEEP_BYTES	((Size) 16 << 20)
+
+typedef struct WalkKey
 {
-	qsort_arg(t->word, t->nsb, sizeof(uint32), walk_cmp, t);
+	SiftSrcWalkStamp st;
+	uint32		nsb;
+	int			wkeys;
+	struct
+	{
+		int			leaf;
+		int			vtype;
+		int			xk;
+		int64		xc;
+		bool		desc;
+		bool		nulls_first;
+	}			k[SIFT_TOPN_MAX_KEYS];
+} WalkKey;
+
+typedef struct WalkBase
+{
+	WalkKey		key;
+	uint32		nsb;
+	Rank	   *bound;			/* wkeys per superblock */
+	uint32	   *units;			/* the units of the stored segments in the superblock */
+	uint32	   *ord;			/* the superblocks by their best bound */
+	uint32	   *pos;			/* the place of each superblock in ord */
+	uint32	   *tail;			/* nsb + 1: the units of ord[i ..] */
+	MemoryContext cx;
+	uint64		used;
+} WalkBase;
+
+static MemoryContext walk_cx;
+static WalkBase *walk_kept[WALK_CACHED];
+static uint64 walk_clock;
+
+static bool
+walk_viable(const SiftTopN *t, uint32 sb)
+{
+	return bounds_viable(t, &t->wb->bound[(Size) sb * t->wkeys]);
+}
+
+static WalkBase *
+walk_find(const WalkKey *key)
+{
+	for (int i = 0; i < WALK_CACHED; i++)
+		if (walk_kept[i] != NULL && memcmp(&walk_kept[i]->key, key, sizeof(WalkKey)) == 0)
+		{
+			walk_kept[i]->used = ++walk_clock;
+			return walk_kept[i];
+		}
+	return NULL;
+}
+
+/* Keeps wb, in a context of its own; the kept orders of the same file of an older version, and the least used when all places are taken, go */
+static void
+walk_keep(WalkBase *wb)
+{
+	int			slot = -1;
+
+	for (int i = 0; i < WALK_CACHED; i++)
+	{
+		WalkBase   *o = walk_kept[i];
+
+		if (o != NULL && o->key.st.index == wb->key.st.index && o->key.st.file == wb->key.st.file && o->key.st.version != wb->key.st.version)
+		{
+			MemoryContextDelete(o->cx);
+			walk_kept[i] = NULL;
+		}
+		if (walk_kept[i] == NULL)
+			slot = i;
+	}
+	if (slot < 0)
+	{
+		slot = 0;
+		for (int i = 1; i < WALK_CACHED; i++)
+			if (walk_kept[i]->used < walk_kept[slot]->used)
+				slot = i;
+		MemoryContextDelete(walk_kept[slot]->cx);
+	}
+	wb->used = ++walk_clock;
+	walk_kept[slot] = wb;
+}
+
+static WalkBase *
+walk_build(SiftTopN *t, MemoryContext cxt, const WalkKey *key, bool segs)
+{
+	uint32		nsb = t->nsb;
+	int			wkeys = t->wkeys;
+	MemoryContext cx = key != NULL ? AllocSetContextCreate(cxt, "sift cache topn walk", ALLOCSET_DEFAULT_SIZES) : AllocSetContextCreate(cxt, "sift topn walk", ALLOCSET_DEFAULT_SIZES);
+	WalkBase   *wb = MemoryContextAllocZero(cx, sizeof(WalkBase));
+	WalkSort	ws;
+
+	wb->cx = cx;
+	wb->nsb = nsb;
+	if (key != NULL)
+		wb->key = *key;
+	wb->bound = MemoryContextAllocZero(cx, (Size) nsb * wkeys * sizeof(Rank));
+	wb->units = MemoryContextAllocZero(cx, nsb * sizeof(uint32));
+	wb->ord = MemoryContextAlloc(cx, nsb * sizeof(uint32));
+	wb->pos = MemoryContextAlloc(cx, nsb * sizeof(uint32));
+	wb->tail = MemoryContextAllocZero(cx, ((Size) nsb + 1) * sizeof(uint32));
+	for (uint32 sb = 0; sb < nsb; sb++)
+	{
+		for (int j = 0; j < wkeys; j++)
+		{
+			SiftSrcZone z;
+			int			leaf = t->key[j].leaf;
+
+			wb->units[sb] = segs ? sift_colsrc_zone_range_segs(t->src, sb, sb + 1, leaf, &z) : sift_colsrc_zone_range(t->src, sb, sb + 1, leaf, &z);
+			wb->bound[(Size) sb * wkeys + j] = zone_best(&t->key[j], &z);
+		}
+		wb->ord[sb] = sb;
+	}
+	ws = (WalkSort) {wb->bound, wkeys};
+	qsort_arg(wb->ord, nsb, sizeof(uint32), walk_cmp, &ws);
+	for (uint32 i = nsb; i > 0; i--)
+	{
+		wb->pos[wb->ord[i - 1]] = i - 1;
+		wb->tail[i - 1] = wb->tail[i] + wb->units[wb->ord[i - 1]];
+	}
+	return wb;
+}
+
+/* The walk of a first sort column that does not follow the table (t->nsb superblocks): its bounds and order, from the backend's kept ones when the source allows */
+void
+sift_topn_walk_setup(SiftTopN *t)
+{
+	WalkKey		key;
+	SiftSrcWalkStamp st;
+	uint32		mem[WALK_MEM_SBS];
+	int			nmem = 0;
+	bool		keep = sift_colsrc_walk_stamp(t->src, &st, mem, WALK_MEM_SBS, &nmem);
+	WalkBase   *wb = NULL;
+
+	t->wpos = 0;
+	t->hpos = t->nhead = 0;
+	if (keep)
+	{
+		memset(&key, 0, sizeof(key));
+		key.st = st;
+		key.nsb = t->nsb;
+		key.wkeys = t->wkeys;
+		for (int j = 0; j < t->wkeys; j++)
+		{
+			key.k[j].leaf = t->key[j].leaf;
+			key.k[j].vtype = t->key[j].vtype;
+			key.k[j].xk = t->key[j].xk;
+			key.k[j].xc = t->key[j].xc;
+			key.k[j].desc = t->key[j].desc;
+			key.k[j].nulls_first = t->key[j].nulls_first;
+		}
+		wb = walk_find(&key);
+		if (wb == NULL)
+		{
+			/* kept as long as the backend: "sift cache" contexts are not leaks to scripts/leakcheck.sh */
+			if (walk_cx == NULL)
+				walk_cx = AllocSetContextCreate(TopMemoryContext, "sift cache topn walks", ALLOCSET_DEFAULT_SIZES);
+			if ((Size) t->nsb * (t->wkeys * sizeof(Rank) + 4 * sizeof(uint32)) <= WALK_KEEP_BYTES)
+			{
+				wb = walk_build(t, walk_cx, &key, true);
+				walk_keep(wb);
+			}
+			else
+				keep = false;
+		}
+	}
+	if (!keep)
+	{
+		/* the zones with the write buffers in them: no superblock is left out of the order */
+		wb = walk_build(t, GetMemoryChunkContext(t), NULL, false);
+		nmem = 0;
+	}
+	t->wb = wb;
+	if (nmem > 0)
+	{
+		t->whead = MemoryContextAlloc(GetMemoryChunkContext(t), nmem * sizeof(uint32));
+		memcpy(t->whead, mem, nmem * sizeof(uint32));
+		t->nhead = nmem;
+	}
+}
+
+static bool
+walk_in_head(const SiftTopN *t, uint32 sb)
+{
+	int			lo = 0,
+				hi = t->nhead;
+
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (t->whead[mid] == sb)
+			return true;
+		if (t->whead[mid] < sb)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return false;
+}
+
+/* The units of the superblocks the walk has not reached: those the head has visited are not among them */
+static int64
+walk_rest(const SiftTopN *t)
+{
+	const WalkBase *wb = t->wb;
+	int64		n = wb->tail[t->wpos];
+
+	for (int i = 0; i < t->nhead; i++)
+		if (t->whead[i] < wb->nsb && wb->pos[t->whead[i]] >= t->wpos)
+			n -= wb->units[t->whead[i]];
+	return n;
 }
 
 bool
 sift_topn_walk_next(SiftTopN *t, uint32 *sb)
 {
-	if (t->wpos >= t->nsb)
-		return false;
-	*sb = t->word[t->wpos];
-	if (!walk_viable(t, *sb))
+	const WalkBase *wb = t->wb;
+
+	if (t->hpos < t->nhead)
 	{
-		for (; t->wpos < t->nsb; t->wpos++)
-			t->skipped += t->wunits[t->word[t->wpos]];
-		return false;
+		*sb = t->whead[t->hpos++];
+		return true;
 	}
-	t->wpos++;
-	return true;
+	for (;;)
+	{
+		if (t->wpos >= wb->nsb)
+			return false;
+		*sb = wb->ord[t->wpos];
+		if (t->nhead > 0 && walk_in_head(t, *sb))
+		{
+			t->wpos++;
+			continue;
+		}
+		if (!walk_viable(t, *sb))
+		{
+			t->skipped += walk_rest(t);
+			t->wpos = wb->nsb;
+			return false;
+		}
+		t->wpos++;
+		return true;
+	}
 }
 
 void
@@ -2623,9 +2834,21 @@ sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse)
 }
 
 const uint32 *
-sift_topn_walk_order(const SiftTopN *t)
+sift_topn_walk_order(SiftTopN *t)
 {
-	return t->word;
+	const WalkBase *wb = t->wb;
+	uint32		n = 0;
+
+	if (t->nhead == 0)
+		return wb->ord;
+	t->wfull = MemoryContextAlloc(GetMemoryChunkContext(t), wb->nsb * sizeof(uint32));
+	for (int i = 0; i < t->nhead; i++)
+		if (t->whead[i] < wb->nsb)
+			t->wfull[n++] = t->whead[i];
+	for (uint32 i = 0; i < wb->nsb; i++)
+		if (!walk_in_head(t, wb->ord[i]))
+			t->wfull[n++] = wb->ord[i];
+	return t->wfull;
 }
 
 void

@@ -371,6 +371,36 @@ def render_leftlateral(p):
     return f"SELECT count(s.id) AS ids, avg(s.amount) AS amount, avg(s.sc) AS sc FROM ({inner}) s", False
 
 
+def gen_lateralagg(r, ctx):
+    p = dict(func=r.choice(['jsonb_to_recordset', 'jsonb_array_elements']), cond=r.choice(['', '', 'o.score IS NOT NULL', 'o.score > %d' % r.randrange(9), "o.sign = 'p'"]),
+             aggs=r.sample(['avg(o.score)', 'sum(o.score)', 'min(o.score)', 'max(o.score)', 'count(o.score)', 'max(o.score * 2)', 'count(o.cat)', 'min(o.cat)'], r.randrange(1, 4)),
+             where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), keys=keys(r, 'e', EVENTS, r.randrange(0, 2)), outer=r.choice(['avg', 'sum', 'max', 'count']), ordered=True)
+    return p
+
+
+def render_lateralagg(p):
+    if p['func'] == 'jsonb_to_recordset':
+        lat = "jsonb_to_recordset(e.doc -> 'parts') AS o(cat text, sign text, score float8)"
+        sub = lambda t: t
+    else:
+        lat = "jsonb_array_elements(e.doc -> 'parts') AS o"
+        sub = lambda t: re.sub(r'o\.score', "(o ->> 'score')::float8", t).replace('o.sign', "(o ->> 'sign')").replace('o.cat', "(o ->> 'cat')")
+    cols = ', '.join(f"{sub(a)} AS a{i}" for i, a in enumerate(p['aggs']))
+    wh = (' WHERE ' + sub(p['cond'])) if p['cond'] else ''
+    inner = f"SELECT e.id, e.grp, e.kind, {', '.join(f't.a{i}' for i in range(len(p['aggs'])))} FROM events e LEFT JOIN LATERAL (SELECT {cols} FROM {lat}{wh}) t ON true"
+    if p['where']:
+        inner += ' WHERE ' + ' AND '.join(p['where'])
+    outer = ', '.join(f"{p['outer']}(s.a{i}) AS v{i}" for i in range(len(p['aggs'])) if not (p['outer'] in ('avg', 'sum') and 'cat' in p['aggs'][i]))
+    k = p['keys'] and [re.sub(r'\be\.', 's.', x) for x in p['keys'] if re.match(r'e\.(id|grp|kind)\b', x)]
+    if not outer:
+        outer = 'count(s.id) AS n'
+    else:
+        outer += ', count(s.id) AS n'
+    if k:
+        return f"SELECT {', '.join(k)}, {outer} FROM ({inner}) s GROUP BY {', '.join(k)} ORDER BY {', '.join(k)}", True
+    return f"SELECT {outer} FROM ({inner}) s", False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -448,7 +478,9 @@ def gen_twolevel(r, ctx):
                 # a group key that holds a sub-select: each arm plans one of its own
                 dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]),
                 # the total arm counts the rows the lookup has none for: its join is an outer one next to the inner joins of the arms with the NOT NULL test
-                unmatched=r.random() < 0.4)
+                unmatched=r.random() < 0.4,
+                # the lookup behind a lateral sub-select of its own, over the parts with a score: its WHERE sits at the inner join of the arms with the NOT NULL test
+                wrapped=r.random() < 0.4)
 
 
 def render_twolevel(p):
@@ -459,6 +491,13 @@ def render_twolevel(p):
               f"ON e.ts <@ p.range {p['parent']}{w}), ")
 
     def arm(cat):
+        if p['lookup'] and p['wrapped']:
+            c = 'mo.category' if cat else 'NULL::text'
+            g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (', s.dim' if dim else '') + (f', {c}' if cat else '')
+            return (f"SELECT s.id, s.parent_id, s.kind, s.span, {'s.dim, ' if dim else ''}{c} AS category, avg(mo.score) AS score, count(s.id) AS n FROM scoped s "
+                    f"INNER JOIN LATERAL (SELECT rm.mapped_cat AS category, o.score FROM LATERAL (SELECT cat, sign, score FROM jsonb_to_recordset(s.doc -> 'parts') q(cat text, sign text, score float8) "
+                    f"WHERE q.score IS NOT NULL) o LEFT JOIN LATERAL (SELECT mapped_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true) mo ON true "
+                    + ("" if p['unmatched'] and not cat else "WHERE mo.category IS NOT NULL ") + g)
         if p['lookup']:
             lk = (f"LEFT JOIN LATERAL (SELECT mapped_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true "
                   + ("" if p['unmatched'] and not cat else "WHERE rm.mapped_cat IS NOT NULL"))
@@ -578,14 +617,16 @@ def render_same(p):
 
 
 def gen_point(r, ctx):
-    """Rows of ev_part by an equality or a short IN list on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
+    """Rows of ev_part by an equality or an IN list (short, or of 65 to 400 keys) on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
     access method must give the rows of the normal plan, across the DML of the run (dead rows, addresses a VACUUM frees, the write buffer)."""
     n = ctx['rows'] // 2
     col = r.choice(['id', 'id', 'parent_id', 'kind'])
     val = (lambda: f"'k{r.randrange(5)}'") if col == 'kind' else (lambda: str(r.randrange(1, n if col == 'id' else n // 4)))
-    form = r.randrange(5)
+    form = r.randrange(6)
     if form == 0:
         cond = f'e.{col} = {val()}'
+    elif form == 5:  # a list past 64 keys, which the directory answers up to a share of the rows (misses and repeats among the keys)
+        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(65, 400)))})'
     elif form == 1:
         cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(2, 9)))})'
     elif form == 2:
@@ -601,11 +642,108 @@ def render_point(p):
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
+# ---------- key_cut (docs/COL.md 2.16): units cut by a key, the rows of the normal plan after every kind of churn and every kind of merge ----------
+KCUT_LITERALS = {
+    'ki': lambda r: str(r.randrange(-6, 36)),
+    'kd': lambda r: r.choice(["'infinity'::date", "'-infinity'::date", f"date '2025-{r.randrange(1, 8):02d}-{r.randrange(1, 29):02d}'", "date '2025-01-01'", "date '2025-07-19'"]),
+    'kt': lambda r: r.choice(["'infinity'::timestamp", "'-infinity'::timestamp", f"timestamp '2025-{r.randrange(1, 6):02d}-{r.randrange(1, 29):02d} {r.randrange(24):02d}:00:00'",
+                              "timestamp '2025-01-01 00:00:00.25'"]),
+    'kn': lambda r: r.choice(["'NaN'::numeric", str(r.randrange(0, 250)), f'{r.randrange(0, 250)}.{r.randrange(0, 125) * 8:03d}', '1000000']),
+    'kf': lambda r: r.choice(["'NaN'::float8", "'Infinity'::float8", "'-Infinity'::float8", "'-0'::float8", "0::float8", f'{r.randrange(-50, 50)}.{r.randrange(0, 100):02d}']),
+}
+KCUT_KEYS = ['ki', 'kd', 'kt', 'kn', 'kf']
+
+
+def kcut_pred(r, e):
+    c = r.choice(KCUT_KEYS + KCUT_KEYS + ['amount', 'kind'])
+    if c == 'amount':
+        return f'{e}.amount {r.choice([">", "<", ">=", "<="])} {r.randrange(1000)}'
+    if c == 'kind':
+        return f"{e}.kind = 'k{r.randrange(6)}'"
+    lit = KCUT_LITERALS[c]
+    form = r.randrange(7)
+    if form == 0:
+        return f'{e}.{c} = {lit(r)}'
+    if form == 1:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)}'
+    if form == 2:
+        return f'{e}.{c} BETWEEN {lit(r)} AND {lit(r)}'
+    if form == 3:
+        return f'{e}.{c} IN ({", ".join(lit(r) for _ in range(r.randrange(1, 5)))})'
+    if form == 4:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'({e}.{c} = {lit(r)} OR {e}.{c} > {lit(r)})'
+    return f'{e}.{c} <> {lit(r)}'
+
+
+KCUT_KEY_EXPRS = ['{e}.kind', '{e}.ki', '{e}.ki % 5', '{e}.kd', "date_trunc('month', {e}.kd)::date", '{e}.kt', '({e}.kn IS NULL)', "({e}.kf = 'NaN')"]
+KCUT_AGGS = ['count(*)', 'count({e}.ki)', 'sum({e}.amount)', 'avg({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'sum({e}.val)', 'min({e}.ki)', 'max({e}.ki)', 'min({e}.kd)', 'max({e}.kd)',
+             'min({e}.kt)', 'max({e}.kt)', 'min({e}.kn)', 'max({e}.kn)', 'min({e}.kf)', 'max({e}.kf)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.ki)', 'count(DISTINCT {e}.kd)',
+             'count(*) FILTER (WHERE {e}.ki > 10)']
+
+
+def gen_keycut(r, ctx):
+    t = r.choice(['kcut_a', 'kcut_b', 'kcut_c'])
+    form = r.choice(['agg', 'agg', 'agg', 'topn', 'rows'])
+    where_ = [kcut_pred(r, 'e') for _ in range(r.randrange(0, 4))]
+    if len(where_) > 1 and r.random() < 0.25:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    if form == 'agg':
+        ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(KCUT_KEY_EXPRS, r.choice([0, 0, 1, 1, 2]))))
+        ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 6))))
+        return dict(table=t, form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    order = ', '.join(f'e.{k} {r.choice(["", "DESC"])} {r.choice(["", "NULLS FIRST", "NULLS LAST"])}'.strip() for k in r.sample(KCUT_KEYS, r.choice([1, 2, 3])))
+    return dict(table=t, form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order=order, limit=r.choice([1, 5, 20, 100, 400]), offset=r.choice([0, 0, 7]))
+
+
+def render_keycut(p):
+    if p['form'] == 'agg':
+        return grouped(p, f"{p['table']} e"), True
+    cols = 'e.id, e.ki, e.kd, e.kt, e.kn, e.kf, e.amount'
+    tail = f"ORDER BY {p['order']}, e.id LIMIT {p['limit']} OFFSET {p['offset']}" if p['form'] == 'topn' else 'ORDER BY e.id'
+    return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
+
+
+# ---------- IS [NOT] NULL as a test of the NULL count of a unit's zone: units cut by it, answered from pre-aggregates, across soft deletes and restores ----------
+NZ_NULLABLE = ['deleted_at', 'seen_at', 'tag', 'score', 'kind', 'amount', 'val']
+
+
+def nz_pred(r, e):
+    c = r.choice(NZ_NULLABLE)
+    form = r.randrange(9)
+    if form < 5:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'{e}.org {r.choice(["=", "<", ">"])} {r.randrange(12)}'
+    if form == 6:
+        return f'{e}.amount {r.choice(["<", ">="])} {r.randrange(1000)}'
+    if form == 7:
+        return f'{e}.id {r.choice(["<", ">"])} {r.randrange(1, 4 * 256)}'
+    return f'({e}.{c} IS NULL OR {e}.org = {r.randrange(12)})'
+
+
+NZ_KEYS = ['{e}.org', '{e}.kind', '{e}.org % 3', '({e}.deleted_at IS NULL)', '{e}.seen_at', '{e}.tag']
+NZ_AGGS = ['count(*)', 'count({e}.deleted_at)', 'count({e}.seen_at)', 'count({e}.tag)', 'count({e}.score)', 'sum({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'avg({e}.val)',
+           'sum({e}.val)', 'min({e}.id)', 'max({e}.id)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.org)', 'sum({e}.score)', 'max({e}.seen_at)',
+           'count(*) FILTER (WHERE {e}.deleted_at IS NULL)', 'sum({e}.amount) FILTER (WHERE {e}.tag IS NOT NULL)']
+
+
+def gen_nullzone(r, ctx):
+    where_ = [nz_pred(r, 'e') for _ in range(r.choice([1, 1, 2, 3]))]
+    if len(where_) > 1 and r.random() < 0.2:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(NZ_KEYS, r.choice([0, 0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(NZ_AGGS, r.randrange(1, 5))))
+    return dict(table='nzf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'point': (gen_point, render_point, 3),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
+    'keycut': (gen_keycut, render_keycut, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -680,6 +818,78 @@ def dml(r, ctx):
     return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'])
 
 
+KCUT_COLS = {'ki': ['ki + 1', 'NULL', '39 - ki', '7'], 'kd': ["kd + {d}", "'infinity'", "'-infinity'", 'NULL', "date '2025-03-01'"],
+             'kt': ["kt + interval '{d} days'", "'infinity'", 'NULL', "timestamp '2025-02-02 02:02:02'"], 'kn': ['kn * 2', "'NaN'", 'NULL', '1.5'],
+             'kf': ['kf + 1', "'-0'", "'NaN'", 'NULL', "'Infinity'"]}
+KCUT_KEY_OF = {'a': 'ki, kd', 'b': 'kt, kn', 'c': 'kf, ki'}
+
+
+def dml_kcut(r, ctx):
+    """Statements on the key-cut tables: churn of the keys (rows move between units), deletes, inserts, VACUUM, and every way the units are written again: a promotion of the write
+    buffer, a merge, a refresh, a REINDEX, and a merge of units written before the key was declared (a key that is not in the order of the segments it merges)."""
+    x = r.choice('abc')
+    t, idx = f'kcut_{x}', f'kcut_{x}_idx'
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(16)
+    if e < 4:
+        c = r.choice(KCUT_KEYS)
+        return [f'UPDATE {t} SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 4:
+        return [f'UPDATE {t} SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}']
+    if e in (5, 6):
+        return [f'DELETE FROM {t} WHERE {ids}']
+    if e in (7, 8, 9):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 10:
+        return [f'VACUUM {t}']
+    if e == 11:
+        return [f"SELECT sift.col_promote('{idx}')"]
+    if e == 12:
+        return [r.choice([f"SELECT sift.col_merge('{idx}', true)", f"SELECT sift.col_merge('{idx}', true)", f"SELECT count(*) FROM sift.col_refresh('{idx}')", f'REINDEX INDEX {idx}'])]
+    if e == 13:
+        # segments written without the key, merged into units cut by it
+        lo = ctx['next_kc']; ctx['next_kc'] += 60
+        return [f'ALTER INDEX {idx} RESET (key_cut)', f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + 59}, {r.randrange(1, 9)})', f"SELECT sift.col_promote('{idx}')",
+                f"ALTER INDEX {idx} SET (key_cut = '{KCUT_KEY_OF[x]}')", f"SELECT sift.col_merge('{idx}', true)"]
+    if e == 14:
+        # another key: the segments cut by the old one stop a merge (the REINDEX hint of the error), so the index is built again
+        return [f"ALTER INDEX {idx} SET (key_cut = '{r.choice(['ki', 'kd', 'kt', 'kn', 'kf', 'ki, kd', 'kd, kt', 'kn, kf', KCUT_KEY_OF[x]])}')", f'REINDEX INDEX {idx}']
+    return [f'ANALYZE {t}']
+
+
+def dml_nullzone(r, ctx):
+    """Soft deletes and restores, NULLing and filling of the columns the family tests, inserts, deletes and VACUUM on nzf: units whose NULL count changes under the zones."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    if e < 3:
+        return f'UPDATE nzf SET deleted_at = now() WHERE {ids}'
+    if e == 3:
+        return f'UPDATE nzf SET deleted_at = NULL WHERE {ids}'
+    if e == 4:
+        return f'UPDATE nzf SET deleted_at = timestamptz \'2025-08-01\' WHERE id BETWEEN {r.randrange(1, 800)} AND {r.randrange(800, 2400)}'
+    if e == 5:
+        return f"UPDATE nzf SET seen_at = {r.choice(['NULL', 'date ' + chr(39) + '2025-05-05' + chr(39)])} WHERE {ids}"
+    if e == 6:
+        return f"UPDATE nzf SET tag = {r.choice(['NULL', chr(39) + 'zz' + chr(39)])} WHERE {ids}"
+    if e == 7:
+        return f"UPDATE nzf SET score = {r.choice(['NULL', chr(39) + 'NaN' + chr(39), '1.5'])} WHERE {ids}"
+    if e == 8:
+        return f'UPDATE nzf SET kind = NULL, amount = amount + 1 WHERE {ids}'
+    if e == 9:
+        return f'DELETE FROM nzf WHERE {ids}'
+    if e in (10, 11):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_nz']; ctx['next_nz'] += n
+        return f'INSERT INTO nzf SELECT * FROM fz.gen_nzf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 12:
+        return r.choice(['VACUUM nzf', 'VACUUM (FREEZE) nzf'])
+    return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
+
+
 # ---------- a run ----------
 def sqlq(s):
     assert '$fzq$' not in s
@@ -713,9 +923,15 @@ def gen_query(seed, i, ctx, only):
 def episodes(seed, nq, ctx, only, dmls=4):
     """[(dml statements, [query entries])]: 4-10 queries after 0-4 statements."""
     r = random.Random(seed * 7919 + 1)
+    rk = random.Random(seed * 104729 + 3)
+    rn = random.Random(seed * 1299709 + 5)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
+        if not only or 'nullzone' in only:
+            st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
+        if not only or 'keycut' in only:
+            st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)
@@ -893,7 +1109,7 @@ def main():
         tag = f'{seed}'
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000}
+        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

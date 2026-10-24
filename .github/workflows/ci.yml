@@ -134,7 +134,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && 150 || 90 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && 350 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -144,6 +144,8 @@ jobs:
         with:
           # The compatibility tests build released libraries from their tags.
           fetch-depth: 0
+
+      - uses: ./.github/actions/apt-limits
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git }}
@@ -206,7 +208,7 @@ jobs:
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
 
       - name: Keep the logs of a failed run
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
           name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
@@ -244,6 +246,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/apt-limits
 
       - name: Install build dependencies
         run: |

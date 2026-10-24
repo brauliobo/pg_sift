@@ -103,6 +103,7 @@
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
 #define AGG_START_MS		2750.0	/* a millisecond in this path's estimates: AGG_SETUP_FACTOR times the default parallel_setup_cost is 8 ms */
+#define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the plan gate's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
@@ -113,7 +114,7 @@
 #define AGG_VET_OS_PAGE		1000.0	/* ... from the cache of the operating system: the read call and the copy of the page (3.5 us measured, a heap of 185 MB under 16 MB of buffers) */
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
-#define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
+#define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
 #define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
@@ -1087,6 +1088,21 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
+/*
+ * The rows of an unnest PostgreSQL expects of the aggregate fall to a default when a join is on a range or the rows come from a function (a row,
+ * or the 100 rows of a jsonb_each), though the table's own filters keep far more: the normal plan is priced for a few rows where the data has
+ * thousands, and the scan, which reads the table's rows whatever the join keeps, loses a comparison it wins. The paths of the grouping stage that
+ * are not the scan are charged the square root of the excess, as the normal plan of an unnest is on the other side of the same estimate (agg_cost).
+ * Rows without an unnest keep PostgreSQL's estimate: the statistics of the joined tables are the ones it counts them by.
+ */
+double
+input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	if (s->group < 0 || rel_has_param_qual(c->rel))
+		return 1.0;
+	return Max(sqrt(Max(c->rel->rows, 1.0) * elems_of(c, s->group) / Max(input_rel->rows, 1.0)), 1.0);
+}
+
 /* does a btree index of the joined table start with columns that the table's `column = value` conditions give (map_load picks the same) */
 static bool
 join_index_usable(RelOptInfo *rel, const SiftAggJoin *j)
@@ -1340,14 +1356,15 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		native = combo_entries(c, s, cb, k->agg_rows, false) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		run = AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
 
 			/*
 			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
 			 * inputs are counted by what the index holds of the elements and of the tuples the scan reads, as the rows PostgreSQL expects of the join
 			 * (a few for a filter it knows nothing of) are not what the child runs for
 			 */
-			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
@@ -1636,6 +1653,12 @@ agg_open_cost(int nparts)
 	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
 }
 
+/*
+ * the most rows of elements a scan of the plan being made reads: what a plan that keeps the shared CTE has to produce (cte.c). A filter without
+ * statistics keeps a default guess of the table's rows: the rows are the geometric mean of the guess and the table's, as filter_rows_ratio has them.
+ */
+double		agg_read_rows;
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -1655,6 +1678,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
 	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
+	agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
 	k.rows_out = rows_out;
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
@@ -1715,4 +1739,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		p->total_cost += c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
+	/*
+	 * The rows of a fused scan add the groups of every arm, though no arm has more groups than rows it reads: the node reports at most the rows
+	 * its arms aggregate. The plan above is priced for them (agg/cte.c weighs the inline plan of a shared CTE against the shared one), and the
+	 * sum of the arms' groups made the inline plan look 6 times dearer than it is.
+	 */
+	if (s->narms > 0 && !s->topn)
+		p->rows = Min(p->rows, Max(s->est_rows, 1.0));
 }

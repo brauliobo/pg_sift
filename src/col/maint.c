@@ -132,8 +132,15 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, format, cx);
 		sift_colw_set_preagg(w, &sift_col_rel(index)->pagg);
-		for (int i = 0; i < nb; i++)
-			sift_colw_add(w, batches[i]);
+		if (sift_col_key_cut(sift_col_rel(index)))
+		{
+			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
+			sift_colk_write(w, batches, nb, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index), cx);
+		}
+		else
+			for (int i = 0; i < nb; i++)
+				sift_colw_add(w, batches[i]);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu);
 		sift_wt_finish(wt);
@@ -438,6 +445,33 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
 	if (!exact)
 		format = Min(format, SIFT_COL_FORMAT_TAGS);
+	if (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
+	{
+		/*
+		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
+		 * overlays of promotions and of the churn since the last merge fold back into the range they belong to. One segment, written through the
+		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/order.c), not held.
+		 */
+		uint64		rows = 0;
+
+		for (int i = 0; i < n; i++)
+			rows += sift_cseg_live_rows(seg[i]);
+		if (rows > 0)
+		{
+			pcx = AllocSetContextCreate(cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
+			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
+			sift_wt_expect(wt, mi.bytes);
+			throttle(wt);
+			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, format, pcx);
+			if (pagg)
+				sift_colw_set_preagg(w, pagg);
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
+			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index),
+							maintenance_work_mem, pcx);
+		}
+		for (int i = 0; i < n; i++)
+			cur[i] = seg[i]->nsb;
+	}
 	for (;;)
 	{
 		uint32		sb = PG_UINT32_MAX;

@@ -31,7 +31,7 @@ fi
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
 # the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs)
-GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
+GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*' ':!scripts/bench-cases.allow')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 die() { echo "release: $*" >&2; exit 1; }
 soft() { if [[ -n $DRY ]]; then log "dry run, would stop: $*"; else die "$*"; fi; }	# a precondition of the real release, a note in a dry run
@@ -147,6 +147,9 @@ check_upgrade() {
 	# The setting exists once a function of the library ran in the session.
 	min=$(q "$sock" $port sift <<<"SELECT sift.verify('docs_idx', true); SELECT min_val FROM pg_settings WHERE name = 'sift.col_format_minor'" | tail -1) || true
 	if [[ -n $min ]]; then
+		# server-wide, as docs/UPGRADING.md "Going back" does: the background worker of sift.col_auto_merge (on by default since 3.3) rewrites the index
+		# with the setting of its own process, not the session's, and its default would put a section the previous library cannot read into it
+		q "$sock" $port sift -c "ALTER SYSTEM SET sift.col_format_minor = $min" -c "SELECT pg_reload_conf()" >/dev/null
 		q "$sock" $port sift <<<"DROP INDEX docs_idx; SET sift.col_format_minor = $min; REINDEX INDEX docs_col; INSERT INTO docs SELECT i, i % 9, i % 100, 'x' FROM generate_series(30001, 30500) i; VACUUM docs"
 		q "$sock" $port sift <<<"SELECT sift.col_verify('docs_col', true)" >/dev/null
 		b=$(q "$sock" $port sift <<<"$ANSC"); pgt "$W/new" "$U" $port stop >/dev/null

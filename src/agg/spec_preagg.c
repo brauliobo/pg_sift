@@ -320,15 +320,24 @@ hist_leaf_ok(const SiftSrcLayout *lay, int nbase, int leaf)
 	return vt == SCV_I32 || vt == SCV_CODE || vt == SCV_I64;
 }
 
+/* the conjuncts a unit's zone decides: the comparisons and, in a shape that has them (nullz), the NULL tests */
+static List *
+zone_conjs(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nullz)
+{
+	List	   *out = sift_aggspec_zone_cmps(s, lay, nbase, false);
+
+	return nullz ? list_concat(out, sift_aggspec_zone_cmps(s, lay, nbase, true)) : out;
+}
+
 /*
  * The leaf the conjuncts test besides the zone comparisons (-1: none), or -2 when they cannot be answered from a histogram. The conjuncts must be
  * zone comparisons, or test one scalar leaf. *zdim: the first leaf of a zone comparison that has a histogram (-1: none), which tests it when the
  * zone of a unit is not inside the comparison.
  */
 static int
-preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim, const SiftSrcPreagg *pa, int *zdim)
+preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim, const SiftSrcPreagg *pa, bool nullz, int *zdim)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = zone_conjs(s, lay, nbase, nullz);
 
 	*zdim = -1;
 	for (int i = 0; i < s->npred; i++)
@@ -339,7 +348,7 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 			return -2;
 		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension. The cells of a timestamp stand in for
 		 * its histogram, which a unit that spans more than 32 instants does not have */
-		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l) &&
+		if (l >= 0 && *zdim < 0 && s->pred[i]->kind != SAP_NULL && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l) &&
 			!(lay->leaf[l].vtype == SCV_I64 && pa_cal(pa, l) >= 0))
 			*zdim = l;
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
@@ -429,7 +438,7 @@ in_leaves(const int *arr, int n, int leaf)
 static SiftPaWhy
 preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 	int			group = s->group,
 				nd = 0,
 				nm = 0,
@@ -524,7 +533,7 @@ cal_pred(const SiftAggPred *p, uint8 *mask)
 static bool
 cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, uint8 *mask)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 
 	for (int i = 0; i < s->npred; i++)
 		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !cal_pred(s->pred[i], mask))
@@ -534,7 +543,7 @@ cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, u
 
 /* the sums and histograms of the rows' leaves answer a scan of the rows: at most one key, a column of a histogram */
 static SiftPaWhy
-preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, bool nullz, SiftAggPaShape *out)
 {
 	int			dim = -1,
 				d = -1,
@@ -566,7 +575,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 			cleaf = s->key[0].leaf;
 		}
 	}
-	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
+	dim = preagg_conj_dim(s, lay, nbase, dim, pa, nullz, &zdim);
 	if (dim == -2)
 		return SPW_ROW_PRED;
 	/* the tests of the key's calendar leaf are made on its cells; those of another leaf are not */
@@ -650,7 +659,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	/* ... or from the cells of a date or timestamp it compares, whose span decides each cell (a unit with a cell the comparison cuts is scanned) */
 	if (dim < 0 && hdim < 0 && cleaf < 0 && why == SPW_OK)
 	{
-		List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+		List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 
 		foreach_ptr(SiftAggPred, p, cmps)
 		{
@@ -671,7 +680,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	}
 	if (why != SPW_OK)
 		return why;
-	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hdim = hdim, .list = -1};
+	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hdim = hdim, .list = -1, .nullz = nullz};
 	return SPW_OK;
 }
 
@@ -679,7 +688,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 static bool
 rows_zone_bound(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftAggPaShape *shape)
 {
-	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, lay, nbase))
+	foreach_ptr(SiftAggPred, p, zone_conjs(s, lay, nbase, shape->nullz))
 		if (sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->dim)
 			return true;
 	return false;
@@ -710,7 +719,18 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		return SPW_TOPN;
 	if (s->group >= 0)
 		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
-	why = preagg_rows(s, lay, nbase, pa, out);
+	why = preagg_rows(s, lay, nbase, pa, false, out);
+	/* a NULL test of a column that is no dim of the shape (WHERE deleted_at IS NULL): the zone's NULL count decides it for each unit, as a comparison is decided */
+	if (why != SPW_OK && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
+	{
+		SiftAggPaShape nz;
+
+		if (preagg_rows(s, lay, nbase, pa, true, &nz) == SPW_OK)
+		{
+			*out = nz;
+			why = SPW_OK;
+		}
+	}
 	/*
 	 * What the histograms cannot give (two keys, a key and a test of another column), or give only for the units inside a comparison, the rollup of the
 	 * rows may: it answers every exact unit.
