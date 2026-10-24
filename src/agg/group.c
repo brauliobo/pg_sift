@@ -455,7 +455,7 @@ ident_wide_id(AggExec *ex, KeyState *k, int64 v)
 		h = (h + 1) & (k->wcap - 1);
 	}
 	k->wval[h] = v;
-	id = k->bucket ? bucket_id(ex, k, v) : k->cal ? cal_id(ex, k, v) : ident_add(ex, k, v);
+	id = k->bucket ? bucket_id(ex, k, v) : k->cal ? cal_id(ex, k, v) : k->ident ? ident_add(ex, k, v) : key_value_id(ex, (int) (k - ex->ks), leaf_datum(k->param->paramtype, v), false);
 	k->wid[h] = id;
 	if ((uint64) ++k->nwide * 2 > k->wcap)
 	{
@@ -683,8 +683,8 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 
 /*
  * The ids of the integer values in [mn, mx] of key ki, of nsel rows, are made; false: the key keeps its ids in a hash table instead of the
- * range table (ident_wide_id), which is too wide or would be filled with many more values than the rows have (the ids of a column
- * clustered by another, whose units hold few values far apart).
+ * range table (ident_wide_id), which is too wide (a lookup key's too: a date column holding both infinities spans 2^32 values) or would be filled
+ * with many more values than the rows have (the ids of a column clustered by another, whose units hold few values far apart).
  */
 bool
 key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel)
@@ -695,7 +695,7 @@ key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel)
 	int64		span = rt_span(&k->rt, mn, mx),
 				added = span - (k->rt.lo <= k->rt.hi ? (int64) k->rt.hi - k->rt.lo + 1 : 0);
 
-	if (k->ident && (k->wcap || (any && (span > MAX_RANGE || (span > SPARSE_RANGE && added > (int64) SPARSE_FACTOR * nsel)))))
+	if (k->wcap || (any && (span > MAX_RANGE || (k->ident && span > SPARSE_RANGE && added > (int64) SPARSE_FACTOR * nsel))))
 	{
 		if (!k->wcap)
 			ident_go_wide(ex, k);
