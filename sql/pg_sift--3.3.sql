@@ -514,9 +514,7 @@ BEGIN
 				('^point_columns=.', 14, 'point_columns', false,
 				 'the segments written before the option have no point directory, so an equality or IN list on the column reads their units (zones and summaries cut most); a REINDEX writes it'),
 				('^point_tid_columns=.', 16, 'point_tid_columns', false,
-				 'the segments written before the option list the rows of the column by their number in the segment, so an equality or IN list on the column reads the units of the rows it finds; a REINDEX lists their heap addresses'),
-				('^key_cut=.', 17, 'key_cut', false,
-				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key')
+				 'the segments written before the option list the rows of the column by their number in the segment, so an equality or IN list on the column reads the units of the rows it finds; a REINDEX lists their heap addresses')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;
 		CONTINUE WHEN why IS NULL;

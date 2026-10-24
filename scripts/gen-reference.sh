@@ -241,8 +241,9 @@ upgrades = {}
 for f in sorted(os.listdir(os.path.join(ROOT, 'sql'))):
     if re.fullmatch(r'pg_sift--[\d.]+--%s\.sql' % re.escape(latest), f):
         upgrades.update(scan('sql/' + f)[1])
+before = scan('sql/pg_sift--%s.sql' % [v for v in versions if vkey(v) < vkey(latest)][-1])[1]   # a comment the previous version has already is on an updated install
 for k, text in comments.items():
-    if upgrades.get(k) != text:
+    if upgrades.get(k) != text and before.get(k) != text:
         err('sql/pg_sift--%s.sql: the COMMENT on %s %s is not (the same) in the upgrade script into %s' % (latest, k[0], k[1], latest))
 for k in upgrades:
     if k not in comments:
