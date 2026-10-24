@@ -136,7 +136,7 @@ A `sift_col` index with a `WHERE` predicate holds only the rows that pass it, so
 takes the index when PostgreSQL's `predOK` is true for it (the conditions of the table imply the predicate, as for a partial btree or a BM25 index).
 A query that may need a row outside the predicate keeps the normal plan, and so does a generic plan of a prepared statement whose parameter the proof
 needs. Rows that an `UPDATE` moves in or out of the predicate are inserted into or deleted from the index like any other change. Of several indexes
-that the query can use, a full one and a partial one, the cheaper (the partial one is smaller) wins. Fixtures `pi_*` and `t_partial`, test `agg_partial_index`.
+that the query can use, a full one and a partial one, the cheaper (the partial one is smaller) wins; so does the one cut by a key (`key_cut`) against the one cut by block range, whatever the creation order. Every index that gives a plan is planned and priced, which costs about one plan of a single-index table (0.05 to 0.1 ms) per extra index. Fixtures `pi_*` and `t_partial`, test `agg_partial_index`.
 
 ## Uncorrelated sub-selects
 
