@@ -60,7 +60,7 @@ SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PART
        runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 ORDER BY id DESC LIMIT 3 $q$, false) AS same_limit;
 
 -- the window stays as written: rank(), a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
--- in a condition that is not a conjunct, more than the first row
+-- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
 SELECT * FROM check_query('rank', $q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, rank() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
@@ -76,7 +76,7 @@ SELECT * FROM check_query('a CTE read twice', $q$
 SELECT * FROM check_query('a MATERIALIZED CTE', $q$ WITH latest AS MATERIALIZED (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) SELECT id, grp FROM latest WHERE rn = 1 $q$);
 SELECT * FROM check_query('an OR', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 1 OR grp = 3 $q$);
 SELECT * FROM check_query('the second row', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
-SELECT * FROM check_query('the first three rows', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
+SELECT * FROM check_query('the first three rows are arrays', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
 SELECT * FROM check_query('a left join', $q$
  SELECT g.grp, t.id FROM groups g LEFT JOIN (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events WHERE amount = 3) t ON t.grp = g.grp AND t.rn = 1 $q$);
 

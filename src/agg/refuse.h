@@ -45,6 +45,7 @@
 	X(FIRST_MEMORY, "first_memory", "the first rows of the groups would not fit in the memory of a hash aggregate", 1, 0) \
 	X(GROUP_MEMORY, "group_memory", "the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill", 1, 1) \
 	X(LATERAL_LIMIT, "lateral_limit", "a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties", 0, 0) \
+	X(DISTINCT_SET, "distinct_set", "count(DISTINCT x) keeps the distinct values of each group: x is not a NOT NULL column of the scanned table under a unique single-column index, so its rows cannot be counted in its place", 0, 0) \
 	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id", 0, 0) \
 	X(TWO_KEYS, "two_keys", "a key of the two level aggregate is not one every arm groups by", 0, 0) \
 	X(TWO_AGGS, "two_aggs", "an aggregate over the arms is not one the two level scan computes", 0, 0) \
@@ -53,7 +54,7 @@
 	X(SPINE_ROWS, "spine_rows", "the rows of the spine are estimated above sift.agg_lookup_max_kb", 1, 0) \
 	X(ROWS_SHAPE, "rows_shape", "the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group", 0, 0) \
 	X(TOPN_SHAPE, "topn_shape", "the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests", 0, 0) \
-	X(WINDOW_FIRST, "window_first", "the first row of each group, asked with a window function, is not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else", 0, 0) \
+	X(WINDOW_FIRST, "window_first", "the first rows of each group, asked with a window function (rn = 1, rn <= N), are not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else, over a table with a column index for N > 1", 0, 0) \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1) \
 	X(CTE_COST, "cte_cost", "the shared CTE plan is estimated cheaper than the plan with the CTE inlined", 0, 1)
 

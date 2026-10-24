@@ -13,7 +13,7 @@ CREATE INDEX items_grp ON items (grp);
 CREATE INDEX items_col ON items USING sift_col (id, grp, part, cat, amount);
 VACUUM (FREEZE, ANALYZE) items;
 
-CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) $$;
+CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE d bigint;
 BEGIN
