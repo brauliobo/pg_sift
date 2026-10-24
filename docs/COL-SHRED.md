@@ -33,6 +33,8 @@ changed spec is told from the one the segment was built with. Limits: 256 column
 
 `sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies): the documents come from 16 stretches of blocks evenly spaced over the table, a key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text), a map of more than 32 keys of one type a wildcard, an array of objects a group, and a key in fewer than 1% of the documents, or without a single shape, is left out. It refuses a table the caller cannot read and one with row-level security.
 
+An index with a `jsonb` column and no `paths` option (or `paths = 'auto'`) takes that answer at `CREATE INDEX`: the build reads the sample, writes the spec to the option as `auto: spec` (so the schema of the build, of its workers and of every later `REINDEX` is the same; `pg_dump` restores it as written) and says so in a NOTICE. Paths written by hand are never touched. When no key qualifies (an empty table, documents without a repeated scalar key) nothing is written and the column is refused as before; to read the documents again, call `sift.suggest_paths` and `ALTER INDEX ... SET (paths = '...')` with its answer (`col_paths_auto`).
+
 ## Output model (Dremel / DuckDB LIST)
 
 A **group** is a repeated level: the root (exactly one element, the document), every `[]` and every `*`. Every **column** (a typed
