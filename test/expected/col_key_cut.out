@@ -224,12 +224,108 @@ SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable'
      17
 (1 row)
 
--- a build that must hold the rows of the index to cut them stops when they pass the memory it may use
+-- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan
+DROP INDEX kc_idx;
 SET sift.test_col_segment_kb = 64;
-CREATE INDEX kc_small ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust');
-ERROR:  sift_col build with key_cut holds the rows of the index in memory and needs more than maintenance_work_mem
-HINT:  Raise maintenance_work_mem, or CREATE INDEX without key_cut.
+CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
 RESET sift.test_col_segment_kb;
+SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+ runs | format 
+------+--------
+ t    |     17
+(1 row)
+
+SELECT * FROM kchk('runs');
+ after_step |       shape        |             result             
+------------+--------------------+--------------------------------
+ runs       | one customer       | same Units: 8 Units Pruned: 7
+ runs       | customer and dates | same Units: 8 Units Pruned: 7
+ runs       | customer range     | same Units: 8 Units Pruned: 7
+ runs       | customer list      | same Units: 15 Units Pruned: 0
+ runs       | other column       | same Units: 15 Units Pruned: 0
+ runs       | top-N by key       | same Units: 15 Units Pruned: 0
+(6 rows)
+
+SET maintenance_work_mem = '1MB';
+SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+RESET maintenance_work_mem;
+SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+ segments | format 
+----------+--------
+        1 |     17
+(1 row)
+
+SELECT * FROM kchk('runs merged');
+ after_step  |       shape        |             result             
+-------------+--------------------+--------------------------------
+ runs merged | one customer       | same Units: 1 Units Pruned: 13
+ runs merged | customer and dates | same Units: 1 Units Pruned: 13
+ runs merged | customer range     | same Units: 1 Units Pruned: 13
+ runs merged | customer list      | same Units: 3 Units Pruned: 11
+ runs merged | other column       | same Units: 14 Units Pruned: 0
+ runs merged | top-N by key       | same Units: 1 Units Pruned: 0
+(6 rows)
+
+SELECT sift.col_verify('kc_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- an index that gets the option later has segments cut by superblock: a merge loads and sorts them, and the rows written since are in key-cut segments
+CREATE TABLE kl (LIKE kc);
+INSERT INTO kl SELECT * FROM kc WHERE id <= 60000;
+CREATE INDEX kl_idx ON kl USING sift_col (id, cust, d, amount);
+ALTER INDEX kl_idx SET (key_cut = 'cust, d');
+INSERT INTO kl SELECT * FROM kc WHERE id > 60000;
+SELECT sift.col_promote('kl_idx');
+ col_promote 
+-------------
+           1
+(1 row)
+
+SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) AS formats FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
+ formats 
+---------
+ 12,17
+(1 row)
+
+SELECT sift.col_merge('kl_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT string_agg(DISTINCT format::text, ',') AS formats, count(*) AS segments FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
+ formats | segments 
+---------+----------
+ 17      |        1
+(1 row)
+
+SELECT sift.col_verify('kl_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT (SELECT count(*) || ' ' || sum(amount) FROM kl WHERE cust = 42) = (SELECT count(*) || ' ' || sum(amount) FROM kc WHERE cust = 42) AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+SELECT sift.col_verify('kc_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE kl;
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
 DROP EXTENSION pg_sift;

@@ -641,11 +641,14 @@ the number of units, and the per-unit costs the planner uses, stay what the supe
 units as it can be. The segments are column format minor 17, written only for an index with the option and `sift.col_format_minor` 15 or more; the setting stays 15. Cost, 200,000 rows to 1,000,000 rows: the
 index 16% to 28% larger for narrow rows (the TIDs) and 6% to 13% smaller for wide ones (tighter units compress better), the build CPU 1.4 to 6 times (the sort).
 
-The option applies to the units written afterwards: the build, `REINDEX`, a promotion of the write buffer (its rows are cut into units of their own segment), and a merge, which decodes every live row of its
-inputs and cuts them again by the key, so the overlays of the churn fold back into the range they belong to. A build and a merge hold the rows they cut in memory (about 32 bytes and 16 for each column of
-the index, per row), and stop with an error that says so when that passes `maintenance_work_mem` (the build: twice the budget of a segment), so a very large table takes the option after a streaming merge
-is written; until then raise the setting, or leave the option out. `sift.col_refresh`, `VACUUM` and `REINDEX` keep the option. An index with older units reads them as before until a `REINDEX`
-(`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4).
+The option applies to the units written afterwards: the build, `REINDEX`, a promotion of the write buffer (its rows are cut into units of their own segment), and a merge, which cuts the live rows of its
+inputs again by the key, so the overlays of the churn fold back into the range they belong to. The memory does not grow with the table. A build holds the rows of the superblocks it has read until they pass its
+budget (half of `maintenance_work_mem`, at least 64 MB), then sorts them and writes them as a segment of their own, a run; the runs overlap in the key, and a merge of them is a k-way merge of the
+units of each (a key-cut segment is in the order of the key from one unit to the next), which holds one unit of each input and a window of about 1.25 units of the output, whatever the number of rows. A build
+needs as many runs as the table is large over its budget, and stops with an error that says so when that passes the segments a build may write (121): raise `maintenance_work_mem`. The segments written before the
+option was set are not in the order of the key: a merge loads one whole and sorts it, up to `maintenance_work_mem` (an error with the `REINDEX` hint beyond it). A segment that is not in the order of the
+current key (the option was changed to other columns) stops a merge with the same hint. `sift.col_refresh`, `VACUUM` and `REINDEX` keep the option. An index with older units reads them as before until a
+`REINDEX` (`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4).
 
 ### 2.17 Point directory of a leaf in a segment (column format minor 14, 3.3; opt-in)
 
