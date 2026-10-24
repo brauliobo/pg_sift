@@ -1717,4 +1717,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		p->total_cost += c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
+	/*
+	 * The rows of a fused scan add the groups of every arm, though no arm has more groups than rows it reads: the node reports at most the rows
+	 * its arms aggregate. The plan above is priced for them (agg/cte.c weighs the inline plan of a shared CTE against the shared one), and the
+	 * sum of the arms' groups made the inline plan look 6 times dearer than it is.
+	 */
+	if (s->narms > 0 && !s->topn)
+		p->rows = Min(p->rows, Max(s->est_rows, 1.0));
 }
