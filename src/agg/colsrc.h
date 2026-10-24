@@ -478,6 +478,14 @@ typedef struct SiftSrcCounters
  * `impl` is the provider's source object. The functions of the seam below dispatch to the provider that owns the relation's
  * access method.
  */
+#define SIFT_SRC_HEAD_MAX	32		/* the most entries of a run head at each end (col/runs.h SIFT_CRUN_HEAD_MAX) */
+
+typedef struct SiftSrcHead
+{
+	int64		key;
+	uint64		addr;			/* block << 16 | offset */
+} SiftSrcHead;
+
 typedef struct SiftSrcProvider
 {
 	bool		(*owns_index) (Oid indexrelam);
@@ -578,6 +586,13 @@ typedef struct SiftSrcProvider
 	 */
 	bool		(*run_info) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id);
 	void		(*run_read) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
+	/*
+	 * Optional (needs run_info found a run): the head of that run, the best SiftSrcRunHeads.n entries of the run read ascending (lo) and descending (hi)
+	 * with the heap address of each row; 0 when the run has none. Stored when the unit was written: sound only if every row of the unit still passes.
+	 */
+	/* Optional: run_heads for the unit of superblock sb without reading it, only when every row of the unit is live and visible (the unit of a table, of a key-cut segment or of a write buffer has none) */
+	bool		(*sb_heads) (void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
+	int			(*run_heads) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 	/* read for the rows `rows` (ascending) only, valid until the next read of the leaf: vec->n == n, element k is row rows[k] */
 	void		(*read_rows) (void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 	/* optional: the int filters above. set_filters (before begin) returns the bits of those it will apply, filter narrows the rows of a unit by them */
@@ -746,6 +761,9 @@ extern bool sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, in
 extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 /* The sorted run of a leaf of the unit (SiftSrcProvider.run_info): false when there is none to use, then the rows of the run [pos, pos + cnt) */
 extern bool sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id);
+/* The head of the run (SiftSrcProvider.run_heads): its H, 0 when there is none */
+extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
+extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern void sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */

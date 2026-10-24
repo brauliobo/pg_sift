@@ -1244,6 +1244,19 @@ sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm)
 			 (uint64) k * h->fan * SIFT_PAGEMASK_WORDS * sizeof(uint64), (Size) n * SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
 }
 
+/* The pages the rows of unit u are on, from the superunit summary (4 words), without reading the unit; false when the segment has no summary */
+bool
+sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm)
+{
+	const SuperHeader *h = super_header(seg);
+
+	if (h == NULL || u >= seg->nsb)
+		return false;
+	seg_read(seg, sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_SUPERDIR(PRIV(seg)->pagg) + sizeof(SuperHeader) +
+			 (uint64) u * SIFT_PAGEMASK_WORDS * sizeof(uint64), SIFT_PAGEMASK_WORDS * sizeof(uint64), pm);
+	return true;
+}
+
 bool
 sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
 {
@@ -1651,7 +1664,18 @@ sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 *
 void
 sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst)
 {
-	seg_read(seg, at, sift_crun_bytes(r->kind, r->n), dst);
+	seg_read(seg, at, sift_crun_total(r), dst);
+}
+
+/* The head of the run (r->heads > 0): the entries nlo from the low end, then nhi from the high end, the last of the run first */
+void
+sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHeadEnt *out)
+{
+	uint32		nlo,
+				nhi;
+
+	sift_crun_head_counts(r->heads, r->n, &nlo, &nhi);
+	seg_read(seg, at + sift_crun_bytes(r->kind, r->n), (nlo + nhi) * sizeof(SiftCHeadEnt), out);
 }
 
 void

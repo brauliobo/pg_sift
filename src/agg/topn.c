@@ -40,6 +40,9 @@
 #define TOPN_PROBES		6
 
 bool		sift_topn_zone_keys = true;
+#ifdef SIFT_TESTING
+bool		sift_topn_heads = true;
+#endif
 bool		sift_topn_runs = true;
 
 bool
@@ -319,6 +322,8 @@ struct SiftTopN
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
 	int64		nrun;			/* units read through their sorted run */
+	int64		nrhead;			/* units answered from the head of their sorted run */
+	bool		wkeep;			/* the write buffers' superblocks are known (whead): a superblock outside them has no row in memory */
 	int64		fetched;
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
 };
@@ -1855,6 +1860,104 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	return true;
 }
 
+/*
+ * A unit of which every row passes, asked for at most as many rows as the head of the run of the first key holds: the n best rows of the unit
+ * are the first n entries of the head from the end the sort wants, with their keys and heap addresses, so the unit is not read. A row that is dead or
+ * changed since the unit was written fails the mask (the visibility check clears its bit), and the unit is read as before.
+ */
+static bool
+head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
+{
+	const TopKey *k0 = &t->key[0];
+	SiftSrcHead lo[SIFT_SRC_HEAD_MAX],
+				hi[SIFT_SRC_HEAD_MAX];
+	const SiftSrcHead *h;
+	uint32		nlo,
+				nhi,
+				nvals,
+				nnull,
+				n;
+	uint64		id;
+	uint16		part;
+	Rank		bar;
+	bool		barred;
+
+	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
+		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0 || t->limit > SIFT_SRC_HEAD_MAX)
+		return false;
+	for (int i = 0; i < nrow / 64; i++)
+		if (rmask[i] != ~UINT64CONST(0))
+			return false;
+	if (nrow % 64 && rmask[nrow / 64] != (UINT64CONST(1) << (nrow % 64)) - 1)
+		return false;
+	if (!sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id) || nvals != (uint32) nrow || nnull != 0)
+		return false;
+	if (sift_colsrc_run_heads(src, unit, k0->leaf, lo, &nlo, hi, &nhi) == 0)
+		return false;
+	h = k0->desc ? hi : lo;
+	n = k0->desc ? nhi : nlo;
+	if (n < (uint32) t->limit)
+		return false;
+	part = unit_part(t, src);
+	barred = bar_rank(t, &bar);
+	for (uint32 i = 0; i < (uint32) t->limit; i++)
+	{
+		TopEnt		e = {0};
+
+		if (barred && rank_after(rank_of(k0, false, h[i].key), bar))
+			break;
+		e.k[0] = h[i].key;
+		ItemPointerSet(&e.tid, (BlockNumber) (h[i].addr >> 16), (OffsetNumber) (h[i].addr & 0xFFFF));
+		e.part = part;
+		e.tie = tie_key(&e.tid, part);
+		res_push(t, &e);
+	}
+	share_bar(t);
+	t->nrhead++;
+	return true;
+}
+
+static bool walk_in_head(const SiftTopN *t, uint32 sb);
+
+bool
+sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb)
+{
+	const TopKey *k0 = &t->key[0];
+	SiftSrcHead lo[SIFT_SRC_HEAD_MAX],
+				hi[SIFT_SRC_HEAD_MAX];
+	const SiftSrcHead *h;
+	uint32		nlo,
+				nhi,
+				n;
+	Rank		bar;
+	bool		barred;
+
+	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
+		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0 || t->limit > SIFT_SRC_HEAD_MAX)
+		return false;
+	if (!t->wkeep || walk_in_head(t, sb) || !sift_colsrc_sb_heads(src, sb, k0->leaf, lo, &nlo, hi, &nhi))
+		return false;
+	h = k0->desc ? hi : lo;
+	n = k0->desc ? nhi : nlo;
+	if (n < (uint32) t->limit)
+		return false;
+	barred = bar_rank(t, &bar);
+	for (uint32 i = 0; i < (uint32) t->limit; i++)
+	{
+		TopEnt		e = {0};
+
+		if (barred && rank_after(rank_of(k0, false, h[i].key), bar))
+			break;
+		e.k[0] = h[i].key;
+		ItemPointerSet(&e.tid, (BlockNumber) (h[i].addr >> 16), (OffsetNumber) (h[i].addr & 0xFFFF));
+		e.tie = tie_key(&e.tid, 0);
+		res_push(t, &e);
+	}
+	share_bar(t);
+	t->nrhead++;
+	return true;
+}
+
 /* the first 8 bytes of an entry (after the varlena header of a bytea), most significant first, zero padded: it orders the entries as they are up to a tie */
 static uint64
 key_prefix(uint8 bkind, const char *p, uint32 len)
@@ -2207,6 +2310,8 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		(void) run_unit(t, src, unit, key0, rmask, nrow);
 		return;
 	}
+	if (key0 == NULL && head_unit(t, src, unit, rmask, nrow))
+		return;
 	if (run_unit(t, src, unit, key0, rmask, nrow))
 		return;
 	if (key0 == NULL && k0->leaf >= 0)
@@ -2676,6 +2781,7 @@ sift_topn_walk_setup(SiftTopN *t)
 		nmem = 0;
 	}
 	t->wb = wb;
+	t->wkeep = keep;
 	if (nmem > 0)
 	{
 		t->whead = MemoryContextAlloc(GetMemoryChunkContext(t), nmem * sizeof(uint32));
@@ -2882,6 +2988,12 @@ sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs)
 {
 	t->skipped += n;
 	t->nrun += runs;
+}
+
+int64
+sift_topn_heads_used(const SiftTopN *t)
+{
+	return t->nrhead;
 }
 
 int64

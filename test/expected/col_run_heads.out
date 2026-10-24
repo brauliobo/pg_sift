@@ -1,0 +1,205 @@
+-- The head of a sorted run: an index with order_columns also keeps, per unit and leaf with no NULL, the first and last
+-- n / 128 keys of the run (at most 32) with the heap addresses of their rows, so that ORDER BY .. LIMIT n over a clean unit names its n best rows without reading
+-- the unit. A unit with a dead row, a page that is not all-visible or rows in the write buffer is read as before. The rows are those of the plain plan.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '120s';
+CREATE TABLE rh (id int, k int, kn int, ts timestamptz, d date, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE rh ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO rh
+SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END,
+       timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 200000) * interval '1 minute', date '2020-01-01' + (hashint4(g + 3) & 2147483647) % 2000, repeat('x', 600)
+FROM generate_series(1, 40000) g;
+CREATE INDEX rh_idx ON rh USING sift_col (id, k, kn, ts, d) WITH (write_buffer_limit = 4096, order_columns = 'id, k, kn, ts, d');
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) rh;
+SELECT array_agg(DISTINCT format) AS minors, sift.col_verify('rh_idx', true) FROM sift._test_col_formats('rh_idx');
+ minors | col_verify 
+--------+------------
+ {18}   | 
+(1 row)
+
+-- the plain plan, the top-N scan with the sorted runs but not the heads, and with the heads
+CREATE FUNCTION rh_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', (m <> 'plain')::text, false);
+	PERFORM set_config('sift.test_topn_heads', (m = 'heads')::text, false);
+	PERFORM set_config('enable_seqscan', (m = 'plain')::text, false);
+	PERFORM set_config('enable_indexscan', (m = 'plain')::text, false);
+	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);
+END $$;
+CREATE FUNCTION rh_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO r;
+	RETURN r;
+END $$;
+-- the units the query answered from a head (0 when the plan is not a top-N scan)
+CREATE FUNCTION rh_heads(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN coalesce(jsonb_path_query_first(j, '$.**."Units Answered By Run Head"')::int, 0);
+END $$;
+-- every column, direction and limit around the head (H is 25 for these units of about 3,200 rows, and 32 at the most): the keys alone (any row of a tie) and with the id as the tiebreak
+CREATE FUNCTION rh_check(OUT shape text, OUT same bool, OUT heads int) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE
+	col text; dir text; lim int; q text; qk text; a text; b text; c text; ak text; bk text; ck text;
+BEGIN
+	FOREACH col IN ARRAY ARRAY['id', 'k', 'kn', 'ts', 'd'] LOOP
+	FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
+	FOREACH lim IN ARRAY ARRAY[1, 10, 20, 33, 40] LOOP
+		q := format('SELECT id, %1$s FROM rh ORDER BY %1$s %2$s, id LIMIT %3$s', col, dir, lim);
+		qk := format('SELECT %1$s FROM rh ORDER BY %1$s %2$s LIMIT %3$s', col, dir, lim);
+		PERFORM rh_mode('plain'); a := rh_rows(q); ak := rh_rows(qk);
+		PERFORM rh_mode('runs'); b := rh_rows(q); bk := rh_rows(qk);
+		PERFORM rh_mode('heads'); c := rh_rows(q); ck := rh_rows(qk);
+		shape := format('%s %s limit %s', col, dir, lim);
+		same := a = b AND b = c AND ak = bk AND bk = ck;
+		heads := rh_heads(qk);
+		RETURN NEXT;
+	END LOOP; END LOOP; END LOOP;
+	PERFORM rh_mode('heads');
+END $$;
+CREATE FUNCTION rh_summary(OUT queries int, OUT same int, OUT from_heads int, OUT heads_above_limit int) LANGUAGE sql AS $$
+	SELECT count(*)::int, count(*) FILTER (WHERE same)::int, count(*) FILTER (WHERE heads > 0)::int,
+	       count(*) FILTER (WHERE heads > 0 AND shape ~ 'limit (33|40)$')::int FROM rh_check()
+$$;
+-- clean units: heads answer id, k, ts and d (not kn, which has NULLs) for a limit up to H, and not for a limit above 32
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |         21 |                 0
+(1 row)
+
+SELECT shape, heads > 0 AS from_heads FROM rh_check() WHERE shape IN ('k ASC limit 10', 'k DESC limit 20', 'k ASC limit 33', 'kn ASC limit 10', 'ts DESC limit 1') ORDER BY shape;
+      shape      | from_heads 
+-----------------+------------
+ k ASC limit 10  | t
+ k ASC limit 33  | f
+ k DESC limit 20 | t
+ kn ASC limit 10 | f
+ ts DESC limit 1 | t
+(5 rows)
+
+-- a row changed or deleted: its page is no longer all-visible, then the unit has a dead row; the answers stay those of the plain plan
+UPDATE rh SET k = -1 WHERE id IN (5, 17000, 33000);
+DELETE FROM rh WHERE id IN (1, 2, 3, 20000);
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |         17 |                 0
+(1 row)
+
+VACUUM rh;
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |         17 |                 0
+(1 row)
+
+SELECT sift.col_verify('rh_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- rows in the write buffer, the promotion of them, and a merge that writes the heads again
+INSERT INTO rh SELECT g, -100 - g % 5, NULL, timestamptz '2000-01-01' + g * interval '1 minute', date '1990-01-01' + g, repeat('x', 600) FROM generate_series(40001, 40300) g;
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |          9 |                 0
+(1 row)
+
+SELECT sift.col_promote('rh_idx'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |         17 |                 0
+(1 row)
+
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) rh;
+SELECT sift.col_merge('rh_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) rh;
+SELECT * FROM rh_summary();
+ queries | same | from_heads | heads_above_limit 
+---------+------+------------+-------------------
+      50 |   50 |         19 |                 0
+(1 row)
+
+SELECT array_agg(DISTINCT format) AS minors, sift.col_verify('rh_idx', true) FROM sift._test_col_formats('rh_idx');
+ minors | col_verify 
+--------+------------
+ {18}   | 
+(1 row)
+
+-- segments written without heads (a lower setting, minor 13) and with them in one index: both are read, a merge writes them all with heads
+CREATE TABLE rh_m (LIKE rh) WITH (autovacuum_enabled = off);
+ALTER TABLE rh_m ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO rh_m SELECT * FROM rh WHERE id <= 20000;
+SET sift.col_format_minor = 14;
+CREATE INDEX rh_m_idx ON rh_m USING sift_col (id, k, kn, ts, d) WITH (write_buffer_limit = 4096, order_columns = 'id, k, kn, ts, d');
+RESET sift.col_format_minor;
+INSERT INTO rh_m SELECT * FROM rh WHERE id > 20000;
+SELECT sift.col_promote('rh_m_idx'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) rh_m;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, sift.col_verify('rh_m_idx', true) FROM sift._test_col_formats('rh_m_idx');
+ minors  | col_verify 
+---------+------------
+ {13,18} | 
+(1 row)
+
+CREATE FUNCTION rh_mixed() RETURNS TABLE (same bool, from_heads bool) LANGUAGE plpgsql AS $$
+DECLARE q text := 'SELECT k FROM rh_m ORDER BY k LIMIT 2'; a text; b text;
+BEGIN
+	PERFORM rh_mode('plain'); a := rh_rows(q);
+	PERFORM rh_mode('heads'); b := rh_rows(q);
+	same := a = b; from_heads := rh_heads(q) > 0;
+	RETURN NEXT;
+END $$;
+SELECT * FROM rh_mixed();
+ same | from_heads 
+------+------------
+ t    | t
+(1 row)
+
+SELECT sift.col_merge('rh_m_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) rh_m;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, sift.col_verify('rh_m_idx', true) FROM sift._test_col_formats('rh_m_idx');
+ minors | col_verify 
+--------+------------
+ {18}   | 
+(1 row)
+
+SELECT * FROM rh_mixed();
+ same | from_heads 
+------+------------
+ t    | t
+(1 row)
+
+DROP TABLE rh, rh_m CASCADE;
+DROP FUNCTION rh_mode(text), rh_rows(text), rh_heads(text), rh_check(), rh_summary(), rh_mixed();
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

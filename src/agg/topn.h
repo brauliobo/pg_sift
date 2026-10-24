@@ -115,6 +115,11 @@ extern void sift_topn_skip(SiftTopN *t);
  */
 extern bool sift_topn_follows(const SiftTopN *t);
 extern PGDLLIMPORT bool sift_topn_zone_keys;	/* sift.topn_zone_keys */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT bool sift_topn_heads;	/* sift.test_topn_heads: answer a unit of which every row passes from the head of its sorted run */
+#else
+#define sift_topn_heads true
+#endif
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
 extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
@@ -142,6 +147,8 @@ extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
 extern const uint32 *sift_topn_walk_order(SiftTopN *t);
 extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
 extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
+extern bool sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb);
+extern int64 sift_topn_heads_used(const SiftTopN *t);	/* units answered from the head of their sorted run */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);
 extern void sift_topn_import(SiftTopN *t, const char *data, Size len);
