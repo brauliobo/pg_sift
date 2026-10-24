@@ -53,7 +53,7 @@ int			sift_test_col_refresh_sleep_armed = 0;
 
 /* The automatic rewrite (sift.col_auto_merge*, registered in col/am.c) */
 bool		sift_col_auto_merge = true;
-int			sift_col_auto_merge_dirty_pct = 30;
+int			sift_col_auto_merge_dirty_pct = 10;
 double		sift_col_auto_merge_fragmentation = 2.0;
 double		sift_col_auto_merge_buffer_pct = 1.0;
 double		sift_col_auto_merge_wal_pct = 5.0;
@@ -66,7 +66,10 @@ int			sift_col_auto_merge_max_workers = 0;
 
 /*
  * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else sift.vacuum_rewrite_limit for an index over it, so that
- * the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it. 0: no partitions.
+ * the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it, else, with sift.col_auto_merge on,
+ * a sixteenth of the index (at least 64 kB): a churn that keeps to a part of the table (the newest rows, a status that changes again and again) dirties
+ * the units of a few partitions, and the rewrite of those costs a sixteenth of the index, where the rewrite of one segment of the index would cost all of it
+ * and be refused by the WAL budget. 0: no partitions.
  */
 static int	part_kb = 0;
 
@@ -79,7 +82,8 @@ use_partitions(const SiftDirSnapshot *snap)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			bytes += snap->segs[i].bytes;
 	part_kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
-		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 :
+		sift_col_auto_merge ? Max(64, bytes / 16 / 1024) : 0;
 }
 
 /*
