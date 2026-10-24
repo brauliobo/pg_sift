@@ -114,7 +114,7 @@
 #define AGG_VET_OS_PAGE		1000.0	/* ... from the cache of the operating system: the read call and the copy of the page (3.5 us measured, a heap of 185 MB under 16 MB of buffers) */
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
-#define AGG_WIDE_ENTRY		12.0	/* a new entry of it (a numeric built, about 100 ns), per distinct value */
+#define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
 #define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
