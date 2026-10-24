@@ -148,7 +148,7 @@ Options (not every option applies to every command)
                     changed key), --parallel-engines N (independent engines at once on disjoint cpusets), --max-rerun N (NOISY cells measured again), --docs, --out DIR,
                     --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; bench/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
-  final options     --stages store,compression,stats,gap,search, --budget MIN (default 25; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
+  final options     --stages store,compression,stats,gap,search, --budget MIN (default 85 at --size standard, 25 below it; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   --run-id ID       name the run (bench/out/run-ID); a directory that has a manifest is continued, results of the same key are kept (`bench/bench resume`)
