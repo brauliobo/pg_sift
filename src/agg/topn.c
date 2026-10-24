@@ -2565,7 +2565,7 @@ walk_build(SiftTopN *t, MemoryContext cxt, const WalkKey *key, bool segs)
 {
 	uint32		nsb = t->nsb;
 	int			wkeys = t->wkeys;
-	MemoryContext cx = AllocSetContextCreate(cxt, "sift topn walk", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = key != NULL ? AllocSetContextCreate(cxt, "sift cache topn walk", ALLOCSET_DEFAULT_SIZES) : AllocSetContextCreate(cxt, "sift topn walk", ALLOCSET_DEFAULT_SIZES);
 	WalkBase   *wb = MemoryContextAllocZero(cx, sizeof(WalkBase));
 	WalkSort	ws;
 
@@ -2631,8 +2631,9 @@ sift_topn_walk_setup(SiftTopN *t)
 		wb = walk_find(&key);
 		if (wb == NULL)
 		{
+			/* kept as long as the backend: "sift cache" contexts are not leaks to scripts/leakcheck.sh */
 			if (walk_cx == NULL)
-				walk_cx = AllocSetContextCreate(TopMemoryContext, "sift topn walks", ALLOCSET_DEFAULT_SIZES);
+				walk_cx = AllocSetContextCreate(TopMemoryContext, "sift cache topn walks", ALLOCSET_DEFAULT_SIZES);
 			if ((Size) t->nsb * (t->wkeys * sizeof(Rank) + 4 * sizeof(uint32)) <= WALK_KEEP_BYTES)
 			{
 				wb = walk_build(t, walk_cx, &key, true);
