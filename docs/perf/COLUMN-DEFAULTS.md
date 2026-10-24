@@ -90,3 +90,17 @@ The same index and statements as above, with `calendar_columns = 'all'` (the 3 d
 | the same `AND deleted_at IS NULL` | 122 | 0 | 251,433 |
 
 The 156 statements: 0 of 7,646 units from the pre-aggregates before, 0 after. Each of them also filters `deleted_at IS NULL`, which no cell answers (the next change), and groups by paths and lookup outputs. The total of the 156 did not move beyond the noise of a host at load 40 (28.8 to 29.4 s before, 26.9 to 29.8 s after): a unit of this index holds about 2,000 rows, as cheap to scan as its cells are to read. A range with day bounds is cut by the month cell of every unit that has a row in the boundary month, so only the units written when the table was young are answered whole; ranges aligned to months are answered everywhere.
+
+## Paths read from the documents of the web API (`jsonb` columns, 156 statements)
+
+The index of the web API with the paths written by hand, against `paths` chosen by the sample at `CREATE INDEX` (the three `jsonb` columns: a map of 10 float keys read by key and by `jsonb_each`, an array of objects, a document with a list of objects below one key). The sampler reads 2,000 documents from 16 stretches; statements 156, `work_mem` 4 GB, alternating pairs as above, median of 3.
+
+| Paths | Index | Statements with SiftAgg | SiftAgg nodes | Total of 156 |
+|---|---:|---:|---:|---:|
+| by hand | 8,830,976 | 156 | 237 | 17.1 s |
+| 10 named keys (the sampler before) | 12,058,624 (+36.6%) | 12 | 28 | 478 s |
+| wildcard for the map, every key of the objects | 11,354,112 (+28.6%) | 116 | 138 | 221 s |
+| wildcard, free text left out (this change) | 9,314,304 (+5.5%) | 116 | 138 | 241 s |
+| the same with the one key the sample cannot see | 9,330,688 (+5.7%) | 156 | 237 | 20.0 s (hand 26.6 s in the same pairs) |
+
+What each rule did: a map of ten keys of one type read with `jsonb_each` is served only by a wildcard (`unnest_leaf`), so the sampler now takes a wildcard from 5 keys instead of 33; a text key whose values average over 64 bytes (a comment, +2.1 MB, 23% of the index) is no filter or group key and is left out; an array that is the whole document is a group of the column's own path; and arrays inside the elements of a group are left out (the build refused `one level of arrays and objects`). What the sample cannot do: the 40 statements that read a key which no document of the table holds (a flag the application filters on and has never written) fall to the heap, 85.2 s of the 241 s; write the spec by hand (the sampler's answer plus that key, the last row) and the 156 are answered again.

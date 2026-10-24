@@ -267,3 +267,5 @@ BEGIN
 	END LOOP;
 END
 $fn$;
+
+COMMENT ON FUNCTION sift.suggest_paths(regclass, text, int4) IS 'The paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks, the same answer for the same table): typed paths for the scalar keys, a wildcard for a map of more than 4 keys of one type, a group for an array of objects, free text (values of more than 64 bytes on average) left out; advice only, NULL when no key qualifies.';
