@@ -801,6 +801,99 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 		p->rows = rows;
 }
 
+/* the most rows a node expects among those that read a table with a column index, in a plan; *reads: this node reads one */
+static double
+plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
+{
+	double		rows = 0;
+	bool		below = false;
+
+	if (plan == NULL)
+		return 0;
+	check_stack_depth();
+	switch (nodeTag(plan))
+	{
+		case T_SeqScan:
+		case T_IndexScan:
+		case T_IndexOnlyScan:
+		case T_BitmapHeapScan:
+			{
+				RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, subroot->parse->rtable);
+
+				below = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid);
+				break;
+			}
+		case T_Append:
+			foreach_ptr(Plan, c, ((Append *) plan)->appendplans)
+			{
+				bool		r = false;
+
+				rows = Max(rows, plan_leaf_rows(subroot, c, &r));
+				below |= r;
+			}
+			break;
+		default:
+			break;
+	}
+	for (int i = 0; i < 2; i++)
+	{
+		bool		r = false;
+
+		rows = Max(rows, plan_leaf_rows(subroot, i == 0 ? plan->lefttree : plan->righttree, &r));
+		below |= r;
+	}
+	*reads = below;
+	return below ? Max(rows, plan->plan_rows) : rows;
+}
+
+/*
+ * How many times derived_cte_rows raised the rows of a CTE scan in the plan being made (the largest ratio): plan_variants takes it after the
+ * shared plan and passes it on, so what is left here after an error or a nested plan is not read.
+ */
+double		agg_cte_lift = 1.0;
+
+/*
+ * A shared CTE whose body joins a table with a column index to filtered tables is estimated at a row or two (each join keeps the share of a
+ * default guess, and a dimension filter that owns all the rows of the table keeps a hundredth), and everything that reads it is priced from
+ * that: the shared plan costs the same at ten times the rows as at one, and the scans that replace it lose the comparison. The rows of the
+ * scan are lifted to the geometric mean of the estimate and the largest result the body builds from the table, as derived_rel_rows does for a
+ * filter; never fewer rows than PostgreSQL's own. This is a floor, not an estimate. It is made for the shared plan only: the inline plan
+ * (agg_variant) has no such CTE to price, and the aggregates the scans leave in it would be priced for more rows than the scans read.
+ */
+void
+derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
+{
+	RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	PlannerInfo *cteroot = root;
+	int			ndx = 0,
+				plan_id;
+	double		leaf,
+				rows;
+	bool		reads;
+
+	if (agg_variant != NULL || rte->self_reference)
+		return;
+	for (Index lv = rte->ctelevelsup; lv > 0; lv--)
+		cteroot = cteroot->parent_root;
+	foreach_node(CommonTableExpr, cte, cteroot->parse->cteList)
+	{
+		if (strcmp(cte->ctename, rte->ctename) == 0)
+			break;
+		ndx++;
+	}
+	if (ndx >= list_length(cteroot->cte_plan_ids) || (plan_id = list_nth_int(cteroot->cte_plan_ids, ndx)) <= 0)
+		return;
+	leaf = plan_leaf_rows(list_nth(root->glob->subroots, plan_id - 1), list_nth(root->glob->subplans, plan_id - 1), &reads);
+	rows = clamp_row_est(sqrt(rel->rows * leaf));
+	if (!reads || rows <= rel->rows)
+		return;
+	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (its body builds %.0f from a table with a column index)", rows, rel->rows, leaf);
+	agg_cte_lift = Max(agg_cte_lift, rows / rel->rows);
+	rel->rows = rows;
+	foreach_node(Path, p, rel->pathlist)
+		p->rows = rows;
+}
+
 /*
  * How many times more rows the key of a row owns than the mean: nd * sum(freq^2) over the values of the column, the frequencies of its
  * most common values by PostgreSQL's statistics and the rest of the rows spread evenly. 1 for a flat column or one without statistics.
