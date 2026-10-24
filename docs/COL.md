@@ -633,7 +633,7 @@ reads fewer pages than the zones of the units can cut once the table has churned
 float columns of the index, most significant first) sorts the rows of a build, a promotion or a merge by the key and cuts the units by its range, whatever their heap pages: the zones of the key in a unit are
 then tight, and a lookup or a range of the key reads the units of its range only (the units of an index without the option: every part of the heap; in the test, 1 of 100 units for one key value against 8 of
 8 for the same rows by superblock). A NULL key sorts last. The rows of a unit are in TID order, and the unit lists its TIDs (a lazy TID directory, which the head read of the unit covers whatever its length) because its rows are no longer those of a block range: a scan, a top-N and a point lookup of the index read the addresses from it, and the dirty-page list of a unit (the heap pages that
-changed since it was written) is kept as for a superblock.
+changed since it was written) is kept as for a superblock. For the same reason a heap address does not name its unit, so the point directories of a key-cut segment list the rows of the segment (section 2.17) whatever `point_tid_columns` says, and a lookup reads the unit of each row; a key-cut segment with a table of addresses is refused with the `REINDEX` hint.
 
 `key_cut_rows` (64 to 32,768) is the rows a unit aims at (at most 32,768, which is a superblock of rows of about 11 bytes); the default is the rows of an average superblock of the table (`reltuples / relpages * 256` from `pg_class`, 1,024 when the table was not analyzed), so
 the number of units, and the per-unit costs the planner uses, stay what the superblock cut gave. A unit is cut where the first key changes when that is within a quarter of the aim, so one key value is in as few
@@ -706,7 +706,7 @@ u32 words[words]  the lists, {u32 count (2 or more), u32 bytes, bytes}, padded t
                 differences of the codes after it (a key in rows of neighbouring pages costs 1 to 2 bytes a row)
 ```
 
-The block of an address says the unit (`block >> 8` is the superblock), so a lookup knows the units of its rows without reading any. The fingerprint is 16 bits,
+The block of an address says the unit (`block >> 8` is the superblock), so a lookup knows the units of its rows without reading any. A key-cut segment (section 2.16) has no such unit for an address and keeps the rows form. The fingerprint is 16 bits,
 so the table is a filter (about 1 in 65,000 for each other key in the probe sequence): the access method returns the addresses with the heap check of the condition
 (`xs_recheck`, a bitmap scan's recheck), as for rows. Three rules keep the answer the heap's. The units whose rows may have died are read instead (a unit with a dead
 row, `sift_cseg_dirty`: VACUUM frees an address to be used again by another row, listed under another key or none), as a segment without the directory would be. A scan that
