@@ -1161,6 +1161,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		entry->flags |= SIFT_SEG_VERS;
 		entry->reserved = w->vmin;
 	}
+	if (w->keyed)
+		entry->flags |= SIFT_SEG_KEYED;
 	entry->ndocs = w->rows;
 	entry->bytes = blocks * BLCKSZ;
 	pfree(schema.data);

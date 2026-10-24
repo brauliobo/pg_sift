@@ -652,7 +652,7 @@ units of each (a key-cut segment is in the order of the key from one unit to the
 needs as many runs as the table is large over its budget, and stops with an error that says so when that passes the segments a build may write (121): raise `maintenance_work_mem`. The segments written before the
 option was set are not in the order of the key: a merge loads one whole and sorts it, up to `maintenance_work_mem` (an error with the `REINDEX` hint beyond it). A segment that is not in the order of the
 current key (the option was changed to other columns) stops a merge with the same hint. `sift.col_refresh`, `VACUUM` and `REINDEX` keep the option. An index with older units reads them as before until a
-`REINDEX` (`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4).
+`REINDEX` (`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4). A keyed segment is told by the flag `SIFT_SEG_KEYED` of its entry (the first ones, minor 17, have none and are keyed too), not by its minor: a segment may carry a later minor for another record and is keyed or not whatever it is.
 
 ### 2.17 Point directory of a leaf in a segment (column format minor 14, 3.3; opt-in)
 
