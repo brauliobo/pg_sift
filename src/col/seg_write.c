@@ -807,11 +807,12 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		return false;
 	for (int c = 0; c < ncols; c++)
 		h.nleaf += super_leaf_ok(&w->schema->cols[c]);
+	/* what the merge of one group allocates is freed with the group: a segment of many units has thousands of groups */
 	cx = AllocSetContextCreate(w->mcxt, "sift col superunits", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(cx);
 	ua = palloc(fan * sizeof(SiftCAgg));
 	cdir = palloc((nsu + 1) * sizeof(uint64));
 	initStringInfo(&cubes);
+	old = MemoryContextSwitchTo(cx);
 	for (uint32 k = 0; k < nsu; k++)
 	{
 		uint32		n = Min(fan, nsb - k * fan);
@@ -831,8 +832,7 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		}
 		if (n >= 2 && anycube && !sift_cpagg_super_cube(w->schema, blob, len, n, &cubes))
 			cubes.len = before;
-		pfree(blob);
-		pfree(len);
+		MemoryContextReset(cx);
 	}
 	cdir[nsu] = cubes.len;
 	h.cubedir_off = cubes.len > 0 ? ALIGN8(sizeof(SuperHeader) + (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (Size) h.nleaf * nsu * sizeof(SiftCSuperLeaf)) : 0;
@@ -863,6 +863,9 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		appendBinaryStringInfo(out, cubes.data, cubes.len);
 	}
 	MemoryContextDelete(cx);
+	pfree(ua);
+	pfree(cdir);
+	pfree(cubes.data);
 	return true;
 }
 
