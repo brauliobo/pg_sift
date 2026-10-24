@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The scaling gate: the time of a request against the size of the table, at 5 sizes of small tables, with the log-log slope asserted per class (bench/scaling,
 # docs/SCALING.md): units pruned (every unit tested, none read), one unit read, count(*), sum, ORDER BY .. LIMIT, a point and an IN list through the point directory,
-# GROUP BY with up to 256k groups, a request of 51 keys over 400-2000 partitions (flat: the partitions it touches, not the partitions that exist) and a query over all
-# of them (linear). Per-request work must stay flat (slope <= 0.5) and whole-table work linear (<= 1.15), so a change that makes a request cost more the more
+# GROUP BY with up to 256k groups, a request of 51 keys over 400-2000 partitions and over 1,000 partitions of padded rows (flat: the partitions it touches, not the partitions that
+# exist) and the units a 51-key request reads in an arrival-order heap with an exact key summary (flat: bounded by the rows it asks for). Per-request work must stay flat (slope <= 0.5) and whole-table work linear (<= 1.15), so a change that makes a request cost more the more
 # units, groups or partitions exist fails here, in seconds, instead of at 10x. The library is the 8-page-unit flavour of scripts/scaling-gate.sh (thousands of
 # units on 1 GB of tmpfs); skipped on PostgreSQL 17.
 . "$(dirname "$0")/lib.bash"
@@ -35,7 +35,7 @@ n=$(grep -c . <<<"$lines")
 plan $((n + 3))
 check "the answers of the scan, of the point directory and of an IN list are the heap's (3 checks)" test "$(grep -c '^CHECK .* ok' <<<"$out")" == 3
 check "no check mismatched" test "$(grep -c '^CHECK .*MISMATCH' <<<"$out")" == 0
-check "every class of the gate ran (at least 11 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 11
+check "every class of the gate ran (at least 15 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 15
 while IFS= read -r l; do
 	[[ -n $l ]] || continue
 	desc=${l#SLOPE }

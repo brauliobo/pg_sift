@@ -13,6 +13,7 @@ class Query:
     sql: Callable[[int], str]                 # size -> statement
     target: str | None = 'flat'               # flat | linear | None
     needs_sift: bool = True                   # the sift engine must plan a sift node, else the time is not the index: FAIL
+    units: str | None = None                  # flat | linear | info: the units read (the plan's Units) against the size, a second SLOPE line `<query>[units]`; None = not reported
 
 
 @dataclass
