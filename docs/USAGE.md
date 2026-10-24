@@ -282,6 +282,12 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
   `maintenance_work_mem`, about 4.3 times at `1MB` (a second merge pass), measured on 100,000 articles (64 MB index). Memory stays within the budget at any table size.
 - pg_dump restores rebuild the index. Replication: see [Replication](#replication).
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
+- A `sift_col` unit answers from its pre-aggregates only over pages the visibility map calls all-visible. A plain VACUUM sets every page it can: measured on
+  400,000 rows with 3% of them updated in ten transactions and `synchronous_commit = on`, none stays unset with no old snapshot, and with a transaction
+  holding a snapshot older than the updates 9,814 of 10,052 pages stay unset until it ends, after which one more VACUUM sets them (0 left). That is the
+  PostgreSQL rule that the oldest snapshot decides what a VACUUM may call all-visible, so look for the oldest `xact_start` or `backend_xmin` in
+  `pg_stat_activity` and for replication slots when grouped aggregates still read rows after a VACUUM. With
+  `synchronous_commit = off` the commits not yet flushed do the same (see `sift.col_auto_merge`).
 
 <!-- sift-settings:start -->
 | Setting | Applies to | Default | Values | Context | Description | Cost |
