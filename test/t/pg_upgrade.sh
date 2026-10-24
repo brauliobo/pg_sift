@@ -199,7 +199,7 @@ check "pg_upgrade --check passes" test $checked -eq 0
 upgraded=$?
 check "pg_upgrade succeeds" test $upgraded -eq 0
 if [[ $upgraded -ne 0 ]]; then
-	diag "$(tail -n 20 "$(dir new)/pg_upgrade.log"; tail -n 8 "$(dir new)"/data/pg_upgrade_output.d/*/log/pg_upgrade_server.log 2>/dev/null)"
+	diag "$(tail -n 20 "$(dir new)/pg_upgrade.log"; tail -n 8 "$(dir new)"/data/pg_upgrade_output.d/*/log/pg_upgrade_server.log 2>/dev/null; tail -n 12 "$(dir new)"/data/pg_upgrade_output.d/*/log/pg_upgrade_dump_*.log 2>/dev/null)"
 	bail "pg_upgrade failed"
 fi
 node_start new || bail "the upgraded cluster does not start"
