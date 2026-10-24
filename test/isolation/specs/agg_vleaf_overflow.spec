@@ -21,7 +21,9 @@ teardown
 }
 
 session s1
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET plan_cache_mode = force_generic_plan; }
+# the library loads while the first statement of a backend is planned, and that statement is planned again and every prepared plan dropped: the plan the
+# steps keep must be made after, or the second session's value is seen by a fresh plan (which does not choose the scan) and not by the one under test
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET plan_cache_mode = force_generic_plan; DO $$ BEGIN PERFORM count(*) FROM iso_vl; END $$; }
 step s1prep	{ BEGIN;
 		  PREPARE member AS SELECT grp, sum((m ->> 'a')::float8) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
 		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
