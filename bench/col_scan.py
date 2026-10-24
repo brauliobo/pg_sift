@@ -6,7 +6,8 @@
   bench/col_scan.py space DB ROWS > col-scan-space.tsv   the size of every kind of index
 
 KIND: btree (one per query column), classes (one sift_col index with the operator classes), set (the same with key_columns = $SET_COLUMNS, default 'id, rnd, s_short, u'),
-point (the same with point_columns = $POINT_COLUMNS, default 'id, rnd, grp, s_short, u'), point_tid (the same with point_tid_columns: the directory lists heap addresses and the lookup reads no unit).
+point (the same with point_columns = $POINT_COLUMNS, default 'id, rnd, grp, s_short, u'), point_tid (the same with point_tid_columns: the directory lists heap addresses and the lookup reads no unit),
+keycut (point_tid and key_cut = 'rnd': the units are cut by rnd, the column of random order).
 PG* variables pick the server. Each query and plan runs RUNS = 24 times in one session: the median of the last three is exec_median_ms (EXPLAIN (ANALYZE, TIMING OFF) Execution
 Time), a backend that has run the query before (and has asked a dictionary often enough for the lookup structures built beside it, col/dict.c: 8
 equalities, 16 prefix tests). first_ms is the first run of a new backend (it parses the dictionaries of the string columns it reads, fills its caches):
@@ -18,7 +19,7 @@ import json, os, random, statistics, subprocess, sys
 
 ENV = dict(os.environ, LC_ALL="C")
 NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + key_columns", "point": "sift_col classes + point_columns",
-         "point_tid": "sift_col classes + point_tid_columns"}
+         "point_tid": "sift_col classes + point_tid_columns", "keycut": "sift_col classes + point_tid_columns + key_cut"}
 OPS = ("id sift.col_int4_ops, rnd sift.col_int4_ops, grp sift.col_int4_ops, ts sift.col_timestamptz_ops, "
        "s_short sift.col_text_ops, u sift.col_uuid_ops, amount sift.col_numeric_ops")
 SET_COLUMNS = os.environ.get("SET_COLUMNS", "id, rnd, s_short, u")
@@ -30,8 +31,9 @@ INDEXES = {
     "set": [f"CREATE INDEX c_set ON T USING sift_col ({OPS}) WITH (key_columns = '{SET_COLUMNS}')"],
     "point": [f"CREATE INDEX c_point ON T USING sift_col ({OPS}) WITH (point_columns = '{POINT_COLUMNS}')"],
     "point_tid": [f"CREATE INDEX c_point_tid ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}')"],
+    "keycut": [f"CREATE INDEX c_keycut ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}', key_cut = 'rnd')"],
 }
-DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point", "c_point_tid")
+DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point", "c_point_tid", "c_keycut")
 SIFT = ["SET sift.enable_col_scan = on"]
 PLANS = {
     "btree": [("planner", []), ("forced index scan", ["SET enable_seqscan = off", "SET enable_bitmapscan = off"]),
@@ -164,7 +166,8 @@ def space(n):
                               ("classes", "sift_col classes", "id, rnd, grp, ts, s_short, u, amount: one index"),
                               ("set", "sift_col classes + key_columns", f"the same with key_columns = '{SET_COLUMNS}'"),
                               ("point", "sift_col classes + point_columns", f"the same with point_columns = '{POINT_COLUMNS}'"),
-                              ("point_tid", "sift_col classes + point_tid_columns", f"the same with point_tid_columns = '{POINT_COLUMNS}'")):
+                              ("point_tid", "sift_col classes + point_tid_columns", f"the same with point_tid_columns = '{POINT_COLUMNS}'"),
+                              ("keycut", "sift_col classes + point_tid_columns + key_cut", "the same with key_cut = 'rnd'")):
         psql(*[f"DROP INDEX IF EXISTS {i}" for i in DROP])
         for d in INDEXES[kind] + (["CREATE INDEX b_amount ON T (amount)"] if kind == "btree" else []):
             psql(d.replace(" T ", f" {tab} "))
