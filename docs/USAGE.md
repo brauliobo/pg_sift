@@ -14,9 +14,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](../packaging/)).
 - Docker, Docker Compose, CloudNativePG: [CONTAINERS.md](CONTAINERS.md) (the image recipes are in [packaging/docker/](../packaging/docker/)); a five-minute tour: [QUICKSTART.md](QUICKSTART.md). Supported versions: [SUPPORT.md](SUPPORT.md).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_3.2.3-1_amd64.deb`.
+  and `sudo apt install ./postgresql-18-pg-sift_3.3.0-1_amd64.deb`.
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.2.3/pg_sift_18-3.2.3-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.3.0/pg_sift_18-3.3.0-1.el9.x86_64.rpm`.
 
 Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`): `CREATE EXTENSION pg_sift;`. No `shared_preload_libraries` entry is needed for the `sift` index, the `sift_col` index or the `sift_table` table access method; only publishing a `sift_table` under `wal_level = logical` does ([Replication](#replication)).
 
@@ -384,7 +384,7 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `stemmer` | `sift` | '' | none or en | Stemmer: en (Snowball English) or none | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
 | `case_folding` | `sift` | true | bool | Fold case | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
 | `accent_folding` | `sift` | true | bool | Strip accents | REINDEX to change [SIZING](SIZING.md#features-and-their-costs) |
-| `positions` | `sift` | true | bool | Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply) | index about 2.5x the size of positions=false in the 3.0 series (130.9 against 52.5 MiB on 218,058 articles); REINDEX to change [SIZING](SIZING.md#disk) |
+| `positions` | `sift` | true | bool | Store word positions, so phrase queries are decided by the index instead of rechecked in the heap (REINDEX to apply) | index about 2.5x the size of positions=false (130.9 against 52.5 MiB on 218,058 articles); REINDEX to change [SIZING](SIZING.md#disk) |
 | `prefix_index` | `sift` | 0 | int 0..15 | Index the first 1..n characters of every word, so prefix queries of up to n characters need no expansion (0 = off, REINDEX to apply) | a larger index (more terms, growing with n); REINDEX to change [USAGE](USAGE.md#queries) |
 | `fields` | `sift` | '' | names of the leading sections of the text, as name:word | Names of the first sections of the indexed text (split at chr(29)) that queries can search apart, as name:word | REINDEX to change [FIELDS-FACETS](FIELDS-FACETS.md#fields-siftsections-and-siftfield_query) |
 | `write_buffer_limit` | `sift` | 4096 | int 64..1048576 | Write buffer size in kB before it is sealed for promotion | 1024 against 4096 kB (100,000 documents): promotion 37 to 13 ms but 3.7x as often, 16-client INSERT 107k to 87k rows/s, index 72 to 98 MB [USAGE](USAGE.md#maintenance-and-operations) |
