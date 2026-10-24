@@ -104,3 +104,18 @@ The index of the web API with the paths written by hand, against `paths` chosen 
 | the same with the one key the sample cannot see | 9,330,688 (+5.7%) | 156 | 237 | 20.0 s (hand 26.6 s in the same pairs) |
 
 What each rule did: a map of ten keys of one type read with `jsonb_each` is served only by a wildcard (`unnest_leaf`), so the sampler now takes a wildcard from 5 keys instead of 33; a text key whose values average over 64 bytes (a comment, +2.1 MB, 23% of the index) is no filter or group key and is left out; an array that is the whole document is a group of the column's own path; and arrays inside the elements of a group are left out (the build refused `one level of arrays and objects`). What the sample cannot do: the 40 statements that read a key which no document of the table holds (a flag the application filters on and has never written) fall to the heap, 85.2 s of the 241 s; write the spec by hand (the sampler's answer plus that key, the last row) and the 156 are answered again.
+
+## Calendar cells and the size of the table (slope)
+
+The same index with and without `calendar_columns = 'all'`, on prefixes of the table (the first n rows of the heap, so a unit keeps the dates it has in the whole table; 24 years of dates in every prefix), `work_mem` 4 GB, one session per run, the two indexes switched with `indisvalid` and timed in alternating pairs (the order flips each round, the first pair is dropped, median of 9) at a host load of 20 to 56. Statements: the OR of two ranges of a year, aligned to months (`aligned`) or to days (`days`), `GROUP BY date_trunc('month', d)` over the day-bounded ranges (`month`), and the same `AND deleted_at IS NULL`. Units / from cells; ms without cells / with cells:
+
+| Rows | Units | `aligned` | `days` | `month` | `month` + `deleted_at` |
+|---:|---:|---|---|---|---|
+| 25,000 | 13 | 13: 0.55 / 0.52 | 4: 0.56 / 0.72 | 0: 0.74 / 0.91 | 0: 0.79 / 0.81 |
+| 46,000 | 22 | 22: 0.78 / 0.73 | 3: 0.87 / 0.96 | 0: 0.90 / 1.11 | 0: 1.07 / 1.07 |
+| 85,000 | 41 | 41: 0.98 / 1.03 | 16: 1.13 / 1.27 | 9: 1.35 / 1.70 | 0: 1.49 / 1.43 |
+| 179,000 | 84 | 84: 1.67 / 2.01 | 37: 1.60 / 2.31 | 22: 1.80 / 2.92 | 1: 2.13 / 2.57 |
+| 353,029 | 150 | 150: 2.26 / 2.64 | 57: 2.26 / 3.17 | 22: 2.78 / 3.87 | 1: 3.44 / 3.59 |
+| log-log slope | | 0.54 / 0.64 | 0.51 / 0.57 | 0.50 / 0.58 | 0.54 / 0.57 |
+
+The slope does not flatten: with cells the time grows as fast as without them (0.57 to 0.64 against 0.50 to 0.54, where the fixed cost of a statement bends both below 1), and every shape is 0% to 40% slower with them. A unit holds about 2,000 rows, whatever the size of the table, and the rows of a unit are scattered over the 24 years (the correlation of the date with the heap order is 0.04), so a unit has about as many cells as rows in its recent years, a cell holds one to a few rows, and reading the cells costs what scanning the date of the unit costs (7 ns a row, 15 us a unit). More units mean more of them to answer from cells, not a cheaper unit: the table size cannot make cells pay while the dates are scattered inside the units. The same 353,029 rows written in the order of the date (every unit holds a few days): 68 of 69 units of the aligned range are answered by the zone alone with or without cells (1.01 / 1.29 ms), the day-bounded count 0.83 / 1.01 ms, and the month grouping, which a zone cannot answer, 70 of 70 units from cells, 2.60 -> 2.04 ms (-22%); with `deleted_at IS NULL` 2 of 70, 2.42 / 2.60 ms. So cells stay named, not a default: they pay for a group-by-month over a table stored in date order, and nothing else measured.
