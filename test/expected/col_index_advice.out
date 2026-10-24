@@ -12,8 +12,8 @@ INSERT INTO ad SELECT i, i / 600, i % 4, (hashint4(i) & 2147483647) % 300, (hash
 VACUUM (FREEZE, ANALYZE) ad;
 CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label);
 SELECT * FROM sift.index_advice('ad_col');
-       leaf       |   kind    |                        held                         | sampled | share |                                                   advice                                                    
-------------------+-----------+-----------------------------------------------------+---------+-------+-------------------------------------------------------------------------------------------------------------
+       leaf       |   kind    |                        held                         | sampled | share |                                                                           advice                                                                            
+------------------+-----------+-----------------------------------------------------+---------+-------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
  id               | unique    |                                                     |       8 |     0 | 
  dim_a_id         | key       | cube histogram in 100% of the units                 |       8 |   100 | 
  source           | dimension | cube histogram in 100% of the units                 |       8 |   100 | 
@@ -22,9 +22,9 @@ SELECT * FROM sift.index_advice('ad_col');
  val              | measure   |                                                     |       8 |     0 | 
  d                | date      | cube histogram in 100% of the units, calendar cells |       0 |       | 
  label            | dimension | cube histogram in 100% of the units                 |       8 |   100 | 
- dim_a_id, source | pair      |                                                     |       8 |   100 | rollup_dims = 'dim_a_id, source: <measure>' would answer 100% of the units from cells, within 3% more index
+ dim_a_id, source | pair      |                                                     |       8 |   100 | rollup_dims = 'dim_a_id, source: <measure>' would answer 100% of the units from cells, within 3% more index (rollup_dims = 'auto' writes the cheapest pair)
  dim_a_id, label  | pair      |                                                     |       8 |   100 | 
- source, label    | pair      |                                                     |       8 |   100 | rollup_dims = 'source, label: <measure>' would answer 100% of the units from cells, within 3% more index
+ source, label    | pair      |                                                     |       8 |   100 | rollup_dims = 'source, label: <measure>' would answer 100% of the units from cells, within 3% more index (rollup_dims = 'auto' writes the cheapest pair)
 (11 rows)
 
 -- the same rows after a REINDEX (the decisions are a function of the data)
@@ -40,11 +40,11 @@ SELECT (SELECT count(*) FROM (TABLE ad_before EXCEPT SELECT * FROM sift.index_ad
 -- a rollup that holds a pair is not advised again; key_columns = 'off' leaves the foreign key column to the advice
 CREATE INDEX ad_roll ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_dims = 'dim_a_id, source', key_columns = 'off');
 SELECT leaf, kind, held, share, advice FROM sift.index_advice('ad_roll') WHERE kind = 'pair' OR leaf = 'parent_id' ORDER BY leaf;
-      leaf       | kind | held | share |                                                  advice                                                  
------------------+------+------+-------+----------------------------------------------------------------------------------------------------------
+      leaf       | kind | held | share |                                                                          advice                                                                          
+-----------------+------+------+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------
  dim_a_id, label | pair |      |   100 | 
  parent_id       | key  |      |     0 | key_columns = 'auto' keeps a key list or bitmap of it for count(DISTINCT)
- source, label   | pair |      |   100 | rollup_dims = 'source, label: <measure>' would answer 100% of the units from cells, within 3% more index
+ source, label   | pair |      |   100 | rollup_dims = 'source, label: <measure>' would answer 100% of the units from cells, within 3% more index (rollup_dims = 'auto' writes the cheapest pair)
 (3 rows)
 
 -- the advice is what the build then finds: the advised pair is written in every unit, a pair with a column the advice leaves out (300 values in a unit) is not
