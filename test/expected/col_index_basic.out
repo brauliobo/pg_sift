@@ -25,7 +25,7 @@ CREATE TABLE orders (
 CREATE INDEX o_numeric ON orders USING sift_col (total);
 CREATE INDEX o_jsonb ON orders USING sift_col (payload);
 ERROR:  the jsonb column "payload" of a sift_col index needs paths
-HINT:  Declare them with the paths option: WITH (paths = 'payload.* float4')
+HINT:  Declare them with the paths option: WITH (paths = 'payload.* float4'), or REINDEX to read them from the documents.
 CREATE INDEX o_include ON orders USING sift_col (store_id) INCLUDE (qty);
 ERROR:  access method "sift_col" does not support included columns
 CREATE UNIQUE INDEX o_unique ON orders USING sift_col (store_id);

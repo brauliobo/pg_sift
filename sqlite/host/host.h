@@ -44,6 +44,7 @@ typedef struct { uint64 value; } FullTransactionId;
 
 #define InvalidOid				((Oid) 0)
 #define InvalidBlockNumber		((BlockNumber) 0xFFFFFFFF)
+#define MaxBlockNumber			((BlockNumber) 0xFFFFFFFE)
 #define InvalidOffsetNumber		((OffsetNumber) 0)
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)

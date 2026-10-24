@@ -38,7 +38,7 @@ INSERT INTO pa_q VALUES
 -- no paths option: decided at CREATE INDEX (a jsonb column needed paths, so this was an error): the NOTICE, the option, and the answers
 CREATE INDEX pa_auto ON pa USING sift_col (id, doc, tail);
 NOTICE:  sift_col index pa_auto reads the jsonb paths doc.count int4, doc.meta.lang text, doc.name text, doc.parts[]{cat text, score int4}, tail.t int4
-DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and sift.suggest_paths reads the documents again.
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
 HINT:  Write paths = '...' to fix them by hand.
 SELECT pa_option('pa_auto');
                                                    pa_option                                                   
@@ -98,7 +98,7 @@ SELECT pa_option('pa_hand');
 
 CREATE INDEX pa_none ON pa USING sift_col (id, doc) WITH (paths = 'auto');
 NOTICE:  sift_col index pa_none reads the jsonb paths doc.count int4, doc.meta.lang text, doc.name text, doc.parts[]{cat text, score int4}
-DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and sift.suggest_paths reads the documents again.
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
 HINT:  Write paths = '...' to fix them by hand.
 SELECT pa_option('pa_none');
                                             pa_option                                             
@@ -111,7 +111,7 @@ CREATE TABLE pa_few (id int, doc jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO pa_few SELECT i, jsonb_build_object('k' || i, i) FROM generate_series(1, 2000) i;
 CREATE INDEX pa_few_col ON pa_few USING sift_col (id, doc);
 NOTICE:  sift_col index pa_few_col reads the jsonb paths doc.* int4
-DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and sift.suggest_paths reads the documents again.
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
 HINT:  Write paths = '...' to fix them by hand.
 SELECT pa_option('pa_few_col');
        pa_option        
@@ -123,13 +123,65 @@ SELECT pa_option('pa_few_col');
 CREATE TABLE pa_empty (id int, doc jsonb);
 CREATE INDEX pa_empty_col ON pa_empty USING sift_col (id, doc);
 ERROR:  the jsonb column "doc" of a sift_col index needs paths
-HINT:  Declare them with the paths option: WITH (paths = 'doc.* float4')
+HINT:  Declare them with the paths option: WITH (paths = 'doc.* float4'), or REINDEX to read them from the documents.
 SELECT pa_option('pa_empty_col');
  pa_option 
 -----------
  not set
 (1 row)
 
-DROP TABLE pa, pa_q, pa_few, pa_empty;
+-- ALTER INDEX ... SET (paths = 'auto') or RESET (paths) asks for the documents to be read again at the next REINDEX (as after any change of paths the
+-- index has no layout until then, so the REINDEX follows at once)
+CREATE TABLE pa_re (id int, doc jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO pa_re SELECT i, jsonb_build_object('a', i % 7) FROM generate_series(1, 2000) i;
+CREATE INDEX pa_re_col ON pa_re USING sift_col (id, doc);
+NOTICE:  sift_col index pa_re_col reads the jsonb paths doc.a int4
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
+HINT:  Write paths = '...' to fix them by hand.
+SELECT pa_option('pa_re_col');
+       pa_option        
+------------------------
+ paths=auto: doc.a int4
+(1 row)
+
+DELETE FROM pa_re;
+INSERT INTO pa_re SELECT i, jsonb_build_object('b', i % 11, 'label', 'l' || i % 3) FROM generate_series(1, 2000) i;
+ALTER INDEX pa_re_col SET (paths = 'auto');
+SELECT pa_option('pa_re_col');
+ pa_option  
+------------
+ paths=auto
+(1 row)
+
+REINDEX INDEX pa_re_col;
+NOTICE:  sift_col index pa_re_col reads the jsonb paths doc.b int4, doc.label text
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
+HINT:  Write paths = '...' to fix them by hand.
+SELECT pa_option('pa_re_col');
+               pa_option                
+----------------------------------------
+ paths=auto: doc.b int4, doc.label text
+(1 row)
+
+DELETE FROM pa_re;
+INSERT INTO pa_re SELECT i, jsonb_build_object('c', i % 5) FROM generate_series(1, 2000) i;
+ALTER INDEX pa_re_col RESET (paths);
+REINDEX INDEX pa_re_col;
+NOTICE:  sift_col index pa_re_col reads the jsonb paths doc.c int4
+DETAIL:  They are the keys that are a scalar of one type in most of a sample of 2000 documents, a map of more than 32 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.
+HINT:  Write paths = '...' to fix them by hand.
+SELECT pa_option('pa_re_col');
+       pa_option        
+------------------------
+ paths=auto: doc.c int4
+(1 row)
+
+SELECT sift.col_verify('pa_re_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE pa, pa_q, pa_few, pa_empty, pa_re;
 DROP FUNCTION pa_option(text), pa_rows(text, bool), pa_pushed(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
