@@ -1,0 +1,44 @@
+-- A table with several sift_col indexes is scanned through the one the cost model prices lowest, whichever was created last: an index cut by the key (key_cut)
+-- reads the few units of a key and all of them for a date range, an index cut by block range the other way round. Each table has both, in the two creation orders.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.enable_col_scan = on;
+
+CREATE FUNCTION ip_fill(t text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TABLE %I (id int, tenant int, day date, v int, pad text) WITH (autovacuum_enabled = false)', t);
+	EXECUTE format($q$INSERT INTO %I SELECT i, abs(hashint4(i)) %% 300, date '2020-01-01' + i / 100, i %% 97, repeat('x', 1000) FROM generate_series(0, 59999) i$q$, t);
+END $$;
+-- the index the statement is planned through ('none' when no sift scan)
+CREATE FUNCTION ip_index(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '^\s*Index: ' THEN RETURN regexp_replace(l, '^\s*Index: ', ''); END IF;
+	END LOOP;
+	RETURN 'none';
+END $$;
+
+SELECT ip_fill('ip_a'), ip_fill('ip_b'), ip_fill('ip_one');
+CREATE INDEX ip_a_page ON ip_a USING sift_col (id, tenant, day, v);
+CREATE INDEX ip_a_key ON ip_a USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
+CREATE INDEX ip_b_key ON ip_b USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
+CREATE INDEX ip_b_page ON ip_b USING sift_col (id, tenant, day, v);
+CREATE INDEX ip_one_page ON ip_one USING sift_col (id, tenant, day, v);
+VACUUM (FREEZE, ANALYZE) ip_a, ip_b, ip_one;
+
+-- a key: the cut by key reads 1 or 2 units, the other all of them; a date range: the cut by block range reads a few, the other all; both in either creation order
+SELECT t, ip_index(format('SELECT count(*) FROM %s WHERE tenant = 7', t)) AS key_lookup,
+       ip_index(format('SELECT sum(v) FROM %s WHERE tenant IN (7, 8, 9)', t)) AS key_in_sum,
+       ip_index(format('SELECT count(*) FROM %s WHERE day >= date ''2020-06-01'' AND day < date ''2020-06-08''', t)) AS date_range,
+       ip_index(format('SELECT count(*) FROM %s WHERE id BETWEEN 30000 AND 30400', t)) AS id_range
+FROM (VALUES ('ip_a'), ('ip_b')) x(t) ORDER BY t;
+-- a table with one index is planned as before
+SELECT ip_index('SELECT count(*) FROM ip_one WHERE tenant = 7') AS key_lookup, ip_index('SELECT count(*) FROM ip_one WHERE day < date ''2020-02-01''') AS date_range;
+-- the answers do not depend on the index
+SELECT (SELECT count(*) FROM ip_a WHERE tenant = 7) = (SELECT count(*) FROM ip_b WHERE tenant = 7) AS same_key,
+       (SELECT sum(v) FROM ip_a WHERE day >= date '2020-06-01' AND day < date '2020-06-08') = (SELECT sum(v) FROM ip_b WHERE day >= date '2020-06-01' AND day < date '2020-06-08') AS same_range;
+
+DROP TABLE ip_a, ip_b, ip_one;
+DROP FUNCTION ip_fill(text), ip_index(text);
+DROP EXTENSION pg_sift;
