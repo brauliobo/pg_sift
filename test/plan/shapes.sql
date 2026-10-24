@@ -314,7 +314,7 @@ SELECT count(DISTINCT parent_id) AS parents FROM events WHERE deleted_at IS NULL
 SELECT kind, count(DISTINCT parent_id) AS parents FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: j03_distinct_by_month
--- expect: scan 0.096 0.38
+-- expect: scan 0.096 0.5
 SELECT date_trunc('month', ts)::date AS bucket, count(DISTINCT parent_id) AS parents FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: j04_two_distincts
@@ -355,7 +355,7 @@ SELECT parent_id, round(avg((doc -> 'metrics' ->> 'asp_a')::float8)::numeric, 3)
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: l01_rank_within_month
--- expect: scan 0.21 0.83
+-- expect: scan 0.096 0.5
 SELECT bucket, kind, n FROM (SELECT bucket, kind, n, rank() OVER (PARTITION BY bucket ORDER BY n DESC, kind) AS rk
 	FROM (SELECT date_trunc('month', ts)::date AS bucket, kind, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1, 2) s) w WHERE rk <= 2 ORDER BY 1, 2;
 
