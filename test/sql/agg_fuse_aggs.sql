@@ -101,6 +101,8 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET sift.agg_preagg = off;
+-- the leader takes no morsel: the workers scan, so that what they send is merged whatever the timing (the scan of this table is over before a worker starts otherwise)
+SET parallel_leader_participation = off;
 SELECT same(:'simple') AS simple_par_same, same(:'mapped') AS mapped_par_same, same(:'lines') AS lines_par_same, same(:'where_aggs') AS where_aggs_par_same;
 
 DROP FUNCTION arms_shared(text), same(text);

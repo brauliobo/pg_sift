@@ -319,10 +319,12 @@ static void
 bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber *offsets, int n)
 {
 	uint64		gen;
+	bool		held;
 	int			cnt = n < 0 ? SIFT_TBL_MAX_OFF : n;
 
 	s->nbrows = s->bri = 0;
-	if (!sift_tbl_load_vblock(rel, s->st, vblock, s->copy, &gen))
+	/* the write buffers the scan began with, like its column groups (s->dir): a UPDATE reads the directory again at every row */
+	if (!sift_tbl_load_vblock_in(rel, s->seg, s->nseg, vblock, s->copy, &gen, &held))
 	{
 		bitmap_group_page(rel, s, vblock, offsets, n);
 		return;

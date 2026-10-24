@@ -117,8 +117,10 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 15 | `key_columns`: a key list or bitmap of an int2, int4 or date column (the foreign key and `_id` columns the default `auto` picks, or the ones named) | `WITH (key_columns = 'off')`, or `sift.col_format_minor` 14 or less |
 | 16 | `point_tid_columns` (option, off): the point directory lists heap addresses | `sift.col_format_minor` 14 or less (then it lists rows, minor 14) |
 
-So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the session, the role, the database or the server, writes what 3.2 reads (4 for a schema
+So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the server (`ALTER SYSTEM`, as in "Going back to 3.2") or the database, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
+
+A session setting (`SET`), or one on an application role, is not enough while `sift.col_auto_merge` is on (the default since 3.3): the background worker that rewrites a `sift_col` index runs in its own process, as the bootstrap superuser, and follows only the setting of the server and of the database, so it would write the default 15 into an index that 3.2 must read. Use the server setting when the aim is that no 3.3 write is beyond 3.2, or `sift.col_auto_merge = off` for the time the session setting is the one in force.
 
 ### Going back to 3.2
 

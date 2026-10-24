@@ -6,6 +6,10 @@ extension are in [../CHANGELOG.md](../CHANGELOG.md), those of the SQLite extensi
 
 ## Unreleased
 
+## 3.2.3
+
+- Rebuilt with the PostgreSQL release 3.2.3.
+
 ## 3.2.2
 
 - Rebuilt with the PostgreSQL release 3.2.2.
