@@ -950,3 +950,33 @@ compute_gids(AggExec *ex, int nsel)
 	if (ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
 }
+
+/*
+ * The group ids of the current grouping set in hash mode from the key ids of the chunk (kid: compute_kids with every key): a key outside the set is
+ * NULL (id 0) and the key of the sets is the set's number, as key_prepare gives them, so the sets that read the chunk's own tuples prepare the keys once.
+ */
+void
+compute_set_gids(AggExec *ex, int nsel, const uint32 *kid)
+{
+	int			nk = ex->spec->nkeys;
+	const uint32 *col[SIFT_AGG_MAX_KEYS];
+	uint32		fixed[SIFT_AGG_MAX_KEYS];
+
+	for (int j = 0; j < nk; j++)
+	{
+		bool		in = (ex->arm_mask >> j & 1) != 0;
+
+		col[j] = in && ex->spec->key[j].kind != SAK_SET ? kid + (Size) j * (VEC + PADW) : NULL;
+		fixed[j] = in ? ex->curset + 1 : 0;
+	}
+	for (int i = 0; i < nsel; i++)
+	{
+		uint32		ids[SIFT_AGG_MAX_KEYS];
+
+		for (int j = 0; j < nk; j++)
+			ids[j] = col[j] ? col[j][i] : fixed[j];
+		ex->gid[i] = hash_group(ex, ids);
+	}
+	if (ex->ngroups > ex->gcap)
+		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+}
