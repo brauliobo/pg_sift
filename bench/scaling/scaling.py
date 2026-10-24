@@ -2,7 +2,7 @@
 """Focused scaling suite: time against size at 4-5 points on small tables, the log-log slope asserted against a target (docs/SCALING.md).
 
   bench/scaling/scaling.py list
-  bench/scaling/scaling.py run [--only units,groups,...] [--quick] [--sizes units=64,128,256] [--reps 5] [--out FILE] [--keep]
+  bench/scaling/scaling.py run [--only units,groups,...] [--quick] [--gate] [--sizes units=64,128,256] [--reps 5] [--out FILE] [--keep]
 
 Uses the cluster of PGHOST/PGPORT/PGDATABASE (any with pg_sift installed); every case lives in the schema scal_<case>, dropped at the end.
 Per size and engine: one warm-up and --reps runs of EXPLAIN (ANALYZE, TIMING OFF), median Planning + Execution Time.
@@ -34,13 +34,13 @@ def drop_schema(name):
          f"and c.relkind in ('r', 'p') order by c.relispartition desc \\gexec\ndrop schema if exists scal_{name} cascade;")
 
 
-def load_cases():
+def load_cases(gate=False):
     cases = {}
     for f in sorted(glob.glob(os.path.join(H, 'cases', '*.py'))):
         spec = importlib.util.spec_from_file_location('cases_' + os.path.basename(f)[:-3], f)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        for c in mod.CASES:
+        for c in (getattr(mod, 'GATE', []) if gate else mod.CASES):
             cases[c.name] = c
     return cases
 
@@ -68,7 +68,7 @@ def node(plan):
 
 
 def run(args):
-    cases = load_cases()
+    cases = load_cases(args.gate)
     only = args.only.split(',') if args.only else list(cases)
     sizes_override = {k: [int(v) for v in s.split(',')] for k, s in (a.split('=') for a in args.sizes)}
     rows, failed = {}, False
@@ -146,7 +146,7 @@ if __name__ == '__main__':
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('list')
     r = sub.add_parser('run')
-    r.add_argument('--only'); r.add_argument('--quick', action='store_true'); r.add_argument('--keep', action='store_true')
+    r.add_argument('--only'); r.add_argument('--quick', action='store_true'); r.add_argument('--gate', action='store_true', help='the cases of the CI gate (GATE of cases/*.py): small, 8-page units'); r.add_argument('--keep', action='store_true')
     r.add_argument('--sizes', action='append', default=[]); r.add_argument('--reps', type=int, default=5)
     a = ap.parse_args()
     if a.cmd == 'list':
