@@ -245,7 +245,7 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 }
 
 /*
- * percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
+ * mode() and percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
  * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4, date, int8, timestamp or
  * timestamptz leaf or a decimal of at most 18 digits: the executor keeps the values of a group exactly and picks the ranks as
  * PostgreSQL's final functions do.
@@ -253,22 +253,28 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 static bool
 compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 {
-	bool		is_cont = a->aggfnoid == F_PERCENTILE_CONT_FLOAT8_FLOAT8;
+	bool		is_cont = a->aggfnoid == F_PERCENTILE_CONT_FLOAT8_FLOAT8,
+				is_mode = a->aggfnoid == F_MODE;
 	Const	   *frac;
 	Node	   *arg;
 	TypeCacheEntry *tc;
 	SortGroupClause *sgc;
 	int			leaf;
 
-	if ((!is_cont && a->aggfnoid != F_PERCENTILE_DISC_FLOAT8_ANYELEMENT) || list_length(a->aggdirectargs) != 1 ||
+	if ((!is_cont && !is_mode && a->aggfnoid != F_PERCENTILE_DISC_FLOAT8_ANYELEMENT) || list_length(a->aggdirectargs) != (is_mode ? 0 : 1) ||
 		list_length(a->args) != 1 || list_length(a->aggorder) != 1 || a->aggdistinct != NIL)
 		return false;
-	frac = (Const *) strip_relabel(linitial(a->aggdirectargs));
-	if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
-		return false;
-	out->frac = DatumGetFloat8(frac->constvalue);
-	if (!(out->frac >= 0 && out->frac <= 1))
-		return false;
+	if (is_mode)
+		out->frac = -1;
+	else
+	{
+		frac = (Const *) strip_relabel(linitial(a->aggdirectargs));
+		if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
+			return false;
+		out->frac = DatumGetFloat8(frac->constvalue);
+		if (!(out->frac >= 0 && out->frac <= 1))
+			return false;
+	}
 	arg = strip_relabel((Node *) linitial_node(TargetEntry, a->args)->expr);
 	sgc = linitial_node(SortGroupClause, a->aggorder);
 	tc = lookup_type_cache(exprType(arg), TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
@@ -302,8 +308,8 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 			return false;
 	}
 	out->share = -1;
-	out->desc = psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg),
-						 out->desc_order ? " DESC" : "");
+	out->desc = is_mode ? psprintf("mode() WITHIN GROUP (ORDER BY %s%s)", expr_text(c, arg), out->desc_order ? " DESC" : "") :
+		psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg), out->desc_order ? " DESC" : "");
 	return true;
 }
 
@@ -498,7 +504,7 @@ compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 		return compile_mapped(c, a, arg, out, ai);
 	out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
 		fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
-	out->argtype = NUMERICOID;
+	out->argtype = exprType(arg);
 	out->distinct = sum && a->aggdistinct != NIL;
 	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
 	return true;
@@ -642,6 +648,9 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
 										fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
 		return compile_numeric_agg(c, a, arg, out, ai);
+	/* the distinct values of a bigint are kept as those of a decimal: exact, and a partial state the leader can merge */
+	if (exprType(arg) == INT8OID && fid == F_COUNT_ANY && a->aggdistinct != NIL && compile_numeric_agg(c, a, arg, out, ai))
+		return true;
 	if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
 		return compile_float_agg(c, a, arg, out, ai);
 	if ((fid == F_SUM_INT8 || fid == F_AVG_INT8) && a->aggdistinct == NIL && compile_int8_agg(c, a, arg, out))

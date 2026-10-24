@@ -1345,6 +1345,7 @@ def main():
     ap.add_argument('--out', default='')
     ap.add_argument('--no-shrink', action='store_true')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--stop-after', type=int, default=0, help='stop after the seed in which this many queries crashed, diverged or failed to generate (0: all seeds); the full tier uses it so that a red job does not run the rest of its seeds')
     ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
     ap.add_argument('--show', action='store_true', help='print every query')
@@ -1443,6 +1444,9 @@ def main():
         psql('postgres', f'DROP DATABASE IF EXISTS {run_db} WITH (FORCE)')
         if not a.keep:
             psql('postgres', f'DROP DATABASE IF EXISTS {base_db} WITH (FORCE)')
+        if a.stop_after and total['CRASH'] + total['DIFF'] + total['GENERR'] >= a.stop_after:
+            print(f'diff_fuzz: {a.stop_after} bad queries by seed {seed}: the remaining seeds are not run')
+            break
     print('families, share of variant runs that used SiftAgg: ' + ', '.join(f'{f} {100 * p[0] // max(p[1], 1)}% of {p[1]}' for f, p in pushed.items() if p[1]))
     print(f"diff_fuzz: {total['queries']} queries in {time.time() - t0:.0f}s: {total['ok']} equal, {total['DIFF']} divergent, {total['GENERR']} generator errors, {total['CRASH']} crashes, "
           f"{total['timeout']} timeouts")

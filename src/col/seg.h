@@ -238,6 +238,7 @@ extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys
 extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const uint64 *nulls, const SiftKey *tid, uint32 n, uint64 *listed);
 /* The rows the point directory of leaf col lists (0: it has none), and the check of the blocks of every leaf: slots and lists in range, ascending, as many keys, rows and words as the records say */
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);
+extern uint32 sift_cseg_point_nkeys(SiftColSegment *seg, int col);
 extern void sift_cseg_verify_points(SiftColSegment *seg);
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */

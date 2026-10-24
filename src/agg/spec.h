@@ -483,6 +483,13 @@ is_ordered_agg(const SiftAggAgg *a)
 	return a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC;
 }
 
+/* mode() WITHIN GROUP (ORDER BY x) is a SAA_PCT_DISC with the fraction -1 (the fractions of a percentile are in [0, 1]): the value of most rows, the first of them in the order of the sort on a tie */
+static inline bool
+osa_is_mode(const SiftAggAgg *a)
+{
+	return a->kind == SAA_PCT_DISC && a->frac < 0;
+}
+
 /* percentile_disc over a 64-bit integer, a timestamp or a decimal (the integer over 10^scale): its values are kept as the integers, a double holds only 53 bits */
 static inline bool
 osa_int_key(const SiftAggAgg *a)

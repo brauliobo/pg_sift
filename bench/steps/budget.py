@@ -29,12 +29,49 @@ STAGES = [  # stage, what it times, the engines
     ('cases', 'every case of bench/cases.tsv at 1,000,000 orders (tables shared by the cases that read the same one)', 'pg_sift, PostgreSQL (`sift.enable_agg = off`), pg_duckdb'),
     ('duckdb', 'the ten questions of the store at 1,000,000 orders', 'pg_duckdb (heap and Parquet), pg_sift, PostgreSQL'),
 ]
+BASIS = {  # where the minutes of a stage come from
+    'store': 'arithmetic on the stored parts of 2026-10-22 (load 32 s, warm 37 s, cold 602 s at 3 CPUs), with the preset\'s cold runs, restarts and load windows',
+    'updates': 'arithmetic on the stored section of 2026-10-22 (720 s of update phases, 336 s of them ClickHouse\'s DELETE), with the preset\'s repetitions and churn windows',
+    'compression': 'estimate', 'stats': 'estimate', 'gap': 'estimate',
+    'search': 'arithmetic on the stored runs of 2026-10-22: articles 70 + 207 s, places 78 + 267 s, the cold passes 71 + 21 s and 59 + 46 s',
+    'cases': 'measured on 2026-10-24 without the pg_duckdb container (see Cases below)',
+    'duckdb': 'estimate from the load and the ten questions of the stored 1M run',
+}
+SIFT_BUILD = 3  # minutes: the one step of the preparation that depends on the commit under test (the extension built into the image)
 OUTSIDE = [  # what the pass does not run: a release runs it by name when its code changed
     ('scale', 'the slopes of the cases of the README table (bench/results/cases-scale.tsv)', '`bench cases --cases ID,ID,ID --rows 100000 --scales 1,3,10 --docs` for the cases that changed, about 5 minutes for 3 cases (measured); the stage `scale` (`--scales 1,10,100` of 200,000 orders, 20 million at the top) is hours and stays opt-in'),
-    ('store sizes', 'the store questions at 25,000, 100,000 and 10,000,000 orders (bench/results/store-scaling.json)', '`bench store all --sizes 25000,100000,10000000 --cold-runs 0 --restart-runs 0 --update-sizes none`; about 16 minutes (10M: generation and the loads of Elasticsearch, Citus and PostgreSQL dominate), estimated from the loads of the 1M pass, not measured'),
-    ('duckdb 10M', 'the ten questions of the store on pg_duckdb at 10,000,000 orders', '`bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`; about 5 minutes, estimated, not measured'),
     ('sets, extras', 'the set-filter benchmark (25 min) and the release-to-release items (100 min: tags are rebuilt)', 'docs/BENCHMARKS.md only; `bench final --stages sets,extras`'),
 ]
+
+
+def sizes_seconds(results):
+    """tier -> (load, warm) wall seconds of the store questions at each size, from the parts of bench/results/store-scaling.json"""
+    path = os.path.join(results, 'store-scaling.json')
+    if not os.path.exists(path):
+        return {}
+    S = store_charts.Store(path)
+    wall = lambda tier, part: tier['parts'].get(part, {}).get('utilization', {}).get('wall_s', 0)
+    return {t: (wall(tier, 'load'), wall(tier, 'warm')) for t, tier in S.tiers.items()}
+
+
+def window_table(results, total):
+    """the items that the window holds after the stages of the pass: the 10M runs and the build of the extension"""
+    sz = sizes_seconds(results)
+    small = sum(sum(v) for t, v in sz.items() if not t.startswith('10M')) / 60
+    big = sum(sum(v) for t, v in sz.items() if t.startswith('10M')) / 60
+    bl, bw = next((v for t, v in sz.items() if t.startswith('10M')), (0, 0))
+    rows = [
+        ('store at 25,000 and 100,000 orders', '`bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none`', small, 'measured on 2026-10-22' if sz else NOT),
+        ('store at 10,000,000 orders', '`bench store all --sizes 10000000 --cold-runs 0 --restart-runs 0 --update-sizes none`', big,
+         'measured on 2026-10-22: load %.0f s, the ten questions %.0f s (five of them measured again on a noisy disk)' % (bl, bw) if sz else NOT),
+        ('pg_duckdb at 10,000,000 orders', '`bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`', 5, 'estimate'),
+        ('the extension built into the image', 'the one step of the preparation that depends on the commit', SIFT_BUILD, 'estimate'),
+    ]
+    out = ['| in the window, after the stages | command | minutes | basis |', '|---|---|---:|---|']
+    out += ['| %s | %s | %.0f | %s |' % r for r in rows]
+    full = total + sum(r[2] for r in rows)
+    out += ['| **release window** | the stages above, then these | **%.0f** | the stages are %d |' % (full, total)]
+    return out, full
 
 
 def presets():
@@ -51,9 +88,9 @@ def minutes(p, stage):
 
 def stage_table(p):
     total = sum(minutes(p, s) for s, _, _ in STAGES)
-    out = ['| stage | minutes | what it times | engines |', '|---|---:|---|---|']
-    out += ['| `%s` | %d | %s | %s |' % (s, minutes(p, s), what, eng) for s, what, eng in STAGES]
-    out += ['| **release pass** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 120 minutes | every engine measured, none from the cache |' % total]
+    out = ['| stage | minutes | what it times | engines | basis of the minutes |', '|---|---:|---|---|---|']
+    out += ['| `%s` | %d | %s | %s | %s |' % (s, minutes(p, s), what, eng, BASIS[s]) for s, what, eng in STAGES]
+    out += ['| **stages** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 85 minutes | every engine measured, none from the cache | |' % total]
     return out, total
 
 
@@ -110,7 +147,7 @@ def read_times(path):
     return out
 
 
-def cases_table(results):
+def cases_table(results, p):
     times = read_times(os.path.join(results, 'cases-time.tsv'))
     if not times:
         return ['The seconds of each case are not measured yet: `bench/bench cases --docs` writes bench/results/cases-time.tsv.']
@@ -121,8 +158,8 @@ def cases_table(results):
     one = {k: v for k, v in one.items() if v[0] == n}
     build, run = sum(v[1] for v in one.values()), sum(v[2] for v in one.values())
     fixed = sum(v[1] for v in extra.values())
-    out = ['%d cases at %s orders on one backend: %.0f s of table builds (a case that reads the table of an earlier one has 0), %.0f s of timed runs (3 rounds of 1 untimed and 5 timed runs on every lane, a lane stops repeating after 20 s), '
-           '%.0f s to generate the orders and load the pg_duckdb container: **%.0f minutes** (without the container\'s own runs).' % (len(one), format(n, ','), build, run, fixed, (build + run + fixed) / 60), '',
+    out = ['%d cases at %s orders on one backend: %.0f s of table builds (a case that reads the table of an earlier one has 0), %.0f s of timed runs (%s rounds of 1 untimed and 5 timed runs on every lane, a lane stops repeating after %s s: the preset of the pass), '
+           '%.0f s to generate the orders and load the pg_duckdb container: **%.0f minutes** (without the container\'s own runs, which the 16 minutes of the stage allow for).' % (len(one), format(n, ','), build, run, p.get('P_CASE_ROUNDS', 3), p.get('P_LANE_BUDGET', 20), fixed, (build + run + fixed) / 60), '',
            '<details><summary>Seconds of each case: build and timed runs</summary>', '', '| case | build (s) | timed runs (s) |', '|---|---:|---:|']
     out += ['| `%s` | %.1f | %.1f |' % (k, v[1], v[2]) for k, v in sorted(one.items(), key=lambda kv: -(kv[1][1] + kv[1][2]))]
     return out + ['', '</details>']
@@ -131,9 +168,19 @@ def cases_table(results):
 def block(results):
     p = presets()
     st, total = stage_table(p)
-    out = ['Minutes of a release pass on the reference host (`bench/bench final --size standard`; the stages of `bench/presets.env`): the stage times are the stored times of the '
-           'pass of 2026-10-22 (a test host) with the cuts of the preset applied by arithmetic (the cases stage: measured, below), to be replaced by the first pass on the release host. The pass fits %d of the 120 minutes; with the two 10M items below (21 minutes, estimated) it is %d, before the image build and the data of `bench store prepare` (about 10). The tables under it are what a run costs by engine and by case.' % (total, total + 21), ''] + st
-    out += ['', 'What stays out of the pass, and what it costs when a release needs it:', '', '| what | covers | command and time |', '|---|---|---|']
+    win, full = window_table(results, total)
+    out = ['Minutes of the release window on the reference host: the stages of `bench/bench final --size standard` (`bench/presets.env`), then the runs at 10,000,000 orders and the build of the extension. '
+           'The window is **%d minutes** of the 100 the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
+           'the others are the stored times of the pass of 2026-10-22 (a test host) with the cuts applied, to be replaced by the first pass on the release host.' % full, ''] + st
+    out += ['', win[0], win[1]] + win[2:]
+    out += ['', '**Done ahead, outside the window.** The data (`bench store prepare`: the CSV of 1,000,000 and 10,000,000 orders; every result records the hash of the data it used) and the pulled images of the other engines '
+            'do not depend on the commit under test and are made the day before (`bench refresh --prepare` builds the image and generates the data, bench/README.md); only the extension is built in the window.',
+            '', '**What the 10M runs are for, and what dropping each would lose.** The store at 10,000,000 orders is the only evidence of the slope from 25,000 to 10,000,000 orders (the README\'s scale chart and its table of seven questions at 10M against '
+            'every engine): it stays at 10M, with the cold runs, restarts and updates off. pg_duckdb at 10M stays too: between 1M and 10M the ratio of its Parquet lane to pg_sift halves on two of the ten questions (`orders_per_country` 10.7x to 5.2x, `search_newest` 27.9x to 8.2x) and moves within 1.4x on the other eight, so a 1M-only run would state a ratio for a size where it no longer holds. '
+            'What moves to 1M instead of 10M is everything else: the cases (86 at 1M, 100,000 to 1M in the slope runs), the update section (200,000 and 1M) and the cold runs.',
+            '', '**Engines at the same time: not in the window.** The timed windows of the engines run one after another (`--parallel-engines` stays 1, see "Engines at the same time" above): neighbours on other cores change a median through the memory bandwidth and the L3 they share. '
+            'What can overlap is untimed work, and it is small: the loads of the engines (32 s at 1M) and the preparation above, which is already outside. ClickHouse\'s lightweight DELETE (336 s of the update section) is a timed phase of a published result, so it is not overlapped; it stays.']
+    out += ['', 'What stays out of the window, and what it costs when a release needs it:', '', '| what | covers | command and time |', '|---|---|---|']
     out += ['| %s | %s | %s |' % o for o in OUTSIDE]
     e = engines_table(results)
     if e:
@@ -141,7 +188,7 @@ def block(results):
     s = search_table(results)
     if s:
         out += ['', 'Search (slim tier, bench/results/articles.tsv and places.tsv):', ''] + s
-    out += ['', 'Cases:', ''] + cases_table(results)
+    out += ['', 'Cases:', ''] + cases_table(results, p)
     return out
 
 

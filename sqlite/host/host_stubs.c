@@ -107,3 +107,19 @@ void
 sift_wbuf_close(SiftWbufReader *r)
 {
 }
+
+/* ---------- hashing (col/hll.c): the sketches of hll_columns are written by the PostgreSQL extension, whose hash they carry ---------- */
+
+uint64
+hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the sketch of a column is built by the PostgreSQL extension only"),
+					errhint("Index the column with hll_columns in PostgreSQL.")));
+	return 0;
+}
+
+uint64
+hash_bytes_uint32_extended(uint32 k, uint64 seed)
+{
+	return hash_bytes_extended(NULL, 0, seed);
+}

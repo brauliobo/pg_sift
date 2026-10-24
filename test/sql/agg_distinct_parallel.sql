@@ -1,4 +1,4 @@
--- count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) of numeric values (a numeric column or an expression of one) with 0, 2 and 4 workers: a
+-- count(DISTINCT), sum(DISTINCT) and avg(DISTINCT) of numeric values (a numeric or bigint column or an expression of one) with 0, 2 and 4 workers: a
 -- worker sends the pairs (group, value) of its set with the numbers themselves, since the ids of its table of them are its own, and the leader
 -- gives them its own ids and counts or adds each number once per group. The rows are those of the normal plan, with NULLs, NaN, duplicates,
 -- a FILTER, a small work_mem (the sets go through a sort), the leader out of the scan, and a global aggregate. mode: parallel (workers planned
@@ -7,15 +7,17 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;
 
-CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), price numeric, qty int, big bigint) WITH (autovacuum_enabled = false);
+CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), price numeric, qty int, big bigint, wide bigint) WITH (autovacuum_enabled = false);
 INSERT INTO facts
 SELECT i, i % 7, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4],
        CASE WHEN i % 29 = 0 THEN NULL WHEN i % 997 = 0 THEN 'NaN'::numeric ELSE ((hashint4(i) & 2147483647) % 3000)::numeric / 10 END,
        CASE WHEN i % 31 = 0 THEN NULL ELSE ((hashint4(i + 1) & 2147483647) % 500)::numeric / 8 END,
        CASE WHEN i % 13 = 0 THEN NULL ELSE (hashint4(i + 2) & 2147483647) % 400 END,
-       (hashint4(i + 3) & 2147483647) % 50000 * 100003::bigint
+       (hashint4(i + 3) & 2147483647) % 50000 * 100003::bigint,
+       CASE WHEN i % 11 = 0 THEN NULL WHEN i % 503 = 0 THEN 9223372036854775807 WHEN i % 509 = 0 THEN -9223372036854775807 - 1
+            ELSE (hashint4(i + 4) & 2147483647) % 30000 - 15000 END
 FROM generate_series(1, 20000) i;
-CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, price, qty, big);
+CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, price, qty, big, wide);
 VACUUM ANALYZE facts;
 
 SET parallel_setup_cost = 0;
@@ -37,7 +39,12 @@ INSERT INTO shapes (name, q) VALUES
 	('filter',            'SELECT grp, count(DISTINCT amount) FILTER (WHERE qty > 100), sum(DISTINCT amount) FILTER (WHERE kind = ''cat_a'') FROM facts GROUP BY grp'),
 	('where',             'SELECT grp, count(DISTINCT amount), sum(DISTINCT price) FROM facts WHERE qty < 200 AND kind <> ''cat_b'' GROUP BY grp'),
 	('nothing',           'SELECT grp, count(DISTINCT amount), sum(DISTINCT amount) FROM facts WHERE id < 0 GROUP BY grp'),
-	('all null group',    'SELECT qty IS NULL AS q, count(DISTINCT amount), sum(DISTINCT amount) FROM facts GROUP BY 1');
+	('all null group',    'SELECT qty IS NULL AS q, count(DISTINCT amount), sum(DISTINCT amount) FROM facts GROUP BY 1'),
+	('count bigint',      'SELECT grp, count(DISTINCT big) FROM facts GROUP BY grp'),
+	('bigint global',     'SELECT count(DISTINCT wide), count(DISTINCT big), count(DISTINCT id::bigint) FROM facts'),
+	('bigint extremes',   'SELECT kind, count(DISTINCT wide), count(wide) FROM facts GROUP BY kind'),
+	('bigint filter',     'SELECT kind, count(DISTINCT wide) FILTER (WHERE qty > 100), count(DISTINCT big) FROM facts GROUP BY kind'),
+	('bigint expression', 'SELECT grp, count(DISTINCT big + 1), count(DISTINCT big * 2) FROM facts GROUP BY grp');
 
 CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -78,7 +85,7 @@ RESET work_mem;
 RESET hash_mem_multiplier;
 
 -- a scan that reads rows in the write buffer and rows of updated tuples
-INSERT INTO facts SELECT 20000 + i, i % 7, 'cat_a', (i % 400)::numeric / 4, i % 9, i % 300, i FROM generate_series(1, 700) i;
+INSERT INTO facts SELECT 20000 + i, i % 7, 'cat_a', (i % 400)::numeric / 4, i % 9, i % 300, i, i - 350 FROM generate_series(1, 700) i;
 UPDATE facts SET amount = amount + 0.5 WHERE id % 17 = 0;
 DELETE FROM facts WHERE id % 61 = 0;
 SELECT s.name, rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS dirty_w0, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS dirty_w2,

@@ -7,7 +7,7 @@ name: ci
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
-# The full tier is three shards on PostgreSQL 18 and five on 17 (the deep one four and nine, cut by the weights of scripts/ci.sh, the full entries first so that the account's concurrent jobs go to the long ones) (the last one runs the jobs that install a library flavor): in one it took 92 minutes of tests on a 4-core runner and PostgreSQL 17 ran past the 150-minute limit.
+# The full tier is three shards on PostgreSQL 18 and five on 17 (the deep one five and ten, cut by the weights of scripts/ci.sh, the full entries first so that the account's concurrent jobs go to the long ones) (the last one runs the jobs that install a library flavor): in one it took 92 minutes of tests on a 4-core runner and PostgreSQL 17 ran past the 150-minute limit.
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
 # of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
@@ -103,7 +103,7 @@ jobs:
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
           jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --argjson deep "$DEEP" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
             if $event == "pull_request" then (if $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end) else
-            (if $heavy then [(17, 18) as $v | (if $deep then (if $v == 17 then 9 else 4 end) else (if $v == 17 then 5 else 3 end) end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end)
+            (if $heavy then [(17, 18) as $v | (if $deep then (if $v == 17 then 10 else 5 end) else (if $v == 17 then 5 else 3 end) end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end)
             + (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
               + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}]

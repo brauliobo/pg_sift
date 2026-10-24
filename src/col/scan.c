@@ -553,8 +553,16 @@ prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int co
 
 	if (c->prow != NULL || c->ptids || (keys = point_keys(t, &nkeys)) == NULL)
 		return false;
-	/* a list that names a good share of the rows is no lookup: the zones and the units answer it as well */
+	/*
+	 * A list that names a good share of the rows is no lookup: the zones and the units answer it as well. So does one whose keys have many rows
+	 * on average: reading them costs about what scanning the units that hold them does (a row of a list is read at some ten times a row of a unit).
+	 * A scan that hands the addresses to the heap has no units to scan, and the directory is its answer.
+	 */
 	if (nkeys > SIFT_CPOINT_MIN_KEYS && (uint64) nkeys > ((uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / 16)
+		ok = false;
+	else if ((src->flags & SIFT_COLO_POINT_TIDS) == 0 && sift_cseg_point_nkeys(seg, col) > 0 &&
+			 (double) nkeys * sift_cseg_point_count(seg, col) / sift_cseg_point_nkeys(seg, col) >
+			 Max((double) SIFT_CPOINT_DENSE_ROWS, ((double) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / SIFT_CPOINT_DENSE_SHARE))
 		ok = false;
 	else
 		ok = prune_keys(src, seg, c, i, col, keys, nkeys, keep);

@@ -1,4 +1,4 @@
--- percentile_cont and percentile_disc of Custom Scan (SiftAgg) keep the values of a group in a histogram and pick the ranks the final functions of PostgreSQL pick, without
+-- mode(), percentile_cont and percentile_disc of Custom Scan (SiftAgg) keep the values of a group in a histogram and pick the ranks the final functions of PostgreSQL pick, without
 -- sorting the histogram (a quickselect of the positions of all the aggregates that share the argument). Every statement is run pushed down and on the normal plan: the rows must be the same,
 -- for ties, all-distinct values, NaN, infinities, -0, NULLs, DESC, fractions at the ends, groups of one and two values, aggregates that share an argument and those that do not,
 -- a FILTER, a histogram that spills to a tuplesort (work_mem), and parallel workers (their histograms are merged).
@@ -67,7 +67,11 @@ DECLARE q text[] := ARRAY[
 	'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm), percentile_disc(0.95) WITHIN GROUP (ORDER BY nm), percentile_disc(0.1) WITHIN GROUP (ORDER BY nm DESC) FROM os GROUP BY g',
 	'SELECT small, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm * 2 - 1), percentile_disc(0.5) WITHIN GROUP (ORDER BY nm * f4::numeric) FROM os WHERE f4 < 1000 GROUP BY small',
 	'SELECT percentile_disc(0.37) WITHIN GROUP (ORDER BY i8), percentile_disc(0.37) WITHIN GROUP (ORDER BY ts), percentile_disc(0.37) WITHIN GROUP (ORDER BY nm) FROM os',
-	'SELECT g % 3, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm) FILTER (WHERE g < 20), percentile_disc(0.5) WITHIN GROUP (ORDER BY i8), percentile_cont(0.5) WITHIN GROUP (ORDER BY f) FROM os GROUP BY 1'];
+	'SELECT g % 3, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm) FILTER (WHERE g < 20), percentile_disc(0.5) WITHIN GROUP (ORDER BY i8), percentile_cont(0.5) WITHIN GROUP (ORDER BY f) FROM os GROUP BY 1',
+	'SELECT g, mode() WITHIN GROUP (ORDER BY f), mode() WITHIN GROUP (ORDER BY f DESC), mode() WITHIN GROUP (ORDER BY f4), mode() WITHIN GROUP (ORDER BY d) FROM os GROUP BY g',
+	'SELECT small, mode() WITHIN GROUP (ORDER BY n), mode() WITHIN GROUP (ORDER BY n DESC), mode() WITHIN GROUP (ORDER BY i8), mode() WITHIN GROUP (ORDER BY ts DESC), mode() WITHIN GROUP (ORDER BY tz), mode() WITHIN GROUP (ORDER BY nm) FROM os GROUP BY small',
+	'SELECT g, mode() WITHIN GROUP (ORDER BY small), percentile_disc(0.5) WITHIN GROUP (ORDER BY small), mode() WITHIN GROUP (ORDER BY small DESC) FROM os GROUP BY g',
+	'SELECT mode() WITHIN GROUP (ORDER BY f), mode() WITHIN GROUP (ORDER BY nm * 2), mode() WITHIN GROUP (ORDER BY n) FROM os'];
 BEGIN
 	FOR n IN 1..array_length(q, 1) LOOP
 		RETURN QUERY SELECT n, s.plan, s.result_rows, s.vs_normal_plan FROM same(q[n]) s;
