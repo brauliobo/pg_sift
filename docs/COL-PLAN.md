@@ -522,6 +522,7 @@ Every refusal has a slug, `sift.explain_refusals` and `sift.explain_why` name it
 | `first_memory` | limit |  | the first rows of the groups would not fit in the memory of a hash aggregate |
 | `group_memory` | limit | yes | the groups would not fit in the memory of a hash aggregate, and the scan cannot spill them, or the normal plan, which spills them, is estimated cheaper than the scan with its spill |
 | `lateral_limit` | semantic |  | a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties |
+| `distinct_set` | semantic |  | count(DISTINCT x) keeps the distinct values of each group: x is not a NOT NULL column of the scanned table under a unique single-column index, so its rows cannot be counted in its place |
 | `two_arms` | semantic |  | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id |
 | `two_keys` | semantic |  | a key of the two level aggregate is not one every arm groups by |
 | `two_aggs` | semantic |  | an aggregate over the arms is not one the two level scan computes |
