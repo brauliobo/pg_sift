@@ -39,6 +39,7 @@ extern MemoryContext sift_agg_memo_begin(void);
 extern void sift_agg_memo_end(MemoryContext cx);
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern void sift_agg_flatten_laterals(Query *q);
+extern bool sift_agg_latest_per_group(Query *q, bool apply);
 
 /* agg/plan.c: called by the upper path hook of bm25/planner.c */
 extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
