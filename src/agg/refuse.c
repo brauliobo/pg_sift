@@ -25,6 +25,7 @@
 #include "utils/memutils.h"
 #include "utils/tuplestore.h"
 
+#include "agg/agg.h"
 #include "agg/refuse.h"
 #include "agg/stats.h"
 #include "core/limits.h"
@@ -254,7 +255,7 @@ agg_arm_end(void)
 	{
 		foreach_ptr(Path, p, a->paths)
 			a->used |= list_member_ptr(a->rel->pathlist, p);
-		a->used &= a->cheaper;
+		a->used &= a->cheaper || sift_agg_force;
 		if (!a->used)
 		{
 			/* the memory decided it when the scan, without the spill, is no dearer than the normal plan */

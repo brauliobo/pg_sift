@@ -474,9 +474,9 @@ inline_wins(const CteVariants *v, double vet, double shared_vet)
 				plain_cost = v->plain_cost - shared_vet,
 				work = v->work - shared_vet;
 
-	return v->scans.n > 0 && (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
+	return v->scans.n > 0 && (sift_agg_force || (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
 							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
-							  scans < plain_cost - inline_cost);
+							  scans < plain_cost - inline_cost));
 }
 
 /*
