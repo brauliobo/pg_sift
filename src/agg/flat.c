@@ -676,6 +676,7 @@ typedef struct Decor
 	List	   *rest;			/* the other conditions of the sub-select */
 	Bitmapset  *outer;			/* the range table entries of the outer query it reads */
 	List	   *groups;			/* the expressions it groups by (a LATERAL one, which gives a row for each group, not one row) */
+	bool		exists;			/* EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..): whether a row is there, whatever it holds */
 } Decor;
 
 /* the aggregates whose value over no rows is NULL, or 0 (count) */
@@ -780,7 +781,7 @@ decor_analyze(Query *sub, Decor *d)
 	RangeTblEntry *t;
 
 	sub = ungrouped(sub);
-	if (sub->commandType != CMD_SELECT || !(sub->hasAggs || sub->groupClause != NIL) || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
+	if (sub->commandType != CMD_SELECT || (sub->hasAggs || sub->groupClause != NIL) != !d->exists || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
 		sub->setOperations != NULL || sub->groupingSets != NIL || sub->groupDistinct || (sub->groupClause == NIL && sub->havingQual != NULL) || sub->sortClause != NIL ||
 		sub->distinctClause != NIL || sub->limitOffset != NULL || sub->limitCount != NULL || sub->cteList != NIL || sub->rowMarks != NIL ||
 		sub->jointree == NULL || list_length(sub->jointree->fromlist) != 1 || !IsA(linitial(sub->jointree->fromlist), RangeTblRef) ||
@@ -809,9 +810,10 @@ decor_analyze(Query *sub, Decor *d)
 		else
 			return false;
 	}
-	foreach_node(TargetEntry, te, sub->targetList)
-		if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
-			return false;
+	if (!d->exists)
+		foreach_node(TargetEntry, te, sub->targetList)
+			if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
+				return false;
 	return d->conds != NIL;
 }
 
@@ -905,6 +907,13 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 			c->tleSortGroupRef = te->ressortgroupref;
 			g->groupClause = lappend(g->groupClause, c);
 		}
+	}
+	if (d->exists)
+	{
+		/* the keys of the rows there are, and a column that is true: NULL where the outer row has none */
+		g->targetList = lappend(g->targetList, makeTargetEntry((Expr *) makeBoolConst(true, false), list_length(g->targetList) + 1, "found", false));
+		*exprs = list_make1(makeTargetEntry((Expr *) makeVar(grti, list_length(g->targetList), BOOLOID, -1, InvalidOid, 0), 1, "found", false));
+		return g;
 	}
 	foreach_node(TargetEntry, te, d->sub->targetList)
 	{
@@ -1084,7 +1093,7 @@ typedef struct SublinkDecor
 	Query	   *q;
 	bool		apply;
 	bool		changed;
-	List	   *pulled;
+	List	   *semi;			/* the EXISTS and NOT EXISTS the WHERE ANDs: PostgreSQL makes semi and anti joins of them, which the scan has arms for */
 } SublinkDecor;
 
 /* the columns of a FROM item, as a join's range table entry holds them */
@@ -1165,13 +1174,17 @@ decor_sublink(Node *n, SublinkDecor *c)
 			   *join = NIL;
 	ListCell   *item = NULL;
 	Index		grti = list_length(q->rtable) + 1;
+	Node	   *e;
 
 	if (n == NULL)
 		return NULL;
 	if (!IsA(n, SubLink))
 		return expression_tree_mutator(n, decor_sublink, c);
 	s = (SubLink *) n;
-	if (s->subLinkType != EXPR_SUBLINK || !decor_analyze(castNode(Query, s->subselect), &d) || d.groups != NIL)
+	if ((s->subLinkType != EXPR_SUBLINK && s->subLinkType != EXISTS_SUBLINK) || list_member_ptr(c->semi, s))
+		return n;
+	d.exists = s->subLinkType == EXISTS_SUBLINK;
+	if (!decor_analyze(castNode(Query, s->subselect), &d) || d.groups != NIL)
 		return n;
 	foreach(item, q->jointree->fromlist)
 		if (bms_is_subset(d.outer, tree_rtis(lfirst(item))))
@@ -1184,7 +1197,33 @@ decor_sublink(Node *n, SublinkDecor *c)
 	add_subquery(q, decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join));
 	sift_agg_by_cost = true;
 	lfirst(item) = join_item(q, lfirst(item), grti, JOIN_LEFT, (Node *) make_ands_explicit(join));
-	return (Node *) linitial_node(TargetEntry, exprs)->expr;
+	e = (Node *) linitial_node(TargetEntry, exprs)->expr;
+	if (d.exists)
+	{
+		/* a group is there, or the left join made up a row of NULLs: never NULL, as EXISTS is not */
+		NullTest   *t = makeNode(NullTest);
+
+		t->arg = (Expr *) add_nulling_relids(e, NULL, bms_make_singleton(grti + 1));
+		t->nulltesttype = IS_NOT_NULL;
+		t->location = -1;
+		return (Node *) t;
+	}
+	return e;
+}
+
+/* the sub-selects the WHERE ANDs together, EXISTS and NOT EXISTS among them */
+static void
+semi_sublinks(Node *quals, List **semi)
+{
+	if (quals == NULL)
+		return;
+	if (IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == AND_EXPR)
+		foreach_ptr(Node, a, ((BoolExpr *) quals)->args)
+			semi_sublinks(a, semi);
+	else if (IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == NOT_EXPR && IsA(linitial(((BoolExpr *) quals)->args), SubLink))
+		semi_sublinks(linitial(((BoolExpr *) quals)->args), semi);
+	else if (IsA(quals, SubLink) && ((SubLink *) quals)->subLinkType == EXISTS_SUBLINK)
+		*semi = lappend(*semi, quals);
 }
 
 static bool
@@ -1195,6 +1234,7 @@ decorrelate_sublinks(Query *q, bool apply)
 	if (!q->hasSubLinks || q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->groupClause != NIL || q->groupingSets != NIL ||
 		q->havingQual != NULL || q->jointree == NULL || q->setOperations != NULL)
 		return false;
+	semi_sublinks(q->jointree->quals, &c.semi);
 	foreach_node(TargetEntry, te, q->targetList)
 		te->expr = (Expr *) decor_sublink((Node *) te->expr, &c);
 	q->jointree->quals = decor_sublink(q->jointree->quals, &c);
