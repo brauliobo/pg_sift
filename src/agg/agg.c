@@ -533,17 +533,14 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 	return (Datum) 0;
 }
 
-/* The zone of the first sort leaf in the unit of superblock sb; false when it has none */
+/* The zone of the first sort leaf over the units of superblock sb, from the segment headers (the unit is not read); false when it has none */
 static bool
 topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
 {
 	if (ex->search)
 		sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
 	sift_colsrc_begin(ex->src, sb, sb + 1, NULL, 0);
-	if (!sift_colsrc_next(ex->src, &ex->unit))
-		return false;
-	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), z);
-	return true;
+	return sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(ex->topn, 0), z) > 0;
 }
 
 /*
@@ -724,8 +721,12 @@ topn_run(AggExec *ex)
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
 		for (int i = 0; i < sift_topn_nprobes(); i++)
-			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
-				sift_topn_probe(t, ex->unit.sb, &z);
+		{
+			uint32		sb = sift_topn_probe_sb(t, i, nsb);
+
+			if (topn_zone(ex, sb, &z))
+				sift_topn_probe(t, sb, &z);
+		}
 	sift_topn_start(t, nsb);
 	parallel = ex->spec->nworkers > 0 && sift_topn_parallel_ok(t);
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
