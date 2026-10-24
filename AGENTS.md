@@ -47,3 +47,4 @@ in CHANGELOG.md, and, for a column format, the table of the first release that r
   figures backed by stored logs (`docs/results/`, `bench/`). Do not rewrite or lengthen docs for internal refactors.
 - CHANGELOG.md `## Unreleased` is the one place for small notes. Operational notes for agents belong here, not in other files.
 - A perf figure carries its date, version, hardware and CPUs, or is marked as a historical baseline.
+- A release run from a host without the AUR key shows `aur fail` in its manifest (`GIT_SSH_COMMAND=false`): expected, then publish the PKGBUILD from the key host (docs/RELEASE.md, "The AUR from the host that has the key").
