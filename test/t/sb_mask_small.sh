@@ -25,7 +25,7 @@ QUERIES=("SELECT k, count(*), sum(v) FROM t GROUP BY k ORDER BY k"
 answer() { # QUERY MODE: the answer from the sift plans (sift) or the native ones (native)
 	local set="SET enable_seqscan = off"
 	[[ $2 == native ]] && set="SET sift.enable_agg = off"
-	sql sb "$set" "SET max_parallel_workers_per_gather = 0" "$1" | tail -n +1 | grep -v '^$' | md5sum
+	sql sb "$set" "SET max_parallel_workers_per_gather = 0" "$1" | tail -n +1 | grep -v '^$' | "$REPO/scripts/sha256.sh"
 }
 same() { local q; for q in "${QUERIES[@]}"; do [[ $(answer "$q" sift) == "$(answer "$q" native)" ]] || return 1; done; }
 
