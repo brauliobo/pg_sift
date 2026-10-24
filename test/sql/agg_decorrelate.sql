@@ -57,6 +57,50 @@ SELECT * FROM check_query('read by an aggregate of the outer query', $q$
 SELECT * FROM check_query('inner lateral, count = 0', $q$ SELECT o.id, x.c FROM owners o JOIN LATERAL (SELECT count(i.amt) c FROM items i WHERE i.owner_id = o.k) x ON true WHERE x.c = 0 $q$);
 SELECT * FROM check_query('inner lateral, sum IS NULL', $q$ SELECT o.id FROM owners o JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON true WHERE x.s IS NULL $q$);
 SELECT * FROM check_query('the whole row of the lateral', $q$ SELECT o.id, x FROM owners o LEFT JOIN LATERAL (SELECT count(*) c, max(i.amt) m FROM items i WHERE i.owner_id = o.k) x ON true WHERE o.id < 400 $q$);
+-- the comma form: an inner join of the sub-select to the item of the FROM list that holds the columns it reads
+SELECT * FROM check_query('comma lateral', $q$ SELECT o.id, x.s, x.c FROM owners o, LATERAL (SELECT sum(i.amt) s, count(*) c FROM items i WHERE i.owner_id = o.k) x $q$);
+SELECT * FROM check_query('comma lateral under a WHERE on its count', $q$ SELECT o.id, x.c FROM owners o, LATERAL (SELECT count(i.amt) c FROM items i WHERE i.owner_id = o.k) x WHERE x.c = 0 $q$);
+SELECT * FROM check_query('comma lateral after other items', $q$
+ SELECT o.id, p.name, x.s FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k AND i.cat < 5) x WHERE p.id = o.id + 1 $q$);
+SELECT * FROM check_query('comma lateral of the second item, read by a later lateral', $q$
+ SELECT o.id, p.id pid, x.s, y.m FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = p.k) x, LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y
+ WHERE p.id = o.id + 1 $q$);
+SELECT * FROM check_query('comma lateral beside a join lateral: the first is in a join, not in the list', $q$
+ SELECT o.id, x.s, y.c FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.owner_id = o.k2) y ON true $q$);
+
+SELECT * FROM check_query('a lateral that reads the columns of another lateral', $q$
+ SELECT o.id, x.s, y.m FROM owners o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON true LEFT JOIN LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y ON true $q$);
+-- LATERAL with GROUP BY: a row for each group of an outer row (an inner join gives none for a key without rows, a left join a row of NULLs, a count included)
+SELECT * FROM check_query('inner lateral, group by', $q$ SELECT o.id, x.cat, x.s, x.c FROM owners o JOIN LATERAL (SELECT i.cat, sum(i.amt) s, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true $q$);
+SELECT * FROM check_query('left lateral, group by: a count of no group is NULL', $q$ SELECT o.id, x.cat, x.c FROM owners o LEFT JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true $q$);
+SELECT * FROM check_query('left lateral, group by, the rows without a group', $q$ SELECT o.id FROM owners o LEFT JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true WHERE x.c IS NULL $q$);
+SELECT * FROM check_query('comma lateral, group by', $q$ SELECT o.id, x.cat, x.m FROM owners o, LATERAL (SELECT i.cat, max(i.amt) m FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x $q$);
+SELECT * FROM check_query('group by a column that is NULL for some rows, two columns', $q$
+ SELECT o.id, x.txt, x.cat, x.n FROM owners o JOIN LATERAL (SELECT i.txt, i.cat, count(i.amt) n FROM items i WHERE i.owner_id = o.k GROUP BY i.txt, i.cat) x ON true WHERE o.grp < 3 $q$);
+SELECT * FROM check_query('HAVING', $q$ SELECT o.id, x.cat, x.c FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat HAVING count(*) > 1 AND min(i.amt) < 50) x ON true $q$);
+SELECT * FROM check_query('HAVING, left join: a key whose groups all fail has one row of NULLs', $q$
+ SELECT o.id, x.cat FROM owners o LEFT JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat HAVING count(*) > 2) x ON true $q$);
+SELECT * FROM check_query('expressions of the group and the aggregates, the group column alone', $q$
+ SELECT o.id, x.k2, x.r FROM owners o JOIN LATERAL (SELECT i.cat + 1 AS k2, sum(i.amt) / nullif(count(i.amt), 0) r FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true $q$);
+SELECT * FROM check_query('left lateral, group by: an expression of the aggregates is NULL for a key without a group', $q$
+ SELECT o.id, x.cat, x.s0, x.r FROM owners o LEFT JOIN LATERAL (SELECT i.cat, coalesce(sum(i.amt), -1) s0, sum(i.amt) / nullif(count(i.amt), 0) r FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true $q$);
+SELECT * FROM check_query('groups without an aggregate', $q$ SELECT o.id, x.cat FROM owners o JOIN LATERAL (SELECT i.cat FROM items i WHERE i.owner_id = o.k AND i.amt > 20 GROUP BY i.cat) x ON true $q$);
+SELECT * FROM check_query('the tied column is a group too', $q$ SELECT o.id, x.owner_id, x.c FROM owners o JOIN LATERAL (SELECT i.owner_id, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.owner_id) x ON true $q$);
+SELECT * FROM check_query('read by an aggregate of the outer query', $q$
+ SELECT o.grp, count(*) n, sum(x.c) c FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true GROUP BY o.grp $q$);
+SELECT * FROM check_query('a condition on a group column above a left join', $q$
+ SELECT o.id, x.cat FROM owners o LEFT JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true WHERE x.cat IS NULL OR x.cat = 3 $q$);
+-- the rewrite shows in explain_why as the arm that is used
+SELECT bool_or(used) AS rewritten FROM sift.explain_why($q$ SELECT o.id, x.c FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat) x ON true $q$);
+SELECT bool_or(used) AS limited FROM sift.explain_why($q$ SELECT o.id, x.c FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat ORDER BY 1 LIMIT 1) x ON true $q$);
+-- as written: an ORDER BY or a LIMIT, a HAVING without groups (it can drop the one row), grouping sets, an outer column in a group or the HAVING, a scalar sub-select with groups
+SELECT * FROM check_query('group by with a limit', $q$ SELECT o.id, x.cat FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat ORDER BY 2 DESC LIMIT 1) x ON true WHERE o.id < 500 $q$);
+SELECT * FROM check_query('HAVING without groups', $q$ SELECT o.id, x.c FROM owners o JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.owner_id = o.k HAVING count(*) > 5) x ON true $q$);
+SELECT * FROM check_query('grouping sets', $q$ SELECT o.id, x.cat, x.c FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY ROLLUP (i.cat)) x ON true WHERE o.id < 500 $q$);
+SELECT * FROM check_query('an outer column in the HAVING', $q$ SELECT o.id, x.cat FROM owners o JOIN LATERAL (SELECT i.cat, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat HAVING count(*) > o.grp) x ON true $q$);
+SELECT * FROM check_query('an outer column in the group', $q$ SELECT o.id, x.g FROM owners o JOIN LATERAL (SELECT i.cat + o.grp g, count(*) c FROM items i WHERE i.owner_id = o.k GROUP BY i.cat + o.grp) x ON true WHERE o.id < 500 $q$);
+SELECT * FROM check_query('a scalar sub-select with groups', $q$ SELECT o.id, (SELECT count(*) FROM items i WHERE i.owner_id = o.k GROUP BY i.cat HAVING i.cat = 3) c FROM owners o $q$);
+
 -- scalar sub-selects, in the select list and the WHERE
 SELECT * FROM check_query('scalar in the select list', $q$ SELECT o.id, (SELECT sum(i.amt) FROM items i WHERE i.owner_id = o.k) s, (SELECT count(*) FROM items i WHERE i.owner_id = o.k) c FROM owners o $q$);
 SELECT * FROM check_query('scalar in the WHERE', $q$ SELECT o.id FROM owners o WHERE (SELECT count(*) FROM items i WHERE i.owner_id = o.k) = 0 $q$);
@@ -77,6 +121,7 @@ SELECT * FROM check_query('a limit', $q$ SELECT o.id, x.s FROM owners o LEFT JOI
 SELECT * FROM check_query('a join condition of its own', $q$ SELECT o.id, x.s FROM owners o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON x.s > 100 $q$);
 SELECT * FROM check_query('the outer query groups', $q$ SELECT o.grp, sum((SELECT sum(i.amt) FROM items i WHERE i.owner_id = o.k)) s FROM owners o GROUP BY o.grp $q$);
 SELECT * FROM check_query('an aggregate with a value over no rows', $q$ SELECT o.id, (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY i.amt) FROM items i WHERE i.owner_id = o.k) m FROM owners o $q$);
+SELECT * FROM check_query('comma lateral with a condition the lateral cannot move',$q$ SELECT o.id, x.s FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id < o.k AND i.owner_id > o.k - 3) x WHERE o.id < 500 $q$);
 SELECT * FROM check_query('EXISTS', $q$ SELECT o.id FROM owners o WHERE EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) $q$);
 
 DROP TABLE owners, items;

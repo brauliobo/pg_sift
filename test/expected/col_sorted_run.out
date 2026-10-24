@@ -45,7 +45,7 @@ UNION ALL SELECT 'sr_on', array_agg(DISTINCT format) FROM sift._test_col_formats
     idx    | minors 
 -----------+--------
  sr_off    | {4}
- sr_on     | {13}
+ sr_on     | {18}
  sr_twelve | {4}
 (3 rows)
 
@@ -69,8 +69,8 @@ SELECT count(*) FILTER (WHERE section = 'runs') AS rows_off FROM sift.col_sectio
         0
 (1 row)
 
--- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c)
-SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.02 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
+-- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c), and the heads of the leaves with no NULL (under 10% more)
+SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.10 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
  runs_take_bytes | two_bytes_a_row_per_unordered_leaf 
 -----------------+------------------------------------
  t               | t
@@ -89,11 +89,12 @@ ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric o
 CREATE INDEX sr_bad5 ON sr_x USING sift_col (id, u) WITH (order_columns = 'u', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 ERROR:  invalid order_columns option: not an integer, date, timestamp, numeric or float column
 DROP TABLE sr_x;
--- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off)
+-- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off); the heads of the runs are col_run_heads's (sift.test_topn_heads = off)
 CREATE FUNCTION sr_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', (m <> 'plain')::text, false);
 	PERFORM set_config('sift.topn_runs', (m = 'runs')::text, false);
+	PERFORM set_config('sift.test_topn_heads', 'false', false);
 	PERFORM set_config('enable_seqscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_indexscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);
@@ -171,7 +172,7 @@ CREATE INDEX sr_both ON sr_s USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) W
 SELECT array_agg(DISTINCT format) AS minors, sift.col_verify('sr_both', true) FROM sift._test_col_formats('sr_both');
  minors | col_verify 
 --------+------------
- {13}   | 
+ {18}   | 
 (1 row)
 
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sr_s', ARRAY['k', 'f'], ARRAY[1, 300]);
@@ -267,9 +268,9 @@ SELECT sift.col_promote('sr_on') >= 0 AS promoted;
 (1 row)
 
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sr_on');
- minors 
---------
- {13}
+ minors  
+---------
+ {13,18}
 (1 row)
 
 SELECT sift.col_verify('sr_on', true);
@@ -281,7 +282,7 @@ SELECT sift.col_verify('sr_on', true);
 SELECT * FROM sr_small('sr');
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      96 |   96 |        92 | 
+      96 |   96 |        90 | 
 (1 row)
 
 SELECT sift.col_merge('sr_on', true) >= 0 AS merged;
@@ -294,7 +295,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) sr;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sr_on');
  minors | segments 
 --------+----------
- {13}   |        1
+ {18}   |        1
 (1 row)
 
 SELECT sift.col_verify('sr_on', true);
@@ -378,7 +379,7 @@ SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
  minors 
 --------
- {4,13}
+ {4,18}
 (1 row)
 
 SELECT sift.col_verify('sa_idx', true);
@@ -407,7 +408,7 @@ SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
  minors | segments 
 --------+----------
- {13}   |        1
+ {18}   |        1
 (1 row)
 
 SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 3);
@@ -486,7 +487,7 @@ REINDEX INDEX sa_idx;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
  minors 
 --------
- {13}
+ {18}
 (1 row)
 
 SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 3);

@@ -343,6 +343,8 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->heap_pages = cc->heap_pages;
 	c->rechecked = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nrechecked : 0;
 	c->recheck_units = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nunits : 0;
+	c->point_units = cc->point_units;
+	c->point_rows = cc->point_rows;
 }
 
 #endif							/* __has_include("col/col.h") */

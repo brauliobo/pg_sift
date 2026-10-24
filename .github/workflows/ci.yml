@@ -129,7 +129,7 @@ jobs:
       - run: scripts/check-errors.sh
       - run: scripts/check-memory.sh && scripts/check-memory.sh --selftest
       - run: scripts/check-bench-fresh.sh
-      - run: git fetch -q --depth=1 origin integration/3.3-batch-1:refs/remotes/origin/integration/3.3-batch-1 || true; scripts/check-bench-cases.sh
+      - run: git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" || true; scripts/check-bench-cases.sh
       - run: scripts/gen-refusals.sh --check
       - run: scripts/coverage.sh --docs
       - run: scripts/gen-docs.py --check

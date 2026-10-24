@@ -48,8 +48,8 @@ SELECT pg_relation_size('sr_twelve') = pg_relation_size('sr_off') AS lower_is_of
        (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('sr_twelve'))
        = (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('sr_off')) AS lower_is_off_sections;
 SELECT count(*) FILTER (WHERE section = 'runs') AS rows_off FROM sift.col_sections('sr_off');
--- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c)
-SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.02 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
+-- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c), and the heads of the leaves with no NULL (under 10% more)
+SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.10 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
 
 -- the options are checked: names, types that are not ordered by their key (text, uuid, bool), a leaf of a jsonb path
 CREATE INDEX sr_bad1 ON sr USING sift_col (id, k) WITH (order_columns = 'nosuch', cube_minmax = false, superunit = 0, calendar_columns = 'off');
@@ -60,11 +60,12 @@ CREATE INDEX sr_bad4 ON sr_x USING sift_col (id, b) WITH (order_columns = 'b', c
 CREATE INDEX sr_bad5 ON sr_x USING sift_col (id, u) WITH (order_columns = 'u', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 DROP TABLE sr_x;
 
--- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off)
+-- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off); the heads of the runs are col_run_heads's (sift.test_topn_heads = off)
 CREATE FUNCTION sr_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', (m <> 'plain')::text, false);
 	PERFORM set_config('sift.topn_runs', (m = 'runs')::text, false);
+	PERFORM set_config('sift.test_topn_heads', 'false', false);
 	PERFORM set_config('enable_seqscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_indexscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);

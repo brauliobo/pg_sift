@@ -188,6 +188,7 @@ extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, u
  * else valid until the next call on seg. sift_cseg_super_pagemask fills 4 words for each of the n units from the first of group k.
  */
 extern uint32 sift_cseg_super_fan(SiftColSegment *seg);
+extern bool sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm);
 extern void sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm);
 extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a);
 extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);
@@ -251,7 +252,23 @@ extern uint32 sift_cseg_set_kinds(SiftColSegment *seg, int col);
  */
 extern bool sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at);
 extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out);
-/* The whole stored run, sift_crun_bytes(r->kind, r->n) bytes (the verifier) */
+/* The head of the run (r->heads > 0): sift_crun_head_counts entries, the low end first, then the high end from the last of the run */
+extern void sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHeadEnt *out);
+/*
+ * The page mask and the run head of leaf col in unit u, the two reads of a head bypass (col/scan_unit.c), kept by the backend for the next query (col/dictcache.c:
+ * a segment never changes). False when the segment has no page masks; else has: the unit has a head, nlo + nhi entries of ent (sift_cseg_run_heads).
+ */
+typedef struct SiftCSbHead
+{
+	bool		has;
+	uint32		nlo;
+	uint32		nhi;
+	uint64		pm[SIFT_PAGEMASK_WORDS];
+	SiftCHeadEnt ent[2 * SIFT_CRUN_HEAD_MAX];
+} SiftCSbHead;
+
+extern bool sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out);
+/* The whole stored run with its head, sift_crun_total(r) bytes (the verifier) */
 extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
 extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);

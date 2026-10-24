@@ -96,6 +96,7 @@ sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
 		return;
 	}
 	sift_col_sel_all(cu, &all);
+	sift_col_point_narrow(cu, &all);
 	memcpy(bits, all.bits, all.nwords * sizeof(uint64));
 }
 

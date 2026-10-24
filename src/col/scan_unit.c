@@ -243,6 +243,64 @@ sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull
 	return cu->run.found;
 }
 
+/*
+ * The head of the sorted run of col in the unit of superblock sb, when the unit need not be opened to know that every row of it is live and visible to the
+ * snapshot: the only unit of the superblock (a write buffer holding rows of it is the caller's to rule out), of a segment with superunit summaries (the page
+ * masks are there), with its pages all-visible and no dead row, in the order of col_super_take. False otherwise, then the unit is read.
+ */
+bool
+sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
+{
+	SiftColSegment *seg = NULL;
+	uint32		u = 0;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+	SiftCSbHead h;
+
+	if (src->flags & COLO_TABLE)
+		return false;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *s = src->seg[i].seg;
+		uint32		k = sift_cseg_find_unit(s, sb);
+
+		if (k >= s->nsb || s->sbdir[k].sb != sb)
+			continue;
+		if (seg != NULL)
+			return false;
+		seg = s;
+		u = k;
+	}
+	if (seg == NULL || sift_cseg_keyed(&seg->entry) || !sift_cseg_sbhead(seg, u, col, &h))
+		return false;
+	src->visibility.sb_mask(src->visibility.arg, sb, av);
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		if (h.pm[w] & ~av[w])
+			return false;
+	if (!segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	if (!h.has || sift_cseg_dirty(seg, u))
+		return false;
+	*nlo = h.nlo;
+	*nhi = h.nhi;
+	memcpy(out, h.ent, (h.nlo + h.nhi) * sizeof(SiftCHeadEnt));
+	return true;
+}
+
+int
+sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
+{
+	ColUnit    *cu = unit->priv;
+
+	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run head read without its info");
+	*nlo = *nhi = 0;
+	if (cu->run.r.heads == 0)
+		return 0;
+	sift_crun_head_counts(cu->run.r.heads, cu->run.r.n, nlo, nhi);
+	sift_cseg_run_heads(cu->seg, cu->run.at, &cu->run.r, out);
+	return cu->run.r.heads;
+}
+
 void
 sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords)
 {

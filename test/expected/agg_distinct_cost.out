@@ -54,6 +54,9 @@ SELECT scan_cost('SELECT grp, count(*) AS n, count(DISTINCT cat) AS d FROM items
 CREATE FUNCTION workers(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
+	-- the table scans off, as for runs_in_scan: the workers are the scan's, not those of a parallel plan of the server's own (PostgreSQL 19 plans one for a count(DISTINCT)).
+	-- PostgreSQL 19 has no hook for sift.plan_scale to scale the table the scan is compared with: its expected file (_1) has the sum serial at the setup costs above 0
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	RETURN coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
 END $$;

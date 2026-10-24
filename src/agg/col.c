@@ -35,6 +35,7 @@
 #include "col/am.h"
 #include "col/enc.h"
 #include "col/pg.h"
+#include "col/runs.h"
 #include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
@@ -221,6 +222,8 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
 		}
+		if (ls[i].point_units > 0 && ls[i].nunits > 0)
+			st->point_cover[i] = Min(ls[i].point_units / ls[i].nunits, 1.0);
 		if (ls[i].set_units > 0)
 		{
 			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
@@ -333,14 +336,14 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 static void *
 col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
@@ -658,6 +661,31 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint3
 	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
 }
 
+static bool
+col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	ColSource  *src = impl;
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || !sift_col_sb_heads(src->cs, sb, leaf, e, nlo, nhi))
+		return false;
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return true;
+}
+
+static int
+col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+	int			h = sift_col_run_heads(&((ColSource *) impl)->unit, leaf, e, nlo, nhi);
+
+	StaticAssertStmt(sizeof(SiftSrcHead) == sizeof(SiftCHeadEnt) && SIFT_SRC_HEAD_MAX == SIFT_CRUN_HEAD_MAX, "the run head entries of the engine and the source differ");
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return h;
+}
+
 static void
 col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
 {
@@ -857,6 +885,8 @@ static const SiftSrcProvider col_provider = {
 	.walk_stamp = col_walk_stamp,
 	.overflow = col_overflow,
 	.run_info = col_run_info,
+	.run_heads = col_run_heads,
+	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,

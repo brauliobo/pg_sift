@@ -20,9 +20,9 @@ plan_rows.c: pg_aggregate_ok # a test of an aggregate of the rows plan: the call
 plan_two.c: append_arms same_scan from_same cond_split outer_cond arm_gates arm_having_expr count_aggs_walker outer_agg spine_key two_keys two_aggs spine_where two_from spine_type spine_eq spine_conjunct two_spine # steps of the two-level shape: two_level names two_arms, two_keys, two_aggs or spine_shape
 plan_type.c: typeof_cmp_operands typeof_test wide_test types_guard_reads # tests of a jsonb_typeof or wide comparison: the caller names where
 plan_zone.c: array_consts zone_range zone_meets zone_may # zone pruning tests: a unit that cannot be pruned is read, no refusal
-spec.c: sift_aggspec_spillable sift_parse_decimal sift_aggspec_zone_cmp str_const str_cmp_test str_in_test sift_aggspec_str_test plain_agg # tests of a compiled spec (parallel workers, string tests): a scan that cannot use workers or a kernel is not a refusal
+spec.c: sift_aggspec_spillable sift_parse_decimal sift_aggspec_zone_cmp sift_aggspec_span_pred str_const str_cmp_test str_in_test sift_aggspec_str_test plain_agg # tests of a compiled spec (parallel workers, string tests): a scan that cannot use workers or a kernel is not a refusal
 spec_fuse.c: combo_same fuse_join fuse_combo fuse_fslots fuse_posts runs_plan pred_runs_plan fuse_aggs routable fuse_split fuse_leaves fuse_children fuse_build fuse_key_slots fuse_candidate sift_aggspec_fusable # fusing the arms of a spec: arms that do not fuse run as separate scans, no refusal
-spec_preagg.c: plain_leaf pa_pres sift_pawhy_fixable add_leaf pred_dims in_leaves rows_zone_bound cal_pred cal_tests # pre-aggregate decisions: a miss is counted by sift.col_rollup_misses, no refusal
+spec_preagg.c: plain_leaf pa_pres sift_pawhy_fixable add_leaf pred_dims in_leaves rows_zone_bound cal_pred cal_tests cal_alt # pre-aggregate decisions: a miss is counted by sift.col_rollup_misses, no refusal
 plan_order.c: topn_unique_key # a test of the join table's indexes: topn_joins_ok names topn_shape
 plan_order.c: topn_raw_key # a test of the first key leaf: the scan reads it through the datums of the unit, not as the stored codes, and is no less a top-N
 plan_order.c: topn_bounds # an early guard of topn_paths: a query without a usable LIMIT is no top-N candidate, so no arm is open to refuse

@@ -218,7 +218,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 	Pair		pairs[PAIR_DIMS * (PAIR_DIMS - 1) / 2];
 	int			dims[PAIR_DIMS],
 				ndim = 0,
-				npair = 0;
+				npair = 0,
+				nplain = 0;		/* the columns a cube could take: more than its cap, and preagg = 'auto' picks the ones that fit */
 	uint64		units = 0,
 				bytes = 0;
 	int64	   *vals,
@@ -346,6 +347,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		}
 	}
 	for (int c = 0; c < sc->ncols; c++)
+		nplain += sc->cols[c].parent < 0 && sift_cpagg_dim_ok(sc, &sc->cols[c]);
+	for (int c = 0; c < sc->ncols; c++)
 	{
 		const SiftColDef *d = &sc->cols[c];
 		int			cube_pct = share(histo[c], (uint32) units);
@@ -373,7 +376,8 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		else
 			kind = d->store == SIFT_COLS_STR ? "text" : "measure";
 		if (leaf[c].dim && cube_pct < AGREE_PCT)
-			appendStringInfo(&advice, "add it to preagg = 'cube(...)': %u of %u sampled units hold at most %d values of it", leaf[c].small, leaf[c].seen, DIM_GROUPS);
+			appendStringInfo(&advice, "add it to preagg = 'cube(...)'%s: %u of %u sampled units hold at most %d values of it",
+							 nplain > SIFT_PAGG_MAX_DIMS ? " (or ask preagg = 'auto' for the columns that fit)" : "", leaf[c].small, leaf[c].seen, DIM_GROUPS);
 		else if (strcmp(kind, "key") == 0 && !rel->pagg.pres[c] && cube_pct < SIFT_COL_AUTO_KEEP_PCT)
 			appendStringInfo(&advice, "key_columns = 'auto' keeps a key list or bitmap of it for count(DISTINCT)");
 		v[0] = CStringGetTextDatum(leaf_label(index, d));
@@ -402,7 +406,7 @@ sift_col_index_advice(PG_FUNCTION_ARGS)
 		v[3] = Int32GetDatum(pairs[p].seen);
 		v[4] = Int32GetDatum(share(pairs[p].fit, pairs[p].seen));
 		if (pass)
-			v[5] = CStringGetTextDatum(psprintf("rollup_dims = '%s, %s: <measure>' would answer %d%% of the units from cells, within %d%% more index", na, nb,
+			v[5] = CStringGetTextDatum(psprintf("rollup_dims = '%s, %s: <measure>' would answer %d%% of the units from cells, within %d%% more index (rollup_dims = 'auto' writes the cheapest pair)", na, nb,
 												share(pairs[p].fit, pairs[p].seen), GROWTH_PCT));
 		else
 			isnull[5] = true;

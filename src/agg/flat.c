@@ -192,6 +192,7 @@ static List *flat_levels;		/* the query level being flattened and those around i
 static bool group_aggregate_lateral(Query *q, bool apply);
 struct DecorJoin;
 static bool decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor);
+static bool decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor);
 static void decor_apply(Query *q, struct DecorJoin *r);
 static bool decorrelate_sublinks(Query *q, bool apply);
 
@@ -212,6 +213,8 @@ flatten_jointree(Query *q, Node *n, bool apply, List **pulled, List **decor, boo
 		foreach_ptr(Node, x, f->fromlist)
 			items = lappend(items, flatten_jointree(q, x, apply, pulled, decor, changed));
 		f->fromlist = items;
+		if (decorrelate_comma(q, f, apply, decor))
+			*changed = true;
 	}
 	else if (IsA(n, JoinExpr))
 	{
@@ -672,6 +675,8 @@ typedef struct Decor
 	List	   *conds;			/* the equalities: the table's column and the outer query's */
 	List	   *rest;			/* the other conditions of the sub-select */
 	Bitmapset  *outer;			/* the range table entries of the outer query it reads */
+	List	   *groups;			/* the expressions it groups by (a LATERAL one, which gives a row for each group, not one row) */
+	bool		exists;			/* EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..): whether a row is there, whatever it holds */
 } Decor;
 
 /* the aggregates whose value over no rows is NULL, or 0 (count) */
@@ -686,17 +691,20 @@ decor_aggregate(Aggref *a)
 		!contain_vars_of_level((Node *) a, 1);
 }
 
-/* the expressions of the select list: aggregates, constants and functions of them, no column outside an aggregate */
+/* the expressions of the select list: aggregates, the expressions it groups by, constants and functions of them, no column outside an aggregate */
 static bool
-decor_output_bad(Node *n, void *context)
+decor_output_bad(Node *n, Decor *d)
 {
 	if (n == NULL)
 		return false;
+	foreach_ptr(Node, g, d->groups)
+		if (equal(n, g))
+			return false;
 	if (IsA(n, Var))
 		return true;
 	if (IsA(n, Aggref))
 		return !decor_aggregate((Aggref *) n);
-	return expression_tree_walker(n, decor_output_bad, context);
+	return expression_tree_walker(n, decor_output_bad, d);
 }
 
 /* `table.column = outer column` of the same type, by the equality that groups the type */
@@ -725,13 +733,56 @@ decor_equality(Node *c, Decor *d)
 	return true;
 }
 
+#if PG_VERSION_NUM >= 180000
+typedef struct Ungroup
+{
+	Index		rti;
+	List	   *exprs;
+} Ungroup;
+
+/* a column of the entry that stands for the grouping is the expression it groups by */
+static Node *
+ungroup_column(Node *n, Ungroup *u)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varno == u->rti)
+		return copyObject(list_nth(u->exprs, ((Var *) n)->varattno - 1));
+	return expression_tree_mutator(n, ungroup_column, u);
+}
+#endif
+
+/* the sub-select as PostgreSQL 17 parses it: no range table entry for its grouping (PostgreSQL 18 adds one for any GROUP BY) */
+static Query *
+ungrouped(Query *sub)
+{
+#if PG_VERSION_NUM >= 180000
+	Query	   *q;
+	Ungroup		u;
+
+	if (!sub->hasGroupRTE)
+		return sub;
+	q = copyObject(sub);
+	u.rti = list_length(q->rtable);
+	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
+	q->targetList = (List *) ungroup_column((Node *) q->targetList, &u);
+	q->havingQual = ungroup_column(q->havingQual, &u);
+	q->rtable = list_delete_last(q->rtable);
+	q->hasGroupRTE = false;
+	return q;
+#else
+	return sub;
+#endif
+}
+
 static bool
 decor_analyze(Query *sub, Decor *d)
 {
 	RangeTblEntry *t;
 
-	if (sub->commandType != CMD_SELECT || !sub->hasAggs || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
-		sub->setOperations != NULL || sub->groupClause != NIL || sub->groupingSets != NIL || sub->havingQual != NULL || sub->sortClause != NIL ||
+	sub = ungrouped(sub);
+	if (sub->commandType != CMD_SELECT || (sub->hasAggs || sub->groupClause != NIL) != !d->exists || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
+		sub->setOperations != NULL || sub->groupingSets != NIL || sub->groupDistinct || (sub->groupClause == NIL && sub->havingQual != NULL) || sub->sortClause != NIL ||
 		sub->distinctClause != NIL || sub->limitOffset != NULL || sub->limitCount != NULL || sub->cteList != NIL || sub->rowMarks != NIL ||
 		sub->jointree == NULL || list_length(sub->jointree->fromlist) != 1 || !IsA(linitial(sub->jointree->fromlist), RangeTblRef) ||
 		list_length(sub->rtable) != 1 || contain_volatile_functions((Node *) sub) || contain_vars_of_level((Node *) sub, 2))
@@ -740,6 +791,16 @@ decor_analyze(Query *sub, Decor *d)
 	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || !has_column_index(t->relid))
 		return false;
 	d->sub = sub;
+	if (contain_vars_of_level(sub->havingQual, 1))
+		return false;
+	foreach_ptr(SortGroupClause, sgc, sub->groupClause)
+	{
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, sub->targetList);
+
+		if (contain_vars_of_level(e, 1))
+			return false;
+		d->groups = lappend(d->groups, e);
+	}
 	foreach_ptr(Node, c, make_ands_implicit((Expr *) sub->jointree->quals))
 	{
 		if (!contain_vars_of_level(c, 1))
@@ -749,9 +810,10 @@ decor_analyze(Query *sub, Decor *d)
 		else
 			return false;
 	}
-	foreach_node(TargetEntry, te, sub->targetList)
-		if (te->resjunk || decor_output_bad((Node *) te->expr, NULL))
-			return false;
+	if (!d->exists)
+		foreach_node(TargetEntry, te, sub->targetList)
+			if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
+				return false;
 	return d->conds != NIL;
 }
 
@@ -802,7 +864,7 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 
 	g->jointree->quals = d->rest == NIL ? NULL : (Node *) make_ands_explicit(d->rest);
 	g->targetList = NIL;
-	g->hasAggs = true;
+	g->groupClause = NIL;
 	foreach_ptr(OpExpr, c, d->conds)
 	{
 		bool		first = castNode(Var, linitial(c->args))->varlevelsup == 0;
@@ -827,8 +889,46 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 		lfirst(list_nth_cell(e->args, first ? 0 : 1)) = makeVar(grti, at, in->vartype, in->vartypmod, in->varcollid, 0);
 		*join = lappend(*join, e);
 	}
+	/* then the groups of the sub-select (the grouped column of a tie is that key); the HAVING stays in the grouped query */
+	foreach_ptr(SortGroupClause, sgc, d->sub->groupClause)
+	{
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, d->sub->targetList);
+		bool		grouped_already = false;
+
+		foreach_node(TargetEntry, te, g->targetList)
+			grouped_already |= equal(te->expr, e);
+		if (!grouped_already)
+		{
+			TargetEntry *te = makeTargetEntry((Expr *) copyObject(e), list_length(g->targetList) + 1, psprintf("g%d", list_length(g->targetList) + 1), false);
+			SortGroupClause *c = copyObject(sgc);
+
+			g->targetList = lappend(g->targetList, te);
+			te->ressortgroupref = list_length(g->groupClause) + 1;
+			c->tleSortGroupRef = te->ressortgroupref;
+			g->groupClause = lappend(g->groupClause, c);
+		}
+	}
+	if (d->exists)
+	{
+		/* the keys of the rows there are, and a column that is true: NULL where the outer row has none */
+		g->targetList = lappend(g->targetList, makeTargetEntry((Expr *) makeBoolConst(true, false), list_length(g->targetList) + 1, "found", false));
+		*exprs = list_make1(makeTargetEntry((Expr *) makeVar(grti, list_length(g->targetList), BOOLOID, -1, InvalidOid, 0), 1, "found", false));
+		return g;
+	}
 	foreach_node(TargetEntry, te, d->sub->targetList)
-		*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
+	{
+		if (te->resjunk)
+			continue;
+		if (d->groups == NIL)
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
+		else
+		{
+			/* a missing group is a row of NULLs: its columns are the sub-select's own, not expressions of the aggregates evaluated above the join */
+			g->targetList = lappend(g->targetList, makeTargetEntry((Expr *) copyObject(te->expr), list_length(g->targetList) + 1, psprintf("o%d", te->resno), false));
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) makeVar(grti, list_length(g->targetList), exprType((Node *) te->expr), exprTypmod((Node *) te->expr),
+																	   exprCollation((Node *) te->expr), 0), te->resno, te->resname, false));
+		}
+	}
 	return g;
 }
 
@@ -851,6 +951,20 @@ tree_rtis(Node *n)
 	return s;
 }
 
+/* the outer columns come from the items of the FROM tree and are not another lateral sub-select's, which the rewrite replaces (and the rewrite of this one would read stale) */
+static bool
+decor_outer_ok(Query *q, Decor *d, Node *from)
+{
+	int			rti = -1;
+
+	if (!bms_is_subset(d->outer, tree_rtis(from)))
+		return false;
+	while ((rti = bms_next_member(d->outer, rti)) >= 0)
+		if (rt_fetch(rti, q->rtable)->rtekind == RTE_SUBQUERY && rt_fetch(rti, q->rtable)->lateral)
+			return false;
+	return true;
+}
+
 /* a lateral sub-select to replace (the replacement waits for the joins of the level to be spliced, as for a pull-up) */
 typedef struct DecorJoin
 {
@@ -870,7 +984,7 @@ decorrelate_join(Query *q, JoinExpr *j, bool apply, List **decor)
 		return false;
 	r->lrti = ((RangeTblRef *) j->rarg)->rtindex;
 	rte = rt_fetch(r->lrti, q->rtable);
-	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_analyze(rte->subquery, &r->d) || !bms_is_subset(r->d.outer, tree_rtis(j->larg)))
+	if (rte->rtekind != RTE_SUBQUERY || !rte->lateral || !decor_analyze(rte->subquery, &r->d) || !decor_outer_ok(q, &r->d, j->larg))
 		return false;
 	if (apply)
 		*decor = lappend(*decor, r);
@@ -951,10 +1065,12 @@ decor_apply(Query *q, DecorJoin *r)
 	RangeTblEntry *rte;
 	JoinExpr   *j;
 	DecorRead	read;
+	bool		grouped = r->d.groups != NIL;
 
 	j = join_of((Node *) q->jointree, r->lrti);
+	/* one row for every outer row, so a join that did not null the columns now does; the groups of the sub-select keep an inner join an inner join */
 	read.exprs = exprs;
-	read.nulled = bms_make_singleton(j->rtindex);
+	read.nulled = grouped && j->jointype == JOIN_INNER ? NULL : bms_make_singleton(j->rtindex);
 	*q = *(Query *) replace_rte_variables((Node *) q, r->lrti, 0, decor_read, &read, NULL);
 	rte = rt_fetch(r->lrti, q->rtable);
 	rte->subquery = g;
@@ -963,8 +1079,11 @@ decor_apply(Query *q, DecorJoin *r)
 		names = lappend(names, makeString(te->resname));
 	rte->eref = makeAlias(rte->eref->aliasname, names);
 	j = join_of((Node *) q->jointree, r->lrti);
-	j->jointype = JOIN_LEFT;
-	rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_LEFT;
+	if (!grouped)
+	{
+		j->jointype = JOIN_LEFT;
+		rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_LEFT;
+	}
 	j->quals = (Node *) make_ands_explicit(join);
 	sift_agg_by_cost = true;
 }
@@ -974,7 +1093,7 @@ typedef struct SublinkDecor
 	Query	   *q;
 	bool		apply;
 	bool		changed;
-	List	   *pulled;
+	List	   *semi;			/* the EXISTS and NOT EXISTS the WHERE ANDs: PostgreSQL makes semi and anti joins of them, which the scan has arms for */
 } SublinkDecor;
 
 /* the columns of a FROM item, as a join's range table entry holds them */
@@ -994,68 +1113,43 @@ join_columns(Query *q, Node *n, List **names, List **vars)
 	*vars = list_concat(*vars, vv);
 }
 
-/* `(SELECT aggregate FROM t WHERE t.k = x.k)` of a select list or WHERE: the item of the FROM list that holds x LEFT JOIN the table grouped */
-static Node *
-decor_sublink(Node *n, SublinkDecor *c)
+/* the sub-select as a range table entry of the query (its columns named as its select list does) */
+static void
+add_subquery(Query *q, Query *sub)
 {
-	SubLink    *s;
-	Decor		d = {0};
-	Query	   *q = c->q;
-	List	   *exprs = NIL,
-			   *join = NIL,
-			   *names = NIL,
+	RangeTblEntry *rte = makeNode(RangeTblEntry);
+	List	   *names = NIL;
+
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = sub;
+	rte->inFromCl = true;
+	foreach_node(TargetEntry, te, sub->targetList)
+		names = lappend(names, makeString(te->resname));
+	rte->eref = makeAlias("decor", names);
+	q->rtable = lappend(q->rtable, rte);
+}
+
+/* `left JOIN rti ON quals` with the range table entry of the join that the planner expects */
+static JoinExpr *
+join_item(Query *q, Node *left, Index rti, JoinType type, Node *quals)
+{
+	List	   *names = NIL,
 			   *vars = NIL;
-	ListCell   *item = NULL;
-	RangeTblEntry *g,
-			   *jr;
-	JoinExpr   *j;
-	Index		grti;
+	RangeTblRef *ref = makeNode(RangeTblRef);
+	JoinExpr   *j = makeNode(JoinExpr);
+	RangeTblEntry *jr = makeNode(RangeTblEntry);
 	int			nleft;
 
-	if (n == NULL)
-		return NULL;
-	if (!IsA(n, SubLink))
-		return expression_tree_mutator(n, decor_sublink, c);
-	s = (SubLink *) n;
-	if (s->subLinkType != EXPR_SUBLINK || !decor_analyze(castNode(Query, s->subselect), &d))
-		return n;
-	foreach(item, q->jointree->fromlist)
-		if (bms_is_subset(d.outer, tree_rtis(lfirst(item))))
-			break;
-	if (item == NULL)
-		return n;
-	c->changed = true;
-	if (!c->apply)
-		return n;
-	grti = list_length(q->rtable) + 1;
-	g = makeNode(RangeTblEntry);
-	g->rtekind = RTE_SUBQUERY;
-	g->subquery = decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join);
-	sift_agg_by_cost = true;
-	g->inFromCl = true;
-	foreach_node(TargetEntry, te, g->subquery->targetList)
-		names = lappend(names, makeString(te->resname));
-	g->eref = makeAlias("decor", names);
-	q->rtable = lappend(q->rtable, g);
-
-	/* x LEFT JOIN g ON equalities, with the range table entry of the join that the planner expects */
-	names = vars = NIL;
-	join_columns(q, lfirst(item), &names, &vars);
+	join_columns(q, left, &names, &vars);
 	nleft = list_length(names);
-	{
-		RangeTblRef *ref = makeNode(RangeTblRef);
-
-		ref->rtindex = grti;
-		j = makeNode(JoinExpr);
-		j->jointype = JOIN_LEFT;
-		j->larg = lfirst(item);
-		j->rarg = (Node *) ref;
-		j->quals = (Node *) make_ands_explicit(join);
-		join_columns(q, (Node *) ref, &names, &vars);
-	}
-	jr = makeNode(RangeTblEntry);
+	ref->rtindex = rti;
+	j->jointype = type;
+	j->larg = left;
+	j->rarg = (Node *) ref;
+	j->quals = quals;
+	join_columns(q, (Node *) ref, &names, &vars);
 	jr->rtekind = RTE_JOIN;
-	jr->jointype = JOIN_LEFT;
+	jr->jointype = type;
 	jr->joinaliasvars = vars;
 	for (int i = 1; i <= list_length(vars); i++)
 		if (i <= nleft)
@@ -1066,8 +1160,70 @@ decor_sublink(Node *n, SublinkDecor *c)
 	jr->inFromCl = true;
 	q->rtable = lappend(q->rtable, jr);
 	j->rtindex = list_length(q->rtable);
-	lfirst(item) = j;
-	return (Node *) linitial_node(TargetEntry, exprs)->expr;
+	return j;
+}
+
+/* `(SELECT aggregate FROM t WHERE t.k = x.k)` of a select list or WHERE: the item of the FROM list that holds x LEFT JOIN the table grouped */
+static Node *
+decor_sublink(Node *n, SublinkDecor *c)
+{
+	SubLink    *s;
+	Decor		d = {0};
+	Query	   *q = c->q;
+	List	   *exprs = NIL,
+			   *join = NIL;
+	ListCell   *item = NULL;
+	Index		grti = list_length(q->rtable) + 1;
+	Node	   *e;
+
+	if (n == NULL)
+		return NULL;
+	if (!IsA(n, SubLink))
+		return expression_tree_mutator(n, decor_sublink, c);
+	s = (SubLink *) n;
+	if ((s->subLinkType != EXPR_SUBLINK && s->subLinkType != EXISTS_SUBLINK) || list_member_ptr(c->semi, s))
+		return n;
+	d.exists = s->subLinkType == EXISTS_SUBLINK;
+	if (!decor_analyze(castNode(Query, s->subselect), &d) || d.groups != NIL)
+		return n;
+	foreach(item, q->jointree->fromlist)
+		if (bms_is_subset(d.outer, tree_rtis(lfirst(item))))
+			break;
+	if (item == NULL)
+		return n;
+	c->changed = true;
+	if (!c->apply)
+		return n;
+	add_subquery(q, decor_group(&d, grti, bms_make_singleton(grti + 1), &exprs, &join));
+	sift_agg_by_cost = true;
+	lfirst(item) = join_item(q, lfirst(item), grti, JOIN_LEFT, (Node *) make_ands_explicit(join));
+	e = (Node *) linitial_node(TargetEntry, exprs)->expr;
+	if (d.exists)
+	{
+		/* a group is there, or the left join made up a row of NULLs: never NULL, as EXISTS is not */
+		NullTest   *t = makeNode(NullTest);
+
+		t->arg = (Expr *) add_nulling_relids(e, NULL, bms_make_singleton(grti + 1));
+		t->nulltesttype = IS_NOT_NULL;
+		t->location = -1;
+		return (Node *) t;
+	}
+	return e;
+}
+
+/* the sub-selects the WHERE ANDs together, EXISTS and NOT EXISTS among them */
+static void
+semi_sublinks(Node *quals, List **semi)
+{
+	if (quals == NULL)
+		return;
+	if (IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == AND_EXPR)
+		foreach_ptr(Node, a, ((BoolExpr *) quals)->args)
+			semi_sublinks(a, semi);
+	else if (IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == NOT_EXPR && IsA(linitial(((BoolExpr *) quals)->args), SubLink))
+		semi_sublinks(linitial(((BoolExpr *) quals)->args), semi);
+	else if (IsA(quals, SubLink) && ((SubLink *) quals)->subLinkType == EXISTS_SUBLINK)
+		*semi = lappend(*semi, quals);
 }
 
 static bool
@@ -1078,10 +1234,49 @@ decorrelate_sublinks(Query *q, bool apply)
 	if (!q->hasSubLinks || q->commandType != CMD_SELECT || q->hasAggs || q->hasWindowFuncs || q->groupClause != NIL || q->groupingSets != NIL ||
 		q->havingQual != NULL || q->jointree == NULL || q->setOperations != NULL)
 		return false;
+	semi_sublinks(q->jointree->quals, &c.semi);
 	foreach_node(TargetEntry, te, q->targetList)
 		te->expr = (Expr *) decor_sublink((Node *) te->expr, &c);
 	q->jointree->quals = decor_sublink(q->jointree->quals, &c);
 	return c.changed;
+}
+
+/* `FROM x, LATERAL (aggregates of a table tied to x)` is that sub-select inner joined to the item of the list that holds the columns it reads */
+static bool
+decorrelate_comma(Query *q, FromExpr *f, bool apply, List **decor)
+{
+	bool		changed = false;
+	int			i = 1;
+
+	while (i < list_length(f->fromlist))
+	{
+		Node	   *n = list_nth(f->fromlist, i);
+		RangeTblEntry *rte;
+		Decor		d = {0};
+		int			k = 0;
+
+		if (IsA(n, RangeTblRef) && (rte = rt_fetch(((RangeTblRef *) n)->rtindex, q->rtable))->rtekind == RTE_SUBQUERY && rte->lateral &&
+			decor_analyze(rte->subquery, &d))
+		{
+			while (k < i && !decor_outer_ok(q, &d, list_nth(f->fromlist, k)))
+				k++;
+			if (k < i)
+			{
+				changed = true;
+				if (apply)
+				{
+					JoinExpr   *j = join_item(q, list_nth(f->fromlist, k), ((RangeTblRef *) n)->rtindex, JOIN_INNER, NULL);
+
+					lfirst(list_nth_cell(f->fromlist, k)) = j;
+					f->fromlist = list_delete_nth_cell(f->fromlist, i);
+					decorrelate_join(q, j, true, decor);
+					continue;
+				}
+			}
+		}
+		i++;
+	}
+	return changed;
 }
 
 bool
