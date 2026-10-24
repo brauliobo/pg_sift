@@ -527,6 +527,18 @@ CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) US
 
 Index what you filter and group by; an expression such as the month above is a column of its own and a query must write it the same way.
 
+### What CREATE INDEX decides for the columns
+
+A `sift_col` index chooses these from the table at `CREATE INDEX` and says each choice in one NOTICE; every one is a default that an explicit option replaces, and none changes an answer (the aggregates are the normal plan's).
+
+| Decision | Rule | NOTICE says | Replace it with |
+|---|---|---|---|
+| Key lists of the foreign keys (`key_columns`) | `int2`, `int4` and `date` foreign keys and `*_id` columns that are not unique and that the cube does not already hold; kept where a key list or bitmap fits 3% of a unit in at least half of the units | the columns kept, their bytes, the columns left out and why | `key_columns = 'off'` or `'a, b'` |
+| Cube dimensions and calendar cells | the cube holds 16 dimensions: the calendar cells of the dates first, then the columns in their order (the dates' own histograms and the last columns give way) | the plain columns left without a histogram | `preagg = 'cube(...)'`, `calendar_columns` |
+| Paths of a `jsonb` column (`paths`) | the keys that are a scalar of one type in most of 2,000 sampled documents; a wildcard for a map of more than 32 keys, a group for an array of objects; written to the option as `auto: spec` | the spec read | `paths = '...'` by hand |
+
+Rebuilds keep what was chosen (the options hold `auto: ...`), so `REINDEX` and the workers of a build see one schema. What is not decided for you, and how to see it: `sift.index_advice(index)` lists per column its kind, what the index holds and, over 32 evenly spaced units, whether it qualifies as a cube dimension, and advises a `rollup_dims` pair that covers 90% of the units for within 3% more index; `sift.suggest_paths(table, column)` shows the paths the build would read. The min/max, superunit and calendar structures are not chosen per column: each costs about 1% of an index of wide rows and none is dropped by a rule that keeps its gain.
+
 ### Memory of a backend
 
 A backend that plans and runs statements of many aggregate arms keeps far more memory after them than its memory contexts hold: the planner and the scan free blocks of tens of megabytes, and the C library of Linux (glibc) keeps them in the heap of the process for the next statement, because its threshold for mapping a block by itself grows to the largest block it has freed. For a server with hundreds of pooled backends that is the number to watch.
