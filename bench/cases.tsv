@@ -80,3 +80,4 @@ softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count
 softdel_deleted_list	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units Pruned: [1-9]	native,pg_duckdb	-	ms	faster33	no
 point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	yes
 point_in_1000	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	no
+bigdict_point_probes	dictionary the cache cannot hold is no longer parsed again for every test	orders	default	orders_col	native	-	ms	faster33	no
