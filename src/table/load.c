@@ -215,6 +215,9 @@ publish_group(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->sum_dl += seg->sum_dl;
 }
 
+/* How many times a load settles a full directory again before it fails */
+#define LOAD_ROOM_TRIES 8
+
 /* A directory that is full (or past sift.table_backpressure) is made room in before the group is written, as a new write buffer does */
 static void
 make_room(Relation rel, SiftTblRel *st)
@@ -247,9 +250,16 @@ end_run(Load *ld, Relation rel, SiftTblRel *st)
 	ld->open = false;
 	if (!any)
 		return;
-	make_room(rel, st);
-	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
+	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and give up only when it stays full */
+	for (int tries = 0;; tries++)
+	{
+		make_room(rel, st);
+		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		sift_dir_read(rel, &st->dir);
+		if (st->dir.nsegs < sift_tbl_max_segments - 2 || tries == LOAD_ROOM_TRIES)
+			break;
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	}
 	if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
