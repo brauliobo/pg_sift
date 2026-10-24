@@ -266,6 +266,7 @@ flatten_query(Query *q, bool apply)
 			later->targetlist = (List *) read_columns((Node *) later->targetlist, p);
 	}
 	changed |= group_aggregate_lateral(q, apply);
+	changed |= sift_agg_latest_per_group(q, apply);
 	flat_levels = list_delete_first(flat_levels);
 	return changed;
 }

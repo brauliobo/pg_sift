@@ -401,6 +401,25 @@ def render_lateralagg(p):
     return f"SELECT {outer} FROM ({inner}) s", False
 
 
+def gen_latest(r, ctx):
+    orders = ['e.ts', 'e.amount', 'e.val', 'e.a', 'e.big', 'e.kind', 'e.num', 'e.parent_id']
+    return dict(parts=r.sample(['e.kind', 'e.grp', 'e.a', 'e.parent_id', 'e.flag'], r.randrange(1, 3)),
+                order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
+                filter=r.choice(['t.rn = 1', 't.rn <= 1', 't.rn < 2', '1 = t.rn', '1 >= t.rn', 't.rn = 1::bigint AND t.rn <= 1']), cte=r.random() < 0.3,
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=r.choice([[], [], ['t.amount > %d' % r.randrange(20)]]),
+                shape=r.choice(['rows', 'rows', 'rn', 'count']))
+
+
+def render_latest(p):
+    # id last: the order has no ties, so the first row of a group is the one the normal plan keeps
+    win = f"row_number() OVER (PARTITION BY {', '.join(p['parts'])} ORDER BY {', '.join(p['order'])}, e.id) rn"
+    sub = f"SELECT e.id, e.kind, e.grp, e.amount, {win} FROM events e {where(p)}"
+    frm, pre = (f"latest t", f"WITH latest AS ({sub}) ") if p['cte'] else (f"({sub}) t", '')
+    cond = ' AND '.join([p['filter']] + p['outer'])
+    sel = {'rows': 't.id, t.kind, t.amount', 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount'}[p['shape']]
+    return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -743,7 +762,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
-    'keycut': (gen_keycut, render_keycut, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'nullzone': (gen_nullzone, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']

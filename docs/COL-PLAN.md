@@ -530,6 +530,7 @@ Every refusal has a slug, `sift.explain_refusals` and `sift.explain_why` name it
 | `spine_rows` | limit |  | the rows of the spine are estimated above sift.agg_lookup_max_kb |
 | `rows_shape` | semantic |  | the grouping of the rows of a SiftAgg plan has no count(DISTINCT) of integers, or a key or aggregate it cannot group |
 | `topn_shape` | semantic |  | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests |
+| `window_first` | semantic |  | the first row of each group, asked with a window function, is not a lone row_number() with PARTITION BY and ORDER BY in a sub-select that does nothing else |
 | `cost` | semantic | yes | the normal plan is estimated cheaper than the scan |
 | `cte_cost` | semantic | yes | the shared CTE plan is estimated cheaper than the plan with the CTE inlined |
 <!-- refusals:end -->
