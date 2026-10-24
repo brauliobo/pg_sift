@@ -63,6 +63,16 @@ SELECT sift.stats_reset();
 SELECT count(plan_it(series_query(10 + i))) FROM generate_series(0, 16) i;
 SELECT counts();
 
+-- the choice between the flattened form of a statement (a lateral aggregate as a table grouped by its tie) and the form as written is kept the same way: the
+-- second statement is planned in the form that won, and gives the rows of the plan without the scans
+CREATE FUNCTION lateral_query(k int) RETURNS text LANGUAGE sql AS
+$$ SELECT format($q$SELECT k.id, x.s FROM kinds k LEFT JOIN LATERAL (SELECT sum(e.set_id) AS s FROM events e WHERE e.kind_id = k.id) x ON true WHERE k.id <= %s$q$, k) $$;
+SELECT sift.stats_reset();
+SELECT plan_it(lateral_query(10));
+SELECT plan_it(lateral_query(20));
+SELECT counts();
+DROP FUNCTION lateral_query;
+
 -- the statement of another constant planned from the verdict cached for this one gives the rows of the plan without the scans
 CREATE FUNCTION digest(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE d text;

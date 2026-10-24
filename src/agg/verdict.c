@@ -1,5 +1,6 @@
 /*
- * agg/verdict.c - the choice between a shared CTE and its inline plan, kept per backend (cte.c plan_cte).
+ * agg/verdict.c - the choice between a shared CTE and its inline plan, and the one between the flattened form of a statement and the form as written,
+ * kept per backend (cte.c plan_cte, plan_flat).
  *
  * Making the choice takes PostgreSQL's planner four to eight runs of the statement (the shared plan, the inline plan, the larger sizes of
  * sift.agg_scale_horizon, the flattened form), where a backend that serves one application sees the same few statements again and again with
@@ -90,6 +91,16 @@ verdict_inval(Datum arg, Oid relid)
 		rel_bloom = 0;
 }
 
+/* the settings do not change while a statement is planned: one hash serves the lookups of its plans */
+static bool settings_known;
+static uint64 settings_memo;
+
+void
+verdict_new_planning(void)
+{
+	settings_known = false;
+}
+
 /* the settings a plan depends on: the planner's (methods, costs), the memory a plan may use and the extension's */
 static uint64
 settings_hash(void)
@@ -97,6 +108,9 @@ settings_hash(void)
 	int			n;
 	struct config_generic **vars = get_guc_variables(&n);
 	uint64		h = 0;
+
+	if (settings_known)
+		return settings_memo;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -122,6 +136,8 @@ settings_hash(void)
 			h = hash_combine64(h, hash_bytes_extended((const unsigned char *) v, strlen(v), 0));
 		}
 	}
+	settings_known = true;
+	settings_memo = h;
 	return h;
 }
 
@@ -192,9 +208,9 @@ cache_create(void)
 	CacheRegisterRelcacheCallback(verdict_inval, (Datum) 0);
 }
 
-/* q is jumbled in place (its queryId is put back) and is not otherwise touched */
+/* q is jumbled in place (its queryId is put back) and is not otherwise touched; kind: what the verdict is of (the CTE choice, the flattened form), so that the two of one statement do not meet */
 void
-verdict_lookup(Query *q, CteVerdict *vd)
+verdict_lookup(Query *q, int kind, CteVerdict *vd)
 {
 	uint64		queryid = q->queryId;
 	int			compute;
@@ -211,7 +227,7 @@ verdict_lookup(Query *q, CteVerdict *vd)
 	compute_query_id = COMPUTE_QUERY_ID_ON;
 	JumbleQuery(q);
 	compute_query_id = compute;
-	vd->key = hash_combine64(hash_combine64(q->queryId, settings_hash()), sizes.h);
+	vd->key = hash_combine64(hash_combine64(hash_combine64(q->queryId, settings_hash()), sizes.h), kind);
 	q->queryId = queryid;
 	vd->nrels = sizes.n;
 	vd->cacheable = true;

@@ -668,7 +668,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	agg_vet_forget();
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
-	verdict_lookup(inline_parse, &vd);
+	verdict_lookup(inline_parse, VERDICT_CTE, &vd);
 	if (vd.known)
 		return plan_cached(SIFT_PLANNER_ARGS(parse), inline_parse, &vd, cx);
 	if (sift_agg_scale_horizon > 1.0)
@@ -755,6 +755,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			   *flatplan = NULL;
 	MemoryContext plain_cx,
 				flat_cx;
+	CteVerdict	fv = {0};
 	bool		flat_inlined = false,
 				by_cost = false;
 
@@ -763,6 +764,13 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	{
 		flat = copyObject(parse);
 		by_cost = sift_agg_flatten_laterals(flat);
+		/* the two forms are both planned where the flat plan is no better in every scan, and the inline plan of a shared CTE costs most of it: their choice is kept as the one between the CTE and its inline plan is (verdict.c), and a hit plans the form that won */
+		if (has_shared_cte(parse))
+		{
+			verdict_lookup(parse, VERDICT_FLAT, &fv);
+			if (fv.known)
+				return fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
+		}
 		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 		flat_inlined = inline_won;
 		/*
@@ -779,7 +787,10 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	if (flatplan == NULL || !plain_reader_stmt(plain))
 	{
 		if (flatplan != NULL)
+		{
 			discard_plan(flat_cx);
+			verdict_remember(&fv, false, 0, 0);
+		}
 		return plain;
 	}
 	/*
@@ -791,9 +802,11 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 flatplan->planTree->total_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
+		verdict_remember(&fv, true, 0, 0);
 		return flatplan;
 	}
 	discard_plan(flat_cx);
+	verdict_remember(&fv, false, 0, 0);
 	return plain;
 }
 
@@ -808,6 +821,7 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	PlannedStmt *stmt;
 
 	hook_ran = true;
+	verdict_new_planning();
 	discarded = NIL;			/* those of a plan that failed are gone with its context */
 	/*
 	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
