@@ -504,6 +504,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #endif
 	sift_col_auto_paths(heap, index);
 	sift_col_auto_cube(heap, index);
+	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
