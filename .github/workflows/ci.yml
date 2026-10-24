@@ -108,7 +108,7 @@ jobs:
             + (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
               + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}]
-              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: "^installcheck-(agg|col_agg)", cassert: true}] else [] end) end
+              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: "^installcheck-agg_(cte_|.*_cost$|.*_scope$|.*lateral|.*subplan|plan_|nested_ctes|.*placeholder|statement_cte)", cassert: true}] else [] end) end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
