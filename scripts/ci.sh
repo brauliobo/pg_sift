@@ -30,6 +30,8 @@
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
 # SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one).
 # SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.
+# `affected --focus [--list] [BASE]` narrows the regression tests of a change in src/ to the ones that execute the functions the diff touched (scripts/focus.tsv, made by
+# scripts/focus-gen.sh with gcov): a function every test executes, or a change outside functions, runs the tests of the area as in the fast tier; the other jobs only run in CI.
 # SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the pull request tier: lint runs three of them). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
@@ -68,20 +70,63 @@ if [[ $MODE == --areas-regex ]]; then
 	exit
 fi
 # --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in two), full (it is all of it)
+# focus_regex TOKEN...: the jobs of `affected --focus`. A token is FILE or FILE:FUNCTION (FUNCTION * : a change outside any function); the regression tests that
+# execute the function (scripts/focus.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
+# change outside functions, scripts/areas.tsv as ever for the other files. A function no row has is new or run by no test: its callers are the other tokens.
+focus_regex() {
+	local t f rest=() star=() sel names
+	for t; do
+		f=${t%%:*}
+		[[ $f =~ ^src/(agg|col|table|bm25)/[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }
+		[[ $t != *:'*' ]] || star+=("$f")
+	done
+	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
+		/^#/ { next }
+		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
+	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|')
+	star+=($(sed -n 's/^H //p' <<<"$sel" | sort -u))
+	{ echo '^(coverage|isolation-emulated)$'
+	  [[ -z $names ]] || echo "^installcheck-($names)\$"
+	  (( ! ${#star[@]} )) || areas_fast_regex "${star[@]}"
+	  (( ! ${#rest[@]} )) || areas_regex "${rest[@]}"
+	} | paste -sd'|'
+}
+# focus_tokens BASE: FILE:FUNCTION of every hunk of the diff against BASE in src/; the function is the last line at column 0 that starts like a definition before the hunk
+focus_tokens() {
+	local f l
+	for f in $(cd "$REPO" && git diff --name-only --no-renames "$1" -- src); do
+		[[ -f $REPO/$f ]] || continue
+		git -C "$REPO" diff -U0 --no-renames "$1" -- "$f" | sed -n '/^@@ -0,0 /d; s/^@@ [^+]*+\([0-9]*\).*/\1/p' | while read -r l; do
+			awk -v f="$f" -v l="$l" 'NR <= l && /^[A-Za-z_][A-Za-z0-9_]*\(/ { n = $0; sub(/\(.*/, "", n) } END { print f ":" (n == "" ? "*" : n) }' "$REPO/$f"
+		done
+	done | sort -u
+}
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
+	FOCUS=
+	[[ ${1:-} == --focus ]] && { FOCUS=1; shift; }
 	[[ ${1:-} == --list || ${1:-} == --github ]] && { OUT=${1#--}; shift; }
 	BASE=${1:-origin/main}
 	if [[ $BASE == all ]]; then RE=. FASTRE=.
-	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files
-		RE=$(areas_regex "${@:2}") || exit $?
-		FASTRE=$(areas_fast_regex "${@:2}") || exit $?
+	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files (--focus: FILE:FUNCTION tokens)
+		if [[ -n $FOCUS ]]; then RE=$(focus_regex "${@:2}") || exit $?; FASTRE=$RE
+		else
+			RE=$(areas_regex "${@:2}") || exit $?
+			FASTRE=$(areas_fast_regex "${@:2}") || exit $?
+		fi
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
 		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
 		RE=$(areas_regex "${FILES[@]}") || exit $?
 		FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
+		if [[ -n $FOCUS ]]; then
+			# the functions of the changed files of src/ from the diff (a file with no tokens is new: its callers are the other tokens), the other files as themselves
+			mapfile -t TOK < <({ printf '%s\n' "${FILES[@]}" | grep -v '^src/'; focus_tokens "$MB"; } | sort -u)
+			RE=$(focus_regex ${TOK[@]+"${TOK[@]}"}) || exit $?
+			FASTRE=$RE
+		fi
 	fi
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
@@ -167,6 +212,18 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
+	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
+	# tests that execute a function, the tests of the area for a hot function or a change outside functions
+	focus_rows=$(cut -f1 "$REPO/scripts/focus.tsv" | grep -v '^[#=]' | sort)
+	focus_missing=$(comm -23 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+	[[ -z $focus_missing ]] || { echo "FAIL: focus: no row in scripts/focus.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
+	focus_stale=$(comm -13 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus.tsv has rows for $(echo $focus_stale), which are not tests"; bad=1; }
+	read -r focus_t focus_tok _ < <(awk -F'\t' '!/^[#=]/ && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
+	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1] }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
+	[[ $(focus_regex src/agg/cte.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
 	fast_agg=$(areas_fast_regex src/agg/x.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	while read -r id _; do
