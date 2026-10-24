@@ -105,3 +105,4 @@ prod_settings_heap_check	is never priced above the random fetch of the same page
 lookup_table_whole	is priced with the pages PostgreSQL's own sequential scan of it reads	orders	default	.	native	-	ms	faster33	no
 topn_from_units	takes the rows of the result from the units that gave them	orders	default	Heap Fetches: 0	native,pg_duckdb	-	ms	faster33	no
 cte_lookup_par	a scan whose lookup joins read a CTE, a sub-select or a function	orders	default	.	native,pg_duckdb	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no
+point_dense_keys	only while the keys are expected to have fewer rows than 4,096	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
