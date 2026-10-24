@@ -29,6 +29,7 @@
 #include "utils/uuid.h"
 #include "utils/varlena.h"
 
+#include "agg/leaf_int.h"
 #include "agg/part.h"
 #include "agg/topn.h"
 #include "core/cmp.h"
@@ -38,12 +39,34 @@
 #define TOPN_WINDOW		8
 /* Superblocks whose zones tell whether the sort column follows the table */
 #define TOPN_PROBES		6
+/* Rows a unit gives the heap, at least, for a column of the output to be read from it: decoding costs as much as fetching this many rows from the heap, and a unit that gives less than half the heap is not one most of the final rows come from */
+#define TOPN_OUT_ROWS	16
 
 bool		sift_topn_zone_keys = true;
 #ifdef SIFT_TESTING
 bool		sift_topn_heads = true;
 #endif
 bool		sift_topn_runs = true;
+
+/* Does a heap entry keep the value of the leaf as an integer (leaf_datum gives its Datum): the output of a row is then read from its unit */
+bool
+sift_topn_out_ok(const SiftSrcLeaf *lf)
+{
+	switch (lf->typid)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case DATEOID:
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case TIMEOID:
+			return sift_topn_key_ok(lf) && (lf->vtype == SCV_I32 || lf->vtype == SCV_I64);
+		default:
+			return false;
+	}
+}
 
 bool
 sift_topn_key_ok(const SiftSrcLeaf *lf)
@@ -85,7 +108,7 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
@@ -97,7 +120,7 @@ sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_fi
 	}
 	l = lappend_int(l, nout);
 	for (int c = 0; c < nout; c++)
-		l = lappend_int(l, attno[c]);
+		l = lappend_int(lappend_int(l, attno[c]), oleaf[c]);
 	l = lappend_int(l, flags);
 	return (Node *) list_make4(l, count, offset, exprs);
 }
@@ -207,7 +230,9 @@ typedef struct TopEnt
 	int64		k[SIFT_TOPN_MAX_KEYS];
 	uint64		tie;			/* the TID's key in the result heap, the row in a unit's */
 	uint32		row;
+	uint32		oi;				/* the place of the entry's output columns in SiftTopN.ov (set by res_push) */
 	uint8		nul;			/* bit j: key j is NULL */
+	bool		hasv;			/* the output columns are in ov: the row is not fetched from the heap */
 	ItemPointerData tid;
 	uint16		part;			/* the partition of the row's heap (a partitioned table), else 0 */
 } TopEnt;
@@ -270,6 +295,16 @@ struct SiftTopN
 	int64		nties;			/* comparisons of the unit that a prefix could not decide */
 	int			nout;
 	int		   *attno;
+	int			nov;			/* output columns the units give (the heap holds no row to fetch: all of them are leaves), else 0 */
+	int		   *oleaf;			/* ... their leaves, and the types their values are given as */
+	Oid		   *otyp;
+	bool	   *owide;			/* ... int64 (else int32) vectors */
+	int		   *okey;			/* ... the sort key that is the same column (the entry holds its value), else -1 */
+	int			nread;			/* ... columns that are not a key: read from the unit */
+	int64	   *ov;				/* limit entries of nov values each, and whether each is NULL: the entries of heap take a place each (TopEnt.oi) */
+	bool	   *ovn;
+	int64	   *uv;				/* the values of the rows of lh */
+	bool	   *uvn;
 	int64		skip;			/* the first rows the Limit above throws away (OFFSET): given as rows of NULLs, not read from the heap */
 	int64		emitted;
 	TopEnt	   *heap;			/* the best rows so far, the worst at heap[0] */
@@ -519,8 +554,12 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		;
 	t->nout = list_nth_int(l, i++);
 	t->attno = palloc(Max(t->nout, 1) * sizeof(int));
+	t->oleaf = palloc(Max(t->nout, 1) * sizeof(int));
 	for (int c = 0; c < t->nout; c++)
+	{
 		t->attno[c] = list_nth_int(l, i++);
+		t->oleaf[c] = list_nth_int(l, i++);
+	}
 	bounded = bound_rows(spec, econtext, parent, &t->limit, &offset);
 	/* a heap entry holds SIFT_TOPN_MAX_KEYS keys: more keys sort every row, as no bound does */
 	flags = list_nth_int(l, i++);
@@ -546,6 +585,32 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->lh = palloc(t->limit * sizeof(TopEnt));
 		t->rows = palloc(t->limit * sizeof(uint32));
 		t->tids = palloc(t->limit * sizeof(ItemPointerData));
+		/* every column of the output is a leaf (the plan says so): the units give them, a heap row is fetched only for the entries they could not */
+		if (t->nout > 0 && t->oleaf[0] >= 0 && heap->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		{
+			t->nov = t->nout;
+			t->otyp = palloc(t->nov * sizeof(Oid));
+			t->owide = palloc(t->nov * sizeof(bool));
+			t->okey = palloc(t->nov * sizeof(int));
+			for (int c = 0; c < t->nov; c++)
+			{
+				t->otyp[c] = lay->leaf[t->oleaf[c]].typid;
+				t->owide[c] = lay->leaf[t->oleaf[c]].vtype == SCV_I64;
+				t->okey[c] = -1;
+				for (int j = 0; j < t->nkey && t->okey[c] < 0; j++)
+				{
+					const TopKey *k = &t->key[j];
+
+					if (k->leaf == t->oleaf[c] && k->xk == TXK_NONE && k->x == NULL && !k->blob && !k->nenum && (k->vtype == SCV_I32 || k->vtype == SCV_I64))
+						t->okey[c] = j;
+				}
+				t->nread += t->okey[c] < 0;
+			}
+			t->ov = palloc((Size) t->limit * t->nov * sizeof(int64));
+			t->ovn = palloc((Size) t->limit * t->nov);
+			t->uv = palloc((Size) t->limit * t->nov * sizeof(int64));
+			t->uvn = palloc((Size) t->limit * t->nov);
+		}
 	}
 	t->snap = snapshot;
 	t->src = src;
@@ -1156,8 +1221,22 @@ res_free(const SiftTopN *t, const TopEnt *e)
 			pfree((void *) KEY_BLOB(e->k[j]));
 }
 
+/* the place of the entry's output columns and the columns themselves (v: nov values and flags; NULL: the row is fetched from the heap) */
+static inline void
+res_values(SiftTopN *t, TopEnt *c, uint32 oi, const int64 *v, const bool *vn)
+{
+	c->oi = oi;
+	c->hasv = v != NULL;
+	if (v != NULL)
+	{
+		memcpy(&t->ov[(Size) oi * t->nov], v, t->nov * sizeof(int64));
+		memcpy(&t->ovn[(Size) oi * t->nov], vn, t->nov * sizeof(bool));
+	}
+}
+
+/* An entry takes the place of the one it pushes out, or the next place while the heap fills */
 static void
-res_push(SiftTopN *t, const TopEnt *e)
+res_push(SiftTopN *t, const TopEnt *e, const int64 *v, const bool *vn)
 {
 	TopEnt		c = *e,
 				old;
@@ -1167,13 +1246,18 @@ res_push(SiftTopN *t, const TopEnt *e)
 		/* the entries are kept as they come until there are n of them, then made a heap: the fill costs one comparison an entry less log n */
 		if (t->n < t->limit)
 		{
-			t->heap[t->n++] = *e;
+			res_values(t, &c, t->n, v, vn);
+			t->heap[t->n++] = c;
 			if (t->n == t->limit)
 				for (int i = t->n / 2 - 1; i >= 0; i--)
 					heap_down(t, t->heap, t->n, i);
 			return;
 		}
-		heap_push(t, t->heap, &t->n, e);
+		if (ent_cmp(t, e, &t->heap[0]) >= 0)
+			return;
+		res_values(t, &c, t->heap[0].oi, v, vn);
+		t->heap[0] = c;
+		heap_down(t, t->heap, t->n, 0);
 		return;
 	}
 	if (t->n == t->limit)
@@ -1182,11 +1266,13 @@ res_push(SiftTopN *t, const TopEnt *e)
 			return;
 		old = t->heap[0];
 		res_own(t, &c);
+		res_values(t, &c, old.oi, v, vn);
 		heap_push(t, t->heap, &t->n, &c);
 		res_free(t, &old);
 		return;
 	}
 	res_own(t, &c);
+	res_values(t, &c, t->n, v, vn);
 	heap_push(t, t->heap, &t->n, &c);
 }
 
@@ -1286,11 +1372,55 @@ tie_tid(int64 tie, ItemPointerData *tid, uint16 *part)
 	*part = tie >> 48;
 }
 
+/* The output columns of the rows of lh: the value of a sort key is in the entry, the others are read from the unit. The values of row i are uv[i * nov ...] */
+static void
+read_outputs(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	for (int c = 0; c < t->nov; c++)
+	{
+		SiftSrcVec	v;
+		int			j = t->okey[c];
+
+		if (j >= 0)
+			for (int i = 0; i < t->ln; i++)
+			{
+				t->uvn[(Size) i * t->nov + c] = (t->lh[i].nul >> j) & 1;
+				t->uv[(Size) i * t->nov + c] = t->lh[i].k[j];
+			}
+		else
+		{
+			sift_colsrc_read_rows(src, unit, t->oleaf[c], t->rows, t->ln, &v);
+			for (int i = 0; i < t->ln; i++)
+			{
+				uint32		x = row_at(t->rows, t->ln, t->lh[i].row);
+				Size		at = (Size) i * t->nov + c;
+
+				t->uvn[at] = v.isnull && v.isnull[x];
+				t->uv[at] = t->uvn[at] ? 0 : t->owide[c] ? ((const int64 *) v.data)[x] : ((const int32 *) v.data)[x];
+			}
+		}
+	}
+}
+
+/* The rows of lh that the heap would take as it is now: those whose output the unit has to give */
+static int
+out_rows(const SiftTopN *t)
+{
+	int			n = 0;
+
+	if (t->n < t->limit)
+		return t->ln;
+	for (int i = 0; i < t->ln; i++)
+		n += ent_cmp(t, &t->lh[i], &t->heap[0]) < 0;
+	return n;
+}
+
 /* The best n of those rows by all the keys go to the heap with their TIDs */
 static void
 finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
 	uint16		part;
+	bool		vals;
 
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
@@ -1317,8 +1447,12 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 		e->tid = t->tids[row_at(t->rows, t->ln, e->row)];
 		e->part = part;
 		e->tie = tie_key(&e->tid, part);
-		res_push(t, e);
 	}
+	vals = t->nov > 0 && (t->nread == 0 || out_rows(t) >= Max(TOPN_OUT_ROWS, t->limit / 2));
+	if (vals)
+		read_outputs(t, src, unit);
+	for (int i = 0; i < t->ln; i++)
+		res_push(t, &t->lh[i], vals ? &t->uv[(Size) i * t->nov] : NULL, vals ? &t->uvn[(Size) i * t->nov] : NULL);
 	share_bar(t);
 }
 
@@ -1946,7 +2080,7 @@ head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 		ItemPointerSet(&e.tid, (BlockNumber) (h[i].addr >> 16), (OffsetNumber) (h[i].addr & 0xFFFF));
 		e.part = part;
 		e.tie = tie_key(&e.tid, part);
-		res_push(t, &e);
+		res_push(t, &e, NULL, NULL);
 	}
 	share_bar(t);
 	t->nrhead++;
@@ -1987,7 +2121,7 @@ sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb)
 		e.k[0] = h[i].key;
 		ItemPointerSet(&e.tid, (BlockNumber) (h[i].addr >> 16), (OffsetNumber) (h[i].addr & 0xFFFF));
 		e.tie = tie_key(&e.tid, 0);
-		res_push(t, &e);
+		res_push(t, &e, NULL, NULL);
 	}
 	share_bar(t);
 	t->nrhead++;
@@ -2941,6 +3075,7 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	ItemPointerData tid;
 	uint16		part;
 	TopFetch   *f;
+	const TopEnt *e = !t->all && t->pos < t->n ? &t->res[t->pos] : NULL;
 	bool		call_again = false,
 				all_dead;
 
@@ -2950,6 +3085,18 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	{
 		ExecClearTuple(slot);
 		memset(slot->tts_isnull, true, t->nout * sizeof(bool));
+		ExecStoreVirtualTuple(slot);
+		return true;
+	}
+	if (e != NULL && e->hasv)
+	{
+		/* the row came from a unit: its columns are the heap row's (an update that keeps the TID's chain keeps the columns of the index) */
+		ExecClearTuple(slot);
+		for (int c = 0; c < t->nov; c++)
+		{
+			slot->tts_isnull[c] = t->ovn[(Size) e->oi * t->nov + c];
+			slot->tts_values[c] = slot->tts_isnull[c] ? (Datum) 0 : leaf_datum(t->otyp[c], t->ov[(Size) e->oi * t->nov + c]);
+		}
 		ExecStoreVirtualTuple(slot);
 		return true;
 	}
@@ -3086,7 +3233,7 @@ sift_topn_import(SiftTopN *t, const char *data, Size len)
 				e.k[j] = (int64) (uintptr_t) blob_new(CurrentMemoryContext, data + off + sizeof(n), n);
 				off += sizeof(n) + n;
 			}
-		res_push(t, &e);
+		res_push(t, &e, NULL, NULL);
 		for (int j = 0; j < t->nkey; j++)
 			if (t->key[j].blob && !((e.nul >> j) & 1))
 				pfree((void *) KEY_BLOB(e.k[j]));

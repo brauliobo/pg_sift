@@ -765,6 +765,38 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List 
 	return true;
 }
 
+/*
+ * The leaf of each column of the scan tuple when every one of them is a stored value the top-N keeps as an integer: the rows of a unit give the
+ * output then, and no heap row is fetched (oleaf[] is -1 for all when one column is not). A column that is not a sort key is decoded from the units,
+ * which pays when most of the final rows come from a few of them: the first key follows the heap order (TOPN_OUT_CORR); a random layout leaves those to the heap.
+ */
+#define TOPN_OUT_CORR	0.9
+static void
+topn_out_leaves(AggCtx *c, List *scan_tlist, int nkey, const int *leaf, const SiftTopXform *xf, int *oleaf)
+{
+	bool		decode = false;
+
+	foreach_ptr(TargetEntry, te, scan_tlist)
+	{
+		int			l = match_leaf(c, (Node *) te->expr);
+		bool		key = false;
+
+		if (l < 0 || !sift_topn_out_ok(leaf_of(c, l)))
+		{
+			for (int i = 0; i < list_length(scan_tlist); i++)
+				oleaf[i] = -1;
+			return;
+		}
+		oleaf[foreach_current_index(te)] = l;
+		for (int j = 0; j < nkey; j++)
+			key |= leaf[j] == l && xf[j].kind == TXK_NONE;
+		decode |= !key;
+	}
+	if (decode && (leaf[0] < 0 || fabs(leaf_correlation(c, leaf[0])) < TOPN_OUT_CORR))
+		for (int i = 0; i < list_length(scan_tlist); i++)
+			oleaf[i] = -1;
+}
+
 /* Is the window the whole set of rows: no PARTITION BY and no ORDER BY (every row is a peer of every other), and a frame that is not cut (the default one ends at the last peer) */
 static bool
 window_whole_set(WindowClause *wc)
@@ -972,7 +1004,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	uint64		tlo,
 				thi;
 	int		   *leaf,
-			   *attno;
+			   *attno,
+			   *oleaf;
 	bool	   *desc,
 			   *nulls_first,
 				skip_offset = true;
@@ -1056,6 +1089,8 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		return;
 	}
 	nout = list_length(scan_tlist);
+	oleaf = palloc(Max(nout, 1) * sizeof(int));
+	topn_out_leaves(c, scan_tlist, nkey, leaf, xf, oleaf);
 	if (!topn_windows(c, s, funcs, &scan_tlist))
 		return;
 	if (!spec_finish(c, s, root, input_rel, NIL))
@@ -1083,7 +1118,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
-		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
 		nworkers = c->joins == NIL && s->naggs == 0 && !c->topn_xserial && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
@@ -1094,6 +1129,6 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	}
 	c->topn_sorted = true;
 	c->topn_frac = 1.0;
-	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
+	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 }

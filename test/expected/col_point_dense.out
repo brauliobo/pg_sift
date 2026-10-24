@@ -1,0 +1,41 @@
+-- The point directory answers a list of few rows. A list whose keys have, on average, many rows for each unit of the segment lists a row in nearly
+-- every unit, so the units answer it and the directory is not read (sift_col scan.c prune_point); the rows are the heap's either way.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+CREATE TABLE pdn (id int, u int, d int, v int, pad text DEFAULT repeat('x', 400));
+ALTER TABLE pdn ALTER COLUMN pad SET STORAGE PLAIN;
+-- u: a key of one row; d: 100 keys of 300 rows each, in every unit (a list of 10 of them expects 3,000 rows for each of the few units)
+INSERT INTO pdn (id, u, d, v) SELECT i, (i::bigint * 7919 % 30011)::int, i % 100, i % 7 FROM generate_series(1, 30000) i;
+CREATE INDEX pdn_ix ON pdn USING sift_col (id, u, d, v) WITH (key_columns = 'off', point_columns = 'u, d');
+ANALYZE pdn;
+CREATE FUNCTION pdn_from_point(w text) RETURNS text LANGUAGE plpgsql
+	SET sift.agg_force = on SET max_parallel_workers_per_gather = 0 SET jit = off AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT v, count(*) FROM pdn WHERE %s GROUP BY v', w) LOOP
+		IF l ~ 'Units From Point Directory' THEN RETURN 'directory'; END IF;
+	END LOOP;
+	RETURN 'units';
+END $$;
+SELECT w, pdn_from_point(w) AS answered_by
+FROM (VALUES ('u IN (11, 5000, 29000)'), ('u = 77')) t(w)
+ORDER BY w;
+           w            | answered_by 
+------------------------+-------------
+ u = 77                 | directory
+ u IN (11, 5000, 29000) | directory
+(2 rows)
+
+-- the same rows with the directory ignored (a copy of the table without the option)
+CREATE TABLE pdn_ref AS SELECT * FROM pdn;
+SELECT (SELECT sum(v) FROM pdn WHERE d IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) = (SELECT sum(v) FROM pdn_ref WHERE d IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)) AS dense_same,
+       (SELECT sum(v) FROM pdn WHERE u IN (11, 5000, 29000)) = (SELECT sum(v) FROM pdn_ref WHERE u IN (11, 5000, 29000)) AS sparse_same;
+ dense_same | sparse_same 
+------------+-------------
+ t          | t
+(1 row)
+
+DROP FUNCTION pdn_from_point(text);
+DROP TABLE pdn, pdn_ref;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

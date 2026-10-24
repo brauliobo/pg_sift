@@ -1151,6 +1151,37 @@ col_scale_rel(RelOptInfo *rel)
  * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off. sift.plan_scale is applied by
  * get_relation_info_hook up to 18 and by build_simple_rel_hook, which replaces it, in 19.
  */
+static set_rel_pathlist_hook_type prev_pathlist_hook;
+
+/*
+ * A query the index covers gets an index-only path, and the bitmap path PostgreSQL builds beside it carries the price of that one: a read of every kept unit (the
+ * lookup of a key in the point directory returns the addresses and reads none, when the directory lists them). A lookup by one clause of the directory therefore
+ * reads its units through the index-only path, 20 to 50 times slower than the bitmap path on the addresses. The bitmap path is added priced as what it does.
+ */
+static void
+add_address_paths(PlannerInfo *root, RelOptInfo *rel)
+{
+	List	   *added = NIL;
+
+	foreach_ptr(Path, p, rel->pathlist)
+	{
+		IndexPath  *ip = (IndexPath *) p;
+		IndexPath  *bp;
+
+		if (!IsA(p, IndexPath) || p->pathtype != T_IndexOnlyScan || ip->indexinfo->relam != sift_col_am_oid() || list_length(ip->indexclauses) != 1 ||
+			ip->indexorderbys != NIL)
+			continue;
+		bp = create_index_path(root, ip->indexinfo, ip->indexclauses, ip->indexorderbys, ip->indexorderbycols, ip->path.pathkeys, ip->indexscandir, false,
+							   PATH_REQ_OUTER(&ip->path), 1.0, false);
+		if (bp->path.total_cost >= ip->path.total_cost)
+			continue;
+		added = lappend(added, bp);
+		added = lappend(added, create_bitmap_heap_path(root, rel, (Path *) bp, rel->lateral_relids, 1.0, 0));
+	}
+	foreach_ptr(Path, p, added)
+		add_path(rel, p);
+}
+
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 
@@ -1172,15 +1203,24 @@ col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *
 		col_scale_rel(rel);
 }
 
+static void
+col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	if (prev_pathlist_hook)
+		prev_pathlist_hook(root, rel, rti, rte);
+	if (sift_enable_col_scan)
+		add_address_paths(root, rel);
+}
+
 void
 sift_col_scan_init(void)
 {
 	prev_info_hook = get_relation_info_hook;
 	get_relation_info_hook = col_get_relation_info;
+	prev_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = col_set_rel_pathlist;
 }
 #else
-static set_rel_pathlist_hook_type prev_pathlist_hook;
-
 static bool
 bitmap_uses_col(Path *path)
 {
@@ -1233,7 +1273,10 @@ col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (sift_enable_col_scan)
+	{
+		add_address_paths(root, rel);
 		return;
+	}
 	disable_col_bitmaps(rel->pathlist);
 	disable_col_bitmaps(rel->partial_pathlist);
 }

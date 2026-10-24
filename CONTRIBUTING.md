@@ -7,6 +7,7 @@ make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_c
 make installcheck                   # regression tests against a running server that can load pg_sift
 make check                          # quick tier: every suite in throwaway clusters, about 1.5 minutes on 8 cores, 2.5 on 4
 scripts/ci.sh affected              # the same, only the jobs your diff against origin/main (with the working tree) can break (scripts/areas.tsv); use it before a push
+scripts/ci.sh affected --focus      # while developing: of the changed functions of src/, the regression tests that execute them (scripts/focus.tsv); the full set is the push
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 

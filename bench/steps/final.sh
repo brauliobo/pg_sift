@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run] [--no-resume] [OPTION...]   (bench/steps/final.sh, called by bench/bench)
-# The release pass: every published number, in stages, each with a time budget (bench/presets.env), within a total budget (default 120 min at --size standard, 25 below it).
+# The release pass: every published number, in stages, each with a time budget (bench/presets.env), within a total budget.
 #   store        the store benchmark: PostgreSQL, pg_sift (sift_col, sift_table), Citus (columnar), Elasticsearch, ClickHouse; warm, cold and update tables
 #   compression  the pg_sift compression variants of the column index and the codecs' sizes in every system (1M orders)
 #   stats        what ClickHouse and Elasticsearch read per question
@@ -42,7 +42,7 @@ done
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 [[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
 FWD+=(--size "$SIZE")
-[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=120 || BUDGET=25; }; }
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=85 || BUDGET=25; }; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
@@ -62,7 +62,7 @@ s_gap() {
 s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECONDS=${P_CHURN:-20} bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes 200000,1000000 ${DOCS:+--docs}; }
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
-s_cases() { bench cases --engines pg_duckdb --rows "$P_ROWS" ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
+s_cases() { bench cases --engines pg_duckdb --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" --lane-budget "${P_LANE_BUDGET:-20}" ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
 s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }

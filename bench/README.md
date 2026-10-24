@@ -472,11 +472,40 @@ the same table and statement with `sift.enable_agg = off`); variants are further
 a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
 store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check.
 
-**Time of a run.** A case at 1,000,000 orders spends its seconds in two places: the build (`orders` from the generator, its btrees, the `sift_col` index, the case's setup, VACUUM FREEZE) and its timed runs (3 rounds of 1 untimed and 5 timed runs on every lane). Cases that only read `orders` and have the same index and setup are one build (`share_builds` in `steps/cases.py`: the first case of the group names the schema, `c_s_ID`; it is dropped after the last of the group, `--no-share` gives every case a table of its own), and a lane stops repeating after `--lane-budget` seconds (20) of timed runs, with at least 3 runs, so a statement of seconds is not run fifteen times (the rows say how many runs they have: `n`). `bench/bench cases --plan` prints an estimate before a run.
+**Time of a run.** A case at 1,000,000 orders spends its seconds in two places: the build (`orders` from the generator, its btrees, the `sift_col` index, the case's setup, VACUUM FREEZE) and its timed runs (rounds of 1 untimed and 5 timed runs on every lane: 3 by default, 2 in the release pass, `--rounds`). Cases that only read `orders` and have the same index and setup are one build (`share_builds` in `steps/cases.py`: the first case of the group names the schema, `c_s_ID`; it is dropped after the last of the group, `--no-share` gives every case a table of its own), and a lane stops repeating after `--lane-budget` seconds (20; 10 in the release pass) of timed runs, with at least 3 runs, so a statement of seconds is not run fifteen times (the rows say how many runs they have: `n`). `bench/bench cases --plan` prints an estimate before a run.
 
 **Writing a case.** `created_at` of the generator is random per row, so a range on it prunes no unit: a case that needs zones to cut takes its range on `id`, which follows the heap. A `sift_col` index created without explicit operator classes (`id sift.col_int4_ops`, ...) has no indexable clause, and the plan check fails with the plan lost.
 
 **Finding the cases nobody wrote.** `bench/bench cases --discover` (`steps/cases_discover.py`) measures the statements of a corpus on PostgreSQL (`sift.enable_agg = off`) and on pg_sift, one backend, answers compared, and lists the shapes that the scan answers at least `--min-gain` (2) times faster and that no case of the registry has, ranked by weight times median gain, into `bench/out/cases-proposed.tsv`: a proposal with a draft registry row, for a person to accept (write `bench/cases/ID.sql` and the row, then `bench/bench cases --cases ID --docs`), never a case added by itself. A shape is the set of features of the SQL (aggregates, `DISTINCT`, group-by forms, top-N and its sort expressions, window, join kinds, `UNION ALL`, CTE, lateral, grouping sets, calendar), not its tables or literals. Sources: `--shapes FILE` (the layout of `test/plan/shapes.sql`, the default corpus of the plan gate, with an optional `-- weight: n`), `--fuzz SEEDS` (the query families of `test/fuzz/diff_fuzz.py`, weighted by the family), `--results FILE` (TSV `id native_ms sift_ms [weight [shape]]` or the JSONL of an application's corpus run, measured elsewhere, so a private corpus is ranked without its SQL being copied). A statement whose answer differs between the two plans is printed first and fails the run, and the losses (the scan slower than native) are listed too.
+
+## Release run
+
+The numbers of a release are one pass on the release host, 100 minutes in all. Nothing of it runs before the release commit exists. `bench/bench final --size standard --dry-run` prints the plan and the preconditions and starts nothing; on a host without docker it ends with `MISSING docker works`, and this is what the plan prints today:
+
+```
+Release pass, size standard (bench/presets.env), stages one after another:
+  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 16, duckdb 6 min
+Total about 81 min, budget 85 min.
+```
+
+**Ahead, the day before** (nothing is timed, `nice`, the host may be in use; the data and the images do not depend on the commit, they are reused while their hash and the sources match):
+
+```sh
+git switch main && git pull --ff-only                            # the release checkout; the same one for every step below
+bench/bench setup                                                # the search datasets, rum, pg_textsearch, pg_search, pgx-bm25 (what is up to date is skipped)
+nice bench/bench store prepare --sizes 200000,1000000,10000000   # the pg_sift image and the CSV of each size (`bench refresh --prepare` does the first two)
+. bench/versions.env && for i in $STORE_ES_IMAGE $STORE_CH_IMAGE $STORE_CITUS_IMAGE $STORE_DUCKDB_IMAGE; do docker pull "$i"; done
+bench/bench final --size standard --dry-run                      # every precondition `ok`, the total under the budget
+```
+
+**The window** (one engine at a time, on a host nothing else uses; `bench refresh --calm` exits 75 at once when the host is not calm):
+
+```sh
+export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=16G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only
+bench/bench final --size standard --docs --remeasure-all                                      # 81 min: the eight stages; `bench resume` continues an interrupted run
+```
+
+A step that fails is recorded and the pass goes on; `bench final` prints the stage log at its end.
 
 ## Remote host
 
