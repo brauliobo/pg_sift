@@ -55,3 +55,24 @@ Cost by size of the table (median of 5; `REINDEX` keeps the recorded pair, so it
 | 300,000 | 150.9 / 154.8 ms | 149.9 / 187.5 ms | 868,352 / 942,080 (+8.5%) | 206.7 / 230.9 ms |
 
 A 20-cell rollup costs nothing measurable to build or merge (the differences are inside the run-to-run noise, which is about 10% here; inserts and updates go to the write buffer and do not see it). What grows is the index at 300,000 rows (+8.5% here, +11% in the query run: the cells hold the sums of 8 measures per unit) and `CREATE INDEX`, by the two passes over at most 2,048 blocks the choice reads (12 to 47 ms). The index growth is more than 3%, so the choice is opt-in: `rollup_dims = 'auto'` on `CREATE INDEX`, or `ALTER INDEX ... SET (rollup_dims = 'auto')` and `REINDEX`. The pair is the cheapest that fits, not the one the queries use: the columns the statements of a workload group by are what `sift.index_advice` and the per-column budget of a later change look at.
+
+## What the API workload uses of them (156 statements, `events` table of 353,029 rows)
+
+The `events` index of a web API (13 columns, three of them `jsonb` read through `paths`, `key_columns = auto`; PostgreSQL 18, `work_mem` 4 GB, the 156 analytics statements of the captured requests, 236 SiftAgg nodes, read from `EXPLAIN (ANALYZE)`), with each structure switched off and the index rebuilt; the total is the best of two passes over the 156 statements.
+
+| Variant | Index | Pre-aggregate bytes | Units from pre-aggregates | Total of 156 statements |
+|---|---:|---:|---:|---:|
+| Defaults | 8,806,400 | 715,552 | 0 of 7,646 | 19.05 s |
+| `cube_minmax = false` | 8,577,024 (-2.6%) | 551,568 | 0 | 19.19 s |
+| `superunit = 0` | 8,577,024 (-2.6%) | 644,928 | 0 | 19.40 s |
+| `calendar_columns = 'off'` | 8,830,976 | 715,400 | 0 | 19.66 s |
+| `preagg = 'off'` | 8,101,888 (-8.0%) | 83,040 | 0 | 19.25 s |
+
+What the 236 nodes do with each column: every node filters `deleted_at IS NULL` and an `event_date` range (or two); `event_date` is also grouped in 71, `owner_id` in 99 (and its `count(DISTINCT)` in 82), `origin_id` in 59, `id` in 37; `kind_a` and `kind_b` in 8; the `jsonb` paths are grouped in 129 (`doc_a`) and 89 (`doc_b`) and filtered in 117; `item_id` and `country` are read by none. The aggregates are `count` (660), `sum` (280), `avg` (194), `count(DISTINCT)` (158) and `max` (8); no `min`. No node groups by plain columns alone: they group by `jsonb` paths and the output of lookup joins.
+
+So none of the structures a budget could rank answers a unit of this workload, and no per-column rule derived from it would change an answer or a time: the pre-aggregates are 8.1% of the index and 0 of 7,646 units use them, but the same columns without the two filters are answered from the cube (a path-free copy of the index: `GROUP BY owner_id` in 171 of 171 units, 0.35 ms against 4.4 ms scanned). The filters are what stop it:
+
+- `deleted_at IS NULL`: 655 of 353,029 rows are deleted, scattered, so every unit holds a few and no unit can answer from its histogram or sums (5 of 171 units do in the real index, 0 of 13 in the copy).
+- A `event_date` range: 7,349 distinct days over 24 years, more than the 256 groups of a histogram, and the calendar cells of the dates are not written for an index with `jsonb` paths (`calendar_columns` needs a schema without paths); a path-free copy, which does write them, answers 0 of 13 units of a month range too.
+
+Dropping `cube_minmax` and `superunit` would save 5.2% of this index, but they answer the filterless shapes of the indexes that have them (the 171 of 171 above), and nothing in a workload of statements always filtered by a soft-delete column and a date range shows which columns will want them, so no budget was set. What this workload needs is not a structure to rank but an answer for a filter that most rows pass: the cube of a unit minus the few rows `deleted_at IS NULL` rejects, and the date range from cells that also exist beside `jsonb` paths. Those change the executor and the format, not a default.

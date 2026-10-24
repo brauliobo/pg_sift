@@ -403,20 +403,23 @@ def render_lateralagg(p):
 
 def gen_latest(r, ctx):
     orders = ['e.ts', 'e.amount', 'e.val', 'e.a', 'e.big', 'e.kind', 'e.num', 'e.parent_id']
+    n = r.choice([1, 1, 2, 3, 5, 12, 400])
+    forms = [f't.rn <= {n}', f't.rn < {n + 1}', f'{n} >= t.rn', f'{n + 1} > t.rn', f't.rn <= {n}::bigint AND t.rn <= {n + 3}'] + ([f't.rn = 1', '1 = t.rn'] if n == 1 else [])
     return dict(parts=r.sample(['e.kind', 'e.grp', 'e.a', 'e.parent_id', 'e.flag'], r.randrange(1, 3)),
                 order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
-                filter=r.choice(['t.rn = 1', 't.rn <= 1', 't.rn < 2', '1 = t.rn', '1 >= t.rn', 't.rn = 1::bigint AND t.rn <= 1']), cte=r.random() < 0.3,
+                filter=r.choice(forms), cte=r.random() < 0.3, extra=r.sample(['e.ts', 'e.val', 'e.num', 'e.title', 'e.amount * 2'], r.randrange(0, 3)),
                 where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=r.choice([[], [], ['t.amount > %d' % r.randrange(20)]]),
                 shape=r.choice(['rows', 'rows', 'rn', 'count']))
 
 
 def render_latest(p):
-    # id last: the order has no ties, so the first row of a group is the one the normal plan keeps
+    # id last: the order has no ties, so the first rows of a group are the ones the normal plan keeps
     win = f"row_number() OVER (PARTITION BY {', '.join(p['parts'])} ORDER BY {', '.join(p['order'])}, e.id) rn"
-    sub = f"SELECT e.id, e.kind, e.grp, e.amount, {win} FROM events e {where(p)}"
+    extra = ''.join(f', {x} AS x{i}' for i, x in enumerate(p['extra']))
+    sub = f"SELECT e.id, e.kind, e.grp, e.amount{extra}, {win} FROM events e {where(p)}"
     frm, pre = (f"latest t", f"WITH latest AS ({sub}) ") if p['cte'] else (f"({sub}) t", '')
     cond = ' AND '.join([p['filter']] + p['outer'])
-    sel = {'rows': 't.id, t.kind, t.amount', 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount'}[p['shape']]
+    sel = {'rows': 't.id, t.kind, t.amount' + ''.join(f', t.x{i}' for i in range(len(p['extra']))), 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount, max(t.rn) AS deepest'}[p['shape']]
     return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
 
 
@@ -578,6 +581,27 @@ def render_twolevel(p):
         sql = (scoped + mapped + f"SELECT coalesce(category, 'all_cats') AS category, span{', dim' if dim else ''}, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, "
                f"count(DISTINCT id) AS ids, count(id) AS idn, count(DISTINCT parent_id) AS parents FROM mapped GROUP BY category, span{', dim' if dim else ''} "
                f"ORDER BY 1, 2{', 3' if dim else ''}")
+    return sql, True
+
+
+# ---------- the distinct rows of a group: count(DISTINCT id) over the elements of a list, FILTERs, grouping sets, a spine joined from the left ----------
+def gen_distinctrows(r, ctx):
+    return dict(spans=r.sample(SPANS, r.randrange(1, 4)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), join=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']),
+                sets=r.random() < 0.6, src=r.choice(['parts', 'parts', 'metrics']), filt=r.randrange(10), parents=r.random() < 0.5, key=r.choice(['x.cat', 'x.cat', 'left(x.cat, 4)']))
+
+
+def render_distinctrows(p):
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    if p['src'] == 'parts':
+        inner = f"SELECT e.id, e.parent_id, e.ts, o.cat, o.score FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, sign text, score float8){w}"
+        flt = f"x.score >= {p['filt']}"
+    else:
+        inner = f"SELECT e.id, e.parent_id, e.ts, m.key AS cat, NULL::float8 AS score FROM events e CROSS JOIN LATERAL jsonb_each(e.metrics) m{w}"
+        flt = f"x.cat = 'm{p['filt'] % 4}'"
+    g = f"GROUP BY GROUPING SETS ((p.span, {p['key']}), (p.span), ())" if p['sets'] else f"GROUP BY p.span, {p['key']}"
+    sql = (f"WITH p(span, range) AS (VALUES {', '.join(p['spans'])}) "
+           f"SELECT p.span, {p['key']} AS cat, count(DISTINCT x.id) AS ids, count(DISTINCT x.id) FILTER (WHERE {flt}) AS ids_f, count(x.id) AS n, count(*) AS all_rows"
+           f"{', count(DISTINCT x.parent_id) AS parents' if p['parents'] else ''} FROM p {p['join']} ({inner}) x ON x.ts <@ p.range {g} ORDER BY 1, 2, 3, 4, 5, 6")
     return sql, True
 
 
@@ -803,6 +827,7 @@ FAMILIES = {
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']

@@ -141,14 +141,19 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	return true;
 }
 
-/* count(DISTINCT x) of a column that is unique per row: a unique single-column index on a NOT NULL attribute */
+/*
+ * count(DISTINCT x) of a column that is unique per row: a unique single-column index on a NOT NULL attribute. A grouping set over a preserved
+ * join hands the column as a placeholder, NULL where the join nulls it (which DISTINCT does not count) and the column elsewhere: the column.
+ */
 bool
 unique_row_column(AggCtx *c, Node *arg)
 {
 	Var		   *v;
 
 	arg = strip_relabel(arg);
-	if (!IsA(arg, Var))
+	if (IsA(arg, PlaceHolderVar) && (arg = placeholder_expr(c, (PlaceHolderVar *) arg)) != NULL)
+		arg = strip_relabel(arg);
+	if (arg == NULL || !IsA(arg, Var))
 		return false;
 	v = (Var *) arg;
 	if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0 || !bms_is_member(v->varattno, c->rel->notnullattnums))
@@ -617,6 +622,9 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		out->desc = pstrdup(get_func_name(fid));
 		return true;
 	}
+	/* the set of the values of each group stays: x is not proven unique per row, so the rows cannot be counted in its place */
+	if (fid == F_COUNT_ANY && a->aggdistinct != NIL)
+		agg_report("distinct", AGG_REFUSE_DISTINCT_SET, expr_text(c, arg), false, 0, 0);
 	if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
 										fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
 		return compile_numeric_agg(c, a, arg, out, ai);
