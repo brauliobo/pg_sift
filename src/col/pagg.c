@@ -62,6 +62,19 @@ sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
 	return sift_cseg_presence(seg, col, u, p);
 }
 
+bool
+sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+
+	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	return (*blob = sift_cseg_hll(seg, col, u, &len)) != NULL;
+}
+
 static void
 corrupt_cube(SiftColSegment *seg, uint32 u)
 {

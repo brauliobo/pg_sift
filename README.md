@@ -209,9 +209,9 @@ SELECT sift_count('news', 'power AND plant');
 
 ## SQL reference
 
-Schema `sift` has 50 functions, 5 views, 1 table, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
+Schema `sift` has 51 functions, 5 views, 1 table, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
 
-- **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `cluster_advice`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_advice`, `index_info`, `match`, `match_idx`, `max_score`, `parse_query`, `score`, `sections`, `segment_postings`, `segments`, `suggest_paths`, `text_ops`, `tokenize`, `verify`
+- **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `approx_count_distinct_deserial`, `cluster_advice`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_advice`, `index_info`, `match`, `match_idx`, `max_score`, `parse_query`, `score`, `sections`, `segment_postings`, `segments`, `suggest_paths`, `text_ops`, `tokenize`, `verify`
 - **[Column index](docs/REFERENCE.md#column-index)**: `col_*_ops`, `col_clustering`, `col_index_info`, `col_index_status`, `col_leaves`, `col_maintenance_status`, `col_ops`, `col_sections`, `col_segments`, `col_unit_agg`, `col_unit_hist`, `col_verify`
 - **[Tables](docs/REFERENCE.md#tables)**: `table_paths`, `table_paths_maintained`, `table_segments`, `table_set_paths`, `table_space`
 - **[Maintenance and workers](docs/REFERENCE.md#maintenance-and-workers)**: `col_maintain`, `col_maintenance_due`, `col_merge`, `col_promote`, `col_refresh`, `col_rollup_counters`, `col_rollup_queue`, `col_rollup_refresh`, `col_rollup_requests`, `col_rollup_state`, `merge`, `promote`, `table_maintain`, `worker_state`, `workers`
@@ -229,7 +229,7 @@ The class says whether the option is automatic behaviour (`default`), an `opt-in
 The full tables, with range, context and description, are in [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
 
 <details>
-<summary>The table: 121 options and settings with their defaults, what each buys and what it costs</summary>
+<summary>The table: 122 options and settings with their defaults, what each buys and what it costs</summary>
 
 | Option | Applies to | Type and values | Default | Class | What it buys | Cost | Read more |
 |---|---|---|---|---|---|---|---|
@@ -267,6 +267,7 @@ The full tables, with range, context and description, are in [docs/USAGE.md](doc
 | `key_cut` | sift_col | up to 4 integer, date, timestamp, numeric or float columns of the index, most significant first | '' | opt-in | a lookup or a range of the key reads the units of its range whatever the order of the heap: one key value of 600 in 1 of 100 units, against 8 of 8 by superblock; the units keep their range under churn and after pg_repack, because promotion, merge and REINDEX cut again by the key | format minor 17; the index 17% smaller to 16% larger for narrow rows (units list their TIDs) and 0.2% larger for wide ones; the build CPU 3.4 to 4.1 times (the sort), a promotion and a merge about 3.5 times; a build writes a sorted segment for each half of maintenance_work_mem of rows and a merge streams them (one unit of each input in memory); segments are minor 17, which 3.2 and older refuse |  |
 | `key_cut_rows` | sift_col | int 0..32768 | 0 | default | the rows a key-cut unit aims at; the default is the rows of an average superblock (1,024 when the table was not analyzed), which keeps the number of units and the planner's per-unit costs | format minor 17; fewer rows, more units; more rows, a coarser range per unit |  |
 | `order_columns` | sift_col | integer, date, timestamp, numeric or float columns | '' | opt-in | ORDER BY col LIMIT n reads the first rows of each unit only, and a LIMIT of up to 32 over units that are all visible and clean reads no unit | format minor 18; the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units) |  |
+| `hll_columns` | sift_col | int2, int4, int8, date, timestamp, timestamptz, text, varchar or uuid columns | '' | opt-in | sift.approx_count_distinct(col) of the whole table or of the units a test passes in full is the merge of the stored sketches of its units, not a hash of every row: 5.4 ms at 1,600,000 rows against 63 ms for the same aggregate by the normal plan; the number is the same in every plan, count(DISTINCT) stays exact | format minor 20; a sketch of 8 B + 3 B a register to 12,296 B a unit and column (169 B for 50 values, 8,209 B for 2,700, 12,307 B above 4,096): the index 23% larger for four columns of a million rows, the build 70% longer; segments are minor 20, which 3.3 and older refuse |  |
 | `return_columns` | sift_col | text, varchar or uuid columns | '' | opt-in | an index-only scan returns these columns from the dictionary of the segment, not the heap | no extra storage: the strings are the dictionary the index keeps | [COL-SCAN](docs/COL-SCAN.md#how-it-works) |
 | `superunit` | sift_col | int 0..256 | 16 | default | a scan no predicate cuts through reads one summary per group of units: whole-table count/sum 0.26-0.37 to 0.05-0.08 ms, flat as units grow | format minor 12; +1.0% of the index (groups of 64: +0.8%, of 4 to 8: +1.3% to +1.5%); a range query on a 2-unit table 0.10 to 0.13-0.15 ms | [COL-PREAGG 10](docs/COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16) |
 | `sift.max_expansions` | BM25 | int 1..1000000 | 512 | safety | bounds the terms a wildcard, regex, fuzzy or prefix leaf expands to | above it a prefix matches all its terms but scores as one term | [USAGE](docs/USAGE.md#queries) |
@@ -376,5 +377,5 @@ Measured against the CPU on the store table: [docs/GPU.md](docs/GPU.md#when-it-h
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->475 regression tests (`test/sql`), 42 isolation specs, 88 TAP tests (`test/t`), 962 column fixtures and 251 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->476 regression tests (`test/sql`), 42 isolation specs, 88 TAP tests (`test/t`), 962 column fixtures and 251 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

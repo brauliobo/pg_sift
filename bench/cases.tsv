@@ -96,3 +96,4 @@ exists_decor	`EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..)` and `NOT EXISTS`
 index_pick	a table with several `sift_col` indexes is planned through the cheapest index	orders	default	Index: orders_col	native	-	ms	faster33	no
 window_first_rows	the first N rows of each group asked with a window function	orders	default+id	.	native	agg_forced:sift.agg_force = on	ms	faster33	no
 soft_delete_exceptions	`WHERE stamp IS NULL` is answered from the pre-aggregates	orders	default	Filters: removed_at IS NULL	native	-	ms	faster33	no
+approx_distinct_sketch	`hll_columns` (default none;	orders	default+title WITH (hll_columns = 'title, customer_id')	approx_count_distinct.*Units Without The Sketch: 0	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no

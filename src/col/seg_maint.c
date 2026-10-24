@@ -4,6 +4,7 @@
 
 #include "core/host.h"
 
+#include "col/hll.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -279,6 +280,23 @@ verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const 
 	pfree(blob);
 }
 
+/* The sketch of leaf c in unit u, when it has one, is what its chunk gives, byte for byte */
+static void
+verify_hll(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	uint32		len;
+	const uint8 *blob = sift_cseg_hll(seg, c, u, &len);
+	StringInfoData want;
+
+	if (blob == NULL)
+		return;
+	initStringInfo(&want);
+	if (!sift_hll_build(&seg->schema->cols[c], col, seg->schema->cols[c].store == SIFT_COLS_STR ? sift_cseg_dict(seg, c) : NULL, &want) ||
+		(uint32) want.len != len || memcmp(want.data, blob, len) != 0)
+		corrupt(seg, "The sketch of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(want.data);
+}
+
 /* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
 static void
 verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys, uint64 *listed)
@@ -374,6 +392,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		}
 		verify_set(seg, c, u, &pcol[c]);
 		verify_run(seg, c, u, &pcol[c], keys);
+		verify_hll(seg, c, u, &pcol[c]);
 		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
@@ -612,6 +631,28 @@ verify_run_kinds(SiftColSegment *seg)
 	}
 }
 
+/* The forms a leaf's record in the sketches lists are those of its units' sketches */
+static void
+verify_hll_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_hll_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_hll(seg, c, u, &len);
+
+			if (blob != NULL)
+				have |= blob[0];
+		}
+		if (have != want)
+			corrupt(seg, "The record of the sketches of leaf %d lists forms %u, its units hold %u.", c, want, have);
+	}
+}
+
 /* A dictionary stored in blocks is in a segment of minor 14; if it has an order, that names every code once and the strings ascend in it */
 static void
 verify_dicts(SiftColSegment *seg)
@@ -675,6 +716,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	sift_cseg_verify_super(seg);
 	verify_set_kinds(seg);
 	verify_run_kinds(seg);
+	verify_hll_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
 	sift_sr_release(&seg->sr);

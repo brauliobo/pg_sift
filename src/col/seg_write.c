@@ -6,6 +6,7 @@
 
 #include "col/point.h"
 #include "col/preagg.h"
+#include "col/hll.h"
 #include "col/runs.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -89,6 +90,8 @@ struct SiftColSegWriter
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
 	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
+	SetAcc	   *hll;			/* [ncols], NULL unless the segment keeps HyperLogLog sketches (sift_colw_set_preagg) */
+	bool		anyhll;
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anytids;		/* ... and one of them lists heap addresses (column format minor 16) */
@@ -260,6 +263,9 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 		w->format = SIFT_COL_FORMAT_SUPER;
 	if (w->setting >= SIFT_COL_FORMAT_RUNS && w->run == NULL)
 		w->run = acc_new(w, spec->run);
+	/* the option is what stamps the minor 18: the setting stays at 15 */
+	if (w->setting >= SIFT_COL_FORMAT_PRESENCE && w->hll == NULL)
+		w->hll = acc_new(w, spec->hll);
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
@@ -404,6 +410,26 @@ add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
 	}
 }
 
+/* The sketch of each leaf that asks for one, from the unit just encoded */
+static void
+add_hll(SiftColSegWriter *w, const SiftCPaggCol *cols)
+{
+	for (int c = 0; w->hll && c < w->schema->ncols; c++)
+	{
+		SetAcc	   *a = &w->hll[c];
+
+		if (a->blobs.data == NULL)
+			continue;
+		a->off[w->nsb] = a->blobs.len;
+		if (sift_hll_build(&w->schema->cols[c], &cols[c], w->dict[c], &a->blobs))
+		{
+			a->any = w->anyhll = true;
+			a->kinds |= a->blobs.data[a->off[w->nsb]];
+		}
+		a->off[w->nsb + 1] = a->blobs.len;
+	}
+}
+
 /*
  * The exceptions of the unit (docs/COL-PREAGG.md 11): when one INT leaf is NULL in nearly every row (a soft-delete stamp), the cube and the element rollups of the few
  * rows where it is not, with the dims and measures of the unit's own blobs (cube bytes from cubeat, element bytes from ecubeat). `leaf IS NULL` over the unit is then
@@ -455,7 +481,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		const SiftColDef *def = &w->schema->cols[c];
 
 		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
-		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
+		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->hll && w->hll[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -474,6 +500,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	add_excepts(w, b, cols, cubeat, ecubeat);
 	add_sets(w, cols, unit_bytes);
 	add_runs(w, cols, b->keys);
+	add_hll(w, cols);
 	add_points(w, cols, b->keys);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
@@ -533,7 +560,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	if (!sift_cbatch_kinds_exact(b))
 	{
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9, 10 and 12 promise complete kinds */
-		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && !(w->format == SIFT_COL_FORMAT_CALENDAR && !w->schema->kinds)) || w->set || w->run),
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && !(w->format == SIFT_COL_FORMAT_CALENDAR && !w->schema->kinds)) || w->set || w->run || w->hll),
 					   "sift_col: a unit without its kinds in a segment of column format %d", w->run ? SIFT_COL_FORMAT_RUNS : w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		w->inexact = true;
 		/* a schema without shredded leaves has no kinds to lose: the minor stays */
@@ -558,6 +585,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 				w->set[c].off = repalloc_huge(w->set[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
 			if (w->run && w->run[c].off)
 				w->run[c].off = repalloc_huge(w->run[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
+			if (w->hll && w->hll[c].off)
+				w->hll[c].off = repalloc_huge(w->hll[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
 		}
 		w->pmask = repalloc_huge(w->pmask, (Size) w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
@@ -947,9 +976,11 @@ write_pagg(SiftColSegWriter *w)
 				at = hsz;
 	PaggHeader *h = palloc0(hsz);
 	SetsLeaf   *sets = NULL,
-			   *runs = NULL;
+			   *runs = NULL,
+			   *hlls = NULL;
 	int			nsets = 0,
-				nruns = 0;
+				nruns = 0,
+				nhlls = 0;
 	StringInfoData super;
 	bool		has_super;
 
@@ -1014,6 +1045,16 @@ write_pagg(SiftColSegWriter *w)
 			PAGG_XECUBEDIR(h) = at;
 			PAGG_XECUBE_BYTES(h) = w->xecube.len;
 		}
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xecube.len);
+	}
+	if (ver > 6 && w->anyhll)
+	{
+		Size		start,
+					bytes;
+
+		hlls = layout_blobs(w, w->hll, at, &start, &bytes, &nhlls);
+		PAGG_HLL(h) = start;
+		PAGG_HLL_BYTES(h) = bytes;
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -1079,6 +1120,8 @@ write_pagg(SiftColSegWriter *w)
 			sift_sw_write(w->sw, w->xecube.data, w->xecube.len);
 		}
 	}
+	if (hlls)
+		write_blobs(w, w->hll, HLL_MAGIC, hlls, nhlls);
 	pfree(h);
 }
 
@@ -1173,6 +1216,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->anyheads ? SIFT_COL_FORMAT_HEADS : SIFT_COL_FORMAT_RUNS);
 	if (w->anyexc)
 		w->format = Max(w->format, SIFT_COL_FORMAT_EXCEPT);
+	if (w->anyhll)
+		w->format = Max(w->format, SIFT_COL_FORMAT_HLL);
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);

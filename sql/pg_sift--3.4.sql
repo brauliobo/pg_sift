@@ -505,7 +505,7 @@ COMMENT ON FUNCTION sift.cluster_advice(regclass, int8, text) IS 'Which physical
 -- need before what they only gain from). kind: reindex or rewrite; object: the index or table; reason: what the command changes; command: the statement;
 -- required: queries miss rows until it runs (a word over 255 bytes is stored as its start and a hash since 3.3, and a text index of an older release holds
 -- it cut at 255 bytes; the index does not say whether it holds one, so every text index except analyzer = keyword is listed, and stays listed after its
--- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax and superunit, on unless the index says otherwise; JSON paths, rollup_dims, key_columns, order_columns) that only the units written after
+-- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax and superunit, on unless the index says otherwise; JSON paths, rollup_dims, key_columns, order_columns, hll_columns) that only the units written after
 -- it follow, set on an index whose older units lack the section; a sift_table (it cannot be reindexed) whose segments are below the column format its
 -- schema is written in now (calendar cells for date and timestamp columns, minor 8; complete JSON kinds for declared paths, minor 6). A VACUUM FULL takes
 -- an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it. Reads the catalogs and the metapages, changes
@@ -540,7 +540,7 @@ BEGIN
 			CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
-		-- a segment is minor 9, 10, 13, 14 or 15 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.17)
+		-- a segment is minor 9, 10, 13, 14, 15 or 20 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.17)
 		-- cube_minmax and superunit are on unless the index says otherwise (dflt): the units written before 3.3 lack their sections
 		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
 				('^paths=', 6, 'JSON paths', false,
@@ -560,7 +560,9 @@ BEGIN
 				('^point_tid_columns=.', 16, 'point_tid_columns', false,
 				 'the segments written before the option list the rows of the column by their number in the segment, so an equality or IN list on the column reads the units of the rows it finds; a REINDEX lists their heap addresses'),
 				('^key_cut=.', 17, 'key_cut', false,
-				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key')
+				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key'),
+				('^hll_columns=.', 20, 'hll_columns', false,
+				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;
 		CONTINUE WHEN why IS NULL;
@@ -1111,3 +1113,28 @@ CREATE EVENT TRIGGER sift_publication_check ON ddl_command_end WHEN TAG IN ('CRE
 
 COMMENT ON FUNCTION sift.worker_state(regclass) IS 'Maintenance state of one sift or sift_col index: directory entries, sealed write buffers, whether maintenance runs and, when the last background step failed, the failures in a row, when, the earliest retry, the SQLSTATE and the message. Read through sift.workers.';
 COMMENT ON VIEW sift.workers IS 'One row per sift and sift_col index whose table you can read: segments, sealed write buffers, whether maintenance runs, the failures in a row of the background, when, the next retry, the SQLSTATE and the last error, and why a sift_col index would be rewritten (due).';
+
+-- sift.approx_count_distinct(x): an estimate of the number of distinct values of x, from a HyperLogLog sketch of 16,384 registers (relative standard error 0.81%).
+-- A different function from count(DISTINCT x), which stays exact in every plan: nothing rewrites one into the other and no setting changes it. NULLs are ignored,
+-- no rows give 0; every plan gives the same number for the same rows. The reloption hll_columns of a sift_col index keeps a sketch in each unit, which a scan reads
+-- instead of the rows.
+CREATE FUNCTION sift.approx_count_distinct_trans(internal, anyelement) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_trans' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_combine(internal, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_combine' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_serial(internal) RETURNS bytea
+	AS 'MODULE_PATHNAME', 'sift_approx_serial' LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_deserial(bytea, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_deserial' LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_final(internal) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_approx_final' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE AGGREGATE sift.approx_count_distinct(anyelement) (
+	SFUNC = sift.approx_count_distinct_trans, STYPE = internal, COMBINEFUNC = sift.approx_count_distinct_combine,
+	SERIALFUNC = sift.approx_count_distinct_serial, DESERIALFUNC = sift.approx_count_distinct_deserial,
+	FINALFUNC = sift.approx_count_distinct_final, PARALLEL = SAFE);
+COMMENT ON FUNCTION sift.approx_count_distinct_trans(internal, anyelement) IS 'Transition function of sift.approx_count_distinct: adds the extended hash of a value to a HyperLogLog sketch.';
+COMMENT ON FUNCTION sift.approx_count_distinct_combine(internal, internal) IS 'Combine function of sift.approx_count_distinct: the maximum of each register of two sketches.';
+COMMENT ON FUNCTION sift.approx_count_distinct_serial(internal) IS 'Serial function of sift.approx_count_distinct: the sketch as bytea, for the workers of a parallel aggregate.';
+COMMENT ON FUNCTION sift.approx_count_distinct_deserial(bytea, internal) IS 'Deserial function of sift.approx_count_distinct: the sketch of a worker.';
+COMMENT ON FUNCTION sift.approx_count_distinct_final(internal) IS 'Final function of sift.approx_count_distinct: the estimate of the distinct values, 0 for none.';
+COMMENT ON AGGREGATE sift.approx_count_distinct(anyelement) IS 'An estimate of the distinct values of x (relative standard error 0.81%), the same in every plan; count(DISTINCT x) stays exact.';

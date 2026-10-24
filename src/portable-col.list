@@ -34,6 +34,7 @@ col/preagg_read.c
 col/preagg_super.c
 col/point.c
 col/runs.c
+col/hll.c
 col/setsum.c
 col/wide.c
 col/shred.c
@@ -58,6 +59,7 @@ col/seg.h
 col/seg_int.h
 col/point.h
 col/runs.h
+col/hll.h
 col/setsum.h
 col/ver.h
 col/preagg.h

@@ -1,6 +1,6 @@
 \echo Use "ALTER EXTENSION pg_sift UPDATE TO '3.4'" to load this file. \quit
 
--- sift.upgrade_commands() also lists an index with key_cut whose units were written before the option (column format minor 17): the same function as in
+-- sift.upgrade_commands() also lists an index with key_cut or hll_columns whose units were written before the option (column format minors 17 and 20): the same function as in
 -- pg_sift--3.4.sql, replaced so that an install updated from 3.3 gets what a fresh one does.
 CREATE OR REPLACE FUNCTION sift.upgrade_commands(OUT kind text, OUT object regclass, OUT reason text, OUT command text, OUT required bool)
 	RETURNS SETOF record
@@ -31,7 +31,7 @@ BEGIN
 			CONTINUE;
 		END;
 		CONTINUE WHEN lo IS NULL;
-		-- a segment is minor 9, 10, 13, 14 or 15 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.17)
+		-- a segment is minor 9, 10, 13, 14, 15 or 20 when some unit holds the section (for 14, when the segment holds a point directory), so a lower minor means none does (docs/COL.md 2.13, 2.14, 2.17)
 		-- cube_minmax and superunit are on unless the index says otherwise (dflt): the units written before 3.3 lack their sections
 		SELECT string_agg(format('%s with column format %s: %s', v.what, lo, v.why), '; ' ORDER BY v.minor) INTO why FROM (VALUES
 				('^paths=', 6, 'JSON paths', false,
@@ -51,7 +51,9 @@ BEGIN
 				('^point_tid_columns=.', 16, 'point_tid_columns', false,
 				 'the segments written before the option list the rows of the column by their number in the segment, so an equality or IN list on the column reads the units of the rows it finds; a REINDEX lists their heap addresses'),
 				('^key_cut=.', 17, 'key_cut', false,
-				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key')
+				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key'),
+				('^hll_columns=.', 20, 'hll_columns', false,
+				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;
 		CONTINUE WHEN why IS NULL;
@@ -269,3 +271,27 @@ END
 $fn$;
 
 COMMENT ON FUNCTION sift.suggest_paths(regclass, text, int4) IS 'The paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks, the same answer for the same table): typed paths for the scalar keys, a wildcard for a map of more than 4 keys of one type, a group for an array of objects, free text (values of more than 64 bytes on average) left out; advice only, NULL when no key qualifies.';
+-- sift.approx_count_distinct(x): an estimate of the number of distinct values of x, from a HyperLogLog sketch of 16,384 registers (relative standard error 0.81%).
+-- A different function from count(DISTINCT x), which stays exact in every plan: nothing rewrites one into the other and no setting changes it. NULLs are ignored,
+-- no rows give 0; every plan gives the same number for the same rows. The reloption hll_columns of a sift_col index keeps a sketch in each unit, which a scan reads
+-- instead of the rows.
+CREATE FUNCTION sift.approx_count_distinct_trans(internal, anyelement) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_trans' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_combine(internal, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_combine' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_serial(internal) RETURNS bytea
+	AS 'MODULE_PATHNAME', 'sift_approx_serial' LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_deserial(bytea, internal) RETURNS internal
+	AS 'MODULE_PATHNAME', 'sift_approx_deserial' LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
+CREATE FUNCTION sift.approx_count_distinct_final(internal) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_approx_final' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+CREATE AGGREGATE sift.approx_count_distinct(anyelement) (
+	SFUNC = sift.approx_count_distinct_trans, STYPE = internal, COMBINEFUNC = sift.approx_count_distinct_combine,
+	SERIALFUNC = sift.approx_count_distinct_serial, DESERIALFUNC = sift.approx_count_distinct_deserial,
+	FINALFUNC = sift.approx_count_distinct_final, PARALLEL = SAFE);
+COMMENT ON FUNCTION sift.approx_count_distinct_trans(internal, anyelement) IS 'Transition function of sift.approx_count_distinct: adds the extended hash of a value to a HyperLogLog sketch.';
+COMMENT ON FUNCTION sift.approx_count_distinct_combine(internal, internal) IS 'Combine function of sift.approx_count_distinct: the maximum of each register of two sketches.';
+COMMENT ON FUNCTION sift.approx_count_distinct_serial(internal) IS 'Serial function of sift.approx_count_distinct: the sketch as bytea, for the workers of a parallel aggregate.';
+COMMENT ON FUNCTION sift.approx_count_distinct_deserial(bytea, internal) IS 'Deserial function of sift.approx_count_distinct: the sketch of a worker.';
+COMMENT ON FUNCTION sift.approx_count_distinct_final(internal) IS 'Final function of sift.approx_count_distinct: the estimate of the distinct values, 0 for none.';
+COMMENT ON AGGREGATE sift.approx_count_distinct(anyelement) IS 'An estimate of the distinct values of x (relative standard error 0.81%), the same in every plan; count(DISTINCT x) stays exact.';

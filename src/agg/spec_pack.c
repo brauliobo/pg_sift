@@ -141,6 +141,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 	put_int(p, g->first);
 	put_int(p, g->hyp);
 	put_int(p, g->parallel);
+	put_int(p, g->hll);
 }
 
 static void
@@ -540,6 +541,7 @@ get_gen(Unpack *u)
 	g->first = get_int(u);
 	g->hyp = get_int(u);
 	g->parallel = get_int(u);
+	g->hll = get_int(u);
 	return g;
 }
 

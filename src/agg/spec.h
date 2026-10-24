@@ -261,6 +261,7 @@ typedef struct SiftAggGen
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
+	int			hll;			/* sift.approx_count_distinct of a plain leaf: the leaf whose units' stored sketches the aggregate merges (agg/approx.c), else -1 */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
 } SiftAggGen;
 
@@ -666,6 +667,7 @@ typedef enum SiftPaWhy
 	SPW_AGG_KIND,				/* an aggregate the tuples cannot add up */
 	SPW_AGG_ARG,				/* its argument is not a plain leaf of the list */
 	SPW_AGG_TYPE,				/* ... or has a type the rollup does not sum */
+	SPW_AGG_APPROX,				/* sift.approx_count_distinct of a leaf without stored sketches (hll_columns), or of the groups of a histogram */
 	SPW_DIM_NOT_STORED,			/* a dim or count(leaf) the rollup of the list does not hold */
 	SPW_MEAS_NOT_STORED,		/* a measure it does not hold */
 	SPW_ROW_KEYS,				/* rows: more than one group key */
@@ -691,6 +693,7 @@ extern bool sift_pawhy_fixable(SiftPaWhy why);
 extern void sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *elem, double *tuple);
 extern double sift_agg_rollup_cost;
 extern PGDLLIMPORT bool sift_agg_preagg_distinct;	/* sift.agg_preagg_distinct */
+extern Datum sift_approx_trans(struct FunctionCallInfoBaseData *fcinfo);	/* agg/approx.c: the transition function of sift.approx_count_distinct */
 #define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */

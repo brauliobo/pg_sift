@@ -1364,6 +1364,13 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	if (c->parts_pruned > 0)
 		ExplainPropertyInteger("Partitions Removed", NULL, c->parts_pruned, es);
 	ExplainPropertyInteger("Units", NULL, c->n_units, es);
+	for (int i = 0; i < ex->spec->naggs; i++)
+		if (ex->spec->agg[i].kind == SAA_GEN && ex->spec->agg[i].gen->hll >= 0)
+		{
+			ExplainPropertyText("Approximate Distinct", "sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error", es);
+			ExplainPropertyInteger("Units Without The Sketch", NULL, c->n_units - c->n_pre_units, es);
+			break;
+		}
 	if (!c->pa_on && es->verbose)
 		ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
 	if (!c->pa_on)
