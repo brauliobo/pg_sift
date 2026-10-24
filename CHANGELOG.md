@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: pg_sift: a scan whose query joins a table from the left to what it scans (a calendar `LEFT JOIN` the facts) runs in parallel: the preserved side is shared read-only, each participant marks the rows its tuples matched, a worker sends the marks with its tables and the leader adds the rows nobody matched once every worker has told, and the counts and float sums of the nullable side add up in lane order. Aggregates that still keep the scan in one process: `min`, `max`, numeric sums and `count(DISTINCT)` of the nullable side, arms and a spine.
 - Added: pg_sift: `docs/OPTIONS.md` has a table "Upgrading from 3.3": the options that are new, have another default or write a newer column format minor than 3.3 reads, and those whose behavior this release changes, with what a 3.3 user gets after `ALTER EXTENSION pg_sift UPDATE` and whether it needs a `REINDEX`. No default changed since 3.3.
 - `col_index_advice`.
 - Changed: pg_sift: a lookup join on one column of the scanned table (a text, integer, date, int8 or float8 column) resolves its rows in a loop of the column's kind with the cache of matches probed inline, and reads a row's value once for all of its elements; with the key ids shared by grouping sets, reports with grouping sets over such joins run in 9.5% fewer cycles (10.3% fewer instructions; x0.1 replay statements, one backend).

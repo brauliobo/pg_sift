@@ -43,6 +43,7 @@ void empty_set_groups(AggExec *ex);
 AggExec *result_view(AggExec *ex);
 void final_checks(AggExec *g, int64 ntuples);
 void lane_fold(AggExec *ex);
+void lane_tail(AggExec *ex);
 void scan_items(AggExec *ex);
 bool take_item(AggExec *ex, uint32 *item);
 void par_launch(AggExec *ex);

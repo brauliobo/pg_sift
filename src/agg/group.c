@@ -135,6 +135,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_X_SUM:
 			case SAA_X_AVG:
+				if (ex->lane_serial && ex->spec->agg[i].restype == FLOAT8OID)
+					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
 				if (ex->spec->agg[i].restype == NUMERICOID)
 				{
 					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));

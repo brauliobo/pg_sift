@@ -368,6 +368,12 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_MIN:
 		case SAA_MAX:
 			return true;
+		/* the aggregates of the columns of a nullable input (a preserved join): counts and float sums add up (the lanes keep the order of the sums) */
+		case SAA_X_COUNT:
+			return true;
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			return a->restype == FLOAT8OID;
 		case SAA_GEN:
 			return a->gen->parallel;
 		default:
@@ -449,9 +455,9 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 	for (int i = 0; i < s->njoin; i++)
 		if (s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use))
 			return "a joined child plan runs per combination of values";
-	/* the rows nothing matched are known when every row of the table was seen: by one scan */
+	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */
 	for (int i = 0; i < s->njoin; i++)
-		if (sift_aggjoin_preserves(s->join[i].kind))
+		if (sift_aggjoin_preserves(s->join[i].kind) && s->narms > 0)
 			return "an outer join keeps the rows nothing matched";
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))

@@ -346,6 +346,15 @@ final_checks(AggExec *g, int64 ntuples)
 /* the lookup tables the workers share, together: a larger set is read by the leader alone */
 #define SHARE_MAX	((Size) 1 << 30)
 #define DONE_MAGIC	0x53414732
+#define HITS_MAGIC	0x53414733
+
+/* the rows of a preserved side that a worker's tuples matched: nrow flags of the table of combo ci */
+typedef struct WorkerHits
+{
+	uint32		magic;
+	uint32		ci;
+	uint32		nrow;
+} WorkerHits;
 
 typedef struct WorkerDone
 {
@@ -391,6 +400,19 @@ lane_done(AggExec *ex, uint32 lane)
 		send_blob(ex->mqh, b.data, b.len);
 	else
 		lanes_put(ex, lane, b.data, b.len);
+	pfree(b.data);
+	table_reset(ex);
+}
+
+/* the groups the leader's own table holds (the rows of a preserved side that no tuple matched) are added to the result */
+void
+lane_tail(AggExec *ex)
+{
+	StringInfoData b;
+
+	initStringInfo(&b);
+	blob_dump(ex, -1, &b);
+	blob_merge(ex->gtab, b.data);
 	pfree(b.data);
 	table_reset(ex);
 }
@@ -497,6 +519,21 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		blob_dump(ex, -1, &b);
 		send_blob(ex->mqh, b.data, b.len);
 	}
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+	{
+		const MapTab *m = ex->cs[ci].map;
+		WorkerHits	h = {HITS_MAGIC, ci, 0};
+		char	   *msg;
+
+		if (m == NULL || !m->keep)
+			continue;
+		h.nrow = m->nrow;
+		msg = palloc(sizeof(h) + h.nrow);
+		memcpy(msg, &h, sizeof(h));
+		memcpy(msg + sizeof(h), m->hit, h.nrow);
+		send_blob(ex->mqh, msg, sizeof(h) + h.nrow);
+		pfree(msg);
+	}
 	done.n_units = ex->n_units;
 	done.n_pre_units = ex->n_pre_units;
 	done.n_super = ex->n_super;
@@ -545,7 +582,7 @@ par_launch(AggExec *ex)
 
 		if (cb->join < 0)
 			continue;
-		if (m == NULL || m->keep || ex->spec->join[cb->join].params != NIL)
+		if (m == NULL || ex->spec->join[cb->join].params != NIL)
 			return;
 		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
 		nmaps++;
@@ -655,6 +692,15 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->done[w] = true;
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
+	}
+	else if (*(const uint32 *) data == HITS_MAGIC)
+	{
+		const WorkerHits *h = (const WorkerHits *) data;
+		MapTab	   *m = ex->cs[h->ci].map;
+
+		SIFT_INVARIANT(m != NULL && m->keep && m->nrow == h->nrow, "sift: bad message of a parallel aggregate");
+		for (uint32 r = 0; r < h->nrow; r++)
+			m->hit[r] |= ((const char *) (h + 1))[r];
 	}
 	else if (ex->topn)
 		sift_topn_import(ex->topn, data, len);

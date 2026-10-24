@@ -282,6 +282,15 @@ null_unit(AggExec *ex)
 	ex->cn = 1;
 }
 
+static bool
+join_preserved(const SiftAggSpec *s)
+{
+	for (int j = 0; j < s->njoin; j++)
+		if (sift_aggjoin_preserves(s->join[j].kind))
+			return true;
+	return false;
+}
+
 /* Rows the nullable input never matched: every earlier lookup column is NULL as well. */
 static void
 unmatched_tail(AggExec *ex)
@@ -372,11 +381,17 @@ run_scan(AggExec *ex)
 	else if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	backend_finish(ex);
+	/* the rows of a preserved side that no tuple matched: after the workers told which they matched */
+	if (ex->par && join_preserved(ex->spec))
+		par_finish(ex);
 	unmatched_tail(ex);
+	/* the ids of the groups are the leader's table's: the rows of the tail go to the result like the table of a lane */
+	if (ex->gtab != ex)
+		lane_tail(ex);
 	arms_flush(ex);
 	if (ex->spec->spine)
 		spine_tail(ex);
-	if (ex->par)
+	if (ex->par && ex->par->pcxt)
 		par_finish(ex);
 	if (spill_started(ex))
 		spill_finish(ex);

@@ -1,0 +1,80 @@
+-- A preserved side of an outer join (the calendar of `dates LEFT JOIN facts`) with 0, 2 and 4 workers: each participant keeps which rows of the calendar its
+-- tuples matched, a worker sends them to the leader with its tables, and the leader adds the rows nobody matched once every worker has told. The rows are
+-- those of the normal plan, with float sums (merged in lane order), a FILTER, a condition that matches no row, the leader out of the scan, rows in the
+-- write buffer and updated tuples. mode: parallel (workers planned in the SiftAgg node), serial (SiftAgg alone), none (the normal plan).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.agg_preagg = off;
+
+CREATE TABLE dates (day date PRIMARY KEY, label text);
+INSERT INTO dates SELECT d::date, 'd' || (d::date - '2026-01-01') FROM generate_series('2026-01-01'::date, '2026-02-10', '1 day') d;
+CREATE TABLE facts (id int PRIMARY KEY, day date, grp int, amount float8, qty int) WITH (autovacuum_enabled = false);
+INSERT INTO facts
+SELECT i, '2026-01-01'::date + (i % 23), i % 7, CASE WHEN i % 29 = 0 THEN NULL ELSE ((hashint4(i) & 2147483647) % 3000)::float8 / 10 END, (hashint4(i + 2) & 2147483647) % 400
+FROM generate_series(1, 30000) i;
+CREATE INDEX facts_col ON facts USING sift_col (id, day, grp, amount, qty);
+VACUUM ANALYZE facts;
+ANALYZE dates;
+
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET seq_page_cost = 10000;
+
+CREATE TABLE shapes (n serial, name text, q text);
+INSERT INTO shapes (name, q) VALUES
+	('count by day',      'SELECT d.day, count(f.id) AS n FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	('float sum by day',  'SELECT d.day, count(f.id), sum(f.amount), avg(f.amount) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	('by label and grp',  'SELECT d.label, f.grp, count(*), sum(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.label, f.grp'),
+	('filter',            'SELECT d.day, count(f.id) FILTER (WHERE f.qty > 100), sum(f.amount) FILTER (WHERE f.grp = 3) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day'),
+	('condition in ON',   'SELECT d.day, count(f.id), max(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.qty < 50 GROUP BY d.day'),
+	('matches nothing',   'SELECT d.day, count(f.id), sum(f.amount) FROM dates d LEFT JOIN facts f ON f.day = d.day AND f.id < 0 GROUP BY d.day'),
+	('global',            'SELECT count(*), count(f.id), sum(f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day'),
+	('distinct',          'SELECT d.day, count(DISTINCT f.grp), count(DISTINCT f.qty) FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day');
+
+CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_leader_participation', leader::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION mode_of(q text, workers int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; par bool := false; agg bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		par := par OR l LIKE '%Workers Planned: %';
+		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';
+	END LOOP;
+	RETURN CASE WHEN agg AND par THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
+END $$;
+
+SELECT s.name, mode_of(s.q, 4) AS mode,
+       rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS scan_w0,
+       rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS scan_w2,
+       rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS scan_w4,
+       rows_of(s.q, true, 3, false) = rows_of(s.q, false, 0) AS scan_w3_no_leader
+FROM shapes s ORDER BY s.n;
+
+-- the days no fact has (the calendar runs 18 days past the facts) are groups of the result, in the parallel scan too
+SET sift.enable_agg = on;
+SET max_parallel_workers_per_gather = 4;
+SELECT count(*) AS days_without_facts FROM (SELECT d.day FROM dates d LEFT JOIN facts f ON f.day = d.day GROUP BY d.day HAVING count(f.id) = 0) x;
+
+-- a scan that reads rows in the write buffer and rows of updated tuples
+INSERT INTO facts SELECT 30000 + i, '2026-01-01'::date + (i % 30), i % 7, (i % 400)::float8 / 4, i % 300 FROM generate_series(1, 700) i;
+UPDATE facts SET amount = amount + 0.5 WHERE id % 17 = 0;
+DELETE FROM facts WHERE id % 61 = 0;
+SELECT s.name, rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS dirty_w0, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS dirty_w2,
+       rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS dirty_w4
+FROM shapes s ORDER BY s.n;
+
+DROP TABLE facts, dates, shapes;
+DROP EXTENSION pg_sift;
+DROP FUNCTION mode_of, rows_of;

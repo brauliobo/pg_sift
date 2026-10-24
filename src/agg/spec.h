@@ -570,7 +570,8 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 	if (!sift_aggspec_parallel_ok(s))
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64)
+		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64 ||
+			((s->agg[i].kind == SAA_X_SUM || s->agg[i].kind == SAA_X_AVG) && s->agg[i].restype == FLOAT8OID))
 			return true;
 	return false;
 }

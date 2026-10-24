@@ -104,6 +104,7 @@ typedef struct MapShared
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
+	bool		keep;			/* the side is preserved: each participant keeps its own hit[] */
 	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
 	Size		head;

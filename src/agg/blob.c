@@ -802,9 +802,14 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				break;
 			case SAA_SUM_F64:
 			case SAA_AVG_F64:
+			case SAA_X_SUM:
+			case SAA_X_AVG:
 				acc->n[t] += ba->a.n[r];
 				acc->d[t] += ba->a.d[r];
 				acc->nf[t] |= ba->a.nf[r];
+				break;
+			case SAA_X_COUNT:
+				acc->n[t] += ba->a.n[r];
 				break;
 			case SAA_MIN:
 			case SAA_MAX:
