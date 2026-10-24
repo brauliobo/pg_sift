@@ -515,6 +515,21 @@ inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
 	return wins;
 }
 
+/*
+ * The first plan of a statement and its flattened one (plan_flat) are two queries that PostgreSQL may plan to the same costs: the flat one is
+ * then decided as the first was, without the plans at the larger sizes.
+ */
+static struct
+{
+	bool		set,
+				won;
+	double		plain,
+				inlined,
+				scans,
+				work;
+}			first_plan;
+static bool planning_flat;
+
 /* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
 static PlannedStmt *
 plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
@@ -524,6 +539,8 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 			   *pristine_inline = NULL;
 	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
+	bool		same,
+				won;
 
 	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
@@ -537,8 +554,21 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		pristine_inline = copyObject(inline_parse);
 	}
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
-	if (inline_wins(&v, 0, 0) ||
-		(pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names)))
+	same = planning_flat && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
+		first_plan.scans == v.scans.total && first_plan.work == v.work;
+	won = inline_wins(&v, 0, 0);
+	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work)
+		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
+	if (!planning_flat)
+	{
+		first_plan.set = true;
+		first_plan.won = won;
+		first_plan.plain = v.plain_cost;
+		first_plan.inlined = v.inlined->planTree->total_cost;
+		first_plan.scans = v.scans.total;
+		first_plan.work = v.work;
+	}
+	if (won)
 	{
 		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
 		inline_won = true;
@@ -595,11 +625,14 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		flat = copyObject(parse);
 		sift_agg_flatten_laterals(flat);
 	}
+	first_plan.set = planning_flat = false;
 	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
 	/* the flat plan runs more of the statement in the scan only where an ordinary plan still reads a table that has a column index */
 	if (flat == NULL || !plain_reader_stmt(plain))
 		return plain;
+	planning_flat = true;
 	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
+	planning_flat = false;
 	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
 		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
