@@ -38,8 +38,10 @@ permissions:
 # a pull request run is cancelled by the next push to the same pull request. A push to main never cancels the run of the one before it: that run finishes, and of the
 # runs waiting behind it GitHub keeps the newest, which scopes its diff from the last green run (see `changes`), so every batch of merges gets one complete run and
 # the head of main is tested. A nightly or dispatch run has a group of its own, so a push never cancels it (main-verify.yml dispatches one when the head of main has none).
+# A dispatch with heavy has a group of its own per run, so it never waits behind another run of the same ref (a long deep run held a lean one pending for six minutes); two
+# heavy dispatches of one ref can therefore run together, so check `gh run list` before dispatching. No dispatch is cancelled by another.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || '' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && inputs.heavy && format('-run-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # `changes` and `lint` start the work and carry the condition; the other jobs skip through `needs`. Any label other than `ci` starts a run of its own that skips
