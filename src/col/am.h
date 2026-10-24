@@ -60,10 +60,15 @@ extern bool sift_col_auto_keys(Relation heap, Relation index);
 /* paths = 'auto' (col/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
 #define SIFT_COL_AUTO_PATHS_SAMPLE	2000
 extern void sift_col_auto_paths(Relation heap, Relation index);
+/* preagg = 'auto' or none (col/keycols.c): before a build of an index with more plain columns than the cube holds, the columns ranked by data and written to the option as 'auto: a, b' */
+extern void sift_col_auto_cube(Relation heap, Relation index);
+/* rollup_dims = 'auto' (col/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
+extern void sift_col_auto_rows(Relation heap, Relation index);
 extern void sift_col_set_option(Relation index, const char *name, const char *value);
 extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
 extern const char *sift_col_options_paths_raw(Relation index);
 extern bool sift_col_paths_auto(const char *opt);
+extern bool sift_col_paths_redecide(Relation index);
 extern void sift_col_auto_keys_report(Relation index);
 /* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);

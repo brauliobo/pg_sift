@@ -23,7 +23,7 @@ It uses the cluster of `PGHOST`/`PGPORT`/`PGDATABASE` (pg_sift installed). Each 
 | requests | 32 / 500 / 5k / 50k values in `IN (...)` | count and sum, by group |
 | keys | 10k / 31.6k / 100k keys, 100 rows each | a 51-key request, the same with a date window, its count; clustered layout (asserted flat) and arrival order (information) |
 | keyparts | 6.25k .. 100k keys, 20 rows each, 100 keys a range partition (up to 1,000 partitions, one sift_col index each) | the same 51-key request on the range-partitioned table (asserted flat: it touches 51 partitions at every size) and on one table with one index (information) |
-| arrival | 1.6k .. 25k keys, 16 rows each, rows in arrival order | a 51-key sum with min/max zones only (`zone`), with an exact key summary (`sets`) and with a bloom filter (`bloom`): time and the units read against the keys; the units read by `sets` are asserted flat |
+| arrival | 1.6k .. 25k keys (the gate: 1.6k .. 6.25k, 100k rows of 5 kB at most), 16 rows each, rows in arrival order | a 51-key sum with min/max zones only (`zone`), with an exact key summary (`sets`) and with a bloom filter (`bloom`): time and the units read against the keys; the units read by `sets` are asserted flat |
 
 A sift_col unit is 256 heap pages (about 2 MB of heap whatever the row width), so a table of one row per page has 256 rows a unit: 1k units are 2 GB and 64k units would be 134 GB. The units case therefore builds one padded heap and a partial index (`id <= size * 256`) for each size. The keys case pads rows to 170 bytes so that the table holds more units than the 51 a request can read; with narrower rows a request reads every unit until the table passes 51 units and the slope measures that saturation.
 

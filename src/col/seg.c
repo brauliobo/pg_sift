@@ -343,7 +343,7 @@ points_read(SiftColSegment *seg)
 			at != next || size > s->len - sizeof(foot) - next)
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
 		/* the units of a key-cut segment are not block ranges: an address names no unit, so such a segment lists rows (docs/COL.md 2.16) */
-		if (rec[5] == SIFT_CPOINT_MODE_TIDS && seg->entry.format >= SIFT_COL_FORMAT_KEYED)
+		if (rec[5] == SIFT_CPOINT_MODE_TIDS && sift_cseg_keyed(&seg->entry))
 			corrupt(seg, "The point directory of leaf %u lists heap addresses, which a key-cut segment cannot; REINDEX the index.", rec[0]);
 		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4], rec[5] == SIFT_CPOINT_MODE_TIDS};
 		prev = rec[0];

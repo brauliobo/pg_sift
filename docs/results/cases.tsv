@@ -185,3 +185,9 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	point_prefix_count	native	ms	90.369	78.241	107.447	15	19.25	Seq Scan on orders NOISY
 3.3	distinct_rows_sets	sift	ms	1373.462	1214.545	1704.428	15	5.84	Group Keys: created_at: "*VALUES*".column1, scores.*.key: split_part(r.key, '_'::text, 1), scores.*.key: NULLIF(split_part(r.key, '_'::text,
 3.3	distinct_rows_sets	native	ms	4555.064	4432.359	5179.507	15	5.84	Seq Scan on orders
+3.3	tbl_update_keys	sift	wal_bytes	43.073	43.073	43.078	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	sift	ms	3076.247	2888.681	3159.408	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	sift	cpu_ms	3057.942	2875.036	3132.469	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	native	wal_bytes	53.201	53.201	53.201	3	17.27	heap
+3.3	tbl_update_keys	native	ms	668.524	666.819	758.182	3	17.27	heap
+3.3	tbl_update_keys	native	cpu_ms	662.885	660.064	745.306	3	17.27	heap

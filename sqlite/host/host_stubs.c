@@ -46,6 +46,13 @@ sift_cseg_dict_asked(SiftColSegment *seg, int col)
 	return UINT32_MAX;
 }
 
+/* there is no cache that could fail to hold a dictionary */
+bool
+sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
+{
+	return false;
+}
+
 /* ---------- segment heads and zone arrays (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
 
 const SegHead *

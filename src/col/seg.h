@@ -340,4 +340,11 @@ extern void sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *
 								  MemoryContext cx, SiftTestDamage *r);
 #endif
 
+/* Are the segment's units cut by a declared key? Not told by the minor: a later minor (a segment may have several of the optional records) is no more keyed than an earlier one; the first keyed segments had no flag and are minor 17 */
+static inline bool
+sift_cseg_keyed(const SiftSegEntry *e)
+{
+	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
+}
+
 #endif							/* SIFT_COL_SEG_H */

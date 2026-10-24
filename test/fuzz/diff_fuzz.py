@@ -420,6 +420,46 @@ def render_latest(p):
     return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
 
 
+def gen_decor(r, ctx):
+    tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
+    return dict(form=r.choice(['lateral', 'left', 'select', 'where']), tie=tie, aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
+                                                                                      'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
+                                                                                      'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12),
+                test=r.choice(['', 'IS NULL', 'IS NOT NULL', '> 100', '= 0', 'IS NULL OR {c} > 100']), total=r.random() < 0.3)
+
+
+NUMERIC_AGG = re.compile(r'^(count|sum|avg|coalesce\(sum)')
+
+
+def render_decor(p):
+    if not NUMERIC_AGG.match(p['aggs'][0]) or 'sum(f.amount) / nullif' in p['aggs'][0]:
+        p = dict(p, test=p['test'] if p['test'] in ('', 'IS NULL', 'IS NOT NULL') else 'IS NULL')
+
+    # the outer rows are a few hundred: the normal plan looks up the group of each, the scan groups the table once
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    sub = lambda i: f"SELECT {p['aggs'][i]} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}"
+    n = len(p['aggs'])
+    if p['form'] in ('lateral', 'left'):
+        join = 'JOIN' if p['form'] == 'lateral' else 'LEFT JOIN'
+        cols = ', '.join(f"{p['aggs'][i]} AS v{i}" for i in range(n))
+        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}) x ON true"
+        outs = [f'x.v{i}' for i in range(n)]
+    else:
+        frm = 'events e'
+        outs = [f'({sub(i)})' for i in range(n)]
+    cond = ''
+    if p['test']:
+        c = outs[0]
+        cond = ' AND (' + (c + ' ' + p['test']).replace('{c}', c) + ')' if '{c}' not in p['test'] else ' AND (' + c + ' ' + p['test'].replace('{c}', c) + ')'
+    if p['form'] == 'where':
+        cond = f" AND ({outs[0]} {p['test'] or 'IS NULL'})".replace('{c}', outs[0])
+    sel = 'count(*) AS n' if p['total'] else 'e.id, ' + ', '.join(f'{o} AS v{i}' for i, o in enumerate(outs))
+    if p['total'] and p['form'] != 'where':
+        sel = 'count(*) AS n, ' + ', '.join(f'count({o}) AS c{i}' for i, o in enumerate(outs))
+    return f"SELECT {sel} FROM {frm} WHERE {wh}{cond}", False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -783,8 +823,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
-    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'nullzone': (gen_nullzone, render_preagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
