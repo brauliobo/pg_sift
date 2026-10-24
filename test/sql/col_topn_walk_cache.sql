@@ -1,0 +1,69 @@
+-- The order of the walk of a top-N over a key that does not follow the table is kept by the backend between queries (agg/topn.c): the rows are those of the normal
+-- plan, and the units skipped are the same, when the walk is built and when it is found again, after rows in a write buffer, a promotion, a merge, deletes, a
+-- VACUUM and a REINDEX. A page holds one row, so a superblock is 256 rows and 60 of them make the walk (it starts from 10 superblocks).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+CREATE TABLE zc (id int, k int, j int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO zc SELECT i, (i * 7919) % 15361, i % 7, repeat('x', 600) FROM generate_series(1, 15360) i;
+CREATE INDEX zc_idx ON zc USING sift_col (id, k, j) WITH (write_buffer_limit = 512);
+VACUUM (FREEZE, ANALYZE) zc;
+
+CREATE FUNCTION skipped(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal plan';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Superblocks Skipped By Top-N: %' THEN r := trim(l); END IF; IF l LIKE '%Units: %' OR l LIKE '%Rows Scanned%' THEN r := r || ' ' || trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- 'same' when the rows and their order are those of the normal plan; the walk's skipped superblocks twice (the second time from the kept order)
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; s1 text; s2 text;
+BEGIN
+	s1 := skipped(q);
+	s2 := skipped(q);
+	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO a;
+	SET LOCAL sift.enable_topn = off; SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO b;
+	RESET sift.enable_topn; RESET sift.enable_agg;
+	RETURN format('%s | %s | %s', CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERENT' END, s1, CASE WHEN s1 = s2 THEN 'kept order skips the same' ELSE s2 END);
+END $$;
+
+CREATE TABLE zc_q (n serial, q text);
+INSERT INTO zc_q (q) VALUES
+	('SELECT id, k FROM zc ORDER BY k LIMIT 10'), ('SELECT id, k FROM zc ORDER BY k DESC LIMIT 10'), ('SELECT id, k FROM zc ORDER BY k, id LIMIT 25 OFFSET 5'),
+	('SELECT id, k FROM zc WHERE j = 3 ORDER BY k LIMIT 10'), ('SELECT id, j, k FROM zc ORDER BY j, k LIMIT 10'), ('SELECT id, k FROM zc ORDER BY k NULLS FIRST LIMIT 10');
+CREATE FUNCTION run_all(step text) RETURNS TABLE (after_step text, n int, result text) LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+	FOR r IN SELECT * FROM zc_q ORDER BY n LOOP
+		after_step := step; n := r.n; result := chk(r.q); RETURN NEXT;
+	END LOOP;
+END $$;
+
+SELECT * FROM run_all('built');
+-- rows in the write buffer sort before and after every unit
+INSERT INTO zc SELECT 20000 + i, -i, i % 7, 'y' FROM generate_series(1, 5) i;
+INSERT INTO zc SELECT 30000 + i, 20000 + i, i % 7, 'y' FROM generate_series(1, 5) i;
+SELECT * FROM run_all('write buffer');
+SELECT sift.col_promote('zc_idx') > 0 AS promoted;
+SELECT * FROM run_all('promoted');
+DELETE FROM zc WHERE id % 11 = 0;
+UPDATE zc SET k = k + 100000 WHERE id % 13 = 0;
+SELECT * FROM run_all('deleted and updated');
+VACUUM zc;
+SELECT sift.col_promote('zc_idx') >= 0 AS promoted_again;
+SELECT * FROM run_all('vacuumed');
+SELECT sift.col_merge('zc_idx', true) >= 0 AS merged;
+SELECT * FROM run_all('merged');
+REINDEX INDEX zc_idx;
+SELECT * FROM run_all('reindexed');
+
+DROP FUNCTION run_all(text), chk(text), skipped(text);
+DROP TABLE zc_q, zc;
+DROP EXTENSION pg_sift;

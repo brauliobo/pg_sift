@@ -273,6 +273,18 @@ sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftS
 	return src->prov->zone_range(src->impl, lo, hi, leaf, z);
 }
 
+uint32
+sift_colsrc_zone_range_segs(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	return src->prov->zone_range_segs(src->impl, lo, hi, leaf, z);
+}
+
+bool
+sift_colsrc_walk_stamp(SiftSrcSource *src, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	return src->prov->walk_stamp != NULL && src->prov->walk_stamp(src->impl, st, mem, cap, nmem);
+}
+
 bool
 sift_colsrc_has_zone_range(SiftSrcSource *src)
 {
