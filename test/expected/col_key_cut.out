@@ -128,14 +128,14 @@ SELECT * FROM kchk('deleted and updated');
 
 VACUUM kc;
 SELECT * FROM kchk('vacuumed');
- after_step |       shape        |             result              
-------------+--------------------+---------------------------------
- vacuumed   | one customer       | same Units: 10 Units Pruned: 13
- vacuumed   | customer and dates | same Units: 10 Units Pruned: 13
- vacuumed   | customer range     | same Units: 9 Units Pruned: 14
- vacuumed   | customer list      | same Units: 11 Units Pruned: 12
- vacuumed   | other column       | same Units: 22 Units Pruned: 1
- vacuumed   | top-N by key       | same Units: 23 Units Pruned: 0
+ after_step |       shape        |             result             
+------------+--------------------+--------------------------------
+ vacuumed   | one customer       | same Units: 10 Units Pruned: 6
+ vacuumed   | customer and dates | same Units: 10 Units Pruned: 6
+ vacuumed   | customer range     | same Units: 9 Units Pruned: 7
+ vacuumed   | customer list      | same Units: 11 Units Pruned: 5
+ vacuumed   | other column       | same Units: 15 Units Pruned: 1
+ vacuumed   | top-N by key       | same Units: 16 Units Pruned: 0
 (6 rows)
 
 SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
@@ -145,14 +145,14 @@ SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM kchk('merged');
- after_step |       shape        |             result             
-------------+--------------------+--------------------------------
- merged     | one customer       | same Units: 1 Units Pruned: 13
- merged     | customer and dates | same Units: 1 Units Pruned: 13
- merged     | customer range     | same Units: 1 Units Pruned: 13
- merged     | customer list      | same Units: 3 Units Pruned: 11
- merged     | other column       | same Units: 14 Units Pruned: 0
- merged     | top-N by key       | same Units: 1 Units Pruned: 0
+ after_step |       shape        |            result             
+------------+--------------------+-------------------------------
+ merged     | one customer       | same Units: 1 Units Pruned: 7
+ merged     | customer and dates | same Units: 1 Units Pruned: 7
+ merged     | customer range     | same Units: 1 Units Pruned: 7
+ merged     | customer list      | same Units: 3 Units Pruned: 5
+ merged     | other column       | same Units: 8 Units Pruned: 0
+ merged     | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
 SELECT count(*) >= 0 AS refreshed FROM sift.col_refresh('kc_idx');
@@ -162,26 +162,26 @@ SELECT count(*) >= 0 AS refreshed FROM sift.col_refresh('kc_idx');
 (1 row)
 
 SELECT * FROM kchk('refreshed');
- after_step |       shape        |             result             
-------------+--------------------+--------------------------------
- refreshed  | one customer       | same Units: 1 Units Pruned: 13
- refreshed  | customer and dates | same Units: 1 Units Pruned: 13
- refreshed  | customer range     | same Units: 1 Units Pruned: 13
- refreshed  | customer list      | same Units: 3 Units Pruned: 11
- refreshed  | other column       | same Units: 14 Units Pruned: 0
- refreshed  | top-N by key       | same Units: 1 Units Pruned: 0
+ after_step |       shape        |            result             
+------------+--------------------+-------------------------------
+ refreshed  | one customer       | same Units: 1 Units Pruned: 7
+ refreshed  | customer and dates | same Units: 1 Units Pruned: 7
+ refreshed  | customer range     | same Units: 1 Units Pruned: 7
+ refreshed  | customer list      | same Units: 3 Units Pruned: 5
+ refreshed  | other column       | same Units: 8 Units Pruned: 0
+ refreshed  | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
 REINDEX INDEX kc_idx;
 SELECT * FROM kchk('reindexed');
- after_step |       shape        |             result             
-------------+--------------------+--------------------------------
- reindexed  | one customer       | same Units: 1 Units Pruned: 13
- reindexed  | customer and dates | same Units: 1 Units Pruned: 13
- reindexed  | customer range     | same Units: 1 Units Pruned: 13
- reindexed  | customer list      | same Units: 3 Units Pruned: 11
- reindexed  | other column       | same Units: 14 Units Pruned: 0
- reindexed  | top-N by key       | same Units: 1 Units Pruned: 0
+ after_step |       shape        |            result             
+------------+--------------------+-------------------------------
+ reindexed  | one customer       | same Units: 1 Units Pruned: 7
+ reindexed  | customer and dates | same Units: 1 Units Pruned: 7
+ reindexed  | customer range     | same Units: 1 Units Pruned: 7
+ reindexed  | customer list      | same Units: 3 Units Pruned: 5
+ reindexed  | other column       | same Units: 8 Units Pruned: 0
+ reindexed  | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);
@@ -242,7 +242,7 @@ SELECT * FROM kchk('runs');
  runs       | customer and dates | same Units: 8 Units Pruned: 7
  runs       | customer range     | same Units: 8 Units Pruned: 7
  runs       | customer list      | same Units: 15 Units Pruned: 0
- runs       | other column       | same Units: 15 Units Pruned: 0
+ runs       | other column       | same Units: 8 Units Pruned: 7
  runs       | top-N by key       | same Units: 15 Units Pruned: 0
 (6 rows)
 
@@ -261,14 +261,14 @@ SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_id
 (1 row)
 
 SELECT * FROM kchk('runs merged');
- after_step  |       shape        |             result             
--------------+--------------------+--------------------------------
- runs merged | one customer       | same Units: 1 Units Pruned: 13
- runs merged | customer and dates | same Units: 1 Units Pruned: 13
- runs merged | customer range     | same Units: 1 Units Pruned: 13
- runs merged | customer list      | same Units: 3 Units Pruned: 11
- runs merged | other column       | same Units: 14 Units Pruned: 0
- runs merged | top-N by key       | same Units: 1 Units Pruned: 0
+ after_step  |       shape        |            result             
+-------------+--------------------+-------------------------------
+ runs merged | one customer       | same Units: 1 Units Pruned: 7
+ runs merged | customer and dates | same Units: 1 Units Pruned: 7
+ runs merged | customer range     | same Units: 1 Units Pruned: 7
+ runs merged | customer list      | same Units: 3 Units Pruned: 5
+ runs merged | other column       | same Units: 8 Units Pruned: 0
+ runs merged | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);

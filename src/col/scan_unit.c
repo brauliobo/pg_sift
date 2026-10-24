@@ -417,13 +417,25 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		if (!sift_col_bit_test(c->keep, c->cur + i))
 			return false;
 	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
-	for (uint32 i = 0; i < n; i++)
+	if (seg->entry.format == SIFT_COL_FORMAT_KEYED)
 	{
-		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
-		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+		/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
+		for (uint32 i = 0; i < n; i++)
+		{
+			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
+
+			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
 				return false;
+		}
 	}
+	else
+		for (uint32 i = 0; i < n; i++)
+		{
+			src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
+			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+				if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+					return false;
+		}
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();

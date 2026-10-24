@@ -17,7 +17,7 @@
 #include "col/seg.h"
 
 #define ORDER_DEFAULT_ROWS	1024
-#define ORDER_MAX_ROWS		6144		/* the directory of a unit is read with the head of its record (SIFT_COL_UNIT_HEAD) */
+#define ORDER_MAX_ROWS		32768		/* the most rows of a unit (key_cut_rows); the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
 
 typedef struct RowRef
 {
@@ -77,18 +77,18 @@ ref_cmp(const void *a, const void *b, void *arg)
 	return x->b->keys[x->r] < y->b->keys[y->r] ? -1 : x->b->keys[x->r] > y->b->keys[y->r];
 }
 
-/*
- * Rows a key-cut unit aims at: the option, else the rows of 256 average heap pages (pg_class: ANALYZE or VACUUM keeps reltuples and relpages), so that the
- * number of units stays what the superblock cut gave and the planner's per-unit costs are as before.
- */
 uint64
 sift_colk_row_bytes(const SiftColSchema *schema)
 {
 	return 32 + (uint64) schema->ncols * 16;
 }
 
+/*
+ * Rows a key-cut unit aims at: the rows of 256 average heap pages (pg_class: ANALYZE or VACUUM keeps reltuples and relpages) or the option, so that the number of
+ * units stays what the superblock cut gave and the planner's per-unit costs are as before; 0 when unknown. A unit has at most ORDER_MAX_ROWS of them.
+ */
 uint32
-sift_colk_unit_rows(Relation index)
+sift_colk_aim_rows(Relation index)
 {
 	uint32		n = sift_col_rel(index)->cut_rows;
 	HeapTuple	tp;
@@ -98,9 +98,17 @@ sift_colk_unit_rows(Relation index)
 		Form_pg_class c = (Form_pg_class) GETSTRUCT(tp);
 
 		if (c->relpages > 0 && c->reltuples > 0)
-			n = (uint32) Min((double) ORDER_MAX_ROWS, (double) SIFT_SB_PAGES * c->reltuples / c->relpages);
+			n = (uint32) Min((double) SIFT_COL_UNIT_MAX_ROWS, (double) SIFT_SB_PAGES * c->reltuples / c->relpages);
 		ReleaseSysCache(tp);
 	}
+	return n;
+}
+
+uint32
+sift_colk_unit_rows(Relation index)
+{
+	uint32		n = sift_colk_aim_rows(index);
+
 	return n == 0 ? ORDER_DEFAULT_ROWS : Min(Max(n, 64), ORDER_MAX_ROWS);
 }
 

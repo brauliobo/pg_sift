@@ -370,7 +370,7 @@ sift_col_init(void)
 						 "", NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
 					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
-					  0, 0, 6144, ShareUpdateExclusiveLock);
+					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);

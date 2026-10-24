@@ -117,7 +117,7 @@ write_run(ColBuild *b, bool last)
 	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 	b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
-	sift_colw_set_keyed(b->w);
+	sift_colw_set_keyed(b->w, sift_colk_aim_rows(b->index));
 	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->index), b->wcxt);
 	end_segment(b);
 	pfree(in);

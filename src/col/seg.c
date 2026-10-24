@@ -251,6 +251,17 @@ sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail)
 	*len = r->len;
 	*avail = Min(r->len, SIFT_COL_UNIT_HEAD);
 	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + r->off, *avail, pv->unitbuf);
+	/* the directory of a key-cut unit of many rows ends beyond the head, and the chunk table follows it */
+	if (*avail < r->len)
+	{
+		uint32		need = sift_cunit_head_need(pv->unitbuf, *avail, r->len, seg->schema->ncols);
+
+		if (need > 0)
+		{
+			sift_cseg_unit_fill(seg, u, *avail, need - *avail);
+			*avail = need;
+		}
+	}
 	if (*avail == r->len)
 		memset(pv->unitbuf + r->len, 0, SIFT_COL_PAD);
 	return pv->unitbuf;
