@@ -571,10 +571,11 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 extern bool sift_aggspec_integer_type(Oid t);
 
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
-extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
+extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nulls);
 
 /* ... and whether one predicate is such a comparison; the zone tests of an OR are those of its disjuncts */
 extern bool sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
 
 /*
  * The TIDs the SAP_TID conjuncts keep together, as the keys (block << 16 | offset) [*lo, *hi) (empty when *lo >= *hi); false when the scan
@@ -593,6 +594,7 @@ typedef struct SiftAggPaShape
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
+	bool		nullz;				/* the IS [NOT] NULL conjuncts of columns that are no dim are decided by the zone of a unit, like the comparisons: a unit whose zone does not hold them for all its rows is scanned */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
 	int			rdim[SIFT_SRC_MAX_RDIMS];
 	int			nmeas;				/* ... and as measures */

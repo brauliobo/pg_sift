@@ -76,3 +76,5 @@ keycut_customer_agg	`key_cut` (`sift_col` reloption, default none	orders	default
 keycut_customer_btree	`key_cut` (`sift_col` reloption, default none	orders	default WITH (key_cut = 'customer_id')	.	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	no
 keycut_customer_range	`key_cut` (`sift_col` reloption, default none	orders	default WITH (key_cut = 'customer_id')	Units Pruned: [1-9]	native	-	ms	faster33	no
 jsonb_each_member	jsonb_each_member	events	-	Pushed Aggregates	native	-	ms	faster33	yes
+softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units From Pre-aggregates: [1-9]	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes
+softdel_deleted_list	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Units Pruned: [1-9]	native,pg_duckdb	-	ms	faster33	no

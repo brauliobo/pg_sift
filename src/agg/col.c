@@ -379,10 +379,15 @@ col_nsb(void *impl)
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
 }
 
-/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none */
-static void
+/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none; a NULL test is one predicate */
+static int
 zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftColPred *out)
 {
+	if (z->nulltest)
+	{
+		out[0] = (SiftColPred) {z->leaf, z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL};
+		return 1;
+	}
 	vals[0].v.i = z->lo;
 	vals[1].v.i = z->hi;
 	out[0] = (SiftColPred) {z->leaf, SIFT_COLOP_GE, 1, &vals[0]};
@@ -395,13 +400,16 @@ zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftCol
 			set[i].v.i = z->vals[i];
 		out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_IN, z->nvals, set};
 	}
+	return 2;
 }
 
 /* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
 static bool
 zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z)
 {
-	if (p[0].col != z->leaf || p[0].vals[0].v.i != z->lo)
+	if (z->nulltest)
+		return p[0].col == z->leaf && p[0].op == (z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL);
+	if (p[0].col != z->leaf || p[0].op != SIFT_COLOP_GE || p[0].vals[0].v.i != z->lo)
 		return false;
 	if (z->nvals == 0)
 		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
@@ -427,9 +435,11 @@ zone_tests(ColSource *src, const SiftSrcPrune *prune, int nprune)
 	for (int k = 0; k < nprune; k++)
 		if (prune[k].nkids == 0)
 		{
-			if (n >= src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
+			int			len = prune[k].nulltest ? 1 : 2;
+
+			if (n + len > src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
 				zone_preds(src->cxt, &prune[k], MemoryContextAllocZero(src->cxt, 2 * sizeof(SiftColValue)), &src->zpred[n]);
-			n += 2;
+			n += len;
 		}
 	src->nzpred = n;
 }
@@ -444,9 +454,8 @@ zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
 	{
 		SiftColPred *preds = MemoryContextAlloc(cxt, 2 * sizeof(SiftColPred));
 
-		zone_preds(cxt, z, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
+		c.npreds = zone_preds(cxt, z, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
 		c.preds = preds;
-		c.npreds = 2;
 		return c;
 	}
 	c.kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));

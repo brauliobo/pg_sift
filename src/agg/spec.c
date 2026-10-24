@@ -102,23 +102,30 @@ sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 	return lf->parent < 0 && !lf->lossy && (num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid)));
 }
 
+/* x IS [NOT] NULL on a scalar leaf of the rows: the NULL count of a unit's zone refuses the unit (no NULL, or only NULLs) or holds the test for all its rows */
+bool
+sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	return p->kind == SAP_NULL && p->op <= 1 && p->level == 0 && !p->late && p->leaf < nbase && lay->leaf[p->leaf].parent < 0 && lay->leaf[p->leaf].kind == SCL_SCALAR;
+}
+
 /* the conjuncts a unit's zone can refuse */
 static List *
-zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, bool nulls)
 {
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
-			out = zone_cmps(out, p->child[i], lay, nbase);
-	return sift_aggspec_zone_cmp(p, lay, nbase) ? lappend(out, (void *) p) : out;
+			out = zone_cmps(out, p->child[i], lay, nbase, nulls);
+	return (nulls ? sift_aggspec_null_zone(p, lay, nbase) : sift_aggspec_zone_cmp(p, lay, nbase)) ? lappend(out, (void *) p) : out;
 }
 
 List *
-sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase)
+sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nulls)
 {
 	List	   *out = NIL;
 
 	for (int i = 0; i < s->npred; i++)
-		out = zone_cmps(out, s->pred[i], lay, nbase);
+		out = zone_cmps(out, s->pred[i], lay, nbase, nulls);
 	return out;
 }
 

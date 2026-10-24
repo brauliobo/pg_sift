@@ -703,12 +703,45 @@ def render_keycut(p):
     return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
 
 
+# ---------- IS [NOT] NULL as a test of the NULL count of a unit's zone: units cut by it, answered from pre-aggregates, across soft deletes and restores ----------
+NZ_NULLABLE = ['deleted_at', 'seen_at', 'tag', 'score', 'kind', 'amount', 'val']
+
+
+def nz_pred(r, e):
+    c = r.choice(NZ_NULLABLE)
+    form = r.randrange(9)
+    if form < 5:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'{e}.org {r.choice(["=", "<", ">"])} {r.randrange(12)}'
+    if form == 6:
+        return f'{e}.amount {r.choice(["<", ">="])} {r.randrange(1000)}'
+    if form == 7:
+        return f'{e}.id {r.choice(["<", ">"])} {r.randrange(1, 4 * 256)}'
+    return f'({e}.{c} IS NULL OR {e}.org = {r.randrange(12)})'
+
+
+NZ_KEYS = ['{e}.org', '{e}.kind', '{e}.org % 3', '({e}.deleted_at IS NULL)', '{e}.seen_at', '{e}.tag']
+NZ_AGGS = ['count(*)', 'count({e}.deleted_at)', 'count({e}.seen_at)', 'count({e}.tag)', 'count({e}.score)', 'sum({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'avg({e}.val)',
+           'sum({e}.val)', 'min({e}.id)', 'max({e}.id)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.org)', 'sum({e}.score)', 'max({e}.seen_at)',
+           'count(*) FILTER (WHERE {e}.deleted_at IS NULL)', 'sum({e}.amount) FILTER (WHERE {e}.tag IS NOT NULL)']
+
+
+def gen_nullzone(r, ctx):
+    where_ = [nz_pred(r, 'e') for _ in range(r.choice([1, 1, 2, 3]))]
+    if len(where_) > 1 and r.random() < 0.2:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(NZ_KEYS, r.choice([0, 0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(NZ_AGGS, r.randrange(1, 5))))
+    return dict(table='nzf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
-    'keycut': (gen_keycut, render_keycut, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -825,6 +858,36 @@ def dml_kcut(r, ctx):
     return [f'ANALYZE {t}']
 
 
+def dml_nullzone(r, ctx):
+    """Soft deletes and restores, NULLing and filling of the columns the family tests, inserts, deletes and VACUUM on nzf: units whose NULL count changes under the zones."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    if e < 3:
+        return f'UPDATE nzf SET deleted_at = now() WHERE {ids}'
+    if e == 3:
+        return f'UPDATE nzf SET deleted_at = NULL WHERE {ids}'
+    if e == 4:
+        return f'UPDATE nzf SET deleted_at = timestamptz \'2025-08-01\' WHERE id BETWEEN {r.randrange(1, 800)} AND {r.randrange(800, 2400)}'
+    if e == 5:
+        return f"UPDATE nzf SET seen_at = {r.choice(['NULL', 'date ' + chr(39) + '2025-05-05' + chr(39)])} WHERE {ids}"
+    if e == 6:
+        return f"UPDATE nzf SET tag = {r.choice(['NULL', chr(39) + 'zz' + chr(39)])} WHERE {ids}"
+    if e == 7:
+        return f"UPDATE nzf SET score = {r.choice(['NULL', chr(39) + 'NaN' + chr(39), '1.5'])} WHERE {ids}"
+    if e == 8:
+        return f'UPDATE nzf SET kind = NULL, amount = amount + 1 WHERE {ids}'
+    if e == 9:
+        return f'DELETE FROM nzf WHERE {ids}'
+    if e in (10, 11):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_nz']; ctx['next_nz'] += n
+        return f'INSERT INTO nzf SELECT * FROM fz.gen_nzf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 12:
+        return r.choice(['VACUUM nzf', 'VACUUM (FREEZE) nzf'])
+    return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
+
+
 # ---------- a run ----------
 def sqlq(s):
     assert '$fzq$' not in s
@@ -859,9 +922,12 @@ def episodes(seed, nq, ctx, only, dmls=4):
     """[(dml statements, [query entries])]: 4-10 queries after 0-4 statements."""
     r = random.Random(seed * 7919 + 1)
     rk = random.Random(seed * 104729 + 3)
+    rn = random.Random(seed * 1299709 + 5)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
+        if not only or 'nullzone' in only:
+            st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
         if not only or 'keycut' in only:
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         qs = []
@@ -1041,7 +1107,7 @@ def main():
         tag = f'{seed}'
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000}
+        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)
