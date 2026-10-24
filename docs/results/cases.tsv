@@ -183,3 +183,9 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	point_key_range	native	ms	37.319	36.357	39.592	15	15.86	Seq Scan on orders NOISY
 3.3	point_prefix_count	sift	ms	0.551	0.476	1.196	15	19.25	Bitmap Heap Scan on orders NOISY
 3.3	point_prefix_count	native	ms	90.369	78.241	107.447	15	19.25	Seq Scan on orders NOISY
+3.3	tbl_update_keys	sift	wal_bytes	43.073	43.073	43.078	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	sift	ms	3076.247	2888.681	3159.408	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	sift	cpu_ms	3057.942	2875.036	3132.469	3	17.27	sift_table, segments written: buffer,columns,sealed buffer,tombstones
+3.3	tbl_update_keys	native	wal_bytes	53.201	53.201	53.201	3	17.27	heap
+3.3	tbl_update_keys	native	ms	668.524	666.819	758.182	3	17.27	heap
+3.3	tbl_update_keys	native	cpu_ms	662.885	660.064	745.306	3	17.27	heap
