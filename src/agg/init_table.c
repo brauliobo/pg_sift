@@ -304,7 +304,7 @@ table_init(AggExec *ex)
 	ex->amax = palloc0(Max(s->naggs, 1) * sizeof(double));
 	ex->amap = palloc0(Max(s->naggs, 1) * sizeof(IdMap));
 	ex->osa = palloc0(Max(s->naggs, 1) * sizeof(Osa *));
-	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(double *));
+	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(OsaVal *));
 	ex->xcmp = palloc0(Max(s->naggs, 1) * sizeof(FmgrInfo *));
 	ex->xlen = palloc0(Max(s->naggs, 1) * sizeof(int16));
 	ex->xbyval = palloc0(Max(s->naggs, 1) * sizeof(bool));

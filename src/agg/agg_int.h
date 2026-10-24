@@ -125,7 +125,7 @@ typedef struct AggExec
 	double	   *amax;			/* avg(float8): the largest absolute input */
 	IdMap	   *amap;			/* count(DISTINCT numeric): the ids of the values */
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
-	double	  **oval;			/* ... and their results by sorted-values id */
+	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
 	uint8	   *fwin;			/* DISTINCT ON: per tuple of the chunk, its row became the best of its group (decided by the first of the aggregates, which the others follow) */

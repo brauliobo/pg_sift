@@ -511,15 +511,19 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 		case SAA_PCT_CONT:
 		case SAA_PCT_DISC:
 			{
-				double		v;
+				OsaVal		v;
 
 				*isnull = acc->n[g] == 0;
 				if (*isnull)
 					return (Datum) 0;
 				v = ex->oval[ai][ex->acc[a->share].i[g] - 1];
+				if (a->argtype == NUMERICOID && osa_int_key(a))
+					return scaled_numeric(v.i == PG_INT64_MAX ? SIFT_NX_NAN : v.i, a->num.scale);
+				if (osa_int_key(a))
+					return leaf_datum(a->restype, v.i);
 				if (a->restype == FLOAT4OID)
-					return Float4GetDatum((float4) v);
-				return a->restype == FLOAT8OID ? Float8GetDatum(v) : leaf_datum(a->restype, (int64) v);
+					return Float4GetDatum((float4) v.d);
+				return a->restype == FLOAT8OID ? Float8GetDatum(v.d) : leaf_datum(a->restype, (int64) v.d);
 			}
 		case SAA_MIN:
 		case SAA_MAX:

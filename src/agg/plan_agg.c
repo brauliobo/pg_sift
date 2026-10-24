@@ -246,8 +246,9 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 
 /*
  * percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
- * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4 or date leaf: the
- * executor keeps the values of a group exactly and picks the ranks as PostgreSQL's final functions do.
+ * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4, date, int8, timestamp or
+ * timestamptz leaf or a decimal of at most 18 digits: the executor keeps the values of a group exactly and picks the ranks as
+ * PostgreSQL's final functions do.
  */
 static bool
 compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
@@ -274,15 +275,22 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 	if (sgc->sortop != tc->lt_opr && sgc->sortop != tc->gt_opr)
 		return false;
 	out->desc_order = sgc->sortop == tc->gt_opr;
+	out->num.n = 0;
 	out->kind = is_cont ? SAA_PCT_CONT : SAA_PCT_DISC;
 	out->argtype = exprType(arg);
-	if ((leaf = match_leaf(c, arg)) >= 0)
+	if (!is_cont && out->argtype == NUMERICOID)
+	{
+		if (!compile_nx(c, arg, 18, &out->num))
+			return false;
+	}
+	else if ((leaf = match_leaf(c, arg)) >= 0)
 	{
 		SiftSrcLeaf *l = leaf_of(c, leaf);
 
 		if (l->kind != SCL_SCALAR ||
 			!((l->vtype == SCV_F64 && (l->typid == FLOAT8OID || l->typid == FLOAT4OID)) ||
-			  (l->vtype == SCV_I32 && (l->typid == INT4OID || l->typid == INT2OID || l->typid == DATEOID))))
+			  (l->vtype == SCV_I32 && (l->typid == INT4OID || l->typid == INT2OID || l->typid == DATEOID)) ||
+			  (!is_cont && !l->wide && l->vtype == SCV_I64 && (l->typid == INT8OID || l->typid == TIMESTAMPOID || l->typid == TIMESTAMPTZOID))))
 			return false;
 		out->leaf = leaf;
 		use_leaf(c, leaf);
@@ -303,8 +311,12 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 static bool
 same_sorted_input(const SiftAggAgg *a, const SiftAggAgg *b)
 {
-	if (a->filter || b->filter || a->leaf != b->leaf || a->nvx != b->nvx)
+	if (a->filter || b->filter || a->leaf != b->leaf || a->nvx != b->nvx || osa_int_key(a) != osa_int_key(b) || a->num.n != b->num.n ||
+		(a->num.n && a->num.scale != b->num.scale))
 		return false;
+	for (int k = 0; k < a->num.n; k++)
+		if (memcmp(&a->num.step[k], &b->num.step[k], sizeof(SiftAggNx)) != 0)
+			return false;
 	for (int k = 0; k < a->nvx; k++)
 		if (a->vx[k].op != b->vx[k].op || a->vx[k].leaf != b->vx[k].leaf || a->vx[k].c != b->vx[k].c)
 			return false;

@@ -8,16 +8,21 @@ SET sift.agg_force = on;
 -- 12 digits: a PostgreSQL built with fused multiply-add interpolates in the last bit of a float8 differently
 SET extra_float_digits = -3;
 
-CREATE TABLE os (id int, g int, small int, f float8, f4 float4, d date, n int2, pad text DEFAULT repeat('x', 50));
-INSERT INTO os (id, g, small, f, f4, d, n)
+CREATE TABLE os (id int, g int, small int, f float8, f4 float4, d date, n int2, i8 bigint, ts timestamp, tz timestamptz, nm numeric(12,3), pad text DEFAULT repeat('x', 50));
+INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm)
 SELECT i, CASE WHEN i % 11 = 0 THEN 0 WHEN i < 50 THEN i ELSE 1 + i % 37 END, i % 7,
 	   CASE WHEN i % 997 = 0 THEN NULL WHEN i % 313 = 0 THEN 'NaN' WHEN i % 331 = 0 THEN 'Infinity' WHEN i % 337 = 0 THEN '-Infinity' WHEN i % 311 = 0 THEN '-0'
 			WHEN i % 5 = 0 THEN (i % 13)::float8 ELSE ((i * 7919) % 100003) / 7.0 END,
-	   ((i * 31) % 5000) / 3.0, date '2020-01-01' + (i * 7) % 900, (i % 300 - 150)::int2
+	   ((i * 31) % 5000) / 3.0, date '2020-01-01' + (i * 7) % 900, (i % 300 - 150)::int2,
+	   CASE WHEN i % 991 = 0 THEN NULL WHEN i % 3 = 0 THEN (i % 17) - 8 WHEN i % 7 = 0 THEN 4611686018427387904 + i ELSE (i * 104729)::bigint * (CASE WHEN i % 2 = 0 THEN 1 ELSE -1 END) * 1000003 END,
+	   CASE WHEN i % 983 = 0 THEN NULL WHEN i % 941 = 0 THEN 'infinity' WHEN i % 947 = 0 THEN '-infinity' ELSE timestamp '2001-02-03 04:05:06.789012' + (i * 7919 % 1000003) * interval '1 minute' - (i % 5) * interval '1 us' END,
+	   CASE WHEN i % 977 = 0 THEN NULL ELSE timestamptz '2020-06-01 00:00:00+00' + (i * 31 % 5003) * interval '1 hour' END,
+	   CASE WHEN i % 971 = 0 THEN NULL WHEN i % 967 = 0 THEN 'NaN' WHEN i % 5 = 0 THEN (i % 13) ELSE ((i * 7919) % 1000003 - 500000) / 7.0 END
 FROM generate_series(1, 20000) i;
 -- groups of one and of two values
-INSERT INTO os (id, g, small, f, f4, d, n) VALUES (100001, 9001, 1, 5.5, 1.5, '2024-01-01', 3), (100002, 9002, 1, 1.5, 2.5, '2024-01-02', 1), (100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2);
-CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n);
+INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm) VALUES (100001, 9001, 1, 5.5, 1.5, '2024-01-01', 3, 7, '2024-01-01', '2024-01-01+00', 1.5), (100002, 9002, 1, 1.5, 2.5, '2024-01-02', 1, -9223372036854775807 - 1, '2024-01-02', '2024-01-02+00', -2.25),
+	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5);
+CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n, i8, ts, tz, nm);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) os;
 
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -53,7 +58,13 @@ DECLARE q text[] := ARRAY[
 	'SELECT small, percentile_cont(0.5) WITHIN GROUP (ORDER BY f) FILTER (WHERE g < 20), percentile_cont(0.5) WITHIN GROUP (ORDER BY f) FROM os GROUP BY small',
 	'SELECT g, percentile_cont(0.5) WITHIN GROUP (ORDER BY f * 2.0 - 1.0), count(*), sum(f4) FROM os WHERE small <> 3 GROUP BY g',
 	'SELECT g % 3, percentile_cont(0.5) WITHIN GROUP (ORDER BY f), percentile_cont(0.5) WITHIN GROUP (ORDER BY f4::float8) FROM os WHERE g IN (1, 2, 3, 9001, 9002, 40) GROUP BY 1',
-	'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY small) FROM os GROUP BY g'];
+	'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY small) FROM os GROUP BY g',
+	'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY i8), percentile_disc(0.9) WITHIN GROUP (ORDER BY i8 DESC), percentile_disc(0) WITHIN GROUP (ORDER BY i8), percentile_disc(1) WITHIN GROUP (ORDER BY i8) FROM os GROUP BY g',
+	'SELECT small, percentile_disc(0.5) WITHIN GROUP (ORDER BY ts), percentile_disc(0.25) WITHIN GROUP (ORDER BY ts DESC), percentile_disc(0.5) WITHIN GROUP (ORDER BY tz) FROM os GROUP BY small',
+	'SELECT g, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm), percentile_disc(0.95) WITHIN GROUP (ORDER BY nm), percentile_disc(0.1) WITHIN GROUP (ORDER BY nm DESC) FROM os GROUP BY g',
+	'SELECT small, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm * 2 - 1), percentile_disc(0.5) WITHIN GROUP (ORDER BY nm * f4::numeric) FROM os WHERE f4 < 1000 GROUP BY small',
+	'SELECT percentile_disc(0.37) WITHIN GROUP (ORDER BY i8), percentile_disc(0.37) WITHIN GROUP (ORDER BY ts), percentile_disc(0.37) WITHIN GROUP (ORDER BY nm) FROM os',
+	'SELECT g % 3, percentile_disc(0.5) WITHIN GROUP (ORDER BY nm) FILTER (WHERE g < 20), percentile_disc(0.5) WITHIN GROUP (ORDER BY i8), percentile_cont(0.5) WITHIN GROUP (ORDER BY f) FROM os GROUP BY 1'];
 BEGIN
 	FOR n IN 1..array_length(q, 1) LOOP
 		RETURN QUERY SELECT n, s.plan, s.result_rows, s.vs_normal_plan FROM same(q[n]) s;

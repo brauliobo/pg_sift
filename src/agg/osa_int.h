@@ -11,8 +11,16 @@
  * value) pairs while it fits work_mem, and every value in a tuplesort (work_mem, spilling to disk as the normal plan's sort)
  * once it does not. A value is its order key (float8 in the order of float8_cmp: -0 = 0, NaN last), a group the id of its
  * sorted values (in order of appearance; acc->i of the aggregate that owns the values, which the group renumbering carries).
+ * A percentile_disc over a 64-bit integer, a timestamp or a decimal keeps the integer, its order key the integer with the sign bit flipped.
  */
 #define OSA_BLOCK	64
+
+/* the result of an ordered-set aggregate for a group: a double, or the integer of an osa_int_key aggregate */
+typedef union OsaVal
+{
+	double		d;
+	int64		i;
+} OsaVal;
 
 typedef struct OsaSlot
 {

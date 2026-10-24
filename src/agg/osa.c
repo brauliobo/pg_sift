@@ -254,6 +254,26 @@ osa_values(AggExec *ex, SiftAggAgg *a, const uint32 *idx, int nsel)
 	return ex->vstk;
 }
 
+/* the argument of an osa_int_key aggregate for the nsel tuples, as order keys */
+static const uint64 *
+osa_int_keys(AggExec *ex, SiftAggAgg *a, const uint32 *idx, int nsel, const uint64 *ok)
+{
+	uint64	   *key = (uint64 *) ex->c64;
+
+	if (a->num.n)
+	{
+		const sift_i128 *nx = eval_nx(ex, &a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+
+		for (int j = 0; j < nsel; j++)
+			key[j] = nx[j] == SIFT_NX_NAN ? UINT64_MAX : (uint64) (int64) nx[j] ^ OSA_SIGN;	/* a NaN sorts last; 18 digits never reach the key of INT64_MAX */
+		return key;
+	}
+	sift_colk->for_i64_sel[SIFT_COLW_64](get_vec(ex, a->leaf)->data, idx, nsel, 0, (int64 *) key);
+	for (int j = 0; j < nsel; j++)
+		key[j] ^= OSA_SIGN;
+	return key;
+}
+
 /* adds the selected values to the values of the aggregate, which owns them (the other aggregates on the argument share them) */
 void
 osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
@@ -262,11 +282,15 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	AggAcc	   *own = &ex->acc[ai];
 	Osa		   *o = ex->osa[ai];
 	const uint32 *idx = NULL;
-	const double *x;
+	const double *x = NULL;
+	const uint64 *ik = NULL;
 
 	if (a->leaf >= 0)
 		gather_idx(ex, a->leaf, nsel, &idx);
-	x = osa_values(ex, a, idx, nsel);
+	if (osa_int_key(a))
+		ik = osa_int_keys(ex, a, idx, nsel, ok);
+	else
+		x = osa_values(ex, a, idx, nsel);
 	/* a block of values at a time: the slots of the whole block are requested before the first is probed (a histogram of 10^5 pairs is out of the cache) */
 	for (int b = 0; b < nsel; b += OSA_BLOCK)
 	{
@@ -286,7 +310,7 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 			if (own->i[g] == 0)
 				own->i[g] = ++o->nsid;
 			sid[m] = own->i[g] - 1;
-			key[m] = f8_key(x[b + k]);
+			key[m] = ik ? ik[b + k] : f8_key(x[b + k]);
 			h[m] = osa_hash(sid[m], key[m]) & (cap - 1);
 			if (o->slot)
 				__builtin_prefetch(&o->slot[h[m]]);
@@ -397,15 +421,22 @@ osa_pick(const SiftAggAgg *a, int64 n, OsaPick *p)
 	p->pos[1] = hi;
 }
 
-static double
+static OsaVal
 osa_result(const SiftAggAgg *a, const OsaPick *p)
 {
-	double		first = key_f8(p->key[0]),
-				second = key_f8(p->key[1]);
+	OsaVal		r;
+	double		first,
+				second;
 
-	if (a->kind == SAA_PCT_DISC || p->pos[0] == p->pos[1])
-		return first;
-	return first + (p->prop * (second - first));
+	if (osa_int_key(a))
+	{
+		r.i = (int64) (p->key[0] ^ OSA_SIGN);
+		return r;
+	}
+	first = key_f8(p->key[0]);
+	second = key_f8(p->key[1]);
+	r.d = a->kind == SAA_PCT_DISC || p->pos[0] == p->pos[1] ? first : first + (p->prop * (second - first));
+	return r;
 }
 
 /*
@@ -585,7 +616,7 @@ osa_finish(AggExec *ex, int owner)
 			nrows[own->i[g] - 1] = own->n[g];
 	for (int ai = 0; ai < s->naggs; ai++)
 		if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
-			ex->oval[ai] = MemoryContextAlloc(ex->tcxt, Max(o->nsid, 1) * sizeof(double));
+			ex->oval[ai] = MemoryContextAlloc(ex->tcxt, Max(o->nsid, 1) * sizeof(OsaVal));
 	if (o->slot)
 	{
 		osa_finish_select(ex, owner, nrows);

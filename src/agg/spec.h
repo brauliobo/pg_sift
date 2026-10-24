@@ -13,6 +13,7 @@
 #ifndef SIFT_AGGSPEC_H
 #define SIFT_AGGSPEC_H
 
+#include "catalog/pg_type_d.h"
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 
@@ -478,6 +479,13 @@ static inline bool
 is_ordered_agg(const SiftAggAgg *a)
 {
 	return a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC;
+}
+
+/* percentile_disc over a 64-bit integer, a timestamp or a decimal (the integer over 10^scale): its values are kept as the integers, a double holds only 53 bits */
+static inline bool
+osa_int_key(const SiftAggAgg *a)
+{
+	return a->kind == SAA_PCT_DISC && (a->argtype == INT8OID || a->argtype == TIMESTAMPOID || a->argtype == TIMESTAMPTZOID || a->argtype == NUMERICOID);
 }
 
 typedef struct SiftAggSpec
