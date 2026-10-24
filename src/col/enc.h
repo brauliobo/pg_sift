@@ -152,6 +152,7 @@ typedef struct SiftColBatch
 	uint32		rowcap;
 	SiftKey    *keys;			/* ascending, all in superblock sb (a keyed batch: any blocks, sb is the sequence number of the unit) */
 	bool		keyed;			/* a key-cut unit (docs/COL.md 2.16): the rows are those of a range of the declared order key, whatever their pages */
+	bool		unsorted;		/* the rows are in any order (the window of the cut of a key-cut merge, col/order.c): not a unit to encode */
 	bool		hasver;			/* xmin and cmin are set for every row (0 = frozen); false: every row is frozen and the arrays mean nothing */
 	uint32	   *xmin;			/* [rowcap]: the transaction that inserted the row of a sift_table group (docs/COL-TAM.md section 7) */
 	uint32	   *cmin;
