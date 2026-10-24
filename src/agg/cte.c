@@ -633,9 +633,13 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	planning_flat = true;
 	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 	planning_flat = false;
-	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
+	/*
+	 * The scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows.
+	 * The same holds when the flat plan reads every table that has a column index in a scan and the first still reads one in an ordinary
+	 * plan (we are here for that): the plan above the scans, priced from the rows it takes for one, is no measure of the work they replace.
+	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
-		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
+		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) || !plain_reader_stmt(flatplan) ||
 		 flatplan->planTree->total_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
