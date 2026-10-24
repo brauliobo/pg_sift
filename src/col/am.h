@@ -24,6 +24,7 @@ typedef struct SiftColRel
 	int		   *nleaves;		/* [natts] */
 	bool	   *json;			/* [natts + 1] the attribute is a shredded jsonb */
 	bool	   *name;			/* [natts + 1] the attribute is a name (a fixed buffer, not a varlena) */
+	bool	   *ret;			/* [natts + 1] the attribute is a text, varchar or uuid column named by return_columns */
 	SiftColShredAdapter *shred;
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
@@ -36,16 +37,38 @@ typedef struct SiftColRel
  * Writes no page; false when the request was not taken (switched off, a standby). The GUC sift.col_rollup_on_demand.
  */
 extern bool sift_col_rollup_on_demand;
+extern bool sift_cluster_advice;
 extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
+/* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
+extern void sift_col_report_caps(Relation index);
+/* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
+#define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
+extern bool sift_col_auto_keys(Relation heap, Relation index);
+extern void sift_col_auto_keys_report(Relation index);
+/* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
+extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
+extern bool sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;
 extern int	sift_test_col_rollup_panic_armed;
+extern bool sift_test_col_merge_panic;
+extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
+extern int	sift_test_col_refresh_sleep_armed;
 #endif
 
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */
 extern void sift_col_validate_preagg(const char *value);
 extern void sift_col_validate_rollup(const char *value);
+extern void sift_col_validate_rollup_dims(const char *value);
+extern void sift_col_validate_calendar_columns(const char *value);
+extern void sift_col_validate_key_columns(const char *value);
+extern void sift_col_validate_order_columns(const char *value);
+extern void sift_col_validate_point_columns(const char *value);
+extern void sift_col_validate_point_tid_columns(const char *value);
+extern void sift_col_validate_return_columns(const char *value);
+/* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
+extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a compression option ("policy" or "policy; column=policy; ...") */
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */
@@ -81,6 +104,8 @@ typedef enum SiftColRound
 	SIFT_COL_ROUND_UP
 } SiftColRound;
 extern int64 sift_col_numeric_key(int scale, Datum value, SiftColRound round);
+/* A finite constant whose scaled value is below 10^18, which every numeric(p <= 18, s) leaf stays under (so sift_col_numeric_key cannot overflow) */
+extern bool sift_col_numeric_key_fits(int scale, Datum value);
 extern Datum sift_col_key_numeric(int scale, int64 key);
 
 /*
@@ -109,6 +134,19 @@ struct SiftColSegment;
 extern bool sift_colw_is_wide_int(const SiftColDef *d);
 extern bool sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
 extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, uint64 *keep);
+
+/* col/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
+extern bool sift_enable_col_scan;
+extern double sift_plan_scale;
+extern void sift_col_scan_init(void);
+extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
+extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
+extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern bool sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir);
+extern bool sift_col_amcanreturn(Relation index, int attno);
+extern void sift_col_amendscan(IndexScanDesc scan);
+extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
+									Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages);
 
 /* col/am.c */
 extern void sift_col_init(void);
@@ -141,6 +179,22 @@ extern PGDLLIMPORT bool sift_col_auto_merge;
 extern PGDLLIMPORT int sift_col_auto_merge_dirty_pct;
 extern PGDLLIMPORT double sift_col_auto_merge_fragmentation;
 extern PGDLLIMPORT double sift_col_auto_merge_buffer_pct;
+extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;
+extern PGDLLIMPORT int sift_col_auto_merge_max_active;
+extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
+extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
+/* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
+extern void sift_col_vacuum_notice(Relation heap, Relation index);
+/* what the automatic rewrite waits for (sift.col_maintenance_status) */
+#define SIFT_COL_GATE_HELD	1
+#define SIFT_COL_GATE_WAL	2
+extern bool sift_col_autovacuum_enabled(Relation heap);
+extern bool sift_col_table_churn(Oid heapoid, int64 *changed, int64 *threshold, TimestampTz *last);
+extern void sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted);
+extern PGDLLEXPORT void sift_col_vacuum_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_col_vacuum_scan_worker_main(Datum main_arg);
+
+extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 
 /* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
  * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,
@@ -150,12 +204,15 @@ extern PGDLLIMPORT int sift_test_col_jitter_us;
 extern PGDLLIMPORT bool sift_test_col_verify_inval;	/* sift.test_col_verify_inval: sift.col_verify's heap check invalidates the index's relcache entry at every tuple (and clobbers the cached state it held) */
 extern PGDLLIMPORT bool sift_test_col_rel_inval;	/* sift.test_col_rel_inval: the build and the recheck invalidate the index's relcache entry at every tuple (sift_col_test_inval) */
 extern void sift_col_test_inval(Relation index);	/* does so when it is on, after it overwrote the cached state the entry held */
-extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 #ifdef SIFT_TESTING
 typedef struct SiftCDictCacheStats
 {
 	uint64		loads;			/* dictionaries parsed from a segment */
 	uint64		hits;			/* dictionaries found in the cache */
+	uint64		head_loads;		/* segment heads (schema, unit directory) read from a segment */
+	uint64		head_hits;		/* segment heads found in the cache */
+	uint64		zone_loads;		/* zone arrays of a leaf read from a segment */
+	uint64		zone_hits;		/* zone arrays found in the cache */
 } SiftCDictCacheStats;
 extern SiftCDictCacheStats sift_cdict_cache_stats;
 extern Size sift_cdict_cache_bytes(void);

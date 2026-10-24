@@ -9,19 +9,7 @@ INSERT INTO gs_facts SELECT i, i % 7, date '2024-01-01' + i % 5, (ARRAY['a', 'b'
 CREATE INDEX gs_facts_col ON gs_facts USING sift_col (id, entity_id, day, kind, scores) WITH (paths = 'scores.* float8');
 VACUUM (FREEZE, ANALYZE) gs_facts;
 
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_pushed.sql
 
 -- two grouping sets; the key computed in the input is in both, the attribute in one; days nothing matches keep a row
 SELECT * FROM check_query($q$
@@ -45,6 +33,19 @@ SELECT * FROM check_query($q$
  FROM (VALUES (date '2024-01-01'), (date '2030-01-01')) d(day)
  LEFT JOIN parsed p ON p.day = d.day
  GROUP BY ROLLUP (p.category, d.day)
+$q$);
+
+-- a constant key: the empty set nulls it in the output (before PostgreSQL 18 only a column of the scan tuple is nulled, never a bare constant; from 18 the planner wraps it and the normal plan answers)
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 'cur'::text AS label, kind, count(*) FROM gs_facts GROUP BY GROUPING SETS ((1, 2), ()) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST
+$q$);
+-- a ROLLUP over a constant and a column; a constant that is no key stays the constant, and so does one read through an expression
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 'cur'::text AS label, 7 AS seven, kind, 'x' || kind AS tagged, count(*) FROM gs_facts GROUP BY ROLLUP (1, kind) ORDER BY 1 NULLS FIRST, 3 NULLS FIRST
+$q$);
+-- two constants, one of them the key of a set of its own
+SELECT pushed OR current_setting('server_version_num')::int >= 180000 AS pushed, differences FROM check_query($q$
+ SELECT 1 AS one, 'cur'::text AS label, count(*) FROM gs_facts GROUP BY GROUPING SETS ((1), (2), ())
 $q$);
 DROP FUNCTION check_query(text);
 DROP TABLE gs_facts;

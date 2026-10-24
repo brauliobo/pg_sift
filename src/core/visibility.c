@@ -17,6 +17,8 @@
 
 #include "bm25/kernels.h"
 #include "table/table.h"
+#include "core/popcount.h"
+#include "core/cpu.h"
 #include "core/store.h"
 #include "core/visibility.h"
 
@@ -65,6 +67,54 @@ BlockNumber
 sift_vis_nblocks(Relation heap)
 {
 	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
+}
+
+/* The all-visible bit of each page (not its all-frozen bit) among the n words of a map page; the contents of a page are 8-aligned. No popcnt instruction: this object is baseline x86-64 (scripts/isa_check.sh) */
+static uint32
+count_allvisible_words(const uint64 *w, uint32 n)
+{
+	uint32		count = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		count += sift_pc64(w[i] & UINT64CONST(0x5555555555555555));
+	return count;
+}
+
+/*
+ * The pages among the first nblocks that the map says are all-visible: what visibilitymap_count counts, from the bytes of the map those pages
+ * use (it counts the whole 8 kB of every map page, a hundred times the work for a partition of a few pages). Not locked, as there: a bit
+ * a writer sets or clears meanwhile is a page more or less.
+ */
+BlockNumber
+sift_vis_count_allvisible(Relation heap, BlockNumber nblocks)
+{
+	SMgrRelation smgr = RelationGetSmgr(heap);
+	uint64		left = ((uint64) nblocks + 3) / 4;
+	BlockNumber vm_nblocks,
+				count = 0;
+
+	if (!smgrexists(smgr, VISIBILITYMAP_FORKNUM))
+		return 0;
+	vm_nblocks = smgrnblocks(smgr, VISIBILITYMAP_FORKNUM);
+	for (BlockNumber mapblk = 0; left > 0 && mapblk < vm_nblocks; mapblk++)
+	{
+		Buffer		buf = ReadBufferExtended(heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+		const char *map = PageGetContents(BufferGetPage(buf));
+		uint32		len = Min(left, VM_MAPSIZE);
+		uint32		off = len / sizeof(uint64) * sizeof(uint64);
+
+		count += count_allvisible_words((const uint64 *) map, len / sizeof(uint64));
+		if (off < len)
+		{
+			uint64		w = 0;
+
+			memcpy(&w, map + off, len - off);
+			count += sift_pc64(w & UINT64CONST(0x5555555555555555));
+		}
+		ReleaseBuffer(buf);
+		left -= len;
+	}
+	return count;
 }
 
 void

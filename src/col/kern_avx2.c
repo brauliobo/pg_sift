@@ -5,8 +5,7 @@
  * (x - lo) <= span unsigned is !((x - lo') > span') signed. A 64-element word comes out of movemasks (u16 and u32 compare results
  * are packed to bytes first). The 8-bit LUT is a two-register PSHUFB lookup, wider LUTs use gathers; unpack cuts 8 values per step
  * from two 128-bit windows of the stream with PSHUFB and variable shifts. bits_count is the bitmap module's AVX2 popcount; bits_to_idx
- * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table (also the aggregation
- * operators' count_changes). The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
+ * walks a sparse word bit by bit and expands a denser one a byte at a time through a 256 x 8 position table. The selection decodes (for_i64_sel, gather_u32) stay scalar: gathers were slower than the loads they
  * replace (docs/COL.md section 8, Measured). The last partial word of a bit vector is computed from a zero padded copy of the
  * remaining elements.
  */
@@ -240,18 +239,6 @@ bits_and_count_avx2(const uint64 *a, const uint64 *b, uint32 nwords)
 		c0 += _mm_popcnt_u64(a[i] & b[i]);
 	return c0 + c1 + c2 + c3;
 }
-
-/* Position of the j-th set bit of m (0 past the last), lane j of row m */
-#define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
-#define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
-#define R64(F, m)	R16(F, m), R16(F, m + 16), R16(F, m + 32), R16(F, m + 48)
-#define R256(F)		R64(F, 0), R64(F, 64), R64(F, 128), R64(F, 192)
-#define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
-#define POS(m, j, b)	((((m) >> (b)) & 1) && BELOW(m, b) == (j) ? (b) : 0)
-#define LANE(m, j)	(POS(m, j, 0) + POS(m, j, 1) + POS(m, j, 2) + POS(m, j, 3) + \
-					 POS(m, j, 4) + POS(m, j, 5) + POS(m, j, 6) + POS(m, j, 7))
-#define POSROW(m)	{LANE(m, 0), LANE(m, 1), LANE(m, 2), LANE(m, 3), LANE(m, 4), LANE(m, 5), LANE(m, 6), LANE(m, 7)}
-const uint8 sift_colk_lut_pos[256][8] = {R256(POSROW)};
 
 F2 uint32
 bits_to_idx_avx2(const uint64 *bits, uint32 nwords, uint32 base, uint32 *idx)

@@ -1,0 +1,145 @@
+-- The lookups on a cached segment dictionary (col/dict.c): a dictionary is searched entry by entry until it has been asked a few times, then
+-- an equality goes through a table of its codes (after 8 finds) and a prefix or range through its codes in byte order (after 16 tests, 1024
+-- entries or more). Every answer must be the heap's, in the rounds before, at and after each switch, on strings that tie on their first
+-- 8 bytes, NULLs, empty strings, unicode, a unit with inline strings, DML, the write buffer and a promoted segment.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+
+CREATE FUNCTION dl_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
+	EXECUTE format('SELECT count(*) FROM dl WHERE %s', heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM dl WHERE %s) z', idx, preds, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM dl WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+
+-- pad makes a page hold about 15 rows: a unit is about 3,800 rows, the rows 9000 to 9100 (long strings) fill one unit with inline text
+CREATE TABLE dl (id int, s text, t text, pad text DEFAULT repeat('x', 500));
+ALTER TABLE dl ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO dl (id, s, t)
+SELECT i,
+	   CASE WHEN i % 53 = 0 THEN NULL
+			WHEN i % 47 = 0 THEN ''
+			WHEN i BETWEEN 9000 AND 9100 THEN repeat('long', 100) || i % 9
+			WHEN i % 41 = 0 THEN (ARRAY['é', 'éa', '日本', '日本語', 'ab', 'abc', 'abd', 'a', 'b', 'B', 'Ab', 'zz'])[1 + i % 12]
+			WHEN i % 7 = 0 THEN 'commonprefix_' || (i * 7919) % 3000
+			ELSE 'k' || md5((i % 2500)::text) END,
+	   CASE WHEN i % 61 = 0 THEN NULL ELSE 'v' || (i * 31) % 1700 END
+FROM generate_series(1, 20000) i;
+CREATE INDEX dl_idx ON dl USING sift_col (s sift.col_text_ops, t sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+VACUUM (ANALYZE) dl;
+SELECT sift.col_verify('dl_idx', true);
+SELECT count(*) AS segments, sum(units) > 4 AS units FROM sift.col_segments('dl_idx') WHERE kind = 'immutable';
+SELECT inline_chunks > 0 AS inline, dict_bytes > 20000 AS dictionary FROM sift.col_leaves('dl_idx') WHERE leaf = 0;
+
+-- (leaf predicates, the same on the heap in bytes); the md5 of 1 is c4ca4238a0b923820dcc509a6f75849b
+CREATE TABLE dl_q (n serial, preds text, heapwhere text);
+INSERT INTO dl_q (preds, heapwhere) VALUES
+ ('0:eq:commonprefix_17', 's = ''commonprefix_17'''),
+ ('0:eq:commonprefix_99999', 's = ''commonprefix_99999'''),
+ ('0:eq:kc4ca4238a0b923820dcc509a6f75849b', 's = ''kc4ca4238a0b923820dcc509a6f75849b'''),
+ ('0:eq:ab', 's = ''ab'''),
+ ('0:eq:', 's = '''''),
+ ('0:eq:日本', 's = ''日本'''),
+ ('0:eq:zzz', 's = ''zzz'''),
+ ('1:eq:v77', 't = ''v77'''),
+ ('0:prefix:commonprefix_1', 'starts_with(s, ''commonprefix_1'')'),
+ ('0:prefix:commonprefix_12', 'starts_with(s, ''commonprefix_12'')'),
+ ('0:prefix:commonprefix_', 'starts_with(s, ''commonprefix_'')'),
+ ('0:prefix:commonpr', 'starts_with(s, ''commonpr'')'),
+ ('0:prefix:k', 'starts_with(s, ''k'')'),
+ ('0:prefix:kc4ca', 'starts_with(s, ''kc4ca'')'),
+ ('0:prefix:', 'starts_with(s, '''')'),
+ ('0:prefix:a', 'starts_with(s, ''a'')'),
+ ('0:prefix:ab', 'starts_with(s, ''ab'')'),
+ ('0:prefix:abcd', 'starts_with(s, ''abcd'')'),
+ ('0:prefix:é', 'starts_with(s, ''é'')'),
+ ('0:prefix:日', 'starts_with(s, ''日'')'),
+ ('0:prefix:zzzz', 'starts_with(s, ''zzzz'')'),
+ ('0:prefix:long', 'starts_with(s, ''long'')'),
+ ('1:prefix:v1', 'starts_with(t, ''v1'')'),
+ ('0:lt:ab', 's < ''ab'' COLLATE "C"'),
+ ('0:le:ab', 's <= ''ab'' COLLATE "C"'),
+ ('0:gt:abc', 's > ''abc'' COLLATE "C"'),
+ ('0:ge:abc', 's >= ''abc'' COLLATE "C"'),
+ ('0:ge:abc;0:lt:abd', 's >= ''abc'' COLLATE "C" AND s < ''abd'' COLLATE "C"'),
+ ('0:gt:b', 's > ''b'' COLLATE "C"'),
+ ('0:lt:commonprefix_5', 's < ''commonprefix_5'' COLLATE "C"'),
+ ('0:ge:commonprefix_5;0:le:commonprefix_6', 's >= ''commonprefix_5'' COLLATE "C" AND s <= ''commonprefix_6'' COLLATE "C"'),
+ ('0:gt:k', 's > ''k'' COLLATE "C"'),
+ ('0:lt:日本', 's < ''日本'' COLLATE "C"'),
+ ('0:lt:', 's < '''' COLLATE "C"'),
+ ('0:ge:', 's >= '''' COLLATE "C"'),
+ ('0:ge:zzzzz', 's >= ''zzzzz'' COLLATE "C"'),
+ ('1:ge:v5;1:lt:v6', 't >= ''v5'' COLLATE "C" AND t < ''v6'' COLLATE "C"'),
+ ('0:prefix:commonprefix_1;1:prefix:v1', 'starts_with(s, ''commonprefix_1'') AND starts_with(t, ''v1'')');
+
+CREATE FUNCTION dl_round() RETURNS SETOF text LANGUAGE sql AS $$ SELECT dl_cmp('dl_idx', preds, heapwhere) FROM dl_q ORDER BY n $$;
+CREATE FUNCTION dl_rounds(k int) RETURNS TABLE (rounds_ok bool) LANGUAGE sql AS
+$$ SELECT count(*) = k * (SELECT count(*) FROM dl_q) AND count(*) FILTER (WHERE r = 'ok') = count(*) FROM (SELECT dl_round() AS r FROM generate_series(1, k)) z $$;
+
+-- what the queries select (some of them nothing, some most of the table)
+SELECT n, (SELECT count(*) FROM sift._test_col_tids('dl_idx', preds)) AS rows FROM dl_q ORDER BY n;
+
+-- 30 rounds in one backend: before, at and after the switch to the table of codes and the sorted order
+SELECT dl_rounds(30);
+
+-- the write buffer, an update, a delete, a promotion into a segment of its own dictionary
+INSERT INTO dl (id, s, t) SELECT 20000 + i, CASE WHEN i % 3 = 0 THEN 'commonprefix_' || i ELSE 'k' || md5((i % 400)::text) END, 'v' || i FROM generate_series(1, 500) i;
+UPDATE dl SET s = 'ab' || id WHERE id % 211 = 0;
+DELETE FROM dl WHERE id % 97 = 0 AND id < 15000;
+SELECT dl_rounds(20);
+SELECT sift.col_promote('dl_idx') > 0 AS promoted;
+SELECT dl_rounds(20);
+SELECT sift.col_verify('dl_idx', true);
+
+-- the same through SQL: the index scan (=, LIKE, ^@) and the aggregate pushdown (ranges), against the heap, 30 times each
+CREATE FUNCTION dl_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_col_scan', (m = 'col')::text, true);
+	PERFORM set_config('sift.enable_agg', (m = 'agg')::text, true);
+	PERFORM set_config('enable_seqscan', (m <> 'col')::text, true);
+END $$;
+
+CREATE FUNCTION dl_sql(q text, m text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM dl_mode(m);
+	EXECUTE q INTO r;
+	RETURN r;
+END $$;
+
+-- the node the plan of a query reads in a mode
+CREATE FUNCTION dl_node(q text, m text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; r text := 'heap';
+BEGIN
+	PERFORM dl_mode(m);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'dl_idx' AND r = 'heap' THEN r := 'index'; END IF;
+		IF line ~ 'SiftAgg' THEN r := 'pushdown'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE TABLE dl_s (n serial, q text, mode text);
+INSERT INTO dl_s (q, mode) VALUES
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s = ''commonprefix_17''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s = ''kc4ca4238a0b923820dcc509a6f75849b''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s LIKE ''commonprefix_1%''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s LIKE ''kc4%''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s ^@ ''ab''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s LIKE ''日%''', 'col'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s >= ''abc'' COLLATE "C" AND s < ''commonprefix_5'' COLLATE "C"', 'agg'),
+ ('SELECT count(*) || ''/'' || coalesce(sum(id), 0) FROM dl WHERE s > ''k'' COLLATE "C"', 'agg');
+
+SELECT count(*) = 8 * 30 AS agree FROM dl_s s, generate_series(1, 30) k
+WHERE (SELECT dl_sql(s.q, 'heap')) IS NOT DISTINCT FROM (SELECT dl_sql(s.q, s.mode));
+
+SELECT mode, dl_node(q, mode) AS node, count(*) FROM dl_s GROUP BY mode, 2 ORDER BY mode;
+
+DROP TABLE dl, dl_q, dl_s;
+DROP FUNCTION dl_cmp(regclass, text, text), dl_round(), dl_rounds(int), dl_mode(text), dl_sql(text, text), dl_node(text, text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -119,6 +119,20 @@ DELETE FROM pr WHERE id % 89 = 0;
 DELETE FROM pl WHERE id % 89 = 0;
 SELECT * FROM p_compare();
 
-DROP TABLE ph, pr, pl, p_q;
+-- the limit on the partitions of a scan (lowered): ph and pr have 4, pl 5 (with the default one). Over it the table keeps the normal plan, at it the
+-- scan has its workers; the rows are the same
+CREATE TABLE p_lim (lim int);
+INSERT INTO p_lim VALUES (3), (4), (5);
+CREATE FUNCTION p_limit(tbl text, lim int, OUT mode text, OUT same_rows bool) LANGUAGE plpgsql AS $$
+DECLARE q text := format((SELECT q FROM p_q WHERE n = 2), tbl);
+BEGIN
+	PERFORM set_config('sift.test_limits', 'partitions=' || lim, true);
+	mode := p_mode(q);
+	same_rows := p_rows(q, true, 2, false) IS NOT DISTINCT FROM p_rows(q, false, 0, true);
+END $$;
+SELECT tbl, lim, (p_limit(tbl, lim)).* FROM unnest(ARRAY['ph', 'pr', 'pl']) tbl, p_lim ORDER BY tbl, lim;
+
+DROP TABLE ph, pr, pl, p_q, p_lim;
+DROP FUNCTION p_limit(text, int);
 DROP FUNCTION p_rows(text, bool, int, bool), p_mode(text), p_launched(text), p_compare();
 DROP EXTENSION pg_sift;

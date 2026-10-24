@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS t_partial, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, stores, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_coal, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -75,8 +75,8 @@ CREATE FUNCTION coldiff.fx_orders(first_id int, last_id int, seed int DEFAULT 0)
 											round((1 + 4 * sqrt(coldiff.u(g.id, 100 + i, seed)))::numeric, 1))
 					FROM generate_series(0, p.nr - 1) i) END,
 			   CASE WHEN coldiff.u(g.id, 23, seed) < 0.1 THEN jsonb_strip_nulls(it.items) ELSE it.items END,
-			   (SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['reply','comment','internal'])[1 + floor(coldiff.u(g.id, 500 + j, seed) * 3)::int],
-															 'author_role', (ARRAY['staff','customer'])[1 + floor(coldiff.u(g.id, 600 + j, seed) * 2)::int],
+			   (SELECT coalesce(jsonb_agg(jsonb_build_object('type', (ARRAY['kind_a','kind_b','internal'])[1 + floor(coldiff.u(g.id, 500 + j, seed) * 3)::int],
+															 'author_role', (ARRAY['role_a','role_b'])[1 + floor(coldiff.u(g.id, 600 + j, seed) * 2)::int],
 															 'text', 'note ' || j) ORDER BY j), '[]'::jsonb)
 				FROM generate_series(0, floor(coldiff.u(g.id, 24, seed) * 4)::int - 1) j),
 			   (SELECT string_agg((ARRAY['fast','late','damaged','refund','gift','invoice','exchange','missing','perfect','broken','express','pickup',
@@ -147,8 +147,8 @@ CREATE TABLE pf_dim (a integer, b integer, label text, w float8);
 INSERT INTO pf_dim SELECT a, b, 'l' || (a + b) % 4, a * 10 + b FROM generate_series(0, 9) a, generate_series(0, 4) b WHERE (a + b) % 6 <> 5;
 INSERT INTO pf_dim VALUES (1, 1, 'dup', 0.5), (NULL, 1, 'null a', 1), (2, NULL, 'null b', 2), (NULL, NULL, 'null both', NULL);
 
--- the keys of the metrics of a source -> metric and aspect (about one in seven has no row: the split of the key is the fallback)
-CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_aspect text);
+-- the keys of the metrics of a source -> metric and part (about one in seven has no row: the split of the key is the fallback)
+CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_part text);
 INSERT INTO metrics_map
 SELECT s, key, initcap(split_part(key, '_', 1)), nullif(initcap(split_part(key, '_', 2)), '')
 FROM unnest(ARRAY['web','ios','android','pos','phone'] || ARRAY(SELECT 'marketplace_' || lpad(i::text, 2, '0') FROM generate_series(1, 25) i)) s,
@@ -184,8 +184,8 @@ INSERT INTO map_vals VALUES ('Apparel', 'A', 1.50, 0.5, 1, '2022-01-01'), ('Appa
 	('Home', 'H', 3.10, 2.0, NULL, '2021-01-01'), ('Toys', 'T', 0.05, 0.25, 5, '2024-02-02'), ('Toys', NULL, 0.10, NULL, 4, '2020-03-03');
 
 -- ranges to place a date in (a date in several of them, in none; an empty, an open and a NULL range, a NULL label)
-CREATE TABLE periods (label text, range daterange);
-INSERT INTO periods VALUES ('cur', '[2024-06-01,2025-06-01)'), ('prev', '[2023-06-01,2024-06-01)'), ('wide', '[2023-01-01,2025-12-31]'),
+CREATE TABLE spans (label text, range daterange);
+INSERT INTO spans VALUES ('span_a', '[2024-06-01,2025-06-01)'), ('span_b', '[2023-06-01,2024-06-01)'), ('wide', '[2023-01-01,2025-12-31]'),
 	('empty', 'empty'), (NULL, '[2022-01-01,2022-04-01)'), ('open', '[2025-01-01,)'), ('none', NULL);
 
 -- a joined column of every type PostgreSQL's own sum and average run on: a key with two rows, NULL values, a key without a row, big and negative values
@@ -248,6 +248,24 @@ FROM unnest(ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','
 -- strings longer than a dictionary entry (the engine stores them inline), repeated and distinct, with NULLs
 INSERT INTO t_text SELECT 100 + i, 1 + i % 3, CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 4), 250 + (i % 9) * 40) || (i % 5) END, 'lng'
 FROM generate_series(1, 90) i;
+-- many rows that share the strings above with a number behind them (ties on a prefix, accents, case, an empty string, multi-byte characters), a few units' worth
+INSERT INTO t_text SELECT 1000 + i, 1 + i % 3,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN ''
+		ELSE (ARRAY['a','B','_x','Z','é','ä','10','9','Ab','aB','ab','a b','A','b','Ç','c','z','Zz','-a','a-','ß','ss','  ','日本','é日'])[1 + i % 25] || (i % 37) END,
+	'v' || (i % 11)
+FROM generate_series(1, greatest(:n - 4000, 800)) i;
+
+-- sort keys that coalesce NULL to a constant: each integer width, date and timestamps, with NULLs, the limits of the type (and infinity) that tie with a constant,
+-- repeated values and enough rows for the scan to be the cheaper plan at the page costs of the fixtures
+CREATE TABLE t_coal (id integer PRIMARY KEY, grp integer NOT NULL, s2 smallint, i4 integer, i8 bigint, d date, ts timestamp, tz timestamptz);
+INSERT INTO t_coal SELECT i, 1 + i % 3,
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 7 = 1 THEN 32767 WHEN i % 7 = 2 THEN -32768 ELSE (i * 37) % 200 - 100 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 11 = 0 THEN 2147483647 WHEN i % 13 = 0 THEN -2147483648 ELSE (i * 7919) % 1000 - 500 END,
+	CASE WHEN i % 6 = 0 THEN NULL WHEN i % 17 = 0 THEN 9223372036854775807 WHEN i % 19 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 100000 - 50000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 23 = 0 THEN 'infinity' WHEN i % 29 = 0 THEN '-infinity' ELSE DATE '2024-01-01' + (i % 60) END,
+	CASE WHEN i % 3 = 0 THEN NULL WHEN i % 31 = 0 THEN 'infinity' ELSE TIMESTAMP '2024-01-01' + (i % 500) * interval '67 minutes' END,
+	CASE WHEN i % 4 = 0 THEN NULL WHEN i % 37 = 0 THEN '-infinity' ELSE TIMESTAMPTZ '2024-01-01 00:00:00+00' + (i % 300) * interval '131 minutes' END
+FROM generate_series(1, greatest(:n - 3000, 900)) i;
 
 -- the wide leaves (docs/COL-LEAFTYPES-32.md): numeric of 19..38 digits (two lanes), any other numeric (a canonical image: unconstrained, a negative
 -- scale, more than 38 digits), money and interval, with their traps: NaN and the infinities, the largest and smallest values, equal numbers of
@@ -291,6 +309,9 @@ FROM generate_series(1, greatest(:n - 4000, 400)) i;
 -- the other 3.2 leaf types: time, enum (a value added after the first ones, so that the OID order is not the sort order), uuid, bytea, arrays,
 -- ranges and a multirange, with NULLs, empty values and equal values spelled differently (the numeric elements 1.0 and 1.00)
 DROP TYPE IF EXISTS coldiff_mood CASCADE;
+DROP COLLATION IF EXISTS coldiff_nd;
+-- a nondeterministic collation (case and accents equal): a top-N by a text key under it keeps the normal plan; without ICU the fixtures that need it are skipped
+DO $$ BEGIN CREATE COLLATION coldiff_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 CREATE TYPE coldiff_mood AS ENUM ('sad', 'ok', 'happy');
 ALTER TYPE coldiff_mood ADD VALUE 'meh' BEFORE 'ok';
 CREATE TABLE t_misc (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, t time, e coldiff_mood, u uuid, b bytea, ia integer[], ta text[], na numeric[],

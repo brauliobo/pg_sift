@@ -20,9 +20,12 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/generic_xlog.h"
 #include "access/relation.h"
 #include "funcapi.h"
 #include "storage/lmgr.h"
+#include "utils/builtins.h"
+#include "utils/timestamp.h"
 
 #include "bm25/maint.h"
 #include "core/store.h"
@@ -40,11 +43,20 @@ PG_FUNCTION_INFO_V1(sift_test_truncate);
 PG_FUNCTION_INFO_V1(sift_test_space);
 PG_FUNCTION_INFO_V1(sift_test_info);
 PG_FUNCTION_INFO_V1(sift_test_maint_failures);
+PG_FUNCTION_INFO_V1(sift_test_meta_note);
 PG_FUNCTION_INFO_V1(sift_test_maint_wait_us);
 PG_FUNCTION_INFO_V1(sift_test_freelist);
 PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_churn);
+PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
+
+/* a new setting starts the count of the directory updates it applies to */
+static void
+crash_dir_assign(int newval, void *extra)
+{
+	sift_test_dir_updates = 0;
+}
 
 void
 sift_store_test_init(void)
@@ -64,6 +76,12 @@ sift_store_test_init(void)
 	DefineCustomBoolVariable("sift.test_run_gap",
 							 "Testing: every run a segment stream takes is followed by a page taken by another writer.",
 							 NULL, &sift_test_run_gap, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_crash_dir",
+							"Testing: SIGKILL before (n) or after (-n) the nth directory update since this setting (0 = never).",
+							NULL, &sift_test_crash_dir, 0, INT_MIN, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, crash_dir_assign, NULL);
+	DefineCustomBoolVariable("sift.test_crash_worker",
+							 "Testing: sift.test_crash_dir applies to background workers (on) or to the other processes (off).",
+							 NULL, &sift_test_crash_worker, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_max_extents",
 							"Testing: extents a segment may use (0 = what its header page holds).",
 							NULL, &sift_test_max_extents, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -622,7 +640,54 @@ sift_test_maint_failures(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(snap.meta.flags & SIFT_META_FAILURES_MASK);
 }
 
+/*
+ * sift._test_meta_note(index, mode): the metapage as a build without the failure note wrote it ('old': pd_lower stops short of the note) or
+ * with a note of bytes no build wrote ('junk': every byte 0xFF, one failure in a row), for the readers of sift.workers
+ */
+Datum
+sift_test_meta_note(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_test_open_index(PG_GETARG_OID(0), RowExclusiveLock);
+	char	   *mode = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	Buffer		buf = ReadBuffer(index, SIFT_METAPAGE_BLKNO);
+	GenericXLogState *state;
+	Page		page;
+
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	state = GenericXLogStart(index);
+	page = GenericXLogRegisterBuffer(state, buf, 0);
+	if (strcmp(mode, "old") == 0)
+	{
+		SiftMetaPageData *meta = (SiftMetaPageData *) SiftPageGetData(page);
+
+		memset(SiftPageGetData(page) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+		SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
+		/* one failure counted by such a build, which kept no note */
+		meta->flags = (meta->flags & ~SIFT_META_FAILURES_MASK) | 1;
+		meta->maint_requested_at = GetCurrentTimestamp();
+	}
+	else if (strcmp(mode, "junk") == 0)
+	{
+		memset(SiftPageGetData(page) + SIFT_META_BASE_SIZE, 0xFF, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
+		((SiftMetaPageData *) SiftPageGetData(page))->flags = (((SiftMetaPageData *) SiftPageGetData(page))->flags & ~SIFT_META_FAILURES_MASK) | 1;
+		SiftPageSetUsed(page, sizeof(SiftMetaPageData));
+	}
+	else
+		elog(ERROR, "sift test: unknown mode \"%s\"", mode);
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buf);
+	relation_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
 /* The longest time this backend waited for the maintenance of others since the last call, in microseconds */
+/* sift._test_dir_updates(): the directory updates of this process since sift.test_crash_dir was set */
+Datum
+sift_test_dir_updates_count(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_INT32(sift_test_dir_updates);
+}
+
 Datum
 sift_test_maint_wait_us(PG_FUNCTION_ARGS)
 {

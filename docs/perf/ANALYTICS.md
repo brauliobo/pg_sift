@@ -52,17 +52,17 @@ unique `number`, a GIN on `items`, a BRIN). The store sets are hash buckets: `K1
 
 `bench/sql/analytics/queries/ID.sql`: a header (`-- sets:`, `-- key:` the result columns that sort the rows before they are compared), then a
 section per layout, `--@ pg` (the table above), `--@ flat`, `--@ ch`. Macros: `{stores}` (the ids of the set), `{sources}`,
-`{range(col)}` (two years: the current period 2024-11-01..2025-10-31 and the one before it), `{period(col)}` (`current`, `previous`).
-Every S query filters by store set, sources, `deleted_at IS NULL` and the two periods, as the application does.
+`{range(col)}` (two years: the range 2024-11-01..2025-10-31 and the one before it), `{span(col)}` (`span_a`, `span_b`).
+Every S query filters by store set, sources, `deleted_at IS NULL` and the two ranges, as the application does.
 
 | id | what it does (`pg` section) |
 |---|---|
-| S1 | metrics summary per mapped metric, aspect and period: `jsonb_each(metrics)`, avg, count distinct orders, three `FILTER`ed distincts |
+| S1 | metrics summary per mapped metric, part and span: `jsonb_each(metrics)`, avg, count distinct orders, three `FILTER`ed distincts |
 | S2 | item summary at three rollup levels (category + kind, category, all): per-order pre-aggregation of `jsonb_to_recordset(items)`, then average and distinct counts over orders; categories and kinds mapped |
-| S3 | blend of S1 and S2: revenue of the items and the `p_total` metric of their orders per mapped category and period |
+| S3 | blend of S1 and S2: revenue of the items and the `p_total` metric of their orders per mapped category and span |
 | S4 | time series of orders, units and revenue at four granularities (day, week, month, quarter) over one expansion of the items |
 | S5 | per-store rows: the top 3 categories of each store by revenue with their orders and customers (window function) |
-| S6 | orders with a staff reply among `notes` (`jsonb_path_exists`) per country and language, with their total |
+| S6 | orders with a note of kind `kind_a` by `role_a` among `notes` (`jsonb_path_exists`) per country and language, with their total |
 | S7 | orders with an item of a category, kind and price above a bound, the three conditions on the same element (`EXISTS` over the array) |
 | G1-G8 | whole-table scans of the items (no store filter): filtered count, selective avg/sum, group by two low cardinality columns, count distinct, group by store, by month and language, percentiles, group by order |
 

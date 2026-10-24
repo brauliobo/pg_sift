@@ -56,7 +56,7 @@ typedef enum SiftCmpOp
  * PostgreSQL float8 order everywhere a double is compared or ordered: NaN equals NaN and is greater than every other
  * value, -0 equals +0. min/max results normalize a zero to +0 (documented deviation from the sequential first-seen
  * rule of PostgreSQL's float8smaller/larger, which only shows for a column holding both signs of zero). A NaN result
- * (sum_f64, minmax_f64) is always the canonical quiet NaN: the payload an add or a compare would keep depends on the operand
+ * (minmax_f64) is always the canonical quiet NaN: the payload an add or a compare would keep depends on the operand
  * order, which no level can promise.
  */
 typedef struct SiftAggKernels
@@ -64,8 +64,6 @@ typedef struct SiftAggKernels
 	/* ---- predicates: bit i of out = (v[i] op c) ---- */
 	/* doubles in PostgreSQL's order, not the integer keys of the column kernels */
 	void		(*cmp_f64) (uint64 *out, const double *v, int n, SiftCmpOp op, double c);
-	/* bit i = (lo <= v[i] <= hi); lo > hi selects nothing */
-	void		(*between_f64) (uint64 *out, const double *v, int n, double lo, double hi);
 	/* bit i = (uint32) (v[i] - base) < nlut && lut[v[i] - base] != 0 (wrapping subtraction in uint32); a bound check fused with a byte LUT */
 	void		(*lut_i32) (uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut);
 
@@ -80,15 +78,11 @@ typedef struct SiftAggKernels
 	/*
 	 * ---- reductions over the rows of mask (mask == NULL: all n rows) ----
 	 * Integer sums are exact (the caller bounds n so that no overflow happens in int64: |v| < 2^31, n <= SIFT_AGG_VEC).
-	 * sum_f64 has a fixed order for every level: eight accumulators a[0..7] start at +0.0; row i (selected) is added to
-	 * a[i % 8] in row order; the result is ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7)). Unselected rows add
-	 * nothing (they are skipped, not added as 0.0).
 	 */
 	int64		(*sum_i32) (const int32 *v, const uint64 *mask, int n);
-	double		(*sum_f64) (const double *v, const uint64 *mask, int n);
 	/*
 	 * The largest absolute value of the selected rows, 0 when none is: true with *mx set, or false (*mx untouched) when a selected
-	 * row is not finite (NaN, +-Inf). The float guard of a sum: only a finite input may overflow it.
+	 * row is not finite (NaN, +-Inf). The float guard of a sum (sum_gid_f64): only a finite input may overflow it.
 	 */
 	bool		(*absmax_f64) (const double *v, const uint64 *mask, int n, double *mx);
 	/* false (outputs untouched) when no row is selected */
@@ -104,13 +98,6 @@ typedef struct SiftAggKernels
 	void		(*count_gid) (int64 *cnt, const uint32 *gid, const uint64 *mask, int n);		/* cnt[gid[i]] += 1 */
 	void		(*sum_gid_i32) (int64 *acc, const uint32 *gid, const int32 *v, const uint64 *mask, int n);
 	void		(*sum_gid_f64) (double *acc, const uint32 *gid, const double *v, const uint64 *mask, int n);
-
-	/*
-	 * Adjacent distinct values: the number of selected rows whose value differs from the previous selected row's, where
-	 * the row before the first one of the first call is the value *prev (the caller starts it at a value the data
-	 * never holds, UINT32_MAX); *prev is left at the last selected value (unchanged when none is selected).
-	 */
-	int64		(*count_changes) (const uint32 *v, const uint64 *mask, int n, uint32 *prev);
 } SiftAggKernels;
 
 /* Active table; never NULL after _PG_init */
@@ -121,6 +108,9 @@ extern const SiftAggKernels *sift_aggkern_for(SiftSimdLevel level);
 
 /* The scalar table, the specification */
 extern const SiftAggKernels sift_aggkern_scalar;
+
+/* cnt[c][gid[i]] += 1 for each of the nc >= 1 counters over the rows of mask (NULL: all n): count_gid for several counters in one walk of the rows (scalar at every level, like count_gid) */
+extern void sift_aggk_count_gid_n(int64 *const *cnt, int nc, const uint32 *gid, const uint64 *mask, int n);
 
 /* Registers the dispatch rebind (sift_cpu_register); called from _PG_init */
 extern void sift_aggkern_init(void);

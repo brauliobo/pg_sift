@@ -1,0 +1,58 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s1q s2s s2f s2w s2n s2i s2p s1q s2r s2m s1q s1c s3q
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1q: SET enable_seqscan = off; SELECT count(*) AS seed_docs FROM iso_dir WHERE body @@> 'seed';
+seed_docs
+---------
+      200
+(1 row)
+
+step s2s: LOAD 'pg_sift'; SET sift.async_maintenance = off; SET client_min_messages = error; SET sift.test_limits = 'max_segments=64';
+step s2f: SET sift.test_fail_pages = 1;
+step s2w: DO $$ BEGIN FOR i IN 1..90 LOOP INSERT INTO iso_dir (body) SELECT 'room ' || iso_big(i); END LOOP; END $$;
+step s2n: SELECT count(*) = 64 AS at_limit, count(*) FILTER (WHERE kind = 'buffer') AS open_buffers FROM sift.segments('iso_dir_idx');
+at_limit|open_buffers
+--------+------------
+t       |           1
+(1 row)
+
+step s2i: INSERT INTO iso_dir (body) SELECT 'room more ' || iso_big(1000 + g) FROM generate_series(1, 5) g;
+step s2p: SELECT sift.promote('iso_dir_idx') >= 0 AS promoted;
+ERROR:  sift test: injected failure after 1 pages
+step s1q: SET enable_seqscan = off; SELECT count(*) AS seed_docs FROM iso_dir WHERE body @@> 'seed';
+seed_docs
+---------
+      200
+(1 row)
+
+step s2r: RESET sift.test_fail_pages; SELECT sift.promote('iso_dir_idx') >= 0 AS promoted;
+promoted
+--------
+t       
+(1 row)
+
+step s2m: SELECT sift.merge('iso_dir_idx') >= 0 AS merged; SELECT count(*) < 40 AS merged_down FROM sift.segments('iso_dir_idx');
+merged
+------
+t     
+(1 row)
+
+merged_down
+-----------
+t          
+(1 row)
+
+step s1q: SET enable_seqscan = off; SELECT count(*) AS seed_docs FROM iso_dir WHERE body @@> 'seed';
+seed_docs
+---------
+      200
+(1 row)
+
+step s1c: COMMIT;
+step s3q: SELECT iso_agree('iso_dir', 'seed') AS agree_seed, iso_agree('iso_dir', 'room') AS agree_room, iso_verify('iso_dir_idx') AS verified;
+agree_seed|agree_room|verified
+----------+----------+--------
+t         |t         |t       
+(1 row)
+

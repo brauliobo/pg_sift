@@ -16,6 +16,7 @@
 #include "storage/sinval.h"
 #include "catalog/pg_control.h"
 #include "common/int.h"
+#include "executor/instrument.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "storage/bulk_write.h"
@@ -25,6 +26,7 @@
 #include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "col/col.h"
@@ -70,8 +72,8 @@ sift_wt_begin(Relation index, SiftWriteMode mode)
 	wt->mode = mode;
 	if (mode != SIFT_WRITE_SHARED)
 	{
-		if (smgrnblocks(RelationGetSmgr(index), fork) != 0)
-			elog(ERROR, "sift: bulk write into non-empty index \"%s\"", RelationGetRelationName(index));
+		SIFT_INVARIANT(smgrnblocks(RelationGetSmgr(index), fork) == 0, "sift: bulk write into non-empty index \"%s\"",
+					   RelationGetRelationName(index));
 		wt->bulk = smgr_bulk_start_rel(index, fork);
 		wt->next = FIRST_DATA_BLKNO;
 	}
@@ -83,8 +85,7 @@ sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyze
 {
 	SiftMetaPageData *meta = &wt->meta;
 
-	if (wt->bulk == NULL)
-		elog(ERROR, "sift: the metapage is written by BULK or INIT write targets only");
+	SIFT_INVARIANT(wt->bulk != NULL, "sift: the metapage is written by BULK or INIT write targets only");
 	memset(meta, 0, sizeof(SiftMetaPageData));
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;
@@ -182,7 +183,8 @@ wt_take(SiftWriteTarget *wt, uint32 want, uint32 min, uint32 *got)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 					 errmsg("sift index \"%s\" cannot grow past %u blocks",
-							RelationGetRelationName(wt->index), MaxBlockNumber)));
+							RelationGetRelationName(wt->index), MaxBlockNumber),
+					 errhint("A relation holds at most 32 TB with 8 kB blocks: partition the table so that each index stays below it.")));
 		*got = want;
 		wt->next += want;
 		return wt->next - want;
@@ -222,10 +224,37 @@ sift_wt_throttle(SiftWriteTarget *wt, int delay_ms)
 	wt->delay_ms = delay_ms;
 }
 
-/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly */
+void
+sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec)
+{
+	wt->wal_kbps = kb_per_sec;
+	wt->wal_base = pgWalUsage.wal_bytes;
+	wt->wal_t0 = GetCurrentTimestamp();
+}
+
+/* Sleeps until the WAL the backend wrote since the target was limited is within what its rate allows for the time that went by */
+static void
+wt_wal_wait(SiftWriteTarget *wt)
+{
+	for (;;)
+	{
+		uint64		due_ms = (pgWalUsage.wal_bytes - wt->wal_base) * 1000 / ((uint64) wt->wal_kbps * 1024);
+		int64		ahead = (int64) due_ms - (GetCurrentTimestamp() - wt->wal_t0) / 1000;
+
+		if (ahead <= 0)
+			return;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Min(ahead, 1000), PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly; a WAL rate sleeps before the page that would exceed it */
 void
 sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 {
+	if (wt->wal_kbps > 0)
+		wt_wal_wait(wt);
 	if (wt->delay_ms == 0)
 		return;
 	wt->charged += pages;
@@ -252,7 +281,7 @@ wt_put(SiftWriteTarget *wt, BlockNumber blkno, Page page)
 	}
 #ifdef SIFT_TESTING
 	if (sift_test_fail_pages > 0 && ++wt->npages > sift_test_fail_pages)
-		elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);
+		elog(ERROR, "sift test: injected failure after %d pages", sift_test_fail_pages);	/* check-errors: allow */
 #endif
 	buf = new_locked(wt->index, blkno);
 	log_pages(wt->index, &buf, &page, 1);
@@ -300,7 +329,7 @@ bulk_put_meta(SiftWriteTarget *wt)
 
 	sift_page_init(page, SIFT_PT_META, 0);
 	*META(page) = wt->meta;
-	SiftPageSetUsed(page, sizeof(SiftMetaPageData));
+	SiftPageSetUsed(page, SIFT_META_BASE_SIZE);
 	wt_put(wt, SIFT_METAPAGE_BLKNO, page);
 	page = wt_page(wt, NULL);
 	sift_page_init(page, SIFT_PT_DIRECTORY, 0);
@@ -354,8 +383,7 @@ sift_wt_finish(SiftWriteTarget *wt)
 		wt->nspare = 0;
 		return;
 	}
-	if (!wt->have_meta)
-		elog(ERROR, "sift: bulk write target finished without a metapage");
+	SIFT_INVARIANT(wt->have_meta, "sift: bulk write target finished without a metapage");
 	bulk_release_spare(wt);
 	wt->meta.high_water = wt->next;
 	bulk_put_meta(wt);

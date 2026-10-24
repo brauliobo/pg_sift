@@ -79,7 +79,7 @@ analyze_group_vblock(const SiftTblScan *s, uint64 n)
 			return s->an_ranges[2 * i] + n;
 		n -= len;
 	}
-	elog(ERROR, "sift_table: vblock %llu of the column groups is out of range", (unsigned long long) n);
+	SIFT_INVARIANT(false, "sift_table: vblock %llu of the column groups is out of range", (unsigned long long) n);
 	return 0;
 }
 

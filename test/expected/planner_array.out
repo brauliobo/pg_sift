@@ -220,6 +220,7 @@ SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ct
 SET sift.enable_scan = off;
 SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;
 DROP TABLE a;

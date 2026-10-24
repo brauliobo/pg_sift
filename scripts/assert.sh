@@ -7,9 +7,11 @@
 #   scripts/assert.sh [--major 17|18] [TEST...]       (SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
 #
 # The default tests are the readers and writers of stored bytes (BM25 store and postings, column codec and index, shredder, table AM), the
-# planner paths that deparse or cast nodes (facets, agg_subplan_lut) and the aggregate buffers (agg_numeric_const_cmp), and
+# planner paths that deparse or cast nodes (facets, agg_subplan_lut) and the aggregate buffers (agg_numeric_const_cmp), the two tests that reload the
+# relcache entry of the index at every lock and catalog read (cache_discard, verify_relcache: debug_discard_caches, which cassert builds have), the default of key_columns, which
+# rewrites the options of the index in the catalog (col_key_columns_auto), and
 # the TAP tests 001_crash and 003_wal_minimal (SIFT_ASSERT_TAP="" skips them). The lane fails on a failed test, on a TRAP (failed Assert)
-# or on a memory-context warning in any server log, which the tests themselves would not notice. In scripts/ci.sh it is opt-in:
+# or on a memory-context warning or a catalog write without the lock it expects (missing lock for relation) in any server log, which the tests themselves would not notice. In scripts/ci.sh it is opt-in:
 # `SIFT_CI_JOBS=assert scripts/ci.sh quick`. KEEP=1 keeps the scratch directory.
 set -euo pipefail
 
@@ -19,10 +21,11 @@ PGA=()
 [[ ${1:-} != --major ]] || { PGA=(--major "$2"); shift 2; }
 TESTS=("$@")
 (( ${#TESTS[@]} )) || TESTS=(store_basic store_corrupt index_build_postings phrase_positions verify_corrupt query_errors colcodec_basic col_enc
-	col_index_basic col_wbuf shred_values tbl_basic tbl_agg facets agg_numeric_const_cmp agg_subplan_lut)
+	col_index_basic col_wbuf shred_values tbl_basic tbl_agg facets agg_numeric_const_cmp agg_subplan_lut
+	cache_discard verify_relcache col_key_columns_auto agg_visibility_refusal)
 TAPS=(${SIFT_ASSERT_TAP-t/001_crash.pl t/003_wal_minimal.pl})
 # the logs of the servers (TAP nodes included) must be clean of what the tests do not check
-BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request'
+BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request|missing lock for relation'
 
 PREFIX=$("$REPO/scripts/pg-assert.sh" "${PGA[@]}")
 export PATH=$PREFIX/bin:$PATH

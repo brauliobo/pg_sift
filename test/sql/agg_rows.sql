@@ -3,6 +3,8 @@
 -- (sift.agg_rows off: PostgreSQL's sort and GroupAggregate over the same scans) and without the pushdown, and the answers must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
+-- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
+SET sift.agg_two_level = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
@@ -17,7 +19,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
 VACUUM (FREEZE, ANALYZE) facts;
 
--- the spine has a period no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
+-- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
 CREATE FUNCTION report(aggs text, filt text DEFAULT 'true', tail text DEFAULT '') RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('a', 0), ('b', 1), ('c', 2)) p(label, bucket)),
 	                  cells AS (SELECT f.id, f.entity_id, f.bucket, i.k, avg(i.n) AS val, count(*) FILTER (WHERE i.n > 5) AS big

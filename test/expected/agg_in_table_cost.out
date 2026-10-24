@@ -1,0 +1,67 @@
+-- The test of an IN list on an integer column is a byte table over the range of its values (a bit table for a long list over a wider range, a hash table past
+-- that: agg/pred_in.c), allocated and cleared when the scan starts: a list of 256 keys over a range of a million costs the scan about 2 ms before it reads a row,
+-- the same 256 keys in a range of 256 nothing visible. The scan is priced for the table, and a list over a wide range on a small result keeps the index plan.
+-- The statements run with enable_agg on and off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE items (id int PRIMARY KEY, key int NOT NULL, kind int NOT NULL, amount float8 NOT NULL);
+SELECT setseed(0.42);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO items SELECT g, 1 + (random() * 999999)::int, g % 9, random() * 100 FROM generate_series(1, 200000) g;
+CREATE INDEX items_key ON items (key);
+CREATE INDEX items_col ON items USING sift_col (id, key, kind, amount);
+VACUUM (FREEZE, ANALYZE) items;
+CREATE FUNCTION in_query(span int, n int) RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT kind, count(*), max(amount) FROM items WHERE key IN (%s) GROUP BY 1',
+	              (SELECT string_agg((1 + g * (span / n))::text, ',') FROM generate_series(0, n - 1) g))
+$$;
+CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) LIMIT 1 $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN d;
+END $$;
+-- 256 keys over a range of 1,000,000 values against 256 keys over 256 values (the table of a million bytes against none to speak of): the scan costs more
+-- by a good share of the normal plan's price, and a list of 8 keys over the same range too
+SELECT n, scan_cost(in_query(1000000, n)) - scan_cost(in_query(256, n)) > 500 AS table_priced
+FROM (VALUES (8), (256)) v(n) ORDER BY n;
+  n  | table_priced 
+-----+--------------
+   8 | t
+ 256 | t
+(2 rows)
+
+-- and the table grows with the range
+SELECT scan_cost(in_query(1000000, 256)) - scan_cost(in_query(100000, 256)) > 500 AS wider_costs_more;
+ wider_costs_more 
+------------------
+ t
+(1 row)
+
+-- 256 keys over the wide range keep the index plan, over the narrow range (the table is 256 bytes) the scan
+SELECT span, bool_or(used) AS scan FROM (VALUES (256), (1000000)) v(span), LATERAL sift.explain_why(in_query(span, 256)) GROUP BY span ORDER BY span;
+  span   | scan 
+---------+------
+     256 | t
+ 1000000 | f
+(2 rows)
+
+SELECT differences(in_query(1000000, 256)) AS differences_wide, differences(in_query(256, 256)) AS differences_narrow;
+ differences_wide | differences_narrow 
+------------------+--------------------
+                0 |                  0
+(1 row)
+
+DROP FUNCTION in_query(int, int), scan_cost(text), differences(text);
+DROP TABLE items;
+DROP EXTENSION pg_sift;

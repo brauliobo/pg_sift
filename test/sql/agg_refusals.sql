@@ -1,0 +1,174 @@
+-- Why a query kept the normal plan. The planner of Custom Scan (SiftAgg) gives up silently for the shapes it does not prove; with
+-- sift.explain_refusals on it names the first reason each candidate path (arm) gave up for, as a notice, and sift.explain_why plans a SELECT
+-- without running it and returns the same as rows. One table asserts the slug of every refusal shape; the setting changes no plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '30s';
+
+CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, doc jsonb);
+INSERT INTO events
+SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6,
+       jsonb_build_object('metrics', jsonb_build_object('m', i % 10, 'w', (i % 7)::float8),
+                          'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 12000) i;
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
+CREATE TABLE dims (id int PRIMARY KEY, label text);
+INSERT INTO dims SELECT i, 'd' || i FROM generate_series(0, 599) i;
+CREATE TABLE plain (id int, kind text, val int);
+INSERT INTO plain SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
+-- a partitioned table of which one partition has a column index
+CREATE TABLE parted (id int, kind text, val int) PARTITION BY HASH (id);
+CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
+CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
+-- a series longer than a spine can be
+CREATE TABLE ticks (a int, b int);
+INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 12000) i;
+-- a leaf that one unit holds a string in
+CREATE TABLE facts (id int, metrics jsonb);
+INSERT INTO facts SELECT i, jsonb_build_object('p_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
+INSERT INTO facts VALUES (5001, '{"p_total": "abc"}');
+CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+-- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
+CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
+INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
+CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
+VACUUM (FREEZE, ANALYZE) events;
+VACUUM (FREEZE, ANALYZE) facts;
+ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
+
+-- the arms of a two level aggregate: per row and category, and per row; spine_q joins them to a spine
+CREATE FUNCTION arms() RETURNS text LANGUAGE sql AS $$
+	SELECT $q$(SELECT e.id, e.parent_id, e.kind, e.ts, o.cat AS category, avg(o.score) AS score, count(*) AS n
+	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts, o.cat
+	           UNION ALL
+	           SELECT e.id, e.parent_id, e.kind, e.ts, NULL::text, avg(o.score), count(*)
+	           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.kind, e.ts) m$q$
+$$;
+CREATE FUNCTION spine_q(spine text, cond text, grp text DEFAULT 'GROUP BY 1, 2') RETURNS text LANGUAGE sql AS $$
+	SELECT format('SELECT category, sp.k, avg(score) AS value FROM %s sp(k) JOIN %s ON %s %s', spine, arms(), cond, grp)
+$$;
+CREATE FUNCTION repeated(n int) RETURNS text LANGUAGE sql AS $$
+	SELECT 'SELECT count(*) FROM events GROUP BY ' || string_agg('id + ' || g, ', ') FROM generate_series(1, n) g
+$$;
+
+-- With the table scans off, the pushdown is the plan wherever the query is one it proves; `used` is whether its path beat the normal ones.
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+CREATE TABLE shapes (name text, arm text, q text);
+INSERT INTO shapes VALUES
+ ('used', 'single', 'SELECT kind, count(*), sum(parent_id) FROM events GROUP BY 1'),
+ ('no index', 'single', 'SELECT kind, count(*) FROM plain GROUP BY 1'),
+ ('query kind', 'single', 'SELECT generate_series(1, 2), count(*) FROM events'),
+ ('table kind', 'single', 'SELECT kind, count(*) FROM events TABLESAMPLE SYSTEM (100) GROUP BY 1'),
+ ('partitions', 'single', 'SELECT kind, count(*) FROM parted GROUP BY 1'),
+ ('from shape', 'single', 'WITH c AS MATERIALIZED (SELECT kind FROM events) SELECT kind, count(*) FROM c GROUP BY 1'),
+ ('outer join', 'single', 'SELECT count(*) FROM events e LEFT JOIN LATERAL jsonb_each(e.doc->''metrics'') r ON r.value::text = ''1'''),
+ ('unnest leaf', 'single', 'SELECT x->>''k'', count(*) FROM events e, jsonb_array_elements(e.doc->''nope'') x GROUP BY 1'),
+ ('where', 'single', 'SELECT kind, count(*) FROM events WHERE length(doc::text) > 3 GROUP BY 1'),
+ ('volatile', 'single', 'SELECT kind, count(*) FROM events WHERE random() < 0.5 GROUP BY 1'),
+ ('join condition', 'single', 'SELECT count(*) FROM events e, plain p'),
+ ('join child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id LIMIT 1 FOR UPDATE) s ON true'),
+ ('volatile child', 'single', 'SELECT count(*) FROM events e JOIN LATERAL (SELECT 1 FROM plain p WHERE p.id = e.id ORDER BY random() LIMIT 1) s ON true'),
+ ('group key', 'single', 'SELECT length(doc::text), count(*) FROM events GROUP BY 1'),
+ ('volatile key', 'single', 'SELECT random(), count(*) FROM events GROUP BY 1'),
+ ('too many keys', 'single', repeated(40)),
+ ('output', 'single', 'SELECT id, kind, count(*) FROM events GROUP BY id'),
+ ('error parity', 'single', 'SELECT sum((doc->>''m'')::float8) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') FROM guarded'),
+ ('aggregate', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE length(doc::text) > 3) FROM events GROUP BY 1'),
+ ('volatile filter', 'single', 'SELECT kind, sum(parent_id) FILTER (WHERE random() > 0.5) FROM events GROUP BY 1'),
+ ('dirty cast', 'single', 'SELECT sum(CAST(r.value AS integer)), avg(CAST(r.value AS float8)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = ''p_total'''),
+ ('distinct', 'distinct', 'SELECT DISTINCT kind FROM events'),
+ ('distinct on', 'distinct', 'SELECT DISTINCT ON (kind) kind, parent_id FROM events ORDER BY kind, parent_id'),
+ ('top n', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3'),
+ ('top n order', 'topn', 'SELECT id FROM events ORDER BY id + extract(year FROM now())::int LIMIT 3'),
+ ('top n where', 'topn', 'SELECT id FROM events WHERE length(doc::text) > 3 ORDER BY parent_id LIMIT 3'),
+ ('top n volatile', 'topn', 'SELECT id FROM events WHERE random() < 0.5 ORDER BY parent_id LIMIT 3'),
+ ('top n locked', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 FOR UPDATE'),
+ ('top n window', 'topn', 'SELECT id, row_number() OVER () FROM events ORDER BY parent_id, id LIMIT 3'),
+ ('top n limit', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 OFFSET -1'),
+ ('top n no index', 'topn', 'SELECT id FROM plain ORDER BY val, id LIMIT 3'),
+ ('limit 1 lookup', 'lookup', 'SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id LIMIT 1) d ON true GROUP BY 1'),
+ ('two level', 'two_level', 'SELECT category, avg(score), sum(n)::int FROM ' || arms() || ' GROUP BY 1'),
+ ('two level arms', 'two_level', 'SELECT m.kind, sum(m.n) FROM (SELECT id, kind, 1 AS n FROM events UNION ALL SELECT id, kind, 2 FROM plain) m GROUP BY 1'),
+ ('two level key', 'two_level', 'SELECT category || ''x'', sum(n) FROM ' || arms() || ' GROUP BY 1'),
+ ('two level aggregate', 'two_level', 'SELECT category, max(score) FROM ' || arms() || ' GROUP BY 1'),
+ ('spine', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k')),
+ ('spine join', 'two_level', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
+ ('spine rows', 'two_level', spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')),
+ ('spine grouping sets', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
+ ('rows', 'rows', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
+ ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
+ ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
+SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
+
+-- a condition on a column the index does not hold names it
+CREATE TABLE narrow (id int, kind text, note int);
+INSERT INTO narrow SELECT i, 'k' || i % 5, i % 7 FROM generate_series(1, 2000) i;
+CREATE INDEX narrow_col ON narrow USING sift_col (id, kind);
+ANALYZE narrow;
+SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM narrow WHERE note > 3 GROUP BY 1');
+DROP TABLE narrow;
+
+-- a spine of 12,001 rows is used; one above the memory of the lookups is refused
+SET sift.agg_lookup_max_kb = 512;
+SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';
+RESET sift.agg_lookup_max_kb;
+
+-- The cost of the scan against the normal plan: with the table scans on, a probe of one key keeps its index scan.
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
+SELECT arm, used, slug, scan_cost > normal_cost AS dearer FROM sift.explain_why('SELECT count(*) FROM events WHERE id = 5');
+-- the costs are those of the grouping stage: a LIMIT above it leaves them as they are
+SELECT a.scan_cost = b.scan_cost AND a.normal_cost = b.normal_cost AS stage_costs
+FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1') a, sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1 ORDER BY 1 LIMIT 3') b;
+-- the settings that give up before any shape is looked at
+SET sift.enable_agg = off;
+SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM events GROUP BY 1');
+RESET sift.enable_agg;
+-- the first rows of the groups of a DISTINCT ON have to fit in a hash aggregate's memory
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT arm, used, slug FROM sift.explain_why('SELECT DISTINCT ON (id) id, kind FROM events ORDER BY id, ts');
+RESET work_mem;
+RESET hash_mem_multiplier;
+-- only a SELECT is planned
+SELECT * FROM sift.explain_why('DELETE FROM plain');
+SELECT * FROM sift.explain_why('SELECT 1; SELECT 2');
+-- an error while planning leaves no arm behind: the next query is reported as if it were the first
+SELECT * FROM sift.explain_why('SELECT kind, count(*) FROM events WHERE 1 / 0 = 1 GROUP BY 1');
+SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain GROUP BY 1');
+
+-- The notice of a query that is not explained: the first reason, once for each arm, and nothing for the arms that were used.
+SHOW sift.explain_refusals;
+SET sift.explain_refusals = on;
+SELECT kind, count(*) FROM plain GROUP BY 1 ORDER BY 1 LIMIT 1;
+EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM plain GROUP BY 1;
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM events GROUP BY 1;
+RESET sift.explain_refusals;
+
+-- The setting is a report: every plan above is the same with it on (the notices are muted), and it is off again afterwards.
+CREATE FUNCTION plan_of(q text, report bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; plan text := '';
+BEGIN
+	PERFORM set_config('sift.explain_refusals', report::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+	RETURN plan;
+END $$;
+SET client_min_messages = error;
+SELECT count(*) AS shapes, count(*) FILTER (WHERE plan_of(q, false) <> plan_of(q, true)) AS plans_that_differ FROM shapes;
+SHOW sift.explain_refusals;
+
+RESET client_min_messages;
+DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
+DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
+DROP EXTENSION pg_sift;

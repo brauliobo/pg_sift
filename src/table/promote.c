@@ -254,25 +254,26 @@ sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum
 	return promoted;
 }
 
-/* Merge steps a writer takes when it closes a write buffer: a load never waits long for it, the next close takes the next steps */
-#define SETTLE_MERGE_STEPS	4
-
 /*
- * A writer closed a write buffer: promote the segments whose rows have settled, then merge the column segments while the directory is more
- * than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed write buffer and ran out of
- * the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came. A load in one transaction cannot settle, and from half the directory
- * on its write buffers become tagged groups (seg_class) that merge like the others, so it does not run out of them either.
+ * A writer closed a write buffer: promote the segments whose rows have settled, then merge the column segments (at most steps merges)
+ * while the directory is more than half full. Only VACUUM merged, so a load in many transactions left one small column segment per closed
+ * write buffer and ran out of the directory entries (SIFT_MAX_SEGMENTS) long before autovacuum came. A load in one transaction cannot
+ * settle, and from half the directory on its write buffers become tagged groups (seg_class) that merge like the others, so it does not run
+ * out of them either.
  * Everything here is under the maintenance lock, taken only if it is free (wait: an insert that finds the directory full waits for it, as for
- * a worker that is promoting what it needs): the steps are VACUUM's too.
+ * a worker that is promoting what it needs): the steps are VACUUM's too. Returns the write buffers promoted.
  */
-void
-sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait)
+int
+sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, int steps)
 {
+	int			promoted;
+
 	if (!sift_maint_lock(rel, wait))
-		return;
-	(void) promote_sealed(rel, st, oldest, false);
+		return 0;
+	promoted = promote_sealed(rel, st, oldest, false);
 	(void) sift_tbl_freeze_groups(rel, st, oldest);
-	for (int i = 0; i < SETTLE_MERGE_STEPS && dir_pressure(st) && sift_tbl_merge(rel, st, oldest); i++)
+	for (int i = 0; i < steps && dir_pressure(st) && sift_tbl_merge(rel, st, oldest); i++)
 		CHECK_FOR_INTERRUPTS();
 	sift_maint_unlock(rel);
+	return promoted;
 }

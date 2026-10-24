@@ -14,7 +14,7 @@ import urllib.parse
 from store_common import csv_path, dataset_id, image_ids, marker_path, write
 import store_common
 from store_engine import Http, ask, docker, pg_args, psql_file, psql_value, quiet_gate, wait_idle
-from store_lib import CHUNK, CH_AUTH, COMPRESSION, DDL, LANES, NAME, PG_ENGINES, container, die, is_ch, is_es, log, read, sections
+from store_lib import CHUNK, CH_AUTH, COMPRESSION, DDL, LANES, MAINT, NAME, PG_ENGINES, container, die, is_ch, is_es, log, read, sections
 
 
 def stamp(args):
@@ -104,7 +104,7 @@ def load_pg(eid, args, rows):
     sec = sections(read(DDL[eid]))
     db = LANES[eid][3]
     def fresh():
-        psql_file(eid, f'DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db}', 'postgres')
+        psql_file(eid, f'DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db}' + ''.join(f'; ALTER DATABASE {db} SET {g} = on' for g in MAINT.get(eid, ('', ()))[1]), 'postgres')
         psql_file(eid, sec['table'])
 
     fresh()
@@ -125,9 +125,9 @@ def load_pg(eid, args, rows):
     if eid == 'citus':   # the settings the table was created with, read back from the server (the defaults of columnar.*)
         rows.add(eid, '-', 'orders', 'columnar_options', 'text', value=psql_value(eid, "SELECT 'chunk_group_row_limit=' || chunk_group_row_limit || ', stripe_row_limit=' || stripe_row_limit || ', compression=' || "
                                                                                        "compression || ', compression_level=' || compression_level FROM columnar.options WHERE relation = 'orders'::regclass"))
-    if eid == 'sift_table':   # reusable blocks left inside the table file after the load's VACUUM
+    if eid in ('sift_table', 'sift_table_maint'):   # reusable blocks left inside the table file after the load's VACUUM
         rows.add(eid, '-', 'free', 'size_mib', 'MiB', value=mib(int(psql_value(eid, "SELECT free_blocks FROM sift.table_space('orders')")) * 8192))
-    if eid == 'sift' or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
+    if eid in ('sift', 'sift_maint') or eid in COMPRESSION:   # what the index holds: the options it was built with and, per leaf, the chunks by encoding and their bytes
         rows.add(eid, '-', 'orders_col', 'reloptions', 'text', value=psql_value(eid, "SELECT coalesce(reloptions::text, '(not set)') FROM pg_class WHERE relname = 'orders_col'"))
         rows.add(eid, '-', 'orders_col', 'col_leaves', 'json', value=psql_value(eid, "SELECT json_agg(json_build_object('leaf', path, 'type', type, 'const', const_chunks, 'for', for_chunks, "
                                                                                  "'pack', pack_chunks, 'codec', codec_chunks, 'bytes', chunk_bytes, 'dict', dict_bytes) ORDER BY leaf) FROM sift.col_leaves('orders_col')"))
@@ -209,10 +209,13 @@ def servers(engines):
     v = {}
     settings = lambda eid: psql_value(eid, "SELECT string_agg(name || '=' || current_setting(name), ', ' ORDER BY name) FROM pg_settings WHERE name IN "
                                            "('shared_buffers', 'work_mem', 'jit', 'effective_cache_size')")
-    for eid in [e for e in ('pg', 'sift', 'sift_table') if e in engines]:
+    for eid in [e for e in ('pg', 'sift', 'sift_table', 'sift_maint', 'sift_table_maint') if e in engines]:
         v[eid] = psql_value(eid, 'SHOW server_version')
         v[eid + '_sift'] = psql_value(eid, "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")
         v[eid + '_settings'] = settings(eid)
+        if eid != 'pg':   # the maintenance settings of the lane, read back from the server in its database
+            v[eid + '_maintenance'] = psql_value(eid, "SELECT string_agg(replace(name, 'sift.', '') || ' = ' || setting, ', ' ORDER BY name) FROM pg_settings "
+                                                      "WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge', 'sift.table_auto_defrag')")
     if 'citus' in engines:
         v['citus'] = psql_value('citus', 'SHOW server_version')
         v['citus_columnar'] = psql_value('citus', "SELECT extversion FROM pg_extension WHERE extname = 'citus_columnar'")

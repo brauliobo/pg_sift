@@ -564,7 +564,7 @@ gen_units(const char *dir)
 		sift_cschema_serialize(schema, &out);
 		emit(dir, "schema", 6, 0, out.data, out.len);
 		initStringInfo(&out);
-		sift_cdict_serialize(dicts[2], NULL, &out);
+		sift_cdict_serialize(dicts[2], NULL, 0, &out);
 		emit(dir, "dict", 5, 0, out.data, out.len);
 		for (int p = 0; p < 4; p++)
 		{
@@ -573,7 +573,7 @@ gen_units(const char *dir)
 
 			sift_cc_policy_parse(seed_policies[p], &pol);
 			initStringInfo(&out);
-			sift_cdict_serialize(dicts[2], &pol, &out);
+			sift_cdict_serialize(dicts[2], &pol, 0, &out);
 			snprintf(name, sizeof(name), "dict-%d", p);
 			emit(dir, name, 5, 0, out.data, out.len);
 		}

@@ -59,6 +59,13 @@ SELECT vb_agree('express');
  1500:2251500
 (1 row)
 
+-- sift.table_space tells the virtual blocks left: the floor of 140000 and the table's write buffers are taken from 2^32 - 2
+SELECT vblocks_left BETWEEN 4294967294 - 140000 - 100000 AND 4294967294 - 140000 AS vblocks_left FROM sift.table_space('vb');
+ vblocks_left 
+--------------
+ t
+(1 row)
+
 DROP TABLE vb;
 DROP FUNCTION vb_agree;
 DROP EXTENSION pg_sift;

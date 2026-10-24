@@ -8,15 +8,9 @@
 #define _GNU_SOURCE
 #include "harness.h"
 
-#include <sched.h>
 #include <time.h>
 
 #include "agg/kern_cases.h"
-
-extern double alt_sum_f64_a(const double *v, const uint64 *mask, int n);
-extern double alt_sum_f64_b(const double *v, const uint64 *mask, int n);
-extern double alt_sum_f64_c(const double *v, const uint64 *mask, int n);
-extern double alt_sum_f64_plain(const double *v, const uint64 *mask, int n);
 
 #define N			SIFT_AGG_VEC
 #define NW			SIFT_AGG_VECW
@@ -73,15 +67,12 @@ report(const char *name, const double *t)
 int
 main(void)
 {
-	cpu_set_t	set;
-	int			cpu = getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2;
 	int32	   *i32,
 			   *v2,
 			   *k32;
 	int64	   *i64;
 	double	   *f64;
 	uint32	   *code,
-			   *runs,
 			   *map,
 			   *map2,
 			   *gid,
@@ -89,16 +80,13 @@ main(void)
 			   *parent;
 	uint64	   *out,
 			   *rowmask,
-			   *m50,
-			   *mb;
+			   *m50;
 	uint8	   *lut2;
 	int64	   *cnt,
 			   *iacc;
 	double	   *facc;
 
-	CPU_ZERO(&set);
-	CPU_SET(cpu, &set);
-	sched_setaffinity(0, sizeof(set), &set);
+	kt_pin(getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2);
 	kt_cpu_init();
 	sift_aggkern_init();
 	nbatch = getenv("AK_BATCHES") ? atoi(getenv("AK_BATCHES")) : nbatch;
@@ -109,7 +97,6 @@ main(void)
 	i64 = arr(N * 8);
 	f64 = arr(N * 8);
 	code = arr(N * 4);
-	runs = arr(N * 4);
 	map = arr(1024 * 4);
 	map2 = arr(1000 * 4);
 	gid = arr(N * 4);
@@ -118,7 +105,6 @@ main(void)
 	out = arr(NW * 8);
 	rowmask = arr(NW * 8);
 	m50 = make_mask(0.5);
-	mb = make_mask(0.3);
 	lut2 = arr(1000);
 	cnt = arr(64 * 8);
 	iacc = arr(64 * 8);
@@ -136,7 +122,6 @@ main(void)
 		i64[i] = (int64) (sift_rng_next(&rng) >> 24);
 		f64[i] = sift_rng_unit(&rng) * 1000;
 		code[i] = sift_rng_below(&rng, 1024);
-		runs[i] = i > 0 && sift_rng_below(&rng, 10) ? runs[i - 1] : sift_rng_below(&rng, 1024);
 		v2[i] = 7 + sift_rng_below(&rng, 1200);
 		k32[i] = -5 + sift_rng_below(&rng, 1000);
 		gid[i] = sift_rng_below(&rng, 64);
@@ -165,15 +150,18 @@ main(void)
 
 	ROW("cmp_f64 <", k->cmp_f64(out, f64, N, SCMP_LT, 500));
 	ROW("cmp_f64 >", k->cmp_f64(out, f64, N, SCMP_GT, 500));
-	ROW("between_f64", k->between_f64(out, f64, N, 250, 750));
 	ROW("lut_i32 (1000 entries)", k->lut_i32(out, v2, N, 10, 1000, lut2));
 	ROW("gather_bits (4 elements per row)", k->gather_bits(out, rowmask, parent, N));
 	ROW("gid_code", k->gid_code(gid0, code, map, N, 4));
 	ROW("gid_i32", k->gid_i32(gid0, k32, -5, map2, N, 4));
 	ROW("sum_i32 all rows", sink = k->sum_i32(i32, NULL, N));
 	ROW("sum_i32 50 %", sink = k->sum_i32(i32, m50, N));
-	ROW("sum_f64 all rows", sink = (int64) k->sum_f64(f64, NULL, N));
-	ROW("sum_f64 50 %", sink = (int64) k->sum_f64(f64, m50, N));
+	{
+		double		amx;
+
+		ROW("absmax_f64 all rows", sink = k->absmax_f64(f64, NULL, N, &amx));
+		ROW("absmax_f64 50 %", sink = k->absmax_f64(f64, m50, N, &amx));
+	}
 	{
 		int32		a,
 					b;
@@ -193,17 +181,5 @@ main(void)
 	ROW("count_gid 50 %", k->count_gid(cnt, gid, m50, N));
 	ROW("sum_gid_i32 50 %", k->sum_gid_i32(iacc, gid, i32, m50, N));
 	ROW("sum_gid_f64 50 %", k->sum_gid_f64(facc, gid, f64, m50, N));
-	{
-		uint32		prev = UINT32_MAX;
-
-		ROW("count_changes all rows (10 % change)", sink = k->count_changes(runs, NULL, N, &prev));
-		ROW("count_changes 30 %", sink = k->count_changes(runs, mb, N, &prev));
-		ROW("count_changes 50 %", sink = k->count_changes(runs, m50, N, &prev));
-	}
-	if (sift_aggkern_for(SIFT_SIMD_AVX512) != sift_aggkern_for(SIFT_SIMD_AVX2))
-		printf("\n| sum_f64, AVX-512 selection | 50 %% | all rows |\n|---|---|---|\n| zeroing masked load | %.0f | |\n"
-			   "| load + zeroing move | %.0f | |\n| load + AND with a lane table | %.0f | |\n| plain loads | | %.0f |\n",
-			   BENCH(sink = (int64) alt_sum_f64_a(f64, m50, N)), BENCH(sink = (int64) alt_sum_f64_b(f64, m50, N)),
-			   BENCH(sink = (int64) alt_sum_f64_c(f64, m50, N)), BENCH(sink = (int64) alt_sum_f64_plain(f64, NULL, N)));
 	return 0;
 }

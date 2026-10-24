@@ -205,6 +205,32 @@ put_arms(Pack *p, const SiftAggSpec *s)
 		for (int j = 0; j < a->ncol; j++)
 			put_int(p, a->colsrc[j]);
 	}
+	put_int(p, s->spine != NULL);
+	if (s->spine == NULL)
+		return;
+	put_int(p, s->spine->left);
+	put_int(p, s->spine->child);
+	put_int(p, s->spine->ncol);
+	put_int(p, s->spine->npair);
+	for (int i = 0; i < s->spine->npair; i++)
+	{
+		const struct SiftAggSpinePair *q = &s->spine->pair[i];
+
+		put_int(p, q->col);
+		put_node(p, q->konst);
+		put_int(p, q->nullsafe);
+		put_int(p, (int) q->typid);
+		put_int(p, (int) q->collid);
+		put_int(p, (int) q->eqop);
+		for (int k = 0; k < s->narms; k++)
+			put_int(p, q->key[k]);
+	}
+	put_int(p, s->spine->nout);
+	for (int i = 0; i < s->spine->nout; i++)
+	{
+		put_int(p, s->spine->outcol[i]);
+		put_int(p, s->spine->outkey[i]);
+	}
 }
 
 static void
@@ -240,6 +266,8 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, (int) j->keytype[k]);
 			put_int(p, j->keypos[k]);
 			put_node(p, j->keyexpr[k]);
+			put_node(p, j->tkey[k]);
+			put_int(p, j->keynull[k]);
 		}
 		put_int(p, j->ncol);
 		for (int k = 0; k < j->ncol; k++)
@@ -264,6 +292,15 @@ put_joins(Pack *p, const SiftAggSpec *s)
 			put_int(p, j->first.ncol);
 			for (int k = 0; k < j->first.ncol; k++)
 				put_int(p, j->first.col[k]);
+			put_int(p, j->first.nord);
+			for (int k = 0; k < j->first.nord; k++)
+			{
+				put_int(p, j->first.ordatt[k]);
+				put_int(p, (int) j->first.ordtype[k]);
+				put_int(p, j->first.orddesc[k]);
+				put_int(p, j->first.ordnullsfirst[k]);
+			}
+			put_node(p, (Node *) j->first.qual);
 		}
 		put_str(p, j->desc);
 	}
@@ -312,11 +349,15 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	}
 	put_node(p, (Node *) s->partprune);
 	put_int(p, s->group);
+	put_int(p, s->left_lateral);
+	put_int(p, s->part_final);
 	put_int(p, s->nleaves);
 	for (int i = 0; i < s->nleaves; i++)
 	{
 		put_int(p, s->leaves[i]);
 		put_int(p, s->recheck[i]);
+		put_int(p, (int) (s->gate[i] & PG_UINT32_MAX));
+		put_int(p, (int) (s->gate[i] >> 32));
 	}
 	put_int(p, s->npred);
 	for (int i = 0; i < s->npred; i++)
@@ -372,6 +413,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->nhidden);
 	put_int(p, s->npreds_total);
 	put_dbl(p, s->est_groups);
+	put_dbl(p, s->est_rows);
 	put_int(p, s->nworkers);
 	put_str(p, s->desc_quals);
 	put_node(p, s->search);
@@ -389,8 +431,7 @@ typedef struct Unpack
 static Node *
 get_item(Unpack *u)
 {
-	if (u->pos >= list_length(u->items))
-		elog(ERROR, "sift: truncated aggregate plan");
+	SIFT_INVARIANT(u->pos < list_length(u->items), "sift: truncated aggregate plan");
 	return list_nth(u->items, u->pos++);
 }
 
@@ -427,8 +468,7 @@ get_num(Unpack *u, SiftAggNum *n)
 		x->leaf = get_int(u);
 		x->a = get_int(u);
 		x->b = get_int(u);
-		if (!sift_parse_decimal(get_str(u), &x->c, &scale))
-			elog(ERROR, "sift: bad number in the aggregate plan");
+		SIFT_INVARIANT(sift_parse_decimal(get_str(u), &x->c, &scale), "sift: bad number in the aggregate plan");
 	}
 }
 
@@ -574,6 +614,32 @@ get_arms(Unpack *u, SiftAggSpec *s)
 		for (int j = 0; j < a->ncol; j++)
 			a->colsrc[j] = get_int(u);
 	}
+	if (!get_int(u))
+		return;
+	s->spine = palloc0(sizeof(SiftAggSpine));
+	s->spine->left = get_int(u);
+	s->spine->child = get_int(u);
+	s->spine->ncol = get_int(u);
+	s->spine->npair = get_int(u);
+	for (int i = 0; i < s->spine->npair; i++)
+	{
+		struct SiftAggSpinePair *q = &s->spine->pair[i];
+
+		q->col = get_int(u);
+		q->konst = get_node(u);
+		q->nullsafe = get_int(u);
+		q->typid = (Oid) get_int(u);
+		q->collid = (Oid) get_int(u);
+		q->eqop = (Oid) get_int(u);
+		for (int k = 0; k < s->narms; k++)
+			q->key[k] = get_int(u);
+	}
+	s->spine->nout = get_int(u);
+	for (int i = 0; i < s->spine->nout; i++)
+	{
+		s->spine->outcol[i] = get_int(u);
+		s->spine->outkey[i] = get_int(u);
+	}
 }
 
 static void
@@ -610,6 +676,8 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->keytype[k] = (Oid) get_int(u);
 			j->keypos[k] = get_int(u);
 			j->keyexpr[k] = get_node(u);
+			j->tkey[k] = get_node(u);
+			j->keynull[k] = get_int(u);
 		}
 		j->ncol = get_int(u);
 		for (int k = 0; k < j->ncol; k++)
@@ -633,6 +701,15 @@ get_joins(Unpack *u, SiftAggSpec *s)
 			j->first.ncol = get_int(u);
 			for (int k = 0; k < j->first.ncol; k++)
 				j->first.col[k] = get_int(u);
+			j->first.nord = get_int(u);
+			for (int k = 0; k < j->first.nord; k++)
+			{
+				j->first.ordatt[k] = get_int(u);
+				j->first.ordtype[k] = (Oid) get_int(u);
+				j->first.orddesc[k] = get_int(u);
+				j->first.ordnullsfirst[k] = get_int(u);
+			}
+			j->first.qual = (List *) get_node(u);
 		}
 		j->desc = get_str(u);
 	}
@@ -686,13 +763,18 @@ sift_aggspec_unpack(const List *items)
 	}
 	s->partprune = (List *) get_node(u);
 	s->group = get_int(u);
+	s->left_lateral = get_int(u);
+	s->part_final = get_int(u);
 	s->nleaves = get_int(u);
 	s->leaves = palloc(Max(s->nleaves, 1) * sizeof(int));
 	s->recheck = palloc0(Max(s->nleaves, 1));
+	s->gate = palloc0(Max(s->nleaves, 1) * sizeof(uint64));
 	for (int i = 0; i < s->nleaves; i++)
 	{
 		s->leaves[i] = get_int(u);
 		s->recheck[i] = get_int(u);
+		s->gate[i] = (uint32) get_int(u);
+		s->gate[i] |= (uint64) (uint32) get_int(u) << 32;
 	}
 	s->npred = get_int(u);
 	s->pred = palloc(Max(s->npred, 1) * sizeof(SiftAggPred *));
@@ -760,6 +842,7 @@ sift_aggspec_unpack(const List *items)
 	s->nhidden = get_int(u);
 	s->npreds_total = get_int(u);
 	s->est_groups = strtod(get_str(u), NULL);
+	s->est_rows = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
 	s->desc_quals = get_str(u);
 	s->search = get_node(u);

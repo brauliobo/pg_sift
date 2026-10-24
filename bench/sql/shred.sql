@@ -18,7 +18,7 @@ CREATE TABLE orders AS
 		'items', (SELECT jsonb_agg(jsonb_build_object('category', (ARRAY['x', 'y', 'z'])[1 + (i + j) % 3], 'sku', 'SKU-' || (i * 31 + j),
 				'kind', (ARRAY['p', 'q'])[1 + j % 2], 'qty', 1 + (i + j) % 9, 'price', round((random() * 99)::numeric, 2), 'note', 'unused text of the item'))
 				FROM generate_series(1, 1 + i % 8) j),
-		'notes', (SELECT jsonb_agg(jsonb_build_object('type', 'n' || (j % 3), 'author_role', (ARRAY['agent', 'customer'])[1 + j % 2], 'text', repeat('lorem ', 5)))
+		'notes', (SELECT jsonb_agg(jsonb_build_object('type', 'n' || (j % 3), 'author_role', (ARRAY['agent', 'role_b'])[1 + j % 2], 'text', repeat('lorem ', 5)))
 				FROM generate_series(1, i % 4) j),
 		'tags', jsonb_build_array('a' || i % 7, 'b' || i % 5)) AS doc
 	FROM generate_series(1, :ndocs) i;

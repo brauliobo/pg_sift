@@ -24,11 +24,10 @@ typedef struct ColBuild ColBuild;
 
 /*
  * segs has room for maxsegs entries. A segment is cut when its writer holds more than budget bytes, except the last one that
- * maxsegs allows. done != NULL: a participant of a parallel build, which writes through a SHARED target, takes the generations of its
- * segments from the metapage and adds the rows it indexed to *done; only the leader reports progress then.
+ * maxsegs allows. shared: a participant of a parallel build, which writes through a SHARED target and takes the generations of its
+ * segments from the metapage; the rows and heap blocks it did go to the progress of the leader.
  */
-extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, pg_atomic_uint64 *done,
-								 bool leader);
+extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared);
 /* Scans the whole heap (serial build) or the superblock sb of nblocks heap blocks (parallel); both return the heap tuples scanned */
 extern double sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info);
 extern double sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot, uint32 sb, BlockNumber nblocks);

@@ -1,0 +1,223 @@
+-- ORDER BY <arithmetic or cast of columns> LIMIT n: the scan evaluates the expression with PostgreSQL's own expression machinery (the operators, casts and comparison of the
+-- backend) for every row that passes the WHERE, as the plan's sort does, so the overflow, division by zero, NULL and NaN behavior is the backend's. Every query runs twice,
+-- the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows are compared in order: asc and desc, NULLs first and last, ties, the limits of each
+-- type, infinities and NaN, several expression keys, the heap, the sort of every row, workers, rows in the write buffer. Errors: the same SQLSTATE in both plans.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+CREATE TABLE ta (id int PRIMARY KEY, g int, a int, b bigint, c smallint, k int, f float8, r float4, n numeric(12,2), m numeric(18,0), d date, t timestamp, s text);
+INSERT INTO ta
+SELECT i, i % 7,
+	CASE WHEN i % 4000 < 900 THEN NULL WHEN i = 17000 THEN 2147483647 WHEN i = 21000 THEN -2147483648 ELSE i / 3 END,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN 9223372036854775807 WHEN i % 991 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 1000003 - 500000 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 101 = 0 THEN 32767 WHEN i % 103 = 0 THEN -32768 ELSE (i * 37) % 2000 - 1000 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 31) % 10 END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 1009 = 0 THEN 'NaN' WHEN i % 1013 = 0 THEN 'Infinity' WHEN i % 1019 = 0 THEN '-Infinity' WHEN i % 1021 = 0 THEN '-0'
+		ELSE ((i * 7919) % 20001 - 10000) / 7.0 END,
+	CASE WHEN i % 19 = 0 THEN NULL WHEN i % 1031 = 0 THEN 'NaN' ELSE ((i * 13) % 2001 - 1000) / 8.0 END,
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 997 = 0 THEN 9999999999.99 WHEN i % 991 = 0 THEN -9999999999.99 ELSE ((i * 37) % 4001 - 2000) / 7.0 END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 1000003::bigint) % 100000 - 50000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 5003 = 0 THEN 'infinity' ELSE DATE '2020-01-01' + (i / 40) END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + (i % 7000) * interval '29 minutes' END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE 'v' || (i % 211) END
+FROM generate_series(1, 30000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX ta_col ON ta USING sift_col (id, g, a, b, c, k, f, r, n, m, d, t, s);
+RESET sift.test_limits;
+VACUUM (ANALYZE) ta;
+
+CREATE FUNCTION ta_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
+CREATE FUNCTION ta_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS ta_a, ta_b;
+	PERFORM ta_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE ta_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM ta_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE ta_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM ta_a EXCEPT ALL SELECT pos, r FROM ta_b) UNION ALL (SELECT pos, r FROM ta_b EXCEPT ALL SELECT pos, r FROM ta_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ ', sorted' THEN '+sorted' ELSE '' END || ' ' || (SELECT count(*) FROM ta_b);
+END $$;
+
+CREATE TABLE ta_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO ta_q VALUES
+	-- the rows whose value would overflow are filtered by the WHERE, which the plan evaluates before the sort key
+	('int_plus',         $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 25$q$),
+	('int_plus_desc',    $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1 DESC, id DESC LIMIT 25$q$),
+	('int_plus_nf',      $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1 DESC NULLS FIRST, id LIMIT 25$q$),
+	('int_minus_col',    $q$SELECT id, a FROM ta WHERE a >= 0 ORDER BY 100000 - a, id LIMIT 25$q$),
+	('int_neg',          $q$SELECT id, a FROM ta WHERE a > -2147483648 ORDER BY -a, id LIMIT 25$q$),
+	('int_times',        $q$SELECT id, a FROM ta WHERE a BETWEEN -1000000 AND 1000000 ORDER BY a * 3 DESC, id LIMIT 25$q$),
+	('int_div',          $q$SELECT id, a FROM ta ORDER BY a / 7, id LIMIT 25$q$),
+	('int_mod',          $q$SELECT id, a FROM ta ORDER BY a % 7 DESC NULLS LAST, id LIMIT 40$q$),
+	('int_ties',         $q$SELECT id, k FROM ta ORDER BY k % 3, id LIMIT 40$q$),
+	('int_offset',       $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 20 OFFSET 900$q$),
+	('int_filter',       $q$SELECT id, a FROM ta WHERE g IN (2, 3) AND id > 3000 AND a < 2147483647 ORDER BY a + 1 DESC, id LIMIT 30$q$),
+	('int_late_filter',  $q$SELECT id, a FROM ta WHERE a BETWEEN -1000000 AND 1000000 AND s <> 'v3' AND k IS NOT NULL ORDER BY a + k, id LIMIT 30$q$),
+	('smallint_widen',   $q$SELECT id, c FROM ta ORDER BY c + 40000, id LIMIT 25$q$),
+	('smallint_minus',   $q$SELECT id, c FROM ta ORDER BY 1000 - c NULLS FIRST, id LIMIT 25$q$),
+	('bigint_div',       $q$SELECT id, b FROM ta ORDER BY b / 1000, id LIMIT 25$q$),
+	('bigint_times',     $q$SELECT id, b FROM ta WHERE b BETWEEN -1000000 AND 1000000 ORDER BY b * 2 DESC, id LIMIT 25$q$),
+	('two_columns',      $q$SELECT id, a, c FROM ta WHERE a < 2147483647 ORDER BY a + c, id LIMIT 25$q$),
+	('two_columns_int8', $q$SELECT id, a, b FROM ta WHERE a BETWEEN -1000000 AND 1000000 AND b BETWEEN -1000000 AND 1000000 ORDER BY a * 2 + b, id LIMIT 25$q$),
+	('three_columns',    $q$SELECT id FROM ta WHERE a BETWEEN -1000000 AND 1000000 ORDER BY a + c * k - g, id LIMIT 25$q$),
+	('float_times',      $q$SELECT id, f FROM ta WHERE f < 1e100 ORDER BY f * 2 DESC, id LIMIT 25$q$),
+	('float_neg',        $q$SELECT id, f FROM ta ORDER BY -f, id LIMIT 25$q$),
+	('float_plus_float4',$q$SELECT id, f, r FROM ta ORDER BY f + r DESC NULLS FIRST, id LIMIT 25$q$),
+	('float4_times',     $q$SELECT id, r FROM ta ORDER BY r * 2, id LIMIT 25$q$),
+	('float_div',        $q$SELECT id, f FROM ta WHERE f <> 0 ORDER BY 1 / f, id LIMIT 25$q$),
+	('numeric_times',    $q$SELECT id, n FROM ta ORDER BY n * 2 NULLS FIRST, id LIMIT 25$q$),
+	('numeric_sum',      $q$SELECT id, n, m FROM ta ORDER BY n + m DESC, id LIMIT 25$q$),
+	('numeric_div',      $q$SELECT id, n FROM ta ORDER BY n / 3, id LIMIT 25$q$),
+	('numeric_scale',    $q$SELECT id, n FROM ta ORDER BY n * n, id LIMIT 25$q$),
+	('cast_widen',       $q$SELECT id, a FROM ta ORDER BY a::bigint DESC, id LIMIT 25$q$),
+	('cast_narrow',      $q$SELECT id, b FROM ta WHERE b BETWEEN -1000000 AND 1000000 ORDER BY b::int, id LIMIT 25$q$),
+	('cast_to_float',    $q$SELECT id, a FROM ta ORDER BY a::float8 / 3, id LIMIT 25$q$),
+	('cast_to_numeric',  $q$SELECT id, b FROM ta ORDER BY b::numeric DESC, id LIMIT 25$q$),
+	('cast_numeric_int', $q$SELECT id, n FROM ta WHERE n BETWEEN -1000 AND 1000 ORDER BY n::int, id LIMIT 25$q$),
+	('cast_float_int',   $q$SELECT id, f FROM ta WHERE f BETWEEN -1000 AND 1000 ORDER BY f::int DESC, id LIMIT 25$q$),
+	('cast_to_text',     $q$SELECT id, a FROM ta ORDER BY a::text, id LIMIT 25$q$),
+	('cast_to_text_c',   $q$SELECT id, a FROM ta ORDER BY a::text COLLATE "C" DESC, id LIMIT 25$q$),
+	('cast_numeric_text',$q$SELECT id, n FROM ta ORDER BY n::text, id LIMIT 25$q$),
+	('text_of_id',       $q$SELECT id FROM ta ORDER BY id::text, id LIMIT 25$q$),
+	('compare',          $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a > 5000, id LIMIT 40$q$),
+	('date_plus',        $q$SELECT id, d FROM ta ORDER BY d + 30 NULLS FIRST, id LIMIT 25$q$),
+	('date_minus_date',  $q$SELECT id, d FROM ta WHERE d < 'infinity' ORDER BY d - DATE '2021-01-01' DESC, id LIMIT 25$q$),
+	('timestamp_plus',   $q$SELECT id, t FROM ta ORDER BY t + interval '1 day' DESC, id LIMIT 25$q$),
+	('timestamp_date',   $q$SELECT id, t FROM ta ORDER BY t::date, id LIMIT 25$q$),
+	('expr_then_col',    $q$SELECT id, a, g FROM ta WHERE a < 2147483647 ORDER BY a + 1, g DESC, id LIMIT 30$q$),
+	('col_then_expr',    $q$SELECT id, a, g FROM ta WHERE a BETWEEN -1000000 AND 1000000 ORDER BY g, a * 2 DESC, id LIMIT 30$q$),
+	('two_exprs',        $q$SELECT id, a, c FROM ta WHERE a < 2147483647 ORDER BY c % 10, a + 1 DESC, id LIMIT 30$q$),
+	('string_then_expr', $q$SELECT id, s, a FROM ta WHERE a < 2147483647 ORDER BY s, a + 1, id LIMIT 30$q$),
+	('three_exprs',      $q$SELECT id FROM ta WHERE a < 2147483647 ORDER BY a + 1, n * 2, c - 3 DESC, id LIMIT 30$q$),
+	('six_keys',         $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY g, a + 1, b / 7, d + 1, f * 2, n - 1, id LIMIT 30$q$),
+	('window_total',    $q$SELECT id, a, count(*) OVER () AS total FROM ta WHERE g IN (1, 2) AND a < 2147483647 ORDER BY a + 1 DESC, id LIMIT 10$q$),
+	('window_sum',      $q$SELECT id, a, sum(c) OVER () AS total FROM ta WHERE g = 3 ORDER BY a % 100, id LIMIT 10 OFFSET 40$q$),
+	('deep_page',        $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1 DESC, id LIMIT 20 OFFSET 20000$q$),
+	('all_rows',         $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 200000$q$),
+	('past_the_heap',    $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a * 1, id LIMIT 100001$q$);
+
+SELECT tag, ta_check(q) FROM ta_q ORDER BY tag COLLATE "C";
+
+-- workers: each keeps a heap of the keys it saw, the leader merges them
+SELECT tag, ta_check(q, 2) FROM ta_q WHERE tag IN ('int_plus', 'int_plus_desc', 'int_ties', 'two_columns', 'float_times', 'numeric_times', 'cast_to_text', 'timestamp_plus', 'two_exprs', 'six_keys') ORDER BY tag COLLATE "C";
+
+-- the sort of every row that passes spills (work_mem), and a deep page
+SET work_mem = '64kB';
+SELECT ta_check($q$SELECT id, n FROM ta ORDER BY n * 2, id LIMIT 20 OFFSET 20000$q$) AS spilled_numeric,
+	   ta_check($q$SELECT id, a, s FROM ta WHERE a < 2147483647 ORDER BY a + 1 DESC, s, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys,
+	   ta_check($q$SELECT id, a FROM ta ORDER BY a::text, id LIMIT 20 OFFSET 20000$q$) AS spilled_text;
+RESET work_mem;
+
+-- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
+INSERT INTO ta SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, i % 4, NULL, NULL, 12.5 * i, NULL, DATE '2019-12-31' - i % 5, NULL, 'w' || i
+FROM generate_series(1, 700) i;
+UPDATE ta SET a = NULL, k = 0 WHERE id % 97 = 0;
+UPDATE ta SET a = -5, d = NULL WHERE id % 89 = 0;
+DELETE FROM ta WHERE id % 83 = 0;
+SELECT tag, ta_check(q) FROM ta_q WHERE tag IN ('int_plus', 'int_minus_col', 'int_ties', 'two_columns', 'numeric_times', 'cast_to_text', 'date_plus', 'expr_then_col', 'deep_page') ORDER BY tag COLLATE "C";
+SELECT tag, ta_check(q, 2) FROM ta_q WHERE tag IN ('int_plus', 'float_times', 'two_exprs') ORDER BY tag COLLATE "C";
+VACUUM ta;
+SELECT tag, ta_check(q) FROM ta_q WHERE tag IN ('int_plus', 'int_plus_desc', 'numeric_times', 'cast_to_text') ORDER BY tag COLLATE "C";
+
+-- an expression that raises raises the same SQLSTATE, for a row far from the top, in both plans; the one that overflows only in rows the WHERE removes does not raise.
+-- The pushed plan is the scan in the cases with 'topn'
+CREATE FUNCTION ta_error(q text, pushed bool) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM ta_mode(pushed, 0);
+	EXECUTE q;
+	RETURN 'no error';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE;
+END $$;
+CREATE FUNCTION ta_scan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text; plan text := '';
+BEGIN
+	PERFORM ta_mode(true, 0);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'topn' ELSE 'plain' END;
+END $$;
+SELECT tag, ta_error(q, true) = ta_error(q, false) AS same_error, ta_error(q, true) AS sqlstate, ta_scan(q) AS pushed
+FROM (VALUES ('int_plus',        $q$SELECT id, a FROM ta ORDER BY a + 1, id LIMIT 5$q$),
+			 ('int_plus_where',  $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 5$q$),
+			 ('int_neg',         $q$SELECT id, a FROM ta ORDER BY -a, id LIMIT 5$q$),
+			 ('int_neg_where',   $q$SELECT id, a FROM ta WHERE a > -2147483648 ORDER BY -a, id LIMIT 5$q$),
+			 ('int_div_zero',    $q$SELECT id, g FROM ta ORDER BY 100 / (g - 3), id LIMIT 5$q$),
+			 ('int_div_where',   $q$SELECT id, g FROM ta WHERE g <> 3 ORDER BY 100 / (g - 3), id LIMIT 5$q$),
+			 ('int_mod_zero',    $q$SELECT id, g FROM ta ORDER BY 100 % (g - 3), id LIMIT 5$q$),
+			 ('bigint_times',    $q$SELECT id, b FROM ta ORDER BY b * 3, id LIMIT 5$q$),
+			 ('bigint_times_wh', $q$SELECT id, b FROM ta WHERE b BETWEEN -1000000 AND 1000000 ORDER BY b * 3, id LIMIT 5$q$),
+			 ('smallint_plus',   $q$SELECT id, c FROM ta ORDER BY c + 1::smallint, id LIMIT 5$q$),
+			 ('cast_narrow',     $q$SELECT id, b FROM ta ORDER BY b::int, id LIMIT 5$q$),
+			 ('cast_narrow_wh',  $q$SELECT id, b FROM ta WHERE b BETWEEN -1000000 AND 1000000 ORDER BY b::int, id LIMIT 5$q$),
+			 ('cast_smallint',   $q$SELECT id, a FROM ta ORDER BY a::smallint, id LIMIT 5$q$),
+			 ('cast_float_int',  $q$SELECT id, f FROM ta ORDER BY f::int, id LIMIT 5$q$),
+			 ('float_overflow',  $q$SELECT id, r FROM ta ORDER BY r * 3.4e38::float4, id LIMIT 5$q$),
+			 ('float_div_zero',  $q$SELECT id, f FROM ta ORDER BY 1 / f, id LIMIT 5$q$),
+			 ('numeric_div_zero',$q$SELECT id, n FROM ta ORDER BY 1 / (n * 0), id LIMIT 5$q$),
+			 ('numeric_cast_int',$q$SELECT id, n FROM ta ORDER BY (n * 1000000)::int, id LIMIT 5$q$),
+			 ('numeric_cast_wh',$q$SELECT id, n FROM ta WHERE n < 100 ORDER BY (n / 0.5)::int, id LIMIT 5$q$)) v(tag, q)
+ORDER BY tag COLLATE "C";
+
+-- what stays with the normal plan, each by a named refusal: the expression is not immutable, or not of the kinds above
+SET sift.enable_agg = on;
+SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
+SELECT k, w.used, w.slug, w.reason
+FROM (VALUES ('random',      $q$SELECT id, a FROM ta ORDER BY a + (random() * 0)::int, id LIMIT 5$q$),
+			 ('now',         $q$SELECT id, t FROM ta ORDER BY t + (now() - now()), id LIMIT 5$q$),
+			 ('stable_text', $q$SELECT id, d FROM ta ORDER BY d::text, id LIMIT 5$q$),
+			 ('allowed',     $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 5$q$)) q(k, q),
+	 LATERAL sift.explain_why(q.q) w
+ORDER BY k COLLATE "C";
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+
+-- overflow strings (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the plan that would read the leaf leaves the query to the normal plan
+CREATE TABLE tv (id int PRIMARY KEY, w text);
+INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tv_col ON tv USING sift_col (id, w);
+RESET sift.test_limits;
+ANALYZE tv;
+SELECT ta_check($q$SELECT id, w FROM tv ORDER BY w::text, id LIMIT 10$q$) AS overflow_key;
+
+-- the sorted run of a column (order_columns) orders the column, not an expression of it: the scan reads the units of the expression row by row, where the plain
+-- column goes through the run
+CREATE TABLE tq (id int, kn int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE tq ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tq SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END, repeat('x', 1500) FROM generate_series(1, 12000) g;
+CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (order_columns = 'kn', cube_minmax = false, superunit = 0);
+ANALYZE tq;
+CREATE FUNCTION tq_runs(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM ta_mode(true, 0);
+	PERFORM set_config('seq_page_cost', '1000', true);
+	PERFORM set_config('random_page_cost', '1000', true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+		IF line ~ 'Units Read By Sorted Run' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT tq_runs($q$SELECT id, kn FROM tq ORDER BY kn, id LIMIT 30$q$) AS column_by_run,
+	   tq_runs($q$SELECT id, kn FROM tq ORDER BY kn * -1, id LIMIT 30$q$) AS negated_by_run,
+	   tq_runs($q$SELECT id, kn FROM tq ORDER BY kn + 1, id LIMIT 30$q$) AS plus_by_run;
+SELECT ta_check($q$SELECT id, kn FROM tq ORDER BY kn * -1, id LIMIT 30$q$) AS negated,
+	   ta_check($q$SELECT id, kn FROM tq ORDER BY kn + 1 DESC, id LIMIT 30 OFFSET 100$q$) AS plus_desc,
+	   ta_check($q$SELECT id, kn FROM tq ORDER BY kn % 5, id DESC LIMIT 30$q$) AS remainder;
+DROP TABLE ta, ta_q, tq, tv;
+DROP FUNCTION ta_check(text,integer), ta_error(text,boolean), ta_mode(boolean,integer), ta_scan(text), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

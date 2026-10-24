@@ -188,6 +188,7 @@ sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyDa
 		PredicateLockRelation(rel, snapshot);
 	}
 	s->st = sift_tbl_rel(rel);
+	sift_tbl_auto_defrag_tick(rel, s->st);
 	s->sample_blk = InvalidBlockNumber;
 	s->copy = palloc(BLCKSZ);
 	s->rowcxt = AllocSetContextCreate(CurrentMemoryContext, "sift_table scan row", ALLOCSET_DEFAULT_SIZES);

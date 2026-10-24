@@ -76,8 +76,11 @@ relocate(SiftTblSlot *ss, TupleTableSlot *slot)
 	SiftTblGroupScan *g;
 
 	if (!sift_tbl_group_locate(ss->rel, sift_tbl_rel(ss->rel), &slot->tts_tid, &g, &ss->token, &ss->pos))
-		elog(ERROR, "sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
-			 ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid), RelationGetRelationName(ss->rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
+						ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid), RelationGetRelationName(ss->rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	sift_tbl_gscan_ref(g);
 	lazy_drop(ss);
 	ss->g = g;
@@ -113,8 +116,11 @@ sift_slot_getsomeattrs(TupleTableSlot *slot, int natts)
 	{
 		relocate(ss, slot);
 		if (!sift_tbl_gscan_fill(ss->g, ss->token, ss->pos, slot->tts_nvalid, natts, slot->tts_values, slot->tts_isnull))
-			elog(ERROR, "sift_table: the unit of row (%u,%u) changed while it was read", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
-				 ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid));
+			ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("sift_table: the unit of row (%u,%u) changed while it was read", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
+						ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	}
 	own_values(ss, slot, slot->tts_nvalid, natts);
 	slot->tts_nvalid = natts;
@@ -155,8 +161,11 @@ sift_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	rel = RelationIdGetRelation(slot->tts_tableOid);
 	st = sift_tbl_rel(rel);
 	if (!sift_tbl_fetch_lazy(rel, st, &slot->tts_tid, &rv))
-		elog(ERROR, "sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
-			 ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid), RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("sift_table: the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid),
+						ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid), RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	sift_tbl_free_row(&rv);
 	tomb = row_tomb(rel, st, &slot->tts_tid);
 	switch (attnum)

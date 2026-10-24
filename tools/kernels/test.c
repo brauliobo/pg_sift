@@ -601,6 +601,7 @@ main(int argc, char **argv)
 
 	kt_cpu_init();
 	tabs[ntabs++] = (Tab) {"scalar", &sift_kernels_scalar};
+#if defined(__x86_64__)
 	if (sift_kernels_for(SIFT_SIMD_AVX2))
 	{
 		tabs[ntabs++] = (Tab) {"avx2", &sift_kernels_avx2};
@@ -608,6 +609,9 @@ main(int argc, char **argv)
 	}
 	if (sift_kernels_for(SIFT_SIMD_AVX512))
 		tabs[ntabs++] = (Tab) {"avx512", &sift_kernels_avx512};
+#elif defined(SIFT_HAVE_NEON)
+	tabs[ntabs++] = (Tab) {"neon", &sift_kernels_neon};
+#endif
 	printf("levels:");
 	for (int t = 0; t < ntabs; t++)
 		printf(" %s", tabs[t].name);

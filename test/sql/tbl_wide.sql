@@ -56,7 +56,9 @@ DROP TABLE longtxt, long_q;
 DROP FUNCTION long_rows, long_pushed;
 
 -- a row that cannot fit a write buffer is refused, not corrupted
+SET sift.table_wide_rows = off;
 INSERT INTO wide VALUES (0, repeat('x', 5000000));
+RESET sift.table_wide_rows;
 SELECT count(*) FROM wide;
 DROP TABLE wide;
 DROP EXTENSION pg_sift;

@@ -135,7 +135,7 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 
 	if (a->agglevelsup != 0 || a->aggkind != AGGKIND_NORMAL || a->aggorder != NIL || a->aggvariadic || a->aggdirectargs != NIL ||
 		a->aggsplit != AGGSPLIT_SIMPLE || list_length(a->args) > 1 || contain_volatile_functions((Node *) a))
-		return false;
+		return agg_refuse_on(ROWS_SHAPE, "an aggregate with an outer level, ORDER BY, VARIADIC, direct arguments, a partial split, several arguments or a volatile call");
 	if (a->args != NIL)
 		arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
 	out->fn = a->aggfnoid;
@@ -146,13 +146,13 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 	if (a->aggfnoid == F_COUNT_)
 	{
 		if (a->aggdistinct != NIL)
-			return false;
+			return agg_refuse_on(ROWS_SHAPE, "count(*) with DISTINCT");
 		out->kind = SRA_COUNT_STAR;
 	}
 	else if (a->aggfnoid == F_COUNT_ANY)
 	{
 		if (a->aggdistinct != NIL && out->argtype != INT2OID && out->argtype != INT4OID && out->argtype != INT8OID)
-			return false;
+			return agg_refuse_on(ROWS_SHAPE, "count(DISTINCT) of a value that is not a smallint, integer or bigint");
 		out->kind = a->aggdistinct != NIL ? SRA_DISTINCT : SRA_COUNT;
 	}
 	else if (pg_aggregate_ok(a->aggfnoid) && a->aggdistinct == NIL)
@@ -161,7 +161,7 @@ rows_agg(Aggref *a, List **cols, SiftRowsAgg *out)
 		out->kind = SRA_PG;
 	}
 	else
-		return false;
+		return agg_refuse_on(ROWS_SHAPE, "an aggregate that is not count, or one of the sums and averages the rows plan computes");
 	if (arg)
 		out->argcol = target_column(cols, arg);
 	if (a->aggfilter)
@@ -181,8 +181,8 @@ sets_fit(const SiftRowsSpec *s)
 			continue;
 		for (int k = 0; k < s->naggs; k++)
 			n += s->agg[k].kind == SRA_DISTINCT && s->agg[k].argcol == s->agg[i].argcol;
-		if (n > SIFT_ROWS_MAX_SHARED)
-			return false;
+		if (n > sift_limit(rows_shared, SIFT_ROWS_MAX_SHARED))
+			return agg_refuse_limit(ROWS_SHAPE, rows_shared, sift_limit(rows_shared, SIFT_ROWS_MAX_SHARED), "more count(DISTINCT) aggregates of one column (%d) than one pass shares", n);
 	}
 	return true;
 }
@@ -228,8 +228,7 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	double		groups;
 	int			ndistinct = 0;
 
-	if (!sift_agg_rows || ip == NULL || ip->param_info != NULL || parse->groupClause == NIL || parse->groupingSets != NIL ||
-		parse->hasDistinctOn || !parse->hasAggs)
+	if (!sift_agg_rows || ip == NULL || ip->param_info != NULL || parse->groupClause == NIL || parse->hasDistinctOn || !parse->hasAggs)
 		return;
 	siftagg_arms(ip, &arms);
 	if (arms == NIL)
@@ -238,6 +237,11 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	foreach_ptr(Path, p, output_rel->pathlist)
 		if (IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods)
 			return;
+	if (parse->groupingSets != NIL)
+	{
+		agg_refused(GROUPING_SETS);
+		return;
+	}
 	s.nkeys = list_length(parse->groupClause);
 	s.eqop = palloc(s.nkeys * sizeof(Oid));
 	s.collid = palloc(s.nkeys * sizeof(Oid));
@@ -249,7 +253,10 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 					rhs;
 
 		if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs))
+		{
+			agg_refused(ROWS_SHAPE);
 			return;
+		}
 		s.eqop[j] = sgc->eqop;
 		s.collid[j] = exprCollation(e);
 		ow.keys = lappend(ow.keys, e);
@@ -261,7 +268,10 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	if (gextra && gextra->havingQual)
 		out_walker((Node *) gextra->havingQual, &ow);
 	if (ow.bad || ow.aggs == NIL)
+	{
+		agg_refused(ROWS_SHAPE);
 		return;
+	}
 	s.naggs = list_length(ow.aggs);
 	s.agg = palloc0(s.naggs * sizeof(SiftRowsAgg));
 	foreach_ptr(Node, a, ow.aggs)
@@ -269,13 +279,19 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 		int			i = foreach_current_index(a);
 
 		if (!IsA(a, Aggref) || !rows_agg((Aggref *) a, &cols, &s.agg[i]))
+		{
+			agg_refused(ROWS_SHAPE);
 			return;
+		}
 		ndistinct += s.agg[i].kind == SRA_DISTINCT;
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) a, list_length(scan_tlist) + 1, NULL, false));
 	}
 	/* PostgreSQL's hash aggregate has no sort to avoid without a DISTINCT */
 	if (ndistinct == 0 || !sets_fit(&s))
+	{
+		agg_refused(ROWS_SHAPE);
 		return;
+	}
 	pt = create_empty_pathtarget();
 	foreach_ptr(Node, e, cols)
 		add_column_to_pathtarget(pt, (Expr *) e, 0);
@@ -305,5 +321,6 @@ sift_agg_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output
 	cp->methods = &rows_path_methods;
 	cp->custom_paths = list_make1(proj);
 	cp->custom_private = list_make2(sift_agg_rows_pack(&s), scan_tlist);
+	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
 }

@@ -7,6 +7,8 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
+#include "col/runs.h"
+#include "col/setsum.h"
 #include "col/ver.h"
 #include "core/live.h"
 
@@ -234,9 +236,80 @@ zone_equal(const SiftColDef *def, const SiftCZone *a, const SiftCZone *b)
 	return def->store != SIFT_COLS_STR || memcmp(a->set, b->set, sizeof(a->set)) == 0;
 }
 
+/* The small-set summary of leaf c in unit u, when it has one, is what its keys give (an exact set holds them all and no other, a filter their bits and none else) */
+static void
+verify_set(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	uint32		len,
+				nd;
+	const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+	SiftCSet	s;
+	int64	   *keys;
+
+	if (blob == NULL)
+		return;
+	if (!sift_cset_open(blob, len, &s))
+		corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", c, u);
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a small-set summary in unit %u, whose chunk has no codes.", c, u);
+	keys = palloc(Max(col->n, 1) * sizeof(int64));
+	nd = sift_cset_keys(col, keys);
+	if (!sift_cset_matches(&s, keys, nd))
+		corrupt(seg, "The small-set summary of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(keys);
+}
+
+/* The sorted run of leaf c in unit u, when it has one, is what its chunk gives, entry for entry */
+static void
+verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	SiftCRun	r;
+	uint64		at;
+	uint8	   *blob;
+
+	if (!sift_cseg_run(seg, c, u, &r, &at))
+		return;
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a sorted run in unit %u, whose chunk has no keys.", c, u);
+	blob = palloc(sift_crun_bytes(r.kind, r.n));
+	sift_cseg_run_blob(seg, at, &r, blob);
+	if (!sift_crun_matches(&seg->schema->cols[c], col, blob, sift_crun_bytes(r.kind, r.n)))
+		corrupt(seg, "The sorted run of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(blob);
+}
+
+/* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
+static void
+verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys, uint64 *listed)
+{
+	uint32		base = (uint32) seg->sbdir[u].rank_base;
+
+	if (sift_cseg_point_count(seg, c) == 0)
+		return;
+	if (!col->ready)
+		corrupt(seg, "Leaf %d has a point directory and no keys in the unit %u.", c, u);
+	for (uint32 i = 0; col->ovf && i < SIFT_COL_NWORDS(col->n); i++)
+		if (col->ovf[i])
+			corrupt(seg, "Leaf %d has a point directory and an overflow value in the unit %u.", c, u);
+	if (sift_cseg_point_is_tid(seg, c))
+	{
+		if (!sift_cseg_point_check_tids(seg, c, col->key, col->nulls, keys, col->n, listed))
+			corrupt(seg, "The point directory of leaf %d does not list the address of a row of unit %u under its key.", c, u);
+		return;
+	}
+	for (uint32 i = 0; i < col->n; i++)
+	{
+		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+			continue;
+		if (!sift_cseg_point_has(seg, c, col->key[i], base + i))
+			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
+		(*listed)++;
+	}
+}
+
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
-verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
+verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	const SiftColSchema *sc = seg->schema;
@@ -298,6 +371,9 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 			if (sa.sum != la.sum || sa.sumsq != la.sumsq || sa.flags != la.flags)
 				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
 		}
+		verify_set(seg, c, u, &pcol[c]);
+		verify_run(seg, c, u, &pcol[c]);
+		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
@@ -312,7 +388,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys)
 		else
 			pfree(vals);
 	}
-	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen))
+	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])
@@ -385,18 +461,189 @@ verify_vers(SiftColSegment *seg)
 	pfree(cm);
 }
 
+/* The superunit block says what the units say: the page masks, the merged sums of every INT leaf and the merged cube, recomputed by the writer's own functions */
+void
+sift_cseg_verify_super(SiftColSegment *seg)
+{
+	const SiftColSchema *sc = seg->schema;
+	uint32		fan = sift_cseg_super_fan(seg),
+				nsu;
+	MemoryContext cx,
+				old;
+	uint64	   *pm;
+	SiftCAgg   *ua;
+
+	if (fan == 0)
+		return;
+	nsu = (seg->nsb + fan - 1) / fan;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift col verify superunits", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(cx);
+	pm = palloc(fan * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+	ua = palloc(fan * sizeof(SiftCAgg));
+	for (uint32 k = 0; k < nsu; k++)
+	{
+		uint32		n = Min(fan, seg->nsb - k * fan);
+		const uint8 **blob = palloc(n * sizeof(uint8 *));
+		uint32	   *len = palloc(n * sizeof(uint32));
+		bool		anycube = false;
+		StringInfoData want;
+		const uint8 *got;
+		uint32		glen;
+
+		sift_cseg_super_pagemask(seg, k, n, pm);
+		for (uint32 i = 0; i < n; i++)
+		{
+			SiftCUnitView v;
+			uint32		ulen;
+			const uint8 *rec = sift_cseg_unit(seg, k * fan + i, &ulen);
+			const uint8 *cube;
+
+			if (!sift_cunit_parse(rec, ulen, sc, &v) || memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0)
+				corrupt(seg, "The page mask of unit %u in superunit %u is not the unit's.", k * fan + i, k);
+			cube = sift_cseg_cube(seg, k * fan + i, &len[i]);
+			blob[i] = len[i] ? memcpy(palloc(len[i]), cube, len[i]) : NULL;
+			anycube |= len[i] > 0;
+		}
+		for (int c = 0; c < sc->ncols; c++)
+		{
+			SiftCSuperLeaf want_leaf;
+			SiftCAgg	got_leaf;
+			bool		want_ok;
+
+			if (!super_leaf_ok(&sc->cols[c]))
+				continue;
+			for (uint32 i = 0; i < n; i++)
+				sift_cseg_agg(seg, c, k * fan + i, &ua[i]);
+			want_ok = n >= 2 && sift_cpagg_super_leaf(ua, n, sc->cols[c].store == SIFT_COLS_INT, &want_leaf);
+			if (want_ok != sift_cseg_super_agg(seg, c, k, &got_leaf) ||
+				(want_ok && (got_leaf.nvals != want_leaf.nvals || got_leaf.nnull != want_leaf.nnull || got_leaf.min != want_leaf.min ||
+							 got_leaf.max != want_leaf.max || got_leaf.sum != (SiftCI128) (((unsigned __int128) want_leaf.sum_hi << 64) | want_leaf.sum_lo) ||
+							 got_leaf.sumsq != (SiftCI128) (((unsigned __int128) want_leaf.sumsq_hi << 64) | want_leaf.sumsq_lo) ||
+							 got_leaf.flags != (want_leaf.flags & SIFT_CAGG_SUMSQ_OVF) || got_leaf.zflags != want_leaf.zflags)))
+				corrupt(seg, "The summary of leaf %d in superunit %u differs from its units.", c, k);
+		}
+		initStringInfo(&want);
+		if (n >= 2 && anycube && !sift_cpagg_super_cube(sc, blob, len, n, &want))
+			want.len = 0;
+		got = sift_cseg_super_cube(seg, k, &glen);
+		if (want.len != glen || (glen > 0 && memcmp(want.data, got, glen) != 0))
+			corrupt(seg, "The cube of superunit %u differs from the cubes of its units.", k);
+		MemoryContextReset(cx);
+		pm = palloc(fan * SIFT_PAGEMASK_WORDS * sizeof(uint64));
+		ua = palloc(fan * sizeof(SiftCAgg));
+		CHECK_FOR_INTERRUPTS();
+	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+}
+
+/* The kinds a leaf's record in the small-set summaries lists are those of its units' summaries */
+static void
+verify_set_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_set_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+
+			if (blob != NULL && len > 0)
+				have |= blob[0] == SIFT_CSET_EXACT ? SETS_EXACT : blob[0] == SIFT_CSET_BLOOM ? SETS_BLOOM : SETS_PRES; /* PRES and PLIST */
+		}
+		if (have != want)
+			corrupt(seg, "The record of the small-set summaries of leaf %d lists kinds %u, its units hold %u.", c, want, have);
+	}
+}
+
+/* The kinds a leaf's record in the sorted runs lists are those of its units' runs */
+static void
+verify_run_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_run_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			SiftCRun	r;
+			uint64		at;
+
+			if (sift_cseg_run(seg, c, u, &r, &at))
+				have |= r.kind == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
+		}
+		if (have != want)
+			corrupt(seg, "The record of the sorted runs of leaf %d lists kinds %u, its units hold %u.", c, want, have);
+	}
+}
+
+/* A dictionary stored in blocks is in a segment of minor 14; if it has an order, that names every code once and the strings ascend in it */
+static void
+verify_dicts(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		SiftCDict  *d;
+		uint64	   *seen;
+
+		if (seg->schema->cols[c].store != SIFT_COLS_STR)
+			continue;
+		d = sift_cseg_dict(seg, c);
+		if (!d->blocked)
+			continue;
+		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
+			corrupt(seg, "The dictionary of leaf %d is stored in blocks in a segment of column format 1.%d.", c, seg->entry.format);
+		if (!d->stored_order)
+			continue;
+		seen = palloc0(SIFT_COL_NWORDS(d->n) * sizeof(uint64));
+		for (uint32 i = 0; i < d->n; i++)
+		{
+			uint32		code = d->sorted[i],
+						len,
+						prev_len = 0;
+			const char *s = sift_cdict_str(d, code, &len);
+
+			if (seen[code >> 6] >> (code & 63) & 1)
+				corrupt(seg, "The order of the dictionary of leaf %d lists code %u twice.", c, code);
+			seen[code >> 6] |= UINT64CONST(1) << (code & 63);
+			if (i > 0)
+			{
+				const char *prev = sift_cdict_str(d, d->sorted[i - 1], &prev_len);
+
+				if (sift_cstr_cmp(prev, prev_len, s, len) >= 0)
+					corrupt(seg, "The order of the dictionary of leaf %d is not the byte order of its strings (position %u).", c, i);
+			}
+		}
+		pfree(seen);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 uint64
 sift_cseg_verify(SiftColSegment *seg)
 {
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	uint64		live = seg->hdr->ndocs;
+	uint64		listed[SIFT_COL_MAX_COLS] = {0};
 
 	verify_vers(seg);
+	verify_dicts(seg);
+	sift_cseg_verify_points(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		verify_unit(seg, u, keys);
+		verify_unit(seg, u, keys, listed);
 		CHECK_FOR_INTERRUPTS();
 	}
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (listed[c] != sift_cseg_point_count(seg, c))
+			corrupt(seg, "The point directory of leaf %d lists %u rows, its units hold %llu values.", c, sift_cseg_point_count(seg, c), ULL(listed[c]));
+	sift_cseg_verify_super(seg);
+	verify_set_kinds(seg);
+	verify_run_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
 	sift_sr_release(&seg->sr);

@@ -254,7 +254,7 @@ write_row(Relation index, SiftCWbufHint *h, int lane, Buffer cur, const ItemPoin
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, HDRSIZE, limit, place ? fill_piece : NULL, &pa, &crossed);
 #ifdef SIFT_TESTING
 		if (sift_cwbuf_fail_grow > 0 && --sift_cwbuf_fail_grow == 0)
-			elog(ERROR, "sift_col write buffer: injected failure after a page link");
+			elog(ERROR, "sift_col write buffer: injected failure after a page link");	/* check-errors: allow */
 #endif
 		if (place)
 		{
@@ -314,12 +314,12 @@ sift_cwbuf_jnull(const SiftDirSnapshot *dir)
  * directory for good. The queued invalidation reaches this session at the end of the statement (a transaction that goes on to use a
  * prepared statement), the immediate one the others now.
  */
-static void
-invalidate_plans(Relation index)
+void
+sift_cwbuf_invalidate_plans(Oid heapoid)
 {
-	SharedInvalidationMessage msg = {.rc = {.id = SHAREDINVALRELCACHE_ID,.dbId = MyDatabaseId,.relId = index->rd_index->indrelid}};
+	SharedInvalidationMessage msg = {.rc = {.id = SHAREDINVALRELCACHE_ID,.dbId = MyDatabaseId,.relId = heapoid}};
 
-	CacheInvalidateRelcacheByRelid(msg.rc.relId);
+	CacheInvalidateRelcacheByRelid(heapoid);
 	SendSharedInvalidMessages(&msg, 1);
 }
 
@@ -342,7 +342,7 @@ flag_overflow(Relation index, SiftCWbufHint *h, uint32 mask, uint32 jmask)
 			if ((mask & ~snap->segs[i].reserved) || (jmask & ~(uint32) snap->segs[i].sum_dl))
 			{
 				sift_dir_update(index, &(SiftDirChange) {.fn = or_overflow,.arg = &(OvfArg) {h->gen, mask, jmask},.extra = InvalidBuffer});
-				invalidate_plans(index);
+				sift_cwbuf_invalidate_plans(index->rd_index->indrelid);
 #ifdef SIFT_TESTING
 				sift_col_test_inval(index);
 #endif

@@ -147,7 +147,7 @@ class PairedRestoration(unittest.TestCase):
         self.assertEqual(saved['operations'],1500)
         self.assertEqual(saved['wall_cap_operations'],3499)
         self.assertEqual(len(saved['pilot_pair']['sides'][0]['operation_seconds']),2048)
-        for reset,expected in ((.1,2048),(1.1,None)):
+        for reset,expected in ((.1,2048),(1.1,None),(1.85,None)):
             def bounded(revisions,case,identity,n,deadline,sink,**kwargs):
                 sink.update(wall_seconds=2,sides=[dict(sql_seconds=.01,loop_wall_seconds=.01,
                     phases={'final_reset':{'seconds':reset}})]*2)
@@ -159,6 +159,14 @@ class PairedRestoration(unittest.TestCase):
                 else:
                     gate.calibrate_insert([],CASE,IDENTITY,math.inf,saved)
                     self.assertEqual(saved['operations'],expected)
+
+    def test_the_nightly_limit_admits_the_restore_of_the_nightly_fixture(self):
+        def pair(revisions,case,identity,n,deadline,sink,**kwargs):
+            sink.update(wall_seconds=2,sides=[dict(sql_seconds=n*.0001,loop_wall_seconds=n*.0001,phases={'final_reset':{'seconds':1.85}})]*2)
+        saved = {}
+        with patch.object(gate,'insert_pair',side_effect=pair), patch.object(gate,'BATCH_WALL_LIMIT',gate.NIGHTLY_BATCH_WALL_LIMIT):
+            gate.calibrate_insert([],CASE,IDENTITY,math.inf,saved)
+        self.assertEqual(saved['operations'],1500)
 
     @staticmethod
     def footprint():

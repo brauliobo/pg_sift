@@ -209,3 +209,4 @@ DROP TABLE d;
 DROP FUNCTION fac_summary(text), fac_all(regclass, text), fac_actual(regclass, text, int, bool),
 	fac_expected(text, regclass, text, int, bool);
 DROP EXTENSION pg_sift;
+DROP FUNCTION fac_actual(regclass,text,integer,boolean), fac_all(regclass,text), fac_expected(text,regclass,text,boolean), fac_summary(text);

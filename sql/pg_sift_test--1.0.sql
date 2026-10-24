@@ -1,5 +1,13 @@
 \echo Use "CREATE EXTENSION pg_sift_test" to load this file. \quit
 
+-- The limit registry (src/core/limits.h): each limit with its default and the value sift.test_limits gives it in this session.
+CREATE FUNCTION sift._test_limits(OUT id text, OUT macro text, OUT dflt int8, OUT effective int8, OUT hooked bool)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_limits' LANGUAGE C STRICT;
+
+-- The reloptions of sift and sift_col as registered, to compare with the sources (scripts/gen-options.sh --live).
+CREATE FUNCTION sift._test_reloptions(OUT am text, OUT name text, OUT type text, OUT dflt text)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_reloptions' LANGUAGE C STRICT;
+
 -- Store module (src/core/store_test.c). A sift_store_test index holds one test
 -- segment per heap row: v bytes written through a BULK target at build time.
 CREATE FUNCTION sift._test_am_handler(internal) RETURNS index_am_handler
@@ -40,9 +48,15 @@ CREATE FUNCTION sift._test_info(index regclass, OUT key text, OUT value int8)
 	AS 'MODULE_PATHNAME', 'sift_test_info' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_maint_failures(index regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_maint_failures' LANGUAGE C STRICT;
+-- the metapage as an older build wrote it ('old') or with a failure note of garbage ('junk')
+CREATE FUNCTION sift._test_meta_note(index regclass, mode text) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_meta_note' LANGUAGE C STRICT;
 -- longest wait of this backend for the maintenance of others since the last call, in microseconds
 CREATE FUNCTION sift._test_maint_wait_us() RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_maint_wait_us' LANGUAGE C STRICT;
+-- directory updates of this process since sift.test_crash_dir was set (the named crash points of the matrix in test/t/crash_matrix.sh)
+CREATE FUNCTION sift._test_dir_updates() RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_dir_updates_count' LANGUAGE C STRICT;
 -- copied pages of VACUUM's bounded relocation (with the current sift.vacuum_rewrite_limit)
 CREATE FUNCTION sift._test_space(index regclass) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_space' LANGUAGE C STRICT;
@@ -77,6 +91,8 @@ CREATE FUNCTION sift._test_col_kernels_active(seed int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_col_kernels_active' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_level() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_level' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_simd_detected() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_simd_detected' LANGUAGE C STRICT;
 
 -- Aggregation operators module (src/agg/kern_test.c): bit-exact SIMD checks through sift.simd.
 CREATE FUNCTION sift._test_aggkern_digest(seed int8, cases int4) RETURNS int8
@@ -177,7 +193,7 @@ CREATE FUNCTION sift._test_col_tids(index regclass, preds text DEFAULT '', flags
 CREATE FUNCTION sift._test_col_read(index regclass, leaf int4, preds text DEFAULT '', flags int4 DEFAULT 0,
 									OUT tid tid, OUT val text) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_read' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_leaf_stats(index regclass, OUT leaf int4, OUT ndistinct float8, OUT min float8, OUT max float8, OUT elems_per_row float8) RETURNS SETOF record
+CREATE FUNCTION sift._test_col_leaf_stats(index regclass, OUT leaf int4, OUT ndistinct float8, OUT min float8, OUT max float8, OUT elems_per_row float8, OUT allvisible_frac float8) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_leaf_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_zones(index regclass, leaf int4, preds text DEFAULT '',
 									 OUT sb int4, OUT in_wbuf bool, OUT nrows int4, OUT nvals int8, OUT nnull int8,
@@ -193,11 +209,31 @@ CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', f
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,
 										OUT heap_pages int8, OUT simd text, OUT tests_made int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_counters' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads int8, OUT hits int8, OUT bytes int8) RETURNS record
+CREATE FUNCTION sift._test_col_dict_cache(reset bool DEFAULT false, OUT loads int8, OUT hits int8, OUT bytes int8,
+												 OUT head_loads int8, OUT head_hits int8, OUT zone_loads int8, OUT zone_hits int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_cache' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_pagg_fold(index regclass, dim int4, meas int4 DEFAULT -1,
 										 OUT units int8, OUT answered int8, OUT groups int4, OUT rows int8, OUT total numeric) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_pagg_fold' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_cube_damage(index regclass, units int4, rows bool DEFAULT false, OUT blobs int8, OUT intact int8, OUT with_minmax int8, OUT cut int8, OUT cut_accepted int8,
+										   OUT damaged int8, OUT accepted int8, OUT unsound int8, OUT census_cut_odd int8, OUT census_odd int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_cube_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_damage(index regclass, section text, units int4, OUT objects int8, OUT intact int8, OUT cut int8, OUT cut_accepted int8,
+									  OUT damaged int8, OUT accepted int8, OUT unsound int8, OUT flags int4) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_pre_stats(index regclass, OUT leaf int4, OUT units float8, OUT dim_units float8, OUT mm_units float8, OUT roll_units float8)
+	RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_pre_stats' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_set_damage(index regclass, units int4, OUT blobs int8, OUT exact int8, OUT bloom int8, OUT intact int8, OUT matching int8, OUT cut int8,
+										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_set_damage' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_super_damage(index regclass, OUT supers int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_super_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_run_damage(index regclass, units int4, OUT blobs int8, OUT ord int8, OUT ident int8, OUT intact int8, OUT matching int8, OUT cut int8,
+										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_run_damage' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_zone_flags(index regclass, OUT units int8, OUT jnull_units int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_zone_flags' LANGUAGE C STRICT;
 
@@ -300,6 +336,31 @@ CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrow
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_aggstub_stats' LANGUAGE C STRICT PARALLEL SAFE;
 
+-- Table module (src/table/load.c): why the bulk load of a sift_table keeps the write buffers (NULL: it qualifies)
+CREATE FUNCTION sift._test_tbl_bulk_refusal(tbl regclass) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_bulk_refusal' LANGUAGE C;
+
+-- Table module (src/table/funcs.c): takes the maintenance lock of a sift_table until the transaction ends
+CREATE FUNCTION sift._test_tbl_hold_maint(tbl regclass) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_hold_maint' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the cube blob of the first units of a sift_table decoded as stored, cut and damaged (as _test_col_cube_damage); with_calendar: blobs with a calendar dim
+CREATE FUNCTION sift._test_tbl_cube_damage(tbl regclass, units int4, OUT blobs int8, OUT intact int8, OUT with_calendar int8, OUT cut int8, OUT cut_accepted int8,
+										   OUT damaged int8, OUT accepted int8, OUT unsound int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_cube_damage' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the calendar dims of the cubes of the column segments of a sift_table, by the grain of their cells; no_cal: cubes that hold none
+CREATE FUNCTION sift._test_tbl_cal_grains(tbl regclass, OUT days int8, OUT months int8, OUT years int8, OUT no_cal int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_cal_grains' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the bytes of the pre-aggregates of the column segments of a sift_table
+CREATE FUNCTION sift._test_tbl_preagg_bytes(tbl regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_preagg_bytes' LANGUAGE C STRICT;
+
+-- Table module (src/table/funcs.c): the checks of sift.col_verify on every column segment of a sift_table: its live rows, an error on damage
+CREATE FUNCTION sift._test_tbl_verify(tbl regclass) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_verify' LANGUAGE C STRICT;
+
 -- Table module (src/table/funcs.c): the column groups of a sift_table that still carry their writer (rows that are not final)
 CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_tagged' LANGUAGE C STRICT;
@@ -308,6 +369,16 @@ CREATE FUNCTION sift._test_tbl_tagged(tbl regclass) RETURNS int4
 CREATE FUNCTION sift._test_tbl_page_rec(slot int4, inline_len int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec' LANGUAGE C STRICT;
 
+-- the bytes a continuation page of an overflow row holds when it was given `piece` of them and these flags: an error when the page is damaged
+CREATE FUNCTION sift._test_tbl_ovf_piece(piece int4, flags int4) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_tbl_ovf_piece' LANGUAGE C STRICT;
+
 -- the same for a record of inline_len bytes that ends `over` bytes past the end of the page's data (0: the largest record a page holds)
 CREATE FUNCTION sift._test_tbl_page_rec_end(inline_len int4, over int4) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_tbl_page_rec_end' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_run_file_damage(index regclass, stride int4, OUT runs int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_run_file_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_set_file_damage(index regclass, stride int4, OUT runs int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_set_file_damage' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_point_file_damage(index regclass, stride int4, OUT runs int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_col_point_file_damage' LANGUAGE C STRICT;

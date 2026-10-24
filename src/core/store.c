@@ -31,10 +31,11 @@
 #include "col/col.h"
 #include "bm25/estimate.h"
 #include "core/lane.h"
+#include "core/ops.h"
 #include "core/store.h"
 #include "core/store_int.h"
 
-bool		sift_standby_conflicts = false;
+bool		sift_standby_conflicts = true;
 
 #ifdef SIFT_TESTING
 int			sift_test_space_crash = 0;
@@ -42,6 +43,9 @@ bool		sift_test_space_error = false;
 int			sift_test_fail_pages = 0;
 int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
+int			sift_test_crash_dir = 0;
+bool		sift_test_crash_worker = false;
+int			sift_test_dir_updates = 0;
 #endif
 
 #ifdef SIFT_TESTING
@@ -54,6 +58,25 @@ sift_store_space_test_point(int phase)
 		XLogFlush(GetXLogInsertRecPtr());
 		kill(MyProcPid, SIGKILL);
 	}
+}
+
+/*
+ * sift.test_crash_dir = n kills the process with SIGKILL, its log flushed, before (n > 0) or after (n < 0) the |n|-th directory update it makes
+ * since the setting (every build, promotion, merge, VACUUM and table sealing publishes through store_update); the WAL it wrote is flushed; sift.test_crash_worker picks
+ * background workers instead of the other processes. sift._test_dir_updates() is the count.
+ */
+void
+sift_store_dir_test_point(bool after)
+{
+	if (!after)
+		sift_test_dir_updates++;
+	if (sift_test_crash_dir == 0 || (MyBackendType == B_BG_WORKER) != sift_test_crash_worker ||
+		sift_test_crash_dir != (after ? -sift_test_dir_updates : sift_test_dir_updates))
+		return;
+	ereport(LOG, (errmsg("sift test: crash %s directory update %d", after ? "after" : "before", sift_test_dir_updates)));
+	if (!XLogRecPtrIsInvalid(XactLastRecEnd))
+		XLogFlush(XactLastRecEnd);
+	kill(MyProcPid, SIGKILL);
 }
 #endif
 
@@ -151,15 +174,15 @@ check_meta(Relation index, Buffer buf)
 	SiftMetaPageData *meta = META(page);
 
 	sift_store_check_page(index, buf, SIFT_PT_META, 0);
-	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < sizeof(SiftMetaPageData))
+	if (meta->magic != SIFT_MAGIC || SiftPageGetUsed(page) < SIFT_META_BASE_SIZE || SiftPageGetUsed(page) > sizeof(SiftMetaPageData))
 		corrupt(index, "Bad metapage (magic 0x%08x, %u bytes).", meta->magic, SiftPageGetUsed(page));
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build reads formats %u.0 to %u.%u",
-						RelationGetRelationName(index), meta->format_major, meta->format_minor,
+				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build (pg_sift %s) reads formats %u.0 to %u.%u",
+						RelationGetRelationName(index), meta->format_major, meta->format_minor, SIFT_MODULE_VERSION,
 						SIFT_FORMAT_MAJOR, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
-				 errhint("REINDEX the index.")));
+				 errhint("Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.")));
 	if (meta->high_water < FIRST_DATA_BLKNO)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
 }
@@ -201,6 +224,8 @@ sift_dir_read(Relation index, SiftDirSnapshot *snap)
 	SiftDirectoryData *dir = DIR(BufferGetPage(dirbuf));
 
 	snap->meta = *META(BufferGetPage(metabuf));
+	if (SiftPageGetUsed(BufferGetPage(metabuf)) < sizeof(SiftMetaPageData))
+		memset((char *) &snap->meta + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	snap->version = dir->version;
 	snap->nsegs = dir->nsegs;
 	memcpy(snap->segs, dir->segs, dir->nsegs * sizeof(SiftSegEntry));
@@ -245,7 +270,7 @@ sift_store_new_gen(Relation index)
 
 /* Validates the mutator's result inside the record; aborts it on failure */
 static void
-finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
+finish_dir(Relation index, GenericXLogState *state, const SiftMetaPageData *before, const SiftMetaPageData *meta,
 		   Page dirpage)
 {
 	SiftDirectoryData *dir = DIR(dirpage);
@@ -259,7 +284,8 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 		GenericXLogAbort(state);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift index cannot hold more than %d segments", SIFT_MAX_SEGMENTS)));
+				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), SIFT_MAX_SEGMENTS),
+				 errhint("Run sift.merge() on the index.")));
 	}
 	for (int i = 0; !err && i < dir->nsegs; i++)
 	{
@@ -269,7 +295,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 			err = "invalid segment kind";
 		else if (s->gen == 0 || s->gen >= meta->next_gen)
 			err = "segment generation was not reserved";
-		else if (s->format > Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ))	/* the column engine numbers its segment formats on its own */
+		else if (s->format > Max(Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ), SIFT_COL_FORMAT_WIDE_ROWS))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
 		for (int j = 0; !err && j < i; j++)
 			if (dir->segs[j].gen == s->gen)
@@ -278,7 +304,7 @@ finish_dir(GenericXLogState *state, const SiftMetaPageData *before, const SiftMe
 	if (err)
 	{
 		GenericXLogAbort(state);
-		elog(ERROR, "sift: invalid directory update: %s", err);
+		SIFT_INVARIANT(false, "sift: invalid directory update: %s", err);
 	}
 	dir->version++;
 	SiftPageSetUsed(dirpage, DIR_USED(dir->nsegs));
@@ -333,6 +359,7 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 	Page		fp = NULL;
 	Page		xp = NULL;
 
+	SIFT_DIR_TEST_POINT(false);
 	if (pending && !FullTransactionIdIsValid(safexid))
 		safexid = ReadNextFullTransactionId();
 	if (chg->nrelease > 0)
@@ -345,21 +372,27 @@ store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTa
 		fp = GenericXLogRegisterBuffer(state, plan.flbuf, 0);
 	if (BufferIsValid(chg->extra))
 		xp = GenericXLogRegisterBuffer(state, chg->extra, 0);
+	if (SiftPageGetUsed(mp) < sizeof(SiftMetaPageData))
+		memset((char *) META(mp) + SIFT_META_BASE_SIZE, 0, sizeof(SiftMetaPageData) - SIFT_META_BASE_SIZE);
 	before = *META(mp);
 	if (publish)
 	{
 		if (chg->fn)
 			chg->fn(META(mp), DIR(dp), xp, chg->arg);
+		/* the page ends where the base does until a failure note is written: pd_lower covers the bytes of a note once it has one */
+		if (META(mp)->maint_failed_at != 0)
+			SiftPageSetUsed(mp, sizeof(SiftMetaPageData));
 		/* a build that reads less than the newest segment format of the index must refuse it; a column segment's format is its own (col/col.h), its unfrozen rows raise the minor */
 		for (int i = 0; i < DIR(dp)->nsegs; i++)
 			META(mp)->format_minor = Max(META(mp)->format_minor, seg_minor(index, &DIR(dp)->segs[i]));
-		finish_dir(state, &before, META(mp), dp);
+		finish_dir(index, state, &before, META(mp), dp);
 	}
 	apply_free(META(mp), fp, &plan);
 	/* Do not accept cancellation between a durable physical mapping change and its immediate invalidation. */
 	if (publish && space_exclusive && chg->nrelease > 0)
 		HOLD_INTERRUPTS();
 	GenericXLogFinish(state);
+	SIFT_DIR_TEST_POINT(true);
 	/* These allocations now belong to the directory, even if the caller subsequently errors. */
 	if (published)
 		published->ntaken = published->nspare = 0;

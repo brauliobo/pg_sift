@@ -5,6 +5,7 @@
 #define SIFT_AGG_TWO_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "agg/leaf_int.h"
 #include "agg/tup_int.h"
 
 /* the state of one arm of a two level query (SiftAggArm): per tuple of the chunk, and per outer group the inner aggregates of the current row */
@@ -39,6 +40,36 @@ typedef struct ArmSt
 	uint32		stamp;
 } ArmSt;
 
+/* the join keys of an arm's cells that were seen, with the spine rows each equals */
+typedef struct SpineMemo
+{
+	uint32		n;
+	uint32		cap;
+	uint32		nslot;
+	uint32	   *slot;			/* entry + 1, 0 free */
+	uint32	   *ids;			/* per entry: the arm's key ids of the pairs of the join */
+	uint32	   *first;			/* ... and its rows: SpineSt.match[first .. first + count) */
+	uint32	   *count;
+} SpineMemo;
+
+/* the rows of the spine of a two level aggregate (SiftAggSpine), read when the scan starts */
+typedef struct SpineSt
+{
+	uint32		nrow;
+	uint32	   *oid;			/* [row * nout + o]: the id of the row's column outcol[o] in key outkey[o] */
+	uint32	   *jid;			/* [row * npair + p]: the id of its value of pair p in jot[p], 0 for NULL */
+	bool	   *hit;			/* the row joined a cell */
+	OutTable	jot[SIFT_AGG_MAX_JKEYS];
+	SpineMemo	memo[SIFT_AGG_MAX_ARMS];
+	/* the rows grouped by their join values (jid), in row order: group g is grow[gfirst[g] .. gfirst[g + 1]), found through gslot */
+	uint32		ngrp;
+	uint32		nslot;
+	uint32	   *gslot;			/* group + 1, 0 free */
+	uint32	   *grep;			/* per group: its first row */
+	uint32	   *gfirst;
+	uint32	   *grow;
+} SpineSt;
+
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
@@ -47,6 +78,11 @@ void arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 void arms_init(AggExec *ex);
 void arms_flush(AggExec *ex);
 void arm_chunk(AggExec *ex, Tup *t);
+void spine_tail(AggExec *ex);
+
+/* spine.c */
+void spine_load(AggExec *ex);
+uint32 spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows);
 
 #pragma GCC visibility pop
 

@@ -19,8 +19,7 @@ static int	nproviders;
 void
 sift_colsrc_register(const SiftSrcProvider *prov)
 {
-	if (nproviders == MAX_PROVIDERS)
-		elog(ERROR, "sift: too many column source providers");
+	SIFT_INVARIANT(nproviders < MAX_PROVIDERS, "sift: too many column source providers");
 	providers[nproviders++] = prov;
 }
 
@@ -52,8 +51,7 @@ provider_of_rel(Relation rel)
 	bool		index = rel->rd_rel->relkind == RELKIND_INDEX;
 	const SiftSrcProvider *prov = provider_of(rel->rd_rel->relam, index);
 
-	if (prov == NULL)
-		elog(ERROR, "sift: \"%s\" has no column source", RelationGetRelationName(rel));
+	SIFT_INVARIANT(prov != NULL, "sift: \"%s\" has no column source", RelationGetRelationName(rel));
 	return prov;
 }
 
@@ -67,6 +65,12 @@ void
 sift_colsrc_stats(Relation rel, SiftSrcStats *st)
 {
 	provider_of_rel(rel)->stats(rel, st);
+}
+
+void
+sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp)
+{
+	provider_of_rel(index)->stamp(index, stamp);
 }
 
 void
@@ -237,6 +241,20 @@ sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf)
 	src->prov->tolerate_ovf(src->impl, leaf);
 }
 
+bool
+sift_colsrc_can_raw(Oid relam, bool index)
+{
+	const SiftSrcProvider *prov = provider_of(relam, index);
+
+	return prov != NULL && prov->set_raw != NULL;
+}
+
+void
+sift_colsrc_set_raw(SiftSrcSource *src, int leaf)
+{
+	src->prov->set_raw(src->impl, leaf);
+}
+
 void
 sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {
@@ -256,6 +274,12 @@ sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftS
 }
 
 bool
+sift_colsrc_has_zone_range(SiftSrcSource *src)
+{
+	return src->prov->zone_range != NULL;
+}
+
+bool
 sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
 {
 	return src->prov->overflow && src->prov->overflow(src->impl, unit, leaf);
@@ -268,11 +292,22 @@ sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
 }
 
+bool
+sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
+}
+
+void
+sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
+{
+	src->prov->run_read(src->impl, unit, leaf, pos, cnt, rows);
+}
+
 void
 sift_colsrc_select(SiftSrcSource *src, const SiftFilter *keep)
 {
-	if (src->prov->select == NULL)
-		elog(ERROR, "sift: this column source cannot be restricted to a match set");
+	SIFT_INVARIANT(src->prov->select != NULL, "sift: this column source cannot be restricted to a match set");
 	src->prov->select(src->impl, keep);
 }
 
@@ -280,6 +315,12 @@ void
 sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	src->prov->begin(src->impl, sb_lo, sb_hi, prune, nprune);
+}
+
+bool
+sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
+{
+	return src->prov->kept != NULL && src->prov->kept(src->impl, prune, nprune, nspace, kept);
 }
 
 bool
@@ -370,6 +411,18 @@ bool
 sift_colsrc_can_read_sel(const SiftSrcSource *src)
 {
 	return src->prov->read_sel != NULL;
+}
+
+bool
+sift_colsrc_can_narrow(const SiftSrcSource *src)
+{
+	return src->prov->narrow != NULL;
+}
+
+bool
+sift_colsrc_narrow(SiftSrcSource *src, SiftSrcUnit *unit, const uint64 *bits)
+{
+	return src->prov->narrow(src->impl, unit, bits);
 }
 
 void

@@ -1,0 +1,323 @@
+-- The summary of the keys of a leaf in every unit (column format minor 10, docs/COL.md 2.13): an index with the option key_columns keeps, per unit and
+-- leaf that is not an int2, int4 or date column (those keep a key list or bitmap: col_key_presence), the distinct keys exactly up to 32 and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
+-- match where the zone (a minimum and a maximum) cannot tell. Written only under sift.col_format_minor = 10 and for the leaves of the option, so that
+-- an older library keeps reading what an index without it, or under a lower setting, writes; read back by the decoder that refuses a damaged summary;
+-- recomputed by sift.col_verify; kept by promotion, merge and VACUUM; counted in EXPLAIN.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '60s';
+
+-- 30,000 rows in about 24 units. kind: a random value of 60 for each run of 700 rows (a unit holds two or three of them, so its zone spans most of the
+-- range and says nothing); parent_id: scattered over 5,000 values (a unit holds about 1,100 of them); cat: one of 3,000 texts for each run of 25 rows (about
+-- a thousand in the dictionary, so the 256 bits of the zone cannot tell them apart); big: wide offsets; id: ascending (every unit holds a run of
+-- consecutive ids)
+CREATE TABLE ss (id int, kind bigint, parent_id bigint, cat text, big bigint, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE ss ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ss
+SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000,
+       'cat_' || lpad(((hashint4(g / 25 + 7) & 2147483647) % 3000)::text, 4, '0'),
+       CASE WHEN g % 9 = 0 THEN NULL ELSE (hashint4(g / 300) & 2147483647)::bigint * 4294967 - 9000000000000 END,
+       g % 1000, repeat('x', 1500)
+FROM generate_series(1, 30000) g;
+CREATE TABLE ss_b (LIKE ss) WITH (autovacuum_enabled = off);
+ALTER TABLE ss_b ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ss_b SELECT * FROM ss ORDER BY id;
+
+-- the minor of the segments: 4 (this schema has no jsonb paths) without the option or under a lower setting, 10 with both, and the option writes nothing else
+CREATE INDEX ss_off ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+SET sift.col_format_minor = 7;
+CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
+RESET sift.col_format_minor;
+CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
+SELECT 'ss_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ss_off')
+UNION ALL SELECT 'ss_seven', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_seven')
+UNION ALL SELECT 'ss_on', array_agg(DISTINCT format) FROM sift._test_col_formats('ss_on') ORDER BY 1;
+SELECT sift.col_verify('ss_off', true), sift.col_verify('ss_seven', true), sift.col_verify('ss_on', true);
+-- under a lower setting the bytes are those of an index without the option
+SELECT pg_relation_size('ss_seven') = pg_relation_size('ss_off') AS seven_is_off_size,
+       (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('ss_seven'))
+       = (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('ss_off')) AS seven_is_off_sections;
+SELECT count(*) FILTER (WHERE section = 'sets') AS rows_off FROM sift.col_sections('ss_off');
+SELECT bytes > 0 AS sets_take_bytes FROM sift.col_sections('ss_on') WHERE section = 'sets';
+SELECT pg_relation_size('ss_on') > pg_relation_size('ss_off') AS index_is_larger;
+
+-- the options are checked
+CREATE INDEX ss_bad1 ON ss USING sift_col (id, kind) WITH (key_columns = 'nosuch', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad2 ON ss USING sift_col (id, kind, val) WITH (key_columns = 'kind,,val', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad3 ON ss USING sift_col (id, kind, big) WITH (key_columns = 'auto: nosuch', cube_minmax = false, superunit = 0);
+CREATE INDEX ss_bad4 ON ss USING sift_col (id, kind, big) WITH (key_columns = 'kind, auto', cube_minmax = false, superunit = 0);
+CREATE TABLE ss_f (id int, f float8);
+CREATE INDEX ss_bad5 ON ss_f USING sift_col (id, f) WITH (key_columns = 'f', cube_minmax = false, superunit = 0);
+DROP TABLE ss_f;
+
+-- three ways: the summaries on, the zones alone (the same rows in a table of their own), the plain plan; the units the summaries alone skipped
+CREATE FUNCTION ss_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION ss_units(q text, OUT units int, OUT pruned int, OUT by_set int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	by_set := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pruned := coalesce(substring(l from 'Units Pruned: (\d+)')::int, pruned);
+		by_set := coalesce(substring(l from 'Units Pruned By Set Summary: (\d+)')::int, by_set);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pruned := NULL; by_set := NULL;
+END $$;
+SELECT kind AS k1, parent_id AS p1, cat AS c1, big AS b1 FROM ss WHERE id = 5000 \gset
+SELECT kind AS k2, cat AS c2 FROM ss WHERE id = 17000 \gset
+CREATE TABLE ss_q (n int, shape text, q text);
+INSERT INTO ss_q VALUES
+	(1, 'point, scattered key',    'SELECT count(*), sum(val) FROM %s WHERE parent_id = ' || :p1),
+	(2, 'point, absent key',       'SELECT count(*), sum(val) FROM %s WHERE parent_id = 99999'),
+	(3, 'IN of 5',                 'SELECT count(*), sum(val) FROM %s WHERE parent_id IN (3, 17, 99, 512, 4001)'),
+	(4, 'IN of 50',                'SELECT count(*), sum(val) FROM %s WHERE parent_id IN (SELECT g * 97 FROM generate_series(1, 50) g)'),
+	(5, 'IN list literals, 50',    'SELECT count(*), sum(val) FROM %s WHERE parent_id IN (' || (SELECT string_agg((g * 97)::text, ',') FROM generate_series(1, 50) g) || ')'),
+	(6, 'low cardinality, exact',  'SELECT count(*), sum(val) FROM %s WHERE kind = ' || :k1),
+	(7, 'low cardinality IN',      'SELECT kind, count(*) FROM %s WHERE kind IN (' || :k1 || ', ' || :k2 || ') GROUP BY kind'),
+	(8, 'text equality',           'SELECT count(*), sum(val) FROM %s WHERE cat = ' || quote_literal(:'c1')),
+	(9, 'text IN',                 'SELECT cat, count(*) FROM %s WHERE cat IN (' || quote_literal(:'c1') || ', ' || quote_literal(:'c2') || ') GROUP BY cat'),
+	(10, 'text absent',            'SELECT count(*) FROM %s WHERE cat = ''cat_9999'''),
+	(11, 'range of the key',       'SELECT count(*), sum(val) FROM %s WHERE parent_id BETWEEN 100 AND 103'),
+	(12, 'range of the low key',   'SELECT count(*) FROM %s WHERE kind BETWEEN ' || :k1 + 1 || ' AND ' || :k1 + 2),
+	(13, 'key and a filter',       'SELECT count(*) FROM %s WHERE parent_id = ' || :p1 || ' AND val < 500'),
+	(14, 'two keys',               'SELECT count(*) FROM %s WHERE parent_id = ' || :p1 || ' AND kind = ' || :k1),
+	(15, 'OR of two keys',         'SELECT count(*) FROM %s WHERE parent_id = ' || :p1 || ' OR kind = ' || :k1),
+	(16, 'dense id',               'SELECT count(*), sum(val) FROM %s WHERE id = 12345'),
+	(17, 'bigint, wide offsets',   'SELECT count(*) FROM %s WHERE big = ' || :b1),
+	(18, 'NULL test',              'SELECT count(*) FROM %s WHERE big IS NULL'),
+	(19, 'not equal',              'SELECT count(*) FROM %s WHERE parent_id <> 17'),
+	(20, 'grouped',                'SELECT kind, count(*), sum(val) FROM %s WHERE parent_id = ' || :p1 || ' GROUP BY kind'),
+	(21, 'negative key',           'SELECT count(*) FROM %s WHERE big = -9000000000000');
+CREATE FUNCTION ss_check(a text, b text) RETURNS TABLE (n int, shape text, same bool, units int, pruned int, by_set int, off_pruned int) LANGUAGE plpgsql AS $$
+DECLARE r record; qa text; qb text; ua record; ub record;
+BEGIN
+	FOR r IN SELECT * FROM ss_q ORDER BY ss_q.n LOOP
+		qa := format(r.q, a); qb := format(r.q, b);
+		SELECT * INTO ua FROM ss_units(qa);
+		SELECT * INTO ub FROM ss_units(qb);
+		n := r.n; shape := r.shape; units := ua.units; pruned := ua.pruned; by_set := ua.by_set; off_pruned := ub.pruned;
+		same := ss_rows(qa, true) = ss_rows(qb, true) AND ss_rows(qa, true) = ss_rows(qa, false) AND ss_rows(qa, true) IS NOT NULL
+			AND ss_rows(qa, true) NOT LIKE 'ERROR%';
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- the index of ss_b has no summaries: its twin rows are the same, every query gives the same rows, and the summaries only add skipped units
+DROP INDEX ss_off, ss_seven;
+CREATE INDEX ss_b_off ON ss_b USING sift_col (id, kind, parent_id, cat, big, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+SELECT n, shape, same, units, pruned, by_set, off_pruned, pruned >= off_pruned AS no_less_pruned FROM ss_check('ss', 'ss_b');
+
+-- the summaries do skip: the units of a point lookup, an IN list, a low cardinality key, a text, with the numbers the shapes above print
+SELECT (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)) > 0 AS point_skips,
+       (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE kind = ' || :k1)) > 0 AS low_card_skips,
+       (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE cat = ' || quote_literal(:'c1'))) > 0 AS text_skips,
+       (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE id = 12345')) = 0 AS dense_id_has_none,
+       (SELECT by_set FROM ss_units('SELECT count(*) FROM ss_b WHERE parent_id = ' || :p1)) = 0 AS no_summary_no_skip;
+SELECT sift.col_verify('ss_on', true);
+
+-- sift.stats() splits the units a scan skipped: the ones only a summary cleared are units_pruned_set, the figure EXPLAIN gives, and the sum is Units Pruned
+CREATE FUNCTION ss_split(q text, OUT set_is_explain bool, OUT parts_add_up bool, OUT set_skips bool, OUT zone_skips bool) LANGUAGE plpgsql AS $$
+DECLARE u record;
+BEGIN
+	PERFORM sift.stats_reset();
+	SELECT * INTO u FROM ss_units(q);
+	SELECT coalesce(sum(value) FILTER (WHERE name = 'units_pruned_set'), 0) = u.by_set,
+		   sum(value) FILTER (WHERE name LIKE 'units_pruned_%') = u.pruned,
+		   sum(value) FILTER (WHERE name = 'units_pruned_set') > 0,
+		   sum(value) FILTER (WHERE name = 'units_pruned_zone') > 0
+	INTO set_is_explain, parts_add_up, set_skips, zone_skips FROM sift.stats();
+END $$;
+SELECT 'point' AS shape, * FROM ss_split('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)
+UNION ALL SELECT 'zone and set', * FROM ss_split('SELECT count(*) FROM ss WHERE id < 3000 AND kind = ' || :k1)
+UNION ALL SELECT 'dense id', * FROM ss_split('SELECT count(*) FROM ss WHERE id = 12345');
+
+-- the planner prices the skipped units: a point lookup is planned cheaper with the summaries than without them (a shape the pre-aggregates cannot answer, so the
+-- scan is priced), an IN list of 50 values, which keeps every unit, gets no credit, and the plans give the same rows
+-- VACUUM first: the cost counts the pages marked all-visible, which PostgreSQL 19 sets while a query reads a table, and ss has been read more than ss_b
+VACUUM (ANALYZE) ss;
+VACUUM (ANALYZE) ss_b;
+CREATE FUNCTION ss_cost(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN
+			RETURN substring(l from 'cost=[0-9.]+\.\.([0-9.]+)')::float8;
+		END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT ss_cost('SELECT sum(val * 2), max(val) FROM ss WHERE parent_id = ' || :p1) < ss_cost('SELECT sum(val * 2), max(val) FROM ss_b WHERE parent_id = ' || :p1) AS point_is_cheaper,
+       ss_cost('SELECT sum(val * 2), max(val) FROM ss WHERE parent_id IN (' || (SELECT string_agg((g * 97)::text, ',') FROM generate_series(1, 50) g) || ')')
+       >= ss_cost('SELECT sum(val * 2), max(val) FROM ss_b WHERE parent_id IN (' || (SELECT string_agg((g * 97)::text, ',') FROM generate_series(1, 50) g) || ')') AS wide_list_gets_no_credit;
+
+-- workers each begin on a range of the units: the rows and the units the summaries skipped are the serial scan's
+CREATE FUNCTION ss_by_set(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		n := coalesce(substring(l from 'Units Pruned By Set Summary: (\d+)')::int, n);
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1) AS serial_point,
+       ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE kind = ' || :k1) AS serial_low,
+       ss_by_set('SELECT count(*) FROM ss WHERE cat = ' || quote_literal(:'c1')) AS serial_text;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1) AS parallel_point,
+       ss_by_set('SELECT count(*), sum(val * 2) FROM ss WHERE kind = ' || :k1) AS parallel_low,
+       ss_by_set('SELECT count(*) FROM ss WHERE cat = ' || quote_literal(:'c1')) AS parallel_text;
+SELECT 'parallel point' AS shape, * FROM ss_split('SELECT count(*), sum(val * 2) FROM ss WHERE parent_id = ' || :p1);
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+SET max_parallel_workers_per_gather = 0;
+
+-- rows in the write buffer are read whatever the summaries say; deletes, updates and VACUUM leave a summary that holds more than the unit does, which is
+-- sound; promotion and merge compute it again
+INSERT INTO ss SELECT g, 4999 - g % 7, 4242, 'cat_77', 7, g % 1000, repeat('x', 1500) FROM generate_series(30001, 30400) g;
+INSERT INTO ss_b SELECT g, 4999 - g % 7, 4242, 'cat_77', 7, g % 1000, repeat('x', 1500) FROM generate_series(30001, 30400) g;
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+SELECT count(*) AS new_rows_found FROM ss WHERE parent_id = 4242 AND cat = 'cat_77';
+UPDATE ss SET parent_id = 17 WHERE id % 1000 = 5;
+UPDATE ss_b SET parent_id = 17 WHERE id % 1000 = 5;
+DELETE FROM ss WHERE id % 7 = 0;
+DELETE FROM ss_b WHERE id % 7 = 0;
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ss;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ss_b;
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+SELECT sift.col_promote('ss_on') >= 0 AS promoted;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ss_on');
+SELECT sift.col_verify('ss_on', true);
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+SELECT sift.col_merge('ss_on', true) >= 0 AS merged;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ss;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ss_on');
+SELECT sift.col_verify('ss_on', true);
+SELECT n, shape, same FROM ss_check('ss', 'ss_b') WHERE NOT same;
+SELECT (SELECT by_set FROM ss_units('SELECT count(*) FROM ss WHERE parent_id = ' || :p1)) > 0 AS point_still_skips;
+
+-- the summaries are decoded with checks: a cut blob, a flag bit, an unknown kind, a count that does not fit the blob or overflows, a width or probe
+-- count that is not one, filter bits that are not the length, an empty filter, offsets that are not ascending are refused; a changed byte that is
+-- accepted is another valid summary, and the comparison with the chunk (what sift.col_verify does) refuses it
+SELECT blobs > 0 AS has_blobs, exact > 0 AS has_exact, bloom > 0 AS has_bloom, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks,
+       cut > 0 AS cuts_made, cut_accepted = 0 AS cuts_refused, named > 0 AS named_made, named_accepted = 0 AS named_refused,
+       damaged > 0 AS damages_made, accepted < damaged AS some_refused, missed = 0 AS accepted_differ_from_chunk
+FROM sift._test_col_set_damage('ss_on', 6);
+
+-- an index of the old kind takes the option later: the units written before keep their minor and have no summary, the ones after are minor 10, a merge
+-- writes one segment of minor 10; the option switched off, the next merge writes the old minor; under a lower setting nothing of it is written
+CREATE TABLE sa (id int, kind bigint, parent_id bigint, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE sa ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(1, 12000) g;
+CREATE INDEX sa_idx ON sa USING sift_col (id, kind, parent_id, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sa_idx');
+ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
+INSERT INTO sa SELECT g, (hashint4(g / 700) & 2147483647) % 60, (hashint4(g) & 2147483647) % 5000, g % 1000, repeat('x', 1500) FROM generate_series(12001, 24000) g;
+SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT sift.col_verify('sa_idx', true);
+SELECT string_agg(x::text, ',' ORDER BY x::text) = (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT id FROM sa WHERE parent_id = 17) x) AS point_same
+FROM (SELECT id FROM sa WHERE parent_id = 17) x;
+SET sift.enable_agg = on;
+SELECT count(*), sum(val) FROM sa WHERE parent_id = 17;
+SET sift.enable_agg = off;
+SELECT count(*), sum(val) FROM sa WHERE parent_id = 17;
+RESET sift.enable_agg;
+SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
+SELECT blobs > 0 AS has_summaries FROM sift._test_col_set_damage('sa_idx', 3);
+SELECT sift.col_verify('sa_idx', true);
+ALTER INDEX sa_idx SET (key_columns = '');
+INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(24001, 28000) g;
+SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
+SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+SELECT blobs AS summaries FROM sift._test_col_set_damage('sa_idx', 3);
+SELECT sift.col_verify('sa_idx', true);
+ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
+SET sift.col_format_minor = 6;
+INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(28001, 30000) g;
+SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
+SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
+RESET sift.col_format_minor;
+SELECT sift.col_verify('sa_idx', true);
+
+-- with the rollup of the rows (minor 9) on one index: the segments are minor 10, verify, and the answers are the heap's
+CREATE TABLE sr (id int, a int, b int, k bigint, val numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE sr ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sr SELECT g, g % 9, g % 7, g * 7919 % 5000, g % 1000 / 8.0, repeat('x', 1000) FROM generate_series(1, 30000) g;
+CREATE INDEX sr_idx ON sr USING sift_col (id, a, b, k, val) WITH (rollup_dims = 'a, b', key_columns = 'k', cube_minmax = false, superunit = 0);
+VACUUM ANALYZE sr;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sr_idx');
+SELECT sift.col_verify('sr_idx', true);
+SELECT count(*) || ':' || sum(val) AS plain FROM sr WHERE k = 2919 \gset
+SET sift.enable_agg = off;
+SET sift.enable_col = off;
+SELECT count(*) || ':' || sum(val) AS heap FROM sr WHERE k = 2919 \gset
+RESET sift.enable_agg;
+RESET sift.enable_col;
+SELECT :'plain' = :'heap' AS equality_matches_heap;
+SELECT (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM sr GROUP BY a, b) g) =
+       (SELECT string_agg(a || ':' || b || ':' || n, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n FROM (SELECT a, b FROM sr OFFSET 0) x GROUP BY a, b) g) AS group_matches;
+
+-- a uuid takes a set as a text does (its keys are the codes of its dictionary): units skipped for an absent or a scattered value, the heap's rows, verify
+CREATE TABLE su (id int, u uuid, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE su ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su SELECT g, CASE WHEN g % 53 = 0 THEN NULL ELSE md5(((hashint4(g) & 2147483647) % 5000)::text)::uuid END, g % 1000, repeat('x', 1500) FROM generate_series(1, 30000) g;
+CREATE TABLE su_b (LIKE su) WITH (autovacuum_enabled = off);
+ALTER TABLE su_b ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su_b SELECT * FROM su;
+CREATE INDEX su_on ON su USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, key_columns = 'u', cube_minmax = false, superunit = 0);
+CREATE INDEX su_off ON su_b USING sift_col (id, u, val) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+VACUUM ANALYZE su;
+VACUUM ANALYZE su_b;
+SELECT sift.col_verify('su_on', true);
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('su_on');
+SELECT u AS u1 FROM su WHERE id = 5000 \gset
+CREATE TABLE su_q (n int, shape text, q text);
+INSERT INTO su_q VALUES
+	(1, 'point',            'SELECT count(*), sum(val) FROM %s WHERE u = ' || quote_literal(:'u1') || '::uuid'),
+	(2, 'absent',           'SELECT count(*), sum(val) FROM %s WHERE u = ''00000000-0000-0000-0000-000000000001'''),
+	(3, 'IN of 3',          'SELECT count(*), sum(val) FROM %s WHERE u IN (' || quote_literal(:'u1') || ', ''00000000-0000-0000-0000-000000000001'', ''ffffffff-ffff-ffff-ffff-ffffffffffff'')'),
+	(4, 'NULL test',        'SELECT count(*) FROM %s WHERE u IS NULL'),
+	(5, 'not equal',        'SELECT count(*) FROM %s WHERE u <> ' || quote_literal(:'u1') || '::uuid'),
+	(6, 'grouped',          'SELECT mod(val, 3), count(*) FROM %s WHERE u = ' || quote_literal(:'u1') || '::uuid GROUP BY 1');
+SELECT n, shape, ss_rows(format(q, 'su'), true) = ss_rows(format(q, 'su_b'), true) AND ss_rows(format(q, 'su'), true) = ss_rows(format(q, 'su'), false) AND
+       ss_rows(format(q, 'su'), true) NOT LIKE 'ERROR%' AS same
+FROM su_q ORDER BY n;
+-- the units an index scan skips: the set of the uuid clears units whose zone (codes in first-seen order) spans the key, the twin without a set does not
+SELECT shape, c.rows, w.rows AS rows_without, c.units AS units_read, w.units AS units_read_without
+FROM (VALUES ('point', '1:eq:' || :'u1'),
+             ('IN of 3', '1:in:' || :'u1' || '|00000000-0000-0000-0000-000000000001|ffffffff-ffff-ffff-ffff-ffffffffffff'),
+             ('absent', '1:eq:00000000-0000-0000-0000-000000000001')) q(shape, preds),
+     LATERAL sift._test_col_counters('su_on', q.preds) c, LATERAL sift._test_col_counters('su_off', q.preds) w ORDER BY 1;
+DROP TABLE su, su_b, su_q;
+
+DROP TABLE sa, ss, ss_b, ss_q, sr CASCADE;
+DROP FUNCTION ss_rows(text, bool), ss_units(text), ss_check(text, text), ss_cost(text), ss_by_set(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP FUNCTION ss_split(text);

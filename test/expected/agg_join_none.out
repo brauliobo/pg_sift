@@ -15,6 +15,9 @@ SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 110 END, CASE WHEN i % 19 = 0 
          jsonb_build_object('category', 'asp_b', 'score', CASE WHEN i % 10 = 1 THEN to_jsonb('4'::text) ELSE to_jsonb(i % 7) END)) END)
 FROM generate_series(1, 8000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_id, code, day, amount, document) WITH (paths = 'document.parts[]{category text,score float8}');
+NOTICE:  sift_col index facts_col keeps the keys of dim_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 32 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX facts_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims;
 CREATE TABLE spine (day date PRIMARY KEY);
@@ -151,7 +154,7 @@ SELECT * FROM check_query($q$SELECT f.day, count(*) FROM facts f WHERE NOT EXIST
 SELECT * FROM check_query($q$SELECT s.day, count(f.id), sum(f.amount) FROM spine s LEFT JOIN (SELECT f.id, f.day, f.amount FROM facts f JOIN dims d ON d.code = f.code WHERE d.grp = 'none') f ON f.day = s.day GROUP BY s.day$q$);
  n  | diff | units 
 ----+------+-------
- 14 |    0 |     1
+ 14 |    0 |     0
 (1 row)
 
 DROP FUNCTION check_query(text);

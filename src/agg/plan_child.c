@@ -33,11 +33,11 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "optimizer/pathnode.h"
+#include "optimizer/tlist.h"
 #include "optimizer/paramassign.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
-#include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
@@ -72,14 +72,16 @@ projects_columns(Path *p)
 	return IsA(p, SubqueryScanPath) || p->pathtype == T_ValuesScan || p->pathtype == T_FunctionScan || p->pathtype == T_CteScan;
 }
 
-/* the cheapest path of the rows of a sub-select, VALUES list, function or UNION ALL of sub-selects */
+/* the cheapest path of the rows of a sub-select, VALUES list, function or UNION ALL of sub-selects, or of the scan of a table the plan reads for its rows */
 Path *
 child_path(RelOptInfo *rel, bool correlated)
 {
 	Path	   *best = NULL;
 
 	foreach_ptr(Path, p, rel->pathlist)
-		if ((p->param_info == NULL || (correlated && IsA(p, SubqueryScanPath))) && (projects_columns(p) || IsA(p, AppendPath) || IsA(p, MergeAppendPath)) &&
+		if ((p->param_info == NULL || (correlated && IsA(p, SubqueryScanPath))) &&
+			(projects_columns(p) || IsA(p, AppendPath) || IsA(p, MergeAppendPath) ||
+			 (rel->rtekind == RTE_RELATION && (p->pathtype == T_SeqScan || p->pathtype == T_IndexScan || p->pathtype == T_BitmapHeapScan))) &&
 			(best == NULL || p->total_cost < best->total_cost))
 			best = p;
 	return best;
@@ -365,9 +367,67 @@ first_key_ok(OpExpr *op, Var *v, Oid et)
 }
 
 /*
+ * Can the lookup table test the condition on every row it loads, where the child tests it on the key's row only? Only a comparison of columns
+ * of the table with constants and a null test: they cannot raise an error, so a row nobody asks for does not raise one the child never meets.
+ */
+static bool
+first_filter_bad(Node *n, void *context)
+{
+	Oid			lt,
+				rt;
+
+	if (n == NULL)
+		return false;
+	switch (nodeTag(n))
+	{
+		case T_Var:
+			return ((Var *) n)->varno != 1 || ((Var *) n)->varlevelsup != 0 || ((Var *) n)->varattno <= 0;
+		case T_Const:
+		case T_RelabelType:
+		case T_BoolExpr:
+		case T_NullTest:
+			break;
+		case T_OpExpr:
+			if (builtin_cmp(((OpExpr *) n)->opno, &lt, &rt) < 0 || (type_class(lt) == TC_NONE && lt != TEXTOID) || (type_class(rt) == TC_NONE && rt != TEXTOID))
+				return true;
+			break;
+		default:
+			return true;
+	}
+	return expression_tree_walker(n, first_filter_bad, context);
+}
+
+/*
+ * The ORDER BY of a first-row child: columns of the table (integer, date, timestamp) in either direction, which put the rows of a key in an order
+ * that holds no tie when a unique index holds the key and these columns.
+ */
+static bool
+first_order(Query *q, SiftAggFirst *f)
+{
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		Var		   *v = (Var *) strip_relabel((Node *) get_sortgroupclause_tle(sgc, q->targetList)->expr);
+		Oid			lt,
+					rt;
+		int			cmp = builtin_cmp(sgc->sortop, &lt, &rt);
+
+		if (f->nord >= sift_limit(first_order_cols, SIFT_AGG_MAX_FORD) || !IsA(v, Var) || v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 ||
+			(cmp != SCMP_LT && cmp != SCMP_GT) || lt != v->vartype || rt != v->vartype || v->vartype == BOOLOID ||
+			!sift_aggspec_integer_type(v->vartype))
+			return false;
+		f->ordatt[f->nord] = v->varattno;
+		f->ordtype[f->nord] = v->vartype;
+		f->orddesc[f->nord] = cmp == SCMP_GT;
+		f->ordnullsfirst[f->nord++] = sgc->nulls_first;
+	}
+	return true;
+}
+
+/*
  * `SELECT columns FROM table WHERE column = parameter [AND ...] LIMIT 1` over a table that holds each key once (a unique index on columns
  * among those compared) returns the key's row, whatever plan it has: the scan can read the table as a lookup table (agg/first.c). Anything
- * else the query does (a condition, an order, a second table, an offset, a row lock) leaves the child as it is.
+ * else the query does (an order, a second table, an offset, a row lock, a condition that is not a comparison with a constant or a null test)
+ * leaves the child as it is.
  */
 static void
 first_lookup(AggCtx *c, JoinCtx *jc)
@@ -378,12 +438,12 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	RangeTblEntry *rte;
 	RelOptInfo *brel;
 	List	   *conj;
-	int			atts[SIFT_AGG_MAX_JKEYS];
+	int			atts[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_FORD];
 
 	memset(f, 0, sizeof(*f));
 	if (jc->j.scoped || q->commandType != CMD_SELECT || q->setOperations != NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs ||
 		q->hasSubLinks || q->hasForUpdate || q->hasRecursive || q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL ||
-		q->sortClause != NIL || q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
+		q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
 		q->limitOption != LIMIT_OPTION_COUNT || lim == NULL || !IsA(lim, Const) || lim->constisnull || lim->consttype != INT8OID ||
 		DatumGetInt64(lim->constvalue) != 1 || list_length(q->rtable) != 1 || list_length(q->targetList) > SIFT_AGG_MAX_FOUT ||
 		q->jointree == NULL || list_length(q->jointree->fromlist) != 1 || q->jointree->quals == NULL)
@@ -392,11 +452,9 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		return;
 	rte = linitial_node(RangeTblEntry, q->rtable);
 	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL ||
-		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || brel->tuples > sift_agg_lookup_max_rows)
+		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || !agg_lookup_fits(brel->tuples, brel->reltarget->width))
 		return;
 	conj = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
-	if (list_length(conj) > SIFT_AGG_MAX_JKEYS)
-		return;
 	foreach_ptr(Node, qual, conj)
 	{
 		OpExpr	   *op = (OpExpr *) qual;
@@ -406,7 +464,12 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		Param	   *p;
 		int			pos = -1;
 
-		if (!IsA(qual, OpExpr) || list_length(op->args) != 2)
+		if (!first_filter_bad(qual, NULL))
+		{
+			f->qual = lappend(f->qual, qual);
+			continue;
+		}
+		if (!IsA(qual, OpExpr) || list_length(op->args) != 2 || f->nkey == SIFT_AGG_MAX_JKEYS)
 			return;
 		l = strip_relabel(linitial(op->args));
 		r = strip_relabel(lsecond(op->args));
@@ -436,15 +499,24 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		f->keytype[f->nkey] = v->vartype;
 		f->keyarg[f->nkey++] = pos;
 	}
+	if (!first_order(q, f))
+		return;
 	for (int k = 0; k < f->nkey; k++)
 		atts[k] = f->keyatt[k];
-	if (!sift_agg_unique_key(rte->relid, f->nkey, atts))
+	for (int k = 0; k < f->nord; k++)
+		atts[f->nkey + k] = f->ordatt[k];
+	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
+	{
+		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false);
 		return;
+	}
 	foreach_node(TargetEntry, te, q->targetList)
 	{
 		Var		   *v = (Var *) te->expr;
 
-		if (te->resjunk || te->resno > SIFT_AGG_MAX_FOUT)
+		if (te->resjunk)
+			continue;
+		if (te->resno > SIFT_AGG_MAX_FOUT)
 			return;
 		f->col[te->resno - 1] = IsA(v, Var) && v->varno == 1 && v->varlevelsup == 0 && v->varattno > 0 ? v->varattno : 0;
 		f->ncol = Max(f->ncol, te->resno);
@@ -647,7 +719,7 @@ child_rows_fit(AggCtx *c, JoinCtx *jc)
 {
 	double		reach = child_reach(c, jc);
 
-	return jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach) <= sift_agg_lookup_max_rows;
+	return agg_lookup_fits(jc->cpath->rows * Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach), jc->cpath->pathtarget->width);
 }
 
 static Node *

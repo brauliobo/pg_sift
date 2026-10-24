@@ -67,9 +67,15 @@ because both revisions would build the same extension. Aggregate sources select 
 (PR: 8,192) and adds phrase-count and high-cardinality group workloads, for 18 cases.
 This is a representative warm workload, not exhaustive feature or size coverage.
 
+`storage_insert` and `storage_point_lookup` (sub-millisecond operations) are measured and reported but do not
+decide the verdict (`gate=False` in the catalog); on hosted runners they were 37 of the 52 non-pass verdicts of 439 runs.
+The workflow's budget is the whole job: 300 s for the acceptance run, 1800 s for the nightly tier. Exit 2
+(inconclusive) is a warning annotation there, not a failed run, except in the acceptance run.
+
 Before measuring, the driver compares baseline/head results and checks required
 structured plan paths independently on both revisions. It records topology
-changes as diagnostics without rejecting valid planner changes.
+changes as diagnostics without rejecting valid planner changes: a case whose
+required plan is absent on either revision is reported as `skipped` and not timed.
 `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, TIMING OFF)` runs outside measurement.
 Aggregate/count/storage results are checked against ordinary heap SQL; plans and
 relation sizes are retained. Ranked results are ordered by score then ID and

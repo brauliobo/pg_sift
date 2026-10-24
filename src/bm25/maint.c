@@ -27,6 +27,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_status.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -37,6 +38,7 @@
 #include "bm25/am.h"
 #include "bm25/build.h"
 #include "core/lane.h"
+#include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/maint_int.h"
 #include "bm25/merge.h"
@@ -51,17 +53,18 @@
 int			sift_test_merge_max_kb = 0;
 int			sift_test_merge_sleep_ms = 0;
 int			sift_test_room_segments = 0;
-#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : ROOM_SEGMENTS)
+#define room_segments()		(sift_test_room_segments > 0 ? sift_test_room_segments : (int) sift_limit(max_segments, SIFT_MAX_SEGMENTS) - ROOM_SPARE)
 /* longest wait of an inserter for the maintenance of others (sift._test_maint_wait_us) */
 int64		sift_maint_wait_max_us = 0;
 #define wait_started()		GetCurrentTimestamp()
 #define wait_done(start)	(sift_maint_wait_max_us = Max(sift_maint_wait_max_us, GetCurrentTimestamp() - (start)))
 #else
-#define room_segments()		ROOM_SEGMENTS
+#define room_segments()		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
 #define wait_started()		((TimestampTz) 0)
 #define wait_done(start)	((void) (start))
 #endif
-#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - 16)	/* directory entries from which inserters merge */
+#define ROOM_SPARE			16		/* directory entries below the limit from which inserters merge */
+#define ROOM_SEGMENTS		(SIFT_MAX_SEGMENTS - ROOM_SPARE)
 #define SELF_PROMOTE_SEALED	4		/* sealed segments from which an inserter promotes them itself */
 /* Whatever merge_fanin is, the policy merges (from SIFT_MERGE_ENTRIES entries) before inserters have to make room, and a merge fits a directory */
 StaticAssertDecl(SIFT_MERGE_ENTRIES(SIFT_MERGE_MAX_FANIN) + SELF_PROMOTE_SEALED + 1 < ROOM_SEGMENTS, "merge policy acts after the room threshold");
@@ -132,14 +135,26 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 	}
 	if (sw->neu)
 	{
-		memmove(&dir->segs[at + 1], &dir->segs[at], (n - at) * sizeof(SiftSegEntry));
-		dir->segs[at] = *sw->neu;
-		n++;
-		if (sw->neu->kind == SIFT_SEG_IMMUTABLE)
+		int			k = 1 + sw->nmore;
+
+		if (n + k > SIFT_MAX_SEGMENTS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("the directory has no room for the %d segments this merge wrote", k),
+					 errhint("Merge the segments first (sift.merge(), or sift.col_merge() for a sift_col index), or raise sift.col_auto_merge_partition_kb so that a rewrite cuts fewer partitions.")));
+		memmove(&dir->segs[at + k], &dir->segs[at], (n - at) * sizeof(SiftSegEntry));
+		for (int j = 0; j < k; j++)
 		{
-			meta->ndocs += sw->neu->ndocs;
-			meta->sum_dl += sw->neu->sum_dl;
+			const SiftSegEntry *e = j == 0 ? sw->neu : &sw->more[j - 1];
+
+			dir->segs[at + j] = *e;
+			if (e->kind == SIFT_SEG_IMMUTABLE)
+			{
+				meta->ndocs += e->ndocs;
+				meta->sum_dl += e->sum_dl;
+			}
 		}
+		n += k;
 	}
 	dir->nsegs = n;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
@@ -169,20 +184,29 @@ sift_maint_inputs(Relation index, const SiftSegEntry *in, int n)
 static uint64 maint_written = 0;
 
 void
-sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release, int nrelease,
-				   const char *what, TimestampTz start, int64 docs)
+sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release, int nrelease,
+					 const char *what, TimestampTz start, int64 docs)
 {
-	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = neu};
+	SiftMaintSwitch sw = {.old = old,.nold = nold,.neu = nneu > 0 ? neu : NULL,.more = nneu > 1 ? neu + 1 : NULL,.nmore = Max(nneu - 1, 0)};
+	uint64		bytes = 0;
 
-	if (neu)
-		maint_written += neu->bytes;
+	for (int i = 0; i < nneu; i++)
+		bytes += neu[i].bytes;
+	maint_written += bytes;
 
 	sift_dir_update(index, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = release,
 			.nrelease = nrelease,.extra = InvalidBuffer});
-	sift_log_maint(index, what, start, docs, neu ? neu->bytes : 0);
+	sift_log_maint(index, what, start, docs, bytes);
 }
 
-static int64
+void
+sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release, int nrelease,
+				   const char *what, TimestampTz start, int64 docs)
+{
+	sift_maint_replace_n(index, old, nold, neu, neu ? 1 : 0, release, nrelease, what, start, docs);
+}
+
+int64
 backoff_ms(const SiftMetaPageData *meta)
 {
 	uint32		failures = meta->flags & SIFT_META_FAILURES_MASK;
@@ -466,25 +490,36 @@ int
 sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic)
 {
 	const char *why;
-	int			n = -1;
+	TimestampTz start = GetCurrentTimestamp();
+	bool		all;
+	int			n = 0;
 
 	if (!maint_lock_mode(index, false, ops->step_lock))
 		return -1;
-	if ((why = ops->rewrite_due(index, automatic)) != NULL)
+	if ((why = ops->rewrite_due(index, automatic)) == NULL)
 	{
-		TimestampTz start = GetCurrentTimestamp();
-		uint64		busy = 0;
-
-		n = 0;
-		promote_locked(ops, index, true, true);
-		while (ops->merge_next(index, n == 0, SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE)
-		{
-			n++;
-			CHECK_FOR_INTERRUPTS();
-		}
-		sift_log_maint(index, psprintf("rewrote (%s) the segments of", why), start, -1, -1);
+		maint_unlock_mode(index, ops->step_lock);
+		return -1;
 	}
-	maint_unlock_mode(index, ops->step_lock);
+	all = ops->rewrite_all == NULL || ops->rewrite_all(why);
+	promote_locked(ops, index, true, true);
+	/* the lock is let go between the steps, so that VACUUM and the writers wait for one partition of the rewrite and not for all of it; the rewrite waits for it in turn */
+	for (;;)
+	{
+		uint64		busy = 0;
+		bool		more = ops->merge_next(index, false, all ? SIFT_GOAL_REWRITE : SIFT_GOAL_ANY, true, &busy) == SIFT_STEP_DONE;
+
+		maint_unlock_mode(index, ops->step_lock);
+		if (!more)
+			break;
+		n++;
+		CHECK_FOR_INTERRUPTS();
+		/* a step of the kind makes progress; this is the end of a kind that does not */
+		if (n >= SIFT_MAX_SEGMENTS)
+			break;
+		maint_lock_mode(index, true, ops->step_lock);
+	}
+	sift_log_maint(index, psprintf(all ? "rewrote (%s) the segments of" : "promoted (%s) the write buffer of", why), start, -1, -1);
 	return n;
 }
 
@@ -613,6 +648,40 @@ sift_maint_request_worker(Relation index, const char *function)
 		return false;
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_request,.arg = &now,.extra = InvalidBuffer});
 	return sift_maint_register_worker(index, function);
+}
+
+bool
+sift_maint_busy(int max_active)
+{
+	int			n = 0;
+
+	if (max_active <= 0)
+		return false;
+	pgstat_clear_backend_activity_snapshot();
+	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
+	{
+		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
+
+		n += s->st_backendType == B_BACKEND && s->st_databaseid == MyDatabaseId && s->st_state == STATE_RUNNING;
+	}
+	return n > max_active;
+}
+
+bool
+sift_maint_wait_quiet(int max_active)
+{
+	long		delay = sift_maintenance_naptime;
+
+	for (int tries = 0; sift_maint_busy(max_active); tries++)
+	{
+		if (tries == 8)
+			return false;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		delay *= 2;
+	}
+	return true;
 }
 
 Oid

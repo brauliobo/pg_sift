@@ -1,0 +1,14 @@
+# The build context of packaging/docker/Dockerfile is the repository root; only what the extension build and the image need goes in.
+*
+!Makefile
+!LICENSE
+!NOTICE
+!pg_sift.control
+!pg_sift_test.control
+!src
+!sql
+!scripts/harden.mk
+!packaging/docker/initdb.sql
+**/*.o
+**/*.d
+**/*.so

@@ -144,11 +144,27 @@ unit_group(ColUnit *cu, int group)
 		MemoryContext arena = cu->src->arena;
 		uint32		n = cu->v.nrows;
 		SiftCChunk	c;
-		uint32	   *lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
+		const SiftCLens *kept = cu->seg ? sift_cseg_lens_find(cu->seg, cu->u, group, arena) : NULL;
+		uint32	   *lead;
+		bool		have;
 
+		lead = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n) + 1) * sizeof(uint32));
 		g->counts = lead + 1;		/* the slot before the counts lets the running ends be one prefix sum over `lead` */
 		g->eoff = MemoryContextAllocZero(arena, (SIFT_CC_CAP32(n + 1)) * sizeof(uint32));
-		if (unit_chunk(cu, group, &c))
+		/* the chunk is still looked at (its pages are checked, its row count too), what is decoded from it is the cache's */
+		if (kept && unit_chunk(cu, group, &c) && c.n == n)
+		{
+			for (uint32 i = 0; i < n; i++)
+				g->counts[i] = kept->counts[i];
+			sift_cck->prefix32(lead, n + 1, g->eoff, 0, 0);
+			g->nelems = kept->nelems;
+			g->nulls = c.nulls;
+			g->ovf = c.ovf;
+			g->ready = true;
+			return g;
+		}
+		have = unit_chunk(cu, group, &c);
+		if (have)
 		{
 			if (c.n != n)
 				corrupt("The counts of group %d hold %u values for %u rows.", group, c.n, n);
@@ -167,9 +183,42 @@ unit_group(ColUnit *cu, int group)
 				corrupt("The counts of group %d add up to more than %u elements.", group, PG_UINT32_MAX);
 		}
 		g->nelems = g->eoff[n];
+		if (have && cu->seg)
+			sift_cseg_lens_keep(cu->seg, cu->u, group, n, g->counts, g->nelems);
 		g->ready = true;
 	}
 	return g;
+}
+
+bool
+sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->seg == NULL)
+		return false;
+	if (!cu->run.known || cu->run.col != col)
+	{
+		cu->run.col = col;
+		cu->run.known = true;
+		cu->run.found = sift_cseg_run(cu->seg, col, cu->u, &cu->run.r, &cu->run.at);
+	}
+	if (cu->run.found)
+	{
+		*nvals = cu->run.r.nvals;
+		*nnull = cu->run.r.nnull;
+		*id = cu->seg->entry.gen << 28 | cu->u;
+	}
+	return cu->run.found;
+}
+
+void
+sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords)
+{
+	ColUnit    *cu = unit->priv;
+
+	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run read without its info");
+	sift_cseg_run_read(cu->seg, cu->run.at, &cu->run.r, pos, cnt, ords);
 }
 
 void
@@ -253,6 +302,69 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	return sift_col_unit_allvisible(unit);
 }
 
+/*
+ * The group of units at the cursor as one unit. Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
+ * all-visible (the masks of the units are in the summary, so no unit record is read) and no dead row, read in the order of unit_allvisible and
+ * unit_clean: the all-visible bits first, then the directory, then the liveness.
+ */
+bool
+col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		fan = sift_cseg_super_fan(seg),
+				n,
+				rows = 0;
+	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	if (fan == 0 || c->cur % fan != 0 || c->cur < c->nosuper_to)
+		return false;
+	n = Min(fan, seg->nsb - c->cur);
+	if (n < 2 || c->cur + n > c->end)
+		return false;
+	for (uint32 i = 0; i < n; i++)
+		if (!sift_col_bit_test(c->keep, c->cur + i))
+			return false;
+	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
+	for (uint32 i = 0; i < n; i++)
+	{
+		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+				return false;
+	}
+	if (!(src->flags & COLO_TABLE) && !segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (sift_cseg_dirty(seg, c->cur + i))
+			return false;
+		rows += seg->sbdir[c->cur + i].nrows;
+	}
+	cu->seg = seg;
+	cu->u = c->cur;
+	cu->nsu = n;
+	cu->sb = seg->sbdir[c->cur].sb;
+	cu->v.nrows = rows;
+	cu->clean = cu->clean_ready = cu->av_ready = true;
+	memset(cu->av, 0xFF, sizeof(cu->av));
+	c->cur += n;
+	return true;
+}
+
+bool
+sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (cu->nsu == 0)
+		return false;
+	*seg = cu->seg;
+	*k = cu->u / sift_cseg_super_fan(cu->seg);
+	return true;
+}
+
 /* ---------- pre-aggregates (col/pagg.c, docs/COL-PREAGG.md) ---------- */
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */
@@ -261,7 +373,7 @@ sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 {
 	ColUnit    *cu = unit->priv;
 
-	if (cu->seg == NULL)
+	if (cu->seg == NULL || cu->nsu > 0)
 		return false;
 	*seg = cu->seg;
 	*u = cu->u;

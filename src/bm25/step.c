@@ -10,6 +10,7 @@
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "common/int.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "postmaster/bgworker.h"
@@ -73,13 +74,35 @@ score_ref(Relation index)
 	return (SiftScoreRef) {(float4) opts->k1, (float4) opts->b, 0};
 }
 
+/* Counts the failure for the backoff and keeps what sift.workers shows of it */
 static void
 stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
+	const ErrorData *err = arg;
 	uint32		failures = meta->flags & SIFT_META_FAILURES_MASK;
+	TimestampTz now = GetCurrentTimestamp();
 
 	meta->flags = (meta->flags & ~SIFT_META_FAILURES_MASK) | Min(failures + 1, SIFT_META_FAILURES_MASK);
-	meta->maint_requested_at = *(TimestampTz *) arg;
+	meta->maint_requested_at = meta->maint_failed_at = now;
+	meta->maint_errcode = err->sqlerrcode;
+	memset(meta->maint_errmsg, 0, sizeof(meta->maint_errmsg));
+	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
+}
+
+/* A background worker whose transaction failed (sift_col steps run outside a subtransaction): its own transaction keeps the failure like run_step does */
+void
+sift_maint_record_failure(Oid indexoid, ErrorData *err)
+{
+	Relation	index;
+
+	StartTransactionCommand();
+	index = try_index_open(indexoid, RowExclusiveLock);
+	if (index != NULL)
+	{
+		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
+		index_close(index, RowExclusiveLock);
+	}
+	CommitTransactionCommand();
 }
 
 /*
@@ -124,9 +147,8 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 			(errcode(err->sqlerrcode),
 			 errmsg("maintenance of sift index \"%s\" failed: %s", RelationGetRelationName(index), err->message),
 			 errdetail("It is retried later, after a growing delay.")));
+	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);
-	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = &(TimestampTz) {GetCurrentTimestamp()},
-			.extra = InvalidBuffer});
 	return SIFT_STEP_FAILED;
 }
 
@@ -489,7 +511,10 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_wt_expect(wt, mi.bytes);
 	if (MyBackendType == B_BG_WORKER)
+	{
 		sift_wt_throttle(wt, sift_maintenance_cost_delay);
+		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
+	}
 #ifdef SIFT_TESTING
 	/* a long merge of the worker, the segments claimed */
 	for (int ms = 0; MyBackendType == B_BG_WORKER && ms < sift_test_merge_sleep_ms; ms += 50)

@@ -757,48 +757,63 @@ SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift
 -- any other use of the score in WHERE is an error that says where to filter
 SELECT id FROM r WHERE body @@> 'dog' AND (sift.score(ctid) > 1 OR id = 1);
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) = 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) <> 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) IS NOT NULL;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND (CASE WHEN sift.score(ctid) > 1 THEN true ELSE false END);
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) + 1 > 2;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND abs(sift.score(ctid)) > 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid)::numeric > 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > id;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > random();
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > sift.score(ctid) / 2;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.max_score(ctid) > 1;
 ERROR:  sift.max_score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > ANY (ARRAY[1, 2]);
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE sift.score(ctid) > 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' OR sift.score(ctid) > 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT count(*) FROM r WHERE body @@> ANY (ARRAY['dog', 'fox']) AND sift.score(ctid) > 1;
  count 
@@ -814,13 +829,14 @@ SELECT count(*) FROM r WHERE body @@> 'dog OR fox' AND sift.score(ctid) > 1;
 
 SELECT id FROM r WHERE body @@> 'dog' AND EXISTS (SELECT 1 WHERE sift.score(r.ctid) > 1 OFFSET 0);
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > 1 FOR UPDATE;
 ERROR:  sift.score() is not available in FOR UPDATE and FOR SHARE
-HINT:  Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.
+HINT:  Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.
 UPDATE r SET grp = grp WHERE body @@> 'dog' AND sift.score(ctid) > 1;
 ERROR:  sift.score() is not available in UPDATE
-HINT:  Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.
+HINT:  Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.
 -- the same through a subquery filters, as the hint says
 SELECT count(*) AS n FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'dog' OFFSET 0) q WHERE s > 1;
  n  

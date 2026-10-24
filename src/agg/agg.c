@@ -45,6 +45,7 @@
 #include "nodes/extensible.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/cost.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "portability/instr_time.h"
@@ -56,6 +57,7 @@
 #include "utils/acl.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/tuplestore.h"
 #include "utils/date.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -79,8 +81,11 @@
 #include "agg/back.h"
 #include "agg/kern.h"
 #include "agg/part.h"
+#include "agg/refuse.h"
 #include "agg/rows.h"
 #include "agg/spec.h"
+#include "agg/stats.h"
+#include "col/am.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -90,13 +95,17 @@
 #include "agg/agg_int.h"
 
 bool		sift_enable_agg = true;
+double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
+bool		sift_agg_super = true;
 bool		sift_agg_dense = true;
+bool		sift_agg_dist_stream = true;
 bool		sift_agg_semi_lut = true;
 bool		sift_agg_two_level_on = true;
 int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_join_filter = true;
+bool		sift_agg_left_lateral = true;
 bool		sift_agg_key_skew = true;
 bool		sift_agg_share_lookups = true;
 bool		sift_agg_fuse = true;
@@ -113,13 +122,31 @@ sift_agg_init(void)
 	sift_aggcte_init();
 	sift_search_init();
 	sift_agg_rows_init();
+	sift_agg_refuse_init();
 	DefineCustomBoolVariable("sift.enable_agg",
 							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
 							 NULL, &sift_enable_agg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.agg_scale_horizon",
+							 "Size, as a multiple of the table, up to which an inline shared CTE that is a close call must stay the better plan (1: only the size it is).",
+							 "Used where the scans of the inline plan cost less than the work of the shared CTE but not by the margin: the plans are made again at the square root of the horizon and at the horizon times the rows (sift.plan_scale), and the inline one is kept if it wins at both.",
+							 &sift_agg_scale_horizon, 100.0, 1.0, 1e6,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_left_lateral",
+							 "Pushes down LEFT JOIN LATERAL over a jsonb_to_recordset or jsonb_array_elements list of the scanned row: a row none of whose elements passes is one tuple with NULL element columns.",
+							 NULL, &sift_agg_left_lateral, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_preagg",
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_preagg_distinct",
+							 "Answers count(DISTINCT col) of a column the cube stores a histogram of from the groups of the histograms of the units whose rows are all visible, with sift.agg_preagg.",
+							 NULL, &sift_agg_preagg_distinct, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_super",
+							 "Answers a group of exact units from the summary the sift_col index stored for the group (reloption superunit) instead of from each unit.",
+							 NULL, &sift_agg_super, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.agg_rollup_cost",
 							 "Scale of the cost of a tuple of a unit's rollup against the scan of an element: a unit is answered from its rollup only when that costs less (0: always).",
@@ -129,6 +156,10 @@ sift_agg_init(void)
 							 "Aggregates the chunks of counts, sums and averages from the bitmap of their rows, without a list of tuples.",
 							 NULL, &sift_agg_dense, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_dist_stream",
+							 "Visits the superblocks of a count(DISTINCT) of an integer column in the order of the zone minimum of the column when that keeps its sets small: the values below the minimum of the superblocks to come are dropped.",
+							 NULL, &sift_agg_dist_stream, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_semi_lut",
 							 "Answers a semi or anti join (IN, EXISTS, NOT EXISTS) on an integer leaf from a byte table over the keys of the joined table.",
 							 NULL, &sift_agg_semi_lut, true,
@@ -161,6 +192,12 @@ sift_agg_init(void)
 							"Memory per backend that keeps the rows of the joined tables a scan loaded for the next query, while the table does not change (0: off).",
 							NULL, &sift_agg_lookup_cache_kb, 256 * 1024, 0, MAX_KILOBYTES,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_lookup_shared_kb",
+							"Shared memory, for all backends together, that keeps the rows of the joined tables a scan loaded for the queries of other backends, while the table does not change (0: off, -1: the smaller of sift.agg_lookup_cache_kb and a twentieth of shared_buffers).",
+							"Dynamic shared memory, taken as entries are kept and returned as they go, so it needs no restart; with posix shared memory it comes from /dev/shm, which it must stay below. "
+							"Backends that run the same query at once wait for the one that loads the rows (30 s at most); a segment the system has no room for gives a notice and the backend loads its own tables.",
+							&sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
@@ -173,13 +210,25 @@ sift_agg_init(void)
 							 "Lets a top-N scan visit the units of a sort column that does not follow the table by the best value of their zones, and stop at the first that cannot beat the n-th.",
 							 NULL, &sift_topn_walk, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.topn_zone_keys",
+							 "Lets the walk of a top-N bound the units by the zones of the sort keys after the first too: a first key that ties between units is decided by the next.",
+							 NULL, &sift_topn_zone_keys, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.topn_runs",
+							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
+							 NULL, &sift_topn_runs, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_param_set_size",
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_lookup_max_kb",
+							"Memory of the rows a sub-select, VALUES list, function or spine joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
+							NULL, &sift_agg_lookup_max_kb, 256 * 1024, 0, MAX_KILOBYTES,
+							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_max_rows",
-							"Rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
-							NULL, &sift_agg_lookup_max_rows, 1000000, 0, INT_MAX,
+							"The older form of sift.agg_lookup_max_kb: rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, whatever their width (-1: the memory limit decides).",
+							NULL, &sift_agg_lookup_max_rows, -1, -1, INT_MAX,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
@@ -228,12 +277,12 @@ unmatched_tail(AggExec *ex)
 	int			ci;
 	Tup		   *own;
 	ComboEnt	ent;
-	uint32		prior[SIFT_AGG_MAX_COMBOS] = {0};
+	uint32	   *prior = palloc0(Max(ex->spec->ncombo, 1) * sizeof(uint32));
 
 	if (ex->nj == 0 || !ex->cs[ex->jcombo[ex->nj - 1]].map->keep)
 		return;
 	ci = ex->jcombo[ex->nj - 1];
-	own = &ex->stage[ex->nj - 1];
+	own = stage_tuples(ex, ex->nj - 1);
 	null_unit(ex);
 	for (int x = 0; x < ex->nj - 1; x++)
 	{
@@ -245,7 +294,7 @@ unmatched_tail(AggExec *ex)
 
 		for (int p = 0; p < cb->nleaves; p++)
 			if (cb->leaf[p] < 0)
-				v[p] = (uint64) prior[cb->refcombo[p]] + 1;
+				v[p] = combo_prior_vid(ex, prev, p, prior[cb->refcombo[p]]);
 		combo_bind_leaves(ex, prev, v);
 		combo_emit(ex, prev, &null, NULL, 0, 1);
 		prior[prev] = null.base;
@@ -285,11 +334,14 @@ run_scan(AggExec *ex)
 	ordered = sift_aggspec_ordered(ex->spec);
 	scan_buffers(ex);
 	none = join_none(ex);
-	if (!backend_begin(ex) && !none)
+	ex->ndsorder = 0;
+	ex->dsabort = false;
+	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
+	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
-		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec));
+		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, 0));
 		shared_init(ex->shared, ex);
 	}
 	/* a join without a row to match leaves no tuple: no item of work to take */
@@ -297,23 +349,31 @@ run_scan(AggExec *ex)
 		pg_atomic_write_u32(&ex->shared->next, ex->shared->nitems);
 	ex->lane_serial = ordered && ex->par == NULL;
 	ex->lanes = ordered && !ex->lane_serial;
+	spill_begin(ex);
 	table_init(ex);
+	if (ex->spec->spine)
+		spine_load(ex);
 	ex->gtab = ex->lanes ? result_view(ex) : ex;
 	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
-	if (ex->par == NULL || parallel_leader_participation)
+	if (ex->ndsorder > 0)
+		dist_stream_scan(ex);
+	else if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	backend_finish(ex);
 	unmatched_tail(ex);
 	arms_flush(ex);
+	if (ex->spec->spine)
+		spine_tail(ex);
 	if (ex->par)
 		par_finish(ex);
+	if (spill_started(ex))
+		spill_finish(ex);
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
 		if (ex->acc[i].dt)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
 	osa_finish_all(ex->gtab);
 	gen_flush(ex->gtab);
-	if (ex->lanes && ex->next_lane != SIFT_AGG_LANES)
-		elog(ERROR, "sift: a lane of the aggregate scan is missing");
+	SIFT_INVARIANT(!ex->lanes || ex->next_lane == SIFT_AGG_LANES, "sift: a lane of the aggregate scan is missing");
 	final_checks(ex->gtab, ex->n_tuples);
 }
 
@@ -337,8 +397,14 @@ list_groups(AggExec *ex)
 Datum
 key_datum(AggExec *ex, int j, uint32 g, bool *isnull)
 {
+	return key_id_datum(ex, j, key_id(ex, j, g), isnull);
+}
+
+/* the value of id `id` of key j */
+Datum
+key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull)
+{
 	KeyState   *k = &ex->ks[j];
-	uint32		id = key_id(ex, j, g);
 
 	*isnull = id == 0;
 	if (id == 0)
@@ -393,7 +459,7 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 			return *isnull ? (Datum) 0 : acc->v[g];
 		case SAA_O_SUM_I64:
 			*isnull = acc->n[g] == 0;
-			return DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g]));
+			return scaled_numeric(acc->w[g], 0);
 		case SAA_O_SUM_F64:
 			*isnull = acc->n[g] == 0;
 			if (isinf(acc->d[g]) && !acc->nf[g])
@@ -488,6 +554,31 @@ topn_window_viable(AggExec *ex, uint32 lo, uint32 hi)
 	return false;
 }
 
+/* The zones of the leading sort keys of superblock sb, which bound the walk (agg/topn.h); its number of units */
+static uint32
+topn_walk_zones(AggExec *ex, uint32 sb, SiftSrcZone *zs)
+{
+	uint32		units = 0;
+
+	for (int j = 0; j < sift_topn_walk_keys(ex->topn); j++)
+		units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(ex->topn, j), &zs[j]);
+	return units;
+}
+
+/* Can a unit of superblock sb of the walk hold a row that sorts before the n-th so far, or ties with it? */
+static bool
+topn_walk_viable(AggExec *ex, uint32 sb)
+{
+	SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
+	uint32		n = topn_walk_zones(ex, sb, zs);
+
+	if (sift_topn_walk_zone_viable(ex->topn, zs))
+		return true;
+	while (n-- > 0)
+		sift_topn_skip(ex->topn);
+	return false;
+}
+
 /* Windows of superblocks from the end the best values are at (agg/topn.h) */
 
 /*
@@ -532,6 +623,71 @@ agg_test_wait(void)
 	(void) LockAcquire(&tag, ShareLock, false, false);
 	LockRelease(&tag, ShareLock, false);
 }
+
+/*
+ * The items of a parallel top-N, taken from the shared counter by the leader and the workers: a window of superblocks of the leader's visit
+ * order, left out when the zones of its units cannot beat the n-th row of any participant (the bound they share, agg/topn.h)
+ */
+void
+topn_items(AggExec *ex)
+{
+	ScanShared *sh = ex->shared;
+	TopnChunk	ch = {0, 0, NULL};
+	uint32		item;
+
+	while (take_item(ex, &item))
+	{
+		uint32		lo,
+					hi;
+
+		if (sh->topn_walk)
+		{
+			lo = shared_order(sh, ex->spec)[item];
+			hi = lo + 1;
+			if (!topn_walk_viable(ex, lo))
+			{
+				/* the walk gives the best bound first: the superblocks after this one are no better, whatever bound the others reach */
+				pg_atomic_write_u32(&sh->next, sh->nitems);
+				break;
+			}
+		}
+		else
+		{
+			if (sh->topn_reverse)
+			{
+				hi = sh->nsb - item * sh->topn_item;
+				lo = hi > sh->topn_item ? hi - sh->topn_item : 0;
+			}
+			else
+			{
+				lo = item * sh->topn_item;
+				hi = Min(lo + sh->topn_item, sh->nsb);
+			}
+			if (sift_topn_wants_zones(ex->topn) && !topn_window_viable(ex, lo, hi))
+				continue;
+		}
+		topn_scan(ex, lo, hi, sh->nsb, &ch);
+	}
+}
+
+/* The workers and the leader take the items; the heaps of the workers go into the leader's, which is the result as one process finds it */
+static void
+topn_parallel(AggExec *ex)
+{
+	par_launch(ex);
+	if (ex->shared == NULL)
+	{
+		ex->shared = MemoryContextAlloc(ex->cxt, shared_size(ex->spec, ex->nvorder));
+		shared_init(ex->shared, ex);
+	}
+	sift_topn_share(ex->topn, &ex->shared->topn_bound);
+	if (ex->par == NULL || parallel_leader_participation)
+		topn_items(ex);
+	if (ex->par)
+		par_finish(ex);
+	sift_topn_finish(ex->topn);
+}
+
 static void
 topn_run(AggExec *ex)
 {
@@ -542,6 +698,7 @@ topn_run(AggExec *ex)
 				best;
 	SiftSrcZone z;
 	TopnChunk	ch = {0, 0, NULL};
+	bool		parallel;
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
@@ -557,20 +714,37 @@ topn_run(AggExec *ex)
 			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
 				sift_topn_probe(t, ex->unit.sb, &z);
 	sift_topn_start(t, nsb);
+	parallel = ex->spec->nworkers > 0 && sift_topn_parallel_ok(t);
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
 	{
 		/* the match set of a search restarts when it is asked for superblocks it has passed: only the scans without one are walked */
 		sift_topn_walk_begin(t, nsb);
 		for (uint32 sb = 0; sb < nsb; sb++)
 		{
-			uint32		units = sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(t, 0), &z);
+			SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
+			uint32		units = topn_walk_zones(ex, sb, zs);
 
-			sift_topn_walk_add(t, sb, units, &z);
+			sift_topn_walk_add(t, sb, units, zs);
 		}
 		sift_topn_walk_sort(t);
+		if (parallel)
+		{
+			ex->vorder = (uint32 *) sift_topn_walk_order(t);
+			ex->nvorder = nsb;
+			topn_parallel(ex);
+			return;
+		}
+		sift_topn_run_budget(t, nsb);
 		while (sift_topn_walk_next(t, &lo))
 			scan_units(ex, lo, lo + 1);
+		while (sift_topn_revisit_next(t, &lo))
+			scan_units(ex, lo, lo + 1);
 		sift_topn_finish(t);
+		return;
+	}
+	if (parallel)
+	{
+		topn_parallel(ex);
 		return;
 	}
 	while (sift_topn_next_window(t, &lo, &hi, &best))
@@ -582,41 +756,57 @@ topn_run(AggExec *ex)
 	sift_topn_finish(t);
 }
 
+/* The groups of the scan as the aggregate pass of agg_next ends them */
+static void
+finish_groups(AggExec *ex)
+{
+	empty_set_groups(ex->gtab);
+	dist_finish_all(ex->gtab);
+	dist_end_all(ex->gtab);
+	mapped_finish(ex->gtab);
+	list_groups(ex->gtab);
+	gen_finish(ex->gtab);
+	ex->n_groups = ex->gtab->nglist;
+}
+
+/* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
 static TupleTableSlot *
 topn_next(AggExec *ex, TupleTableSlot *slot)
 {
+	SiftAggSpec *s = ex->spec;
+	int			nout = slot->tts_tupleDescriptor->natts - s->naggs;
+
 	if (!ex->started)
+	{
 		topn_run(ex);
-	return !sift_topn_empty(ex->topn) && sift_topn_next(ex->topn, slot) ? slot : NULL;
+		if (s->naggs > 0 && !sift_topn_empty(ex->topn))
+		{
+			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+			ex->gtab = ex;
+			finish_groups(ex);
+			ex->total_val = palloc(s->naggs * sizeof(Datum));
+			ex->total_null = palloc(s->naggs * sizeof(bool));
+			for (int i = 0; i < s->naggs; i++)
+				ex->total_val[i] = agg_datum(ex->gtab, i, ex->gtab->glist[0], &ex->total_null[i]);
+			MemoryContextSwitchTo(old);
+		}
+	}
+	if (sift_topn_empty(ex->topn))
+		return NULL;
+	/* before the row: it materializes the slot, which copies every value of the tuple */
+	for (int i = 0; i < s->naggs; i++)
+	{
+		slot->tts_values[nout + i] = ex->total_val[i];
+		slot->tts_isnull[nout + i] = ex->total_null[i];
+	}
+	return sift_topn_next(ex->topn, slot) ? slot : NULL;
 }
 
-static TupleTableSlot *
-agg_next(ScanState *node)
+/* group g of table t as a tuple of the scan */
+static void
+group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 {
-	AggExec    *ex = (AggExec *) node;
-	TupleTableSlot *slot = node->ss_ScanTupleSlot;
-	AggExec    *t;
-	uint32		g;
-
-	if (ex->spec->topn)
-		return topn_next(ex, slot);
-	if (!ex->started && !fuse_start(ex))
-	{
-		run_scan(ex);
-		empty_set_groups(ex->gtab);
-		dist_finish_all(ex->gtab);
-		dist_end_all(ex->gtab);
-		mapped_finish(ex->gtab);
-		list_groups(ex->gtab);
-		gen_finish(ex->gtab);
-		ex->n_groups = ex->gtab->nglist;
-	}
-	if (ex->fuse)
-		return fuse_next(ex, slot);
-	t = ex->gtab;
-	if (ex->gpos >= t->nglist)
-		return NULL;
-	g = t->glist[ex->gpos++];
 	ExecClearTuple(slot);
 	for (int j = 0; j < t->spec->nkeys; j++)
 		slot->tts_values[j] = key_datum(t, j, g, &slot->tts_isnull[j]);
@@ -626,7 +816,83 @@ agg_next(ScanState *node)
 
 		slot->tts_values[c] = agg_datum(t, i, g, &slot->tts_isnull[c]);
 	}
-	return ExecStoreVirtualTuple(slot);
+	ExecStoreVirtualTuple(slot);
+}
+
+/* the next group of the table as a tuple of the scan (a spilled scan has one partition of them at a time) */
+static bool
+group_slot(AggExec *ex, TupleTableSlot *slot)
+{
+	AggExec    *t = ex->gtab;
+
+	while (ex->gpos >= t->nglist)
+		if (!spill_more(ex))
+			return false;
+	group_tuple(t, t->glist[ex->gpos++], slot);
+	return true;
+}
+
+/*
+ * The units of a partition are over and no other partition holds a row of its groups (the group key holds the partition key): the groups are
+ * final. They go to the tuples of the result and the table starts again, so the scan holds the groups of one partition, not of all.
+ */
+void
+part_flush(AggExec *ex)
+{
+	TupleTableSlot *slot = ex->css.ss.ss_ScanTupleSlot;
+	MemoryContext tmp = AllocSetContextCreate(ex->cxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES),
+				old = MemoryContextSwitchTo(tmp);
+
+	if (ex->done == NULL)
+	{
+		MemoryContextSwitchTo(ex->cxt);
+		ex->done = tuplestore_begin_heap(false, false, work_mem);
+		MemoryContextSwitchTo(tmp);
+	}
+	dist_finish_all(ex);
+	mapped_finish(ex);
+	list_groups(ex);
+	for (uint32 i = 0; i < ex->nglist; i++)
+	{
+		group_tuple(ex, ex->glist[i], slot);
+		tuplestore_puttupleslot(ex->done, slot);
+	}
+	ex->n_flushed += ex->nglist;
+	ex->glist = NULL;
+	ex->nglist = 0;
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+	table_reset(ex);
+}
+
+static TupleTableSlot *
+agg_next(ScanState *node)
+{
+	AggExec    *ex = (AggExec *) node;
+	TupleTableSlot *slot = node->ss_ScanTupleSlot;
+
+	if (ex->spec->topn)
+		return topn_next(ex, slot);
+	if (!ex->started && !fuse_start(ex))
+	{
+		run_scan(ex);
+		finish_groups(ex);
+		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
+	}
+	if (ex->done)
+	{
+		if (ex->done_slot == NULL)
+			ex->done_slot = MakeSingleTupleTableSlot(slot->tts_tupleDescriptor, &TTSOpsMinimalTuple);
+		/* the expressions above were compiled for the virtual slot of the node */
+		if (!tuplestore_gettupleslot(ex->done, true, false, ex->done_slot))
+			return NULL;
+		return ExecCopySlot(slot, ex->done_slot);
+	}
+	if (ex->fuse)
+		return fuse_next(ex, slot);
+	if (spill_started(ex))
+		return spill_output(ex, slot, group_slot);
+	return group_slot(ex, slot) ? slot : NULL;
 }
 
 static bool
@@ -666,9 +932,11 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	extend_layout(ex);
 	ex->uvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
 	ex->uvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
+	ex->nvec = palloc0(ex->lay->nleaves * sizeof(SiftSrcVec));
+	ex->nvec_ok = palloc0(ex->lay->nleaves * sizeof(bool));
 	ex->gofs = palloc0(ex->lay->nleaves * sizeof(uint32 *));
 	ex->gpar = palloc0(ex->lay->nleaves * sizeof(uint32 *));
-	/* its per-query memory is where a sub-plan runs its scans (init_lut_expr) */
+	/* its per-query memory is where a sub-plan runs its scans (init_expr) */
 	MemoryContextSwitchTo(ex->css.ss.ps.state ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ex->lutcx = CreateStandaloneExprContext();
 	MemoryContextSwitchTo(ex->cxt);
@@ -678,13 +946,15 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
-		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->src, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	init_states(ex);
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
 		register_key(ex, j);
 	register_combos(ex);
 	join_filters(ex, old);
+	/* the planner takes only the joins that are (plan_order.c, topn_joins_ok) */
+	SIFT_INVARIANT(!ex->spec->topn || ex->njfilter == ex->spec->njoin, "sift: a join of a top-N is not a filter of the scan");
 	pgagg_init(ex);
 	prune_init(ex);
 	filter_init(ex);
@@ -750,6 +1020,56 @@ agg_exec(CustomScanState *node)
 	return ExecScan(&node->ss, agg_next, agg_recheck);
 }
 
+/* what the source counted for the run, with the workers' */
+static void
+run_counters(AggExec *c, SiftSrcCounters *cc)
+{
+	sift_colsrc_counters(c->src, cc);
+	if (c->par)
+	{
+		cc->units_pruned += c->par->cc.units_pruned;
+		cc->units_set_pruned += c->par->cc.units_set_pruned;
+		cc->units_search_pruned += c->par->cc.units_search_pruned;
+		cc->rows_vetted += c->par->cc.rows_vetted;
+		cc->heap_pages += c->par->cc.heap_pages;
+		cc->rechecked += c->par->cc.rechecked;
+		cc->recheck_units += c->par->cc.recheck_units;
+	}
+}
+
+/*
+ * Folds the run into the counters of the backend (sift.stats) when it ends, from the counters the loops keep for EXPLAIN ANALYZE: the loops
+ * count nothing more. A scan whose pre-aggregates did not answer it is a miss of its index, for the reason pa_why gives (or, when they were on,
+ * for the units that lacked their rollup).
+ */
+static void
+stats_run(AggExec *c)
+{
+	SiftSrcCounters cc;
+	Oid			rel = OidIsValid(c->spec->indexoid) ? c->spec->indexoid : c->spec->heapoid;
+
+	run_counters(c, &cc);
+	sift_stat_add(SIFT_STAT_SCANS, 1);
+	sift_stat_add(SIFT_STAT_WORKERS, c->par ? c->par->nlaunched : 0);
+	sift_stat_add(SIFT_STAT_UNITS, c->n_units);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_ZONE, cc.units_pruned - cc.units_set_pruned - cc.units_search_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SET, cc.units_set_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SEARCH, cc.units_search_pruned);
+	sift_stat_add(SIFT_STAT_UNITS_PREAGG, c->n_pre_units);
+	sift_stat_add(SIFT_STAT_ROWS_DECODED, c->n_rows);
+	sift_stat_add(SIFT_STAT_ROWS_VETTED, cc.rows_vetted);
+	if (OidIsValid(c->spec->indexoid))
+		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted);
+	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
+	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
+	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);
+	sift_stat_add(SIFT_STAT_UNITS_ROLLUP_COST, c->n_rollup_cost);
+	if (c->pa_why != SPW_OFF && c->pa_why != SPW_OK)
+		sift_stats_preagg_miss(rel, sift_pawhy_slug(c->pa_why), sift_pawhy_fixable(c->pa_why), 0);
+	else if (c->n_rollup_miss > 0)
+		sift_stats_preagg_miss(rel, "unit_without_rollup", true, c->n_rollup_miss);
+}
+
 static void
 agg_end(CustomScanState *node)
 {
@@ -759,13 +1079,23 @@ agg_end(CustomScanState *node)
 		if (ex->osa[i] && ex->spec->agg[i].share == i && ex->osa[i]->sort)
 			tuplesort_end(ex->osa[i]->sort);
 	gen_close(ex);
+	if (ex->done)
+		tuplestore_end(ex->done);
+	if (ex->done_slot)
+		ExecDropSingleTupleTableSlot(ex->done_slot);
 	if (ex->css.ss.ps.state)
 		fuse_unregister(ex);
 	if (ex->fuse && --ex->fuse->refs == 0)
+	{
+		stats_run(ex->fuse->F);
 		engine_close(ex->fuse->F);
+	}
 	dist_end_all(ex);
 	if (ex->gtab)
 		dist_end_all(ex->gtab);
+	spill_end(ex);
+	if (ex->started && !ex->fuse)
+		stats_run(ex);
 	engine_close(ex);
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
@@ -779,9 +1109,24 @@ agg_rescan(CustomScanState *node)
 	AggExec    *ex = (AggExec *) node;
 
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
+	if (spill_rescan(ex))
+		return;
 	ex->gpos = 0;
 	if (ex->topn)
 		sift_topn_rewind(ex->topn);
+}
+
+/* the name EXPLAIN gives a leaf of a rollup: the field of a list's element, or the column of the table that a leaf of the rows' rollup reads */
+static const char *
+pa_leaf_name(AggExec *ex, int leaf)
+{
+	const SiftSrcLeaf *lf = &ex->lay->leaf[leaf];
+	AttrNumber	att;
+
+	if (!ex->pa.rows || ex->index == NULL || lf->attno < 1 || lf->attno > ex->index->rd_index->indnatts)
+		return lf->name;
+	att = ex->index->rd_index->indkey.values[lf->attno - 1];
+	return att > 0 ? get_attname(ex->lay->heapoid, att, false) : lf->name;
 }
 
 /* the dims and measures of the rollup that answers the scan */
@@ -794,9 +1139,9 @@ explain_pa_leaves(AggExec *ex, ExplainState *es)
 	initStringInfo(&d);
 	initStringInfo(&m);
 	for (int i = 0; i < ex->pa.ndims; i++)
-		appendStringInfo(&d, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rdim[i]].name);
+		appendStringInfo(&d, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rdim[i]));
 	for (int i = 0; i < ex->pa.nmeas; i++)
-		appendStringInfo(&m, "%s%s", i ? ", " : "", ex->lay->leaf[ex->pa.rmeas[i]].name);
+		appendStringInfo(&m, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rmeas[i]));
 	if (d.len > 0)
 		ExplainPropertyText("Pre-aggregate Dims", d.data, es);
 	if (m.len > 0)
@@ -834,6 +1179,14 @@ explain_source(SiftAggSpec *s, ExplainState *es)
 		ExplainPropertyText("Search", sift_search_describe(s->search), es);
 	if (s->topn)
 		ExplainPropertyText("Top-N", psprintf("%s (limit %s)", s->desc_topn, sift_topn_limit_text(s->topn)), es);
+	if (es->verbose && max_parallel_workers_per_gather > 0 && s->nworkers == 0)
+	{
+		int			agg;
+		const char *why = sift_aggspec_serial_reason(s, &agg);
+
+		if (why)
+			ExplainPropertyText("Serial Because", agg >= 0 ? psprintf("%s: %s", s->agg[agg].desc, why) : why, es);
+	}
 }
 
 static void
@@ -955,8 +1308,12 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	if (!c->pa_on)
 		return;
 	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
-	if (ex->pa.list < 0)
+	if (c->super_on)
+		ExplainPropertyInteger("Superunits", NULL, c->n_super, es);
+	if (!PA_ROLLUP(ex->pa))
 		return;
+	if (ex->pa.rows)
+		ExplainPropertyText("Pre-aggregate Rollup", "rows", es);
 	explain_pa_leaves(ex, es);
 	ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
 	if (c->n_rollup_cost > 0)
@@ -969,9 +1326,13 @@ static void
 explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 {
 	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
+	if (cc->units_set_pruned > 0)
+		ExplainPropertyInteger("Units Pruned By Set Summary", NULL, cc->units_set_pruned, es);
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
+	if (c->n_combo_trim > 0)
+		ExplainPropertyInteger("Combo Caches Restarted", NULL, c->n_combo_trim, es);
 	ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc->rows_vetted, es);
 	ExplainPropertyInteger("Heap Pages", NULL, cc->heap_pages, es);
 	if (c->recheck)
@@ -980,12 +1341,22 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
 	}
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+	if (part_flush_on(ex))
+		ExplainPropertyText("Groups Finished", "per partition", es);
 	if (c->n_osa_spilled)
 		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
+	if (c->n_spills)
+		ExplainPropertyInteger("Group Table Spills", NULL, c->n_spills, es);
 	if (c->n_dist_spilled)
 		ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
 	if (c->n_dist_chunks)
 		ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
+	if (c->ndsorder)
+	{
+		ExplainPropertyInteger("Distinct Stream Superblocks", NULL, c->ndsorder, es);
+		if (c->dsabort)
+			ExplainPropertyBool("Distinct Stream Given Up", true, es);
+	}
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */
@@ -996,25 +1367,21 @@ explain_run(AggExec *ex, ExplainState *es)
 	SiftSrcCounters cc;
 	AggExec    *c = ex->fuse ? ex->fuse->F : ex;
 
-	sift_colsrc_counters(c->src, &cc);
+	run_counters(c, &cc);
 	if (ex->fuse)
 		ExplainPropertyInteger("Arms In One Pass", NULL, ex->fuse->F->spec->nsets, es);
 	ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
-	if (c->par)
-	{
-		cc.units_pruned += c->par->cc.units_pruned;
-		cc.rows_vetted += c->par->cc.rows_vetted;
-		cc.heap_pages += c->par->cc.heap_pages;
-		cc.rechecked += c->par->cc.rechecked;
-		cc.recheck_units += c->par->cc.recheck_units;
-	}
 	if (s->search)
 		ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
 	if (s->topn && ex->topn)
 	{
 		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+		if (sift_topn_runs_read(ex->topn) > 0)
+			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
+		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
+			ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(ex->topn, 0), sift_topn_ord_units(ex->topn, 1), sift_topn_ord_units(ex->topn, 2)), es);
 		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
 		if (sift_topn_sorted(ex->topn) >= 0)
 			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);

@@ -24,8 +24,11 @@ CREATE FUNCTION pt_fill(first_id int, last_id int) RETURNS void LANGUAGE sql AS 
 	FROM generate_series(first_id, last_id) i $$;
 SELECT pt_fill(1, 6000);
 -- on the parent: one index per partition, with the partitions' own attribute numbers
-CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (paths = 'doc->k int4');
+CREATE INDEX pt_col ON pt USING sift_col (id, g, d, v, amount, s, doc) WITH (paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pt;
+-- the maintenance view lists the indexes of the partitions, not the parent's, which has no storage to read
+SELECT NOT EXISTS (SELECT 1 FROM sift.workers WHERE index = 'pt_col'::regclass) AS parent_skipped;
+SELECT count(*) > 0 AS leaves_listed FROM sift.workers w JOIN pg_inherits h ON h.inhrelid = w.index WHERE h.inhparent = 'pt_col'::regclass;
 
 -- the plan: SiftAgg with the partitions it reads (and workers), or the normal plan
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -110,6 +113,69 @@ SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUT
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2023-02-01''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2023-02-01'']) GROUP BY g');
 SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE pt_in(''{}'')', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (''{}''::date[]) GROUP BY g');
+-- the bounds the pruning of a plan read are not kept when a partition moves to another one: k = 11 was out of the first partition
+CREATE TABLE pb (k int NOT NULL, v int) PARTITION BY RANGE (k);
+CREATE TABLE pb_a PARTITION OF pb FOR VALUES FROM (0) TO (10) WITH (autovacuum_enabled = false);
+CREATE TABLE pb_b PARTITION OF pb FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
+INSERT INTO pb SELECT i % 20, i FROM generate_series(1, 400) i;
+CREATE INDEX pb_col ON pb USING sift_col (k, v) WITH (cube_minmax = false, superunit = 0);
+VACUUM (FREEZE, ANALYZE) pb;
+PREPARE pb_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = $1;
+SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
+ALTER TABLE pb DETACH PARTITION pb_a;
+ALTER TABLE pb DETACH PARTITION pb_b;
+INSERT INTO pb_a SELECT * FROM pb_b WHERE k < 12;
+DELETE FROM pb_b WHERE k < 12;
+ALTER TABLE pb ATTACH PARTITION pb_a FOR VALUES FROM (0) TO (12);
+ALTER TABLE pb ATTACH PARTITION pb_b FOR VALUES FROM (12) TO (20);
+VACUUM (FREEZE, ANALYZE) pb;
+SELECT * FROM same_exec('EXECUTE pb_k(11)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 11');
+SELECT * FROM same_exec('EXECUTE pb_k(13)', 'SELECT count(*) AS n, sum(v) AS s FROM pb WHERE k = 13');
+DEALLOCATE pb_k;
+DROP TABLE pb;
+-- what the planner and the scan keep of a partition (its index's layout, statistics and visibility, its bound) is read again when the table changes
+-- between two executions of one prepared statement: rows written, a partition attached, one detached, an index rebuilt, a bound moved
+CREATE TABLE pf (k int NOT NULL, g int, v int) PARTITION BY RANGE (k);
+CREATE TABLE pf_a PARTITION OF pf FOR VALUES FROM (0) TO (10) WITH (autovacuum_enabled = false);
+CREATE TABLE pf_b PARTITION OF pf FOR VALUES FROM (10) TO (20) WITH (autovacuum_enabled = false);
+CREATE TABLE pf_c (k int NOT NULL, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO pf SELECT i % 20, i % 3, i FROM generate_series(1, 600) i;
+INSERT INTO pf_c SELECT 20 + i % 10, i % 3, i FROM generate_series(1, 300) i;
+CREATE INDEX pf_col ON pf USING sift_col (k, g, v) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX pf_c_col ON pf_c USING sift_col (k, g, v) WITH (cube_minmax = false, superunit = 0);
+VACUUM (FREEZE, ANALYZE) pf, pf_c;
+PREPARE pf_q (int, int) AS SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= $1 AND k < $2 GROUP BY g;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+-- rows written: the visibility and the write buffers move
+UPDATE pf SET v = v + 1 WHERE k = 12;
+INSERT INTO pf SELECT 3 + i % 9, i % 3, i FROM generate_series(1, 50) i;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+VACUUM pf;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 15)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 15 GROUP BY g');
+-- a partition attached, then detached
+ALTER TABLE pf ATTACH PARTITION pf_c FOR VALUES FROM (20) TO (30);
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+ALTER TABLE pf DETACH PARTITION pf_c;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+ALTER TABLE pf ATTACH PARTITION pf_c FOR VALUES FROM (20) TO (30);
+-- the index of a partition rebuilt (a new file, the directory's versions start over), and its table emptied and filled again
+REINDEX INDEX pf_c_col;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+TRUNCATE pf_c;
+INSERT INTO pf_c SELECT 20 + i % 5, i % 3, i FROM generate_series(1, 40) i;
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+-- a bound moved: the rows of pf_b below 15 now belong to the partition before it
+ALTER TABLE pf DETACH PARTITION pf_a;
+ALTER TABLE pf DETACH PARTITION pf_b;
+INSERT INTO pf_a SELECT * FROM pf_b WHERE k < 15;
+DELETE FROM pf_b WHERE k < 15;
+ALTER TABLE pf ATTACH PARTITION pf_a FOR VALUES FROM (0) TO (15);
+ALTER TABLE pf ATTACH PARTITION pf_b FOR VALUES FROM (15) TO (20);
+SELECT * FROM same_exec('EXECUTE pf_q(5, 25)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 5 AND k < 25 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pf_q(12, 14)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 12 AND k < 14 GROUP BY g');
+SELECT * FROM same_exec('EXECUTE pf_q(16, 18)', 'SELECT g, count(*) AS n, sum(v) AS s FROM pf WHERE k >= 16 AND k < 18 GROUP BY g');
+DEALLOCATE pf_q;
+DROP TABLE pf, pf_c;
 SELECT * FROM same_exec('EXECUTE pt_param(3)', 'SELECT g, count(*) AS n FROM pt WHERE g = 3 GROUP BY g');
 SELECT * FROM same_exec('EXECUTE pt_hash(7)', 'SELECT g, count(*) AS n FROM pt WHERE id = 7 GROUP BY g');
 RESET plan_cache_mode;
@@ -152,17 +218,17 @@ CREATE TABLE pn (id int, g int, d date NOT NULL, v int, doc jsonb) PARTITION BY 
 CREATE TABLE pn_a PARTITION OF pn FOR VALUES FROM ('2024-01-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);
 CREATE TABLE pn_b PARTITION OF pn FOR VALUES FROM ('2024-07-01') TO ('2025-01-01') WITH (autovacuum_enabled = false);
 INSERT INTO pn SELECT i, i % 7, DATE '2024-01-01' + i % 360, i % 100, jsonb_build_object('k', i % 5) FROM generate_series(1, 3000) i;
-CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int4');
+CREATE INDEX pn_a_col ON pn_a USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 ANALYZE pn;
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn WHERE d < DATE ''2024-07-01'' GROUP BY g');
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int8');
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int8', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 DROP INDEX pn_b_col;
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (paths = 'doc->k int4');
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, v, d, doc) WITH (paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM pn GROUP BY g');
 DROP INDEX pn_b_col;
-CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int4');
+CREATE INDEX pn_b_col ON pn_b USING sift_col (id, g, d, v, doc) WITH (paths = 'doc->k int4', cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM pn GROUP BY g');
 
 -- a plan prepared before a partition lost its index is replanned
@@ -222,7 +288,7 @@ DROP ROLE pt_reader;
 CREATE TABLE ih (id int, g int) WITH (autovacuum_enabled = false);
 CREATE TABLE ih_a (CHECK (g < 5)) INHERITS (ih);
 INSERT INTO ih_a SELECT i, i % 5 FROM generate_series(1, 500) i;
-CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g);
+CREATE INDEX ih_a_col ON ih_a USING sift_col (id, g) WITH (cube_minmax = false, superunit = 0);
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n FROM ih_a GROUP BY g');
 
@@ -233,7 +299,7 @@ CREATE TABLE pl_b PARTITION OF pl FOR VALUES IN ('cat_c') WITH (autovacuum_enabl
 CREATE TABLE pl_c PARTITION OF pl FOR VALUES IN ('cat_d') WITH (autovacuum_enabled = false);
 CREATE TABLE pl_rest PARTITION OF pl DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pl SELECT i, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d', 'cat_e'])[1 + i % 5], i % 100 FROM generate_series(1, 4000) i;
-CREATE INDEX pl_col ON pl USING sift_col (id, k, v);
+CREATE INDEX pl_col ON pl USING sift_col (id, k, v) WITH (cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pl;
 SET plan_cache_mode = force_generic_plan;
 PREPARE pl_k (text) AS SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = $1 GROUP BY k;
@@ -257,18 +323,18 @@ RESET plan_cache_mode;
 CREATE TABLE ph (id int, k int, v int) PARTITION BY HASH (k);
 SELECT format('CREATE TABLE ph_%s PARTITION OF ph FOR VALUES WITH (MODULUS 8, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 7) i \gexec
 INSERT INTO ph SELECT i, CASE WHEN i % 40 = 0 THEN NULL ELSE i % 300 END, i % 100 FROM generate_series(1, 4000) i;
-CREATE INDEX ph_col ON ph USING sift_col (id, k, v);
+CREATE INDEX ph_col ON ph USING sift_col (id, k, v) WITH (cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) ph;
 -- two key columns (a remainder needs both), and a key that is an expression
 CREATE TABLE phm (a int, b text, v int) PARTITION BY HASH (a, b);
 SELECT format('CREATE TABLE phm_%s PARTITION OF phm FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
 INSERT INTO phm SELECT i % 50, 'cat_' || chr(97 + i % 6), i % 100 FROM generate_series(1, 3000) i;
-CREATE INDEX phm_col ON phm USING sift_col (a, b, v);
+CREATE INDEX phm_col ON phm USING sift_col (a, b, v) WITH (cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) phm;
 CREATE TABLE phx (k int, v int) PARTITION BY HASH ((k + 1));
 SELECT format('CREATE TABLE phx_%s PARTITION OF phx FOR VALUES WITH (MODULUS 4, REMAINDER %s) WITH (autovacuum_enabled = false)', i, i) FROM generate_series(0, 3) i \gexec
 INSERT INTO phx SELECT i % 200, i % 100 FROM generate_series(1, 2000) i;
-CREATE INDEX phx_col ON phx USING sift_col (k, v);
+CREATE INDEX phx_col ON phx USING sift_col (k, v) WITH (cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) phx;
 SET plan_cache_mode = force_generic_plan;
 PREPARE ph_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = $1;
@@ -340,7 +406,7 @@ CREATE TABLE pk_c PARTITION OF pk FOR VALUES IN (7, 8, 9) WITH (autovacuum_enabl
 CREATE TABLE pk_n PARTITION OF pk FOR VALUES IN (NULL) WITH (autovacuum_enabled = false);
 CREATE TABLE pk_rest PARTITION OF pk DEFAULT WITH (autovacuum_enabled = false);
 INSERT INTO pk SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 12 END, i % 100 FROM generate_series(1, 3000) i;
-CREATE INDEX pk_col ON pk USING sift_col (id, k, v);
+CREATE INDEX pk_col ON pk USING sift_col (id, k, v) WITH (cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE) pk;
 CREATE TABLE pk_keys (k int, kind text);
 INSERT INTO pk_keys SELECT i, 'cat_' || chr(97 + i % 3) FROM generate_series(0, 14) i;
@@ -404,6 +470,22 @@ DELETE FROM ph_keys;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
 INSERT INTO ph_keys SELECT i FROM generate_series(0, 299) i;
 SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+-- the remainders of a hash level are computed once for all its partitions: a few keys read a few of the 8 partitions, and a level with more
+-- combinations of values than the limit (lowered to 2) reads every partition, with the same rows; so do keys beyond the exact test of the
+-- range and list bounds (keys times partitions, lowered to 2): the range of the keys prunes alone
+DELETE FROM ph_keys;
+INSERT INTO ph_keys VALUES (1), (2), (3);
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+SET sift.test_limits = 'hash_part_combos=2';
+SELECT * FROM same_join('SELECT count(*) AS n, sum(f.v) AS s FROM ph f JOIN ph_keys x ON x.k = f.k');
+RESET sift.test_limits;
+CREATE TABLE pt_days2 (d date);
+INSERT INTO pt_days2 VALUES ('2024-02-02'), ('2024-11-08');
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
+SET sift.test_limits = 'part_key_tests=2';
+SELECT * FROM same_join('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pt p JOIN pt_days2 x ON x.d = p.d GROUP BY p.g');
+RESET sift.test_limits;
+DROP TABLE pt_days2;
 -- off: the join key filter off reads every partition, with the rows of the normal plan
 SET sift.agg_join_filter = off;
 SELECT * FROM same_join('SELECT x.kind, count(*) AS n, sum(f.v) AS s FROM pk f JOIN pk_keys x ON x.k = f.k WHERE x.k IN (2, 8) GROUP BY 1');

@@ -10,6 +10,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/genam.h"
 #include "access/parallel.h"
 #include "access/relation.h"
@@ -22,6 +24,7 @@
 #include "nodes/plannodes.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
+#include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/plancache.h"
@@ -29,13 +32,26 @@
 
 #include "agg/agg.h"
 #include "agg/colsrc.h"
+#include "agg/plan_int.h"
+#include "agg/refuse.h"
+#include "agg/rows.h"
 
 /*
- * The inline plan must cost this many times less on top of the unnest factor that agg_cost charges its scans (the plain plan is
- * priced with the 100 rows per call that PostgreSQL assumes for jsonb_to_recordset, the data has a handful): S4 on 300000 orders
- * stays on the materialized plan for the 400 store set and takes the inline one for the 4000 store set, where it is 5 times cheaper.
+ * The inline plan is kept when the scans cost this many times less than what the shared plan spends on the work they replace (the plans of the
+ * CTEs and the aggregates that read them). Both are prices of the same rows, so the plan above them, which PostgreSQL estimates from the rows
+ * each plan expects (the shared CTE one row, the scans a group count, and a join on an expression key the default selectivity), is not part of
+ * the comparison. The factor covers the scans' unnest charge (agg_cost prices the plain plan with the 100 rows per call that PostgreSQL assumes
+ * for jsonb_to_recordset, the data has a handful): 56 statements of a 195,000-row slice priced 1.15 to 1.6 times cheaper on the scans ran 63 s shared
+ * and 23 s inline, none slower (the one that measured 1.3 times slower under load tied on a repeat). The statements priced less than 1.15 times
+ * cheaper are not measured.
  */
-#define CTE_INLINE_MARGIN	2.0
+#define CTE_INLINE_MARGIN	1.15
+
+/* A plan above the scans priced this many times the shared plan has an estimate that cannot be trusted (a nested loop over a join of rows it takes for one). */
+#define CTE_INLINE_ABOVE	20.0
+
+/* ... and where an ordinary plan still reads the table, the inline plan may total this many times the shared one at most (priced 1.06 to 1.22 times above it, run 1.2 to 1.5 times faster) */
+#define CTE_INLINE_TOTALS	1.25
 
 static planner_hook_type prev_planner_hook;
 static ExecutorStart_hook_type prev_executor_start;
@@ -45,6 +61,9 @@ static bool hook_ran;
 
 /* the first statement to start after the library loaded has been looked at (sift_executor_start) */
 static bool late_checked;
+
+/* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
+static bool inline_won;
 
 static bool
 has_column_index(Oid relid)
@@ -58,86 +77,162 @@ has_column_index(Oid relid)
 	return found;
 }
 
-/* a CTE that is read twice or more and selects from a table that has a column index */
+/* does the query select from a table that has a column index, itself or through a CTE of the same WITH (which PostgreSQL inlines when one query reads it)? */
 static bool
-shared_cte_over_column_index(CommonTableExpr *cte)
+reads_indexed_table(Query *q, List *siblings, int depth)
+{
+	foreach_node(RangeTblEntry, rte, q->rtable)
+	{
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+			return true;
+		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != 1 || depth <= 0)
+			continue;
+		foreach_node(CommonTableExpr, sib, siblings)
+			if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query) &&
+				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1))
+				return true;
+	}
+	return false;
+}
+
+/* a CTE that is read twice or more and selects from a table that has a column index; siblings: the CTEs of its WITH */
+static bool
+shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 {
 	Query	   *q = castNode(Query, cte->ctequery);
 
 	if (cte->cterecursive || cte->cterefcount < 2 || cte->ctematerialized != CTEMaterializeDefault || q->commandType != CMD_SELECT)
 		return false;
-	foreach_node(RangeTblEntry, rte, q->rtable)
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
-			return true;
-	return false;
+	return reads_indexed_table(q, siblings, 4);
 }
 
-/* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With *inline_them they are all written NOT MATERIALIZED (the walk is of a copy of the query, and goes on) */
+/* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
+typedef struct SharedCteWalk
+{
+	bool		inline_them;
+	List	   *names;
+} SharedCteWalk;
+
+/* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With inline_them the walk goes on (it is of a copy of the query) */
 static bool
-shared_cte_walker(Node *n, bool *inline_them)
+shared_cte_walker(Node *n, SharedCteWalk *w)
 {
 	if (n == NULL)
 		return false;
 	if (!IsA(n, Query))
-		return expression_tree_walker(n, shared_cte_walker, inline_them);
+		return expression_tree_walker(n, shared_cte_walker, w);
 	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
-		if (shared_cte_over_column_index(cte))
+		if (shared_cte_over_column_index(cte, ((Query *) n)->cteList))
 		{
-			if (!*inline_them)
+			if (!w->inline_them)
 				return true;
 			cte->ctematerialized = CTEMaterializeNever;
+			w->names = lappend(w->names, cte->ctename);
 		}
-	return query_tree_walker((Query *) n, shared_cte_walker, inline_them, 0);
+	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
 }
 
 static bool
 has_shared_cte(Query *parse)
 {
-	bool		inline_them = false;
+	SharedCteWalk w = {false, NIL};
 
-	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &inline_them);
+	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &w);
 }
 
-static bool uses_sift_agg(Plan *plan);
+/* the plans a plan reads besides its left and right tree */
+static List *
+child_plans(Plan *plan)
+{
+	switch (nodeTag(plan))
+	{
+		case T_Append:
+			return ((Append *) plan)->appendplans;
+		case T_MergeAppend:
+			return ((MergeAppend *) plan)->mergeplans;
+		case T_SubqueryScan:
+			return list_make1(((SubqueryScan *) plan)->subplan);
+		case T_CustomScan:
+			return ((CustomScan *) plan)->custom_plans;
+		default:
+			return NIL;
+	}
+}
 
-static bool
-any_sift_agg(List *plans)
+typedef struct ScanArms
+{
+	double		total;
+	double		first;			/* the dearest arm */
+	double		vet;			/* of total, what the arms pay to check the heap for the pages that are not all-visible */
+	double		vet_pct;		/* and the largest share of the pages that are not */
+	int			n;
+} ScanArms;
+
+/*
+ * The SiftAgg nodes of the plan (they hold what is below them). The arms below a SiftAggRows node run as the sets of one pass over the index
+ * (agg/fuse.c), so they cost what plan_rows.c credits them; the node's own work and the join below it are the plan above the scans, as they
+ * are in the shared plan.
+ */
+static void
+sift_agg_arms(Plan *plan, ScanArms *a)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+	{
+		double		pct = 0;
+
+		a->total += plan->total_cost;
+		a->first = Max(a->first, plan->total_cost);
+		a->vet += agg_vet_of(plan->total_cost, &pct);
+		a->vet_pct = Max(a->vet_pct, pct);
+		a->n++;
+		return;
+	}
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_rows_plan_methods)
+	{
+		ScanArms	below = {0};
+		double		fused;
+
+		foreach_ptr(Plan, p, ((CustomScan *) plan)->custom_plans)
+			sift_agg_arms(p, &below);
+		fused = below.total - (below.total - below.first) * (1.0 - AGG_FUSED_ARM);
+		a->total += fused;
+		a->first = Max(a->first, below.first);
+		a->vet += below.total > 0 ? below.vet * fused / below.total : 0;
+		a->vet_pct = Max(a->vet_pct, below.vet_pct);
+		a->n += below.n;
+		return;
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		sift_agg_arms(p, a);
+	sift_agg_arms(plan->lefttree, a);
+	sift_agg_arms(plan->righttree, a);
+}
+
+static void
+sift_agg_arms_list(List *plans, ScanArms *a)
 {
 	foreach_ptr(Plan, p, plans)
-		if (uses_sift_agg(p))
-			return true;
-	return false;
+		sift_agg_arms(p, a);
 }
 
 static bool
 uses_sift_agg(Plan *plan)
 {
-	if (plan == NULL)
-		return false;
-	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
-		return true;
-	switch (nodeTag(plan))
-	{
-		case T_Append:
-			if (any_sift_agg(((Append *) plan)->appendplans))
-				return true;
-			break;
-		case T_MergeAppend:
-			if (any_sift_agg(((MergeAppend *) plan)->mergeplans))
-				return true;
-			break;
-		case T_SubqueryScan:
-			if (uses_sift_agg(((SubqueryScan *) plan)->subplan))
-				return true;
-			break;
-		case T_CustomScan:
-			if (any_sift_agg(((CustomScan *) plan)->custom_plans))
-				return true;
-			break;
-		default:
-			break;
-	}
-	return uses_sift_agg(plan->lefttree) || uses_sift_agg(plan->righttree);
+	ScanArms	a = {0};
+
+	sift_agg_arms(plan, &a);
+	return a.n > 0;
+}
+
+static bool
+any_sift_agg(List *plans)
+{
+	ScanArms	a = {0};
+
+	sift_agg_arms_list(plans, &a);
+	return a.n > 0;
 }
 
 /* the CTEs (plan ids) that a CteScan of the plan, or of a CTE it reads, names */
@@ -199,27 +294,273 @@ plan_cost_without_unread_ctes(PlannedStmt *stmt)
 	return Max(cost, 0.0);
 }
 
-static PlannedStmt *
-plan_cte(SIFT_PLANNER_PARAMS)
+/*
+ * What the shared plan spends on the work the scans take over: the plans of the CTEs that the inline plan has no more (once each), and the
+ * aggregates that read them (the node a scan replaces; a read with no aggregate above it counts as itself).
+ */
+typedef struct SharedWork
 {
-	Query	   *inline_parse;
+	PlannedStmt *stmt;
+	List	   *names;
+	Bitmapset  *seen;
+	List	   *arms;
+	double		cost;
+} SharedWork;
+
+static void
+shared_work(SharedWork *w, Plan *plan, Plan *agg)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, Agg))
+		agg = plan;
+	if (IsA(plan, CteScan))
+	{
+		int			id = ((CteScan *) plan)->ctePlanId;
+		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, w->stmt->rtable);
+		bool		named = false;
+		Plan	   *body = list_nth(w->stmt->subplans, id - 1);
+
+		foreach_ptr(char, name, w->names)
+			named |= strcmp(name, rte->ctename) == 0;
+		if (named)
+		{
+			if (agg == NULL)
+				w->cost += plan->total_cost;
+			else if (!list_member_ptr(w->arms, agg))
+			{
+				w->arms = lappend(w->arms, agg);
+				w->cost += agg->total_cost;
+			}
+		}
+		if (!bms_is_member(id, w->seen))
+		{
+			w->seen = bms_add_member(w->seen, id);
+			if (named)
+				w->cost += body->total_cost;
+			shared_work(w, body, NULL);
+		}
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		shared_work(w, p, agg);
+	shared_work(w, plan->lefttree, agg);
+	shared_work(w, plan->righttree, agg);
+}
+
+static double
+shared_work_cost(PlannedStmt *stmt, List *names)
+{
+	SharedWork	w = {stmt, names, NULL, NIL, 0};
+
+	shared_work(&w, stmt->planTree, NULL);
+	return w.cost;
+}
+
+/* does the plan read a table that has a column index other than through a SiftAgg node? */
+static bool
+plain_reader(PlannedStmt *stmt, Plan *plan)
+{
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+		return false;
+	if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
+	{
+		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
+
+		if (rte->rtekind == RTE_RELATION && has_column_index(rte->relid))
+			return true;
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		if (plain_reader(stmt, p))
+			return true;
+	return plain_reader(stmt, plan->lefttree) || plain_reader(stmt, plan->righttree);
+}
+
+static bool
+plain_reader_stmt(PlannedStmt *stmt)
+{
+	if (plain_reader(stmt, stmt->planTree))
+		return true;
+	foreach_ptr(Plan, p, stmt->subplans)
+		if (plain_reader(stmt, p))
+			return true;
+	return false;
+}
+
+/*
+ * A plan keeps every path and relation the planner built for it, several times the size of the plan itself, and a statement is planned up to
+ * four times (shared or inline CTEs, as it is or flattened) of which one is kept. Each plan is made in a context of its own, a child of the
+ * caller's, which is deleted when its plan loses: the statement holds the memory of one planning, not of all.
+ */
+static PlannedStmt *
+plan_in_own_context(SIFT_PLANNER_PARAMS, MemoryContext *cx)
+{
+	MemoryContext old;
+	PlannedStmt *stmt;
+
+	*cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan variant", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(*cx);
+	stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
+	MemoryContextSwitchTo(old);
+	return stmt;
+}
+
+/*
+ * The contexts of the plans that lost are deleted when the hook is done: the memory they free then is the executor's to reuse, where a free
+ * between two plans returns it to the system (and the next plan fills fresh pages).
+ */
+static List *discarded;
+
+static void
+discard_plan(MemoryContext cx)
+{
+	discarded = lappend(discarded, cx);
+}
+
+static void
+delete_discarded(void)
+{
+	List	   *dead = discarded;
+
+	discarded = NIL;
+	foreach_ptr(MemoryContextData, cx, dead)
+		MemoryContextDelete(cx);
+	list_free(dead);
+}
+
+/* the plans of a statement with its shared CTEs and with them inlined, and what the scans of the inline plan and the work of the shared one cost */
+typedef struct CteVariants
+{
 	PlannedStmt *plain,
 			   *inlined;
+	MemoryContext plain_cx,
+				inlined_cx;
+	ScanArms	scans;
+	double		plain_cost,
+				work;
+} CteVariants;
 
+/* both queries are consumed by the planner */
+static void
+plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants *v)
+{
+	const char *outer_variant;
+
+	memset(v, 0, sizeof(*v));
+	v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
+	outer_variant = agg_variant_push("inline");
+	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
+	agg_variant = outer_variant;
+	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
+	sift_agg_arms(v->inlined->planTree, &v->scans);
+	sift_agg_arms_list(v->inlined->subplans, &v->scans);
+	v->work = shared_work_cost(v->plain, names);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
+		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n);
+}
+
+/*
+ * When the scans read the table, they are weighed against the work they replace. When an ordinary plan still reads it (the index lacks a
+ * column of an aggregate) the plan reads the table twice: the scans must still be cheaper than the work they replace, and the totals must
+ * not be far apart (the ordinary plan is priced twice in the inline plan, and a total that far above the shared one is a mis-estimate).
+ * vet and shared_vet: the heap check taken off the inline plan's scans and off the SiftAgg nodes of the shared plan (both 0 for the choice).
+ */
+static bool
+inline_wins(const CteVariants *v, double vet, double shared_vet)
+{
+	double		scans = v->scans.total - vet,
+				inline_cost = v->inlined->planTree->total_cost - vet,
+				plain_cost = v->plain_cost - shared_vet,
+				work = v->work - shared_vet;
+
+	return v->scans.n > 0 && (!plain_reader_stmt(v->inlined) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
+							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
+							  scans < plain_cost - inline_cost);
+}
+
+/*
+ * The scans cost less than the work they replace but not by the margin: a close call at this size. The choice that is right at 10 times the
+ * rows and at 100 times (sift.agg_scale_horizon) is right now: the scans grow with the rows they read, the plan of the shared CTE with its sorts
+ * and hash tables that outgrow work_mem grows faster, and a plan that is a tie today and a loss to the normal one at the size the table is going
+ * to have is not worth keeping. The statement is planned again at each size, from the untouched copies.
+ */
+static bool
+inline_wins_at_scale(SIFT_PLANNER_PARAMS, Query *pristine_inline, List *names)
+{
+	double		horizon = sift_agg_scale_horizon,
+				saved = sift_plan_scale;
+	bool		quiet = agg_quiet_reports(true),
+				wins = true;
+
+	PG_TRY();
+	{
+		for (int i = 0; i < 2 && wins; i++)
+		{
+			CteVariants v;
+
+			sift_plan_scale = saved * (i == 0 ? sqrt(horizon) : horizon);
+			plan_variants(SIFT_PLANNER_ARGS(copyObject(parse)), copyObject(pristine_inline), names, &v);
+			wins = inline_wins(&v, 0, 0);
+			discard_plan(v.plain_cx);
+			discard_plan(v.inlined_cx);
+		}
+	}
+	PG_FINALLY();
+	{
+		sift_plan_scale = saved;
+		agg_quiet_reports(quiet);
+	}
+	PG_END_TRY();
+	return wins;
+}
+
+/* the plan of the statement and the context it is in, which the caller deletes when it plans another statement instead */
+static PlannedStmt *
+plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
+{
+	Query	   *inline_parse,
+			   *pristine = NULL,
+			   *pristine_inline = NULL;
+	CteVariants v;
+	SharedCteWalk walk = {true, NIL};
+
+	inline_won = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
-		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
-			standard_planner(SIFT_PLANNER_ARGS(parse));
+		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
+	agg_vet_forget();
 	inline_parse = copyObject(parse);
-	shared_cte_walker((Node *) inline_parse, &(bool) {true});
-	plain = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(parse));
-	inlined = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(inline_parse)) :
-		standard_planner(SIFT_PLANNER_ARGS(inline_parse));
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f", plan_cost_without_unread_ctes(plain), inlined->planTree->total_cost);
-	if (inlined->planTree->total_cost * CTE_INLINE_MARGIN < plan_cost_without_unread_ctes(plain) &&
-		(uses_sift_agg(inlined->planTree) || any_sift_agg(inlined->subplans)))
-		return inlined;
-	return plain;
+	shared_cte_walker((Node *) inline_parse, &walk);
+	if (sift_agg_scale_horizon > 1.0)
+	{
+		pristine = copyObject(parse);
+		pristine_inline = copyObject(inline_parse);
+	}
+	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
+	if (inline_wins(&v, 0, 0) ||
+		(pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names)))
+	{
+		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true);
+		inline_won = true;
+		discard_plan(v.plain_cx);
+		*cx = v.inlined_cx;
+		return v.inlined;
+	}
+	if (sift_explain_refusals && v.scans.n > 0)
+	{
+		ScanArms	shared = {0};
+		const char *detail = psprintf("inline costs %.2f (the scans %.2f), the shared CTE %.2f (the work the scans replace %.2f)", v.inlined->planTree->total_cost, v.scans.total, v.plain_cost, v.work);
+
+		sift_agg_arms(v.plain->planTree, &shared);
+		sift_agg_arms_list(v.plain->subplans, &shared);
+		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
+		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
+			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false);
+	}
+	discard_plan(v.inlined_cx);
+	*cx = v.plain_cx;
+	return v.plain;
 }
 
 /* does the query, or one it holds, read a table that has a column index? */
@@ -246,18 +587,28 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	Query	   *flat = NULL;
 	PlannedStmt *plain,
 			   *flatplan;
+	MemoryContext plain_cx,
+				flat_cx;
 
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		flat = copyObject(parse);
 		sift_agg_flatten_laterals(flat);
 	}
-	plain = plan_cte(SIFT_PLANNER_ARGS(parse));
+	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
 	if (flat == NULL)
 		return plain;
-	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat));
-	return (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && flatplan->planTree->total_cost < plain->planTree->total_cost ?
-		flatplan : plain;
+	flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
+	/* the scans of an inline CTE were weighed against the work of the shared one already: the totals above them are estimates of other rows */
+	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
+		((inline_won && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
+		 flatplan->planTree->total_cost < plain->planTree->total_cost))
+	{
+		discard_plan(plain_cx);
+		return flatplan;
+	}
+	discard_plan(flat_cx);
+	return plain;
 }
 
 /*
@@ -267,10 +618,26 @@ plan_flat(SIFT_PLANNER_PARAMS)
 static PlannedStmt *
 sift_planner(SIFT_PLANNER_PARAMS)
 {
+	MemoryContext memo = sift_agg_memo_begin();
 	PlannedStmt *stmt;
 
 	hook_ran = true;
-	stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+	discarded = NIL;			/* those of a plan that failed are gone with its context */
+	/*
+	 * The planner changes the tree it is given, with nodes and strings of the context it plans in, which is deleted when its plan loses.
+	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards).
+	 */
+	parse = copyObject(parse);
+	PG_TRY();
+	{
+		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
+	}
+	PG_FINALLY();
+	{
+		sift_agg_memo_end(memo);
+	}
+	PG_END_TRY();
+	delete_discarded();
 	if (uses_sift_agg(stmt->planTree) || any_sift_agg(stmt->subplans))
 		stmt->jitFlags = PGJIT_NONE;
 	return stmt;
@@ -291,19 +658,32 @@ reads_indexed_plan(PlannedStmt *ps)
  * inside planner() and after it decided there was no hook: that one statement of the backend is planned without sift_planner (no inline CTE,
  * no flattened laterals) and the aggregates that every later statement runs in the scan run their ordinary plan. The statement is planned
  * again here, from its text, when it is a plain SELECT of the top level; the same text through the hook gives the plan the next statement of
- * the session gets. Anything else (a statement with parameters, EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
+ * the session gets. The parameters of the extended protocol and of EXECUTE are planned as a custom plan is (their types and values are the
+ * statement's own). Anything else (EXPLAIN, CREATE TABLE AS, a cursor, a function's query) keeps its plan.
  */
 static PlannedStmt *
 replan(QueryDesc *qd)
 {
 	PlannedStmt *ps = qd->plannedstmt;
+	ParamListInfo params = qd->params;
 	RawStmt    *raw = NULL;
+	Oid		   *ptypes = NULL;
 	List	   *trees,
 			   *plans;
 
-	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->params != NULL || qd->sourceText == NULL ||
+	if (ps->commandType != CMD_SELECT || ps->utilityStmt != NULL || ps->hasModifyingCTE || qd->sourceText == NULL ||
 		IsParallelWorker() || !sift_enable_agg || !reads_indexed_plan(ps))
 		return NULL;
+	/* the parameters of a function's query are named by parser hooks, which the text alone does not give back: that statement keeps its plan */
+	if (params != NULL && (ActivePortal == NULL || qd->sourceText != ActivePortal->sourceText))
+		return NULL;
+	if (params != NULL && params->numParams > 0)
+	{
+		ptypes = palloc(params->numParams * sizeof(Oid));
+		for (int i = 0; i < params->numParams; i++)
+			if (!OidIsValid(ptypes[i] = params->params[i].ptype))
+				return NULL;
+	}
 	foreach_node(RawStmt, r, pg_parse_query(qd->sourceText))
 		if (r->stmt_location == ps->stmt_location)
 			raw = r;
@@ -318,10 +698,10 @@ replan(QueryDesc *qd)
 	}
 	if (raw == NULL || !IsA(raw->stmt, SelectStmt) || castNode(SelectStmt, raw->stmt)->intoClause != NULL)
 		return NULL;
-	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, NULL, 0, qd->queryEnv);
+	trees = pg_analyze_and_rewrite_fixedparams(raw, qd->sourceText, ptypes, params ? params->numParams : 0, qd->queryEnv);
 	if (list_length(trees) != 1 || linitial_node(Query, trees)->commandType != CMD_SELECT)
 		return NULL;
-	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, NULL);
+	plans = pg_plan_queries(trees, qd->sourceText, CURSOR_OPT_PARALLEL_OK, params);
 	if (list_length(plans) != 1 || !IsA(linitial(plans), PlannedStmt))
 		return NULL;
 	return linitial_node(PlannedStmt, plans);

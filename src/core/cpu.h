@@ -5,6 +5,12 @@
  * translation unit itself targets baseline x86-64. Modules owning dispatch
  * tables register a rebind callback that runs at load and whenever the
  * sift.simd GUC changes the active level.
+ *
+ * The levels are ranks within the architecture: scalar, then the vector levels in increasing order of what they ask of the CPU. x86-64 has two
+ * (AVX2, AVX-512); AArch64 has one, NEON (Advanced SIMD), which every AArch64 CPU has and which needs no target attribute, so it takes the number of
+ * the first level. sift_simd_level_name() names a level for the architecture the library is built for. sift.simd accepts the names of both
+ * architectures, so that one configuration file serves a mixed fleet, and a name of the other architecture caps nothing. SVE is not used: Apple
+ * silicon has none.
  */
 #ifndef SIFT_CPU_H
 #define SIFT_CPU_H
@@ -13,7 +19,8 @@ typedef enum SiftSimdLevel
 {
 	SIFT_SIMD_SCALAR = 0,
 	SIFT_SIMD_AVX2,
-	SIFT_SIMD_AVX512
+	SIFT_SIMD_AVX512,
+	SIFT_SIMD_NEON = SIFT_SIMD_AVX2
 } SiftSimdLevel;
 
 #define SIFT_CPU_POPCNT			0x0001
@@ -23,6 +30,7 @@ typedef enum SiftSimdLevel
 #define SIFT_CPU_AVX512			0x0010	/* F+BW+VL+DQ */
 #define SIFT_CPU_AVX512_VPOPCNT 0x0020
 #define SIFT_CPU_AVX512_VBMI2	0x0040
+#define SIFT_CPU_NEON			0x0080
 
 typedef struct SiftCpu
 {
@@ -32,6 +40,14 @@ typedef struct SiftCpu
 } SiftCpu;
 
 extern PGDLLIMPORT SiftCpu sift_cpu;
+
+/* The NEON kernels are compiled in where the compiler targets AArch64 with Advanced SIMD, which is every AArch64 target but -mgeneral-regs-only */
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#define SIFT_HAVE_NEON 1
+#define SIFT_SIMD_TOP SIFT_SIMD_NEON
+#else
+#define SIFT_SIMD_TOP SIFT_SIMD_AVX512
+#endif
 
 #if defined(__x86_64__)
 #define SIFT_TARGET_AVX2 \

@@ -94,7 +94,7 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 		if (pol.mode == SIFT_CCM_LAYER && !sift_colz_available(pol.alg))
 			continue;
 		initStringInfo(&buf);
-		sift_cdict_serialize(d, &pol, &buf);
+		sift_cdict_serialize(d, &pol, 0, &buf);
 		CHECK(t, buf.len <= plain->len, "dictionary (%s) of %d bytes is larger than the plain form of %d", specs[k], buf.len, plain->len);
 		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes, "dictionary (%s) parse", specs[k]);
@@ -112,6 +112,46 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 				cut = pg_prng_uint64_range(&rng, 0, buf.len - 1);
 			(void) ERRCODE_OF(q = sift_cdict_parse(CurrentMemoryContext, bad, cut, &used));
 			CHECK(t, q == NULL || used <= cut, "damaged dictionary consumed %zu of %zu bytes", used, cut);
+			pfree(bad);
+		}
+	}
+	/* the forms read in place, raw and with compressed blocks, with and without the order: the same dictionary back, and no damage that parses is out of range */
+	for (int z = 0; z < 4; z++)
+	{
+		SiftCcPolicy zpol;
+		StringInfoData buf;
+		SiftCDict  *p;
+		Size		used = 0;
+		uint32		form = z & 2 ? DICT_LOOKUP : DICT_BLOCKS;
+
+		initStringInfo(&buf);
+		CHECK(t, sift_cc_policy_parse("zstd", &zpol) == NULL, "policy zstd");
+		sift_cdict_serialize(d, z & 1 ? &zpol : NULL, form, &buf);
+		p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
+		CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n && p->nbytes == d->nbytes && p->blocked && (p->sorted != NULL) == (form == DICT_LOOKUP), "lookup dictionary parse");
+		for (uint32 i = 0; p != NULL && i < n; i += 1 + (uint32) pg_prng_uint64_range(&rng, 0, 4))
+			CHECK(t, sift_cdict_find(p, str[i], len[i]) == sift_cdict_find(d, str[i], len[i]), "lookup dictionary code");
+		for (uint32 i = 1; p != NULL && p->sorted != NULL && i < p->n; i++)
+		{
+			uint32		alen,
+						blen;
+			const char *a = sift_cdict_str(p, p->sorted[i - 1], &alen),
+					   *b = sift_cdict_str(p, p->sorted[i], &blen);
+
+			CHECK(t, sift_cstr_cmp(a, alen, b, blen) < 0, "lookup dictionary order");
+		}
+		for (Size cut = 0; cut + 1 < (Size) buf.len; cut += 1 + pg_prng_uint64_range(&rng, 0, Max(49, buf.len / 32)))
+			CHECK(t, sift_cdict_parse(CurrentMemoryContext, buf.data, cut, &(Size) {0}) == NULL, "truncated lookup dictionary (%zu bytes) parsed", cut);
+		for (int rounds = 0; rounds < 20; rounds++)
+		{
+			SiftCDict  *q = NULL;
+			char	   *bad = memcpy(palloc(buf.len), buf.data, buf.len);
+
+			bad[pg_prng_uint64_range(&rng, 0, buf.len - 1)] ^= (char) (1 << pg_prng_uint64_range(&rng, 0, 7));
+			(void) ERRCODE_OF(q = sift_cdict_parse(CurrentMemoryContext, bad, buf.len, &used));
+			CHECK(t, q == NULL || used <= (Size) buf.len, "damaged lookup dictionary consumed %zu bytes", used);
+			for (uint32 i = 0; q != NULL && q->sorted != NULL && i < q->n; i++)
+				CHECK(t, q->sorted[i] < q->n, "damaged lookup dictionary has an order out of range");
 			pfree(bad);
 		}
 	}
@@ -162,7 +202,7 @@ check_dict(TCtx *t)
 	initStringInfo(&buf);
 	appendStringInfoString(&buf, "pad");
 	resetStringInfo(&buf);
-	sift_cdict_serialize(d, NULL, &buf);
+	sift_cdict_serialize(d, NULL, 0, &buf);
 	p = sift_cdict_parse(CurrentMemoryContext, buf.data, buf.len, &used);
 	CHECK(t, p != NULL && used == (Size) buf.len && p->n == d->n, "dictionary parse");
 	for (uint32 i = 0; p != NULL && i < n; i += 1 + RAND(t, 5))

@@ -1,17 +1,8 @@
 -- Ranked top-k scans: exact BM25 scores through the custom scan, ties by ctid,
 -- plan shapes and the statements sift.score() may appear in (DESIGN.md (e), (f))
 CREATE EXTENSION pg_sift;
--- the plan text, and the SiftScan node of EXPLAIN (ANALYZE, FORMAT JSON)
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
+\set ECHO none
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;
@@ -194,6 +185,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM r WHERE body @@> 'quick fox' AND grp = 1 ORDE
 SET sift.enable_scan = off;
 SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 RESET sift.enable_scan;
 -- ties break on the ctid of the visible tuple, not of the index entry (HOT updates move it along the page)
@@ -256,12 +248,14 @@ SELECT t.q, s.id FROM (VALUES ('lazy'), ('runs')) t(q),
 -- the score only exists inside the scan of its relation
 SELECT sift.score(ctid) FROM r;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 SELECT id FROM r WHERE body @@> 'fox' ORDER BY sift.score(ctid) DESC LIMIT 1 FOR UPDATE;
 ERROR:  sift.score() is not available in FOR UPDATE and FOR SHARE
-HINT:  Rank the rows in a SELECT, and change or lock them by key in the statement that uses its result.
+HINT:  Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.
 SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
+DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
 HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
 -- the operator follows the index analyzer
 CREATE TABLE s (id int, body text);
@@ -386,7 +380,9 @@ CREATE FUNCTION join_diff(q text, q0 text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
 	n bigint;
 BEGIN
-	EXECUTE format('SELECT count(*) FROM (((%s) EXCEPT (%s)) UNION ALL ((%s) EXCEPT (%s))) d', q, q0, q0, q) INTO n;
+	-- the scores, not the ids: which of the rows tied at the limit a join method keeps is its own business
+	EXECUTE format('SELECT count(*) FROM ((SELECT score FROM (%s) a(id, score) EXCEPT ALL SELECT score FROM (%s) b(id, score))
+		UNION ALL (SELECT score FROM (%s) b(id, score) EXCEPT ALL SELECT score FROM (%s) a(id, score))) d', q, q0, q0, q) INTO n;
 	RETURN n;
 END $$;
 SELECT sift_plan('SELECT r.id, jg.label, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick fox'' ORDER BY sift.score(r.ctid) DESC LIMIT 5') ~ 'SiftScan' AS scan;
@@ -425,7 +421,7 @@ SELECT join_diff('SELECT r.id, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHE
 	'SELECT id, sift.score(ctid) FROM r WHERE grp IN (0, 1, 2, 3) AND body @@> ''quick OR lazy'' ORDER BY sift.score(ctid) DESC LIMIT 7');
  join_diff 
 -----------
-        12
+         0
 (1 row)
 
 RESET enable_hashjoin;

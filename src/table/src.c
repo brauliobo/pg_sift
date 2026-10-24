@@ -242,8 +242,7 @@ part_col(const TblPart *p, const SiftColDef *want)
 				return j;
 			continue;
 		}
-		if (have->store != want->store)
-			elog(ERROR, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		SIFT_INVARIANT(have->store == want->store, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
 		return j;
 	}
 	return -1;
@@ -280,8 +279,9 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->cxt = mcxt;
 	t->snapshot = RegisterSnapshot(snapshot);
 	t->last = -1;
-	sift_aggsel_init(&t->sel, mcxt);
+	sift_aggsel_init(&t->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&t->pre, mcxt);
+	sift_tbl_auto_defrag_tick(heap, st);
 	sift_tbl_refresh(heap, st);
 	sift_tbl_tomb_sync(heap, st);
 	t->dir = palloc(sizeof(SiftDirSnapshot));
@@ -722,7 +722,10 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	}
 	ords = stored_ords(t, rows, n);
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
-	fill_vec(t, leaf, &v, vec);
+	if (t->lay->leaf[leaf].wide)
+		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
+	else
+		fill_vec(t, leaf, &v, vec);
 	pfree(ords);
 }
 
@@ -767,6 +770,7 @@ tbl_counters(const void *impl, SiftSrcCounters *c)
 		c->rows_vetted += cc->rows_vetted;
 		c->heap_pages += cc->heap_pages;
 	}
+	c->units_search_pruned = t->sel.units_skipped;
 	c->units_pruned += t->sel.units_skipped;
 }
 
@@ -776,9 +780,12 @@ static void
 tbl_preagg(Relation rel, SiftSrcPreagg *pa)
 {
 	SiftCPaggSpec spec;
+	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
 
-	/* the segments are written with the default spec of their layout, whose columns are the leaves of the table's */
-	sift_cpagg_spec_default(sift_tbl_layout_schema(rel, sift_tbl_rel(rel)), &spec);
+	/* the segments are written with the default spec of their layout (its calendar dims when the minor allows them: seg_write.c), whose columns are the leaves of the table's */
+	sift_cpagg_spec_default(schema, &spec);
+	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
+		sift_cpagg_spec_calendar(schema, &spec);
 	sift_aggpre_spec(&spec, pa);
 }
 
@@ -801,9 +808,11 @@ static bool
 tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	TblPart    *p = unit->priv;
+	bool		cal = dim >= SIFT_SRC_CAL;
+	int			col = p->col[dim - (cal ? SIFT_SRC_CAL : 0)];
 
-	return p->col[dim] >= 0 &&
-		sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, p->col[dim], &p->schema->cols[p->col[dim]], p->leaf_of_col, h);
+	StaticAssertStmt(SIFT_SRC_CAL == SIFT_PAGG_CAL, "the calendar dims of the source and of the cube are numbered alike");
+	return col >= 0 && sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, col + (cal ? SIFT_PAGG_CAL : 0), &p->schema->cols[col], p->leaf_of_col, h);
 }
 
 static const SiftSrcProvider tbl_provider = {

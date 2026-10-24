@@ -5,6 +5,7 @@
 # Custom Scan (SiftAgg).
 #
 #   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep]
+#   scripts/coldiff.sh [--slice K/N] [--list]   one of N disjoint slices of the corpus (the Kth of every N queries in name order); --list prints the queries the options select and stops
 #   scripts/coldiff.sh --selftest
 #
 #   --suite S           fixtures: the small orders table of test/col/fixture.sql, the corpus test/col/fixtures/*.sql and the scenarios
@@ -32,6 +33,8 @@
 #   --scenario-slices N each scenario runs the scenario queries of one slice of N (query i is in slice i mod N), the slice moving from one scenario to
 #                       the next, so that every query meets a heap state and every state meets queries of every kind (default 1: all of them everywhere)
 #   --fixture-rows N    rows of the fixture table (default 4000), --seed N its generator seed; above 4000 the t_* tables grow with it
+#   --capability        every fixture runs under the raised page costs, not only the ones that expect the scan, so that `used` tells whether the pushdown
+#                       can answer the query (scripts/coverage.sh --pct)
 #   --default-costs     the fixtures run at the server's costs: the page costs of a fixture that expects the scan are not raised (they are on the
 #                       default tiny table, where the btree plan looks cheap too); with --fixture-rows 300000 the plan choice is the planner's own
 #   --mutate KIND       perturbs the "on" results (int float float-tiny text null rows dup order type cols), to prove a failure is seen
@@ -45,8 +48,8 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
-SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL=
+SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
+VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_role text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -54,11 +57,12 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 
 while (( $# )); do
 	case $1 in
-		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; --list) LIST=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,40p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
 		*) sed -n '2,40p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -104,10 +108,15 @@ resolve_am() {
 }
 
 # ---------- corpus ----------
-# files SUITE: the corpus files of the suite whose name matches --corpus, one per line
+# files FILE...: those whose name matches --corpus, and of them the Kth of every N (--slice K/N), one per line. The slices of a corpus are disjoint
+# and together all of it, so that N jobs with --slice 1/N .. N/N test what one job without it tests (scripts/ci.sh --selftest checks it)
 files() {
-	local f
-	for f in "$@"; do [[ -z $CORPUS || $(basename "$f" .sql) =~ $CORPUS ]] && echo "$f"; done
+	local f i=0
+	for f in "$@"; do
+		[[ -z $CORPUS || $(basename "$f" .sql) =~ $CORPUS ]] || continue
+		(( i++ % SLICE_N == SLICE_K - 1 )) && echo "$f"
+	done
+	return 0
 }
 
 # run_corpus SCEN FILES...: the files in one psql session of the database $DB, each in a transaction of its own (isolation of its tag);
@@ -122,6 +131,7 @@ run_corpus() {
 		echo "LOAD 'pg_sift';"
 		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
 		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
+		echo "SET coldiff.capability = $CAPABILITY;"
 		echo "SET coldiff.no_index = '${NOINDEX:+1}';"
 		echo "SET coldiff.on_table = '${TBL:+1}';"
 		echo "\\o /dev/null"
@@ -244,6 +254,7 @@ col_index() {
 		t_misc) ddl="CREATE INDEX t_misc_col ON t_misc USING $AM (id, grp, qty, t, e, u, b, ia, ta, na, r, tr, mr)" ;;
 		t_net) ddl="CREATE INDEX t_net_col ON t_net USING $AM (id, grp, qty, ip, cd, mac, mac8, tz, b, vb)" ;;
 		t_text) ddl="CREATE INDEX t_text_col ON t_text USING $AM (id, grp, t, vc)" ;;
+		t_coal) ddl="CREATE INDEX t_coal_col ON t_coal USING $AM (id, grp, s2, i4, i8, d, ts, tz)" ;;
 		t_jp) ddl="CREATE INDEX t_jp_col ON t_jp USING $AM (id, grp, doc, mdoc) WITH (paths = 'doc[]{s text, n int4, b bool}, mdoc[]{s text, n int4, b bool}')" ;;
 		t_eo) ddl="CREATE INDEX t_eo_col ON t_eo USING $AM (id, grp, r4, r8, rf, doc) WITH (paths = 'doc[]{q int4, q8 int8, f float8}')" ;;
 		t_rc) ddl="CREATE INDEX t_rc_col ON t_rc USING $AM (id, grp, doc) WITH (paths = 'doc.l[]{k text, v float8, n int4, ok bool}')" ;;
@@ -281,7 +292,7 @@ col_paths() {
 # fixture_tables: the fixture tables rewritten into sift_table (the partitioned families keep heap partitions with a sift_col index, and t_load its heap with a sift_col index for its expression leaves, which a table does not declare: SiftAgg reads a partitioned table through the indexes of its partitions), the table the queries run on, with the paths of COL_PATHS declared for their jsonb columns and written by the rewrite
 fixture_tables() {
 	local t c spec
-	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
+	for t in orders orders_odd pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_coal t_dist t_wide t_jp t_eo t_misc t_net t_tags; do
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
 		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_eo) set -- doc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
@@ -296,7 +307,7 @@ fixture_tables() {
 fixture_col_indexes() {
 	local err t
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_dist t_wide t_jp t_eo t_rc t_vd t_load t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
+	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_coal t_dist t_wide t_jp t_eo t_rc t_vd t_load t_misc t_net t_tags t_partial orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
 		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
 	done
 }
@@ -451,6 +462,7 @@ selftest() {
 	[[ -z ${VERBOSE:-} ]] || table -c "SELECT scenario, name, variant, left(detail, 100) FROM coldiff.results WHERE NOT ok ORDER BY id LIMIT 20"
 }
 
+if [[ -n $LIST ]]; then files "$REPO"/test/col/fixtures/*.sql | xargs -r -n1 basename; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
 [[ $SUITE == fixtures ]] || analytics_suite

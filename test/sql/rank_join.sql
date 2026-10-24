@@ -3,16 +3,7 @@
 -- partitioned and inheritance parents, with and without parallel scans and filter pushdown (DESIGN.md (f))
 CREATE EXTENSION pg_sift;
 
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
 
 -- the document tables hold the same rows; the ids the joined tables hold overlap in multiples of 105
 CREATE TABLE jd (id int PRIMARY KEY, tenant int, body text);

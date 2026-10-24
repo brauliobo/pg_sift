@@ -54,7 +54,7 @@ SELECT d, toks(d) FROM (VALUES
 SELECT toks(E'co­op'), toks(E'zero​width'), toks(E'zw‍j'), toks(E'﻿bom'),
        toks(E'a‏b');
 
--- long tokens are cut at SIFT_MAX_TERM_BYTES on a character boundary
+-- a token over SIFT_MAX_TERM_BYTES is its start (cut at a character boundary), U+FFFF and a hash of all of it
 SELECT pos, length(token), octet_length(token), end_offset
   FROM sift.tokenize(repeat('a', 300) || ' ' || repeat('é', 200) || ' ' || repeat('東', 10) || ' x');
 SELECT octet_length(token), length(token)

@@ -1,0 +1,192 @@
+-- Superunits (column format minor 12, docs/COL-PREAGG.md section 10): an index with the option superunit stores, per group of consecutive units of a segment, the
+-- merged sums and cube of the group, and a SiftAgg scan answers a group whose units are all exact (clean, every page all-visible) and all inside the
+-- predicate from that one summary. Every query runs three ways, which must give the same rows (text): with the superunits, from the units' own
+-- pre-aggregates (sift.agg_super off), and by the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata and `sup` whether
+-- a group of them did: none for an index without the option, a group some page of which was written since the last VACUUM, or a shape the summary lacks.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers lay the rows out in other units from run to run: every build is serial
+SET max_parallel_maintenance_workers = 0;
+
+CREATE FUNCTION pa_rows(q text, sup bool, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_super', sup::text, true);
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+
+-- units of the SiftAgg node, those it answered from the pre-aggregates, and the groups of units among them (NULL: the plan has no SiftAgg, or the query fails)
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT sup int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_super', 'on', true);
+	PERFORM set_config('sift.agg_preagg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		sup := coalesce(substring(l from 'Superunits: (\d+)')::int, sup);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL; sup := NULL;
+END $$;
+
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'by kind',            'SELECT kind, count(*), sum(val), sum(amt), avg(small) FROM %s GROUP BY kind'),
+	(2, 'by text key',        'SELECT grp, count(*), count(val), sum(small) FROM %s GROUP BY grp'),
+	(3, 'whole',              'SELECT count(*), count(val), sum(val), sum(small), sum(amt), min(d), max(d), min(id), max(id) FROM %s'),
+	(4, 'whole, int8 sum',    'SELECT sum(val), avg(val), count(grp) FROM %s'),
+	(5, 'min and max by kind', 'SELECT kind, min(val), max(val) FROM %s GROUP BY kind'),
+	(6, 'float: units',       'SELECT kind, round(sum(flt)::numeric, 4), round(avg(flt)::numeric, 4), min(flt), max(flt) FROM %s GROUP BY kind'),
+	(7, 'range cuts groups',  'SELECT kind, count(*), sum(amt) FROM %s WHERE id < 13000 GROUP BY kind'),
+	(8, 'range on a date',    'SELECT kind, count(*), sum(val) FROM %s WHERE d BETWEEN date ''2025-01-20'' AND date ''2025-05-20'' GROUP BY kind'),
+	(9, 'range, no key',      'SELECT count(*), sum(amt), min(id), max(id) FROM %s WHERE id BETWEEN 3000 AND 21000'),
+	(10, 'keys in list',      'SELECT kind, count(*), sum(amt) FROM %s WHERE kind IN (0, 2, 5) GROUP BY kind'),
+	(11, 'test of dim, no key', 'SELECT count(*), sum(small) FROM %s WHERE grp = ''g05'''),
+	(12, 'NULL key group',    'SELECT grp, count(*) FROM %s WHERE grp IS NULL OR grp > ''g20'' GROUP BY grp'),
+	(13, 'FILTER on the dim', 'SELECT sum(amt) FILTER (WHERE kind = 1), count(*) FILTER (WHERE kind = 2) FROM %s'),
+	(14, 'other test: scan',  'SELECT kind, count(*) FROM %s WHERE small > 0 GROUP BY kind'),
+	(15, 'having, limit',     'SELECT kind, sum(amt) FROM %s GROUP BY kind HAVING sum(amt) > 0 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(16, 'two keys: units',   'SELECT kind, grp, count(*) FROM %s GROUP BY kind, grp'),
+	(17, 'grouping sets',     'SELECT kind, grp, count(*) FROM %s GROUP BY GROUPING SETS ((kind), (grp), ())'),
+	(18, 'only NULLs',        'SELECT kind, sum(val), count(val) FROM %s WHERE kind = 3 GROUP BY kind'),
+	(19, 'no rows',           'SELECT kind, count(*) FROM %s WHERE id > 100000000 GROUP BY kind'),
+	(20, 'expression: scan',  'SELECT kind, sum(val + 1), sum(small * 2) FROM %s GROUP BY kind');
+
+-- one row per query: whether the three ways agree, how much of the first came from metadata and whether a group of units did
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS TABLE (n int, shape text, pre text, sup text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       CASE WHEN u.sup IS NULL THEN '-' WHEN u.sup = 0 THEN 'no' ELSE 'yes' END,
+	       pa_rows(z.q, true, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true, true) AND
+	       pa_rows(z.q, false, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+
+CREATE FUNCTION pa_sum(tbl text) RETURNS TABLE (queries bigint, differ bigint, with_super bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE sup = 'yes') FROM pa_check(tbl)
+$$;
+
+-- a snapshot held by another session of this database keeps the pages of rows written since from becoming all-visible: wait for it
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled';
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+
+-- kind: 6 values, grp: 30 values and NULLs, val: near +-2^62 for two kinds (a group's sum leaves int8), only NULLs for kind 3, d grows with id (a date
+-- range cuts a few groups of units), pad: about 4 rows a heap page, so 1,024 rows or so in a unit
+CREATE TABLE su (id int, kind int, grp text, val bigint, small int, amt numeric(10, 2), flt float8, d date, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE su ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su
+SELECT g, g % 6, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
+       CASE g % 6 WHEN 0 THEN 4611686018427387904 - g % 1000
+                  WHEN 1 THEN -4611686018427387904 + g % 1000
+                  WHEN 3 THEN NULL
+                  ELSE (g % 997) * 3 - 1000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 - 50 END,
+       (g % 71) / 7.0 - 3, date '2025-01-01' + g / 100, repeat('p', 1500)
+FROM generate_series(1, 24000) g;
+CREATE TABLE su_off (LIKE su) WITH (autovacuum_enabled = off);
+CREATE TABLE su_two (LIKE su) WITH (autovacuum_enabled = off);
+CREATE TABLE su_big (LIKE su) WITH (autovacuum_enabled = off);
+CREATE TABLE su_old (LIKE su) WITH (autovacuum_enabled = off);
+ALTER TABLE su_off ALTER COLUMN pad SET STORAGE PLAIN;
+ALTER TABLE su_two ALTER COLUMN pad SET STORAGE PLAIN;
+ALTER TABLE su_big ALTER COLUMN pad SET STORAGE PLAIN;
+ALTER TABLE su_old ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO su_off SELECT * FROM su;
+INSERT INTO su_two SELECT * FROM su;
+INSERT INTO su_big SELECT * FROM su;
+INSERT INTO su_old SELECT * FROM su;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_off;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_two;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_big;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) su_old;
+
+-- groups of 4 units; no option; groups of 2; groups of 256 (more than the units: one group); an index built under minor 7, which has no block
+CREATE INDEX su_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
+CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 2, cube_minmax = false);
+CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 256, cube_minmax = false);
+SET sift.col_format_minor = 7;
+CREATE INDEX su_old_col ON su_old USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
+RESET sift.col_format_minor;
+SELECT 'su' AS tbl, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_col') WHERE kind = 'immutable'
+UNION ALL SELECT 'su_off', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_off_col') WHERE kind = 'immutable'
+UNION ALL SELECT 'su_old', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_old_col') WHERE kind = 'immutable'
+ORDER BY 1;
+SELECT sift.col_verify('su_col', true), sift.col_verify('su_off_col', true), sift.col_verify('su_two_col', true), sift.col_verify('su_big_col', true),
+       sift.col_verify('su_old_col', true);
+
+-- 1. as built
+SELECT * FROM pa_check('su');
+SELECT 'su_off' AS tbl, * FROM pa_sum('su_off') UNION ALL SELECT 'su_two', * FROM pa_sum('su_two') UNION ALL SELECT 'su_big', * FROM pa_sum('su_big')
+UNION ALL SELECT 'su_old', * FROM pa_sum('su_old') ORDER BY 1;
+
+-- 2. rows written since the last VACUUM: the groups that hold their pages are answered from their units (or scanned), the others still from the summary
+UPDATE su SET amt = amt + 1, val = val + 7 WHERE id < 3000 AND id % 97 = 0;
+DELETE FROM su WHERE id < 3000 AND id % 199 = 0;
+INSERT INTO su SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), g, g % 9, g / 7.0, g / 3.0, date '2025-01-01' + g / 100, repeat('p', 1500) FROM generate_series(24001, 25000) g;
+SELECT * FROM pa_check('su');
+
+-- 3. after VACUUM, and the write buffer promoted into units of their own
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) su;
+SELECT sift.col_promote('su_col') >= 0 AS promoted;
+CALL pa_settle();
+SELECT * FROM pa_sum('su');
+SELECT sift.col_verify('su_col', true);
+
+-- 4. a merge writes one segment: the groups are made again from the units it holds, and the summaries of the units it did not rewrite are gone with their segments
+SELECT sift.col_merge('su_col', true) >= 0 AS merged;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) su;
+CALL pa_settle();
+SELECT * FROM pa_check('su');
+SELECT sift.col_verify('su_col', true);
+
+-- 5. the option set later: the segments written before have no block, those written after do, and they answer together
+ALTER INDEX su_off_col SET (superunit = 4);
+INSERT INTO su_off SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), g, g % 9, g / 7.0, g / 3.0, date '2025-01-01' + g / 100, repeat('p', 1500) FROM generate_series(24001, 30000) g;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) su_off;
+SELECT sift.col_promote('su_off_col') >= 0 AS promoted;
+CALL pa_settle();
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_off_col') WHERE kind = 'immutable';
+SELECT * FROM pa_sum('su_off');
+SELECT sift.col_verify('su_off_col', true);
+ALTER INDEX su_off_col SET (superunit = 0);
+SELECT sift.col_merge('su_off_col', true) >= 0 AS merged;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_off_col') WHERE kind = 'immutable';
+
+-- 6. a parallel build lays the rows out in other units from run to run; whatever it does, the summaries agree with the units
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+CREATE INDEX su_par_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
+SELECT sift.col_verify('su_par_col', true);
+DROP INDEX su_col;
+SELECT queries, differ FROM pa_sum('su');
+RESET max_parallel_maintenance_workers;
+
+-- the option is a number from 2 to 256, or 0
+CREATE INDEX su_bad1 ON su USING sift_col (id, kind) WITH (superunit = 1, cube_minmax = false);
+CREATE INDEX su_bad2 ON su USING sift_col (id, kind) WITH (superunit = 257, cube_minmax = false);
+CREATE INDEX su_bad3 ON su USING sift_col (id, kind) WITH (superunit = 'many', cube_minmax = false);
+
+DROP TABLE su, su_off, su_two, su_big, su_old, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

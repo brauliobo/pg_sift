@@ -68,6 +68,7 @@
 #include "agg/kern.h"
 #include "agg/part.h"
 #include "agg/spec.h"
+#include "agg/stats.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -281,15 +282,17 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 {
 	Datum		kv[SIFT_AGG_MAX_JKEYS];
 	bool		knull[SIFT_AGG_MAX_JKEYS];
-	bool		anynull = false;
+	bool		dead = false;
 	size_t		kb;
 
+	if (m->kcx)
+		m->kcx->ecxt_scantuple = slot;
 	for (int k = 0; k < m->nkey; k++)
 	{
-		kv[k] = slot_getattr(slot, j->keyatt[k], &knull[k]);
-		anynull |= knull[k];
+		kv[k] = m->kx[k] ? ExecEvalExprSwitchContext(m->kx[k], m->kcx, &knull[k]) : slot_getattr(slot, j->keyatt[k], &knull[k]);
+		dead |= knull[k] && !m->knull[k];
 	}
-	if (anynull && !m->keep)
+	if (dead && !m->keep)
 		return;					/* NULL equals nothing */
 	if (m->nrow == m->cap)
 		map_grow(m);
@@ -309,6 +312,8 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 		else
 			m->kid[kb + k] = kd_int(&m->kd[k], sift_aggspec_operand_int(j->keytype[k], kv[k]), m->cxt);
 	}
+	if (m->kcx)
+		ResetExprContext(m->kcx);
 	for (int c = 0; c < m->ncol; c++)
 	{
 		MapCol	   *mc = &m->mcol[c];
@@ -429,7 +434,10 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 	m->keep = sift_aggjoin_preserves(j->kind);
 	m->mcol = MemoryContextAllocZero(cxt, Max(j->ncol, 1) * sizeof(MapCol));
 	for (int k = 0; k < j->nkey; k++)
+	{
 		m->ktext[k] = j->keytype[k] == TEXTOID || j->keytype[k] == VARCHAROID;
+		m->knull[k] = j->keynull[k];
+	}
 	for (int c = 0; c < j->ncol; c++)
 		get_typlenbyval(j->coltype[c], &m->mcol[c].len, &m->mcol[c].byval);
 	return m;
@@ -456,6 +464,93 @@ map_hash_ids(int nkey, const uint32 *kid)
 	return (uint32) (h >> 32);
 }
 
+/* the order columns of the rows of a first-row lookup: the value of each (NULL: 0 and isnull) */
+typedef struct FirstOrd
+{
+	MemoryContext cx;			/* where the values live, deleted once the rows are chosen */
+	int64	   *val;
+	bool	   *isnull;
+	uint32		cap;
+} FirstOrd;
+
+/* does the row a come before b in the child's ORDER BY? */
+static bool
+first_before(const SiftAggFirst *f, const FirstOrd *o, uint32 a, uint32 b)
+{
+	for (int i = 0; i < f->nord; i++)
+	{
+		size_t		x = (size_t) a * f->nord + i,
+					y = (size_t) b * f->nord + i;
+
+		if (o->isnull[x] != o->isnull[y])
+			return o->isnull[x] == f->ordnullsfirst[i];
+		if (!o->isnull[x] && o->val[x] != o->val[y])
+			return (o->val[x] < o->val[y]) != f->orddesc[i];
+	}
+	return false;
+}
+
+/* the order columns of the row just added to m */
+static void
+first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableSlot *slot)
+{
+	size_t		at = (size_t) (m->nrow - 1) * f->nord;
+
+	if (o->cx == NULL)
+		o->cx = AllocSetContextCreate(CurrentMemoryContext, "sift first-row order", ALLOCSET_DEFAULT_SIZES);
+	if (m->nrow > o->cap)
+	{
+		o->cap = Max(o->cap * 2, 1024);
+		o->val = o->val ? repalloc(o->val, o->cap * f->nord * sizeof(int64)) : MemoryContextAlloc(o->cx, o->cap * f->nord * sizeof(int64));
+		o->isnull = o->isnull ? repalloc(o->isnull, o->cap * f->nord) : MemoryContextAlloc(o->cx, o->cap * f->nord);
+	}
+	for (int i = 0; i < f->nord; i++)
+	{
+		Datum		d = slot_getattr(slot, f->ordatt[i], &o->isnull[at + i]);
+
+		o->val[at + i] = o->isnull[at + i] ? 0 : sift_aggspec_operand_int(f->ordtype[i], d);
+	}
+}
+
+/*
+ * A child `ORDER BY .. LIMIT 1` returns the first row of a key by its order; a unique index holds the key and the order columns, so there is no
+ * tie. The other rows of the key are out of the chains (a row with its first key id 0 is in none, map_index_rows).
+ */
+static void
+map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o)
+{
+	uint32		nslot = 64;
+	uint32	   *at;
+
+	while (nslot < 2 * m->nrow)
+		nslot *= 2;
+	at = palloc0(nslot * sizeof(uint32));
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		uint32	   *kid = m->kid + (size_t) r * m->nkey;
+		uint32		h;
+		bool		anynull = false;
+
+		for (int k = 0; k < m->nkey; k++)
+			anynull |= kid[k] == 0;
+		if (anynull)
+			continue;
+		for (h = map_hash_ids(m->nkey, kid) & (nslot - 1); at[h] != 0; h = (h + 1) & (nslot - 1))
+			if (memcmp(m->kid + (size_t) (at[h] - 1) * m->nkey, kid, m->nkey * sizeof(uint32)) == 0)
+				break;
+		if (at[h] == 0)
+			at[h] = r + 1;
+		else if (first_before(f, o, r, at[h] - 1))
+		{
+			m->kid[(size_t) (at[h] - 1) * m->nkey] = 0;
+			at[h] = r + 1;
+		}
+		else
+			kid[0] = 0;
+	}
+	pfree(at);
+}
+
 /* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match); the arrays are cut to the rows */
 static void
 map_index_rows(MapTab *m)
@@ -470,11 +565,8 @@ map_index_rows(MapTab *m)
 	{
 		const uint32 *kid = m->kid + (size_t) r * m->nkey;
 		uint32		h;
-		bool		anynull = false;
 
-		for (int k = 0; k < m->nkey; k++)
-			anynull |= kid[k] == 0;
-		if (anynull)
+		if (map_key_dead(m, kid))
 			continue;
 		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
 		m->next[r] = m->head[h];
@@ -698,8 +790,17 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	if ((m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
+		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
 		return map_view(m, &have, j, cxt);
 	}
+	/* sessions that run the same query at once: one loads the rows, the others wait for them */
+	if (lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	{
+		ex->ncached++;
+		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
+		return map_view(m, &have, j, cxt);
+	}
+	sift_stat_add(SIFT_STAT_LOOKUP_MISSES, 1);
 	t->cols = need;
 	/* the columns of the entry that lacked some, and these: a table loaded for one arm after another does not make an entry for each */
 	for (int p = 0; !own && p < have.n && t->cols.n < SIFT_AGG_MAX_JCOLS; p++)
@@ -727,6 +828,8 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 
 	if (t->before != NULL && (after = lookcache_finger(rel)) != NULL)
 		lookcache_keep(t->key, t->before, after, m, &t->cols, t->cx, cxt);
+	if (t->before != NULL)
+		lookshm_unclaim(t->key);
 }
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
@@ -748,6 +851,9 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	Relation	idx;
 	KeptTry		kept = {.cx = cxt};
 	SiftAggJoin lj = *j;
+	ExprState  *firstq = NULL;
+	ExprContext *firstcx = NULL;
+	FirstOrd	ord = {0};
 	instr_time	t0;
 
 	INSTR_TIME_SET_CURRENT(t0);
@@ -780,8 +886,22 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			lj.coltype[c] = kept.cols.type[c];
 		}
 	}
+	if (j->first.qual != NIL)
+	{
+		firstq = ExecInitQual(j->first.qual, NULL);
+		firstcx = CreateStandaloneExprContext();
+	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, own != NULL, kept.cx);
+	/* the key expressions live for the load, not in the context a cache keeps */
+	MemoryContextSwitchTo(old);
+	for (int k = 0; k < j->nkey; k++)
+		if (j->tkey[k])
+		{
+			m->kcx = m->kcx ? m->kcx : CreateStandaloneExprContext();
+			m->kx[k] = ExecInitExpr((Expr *) j->tkey[k], NULL);
+		}
+	MemoryContextSwitchTo(kept.cx);
 	if (idx)
 	{
 		IndexScanDesc iscan = sift_index_beginscan(rel, idx, ex->snap, nkeys);
@@ -804,11 +924,42 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 				ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
 		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
 
+		/* a first-row lookup of a child that tests more than its key: the rows it would not return are not loaded */
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-			map_row(ex, m, slot, &lj, cb, own);
+		{
+			bool		pass = true;
+
+			if (firstq)
+			{
+				firstcx->ecxt_scantuple = slot;
+				pass = ExecQual(firstq, firstcx);
+				ResetExprContext(firstcx);
+			}
+			if (pass)
+			{
+				uint32		n = m->nrow;
+
+				map_row(ex, m, slot, &lj, cb, own);
+				if (j->first.nord > 0 && m->nrow > n)
+					first_order_row(m, &j->first, &ord, slot);
+			}
+		}
 		table_endscan(scan);
 	}
+	if (ord.cx)
+	{
+		map_keep_first(m, &j->first, &ord);
+		MemoryContextDelete(ord.cx);
+	}
 	map_index_rows(m);
+	if (m->kcx)
+	{
+		FreeExprContext(m->kcx, true);
+		m->kcx = NULL;
+		memset(m->kx, 0, sizeof(m->kx));
+	}
+	if (firstcx)
+		FreeExprContext(firstcx, true);
 	MemoryContextSwitchTo(old);
 	map_kept_keep(rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
@@ -882,7 +1033,7 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	/* an own condition reads the table's columns as Params nleaves + i: the same text over another number of leaves is another condition */
 	appendStringInfo(&k, "%u %d %d %d %d|", j->relid, own, sift_agg_lookup_pushdown, own ? cb->nleaves : 0, j->nkey);
 	for (int i = 0; i < j->nkey; i++)
-		appendStringInfo(&k, "%d/%u ", j->keyatt[i], j->keytype[i]);
+		appendStringInfo(&k, "%d/%u/%d/%s ", j->keyatt[i], j->keytype[i], j->keynull[i], j->tkey[i] ? nodeToString(j->tkey[i]) : "");
 	if (cols || own)
 	{
 		appendStringInfo(&k, "|%d|", j->ncol);
@@ -891,6 +1042,10 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	}
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
+	if (j->first.qual != NIL)
+		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
+	for (int i = 0; i < j->first.nord; i++)
+		appendStringInfo(&k, "|ord %d/%d/%d", j->first.ordatt[i], j->first.orddesc[i], j->first.ordnullsfirst[i]);
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
 		appendStringInfo(&k, "|%d/%u/%u/%d/%s", j->idxatt[i], j->idxop[i], j->idxcoll[i], j->idxany[i], nodeToString(j->idxval[i]));
 	return k.data;

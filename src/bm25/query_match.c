@@ -162,7 +162,7 @@ sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len)
 		case SQ_FUZZY:
 			return fuzzy_match(leaf->text, leaf->textlen, term, len, leaf->fuzzy);
 		default:
-			elog(ERROR, "sift: query node kind %d has no term matcher", leaf->kind);
+			SIFT_INVARIANT(false, "sift: query node kind %d has no term matcher", leaf->kind);
 	}
 	pg_unreachable();
 }

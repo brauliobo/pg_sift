@@ -62,7 +62,7 @@ typedef struct ScanEst
 } ScanEst;
 
 /* bm25/planner_match.c */
-extern bool scan_match_clause(Node *clause, IndexOptInfo *index, Expr **query);
+extern bool scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query);
 extern bool score_walker(Node *node, ScoreRefs *refs);
 extern bool score_cutoff(Node *clause, Index relid, bool *lower);
 extern bool cuts_from_above(List *cuts, Index relid);

@@ -60,6 +60,9 @@ END $$;
 -- a hidden key that is a column of the row: one cell per row and outer group
 SELECT same(report('sum(s) AS total, sum(c) AS cells, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents')) AS row_key;
 SELECT same(report('sum(s) AS total, count(DISTINCT region) AS regions', 'region')) AS row_text_key;
+-- count(id) of the row ids counts the cells' rows as count(*) does, alone, with a filter, and with a key that splits the cells
+SELECT same(report('count(id) AS counted, count(*) AS n, sum(s) AS total')) AS count_row_id;
+SELECT same(report('count(id) AS counted, count(id) FILTER (WHERE s > 9) AS big, count(DISTINCT id) AS ids', 'tag')) AS count_row_id_filter;
 -- a hidden key that is an element's tag: several cells in a row, NULL tags among them
 SELECT same(report('sum(s) AS total, sum(c) AS cells, count(*) AS n, count(DISTINCT id) AS ids, count(DISTINCT tag) AS tags', 'tag')) AS element_key;
 -- both, and the arms' HAVING and WHERE

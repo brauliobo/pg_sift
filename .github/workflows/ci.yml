@@ -5,8 +5,11 @@ name: ci
 # and the tests it touches, a few minutes in all. A push to main runs everything the diff can break, PostgreSQL 17, 18 and 19, the TAP, differential and
 # production-library stages and the other jobs; its base is the last green run of main, so a red or cancelled push is not forgotten by the next one.
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
-# the mark the release tool looks for, docs/RELEASE.md); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs).
-# PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, and fails the run like them.
+# the mark the release tool looks for, docs/RELEASE.md); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
+# PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
+# The full tier is three shards on PostgreSQL 18 and five on 17 (the last one runs the jobs that install a library flavor): in one it took 92 minutes of tests on a 4-core runner and PostgreSQL 17 ran past the 150-minute limit.
+# Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
+# of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
 on:
   push:
@@ -17,6 +20,10 @@ on:
     inputs:
       heavy:
         description: Also run the full tier (make check-full)
+        type: boolean
+        default: false
+      deep:
+        description: The full tier at its long sizes (the nightly run has them); without it a job of the full tier fits 45 minutes and the run 75
         type: boolean
         default: false
       versions:
@@ -50,6 +57,7 @@ jobs:
       sqlite: ${{ steps.scope.outputs.sqlite }}
       mariadb: ${{ steps.scope.outputs.mariadb }}
       replication: ${{ steps.scope.outputs.replication }}
+      macos: ${{ steps.scope.outputs.macos }}
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v6
@@ -92,10 +100,11 @@ jobs:
           # a pull request: one PostgreSQL 18 job, the regression tests of the areas the diff touches (`jobs`, narrower than the push's: scripts/areas.tsv `fast:` rows) and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
           jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
-            if $event == "pull_request" then (if $pg == "true" then [{pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast}] else [] end) else
+            if $event == "pull_request" then (if $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end) else
             (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
-              + [{pg: 19, shard: 1, n: 1, tier: "quick", jobs: $jobs, git: true}] else [] end)
-            + if $heavy then [(17, 18) as $v | {pg: $v, shard: 1, n: 1, tier: "full", jobs: "."}] else [] end end
+              + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
+              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}] else [] end)
+            + if $heavy then [(17, 18) as $v | (if $v == 17 then 5 else 3 end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
@@ -110,17 +119,26 @@ jobs:
       - run: for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f"; done
       - run: scripts/check-portable.sh
       - run: scripts/check-neutral.sh
+      - run: scripts/gen-limits.sh --check
+      - run: scripts/gen-reference.sh --check
+      - run: scripts/gen-options.sh --check
+      - run: scripts/check-errors.sh
+      - run: scripts/check-memory.sh && scripts/check-memory.sh --selftest
+      - run: scripts/check-bench-fresh.sh
+      - run: git fetch -q --depth=1 origin integration/3.3-batch-1:refs/remotes/origin/integration/3.3-batch-1 || true; scripts/check-bench-cases.sh
+      - run: scripts/gen-refusals.sh --check
+      - run: scripts/coverage.sh --docs
       - run: scripts/gen-docs.py --check
       - run: scripts/ci.sh --selftest
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 
   postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.tier == 'full' && 150 || 90 }}
+    runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 350 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -130,6 +148,8 @@ jobs:
         with:
           # The compatibility tests build released libraries from their tags.
           fetch-depth: 0
+
+      - uses: ./.github/actions/apt-limits
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git }}
@@ -143,7 +163,7 @@ jobs:
           # the tests start their own clusters: no default cluster, no service on 5432
           sudo apt-get install -y postgresql-common
           sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev
+          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
@@ -164,6 +184,27 @@ jobs:
         if: ${{ matrix.pg == 17 }}
         run: echo "SIFT_SUDO=sudo env PATH=$PATH" >> "$GITHUB_ENV"
 
+      # the older releases the compatibility tests build (tags do not move; about 70 CPU seconds each, seven of them); PostgreSQL 17 cannot hold two builds, and the
+      # git build of the server changes with every run. A root is by commit (scripts/old-lib-check.sh), so what an earlier cache holds stays valid: the key follows
+      # the compiler and the tags (a release adds a library), the tests that build them change it too, and the shard of the same key prefix restores the
+      # last cache and builds only what it lacks. The cache is saved after a failed run as well: the builds are the cost, not the tests
+      - name: Key of the older releases
+        id: oldlib
+        if: ${{ matrix.pg != 17 && !matrix.git }}
+        run: |
+          prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=$prefix$(git tag --list 'v*' | sha256sum | cut -c1-12)-${{ hashFiles('scripts/old-lib-check.sh', 'test/t/compat_*.sh', 'test/t/old_lib_refusal.sh', 'test/t/pg_upgrade.sh') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the older releases
+        id: oldlib-cache
+        if: ${{ matrix.pg != 17 && !matrix.git }}
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/sift/old-lib/*/root
+          key: ${{ steps.oldlib.outputs.key }}
+          restore-keys: ${{ steps.oldlib.outputs.prefix }}
+
       - name: Build
         run: |
           pg_config --version
@@ -181,12 +222,20 @@ jobs:
           SIFT_CI_JOBS: ${{ matrix.only }}
           SIFT_CI_NO_HARNESS: ${{ matrix.tier == 'fast' && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+          SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
+
+      - name: Keep the older releases
+        if: ${{ !cancelled() && steps.oldlib-cache.outcome == 'success' && steps.oldlib-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.cache/sift/old-lib/*/root
+          key: ${{ steps.oldlib.outputs.key }}
 
       - name: Keep the logs of a failed run
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-test-logs-pg${{ matrix.pg }}-${{ matrix.tier }}-${{ matrix.shard }}
+          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log
@@ -221,6 +270,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/apt-limits
 
       - name: Install build dependencies
         run: |
@@ -260,10 +311,72 @@ jobs:
       - name: Build and smoke-test the library of the series
         run: SERIES=${{ matrix.series }} scripts/package-mariadb.sh all HEAD dist-mariadb
 
+  # Homebrew on macOS arm64, the one place that is not Linux: the formula of this checkout builds and passes its own test on PostgreSQL 17 and 18, and the
+  # test harness runs on brew's bash 5 (a few regression tests; the stages that need GNU tools or /proc stay on Linux) while `make check` under the stock
+  # /bin/bash 3.2 must stop with a message instead of exiting 0. It runs where scripts/areas.tsv says (gh:macos: the build, the harness and Formula/ are
+  # `.`, so a core or harness change, the nightly run and a dispatch), never on a pull request that touches only sources or docs. Hosted macOS minutes are
+  # free for a public repository (10x the Linux rate for a private one), hence the time limit.
+  macos:
+    name: macOS arm64 (Homebrew)
+    needs: changes
+    if: ${{ needs.changes.outputs.macos == 'true' }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      HOMEBREW_NO_ANALYTICS: 1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install bash 5 and PostgreSQL 17 and 18
+        run: brew install bash postgresql@17 postgresql@18 lz4 zstd
+
+      # the README install (a tap, brew install --HEAD, brew test) on this checkout: the formula is copied into a tap of its own with its head pointing here
+      - name: Formula (brew install --HEAD, brew test)
+        run: |
+          git branch -f macos-ci HEAD
+          brew tap-new --no-git local/ci
+          mkdir -p "$(brew --repository local/ci)/Formula"
+          sed "s|^  head .*|  head \"file://$PWD\", using: :git, branch: \"macos-ci\"|" Formula/pg_sift.rb >"$(brew --repository local/ci)/Formula/pg_sift.rb"
+          brew install --HEAD local/ci/pg_sift
+          brew test local/ci/pg_sift
+
+      # the report this job answers: no brew bash on PATH, so `env bash` is /bin/bash 3.2
+      - name: make check under the stock bash 3.2 fails with a message
+        run: |
+          /bin/bash --version | head -1
+          if out=$(env PATH=/usr/bin:/bin:/usr/sbin:/sbin PG_CONFIG="$(brew --prefix postgresql@18)/bin/pg_config" make check 2>&1); then
+            echo "$out"; echo "make check exited 0 under bash 3.2"; exit 1
+          fi
+          echo "$out"
+          grep -q 'needs bash 4+' <<<"$out"
+
+      - name: make check (regression tests) under brew bash 5
+        env:
+          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
+          SIFT_CI_JOBS: '^installcheck-(facets|filter_pushdown)$'
+          SIFT_CI_NO_HARNESS: 1
+        run: |
+          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
+          bash --version | head -1
+          make check
+
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-test-logs-macos
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/regress/*/regression.diffs
+          if-no-files-found: ignore
+
   # the one name for a branch ruleset to require: the shard names of the jobs above change with the diff and the event, this one does not.
   # A job that did not run (skipped) passes; a failed or cancelled one fails the gate
   gate:
-    needs: [changes, lint, postgresql, replication, sqlite, mariadb]
+    needs: [changes, lint, postgresql, replication, sqlite, mariadb, macos]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2

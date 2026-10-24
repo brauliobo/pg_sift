@@ -127,7 +127,7 @@ sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 				break;
 			}
 		default:
-			elog(ERROR, "sift_col: operator %d on a wide integer leaf", p->op);
+			SIFT_INVARIANT(false, "sift_col: operator %d on a wide integer leaf", p->op);
 			return false;
 	}
 	sel_assign(sel, r);
@@ -179,7 +179,7 @@ sift_colw_prune(SiftColSegment *seg, const SiftColPred *p, uint64 *keep)
 		SiftCTest	t;
 
 		sift_ctest_make(&seg->schema->cols[p->col], NULL, p, &t);
-		sift_cseg_prune(seg, p->col, &t, keep);
+		sift_cseg_prune(seg, p->col, &t, keep, 0, seg->nsb, NULL);
 		return;
 	}
 	for (uint32 u = 0; u < seg->nsb; u++)

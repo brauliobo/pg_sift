@@ -59,7 +59,8 @@ str_op(SiftSrcStrOp op)
 		case SSTR_PREFIX:
 			return SIFT_COLOP_PREFIX;
 	}
-	elog(ERROR, "sift: unknown text test %d", (int) op);
+	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
+	pg_unreachable();
 }
 
 /* a text test as a column predicate over the constants in vals (room for t->nvals) */
@@ -117,8 +118,7 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 {
 	ColSource  *src = impl;
 
-	if (nt > COL_MAX_WIDE)
-		elog(ERROR, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
+	SIFT_INVARIANT(nt <= COL_MAX_WIDE, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
 	src->wtest = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColWTest));
 	for (int i = 0; i < nt; i++)
 		sift_colw_test(sift_col_def(src->cs, t[i].leaf), t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
@@ -289,6 +289,12 @@ col_tolerate_ovf(void *impl, int leaf)
 	((ColSource *) impl)->tol[leaf] = true;
 }
 
+void
+col_set_raw(void *impl, int leaf)
+{
+	((ColSource *) impl)->raw[leaf] = true;
+}
+
 bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
@@ -314,7 +320,7 @@ void
 col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 {
 	ColSource  *src = impl;
-	bool		compact = src->sel.keep && src->sel.compact,
+	bool		compact = src->sel.compact,
 				known;
 
 	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
@@ -328,7 +334,9 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	const SiftColCounters *cc = sift_col_counters(((const ColSource *) impl)->cs);
 
 	c->units = cc->units;
-	c->units_pruned = cc->units_pruned + ((const ColSource *) impl)->sel.units_skipped;
+	c->units_search_pruned = ((const ColSource *) impl)->sel.units_skipped;
+	c->units_pruned = cc->units_pruned + c->units_search_pruned;
+	c->units_set_pruned = cc->units_set;
 	c->rows = cc->rows_scanned;
 	c->bytes = cc->bytes_decoded;
 	c->rows_vetted = cc->rows_vetted;

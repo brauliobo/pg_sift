@@ -10,14 +10,14 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TEMP TABLE pat (k int, doc jsonb, dc jsonb);
 INSERT INTO pat VALUES
  (0, NULL, '[]'),
- (1, 'null', '[{"type":"reply","role":"staff","n":1}]'),
- (2, '[]', '[{"type":"reply","role":null,"n":2},{"type":"x"}]'),
+ (1, 'null', '[{"type":"kind_a","role":"role_a","n":1}]'),
+ (2, '[]', '[{"type":"kind_a","role":null,"n":2},{"type":"x"}]'),
  (3, '[null]', '[{"type":"","n":3}]'),
- (4, '[1, 2]', '[{"role":"staff"}]'),
- (5, '[{}]', '[{"type":"réplica","role":"staff","n":-1},{"type":"reply","role":"customer","n":5}]'),
- (6, '[{"type":"reply"}]', '[{"type":"reply","n":2},{"type":"reply","role":"staff"}]'),
- (7, '[{"type":"reply","role":"staff"},{"type":"x","role":null}]', '[]'),
- (8, '[{"type":"","role":"staff","n":3},{"type":"réplica","n":-1}]', '[{"type":"x","role":"staff","n":4}]'),
+ (4, '[1, 2]', '[{"role":"role_a"}]'),
+ (5, '[{}]', '[{"type":"kïnd_x","role":"role_a","n":-1},{"type":"kind_a","role":"role_b","n":5}]'),
+ (6, '[{"type":"kind_a"}]', '[{"type":"kind_a","n":2},{"type":"kind_a","role":"role_a"}]'),
+ (7, '[{"type":"kind_a","role":"role_a"},{"type":"x","role":null}]', '[]'),
+ (8, '[{"type":"","role":"role_a","n":3},{"type":"kïnd_x","n":-1}]', '[{"type":"x","role":"role_a","n":4}]'),
  (9, '[{"type":"a"},{"role":"b"}]', '[{"type":null,"role":"b"}]');
 -- r, r8: columns of the row an element is compared with (int4 and bigint, NULL in one row of seven)
 CREATE TABLE d (id int PRIMARY KEY, g int, r int, r8 bigint, doc jsonb, dc jsonb NOT NULL, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
@@ -47,25 +47,25 @@ BEGIN
 END $$;
 
 -- jsonb_path_exists and @?: strings, integers, && and ||, the empty string, a non-ASCII string, NULL and odd documents
-SELECT forced($$SELECT g, count(*) AS n, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.type == "reply" && @.role == "staff")')) AS f FROM d GROUP BY g$$) AS path_and;
+SELECT forced($$SELECT g, count(*) AS n, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.type == "kind_a" && @.role == "role_a")')) AS f FROM d GROUP BY g$$) AS path_and;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @? '$[*] ? (@.type == "" || @.n < 0)') AS f FROM d GROUP BY g$$) AS path_or_empty_string;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (3 == @.n)')) AS f FROM d GROUP BY g$$) AS path_integer;
-SELECT forced($$SELECT g, count(*) AS n FROM d WHERE jsonb_path_exists(doc, '$[*] ? (@.type == "réplica")') GROUP BY g$$) AS path_where;
+SELECT forced($$SELECT g, count(*) AS n FROM d WHERE jsonb_path_exists(doc, '$[*] ? (@.type == "kïnd_x")') GROUP BY g$$) AS path_where;
 
 -- @>: every object of the right side is contained by some element, not necessarily the same one
-SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"type": "reply"}]') AS one, count(*) FILTER (WHERE doc @> '[{"role": "staff"}, {"type": "réplica"}]') AS two,
-				count(*) FILTER (WHERE '[{"n": 3, "role": "staff"}]' <@ doc) AS commuted FROM d GROUP BY g$$) AS contains;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"type": "kind_a"}]') AS one, count(*) FILTER (WHERE doc @> '[{"role": "role_a"}, {"type": "kïnd_x"}]') AS two,
+				count(*) FILTER (WHERE '[{"n": 3, "role": "role_a"}]' <@ doc) AS commuted FROM d GROUP BY g$$) AS contains;
 
 -- EXISTS and NOT EXISTS: never NULL, an absent or empty array has no element
-SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, role text, n int) WHERE e.type = 'reply' AND e.role = 'staff')) AS yes,
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, role text, n int) WHERE e.type = 'kind_a' AND e.role = 'role_a')) AS yes,
 				count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE e.n > 1 OR e.type IS NULL)) AS no FROM d GROUP BY g$$) AS exists_not_exists;
-SELECT forced($$SELECT count(*) FROM d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.dc) e WHERE e->>'role' = 'staff')$$) AS exists_elements;
+SELECT forced($$SELECT count(*) FROM d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.dc) e WHERE e->>'role' = 'role_a')$$) AS exists_elements;
 
 -- NOT of a test that is NULL for a NULL document only on a NOT NULL column
-SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT jsonb_path_exists(dc, '$[*] ? (@.type == "reply")')) AS f FROM d GROUP BY g$$) AS not_path_not_null;
-SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT dc @> '[{"role": "staff"}]') AS f FROM d GROUP BY g$$) AS not_contains_not_null;
-SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT jsonb_path_exists(doc, '$[*] ? (@.type == "reply")')) AS f FROM d GROUP BY g$$) AS not_path_nullable;
-SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT doc @> '[{"type": "reply"}]') AS f FROM d GROUP BY g$$) AS not_contains_nullable;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT jsonb_path_exists(dc, '$[*] ? (@.type == "kind_a")')) AS f FROM d GROUP BY g$$) AS not_path_not_null;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT dc @> '[{"role": "role_a"}]') AS f FROM d GROUP BY g$$) AS not_contains_not_null;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT jsonb_path_exists(doc, '$[*] ? (@.type == "kind_a")')) AS f FROM d GROUP BY g$$) AS not_path_nullable;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT doc @> '[{"type": "kind_a"}]') AS f FROM d GROUP BY g$$) AS not_contains_nullable;
 
 -- an element against a column of its own row: every operator on either side, the int4 member against a bigint column, the NULL
 -- column and the NULL member are unknown, NOT EXISTS keeps the rows with no comparison that is true
@@ -79,13 +79,13 @@ SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_
 				count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n < d.r8)) AS lt FROM d GROUP BY g$$) AS exists_outer_column_bigint;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n = d.r)) AS none_eq,
 				count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(n int) WHERE e.n IS NULL OR e.n > d.r)) AS none_null_or_gt FROM d GROUP BY g$$) AS not_exists_outer_column;
-SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE e.type = 'reply' AND e.n = d.g)) AS f FROM d GROUP BY g$$) AS exists_outer_column_same_element;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE e.type = 'kind_a' AND e.n = d.g)) AS f FROM d GROUP BY g$$) AS exists_outer_column_same_element;
 -- PostgreSQL turns the negated conjunction into the OR of the negated comparisons, which are unknown for a NULL as the others are
-SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE NOT (e.type = 'reply' AND e.n = d.r))) AS f FROM d GROUP BY g$$) AS exists_outer_not_and;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.dc) AS e(type text, n int) WHERE NOT (e.type = 'kind_a' AND e.n = d.r))) AS f FROM d GROUP BY g$$) AS exists_outer_not_and;
 
 -- near misses keep the normal plan: != (a JSON null member is "not equal" in jsonpath), a float literal, a string against an integer,
 -- a JSON null or a float in a containment, an element compared with an expression of the outer row, a column of another type class and a limit that is no constant
-SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.type != "reply")')) AS f FROM d GROUP BY g$$) AS path_not_equal;
+SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.type != "kind_a")')) AS f FROM d GROUP BY g$$) AS path_not_equal;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.n > 1.5)')) AS f FROM d GROUP BY g$$) AS path_float;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE jsonb_path_exists(doc, '$[*] ? (@.n == "3")')) AS f FROM d GROUP BY g$$) AS path_string_vs_integer;
 SELECT forced($$SELECT g, count(*) FILTER (WHERE doc @> '[{"role": null}]') AS f FROM d GROUP BY g$$) AS contains_null;

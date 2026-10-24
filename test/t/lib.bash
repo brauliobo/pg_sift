@@ -42,11 +42,26 @@ node_mb() { du -sm "$(dir "$1")" | cut -f1; }
 # TAP output
 plan() { echo "1..$1"; }
 ok() { NTEST=$((NTEST + 1)); echo "ok $NTEST - $*"; }
-not_ok() { NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"; }
+# a failed check shows the end of every node log: what the servers did around it is rarely there on a rerun
+not_ok() {
+	local n
+	NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"
+	for n in "${NODES[@]}"; do [[ -f $(dir "$n")/postgres.log ]] && diag "log of node $n:"$'\n'"$(tail -25 "$(dir "$n")/postgres.log" | cut -c1-240)"; done
+	return 0
+}
 diag() { sed 's/^/# /' <<<"$*"; }
 check() { local desc=$1; shift; if "$@"; then ok "$desc"; else not_ok "$desc"; fi; }
 skip() { local n=$1; shift; for _ in $(seq "$n"); do NTEST=$((NTEST + 1)); echo "ok $NTEST # skip $*"; done; }
 bail() { NFAIL=$((NFAIL + 1)); echo "Bail out! $*"; exit 1; }   # a bail keeps the node logs
+# sed -i in place on GNU and BSD sed (BSD's takes the next word as the suffix)
+sed_i() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
+# build_old REF: sets OLDROOT to the root of the released library REF (scripts/old-lib-check.sh); the test is skipped when the release cannot be built on this host
+build_old() {
+	local rc=0
+	OLDROOT=$(SIFT_OLD_REF=$1 "$REPO/scripts/old-lib-check.sh" build) || rc=$?
+	((rc != 77)) || { echo "1..0 # SKIP the release $1 cannot be built on this host (scripts/old-lib-check.sh)"; exit 0; }
+	((rc == 0)) || bail "cannot build $1"
+}
 
 dir() { echo "$TAPDIR/$1"; }
 port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
@@ -110,6 +125,17 @@ node_promote() { pg_ctl -D "$(dir "$1")/data" -w promote >/dev/null; }
 conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=postgres"; }
 
 node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
+# use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
+# tree). Only this tree defines the settings scripts/pgtest.sh conf sets (sift.table_auto_defrag, sift.col_auto_merge, sift.col_auto_merge_wal_pct): a released
+# library warns that "sift" is a reserved prefix in the first statement of a session, and the test compares what the statements print.
+use_root() {
+	local conf=$(dir "$1")/data/postgresql.conf k
+	ROOT=$2
+	for k in table_auto_defrag col_auto_merge col_auto_merge_wal_pct; do sed_i "/^sift\.$k = /d" "$conf"; done
+	[[ $ROOT != "$newroot" ]] || "$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.(table_auto_defrag|col_auto_merge|col_auto_merge_wal_pct) = ' >>"$conf"
+	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
+dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
+}
 node_start() {
 	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
 		>/dev/null 2>&1 || return

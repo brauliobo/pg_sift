@@ -28,9 +28,25 @@
 #include "table/store_int.h"
 
 int			sift_tbl_write_buffer_limit = 4096;	/* kB */
+bool		sift_tbl_wide_rows = true;	/* a row that does not fit a write buffer goes to tail pages (format 11) instead of being refused */
 int			sift_tbl_vblock_floor = 0;	/* testing: the first virtual block of a new write buffer at least */
 int			sift_tbl_max_segments = SIFT_MAX_SEGMENTS;	/* the directory entries a table may use (lowered by a test setting) */
 int			sift_tbl_init_gate = 0;	/* testing: the first writer waits for this advisory lock before it writes the tombstone segment */
+int			sift_tbl_seal_gate = 0;	/* testing: the writer that closed a write buffer waits for this advisory lock before it flags the pages sealed */
+
+#ifdef SIFT_TESTING
+void
+sift_tbl_gate(int number)
+{
+	if (number > 0)
+	{
+		Datum		key = Int64GetDatum(number);
+
+		DirectFunctionCall1(pg_advisory_lock_int8, key);
+		DirectFunctionCall1(pg_advisory_unlock_int8, key);
+	}
+}
+#endif
 
 typedef struct CacheEnt
 {
@@ -172,6 +188,9 @@ new_tomb_segment(Relation rel)
 	return e;
 }
 
+/* The first writer writes the metapage and then the directory, two blocks one after the other: a file of the metapage alone is being laid out */
+#define BLOCKS_WRITTEN(rel)	(RelationGetNumberOfBlocks(rel) > SIFT_DIRECTORY_BLKNO)
+
 void
 sift_tbl_ensure_init(Relation rel)
 {
@@ -180,7 +199,7 @@ sift_tbl_ensure_init(Relation rel)
 	/* a read between the first writer's metapage and its tombstone segment caches a table that is not laid out yet */
 	if (st->initialized && find_seg(&st->dir, is_tomb, 0) != NULL)
 		return;
-	if (RelationGetNumberOfBlocks(rel) == 0)
+	if (!BLOCKS_WRITTEN(rel))
 	{
 		static const SiftOptions none = {0};
 
@@ -199,15 +218,7 @@ sift_tbl_ensure_init(Relation rel)
 	{
 		InitArg		arg;
 
-#ifdef SIFT_TESTING
-		if (sift_tbl_init_gate > 0)
-		{
-			Datum		key = Int64GetDatum(sift_tbl_init_gate);
-
-			DirectFunctionCall1(pg_advisory_lock_int8, key);
-			DirectFunctionCall1(pg_advisory_unlock_int8, key);
-		}
-#endif
+		sift_tbl_gate(sift_tbl_init_gate);
 		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
 		sift_dir_read(rel, &st->dir);
 		if (find_seg(&st->dir, is_tomb, 0) == NULL)
@@ -227,7 +238,7 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 	int			nold = st->nwbuf,
 				n = 0;
 
-	if (RelationGetNumberOfBlocks(rel) == 0)
+	if (!BLOCKS_WRITTEN(rel))
 	{
 		st->initialized = false;
 		st->dir.nsegs = 0;

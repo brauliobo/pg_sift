@@ -8,7 +8,7 @@ from store_common import difference, marker_path, percentile, write
 from store_data import Rows, effective, mib
 from stats import summary
 from store_engine import Client, Http, Window, es_text, gate, server_log
-from store_lib import CH_AUTH, CH_TABLE, LANES, LOAD_QUERIES, LOAD_QUERY, NOISY, PG_ENGINES, TOL, UPDATE_ENGINES, container, is_ch, load_queries, log, read, sections
+from store_lib import CH_AUTH, CH_TABLE, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, NOISY, PG_ENGINES, TOL, UPDATE_ENGINES, container, is_ch, load_queries, log, read, sections
 
 
 UPDATE_SET = "status = 'refunded', amount = amount - 1"
@@ -100,9 +100,16 @@ class Writer:
             self.c.http.request('POST', '/orders/_forcemerge?max_num_segments=1')
             self.c.http.request('POST', '/orders/_flush')
 
+    def lsn(self):
+        return self.c.psql.run('SELECT pg_current_wal_lsn()', True)[0] if self.eid in PG_ENGINES else None
+
+    def wal_mib(self, since):
+        """the WAL written since `since` (a value of lsn()), MiB; None for the systems that are not PostgreSQL"""
+        return None if since is None else mib(int(self.c.psql.run(f"SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '{since}')", True)[0]))
+
     def free_mib(self):
         """sift_table: the free blocks inside the table file (None for the others)"""
-        if self.eid != 'sift_table':
+        if self.eid not in ('sift_table', 'sift_table_maint'):
             return None
         return mib(int(self.c.psql.run("SELECT free_blocks FROM sift.table_space('orders')", True)[0]) * 8192)
 
@@ -223,7 +230,7 @@ def with_load(w, q, args, rows, rate):
 
 
 def read_after_write(w, args, rows):
-    modes = {'pg': ['commit'], 'sift': ['commit'], 'sift_table': ['commit'], 'es': ['default', 'wait_for'], 'ch': ['lightweight'], 'ch_mut': ['mutation'], 'ch_rmt': ['insert']}[w.eid]
+    modes = {'es': ['default', 'wait_for']}.get(w.eid) or [MODES[w.eid]]
     k0 = 0
     for mode in modes:
         ack, vis = [], []
@@ -262,6 +269,7 @@ def update_engine(eid, args, rows, ref):
         point('before')
     for name, kind, pred, test in PHASES:
         ids = [i for i in range(1, n + 1) if test(i)]
+        lsn = w.lsn()
         t0 = time.perf_counter()
         if eid == 'ch_mut':
             w.predicate(kind, pred)
@@ -271,6 +279,8 @@ def update_engine(eid, args, rows, ref):
         dt = time.perf_counter() - t0
         rows.add(eid, '-', name, 'phase_s', 's', value=round(dt, 2))
         rows.add(eid, '-', name, 'phase_rows_s', 'rows/s', value=round(len(ids) / dt))
+        if lsn:
+            rows.add(eid, '-', name, 'wal_mib', 'MiB', value=w.wal_mib(lsn))
         d = w.digest()
         if eid == 'pg':
             ref[name] = d
@@ -290,9 +300,12 @@ def update_engine(eid, args, rows, ref):
     point('after churn')
     for q in qs.values():
         read_latency(w, q, args, rows, 'after churn')
+    lsn = w.lsn()
     t0 = time.perf_counter()
     w.maintain()
     rows.add(eid, '-', 'maintenance', 'maintain_s', 's', value=round(time.perf_counter() - t0, 1))
+    if lsn:
+        rows.add(eid, '-', 'maintenance', 'wal_mib', 'MiB', value=w.wal_mib(lsn))
     point('after maintenance')
     for q in qs.values():
         read_latency(w, q, args, rows, 'after maintenance')

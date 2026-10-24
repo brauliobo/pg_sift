@@ -25,6 +25,7 @@ SELECT octet_length(token) FROM sift.tokenize(repeat(E'\xe9', 300));
 CREATE EXTENSION pg_sift;
 SELECT * FROM sift.tokenize('x');
 ERROR:  sift requires a UTF8 or SQL_ASCII database, not LATIN1
+HINT:  Create a database with ENCODING 'UTF8' and restore the data into it.
 \c :orig
 DROP DATABASE sift_sql_ascii;
 DROP DATABASE sift_latin1;

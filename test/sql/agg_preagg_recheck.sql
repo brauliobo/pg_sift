@@ -15,15 +15,7 @@ CREATE INDEX pr_clean_col ON pr_clean USING sift_col (id, items) WITH (paths = '
 CREATE INDEX pr_dirty_col ON pr_dirty USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4, score float8}', write_buffer_limit = 4096);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
 
-CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE result text;
-BEGIN
-  PERFORM set_config('sift.enable_agg', enabled::text, true);
-  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
-  RETURN result;
-EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
-END $$;
+\ir test/agg_helpers.sql
 -- whether a unit was answered from the rollup (NULL: the query fails)
 CREATE FUNCTION from_rollup(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
@@ -49,6 +41,6 @@ SELECT * FROM check_query('dirty: kind and n', $q$
  SELECT e.kind, count(*), sum(e.n) FROM pr_dirty d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1
 $q$);
 
-DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool);
+DROP FUNCTION check_query(text, text), from_rollup(text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE pr_clean, pr_dirty;
 DROP EXTENSION pg_sift;

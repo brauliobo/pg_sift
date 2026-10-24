@@ -13,6 +13,9 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, CASE WHEN i % 17 = 0 
                                               FROM generate_series(1, 1 + i % 4) j)) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX items_col ON items USING sift_col (id, parent_id, region, doc) WITH (paths = 'doc.parts[]{k text, n int4}');
+NOTICE:  sift_col index items_col keeps the keys of parent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 192 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX items_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) items;
 -- the outer aggregates given; the arms are per item and key, and per item
 CREATE FUNCTION report(aggs text, tail text DEFAULT '', filt text DEFAULT 'true') RETURNS text LANGUAGE sql AS $$

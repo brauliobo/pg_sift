@@ -29,6 +29,7 @@
 #include "agg/init_int.h"
 #include "agg/update_int.h"
 #include "agg/blob_int.h"
+#include "agg/spill_int.h"
 #include "agg/par_int.h"
 #include "agg/fuse_int.h"
 #include "agg/back_host_int.h"
@@ -37,10 +38,12 @@
 #define VECW		SIFT_AGG_VECW
 #define PADW		8
 #define MAX_RANGE	(1 << 22)		/* values a range table covers */
-#define ZONE_SET_MAX	256			/* members of a byte-table IN list that still travel with its zone test */
+#define ZONE_SET_MAX	256			/* members of an IN list that travel with its zone test, at least (zone_set_max) */
+#define ZONE_SET_CAP	(1 << 16)	/* ... and at most */
 #define SPARSE_RANGE	(1 << 16)	/* a range table of more values than this is not worth filling for the few rows of a unit that are spread over it */
 #define SPARSE_FACTOR	16			/* values added to the range table per row of the unit above which the keys are put in the hash table */
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
+#define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN slots, and 4 slots for each group expected) hold at most this many slots for each group in use, else the hash table: their size multiplies the capacity of the keys, not the groups */
 #define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
 #define LANE_DIRECT_MAX	(1 << 15)	/* a lane is built and folded or dumped sixteen times: sparse group spaces go to the hash table */
 #define NDICT_SLOTS	8
@@ -84,12 +87,13 @@ typedef struct AggExec
 	FmgrInfo  **xcmp;			/* SAA_X_MIN, SAA_X_MAX: the comparison of the type, and the length and pass-by-value of the aggregate's type */
 	int16	   *xlen;
 	bool	   *xbyval;
-	int			clbase[SIFT_AGG_MAX_COMBOS];	/* per combo: its first dictionary map slot (after the keys and aggregates) */
+	int		   *clbase;	/* per combo: its first dictionary map slot (after the keys and aggregates) */
 	int			ncl;
 	int			nj;				/* join combos, in the order the stages apply them */
-	int			jcombo[SIFT_AGG_MAX_JOINS];
+	int		   *jcombo;
 	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
+	SpineSt    *spine;			/* the rows of the arms' spine (SiftAggSpec.spine) */
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
@@ -128,11 +132,16 @@ typedef struct AggExec
 	AggState   *gas;			/* the AggState their functions are called with */
 	MemoryContext gres;			/* their results */
 	int			n_dist_spilled;	/* count(DISTINCT) sets that outgrew hash_mem and went through a sort */
+	uint64		dist_hash;		/* the aggregates (below 64) whose sets had left their bitmaps when the table spilled: the next table starts them as hash sets */
+	struct AggSpill *spill;	/* the group table goes to partitions on disk past hash memory (agg/spill.c) */
+	int			n_spills;		/* ... and the times it did */
 	int64		n_dist_chunks;	/* count(DISTINCT) bitmap chunks of the workers that the leader ORed in */
 	/* output */
 	uint32	   *glist;
 	uint32		nglist;
 	uint32		gpos;
+	Datum	   *total_val;		/* a top-N with totals (TOPN_TOTALS): the aggregates of the one group, once the scan is done */
+	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
 	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */
@@ -141,8 +150,16 @@ typedef struct AggExec
 	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
 	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
+	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
+	uint32		nvorder;
+	uint32	   *dsorder;		/* a streaming count(DISTINCT) (dist_stream_begin): the superblocks in ascending order of the zone minimum of its column (ndsorder of them) */
+	int64	   *dsmin;			/* ... and that minimum, PG_INT64_MIN where a superblock gives no bound */
+	uint32		ndsorder;
+	int			dsagg;			/* ... of the aggregate dsagg */
+	bool		dsabort;		/* ... and the sweep was given up: the table of the groups would have spilled, so the scan started over in plain order */
 	SiftSrcPrune *prune;		/* the zone tests of the conjuncts: the integer leaves they compare (nprune), then the ORs of such tests (up to nzone) */
 	int			nprune;
+	struct SkipMap *skip;		/* the superblocks the zones keep, made at the first unit range of the scan (par.c range_skipped) */
 	int			nzone;
 	List	   *jprune;			/* ... and of the join key filters too sparse for a test of the rows: SiftSrcPrune */
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
@@ -186,6 +203,10 @@ typedef struct AggExec
 	SiftSrcUnit unit;
 	SiftSrcVec *uvec;
 	bool	   *uvec_ok;
+	SiftSrcVec *nvec;			/* LEFT lateral: per element leaf, the NULL column of the rows with no element (nullpass) */
+	bool	   *nvec_ok;
+	uint64	   *nullrows;		/* the rows of the unit that get a NULL tuple (left_lateral), NULL: none */
+	bool		nullpass;		/* the tuples are rows (qlevel 0) that have no element: the element leaves read NULL */
 	uint32	  **gofs;			/* per array leaf: elem_offs of the unit, NULL when not built yet */
 	uint32	  **gpar;			/* per array leaf: the row that owns each of its elements in the unit (array_parent), NULL when not built yet */
 	int			qlevel;			/* 1: element queries */
@@ -201,27 +222,31 @@ typedef struct AggExec
 	int64	   *hist2;			/* the scratch of a second one */
 	/* the tuples being aggregated (the arrays of cur) */
 	Tup			t0;				/* the chunk's selection */
-	Tup			stage[SIFT_AGG_MAX_JOINS];	/* the output of each join stage that repeats or drops tuples */
+	Tup		   *stage;			/* the output of each join stage that repeats or drops tuples */
 	Tup		   *cur;
 	int			cstart;			/* the chunk: [cstart, cstart + cn) of the unit's rows / elements */
 	int			cn;
 	uint32	   *sel;
 	uint32	   *tidx;
 	uint32	   *ridx;
-	uint32	   *seid[SIFT_AGG_MAX_JOINS];	/* the entries of the tuples a stage that repeats them is working on */
-	uint32	   *xcout[SIFT_AGG_MAX_COMBOS];	/* per combo a scoped combo reads the output of: that row, repeated for the elements it resolves (elem_exists) */
+	uint32	 ***alcout;			/* per stage: the outputs of the tuples it passes on as they are, plus its own */
+	uint32	  **seid;			/* the entries of the tuples a stage that repeats them is working on */
+	uint32	  **xcout;			/* per combo a scoped combo reads the output of: that row, repeated for the elements it resolves (elem_exists) */
 	/* scratch of combos */
 	uint64	   *cvid[SIFT_AGG_MAX_CLEAVES];
-	uint32	   *cfree[SIFT_AGG_MAX_COMBOS];	/* output row per tuple of a combo without a join */
-	bool		cfree_ok[SIFT_AGG_MAX_COMBOS];
+	uint32	  **cfree;			/* output row per tuple of a combo without a join */
+	bool	   *cfree_ok;
 	uint32	   *peid;
 	uint32	   *pti;
 	uint32	   *pri;
 	uint32	   *gid;
 	uint32	   *kids;			/* hash mode: ids per key, spec->nkeys * VEC */
+	uint64	   *knul;			/* per key (VECW + PADW words each): the tuples of the chunk whose value is NULL, set by key_prepare */
 	uint32	   *cu32;
 	uint64	   *c64;
 	uint8	   *okb;
+	int64	  **ncnt;			/* the counters that take every tuple of the chunk (seen, the n of the aggregates that leave none out): counted in one pass */
+	int			nncnt;
 	uint8	   *nb;
 	double	   *vstk;			/* float8 aggregate arguments: SIFT_AGG_MAX_VX vectors */
 	sift_i128  *nstk;			/* numeric programs: SIFT_AGG_MAX_VX vectors */
@@ -239,9 +264,15 @@ typedef struct AggExec
 	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */
 	/* counters */
 	int64		n_units;
+	struct TupleTableSlot *done_slot;	/* its reads: a slot of minimal tuples */
+	struct Tuplestorestate *done;	/* part_flush_on: the finished groups of the partitions scanned, as the tuples of the result */
+	int64		n_flushed;
 	const uint32 *partoff;		/* a parallel worker of a partitioned table: the leader's first superblock of each partition (sift_aggpart_set_offsets) */
 	int			parts_pruned;	/* the partitions of a partitioned table that its conditions refuted when the scan started (part_prune_init) */
 	int64		n_pre_units;	/* of them, answered from pre-aggregates */
+	int64		n_super;		/* of them, in groups answered from the summary of the group (superunits) */
+	int			n_split;		/* superunits split back into units while none answered: a query a summary cannot answer stops asking for them */
+	bool		super_on;		/* the source may hand over superunits: a row level scan that the pre-aggregates can answer, with no match set */
 	int64		n_rollup_miss;	/* exact units scanned for lack of their rollup, and of them those a refresh was queued for */
 	int64		n_rollup_queued;
 	int64		n_rollup_cost;	/* exact units with a rollup scanned because their tuples cost more than their elements */
@@ -251,6 +282,7 @@ typedef struct AggExec
 	int64		n_rows;			/* of the others */
 	int64		n_tuples;
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
+	int64		n_combo_trim;	/* times the combo caches started again at the entry limit (combo_trim) */
 	int64		n_groups;
 	const SiftAggBackend *be;	/* the backend that answers units of the scan besides the kernels below, and its state (agg/back.h) */
 	void	   *be_state;
@@ -273,17 +305,22 @@ extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
+extern int		sift_agg_lookup_shared_kb;
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);
+bool part_flush_on(const AggExec *ex);
+void part_flush(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
+Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);
 Datum agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull);
 void engine_contexts(AggExec *ex, MemoryContext parent);
 void engine_rels(AggExec *ex);
 void engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params);
 void engine_close(AggExec *ex);
+void topn_items(AggExec *ex);
 
 #pragma GCC visibility pop
 
@@ -402,7 +439,7 @@ key_lf(AggExec *ex, int j)
 {
 	const SiftAggKey *k = &ex->spec->key[j];
 
-	return k->kind == SAK_COMBO || k->kind == SAK_SET || k->kind == SAK_NUM ? NULL : &ex->lay->leaf[k->leaf];
+	return k->kind == SAK_COMBO || k->kind == SAK_SET || k->kind == SAK_NUM || k->kind == SAK_SPINE ? NULL : &ex->lay->leaf[k->leaf];
 }
 
 #endif							/* SIFT_AGG_AGG_INT_H */

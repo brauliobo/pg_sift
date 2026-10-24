@@ -76,7 +76,7 @@ sift_aggspec_operand_int(Oid t, Datum d)
 		case BOOLOID:
 			return DatumGetBool(d);
 		default:
-			elog(ERROR, "sift: unexpected operand type %u", t);
+			SIFT_INVARIANT(false, "sift: unexpected operand type %u", t);
 	}
 	return 0;
 }
@@ -337,9 +337,16 @@ plain_agg(const SiftAggAgg *a)
 			return true;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
-			return !a->distinct;
 		case SAA_COUNT_DISTINCT:
-			return a->num.n == 0;
+			return true;
+		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
+		case SAA_O_COUNT_STAR:
+		case SAA_O_COUNT_ROWS:
+		case SAA_O_COUNT_KEY:
+		case SAA_O_SUM_I64:
+		case SAA_O_SUM_F64:
+		case SAA_O_AVG_F64:
+			return true;
 		case SAA_MIN:
 		case SAA_MAX:
 			return true;
@@ -350,31 +357,110 @@ plain_agg(const SiftAggAgg *a)
 	}
 }
 
+/* does the group table go to partitions on disk when it outgrows hash memory (agg/spill.c)? It must travel as a blob, one pass, one table */
 bool
-sift_aggspec_parallel_ok(const SiftAggSpec *s)
+sift_aggspec_spillable(const SiftAggSpec *s)
 {
-	if (s->narms)
+	if (s->topn || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
-	/* a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan run per combination of leaves (params) is not */
-	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].params != NIL)
+	for (int j = 0; j < s->nkeys; j++)
+		if (s->key[j].kind == SAK_SET)
 			return false;
+	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
+	for (int i = 0; i < s->naggs; i++)
+		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN)
+			return false;
+	return true;
+}
+
+/*
+ * The count(DISTINCT x) of a scan that may visit its superblocks in the order of the zone minimum of x (dist_stream_scan), -1 when there is no
+ * such aggregate: the only DISTINCT aggregate of the spec, over a leaf of the source, and every other aggregate exact in any order (counts,
+ * integer sums and averages, min and max), over plain keys, with no join, arm, grouping set, unnest, partition, match set or top-N, which read
+ * the superblocks in an order of their own.
+ */
+int
+sift_aggspec_dstream(const SiftAggSpec *s)
+{
+	int			found = -1;
+
+	if (s->topn || s->search || s->nsets > 0 || s->narms > 0 || s->spine || s->njoin > 0 || s->ncombo > 0 || s->nparts > 0 || s->group >= 0 ||
+		s->nvleaf > 0)
+		return -1;
+	for (int j = 0; j < s->nkeys; j++)
+		if (!plain_key(&s->key[j]) || s->key[j].kind == SAK_SET || s->key[j].kind == SAK_COMBO)
+			return -1;
+	for (int i = 0; i < s->naggs; i++)
+		switch (s->agg[i].kind)
+		{
+			case SAA_COUNT_DISTINCT:
+				if (found >= 0 || s->agg[i].num.n || s->agg[i].leaf < 0)
+					return -1;
+				found = i;
+				break;
+			case SAA_COUNT_STAR:
+			case SAA_COUNT:
+			case SAA_COUNT_ROWS:
+			case SAA_SUM_INT:
+			case SAA_AVG_INT:
+			case SAA_MIN:
+			case SAA_MAX:
+				break;
+			default:
+				return -1;
+		}
+	return found;
+}
+
+/*
+ * Why the scan runs in one process whatever the cost (NULL: it can have workers), for EXPLAIN VERBOSE; *agg: the aggregate that decides it,
+ * -1 when it is not an aggregate
+ */
+const char *
+sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
+{
+	*agg = -1;
+	/* the rows of the spine are those of a plan the leader runs, and the rows no cell joined are a group of the end of the scan */
+	if (s->spine)
+		return "the rows of a spine are those of a plan the leader runs";
+	/*
+	 * a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan
+	 * run per combination of leaves (params) is not, unless the leader reads it as a table of the unique key it takes the first row of
+	 * (join_first_rows; a leader that cannot runs the scan alone)
+	 */
+	for (int i = 0; i < s->njoin; i++)
+		if (s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use))
+			return "a joined child plan runs per combination of values";
 	/* the rows nothing matched are known when every row of the table was seen: by one scan */
 	for (int i = 0; i < s->njoin; i++)
 		if (sift_aggjoin_preserves(s->join[i].kind))
-			return false;
+			return "an outer join keeps the rows nothing matched";
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
-			return false;
+			return "a group key whose groups the workers cannot merge";
 	for (int i = 0; i < s->naggs; i++)
 		if (!plain_agg(&s->agg[i]))
-			return false;
+		{
+			*agg = i;
+			return "its partial state is not one the leader can merge";
+		}
 	/* the float sums of the scan are merged in lane order, the generic states as the workers finish: not in one scan */
 	for (int i = 0; i < s->naggs; i++)
 		if (s->agg[i].kind == SAA_GEN)
 			for (int j = 0; j < s->naggs; j++)
 				if (s->agg[j].kind == SAA_SUM_F64 || s->agg[j].kind == SAA_AVG_F64)
-					return false;
-	return true;
+				{
+					*agg = i;
+					return "a float sum is merged in lane order, a generic state as the workers finish";
+				}
+	return NULL;
+}
+
+bool
+sift_aggspec_parallel_ok(const SiftAggSpec *s)
+{
+	int			agg;
+
+	return sift_aggspec_serial_reason(s, &agg) == NULL;
 }
 

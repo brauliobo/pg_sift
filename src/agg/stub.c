@@ -301,7 +301,8 @@ add_leaf(StubLayout *lay, int attno, int parent, SiftSrcLeafKind kind, Oid typid
 
 	if (id >= SIFT_COLSRC_MAX_LEAVES)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						errmsg("sift_colstub: an index has at most %d leaves", SIFT_COLSRC_MAX_LEAVES)));
+						errmsg("sift_colstub: an index has at most %d leaves", SIFT_COLSRC_MAX_LEAVES),
+						errhint("Leave out the columns and paths the queries do not read.")));
 	lf->id = id;
 	lf->attno = attno;
 	lf->parent = parent;
@@ -419,7 +420,8 @@ sift_aggstub_layout(Relation index)
 		(void) vtype_of(typid, &known);
 		if (!known)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg(SIFT_COLSTUB_AM " does not support the type %s of index column %d", format_type_be(typid), i + 1)));
+							errmsg(SIFT_COLSTUB_AM " does not support the type %s of index column %d", format_type_be(typid), i + 1),
+							errhint("Use int4, int8, float8, bool, date, timestamp or text.")));
 		add_leaf(lay, i + 1, -1, SCL_SCALAR, typid, NIL, NULL, STUB_ROLE_VALUE, false);
 	}
 	foreach_ptr(StubSpec, sp, specs)
@@ -451,7 +453,8 @@ stub_ambuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	IndexBuildResult *result = palloc0(sizeof(IndexBuildResult));
 
 	if (indexInfo->ii_Predicate != NIL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " does not support partial indexes")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " does not support partial indexes"),
+						errhint("Create the index without a WHERE clause.")));
 	b.lay = sift_aggstub_layout(index);
 	table_index_build_scan(heap, index, indexInfo, true, true, stub_build_callback, &b, NULL);
 	result->heap_tuples = result->index_tuples = b.ntuples;
@@ -533,7 +536,8 @@ stub_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int
 static int64
 stub_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " indexes cannot be scanned")));
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg(SIFT_COLSTUB_AM " indexes cannot be scanned"),
+					errhint("The index only supplies its columns to the aggregate scan; query the table.")));
 }
 
 static void

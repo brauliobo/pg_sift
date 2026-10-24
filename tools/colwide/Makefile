@@ -6,8 +6,8 @@ SRC      = ../../src
 include $(SRC)/areas.mk
 PGINC   := $(shell pg_config --includedir-server)
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -march=x86-64 -mtune=generic -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(PGINC) -D_GNU_SOURCE
-LDLIBS   = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir) -lpgport -lpgcommon -lm	# the server headers turn printf into pg_printf
+CFLAGS  += -std=gnu11 $(SIFT_BASE_ISA) -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare $(SIFT_INC) -I$(PGINC) $(SIFT_PGCPP) -D_GNU_SOURCE
+LDLIBS   = -L$(shell pg_config --libdir) -L$(shell pg_config --pkglibdir) -lpgport -lpgcommon $(SIFT_PGLIBS) -lm	# the server headers turn printf into pg_printf
 OUT     ?= /tmp/sift-colwide
 ifdef SANITIZE
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all

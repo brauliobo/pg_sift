@@ -9,6 +9,7 @@
 
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/index.h"
 #include "funcapi.h"
 #include "miscadmin.h"
@@ -17,6 +18,7 @@
 #include "utils/builtins.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
+#include "utils/uuid.h"
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -26,6 +28,8 @@
 #include "col/am.h"
 #include "agg/colsrc.h"
 #include "col/pagg.h"
+#include "col/runs.h"
+#include "col/setsum.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
@@ -36,10 +40,21 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
+PG_FUNCTION_INFO_V1(sift_test_col_cube_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_pre_stats);
+PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_super_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_run_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_run_file_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
+PG_FUNCTION_INFO_V1(sift_test_col_set_file_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_point_file_damage);
 
 #define TEST_NOWBUF	1
 #define TEST_NOVET		2
+#define TEST_POINTS	8		/* open the source with SIFT_COLO_POINTS: a segment with a point directory answers an equality or a short IN list from it */
+#define TEST_POINT_TIDS	16	/* with TEST_POINTS: a directory of heap addresses returns the addresses (sift_col_point_tids), listed first by sift._test_col_tids, and its units are not read */
 #define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
 #define WAIT_KEY		0x51F7
 
@@ -110,6 +125,12 @@ parse_value(const SiftColDef *def, char *s)
 			v.v.f = strtod(s, NULL);
 			break;
 		default:
+			if (def->type == SIFT_COLT_UUID)
+			{
+				v.v.s = (const char *) DatumGetUUIDP(DirectFunctionCall1(uuid_in, CStringGetDatum(s)));
+				v.len = UUID_LEN;
+				break;
+			}
 			v.v.s = s;
 			v.len = strlen(s);
 	}
@@ -227,7 +248,7 @@ scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							(flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0);
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0));
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
@@ -266,8 +287,10 @@ test_next(TestScan *ts, SiftColUnit *unit)
 static bool
 unit_select(TestScan *ts, const SiftColUnit *unit, int flags, SiftColSel *sel)
 {
+	bool		used;
+
 	sift_col_sel_all(unit, sel);
-	if (!sift_col_filter(unit, ts->q.top, ts->q.ntop, sel))
+	if (!sift_col_filter_points(unit, ts->q.top, ts->q.ntop, sel, &used))
 		return false;
 	for (int g = 0; g < ts->q.ngrp; g++)
 		if (!sift_col_filter_group(unit, &ts->q.grp[g], sel))
@@ -285,6 +308,22 @@ sift_test_col_tids(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(1)), flags);
+	{
+		uint32		n;
+		const SiftKey *keys = sift_col_point_tids(ts.src, &n);
+
+		for (uint32 i = 0; i < n; i++)
+		{
+			ItemPointerData tid;
+			Datum		v[2];
+			bool		nulls[2] = {false, false};
+
+			sift_key_to_tid(keys[i], &tid);
+			v[0] = ItemPointerGetDatum(&tid);
+			v[1] = Int32GetDatum(ItemPointerGetBlockNumber(&tid) >> SIFT_SB_SHIFT);
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		}
+	}
 	while (test_next(&ts, &unit))
 	{
 		SiftColSel	sel;
@@ -501,13 +540,15 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/* (reset bool) The dictionaries this backend parsed from segments and found in its cache since the last reset, and the bytes it keeps */
+/* (reset bool) The dictionaries and segment heads this backend parsed from segments and found in its cache since the last reset, and the bytes it keeps */
 Datum
 sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		v[3] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes())};
-	bool		nulls[3] = {false};
+	Datum		v[7] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes()),
+						Int64GetDatum(sift_cdict_cache_stats.head_loads), Int64GetDatum(sift_cdict_cache_stats.head_hits),
+						Int64GetDatum(sift_cdict_cache_stats.zone_loads), Int64GetDatum(sift_cdict_cache_stats.zone_hits)};
+	bool		nulls[7] = {false};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
@@ -567,9 +608,9 @@ sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 	sift_colsrc_stats(rel, &st);
 	for (int i = 0; i < nleaves; i++)
 	{
-		Datum		v[5] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
-		Float8GetDatum(st.elems_per_row[i])};
-		bool		nulls[5] = {false, false, false, false, false};
+		Datum		v[6] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
+		Float8GetDatum(st.elems_per_row[i]), Float8GetDatum(st.allvisible_frac)};
+		bool		nulls[6] = {false, false, false, false, false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
@@ -604,7 +645,7 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 				rows = 0;
 	SiftCI128	total = 0;
 	Datum		v[5];
-	bool		nulls[5] = {false};
+	bool		nulls[7] = {false};
 	char		buf[64];
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -657,6 +698,985 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
+/* does a decoded cube keep what the decoder promises: min <= max in every group that has a value, and the groups of a calendar dim are the first days of cells of its grain, in ascending order */
+static bool
+cube_sound(const SiftColSchema *sc, const SiftCHist *h)
+{
+	for (int d = 0; d < h->ndims; d++)
+	{
+		const SiftCHistDim *hd = &h->dim[d];
+
+		for (uint32 g = 0; hd->leaf >= SIFT_PAGG_CAL && g < hd->ngroups - (hd->has_null ? 1 : 0); g++)
+			if (!sift_cpagg_cal_key_ok(sc->cols[hd->leaf % SIFT_PAGG_CAL].type, hd->leaf / SIFT_PAGG_CAL, hd->key[g]) || (g > 0 && hd->key[g] <= hd->key[g - 1]))
+				return false;
+		for (int m = 0; m < h->dim[d].nmeas; m++)
+			for (uint32 g = 0; h->dim[d].min[m] != NULL && g < h->dim[d].ngroups; g++)
+				if (h->dim[d].nn[m][g] > 0 && h->dim[d].min[m][g] > h->dim[d].max[m][g])
+					return false;
+	}
+	return true;
+}
+
+/* does the census of the sidecar (sift_col_refresh) call a unit with these bytes odd (it must never read outside them either) */
+static int
+census_odd_units(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen)
+{
+	SiftCPaggCensus c;
+
+	memset(&c, 0, sizeof(c));
+	sift_cpagg_census(sc, spec, spec->minmax, blob, len, eblob, elen, &c);
+	return c.odd;
+}
+
+/*
+ * One cube blob decoded as stored, cut at every length, and with every byte set to some other values (one at a time). A decode must never read
+ * outside the blob (meaningful under SANITIZE=1) and must refuse what it cannot trust: a cut blob is always refused, and a damaged one that is
+ * accepted still obeys min <= max and the cells of a calendar dim. The census that sift.col_refresh takes of the same bytes (spec given: a sift_col index) reads headers only: it
+ * must stay inside them, and call every cut blob odd (census_cut_odd; the empty cut is no blob).
+ */
+void
+sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+					  MemoryContext cx, SiftTestDamage *r)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	uint8	   *copy = palloc(len);
+	SiftCHist	h;
+
+	r->blobs++;
+	MemoryContextReset(cx);
+	if (sift_cpagg_decode(sc, blob, len, cx, &h))
+	{
+		r->intact++;
+		r->minmax += h.dim[0].minmax;
+		for (int d = 0; d < h.ndims; d++)
+			if (h.dim[d].leaf >= SIFT_PAGG_CAL)
+			{
+				r->calendar++;
+				break;
+			}
+	}
+	for (uint32 l = 0; l < len; l++)
+	{
+		MemoryContextReset(cx);
+		memcpy(copy, blob, l);
+		r->cut++;
+		r->cut_accepted += sift_cpagg_decode(sc, copy, l, cx, &h);
+		if (spec)
+			r->census_cut_odd += census_odd_units(sc, spec, copy, l, eblob, eblob ? elen : 0);
+	}
+	for (uint32 i = 0; i < len; i++)
+		for (int k = 0; k < lengthof(vals); k++)
+		{
+			memcpy(copy, blob, len);
+			if (copy[i] == vals[k])
+				continue;
+			copy[i] = vals[k];
+			MemoryContextReset(cx);
+			r->damaged++;
+			if (spec)
+				r->census_odd += census_odd_units(sc, spec, copy, len, eblob, eblob ? elen : 0);
+			if (sift_cpagg_decode(sc, copy, len, cx, &h))
+			{
+				r->accepted++;
+				r->unsound += !cube_sound(sc, &h);
+			}
+		}
+	pfree(copy);
+}
+
+/* The rollup of the rows of a unit decoded as stored, cut at every length and with every byte set to other values: a cut is always refused, and the decoder never reads outside the blob */
+static void
+rows_damage(const SiftColSchema *sc, const uint8 *blob, uint32 len, MemoryContext cx, SiftTestDamage *r)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	uint8	   *copy = palloc(len);
+	SiftCRollup ro;
+
+	r->blobs++;
+	MemoryContextReset(cx);
+	r->intact += sift_cpagg_rollup_decode(sc, blob, len, cx, &ro);
+	for (uint32 l = 0; l < len; l++)
+	{
+		MemoryContextReset(cx);
+		memcpy(copy, blob, l);
+		r->cut++;
+		r->cut_accepted += sift_cpagg_rollup_decode(sc, copy, l, cx, &ro);
+	}
+	for (uint32 i = 0; i < len; i++)
+		for (int k = 0; k < lengthof(vals); k++)
+		{
+			memcpy(copy, blob, len);
+			if (copy[i] == vals[k])
+				continue;
+			copy[i] = vals[k];
+			MemoryContextReset(cx);
+			r->damaged++;
+			r->accepted += sift_cpagg_rollup_decode(sc, copy, len, cx, &ro);
+		}
+	pfree(copy);
+}
+
+/*
+ * sift._test_col_cube_damage(index, units, rows): sift_test_cube_damage of the cube blob of the first units of the index (rows: rows_damage of their rollup of the rows)
+ */
+Datum
+sift_test_col_cube_damage(PG_FUNCTION_ARGS)
+{
+	int			maxunits = PG_GETARG_INT32(1);
+	bool		rows = PG_GETARG_BOOL(2);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
+	SiftTestDamage r = {0};
+	Datum		v[10];
+	bool		nulls[10] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (r.blobs < maxunits && test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					len,
+					elen;
+		const uint8 *blob;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u) || (blob = rows ? sift_cseg_rollup(seg, u, -1, &len) : sift_cseg_cube(seg, u, &len)) == NULL)
+			continue;
+		if (rows)
+			rows_damage(sift_col_rel(ts.index)->schema, blob, len, cx, &r);
+		else
+			sift_test_cube_damage(sift_col_rel(ts.index)->schema, &sift_col_rel(ts.index)->pagg, blob, len, sift_cseg_ecube(seg, u, &elen), elen, cx, &r);
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(r.blobs);
+	v[1] = Int64GetDatum(r.intact);
+	v[2] = Int64GetDatum(r.minmax);
+	v[3] = Int64GetDatum(r.cut);
+	v[4] = Int64GetDatum(r.cut_accepted);
+	v[5] = Int64GetDatum(r.damaged);
+	v[6] = Int64GetDatum(r.accepted);
+	v[7] = Int64GetDatum(r.unsound);
+	v[8] = Int64GetDatum(r.census_cut_odd);
+	v[9] = Int64GetDatum(r.census_odd);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+typedef enum DamageSection
+{
+	DMG_UNIT,
+	DMG_CHUNK,
+	DMG_SCHEMA
+} DamageSection;
+
+typedef struct Damage
+{
+	DamageSection section;
+	const SiftColSchema *sc;
+	MemoryContext cx;
+	uint32		needed;			/* the bytes a read of the intact object touches: a cut below it must be refused */
+	uint32		flags;			/* the chunk flags and (1 << 8 + enc) seen in the objects that parsed */
+	bool		sound;			/* what a reader trusts after a parse still holds, and a refusal was a corruption error */
+} Damage;
+
+/* the kinds, nulls and overflow bitmaps of a parsed chunk, checked again from the bits: no kind outside its slots, none in two, none beyond n */
+static bool
+chunk_sound(const SiftCChunk *c)
+{
+	uint32		words = (c->n + 63) / 64;
+	uint64		tail = c->n % 64 ? ~UINT64CONST(0) << (c->n % 64) : 0;
+
+	for (uint32 w = 0; w < words; w++)
+	{
+		uint64		nul = c->nulls ? c->nulls[w] : 0,
+					ovf = c->ovf ? c->ovf[w] : 0,
+					seen = 0;
+
+		if ((ovf & ~nul) || (w == words - 1 && ((nul | ovf) & tail)))
+			return false;
+		for (int tag = 1; tag < lengthof(c->kind); tag++)
+		{
+			uint64		m = c->kind[tag] ? c->kind[tag][w] : 0;
+
+			if ((m & (seen | ovf)) || (tag == SIFT_COLTAG_JNULL ? (m & ~nul) : (m & nul)) || (w == words - 1 && (m & tail)))
+				return false;
+			seen |= m;
+		}
+	}
+	return true;
+}
+
+/* A chunk the way a scan reads it: decoded, and its strings taken */
+static void
+chunk_read(Damage *d, const SiftCChunk *c)
+{
+	d->flags |= c->flags | 1U << (8 + c->enc);
+	d->sound &= chunk_sound(c);
+	if (c->n > (1U << 20))
+		return;
+	if (c->enc == SIFT_COLENC_STRS)
+	{
+		uint32	   *off;
+		char	   *bytes;
+
+		sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
+	}
+	else
+		sift_cchunk_decode(c, palloc(sizeof(int64) * (c->n + SIFT_COL_PAD / 8)));
+}
+
+/* One stored object read as a scan reads it; false when it is refused, by a failed parse or by an error (a corruption one, or d->sound is false) */
+static bool
+damage_read(Damage *d, const uint8 *p, uint32 len, const SiftColSchema *orig)
+{
+	volatile bool ok = false;
+	MemoryContext old;
+
+	MemoryContextReset(d->cx);
+	old = MemoryContextSwitchTo(d->cx);
+	d->sound = true;
+	PG_TRY();
+	{
+		SiftCChunk	c;
+
+		switch (d->section)
+		{
+			case DMG_CHUNK:
+				if ((ok = sift_cchunk_parse(p, len, &c)))
+				{
+					d->needed = (uint32) (c.payload + c.paylen - p);
+					chunk_read(d, &c);
+				}
+				break;
+			case DMG_UNIT:
+				{
+					SiftCUnitView v;
+
+					if ((ok = sift_cunit_parse(p, len, d->sc, &v)))
+					{
+						SiftKey    *keys = palloc(sizeof(SiftKey) * (v.nrows + 1));
+
+						d->needed = 0;
+						for (int col = 0; col < d->sc->ncols; col++)
+							if (sift_cunit_chunk(&v, col, &c))
+							{
+								d->needed = Max(d->needed, v.chunk_off[col] + v.chunk_len[col]);
+								chunk_read(d, &c);
+							}
+						sift_cunit_keys(&v, 7, keys);
+						for (uint32 r = 1; r < v.nrows; r++)
+							d->sound &= keys[r - 1] < keys[r];
+					}
+				}
+				break;
+			case DMG_SCHEMA:
+				{
+					SiftColSchema *s = sift_cschema_parse(d->cx, p, len);
+
+					if ((ok = s != NULL))
+					{
+						d->needed = len;
+						/* the hash covers every field but the flags: an accepted schema is the stored one */
+						for (int i = 0; i < s->ncols; i++)
+						{
+							const SiftColDef *a = &s->cols[i],
+									   *b = &orig->cols[i];
+
+							d->sound &= i < orig->ncols && a->id == b->id && a->parent == b->parent && a->kind == b->kind && a->store == b->store &&
+								a->attno == b->attno && a->type == b->type && a->scale == b->scale && a->lanes == b->lanes && a->lane == b->lane &&
+								strcmp(a->path, b->path) == 0;
+						}
+						d->sound &= s->ncols == orig->ncols;
+					}
+				}
+				break;
+		}
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(d->cx);
+		e = CopyErrorData();
+		FlushErrorState();
+		d->sound = e->sqlerrcode == ERRCODE_DATA_CORRUPTED || e->sqlerrcode == ERRCODE_INDEX_CORRUPTED || e->sqlerrcode == ERRCODE_FEATURE_NOT_SUPPORTED;
+		ok = false;
+	}
+	PG_END_TRY();
+	MemoryContextSwitchTo(old);
+	return ok;
+}
+
+#define DAMAGE_POSITIONS	600	/* the cuts and the damaged bytes of an object: all of the first and last 64, then every nth */
+
+/* The object intact, cut at the positions, and with a byte set to other values or a bit flipped at them; the tally is the columns of sift._test_col_damage */
+static void
+damage_object(Damage *d, const uint8 *blob, uint32 len, const SiftColSchema *orig, int64 *t)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	uint32		stride = 1 + len / DAMAGE_POSITIONS,
+				needed;
+	uint8	   *copy = palloc0(len + SIFT_COL_PAD);
+
+	enum {OBJECTS, INTACT, CUT, CUT_ACCEPTED, DAMAGED, ACCEPTED, UNSOUND};
+
+	t[OBJECTS]++;
+	memcpy(copy, blob, len);
+	if (damage_read(d, copy, len, orig) && d->sound)
+		t[INTACT]++;
+	else
+		t[UNSOUND]++;
+	needed = d->needed;
+	for (uint32 l = 0; l < len; l += (l < 64 || l + 64 >= len) ? 1 : stride)
+	{
+		memset(copy, 0, len + SIFT_COL_PAD);
+		memcpy(copy, blob, l);
+		t[CUT]++;
+		if (damage_read(d, copy, l, orig))
+		{
+			t[CUT_ACCEPTED]++;
+			t[UNSOUND] += l < needed || !d->sound;
+		}
+		else
+			t[UNSOUND] += !d->sound;
+	}
+	for (uint32 i = 0; i < len; i += (i < 64 || i + 64 >= len) ? 1 : stride)
+		for (int k = 0; k < lengthof(vals) + 2; k++)
+		{
+			uint8		v = k < lengthof(vals) ? vals[k] : blob[i] ^ (k == lengthof(vals) ? 0x01 : 0x80);
+
+			if (v == blob[i])
+				continue;
+			memcpy(copy, blob, len);
+			copy[i] = v;
+			t[DAMAGED]++;
+			if (damage_read(d, copy, len, orig))
+			{
+				t[ACCEPTED]++;
+				t[UNSOUND] += !d->sound;
+			}
+			else
+				t[UNSOUND] += !d->sound;
+		}
+	pfree(copy);
+}
+
+/*
+ * sift._test_col_damage(index, section, units): the stored objects of a section ('unit' the unit record with its chunks, 'chunk' each chunk alone,
+ * 'schema' the leaf list) of the first units of the index, read as a scan reads them, cut at the positions of damage_object and with bytes changed,
+ * one at a time. A reader must never read outside the object (meaningful under SANITIZE=1), must refuse a cut one (below the bytes it needs) and
+ * every refusal must be a corruption error (or the unsupported-feature one of an encoding this build does not know); what it accepts keeps what the format promises (the kinds of a chunk, the order of the keys of a unit,
+ * the stored leaf list). flags: the chunk flags (1 nulls, 2 overflow, 4 tags, 8 kinds) and, from bit 8, the encodings seen in the intact objects.
+ */
+Datum
+sift_test_col_damage(PG_FUNCTION_ARGS)
+{
+	char	   *section = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	int			maxunits = PG_GETARG_INT32(2);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	Damage		d = {0};
+	int64		t[7] = {0};
+	Datum		v[8];
+	bool		nulls[8] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	if (strcmp(section, "unit") == 0)
+		d.section = DMG_UNIT;
+	else if (strcmp(section, "chunk") == 0)
+		d.section = DMG_CHUNK;
+	else if (strcmp(section, "schema") == 0)
+		d.section = DMG_SCHEMA;
+	else
+		elog(ERROR, "sift test: unknown section \"%s\"", section);
+	d.cx = AllocSetContextCreate(CurrentMemoryContext, "damage", ALLOCSET_DEFAULT_SIZES);
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	d.sc = sift_col_rel(ts.index)->schema;
+	if (d.section == DMG_SCHEMA)
+	{
+		StringInfoData buf;
+
+		initStringInfo(&buf);
+		sift_cschema_serialize(d.sc, &buf);
+		damage_object(&d, (const uint8 *) buf.data, buf.len, d.sc, t);
+	}
+	for (int64 units = 0; d.section != DMG_SCHEMA && units < maxunits && test_next(&ts, &unit);)
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					len;
+		const uint8 *rec;
+		SiftCUnitView uv;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u))
+			continue;
+		units++;
+		rec = sift_cseg_unit(seg, u, &len);
+		if (d.section == DMG_UNIT)
+			damage_object(&d, rec, len, NULL, t);
+		else if (sift_cunit_parse(rec, len, d.sc, &uv))
+			for (int col = 0; col < d.sc->ncols; col++)
+				if (uv.chunk_len[col] > 0)
+				{
+					/* a chunk is 8-aligned in the record, as the reader's own parse needs it */
+					uint8	   *c = palloc(uv.chunk_len[col] + SIFT_COL_PAD);
+
+					memset(c + uv.chunk_len[col], 0, SIFT_COL_PAD);
+					memcpy(c, rec + uv.chunk_off[col], uv.chunk_len[col]);
+					damage_object(&d, c, uv.chunk_len[col], NULL, t);
+					pfree(c);
+				}
+	}
+	scan_close(&ts);
+	for (int i = 0; i < 7; i++)
+		v[i] = Int64GetDatum(t[i]);
+	v[7] = Int32GetDatum((int32) d.flags);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* sift._test_col_pre_stats(index): the units that hold the histogram (with min and max) of a leaf, or the rollup of a list, as the planner counts them */
+Datum
+sift_test_col_pre_stats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	const SiftColPreStats *pre = sift_col_pre_stats(index);
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
+	{
+		Datum		v[7] = {Int32GetDatum(c), Float8GetDatum(pre->units), Float8GetDatum(pre->dim[c]), Float8GetDatum(pre->mm[c]), Float8GetDatum(pre->roll[c])};
+		bool		nulls[7] = {false};
+
+		if (pre->dim[c] > 0 || pre->roll[c] > 0)
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/*
+ * sift._test_col_set_damage(index, units): the small-set summaries of the first units of the index, opened as stored, cut at every length, with
+ * each byte set to some other values (one at a time) and with the fields of the header the decoder must check set by name (flag bits, kind, count,
+ * width, probes, bits, order). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse a cut one and each named
+ * damage; a damaged blob it accepts is a valid summary of other keys, which the verifier's comparison with the chunk (sift_cset_matches) refuses.
+ */
+Datum
+sift_test_col_set_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	int			maxunits = PG_GETARG_INT32(1);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	int64		blobs = 0,
+				exact = 0,
+				bloom = 0,
+				intact = 0,
+				matching = 0,
+				cut = 0,
+				cut_accepted = 0,
+				named = 0,
+				named_accepted = 0,
+				damaged = 0,
+				accepted = 0,
+				missed = 0;
+	Datum		v[12];
+	bool		nulls[12] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (blobs < maxunits && test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					len,
+					rlen;
+		const uint8 *rec;
+		SiftCUnitView uv;
+		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u))
+			continue;
+		rec = sift_cseg_unit(seg, u, &rlen);
+		if (!sift_cunit_parse(rec, rlen, sc, &uv))
+			elog(ERROR, "unit does not parse");
+		for (int c = 0; c < sc->ncols && blobs < maxunits; c++)
+		{
+			const uint8 *blob = sift_cseg_set(seg, c, u, &len);
+			uint8	   *copy,
+					   *orig;
+			SiftCSet	s;
+			SiftCChunk	ch;
+			int64	   *keys;
+			uint32		nd;
+			SiftCPaggCol col;
+
+			if (blob == NULL)
+				continue;
+			blobs++;
+			orig = palloc(len);
+			memcpy(orig, blob, len);		/* the next call on seg reuses the buffer */
+			copy = palloc(len);
+			if (!sift_cunit_chunk(&uv, c, &ch))
+				elog(ERROR, "unit has no chunk");
+			keys = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
+			sift_cchunk_decode(&ch, keys);
+			col = (SiftCPaggCol) {keys, ch.nulls, ch.ovf, ch.n, true};
+			{
+				int64	   *k2 = palloc(Max(ch.n, 1) * sizeof(int64));
+
+				nd = sift_cset_keys(&col, k2);
+				pfree(keys);
+				keys = k2;
+			}
+			if (sift_cset_open(orig, len, &s))
+			{
+				intact++;
+				exact += s.kind == SIFT_CSET_EXACT;
+				bloom += s.kind == SIFT_CSET_BLOOM;
+				matching += sift_cset_matches(&s, keys, nd);
+			}
+			for (uint32 l = 0; l < len; l++)
+			{
+				memcpy(copy, orig, l);
+				cut++;
+				cut_accepted += sift_cset_open(copy, l, &s);
+			}
+			for (uint32 i = 0; i < len; i++)
+				for (int k = 0; k < lengthof(vals); k++)
+				{
+					memcpy(copy, orig, len);
+					if (copy[i] == vals[k])
+						continue;
+					/* a list read as an exact summary of the same layout is one, and a correct one while it holds at most SIFT_CSET_LIMIT_MAX keys */
+					if (i == 0 && orig[0] == SIFT_CSET_PLIST && vals[k] == SIFT_CSET_EXACT)
+						continue;
+					copy[i] = vals[k];
+					damaged++;
+					if (sift_cset_open(copy, len, &s))
+					{
+						accepted++;
+						missed += sift_cset_matches(&s, keys, nd);
+					}
+				}
+			/* the named damages of the header: flag bits, unknown kinds, counts, and (exact) width, order; (bloom) probes and bits */
+			for (int f = 0; f < 11; f++)
+			{
+				uint32		n = 0;
+				uint64		big = UINT64_MAX;
+
+				memcpy(copy, orig, len);
+				switch (f)
+				{
+					case 0: copy[2] = 1; break;							/* flag bits */
+					case 1: copy[3] = 0x80; break;
+					case 2: copy[0] = 0; break;							/* kind */
+					case 3: copy[0] = 5; break;
+					case 4: memcpy(copy + 4, &n, 4); break;				/* no keys */
+					case 5: n = UINT32_MAX; memcpy(copy + 4, &n, 4); break;	/* a count that overflows 32 bits when multiplied */
+					case 6: if (orig[0] == SIFT_CSET_PRES) continue; copy[1] = 0; break;							/* width or probes 0 */
+					case 7: copy[1] = orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST ? 3 : 17; break;
+					case 8: memcpy(copy + 8, &big, 8); break;			/* the bits of a filter; the base of an exact set (whose first offset then is not its smallest key) is not damage */
+					case 9:
+						if (orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST)	/* unsorted: the first two offsets swapped, the larger first */
+						{
+							if (orig[1] > 8 || len < SIFT_CSET_HDR + 2 * orig[1])
+								continue;
+							memcpy(copy + SIFT_CSET_HDR, orig + SIFT_CSET_HDR + orig[1], orig[1]);
+							memcpy(copy + SIFT_CSET_HDR + orig[1], orig + SIFT_CSET_HDR, orig[1]);
+						}
+						else
+							memset(copy + SIFT_CSET_HDR, 0, len - SIFT_CSET_HDR);	/* an empty filter */
+						break;
+					default:											/* one byte of the body gone */
+						named++;
+						named_accepted += sift_cset_open(copy, len - 1, &s);
+						continue;
+				}
+				if (f == 8 && (orig[0] == SIFT_CSET_EXACT || orig[0] == SIFT_CSET_PLIST))
+					continue;
+				named++;
+				named_accepted += sift_cset_open(copy, len, &s);
+			}
+			pfree(orig);
+			pfree(copy);
+			pfree(keys);
+		}
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(blobs);
+	v[1] = Int64GetDatum(exact);
+	v[2] = Int64GetDatum(bloom);
+	v[3] = Int64GetDatum(intact);
+	v[4] = Int64GetDatum(matching);
+	v[5] = Int64GetDatum(cut);
+	v[6] = Int64GetDatum(cut_accepted);
+	v[7] = Int64GetDatum(named);
+	v[8] = Int64GetDatum(named_accepted);
+	v[9] = Int64GetDatum(damaged);
+	v[10] = Int64GetDatum(accepted);
+	v[11] = Int64GetDatum(missed);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift._test_col_super_damage(index): every byte of the superunit block of every segment of the index, read as itself with a bit flipped (two flips), one
+ * damage at a time, through a fresh open of the segment and the check of sift.col_verify. A damage must never read outside the block (meaningful under
+ * SANITIZE=1) and every one must be refused, by the reader or by the check: `unnoticed` counts the ones that were not.
+ */
+Datum
+sift_test_col_super_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 masks[] = {0x01, 0x80};
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	int64		supers = 0,
+				damaged = 0,
+				refused = 0;
+	Datum		v[4];
+	bool		nulls[4] = {false};
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		off,
+					len;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (!sift_cseg_test_super_span(seg, &off, &len))
+		{
+			sift_cseg_close(seg);
+			continue;
+		}
+		sift_cseg_close(seg);
+		supers++;
+		for (uint64 b = 0; b < len; b++)
+			for (int m = 0; m < lengthof(masks); m++)
+			{
+				MemoryContext cx = AllocSetContextCreate(old, "super damage", ALLOCSET_DEFAULT_SIZES);
+
+				damaged++;
+				BeginInternalSubTransaction(NULL);
+				MemoryContextSwitchTo(cx);
+				PG_TRY();
+				{
+					SiftColSegment *s2;
+
+					sift_test_seg_flip_at = off + b;
+					sift_test_seg_flip_mask = masks[m];
+					s2 = sift_cseg_open(index, &snap->segs[i], cx);
+					sift_cseg_verify_super(s2);
+					sift_test_seg_flip_at = UINT64_MAX;
+					sift_cseg_close(s2);
+					MemoryContextSwitchTo(old);
+					ReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+				}
+				PG_CATCH();
+				{
+					sift_test_seg_flip_at = UINT64_MAX;
+					MemoryContextSwitchTo(old);
+					FlushErrorState();
+					RollbackAndReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+					refused++;
+				}
+				PG_END_TRY();
+				MemoryContextDelete(cx);
+			}
+	}
+	index_close(index, AccessShareLock);
+	v[0] = Int64GetDatum(supers);
+	v[1] = Int64GetDatum(damaged);
+	v[2] = Int64GetDatum(refused);
+	v[3] = Int64GetDatum(damaged - refused);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift._test_col_run_file_damage(index, stride): the bytes of the sorted runs of every segment of the index (all of the structure, every stride-th entry of
+ * a run), read as themselves with a bit flipped (two flips), one damage at a time, through a fresh open of the segment and the check of sift.col_verify. A damage
+ * must never read outside the section (meaningful under SANITIZE=1) and every one in a byte the reader or the check uses must be refused: `unnoticed`
+ * counts the ones that were not. The padding between the blocks is not counted.
+ */
+static Datum
+section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, uint64 *, uint8 **))
+{
+	static const uint8 masks[] = {0x01, 0x80};
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	int32		stride = Max(PG_GETARG_INT32(1), 1);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	int64		runs = 0,
+				damaged = 0,
+				refused = 0,
+				unnoticed = 0;
+	Datum		v[4];
+	bool		nulls[4] = {false};
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		off,
+					len;
+		uint8	   *used;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (!span(seg, &off, &len, &used))
+		{
+			sift_cseg_close(seg);
+			continue;
+		}
+		sift_cseg_close(seg);
+		runs++;
+		for (uint64 b = 0; b < len; b++)
+			for (int m = 0; m < lengthof(masks) && (used[b] == 2 || (used[b] == 1 && b % stride == 0)); m++)
+			{
+				MemoryContext cx = AllocSetContextCreate(old, "run file damage", ALLOCSET_DEFAULT_SIZES);
+
+				damaged++;
+				BeginInternalSubTransaction(NULL);
+				MemoryContextSwitchTo(cx);
+				PG_TRY();
+				{
+					SiftColSegment *s2;
+
+					sift_test_seg_flip_at = off + b;
+					sift_test_seg_flip_mask = masks[m];
+					s2 = sift_cseg_open(index, &snap->segs[i], cx);
+					sift_cseg_verify(s2);
+					sift_test_seg_flip_at = UINT64_MAX;
+					sift_cseg_close(s2);
+					unnoticed += used[b] != 0;
+					MemoryContextSwitchTo(old);
+					ReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+				}
+				PG_CATCH();
+				{
+					sift_test_seg_flip_at = UINT64_MAX;
+					MemoryContextSwitchTo(old);
+					FlushErrorState();
+					RollbackAndReleaseCurrentSubTransaction();
+					CurrentResourceOwner = owner;
+					refused++;
+				}
+				PG_END_TRY();
+				MemoryContextDelete(cx);
+			}
+	}
+	index_close(index, AccessShareLock);
+	v[0] = Int64GetDatum(runs);
+	v[1] = Int64GetDatum(damaged);
+	v[2] = Int64GetDatum(refused);
+	v[3] = Int64GetDatum(unnoticed);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+Datum
+sift_test_col_run_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_run_span);
+}
+
+/* sift._test_col_set_file_damage(index, stride): the same for the small-set summaries and the key presence */
+Datum
+sift_test_col_set_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_set_span);
+}
+
+/* sift._test_col_point_file_damage(index, stride): the same for the point directories at the end of the dictionary section */
+Datum
+sift_test_col_point_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_point_span);
+}
+
+/*
+ * sift._test_col_run_damage(index, units): the sorted runs of the first units of the index, opened as stored, cut at every length, with each byte set
+ * to some other values (one at a time) and with the fields of the header set by name. The header decoder must refuse a cut run and each named damage;
+ * a damaged run whose header it accepts has its entries read (an ordinal that is no row of the unit is refused) and, if they are read, is another run
+ * that the comparison with the chunk (what sift.col_verify does) refuses.
+ */
+Datum
+sift_test_col_run_damage(PG_FUNCTION_ARGS)
+{
+	static const uint8 vals[] = {0x00, 0x01, 0x02, 0x7F, 0x80, 0xFF};
+	int			maxunits = PG_GETARG_INT32(1);
+	TestScan	ts;
+	SiftColUnit unit;
+	TupleDesc	tupdesc;
+	int64		blobs = 0,
+				ord = 0,
+				ident = 0,
+				intact = 0,
+				matching = 0,
+				cut = 0,
+				cut_accepted = 0,
+				named = 0,
+				named_accepted = 0,
+				damaged = 0,
+				accepted = 0,
+				missed = 0;
+	Datum		v[12];
+	bool		nulls[12] = {false};
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
+	while (blobs < maxunits && test_next(&ts, &unit))
+	{
+		SiftColSegment *seg;
+		uint32		u,
+					rlen;
+		const uint8 *rec;
+		SiftCUnitView uv;
+		const SiftColSchema *sc = sift_col_rel(ts.index)->schema;
+
+		if (!sift_col_unit_stored(&unit, &seg, &u))
+			continue;
+		rec = sift_cseg_unit(seg, u, &rlen);
+		if (!sift_cunit_parse(rec, rlen, sc, &uv))
+			elog(ERROR, "unit does not parse");
+		for (int c = 0; c < sc->ncols && blobs < maxunits; c++)
+		{
+			SiftCRun	r,
+						r2;
+			uint64		at;
+			uint8	   *orig,
+					   *copy;
+			uint32		len,
+					   *ords;
+			SiftCChunk	ch;
+			SiftCPaggCol col;
+			int64	   *keys;
+
+			if (!sift_cseg_run(seg, c, u, &r, &at))
+				continue;
+			blobs++;
+			len = sift_crun_bytes(r.kind, r.n);
+			orig = palloc(len);
+			copy = palloc(len);
+			ords = palloc(r.n * sizeof(uint32) + 1);
+			sift_cseg_run_blob(seg, at, &r, orig);
+			if (!sift_cunit_chunk(&uv, c, &ch))
+				elog(ERROR, "unit has no chunk");
+			keys = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
+			sift_cchunk_decode(&ch, keys);
+			col = (SiftCPaggCol) {keys, ch.nulls, ch.ovf, ch.n, true};
+			ord += r.kind == SIFT_CRUN_ORD;
+			ident += r.kind == SIFT_CRUN_IDENT;
+			if (sift_crun_head(orig, len, r.n, &r2))
+			{
+				intact++;
+				matching += sift_crun_matches(&sc->cols[c], &col, orig, len);
+			}
+			for (uint32 l = 0; l < len; l++)
+			{
+				cut++;
+				cut_accepted += sift_crun_head(orig, l, r.n, &r2);
+			}
+			for (uint32 i = 0; i < len; i++)
+				for (int k = 0; k < lengthof(vals); k++)
+				{
+					memcpy(copy, orig, len);
+					if (copy[i] == vals[k])
+						continue;
+					copy[i] = vals[k];
+					damaged++;
+					if (sift_crun_head(copy, len, r.n, &r2) && sift_crun_entries(&r2, copy + SIFT_CRUN_HDR, 0, r2.n, ords))
+					{
+						accepted++;
+						missed += sift_crun_matches(&sc->cols[c], &col, copy, len);
+					}
+				}
+			/* the named damages of the header: flag bits, kind, the row count, counts that do not fit, the width */
+			for (int f = 0; f < 8; f++)
+			{
+				uint32		n = r.n + 1,
+							big = UINT32_MAX;
+
+				memcpy(copy, orig, len);
+				switch (f)
+				{
+					case 0: copy[2] = 1; break;
+					case 1: copy[3] = 0x80; break;
+					case 2: copy[0] = 0; break;
+					case 3: copy[0] = 3; break;
+					case 4: memcpy(copy + 4, &n, 4); break;
+					case 5: memcpy(copy + 8, &big, 4); break;
+					case 6: memcpy(copy + 12, &big, 4); break;
+					default: copy[1] = copy[1] == 4 ? 1 : 4; break;
+				}
+				named++;
+				named_accepted += sift_crun_head(copy, len, r.n, &r2);
+			}
+			pfree(orig);
+			pfree(copy);
+			pfree(ords);
+			pfree(keys);
+		}
+	}
+	scan_close(&ts);
+	v[0] = Int64GetDatum(blobs);
+	v[1] = Int64GetDatum(ord);
+	v[2] = Int64GetDatum(ident);
+	v[3] = Int64GetDatum(intact);
+	v[4] = Int64GetDatum(matching);
+	v[5] = Int64GetDatum(cut);
+	v[6] = Int64GetDatum(cut_accepted);
+	v[7] = Int64GetDatum(named);
+	v[8] = Int64GetDatum(named_accepted);
+	v[9] = Int64GetDatum(damaged);
+	v[10] = Int64GetDatum(accepted);
+	v[11] = Int64GetDatum(missed);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
+Datum
+sift_test_col_formats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		Datum		v[2] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format)};
+		bool		nulls[2] = {false};
+
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
 /* sift._test_col_zone_flags(index): the stored units, and how many of them have a zone of some leaf flagged SIFT_COLZ_JNULL (a flag of column format minor 6 and later) */
 Datum
 sift_test_col_zone_flags(PG_FUNCTION_ARGS)
@@ -694,28 +1714,6 @@ sift_test_col_zone_flags(PG_FUNCTION_ARGS)
 	v[0] = Int64GetDatum(units);
 	v[1] = Int64GetDatum(jnull);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
-}
-
-/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
-Datum
-sift_test_col_formats(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-
-	InitMaterializedSRF(fcinfo, 0);
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		Datum		v[2] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format)};
-		bool		nulls[2] = {false};
-
-		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
-			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-	}
-	index_close(index, AccessShareLock);
-	return (Datum) 0;
 }
 
 #endif							/* SIFT_TESTING */

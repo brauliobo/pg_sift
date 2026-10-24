@@ -64,6 +64,25 @@ SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d < 
  SiftAgg |              1201 |               1200 |           7 |              0
 (1 row)
 
+-- at the default page costs, partitions of a few rows each: opening 1,200 of them costs the scan more than the normal plan's Append
+RESET seq_page_cost; RESET random_page_cost;
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+--------+-------------------+--------------------+-------------+----------------
+ normal |                 0 |                  0 |           7 |              0
+(1 row)
+
+-- ... and the refusal is made before any partition's index is read: the opening alone is dearer than the normal plan
+SET cpu_operator_cost = 0.02;
+SELECT used, slug, reason ~ '\(opening [0-9]+ partitions costs the scan [0-9.]+, the normal plan [0-9.]+\)$' AS opening_decides
+FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pm GROUP BY g');
+ used | slug | opening_decides 
+------+------+-----------------
+ f    | cost | t
+(1 row)
+
+RESET cpu_operator_cost;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a generic plan
 SET plan_cache_mode = force_generic_plan;
 PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
@@ -104,6 +123,103 @@ SELECT * FROM many_scan('SELECT p.g, count(*) AS n, sum(p.v) AS s FROM pm p JOIN
  SiftAgg |              1201 |               1199 |           7 |              0
 (1 row)
 
+-- the limit on the partitions of a scan, lowered to the edge of 100 partitions: at 100 the table is one source, over it (99, 64) it keeps the normal
+-- plan and says so with the count (slug partition_count); the rows are the same. A bound that prunes at run time does not change it: the limit is
+-- on the partitions PostgreSQL's planning leaves
+CREATE TABLE pc (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
+DO $$
+BEGIN
+	FOR i IN 0..99 LOOP
+		EXECUTE format('CREATE TABLE pc_%s PARTITION OF pc FOR VALUES FROM (%L) TO (%L) WITH (autovacuum_enabled = false)', i, DATE '2020-01-01' + i, DATE '2020-01-01' + i + 1);
+	END LOOP;
+END $$;
+INSERT INTO pc SELECT i, i % 7, DATE '2020-01-01' + i % 100, i % 100 FROM generate_series(1, 3000) i;
+CREATE INDEX pc_col ON pc USING sift_col (id, g, d, v);
+VACUUM (FREEZE, ANALYZE) pc;
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |               100 |                  0 |           7 |              0
+(1 row)
+
+SET sift.test_limits = 'partitions=100';
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |               100 |                  0 |           7 |              0
+(1 row)
+
+SET sift.test_limits = 'partitions=99';
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
+  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+--------+-------------------+--------------------+-------------+----------------
+ normal |                 0 |                  0 |           7 |              0
+(1 row)
+
+SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc WHERE d >= DATE ''2020-02-01'' + (current_date - current_date) AND d < DATE ''2020-02-04'' + (current_date - current_date) GROUP BY g');
+  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+--------+-------------------+--------------------+-------------+----------------
+ normal |                 0 |                  0 |           7 |              0
+(1 row)
+
+SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
+      slug       |                                                                        reason                                                                        
+-----------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 99)
+(1 row)
+
+SET sift.test_limits = 'partitions=64';
+SELECT slug, reason FROM sift.explain_why('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g') WHERE arm = 'single';
+      slug       |                                                                        reason                                                                        
+-----------------+------------------------------------------------------------------------------------------------------------------------------------------------------
+ partition_count | the table has more partitions left by PostgreSQL's pruning than a scan reads (100 partitions are left after the pruning, the limit partitions is 64)
+(1 row)
+
+RESET sift.test_limits;
+-- locks: PostgreSQL's planning takes two relation locks for each partition it keeps (its heap and its index), and a plan of the scan takes no
+-- more than the normal plan (max_locks_per_transaction needs about 2 x the partitions of the plan; the scan opens the index of the partitions
+-- it reads only)
+CREATE FUNCTION plan_locks(stmt text, push bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || stmt LOOP NULL; END LOOP;
+	RETURN (SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'relation');
+END $$;
+SELECT plan_locks('SELECT g, count(*) FROM pm GROUP BY g', false) AS n_normal \gset
+SELECT plan_locks('SELECT g, count(*) FROM pm GROUP BY g', true) AS n_scan \gset
+SELECT :n_normal >= 2 * 1201 AS two_per_partition, :n_scan BETWEEN :n_normal * 0.99 AND :n_normal * 1.01 AS scan_like_normal_plan;
+ two_per_partition | scan_like_normal_plan 
+-------------------+-----------------------
+ t                 | t
+(1 row)
+
+DROP FUNCTION plan_locks(text, bool);
+-- a cached generic plan locks again when it runs: the heap of every partition it lists (as the normal plan's), and the index of the partitions it
+-- reads only (3 of 1,201 here), not two for each partition
+CREATE FUNCTION exec_locks(stmt text) RETURNS bigint LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE lk ON COMMIT DROP AS ' || stmt;
+	RETURN (SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'relation');
+END $$;
+SET plan_cache_mode = force_generic_plan;
+PREPARE pm_n (date[]) AS SELECT g, count(*) AS n FROM pm WHERE d = ANY ($1) GROUP BY g;
+PREPARE pm_s (date[]) AS SELECT g, count(*) AS n FROM pm WHERE d = ANY ($1) GROUP BY g;
+SET sift.enable_agg = off;
+EXECUTE pm_n(ARRAY[DATE '2020-02-02', DATE '2020-02-03', DATE '2020-02-04']) \g /dev/null
+SET sift.enable_agg = on;
+EXECUTE pm_s(ARRAY[DATE '2020-02-02', DATE '2020-02-03', DATE '2020-02-04']) \g /dev/null
+SELECT exec_locks('EXECUTE pm_n(ARRAY[DATE ''2020-02-02'', DATE ''2020-02-03'', DATE ''2020-02-04''])') AS n_normal \gset
+SELECT exec_locks('EXECUTE pm_s(ARRAY[DATE ''2020-02-02'', DATE ''2020-02-03'', DATE ''2020-02-04''])') AS n_scan \gset
+SELECT :n_scan BETWEEN :n_normal * 0.99 AND :n_normal * 1.01 AS scan_like_normal_plan, :n_scan < 1.5 * 1201 AS one_per_partition;
+ scan_like_normal_plan | one_per_partition 
+-----------------------+-------------------
+ t                     | t
+(1 row)
+
+RESET plan_cache_mode;
+DEALLOCATE pm_n; DEALLOCATE pm_s;
+DROP FUNCTION exec_locks(text);
 DROP FUNCTION many_scan(text);
-DROP TABLE pm, pm_days;
+DROP TABLE pm, pm_days, pc;
 DROP EXTENSION pg_sift;

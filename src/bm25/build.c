@@ -82,8 +82,8 @@ mem_watch(MemoryContext cxt)
 #define MEM_SAMPLE()	mem_sample()
 
 /* With sift_test_phase_gate set, entering a phase of the build waits for the advisory lock gate + phase (held by the test) */
-static void
-test_phase_gate(int phase)
+void
+sift_test_phase_wait(int phase)
 {
 	if (sift_test_phase_gate > 0)
 	{
@@ -93,7 +93,7 @@ test_phase_gate(int phase)
 		DirectFunctionCall1(pg_advisory_unlock_int8, key);
 	}
 }
-#define TEST_PHASE_GATE(phase)	test_phase_gate(phase)
+#define TEST_PHASE_GATE(phase)	sift_test_phase_wait(phase)
 #else
 #define MEM_SAMPLE()	((void) 0)
 #define TEST_PHASE_GATE(phase)	((void) 0)
@@ -200,8 +200,7 @@ progress_docs(BuildState *bs, bool all)
 static SiftSegEntry *
 next_entry(BuildState *bs, uint64 *gen)
 {
-	if (bs->nsegs == SIFT_MAX_SEGMENTS)
-		elog(ERROR, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
+	SIFT_INVARIANT(bs->nsegs < SIFT_MAX_SEGMENTS, "sift: build of \"%s\" ran out of directory entries", RelationGetRelationName(bs->index));
 	*gen = bs->nsegs + 1;
 	return &bs->segs[bs->nsegs++];
 }
@@ -399,10 +398,8 @@ end_segment(BuildState *bs)
 	 */
 	while (count_groups(bs->runs, bs->nruns, &lim) > room)
 	{
-		if (lim.df > PG_INT64_MAX / 2)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index), SIFT_MAX_SEGMENTS)));
+		SIFT_INVARIANT(lim.df <= PG_INT64_MAX / 2, "sift: index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index),
+					   SIFT_MAX_SEGMENTS);
 		lim.df *= 2;
 	}
 	while (first < bs->nruns)
@@ -799,7 +796,8 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (heap->rd_tableam != GetHeapamTableAmRoutine() && !sift_tbl_is_table(heap))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift indexes require a heap or sift_table table")));
+				 errmsg("sift indexes require a heap or sift_table table"),
+				 errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
 	{
 		SiftAnalyzerConfig cfg;

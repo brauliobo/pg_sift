@@ -1,0 +1,82 @@
+-- Which sift_table qualifies for the bulk load into column groups: a table nothing reads while the load runs.
+-- The refusal names why a table keeps the write buffers; a publication is covered by test/t/019_tbl_bulk_groups.pl (wal_level = logical).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE plain (id int, v text) USING sift_table;
+CREATE TABLE indexed (id int, v text) USING sift_table;
+CREATE INDEX indexed_id ON indexed (id);
+CREATE INDEX indexed_expr ON indexed ((id % 7), v);
+CREATE TABLE with_bm25 (id int, body text) USING sift_table;
+CREATE INDEX with_bm25_idx ON with_bm25 USING sift (body);
+CREATE TABLE pk (id int PRIMARY KEY, v text) USING sift_table;
+CREATE TABLE uniq (id int, v text) USING sift_table;
+CREATE UNIQUE INDEX uniq_v ON uniq (v);
+CREATE TABLE uniq_partial (id int, v text) USING sift_table;
+CREATE UNIQUE INDEX uniq_partial_id ON uniq_partial (id) WHERE id > 10;
+CREATE TABLE excl (id int, v text, EXCLUDE USING btree (id WITH =)) USING sift_table;
+CREATE FUNCTION nothing() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+CREATE TABLE trig_row (id int, v text) USING sift_table;
+CREATE TRIGGER trig_row_before BEFORE INSERT ON trig_row FOR EACH ROW EXECUTE FUNCTION nothing();
+CREATE TABLE trig_stmt (id int, v text) USING sift_table;
+CREATE TRIGGER trig_stmt_after AFTER INSERT ON trig_stmt FOR EACH STATEMENT EXECUTE FUNCTION nothing();
+CREATE TABLE heap_parent (id int PRIMARY KEY);
+CREATE TABLE fk_child (id int, parent int REFERENCES heap_parent (id)) USING sift_table;
+CREATE TABLE fk_parent (id int PRIMARY KEY, v text) USING sift_table;
+CREATE TABLE heap_child (id int, parent int REFERENCES fk_parent (id));
+CREATE TABLE fk_self (id int PRIMARY KEY, up int REFERENCES fk_self (id)) USING sift_table;
+-- the expressions the executor evaluates for every row: the built-in functions cannot read the table, the ones the user wrote can
+CREATE FUNCTION user_f(int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS 'BEGIN RETURN $1; END';
+CREATE DOMAIN positive AS int CHECK (VALUE > 0);
+CREATE TABLE builtin_exprs (id serial, at timestamptz DEFAULT now(), r float8 DEFAULT random(), n int CHECK (n > 0), g int GENERATED ALWAYS AS (n * 2) STORED)
+	USING sift_table;
+CREATE TABLE user_default (id int, v int DEFAULT user_f(1)) USING sift_table;
+CREATE TABLE user_check (id int CHECK (user_f(id) > 0)) USING sift_table;
+CREATE TABLE user_generated (id int, g int GENERATED ALWAYS AS (user_f(id)) STORED) USING sift_table;
+CREATE TABLE domain_col (id positive) USING sift_table;
+CREATE TABLE user_index (id int) USING sift_table;
+CREATE INDEX user_index_expr ON user_index (user_f(id));
+CREATE TABLE user_partial (id int) USING sift_table;
+CREATE INDEX user_partial_id ON user_partial (id) WHERE user_f(id) > 0;
+SELECT c.relname, sift._test_tbl_bulk_refusal(c.oid) AS refusal
+FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+WHERE a.amname = 'sift_table' AND c.relkind = 'r' AND c.relnamespace = 'public'::regnamespace
+ORDER BY (sift._test_tbl_bulk_refusal(c.oid) IS NOT NULL), c.relname;
+    relname     |                                 refusal                                  
+----------------+--------------------------------------------------------------------------
+ builtin_exprs  | 
+ indexed        | 
+ plain          | 
+ with_bm25      | 
+ domain_col     | a default, a check or a domain of the table calls a function of the user
+ excl           | an exclusion constraint checks the rows of the load
+ fk_child       | a trigger or a foreign key can read the table
+ fk_parent      | a trigger or a foreign key can read the table
+ fk_self        | a trigger or a foreign key can read the table
+ pk             | a unique index checks the rows of the load
+ trig_row       | a trigger or a foreign key can read the table
+ trig_stmt      | a trigger or a foreign key can read the table
+ uniq           | a unique index checks the rows of the load
+ uniq_partial   | a unique index checks the rows of the load
+ user_check     | a default, a check or a domain of the table calls a function of the user
+ user_default   | a default, a check or a domain of the table calls a function of the user
+ user_generated | a default, a check or a domain of the table calls a function of the user
+ user_index     | an index expression or predicate calls a function of the user
+ user_partial   | an index expression or predicate calls a function of the user
+(19 rows)
+
+-- a trigger that is dropped, or a table that is dropped from a foreign key, qualifies again
+DROP TRIGGER trig_row_before ON trig_row;
+DROP TABLE heap_child;
+SELECT relname, sift._test_tbl_bulk_refusal(relname::regclass) AS refusal FROM (VALUES ('trig_row'), ('fk_parent')) t(relname);
+  relname  |                  refusal                   
+-----------+--------------------------------------------
+ trig_row  | 
+ fk_parent | a unique index checks the rows of the load
+(2 rows)
+
+DROP TABLE builtin_exprs, user_default, user_check, user_generated, domain_col, user_index, user_partial, plain, indexed, with_bm25, pk, uniq, uniq_partial, excl, trig_row, trig_stmt, fk_child, fk_parent, fk_self, heap_parent;
+DROP FUNCTION nothing();
+DROP DOMAIN positive;
+DROP FUNCTION user_f(int);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

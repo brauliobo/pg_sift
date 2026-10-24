@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "col/kern.h"
+#include "core/limits.h"
 #include "agg/pred_in_int.h"
 
 static void
@@ -76,11 +77,53 @@ in_hash_has(const PredState *st, int64 x)
 	return false;
 }
 
-/* the test of an IN list of nv values within [lo, hi]: a byte table over the range, else a hash table of the values */
+#define MAX_BITS_RANGE	(1 << 28)	/* values a bit table covers (32 MB) */
+#define MIN_BITS_VALUES	1024		/* members of an IN list from which a range wider than a byte table is a bit table, not a hash table */
+
+static inline bool
+in_bit_has(const PredState *st, int64 x)
+{
+	uint64		u = (uint64) x - (uint64) st->in_lo;
+
+	return u < st->in_nbits && (st->in_bits[u >> 6] >> (u & 63) & 1);
+}
+
+typedef enum { IN_HASH, IN_BITS, IN_BYTES } InKind;
+
+/* the structure of the test of an IN list of nv values within a range of span values (0: all the 2^64) */
+static InKind
+in_kind(uint64 span, int nv)
+{
+	if (span != 0 && span > MAX_RANGE && span <= MAX_BITS_RANGE && nv >= sift_limit(bits_set_values, MIN_BITS_VALUES))
+		return IN_BITS;
+	return span == 0 || span > MAX_RANGE ? IN_HASH : IN_BYTES;
+}
+
+/* the bytes the scan allocates and clears when it starts for such a list: what a range table costs it, whatever the rows (0: a hash table of the values) */
+double
+sift_agg_in_table_bytes(uint64 span, int nv)
+{
+	switch (in_kind(span, nv))
+	{
+		case IN_BITS:
+			return (double) ((span + 63) / 64 + 1) * sizeof(uint64);
+		case IN_BYTES:
+			return (double) span;
+		default:
+			return 0;
+	}
+}
+
+/*
+ * the test of an IN list of nv values within [lo, hi]: a byte table over the range; a bit table when the range is wider and the list long (a
+ * random bit costs a cache line like a random byte, but the table is eight times smaller, which keeps it in the cache: 1.5 to 2.4 ns a row
+ * from 16 to 64 million values against 8 to 14 for the byte table and 25 to 60 for the hash table of a long list); else a hash table of the values
+ */
 void
 in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 {
 	uint64		span = (uint64) hi - (uint64) lo + 1;	/* 0: all the 2^64 values */
+	InKind		kind = in_kind(span, nv);
 
 	st->in_lut = palloc0(SIFT_AGG_PAD);
 	st->in_nv = nv;
@@ -88,7 +131,15 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 		return;
 	st->in_lo = lo;
 	st->in_hi = hi;
-	if (span == 0 || span > MAX_RANGE)
+	if (kind == IN_BITS)
+	{
+		st->in_nbits = span;
+		st->in_bits = palloc0(((span + 63) / 64 + 1) * sizeof(uint64));
+		for (int i = 0; i < nv; i++)
+			st->in_bits[((uint64) vals[i] - (uint64) lo) >> 6] |= UINT64CONST(1) << (((uint64) vals[i] - (uint64) lo) & 63);
+		return;
+	}
+	if (kind == IN_HASH)
 	{
 		in_hash_build(st, vals, nv);
 		return;
@@ -123,6 +174,9 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 		if (st->in_htab)
 			for (int i = 0; i < n; i++)
 				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+		else if (st->in_bits)
+			for (int i = 0; i < n; i++)
+				out[i >> 6] |= (uint64) in_bit_has(st, x[i]) << (i & 63);
 		else
 			for (int i = 0; i < n; i++)
 			{
@@ -130,14 +184,21 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 
 				out[i >> 6] |= (uint64) (u < st->in_nlut && st->in_lut[u]) << (i & 63);
 			}
+		/* the NaNs of a numeric leaf are stored as overflow rows: NaN equals NaN, and no number */
+		if (v->ovf && ex->lay->leaf[p->leaf].typid == NUMERICOID)
+			set_rows(v->ovf + start / 64, n, st->in_hasnan, out);
 	}
-	else if (st->in_htab)
+	else if (st->in_htab || st->in_bits)
 	{
 		const int32 *x = (const int32 *) v->data + start;
 
 		clear_words(out, n);
-		for (int i = 0; i < n; i++)
-			out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+		if (st->in_bits)
+			for (int i = 0; i < n; i++)
+				out[i >> 6] |= (uint64) in_bit_has(st, x[i]) << (i & 63);
+		else
+			for (int i = 0; i < n; i++)
+				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
 	}
 	else
 		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, (int32) st->in_lo, st->in_nlut, st->in_lut);

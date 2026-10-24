@@ -8,6 +8,7 @@
 #include "bm25/query.h"
 #include "bm25/query_int.h"
 #include "core/cmp.h"
+#include "core/limits.h"
 
 /* ---------------------------------------------------------------- analysis */
 
@@ -84,8 +85,8 @@ analyze_words(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 
 	if (nt <= 1)
 		return nt ? new_leaf(raw, SQ_TERM, tok[0].str, tok[0].len, boost) : NULL;
-	if (nt > SIFT_MAX_PHRASE)
-		LIMIT(raw->loc, "phrase longer than %d terms", SIFT_MAX_PHRASE);
+	if (nt > sift_limit(phrase_terms, SIFT_MAX_PHRASE))
+		LIMIT(raw->loc, "phrase longer than %d terms", (int) sift_limit(phrase_terms, SIFT_MAX_PHRASE));
 	n = sift_query_new_node(SQ_PHRASE, raw->loc);
 	n->boost = boost;
 	n->nterms = nt;
@@ -146,7 +147,8 @@ analyze_literal(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 	if (raw->kind == SQ_PREFIX)
 	{
 		append_folded(a, &buf, raw->text, raw->textlen, false);
-		buf.len = pg_mbcliplen(buf.data, buf.len, SIFT_MAX_TERM_BYTES);
+		/* a term longer than SIFT_MAX_TERM_BYTES is stored as its start and a hash: only the start can be a prefix */
+		buf.len = pg_mbcliplen(buf.data, buf.len, SIFT_TERM_HEAD);
 		return buf.len ? prefix_leaf(raw, a, buf.data, buf.len, boost) : NULL;
 	}
 

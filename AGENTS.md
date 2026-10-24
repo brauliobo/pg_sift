@@ -1,6 +1,6 @@
 # AGENTS.md
 
-pg_sift: a PostgreSQL extension (17 and 18) with an exact BM25 full-text index access method (`sift`), a column index access method (`sift_col`),
+pg_sift: a PostgreSQL extension (17, 18 and 19) with an exact BM25 full-text index access method (`sift`), a column index access method (`sift_col`),
 a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (SiftAgg)`). The SQLite and MariaDB ports share the search core.
 
 ## Layout
@@ -27,14 +27,19 @@ a table access method (`sift_table`) and the aggregate pushdown (`Custom Scan (S
 
 - Commit subject `context: subcontext: change` (the module or feature, never the project name); stage files individually.
 - LF line endings only. Public docs use neutral wording: no private paths, hosts or internal names.
-- Generated blocks (`bench:`, `coverage:` and `gen:` markers in README.md and docs/, `docs/COVERAGE.md`) are never edited by hand: change the data, the source or the generator.
+- Generated blocks (the `bench:`, `coverage:` and `gen:` blocks of `docs/BENCHMARKS.md` and README.md, `docs/COVERAGE.md`, `docs/LIMITS.md`, `docs/REFERENCE.md`, the `sift-reference` and `sift-options` blocks of README.md and the `sift-settings` and `sift-reloptions` tables of `docs/USAGE.md`) are never edited by hand: change the data, the source or the generator (`scripts/gen-docs.py` for the `bench:`, `coverage:` and `gen:` kinds).
+- A new or changed `sift.*` function or view needs a `COMMENT ON` in the 3.3+ install and upgrade scripts (never the released ones: `docs/reference-notes.tsv`), then `make reference` (`scripts/gen-reference.sh`, no server needed) and
+  commit `docs/REFERENCE.md` and the README block. A new limit goes in the registry, then `make limits`. A new reloption or `sift.*` setting needs its description in the `DefineCustom*Variable` / `add_*_reloption` call and a row in `docs/options.tsv` (applies to, what it buys, what it costs, link), then `make options`; defaults and ranges come from the call, and a changed default is flagged against `scripts/options-released.tsv` by itself. `--check` of both runs in lint and `scripts/ci.sh`, and fails otherwise.
 - Fix root causes; a bug gets a failing test first. Comments only for non-obvious code.
+- A test that counts units answered from pre-aggregates VACUUMs with `FREEZE, DISABLE_PAGE_SKIPPING`: a plain VACUUM skips a page another backend has pinned (the
+  checkpointer writing it) and leaves it not all-visible. A TAP that measures a background worker or reads the log from a position first waits until no `sift maintenance` backend runs (`quiet` in
+  `test/t/col_auto_merge_partition.sh`): a worker's snapshot keeps VACUUM from removing the dead rows of a table changed after it started.
 
 ## On-disk formats
 
 Any change to what is stored needs a reader for the old and the new format, an upgrade test (`test/t/extension_lifecycle.sh`, `test/t/compat_2x_fixture.sh`)
 and the format number in `src/core/sift.h` (BM25: major 1, minor 2) or `src/col/col.h` (column: major 1, minor 3), in DESIGN.md "Versioning" or docs/COL.md section 2,
-and in CHANGELOG.md.
+in CHANGELOG.md, and, for a column format, the table of the first release that reads it in `scripts/upgrade_check.sql`.
 
 ## Documentation
 

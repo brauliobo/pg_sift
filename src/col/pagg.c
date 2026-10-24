@@ -30,7 +30,7 @@ sift_col_unit_preagg_ok(const SiftColUnit *unit)
 	SiftColSegment *seg;
 	uint32		u;
 
-	return sift_col_unit_stored(unit, &seg, &u) && sift_col_unit_exact(unit);
+	return sift_col_unit_super(unit, &seg, &u) || (sift_col_unit_stored(unit, &seg, &u) && sift_col_unit_exact(unit));
 }
 
 bool
@@ -39,11 +39,25 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	SiftColSegment *seg;
 	uint32		u;
 
+	if (sift_col_unit_super(unit, &seg, &u))
+		return sift_cseg_super_agg(seg, col, u, a);
 	if (!sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	sift_cseg_agg(seg, col, u, a);
 	return !(a->zflags & SIFT_COLZ_OVERFLOW);
+}
+
+bool
+sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
+{
+	SiftColSegment *seg;
+	uint32		u;
+
+	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	return sift_cseg_presence(seg, col, u, p);
 }
 
 static void
@@ -55,18 +69,18 @@ corrupt_cube(SiftColSegment *seg, uint32 u)
 					(unsigned long long) seg->entry.gen, u)));
 }
 
-/* The histogram of dim of a stored unit: from the cube, or the rollup of its list added up by dim. false: the unit has none */
+/* The histogram of dim of a stored unit: from the cube (SIFT_PAGG_CAL + a leaf: the calendar cells of a date or timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
 static bool
 seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *out)
 {
 	uint32		len;
-	const uint8 *blob = sift_cseg_dim_cube(seg, u, dim, &len);
+	const uint8 *blob = dim >= SIFT_PAGG_CAL ? sift_cseg_cube(seg, u, &len) : sift_cseg_dim_cube(seg, u, dim, &len);
 	SiftCRollup r;
 	int			found;
 
 	if (blob == NULL)
 		return false;
-	if (seg->schema->cols[dim].parent < 0)
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent < 0)
 	{
 		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
 			corrupt_cube(seg, u);
@@ -77,18 +91,41 @@ seg_hist(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDi
 	return sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, out);
 }
 
+/* The histogram of dim of a superunit: from its merged cube (the dims of lists and the calendar cells are not merged) */
+static bool
+super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, SiftCHistDim *out)
+{
+	uint32		len;
+	const uint8 *blob;
+	int			found;
+
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
+		return false;
+	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, out)) < 0)
+		corrupt_cube(seg, k);
+	return found > 0;
+}
+
 bool
 sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHistDim *out, SiftColDict *dict)
 {
 	SiftColSegment *seg;
 	uint32		u;
 
-	if (!sift_col_unit_preagg_ok(unit))
-		return false;
-	sift_col_unit_stored(unit, &seg, &u);
-	if (!seg_hist(seg, u, dim, mcxt, out))
-		return false;
-	if (dict && seg->schema->cols[dim].store == SIFT_COLS_STR)
+	if (sift_col_unit_super(unit, &seg, &u))
+	{
+		if (!super_hist(seg, u, dim, mcxt, out))
+			return false;
+	}
+	else
+	{
+		if (!sift_col_unit_preagg_ok(unit))
+			return false;
+		sift_col_unit_stored(unit, &seg, &u);
+		if (!seg_hist(seg, u, dim, mcxt, out))
+			return false;
+	}
+	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
 		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);
 	return true;
 }
@@ -101,13 +138,23 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 				len;
 	const uint8 *blob;
 
-	if (!sift_col_unit_preagg_ok(unit))
+	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r))
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r) || r->list != list)
 		corrupt_cube(seg, u);
+	if (list < 0)
+	{
+		/* the tuples of the rollup of the rows hold every row of the unit once */
+		uint64		rows = 0;
+
+		for (uint32 t = 0; t < r->ntuples; t++)
+			rows += r->count[t];
+		if (rows != unit->nrows)
+			corrupt_cube(seg, u);
+	}
 	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
 	for (int j = 0; j < r->ndims; j++)
 		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
@@ -123,7 +170,7 @@ sift_col_unit_rollup_tuples(const SiftColUnit *unit, int list)
 				len;
 	const uint8 *blob;
 
-	if (!sift_col_unit_preagg_ok(unit))
+	if (!sift_col_unit_preagg_ok(unit) || sift_col_unit_super(unit, &seg, &u))
 		return 0;
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)

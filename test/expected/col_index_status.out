@@ -1,0 +1,60 @@
+-- sift.col_index_status: the sizes, the dead rows, the write buffer and the reason a rewrite is due, from a fresh index through a DELETE and
+-- VACUUM to the rewrite, and only for the indexes whose table the caller can read. The statistics of the table (last VACUUM, rows changed) lag
+-- the statements and are the test of sift.col_maintenance_status's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE cis (id int, k int, v float8) WITH (autovacuum_enabled = off);
+INSERT INTO cis SELECT g, g % 7, g FROM generate_series(1, 20000) g;
+CREATE INDEX cis_idx ON cis USING sift_col (id, k, v);
+-- fresh: one segment, nothing dead, nothing buffered, nothing due
+SELECT "table", segments, max_segments, segment_rows, units = listed_units AS units_once, dirty_segments, dead_rows, buffer_rows,
+       sealed_buffers, running, failures, due, index_bytes >= segment_bytes AS sized
+FROM sift.col_index_status WHERE index = 'cis_idx'::regclass;
+ table | segments | max_segments | segment_rows | units_once | dirty_segments | dead_rows | buffer_rows | sealed_buffers | running | failures | due | sized 
+-------+----------+--------------+--------------+------------+----------------+-----------+-------------+----------------+---------+----------+-----+-------
+ cis   |        1 |          128 |        20000 | t          |              0 |         0 |           0 |              0 | f       |        0 |     | t
+(1 row)
+
+-- a write buffer: new rows wait there until a promotion
+INSERT INTO cis SELECT g, g % 7, g FROM generate_series(20001, 20100) g;
+SELECT segments, buffer_rows FROM sift.col_index_status WHERE index = 'cis_idx'::regclass;
+ segments | buffer_rows 
+----------+-------------
+        2 |         100
+(1 row)
+
+-- one row in twenty dies, so every unit holds a dead row: VACUUM marks the units dirty and the rewrite is due for them
+DELETE FROM cis WHERE id % 20 = 0;
+VACUUM cis;
+SELECT dirty_segments > 0 AS dirty, dead_rows > 0 AS dead, dead_pct, due FROM sift.col_index_status WHERE index = 'cis_idx'::regclass;
+ dirty | dead | dead_pct |     due     
+-------+------+----------+-------------
+ t     | t    |     5.00 | dirty units
+(1 row)
+
+-- the rewrite writes a clean segment; the second entry is the empty write buffer that is open again
+SELECT sift.col_maintain('cis_idx');
+ col_maintain 
+--------------
+ t
+(1 row)
+
+SELECT segments, dirty_segments, dead_rows, buffer_rows, due FROM sift.col_index_status WHERE index = 'cis_idx'::regclass;
+ segments | dirty_segments | dead_rows | buffer_rows | due 
+----------+----------------+-----------+-------------+-----
+        2 |              0 |         0 |           0 | 
+(1 row)
+
+-- a role that cannot read the table does not see the index
+CREATE ROLE cis_non;
+SET ROLE cis_non;
+SELECT count(*) FROM sift.col_index_status;
+ count 
+-------
+     0
+(1 row)
+
+RESET ROLE;
+DROP ROLE cis_non;
+DROP TABLE cis;
+DROP EXTENSION pg_sift;

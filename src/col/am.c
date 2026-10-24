@@ -8,19 +8,20 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/table.h"
-#include "access/visibilitymap.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/hsearch.h"
 #include "utils/numeric.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -30,8 +31,13 @@
 #include "col/am.h"
 #include "col/build.h"
 #include "col/seg.h"
+#include "col/point.h"
+#include "col/runs.h"
+#include "col/setsum.h"
 #include "core/cpu.h"
+#include "core/limits.h"
 #include "core/ops.h"
+#include "core/visibility.h"
 
 bool		sift_enable_col = true;
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
@@ -39,14 +45,15 @@ int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
 bool		sift_test_col_rel_inval = false;
 #endif
 
-/* 5 is the minor of the wide leaves, which a schema takes by itself: the setting is 3, 4 or 6 */
+/* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10, 12, 13, 14 or 15 */
 static bool
 check_col_format_minor(int *newval, void **extra, GucSource source)
 {
-	if (*newval == SIFT_COL_FORMAT_WIDE)
+	if (*newval == SIFT_COL_FORMAT_WIDE || *newval == SIFT_COL_FORMAT_WIDE_ROWS)
 	{
-		GUC_check_errdetail("Column format minor 5 is written for wide leaves only, whatever the setting.");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1) or 6.");
+		GUC_check_errdetail("Column format minor %d is written for %s only, whatever the setting.", *newval,
+							*newval == SIFT_COL_FORMAT_WIDE ? "wide leaves" : "the write buffer of a table with a wide row");
+		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13, 14 or 15.");
 		return false;
 	}
 	return true;
@@ -92,25 +99,161 @@ sift_col_validate_rollup(const char *value)
 }
 
 void
+sift_col_validate_rollup_dims(const char *value)
+{
+	const char *err = sift_cpagg_rows_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_calendar_columns(const char *value)
+{
+	const char *err = sift_cpagg_calendar_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option \"%s\": %s", value, err)));
+}
+
+/* 'a, b': the names of the text, varchar and uuid columns a tuple scan returns; r NULL: just the syntax. Empty or 'off': none */
+static const char *
+return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
+{
+	const char *p = opt;
+
+	while (*p == ' ')
+		p++;
+	if (*p == '\0' || strcmp(p, "off") == 0)
+		return NULL;
+	for (;;)
+	{
+		const char *end = strchr(p, ',');
+		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		int			a = 0;
+
+		while (len > 0 && p[len - 1] == ' ')
+			len--;
+		if (len == 0)
+			return "empty column name";
+		if (r != NULL)
+		{
+			for (int i = 1; i <= r->natts && a == 0; i++)
+				if (strlen(NameStr(TupleDescAttr(desc, i - 1)->attname)) == len && strncmp(NameStr(TupleDescAttr(desc, i - 1)->attname), p, len) == 0)
+					a = i;
+			if (a == 0)
+				return "unknown column";
+			if (!sift_col_returns_str(desc, a, r->nleaves[a], r->json[a]))
+				return "not a text, varchar or uuid column";
+			r->ret[a] = true;
+		}
+		if (end == NULL)
+			return NULL;
+		p = end + 1;
+		while (*p == ' ')
+			p++;
+	}
+}
+
+void
+sift_col_validate_return_columns(const char *value)
+{
+	const char *err = return_walk(value, NULL, NULL);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_key_columns(const char *value)
+{
+	const char *err;
+
+	/* the validator also checks the default, which is NULL: the option is not set until CREATE INDEX chooses it */
+	if (value == NULL)
+		return;
+	err = sift_cset_keys_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_order_columns(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_point_columns(const char *value)
+{
+	const char *err = sift_cpoint_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_point_tid_columns(const char *value)
+{
+	const char *err = sift_cpoint_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option \"%s\": %s", value, err)));
+}
+
+static relopt_enum_elt_def dict_lookup_names[] = {
+	{"auto", SIFT_COL_DICT_AUTO},
+	{"on", SIFT_COL_DICT_ON},
+	{"true", SIFT_COL_DICT_ON},
+	{"off", SIFT_COL_DICT_OFF},
+	{"false", SIFT_COL_DICT_OFF},
+	{(const char *) NULL}
+};
+
+void
 sift_col_init(void)
 {
 	DefineCustomBoolVariable("sift.enable_col",
 							 "Enables the column scans over sift_col indexes.",
 							 NULL, &sift_enable_col, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.enable_col_scan",
+							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
+							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
+							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
+	sift_col_scan_init();
+	DefineCustomRealVariable("sift.plan_scale",
+							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
+							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",
+							 &sift_plan_scale, 1.0, 1.0, 1e6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_on_demand",
 							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
 							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",
 							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.cluster_advice",
+							 "sift.cluster_advice() recommends a physical order for the tables of the sift_col indexes.",
+							 "Off: it answers 'not recommended' for every index. The index option cluster_advice switches one index off.",
+							 &sift_cluster_advice, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_worker",
 							 "A request for a rollup refresh starts the background worker that makes it.",
 							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
 							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_auto_merge",
-							 "After a VACUUM that left a sift_col index scattered by churn, a background worker seals its write buffer and merges all its segments into one.",
-							 "The rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
-							 "when the maintenance lock is held. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. Set it for the server or the database: the worker reads no session setting.",
-							 &sift_col_auto_merge, false, PGC_SUSET, 0, NULL, NULL, NULL);
+							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, and after a VACUUM that left an index scattered it seals the write buffer and merges all its segments into one.",
+							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
+							 "and a unit holding a dead row answers from its rows; the VACUUM sets the map, and the merge after it makes the units answer from their pre-aggregates again. "
+							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
+							 "when the rows changed since the last VACUUM are a thousandth of the table (50 rows at least, 100,000 at most). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
+							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
+							 "The merge rule is sift.col_auto_merge_dirty_pct, _fragmentation and _buffer_pct, and it stays within sift.col_auto_merge_wal_pct of the WAL the server writes; the rewrite sleeps as sift.maintenance_cost_delay says and is skipped "
+							 "when the maintenance lock is held. An index over sift.vacuum_rewrite_limit is rewritten by partitions of that size (sift.col_auto_merge_partition_kb sets another), one step each, so that the lock is let go between them. Needs sift.async_maintenance; sift.col_maintain(index) applies the same rule from a job. "
+							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
+							 "Set it for the server or the database: the worker reads no session setting.",
+							 &sift_col_auto_merge, true, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_dirty_pct",
 							"Percent of the units of a sift_col index holding a dead row above which the automatic rewrite runs.",
 							"Such a unit answers from its rows, not from its pre-aggregates, however few rows are dead.",
@@ -123,22 +266,45 @@ sift_col_init(void)
 							 "Percent of its rows the write buffer of a sift_col index holds above which the automatic rewrite runs.",
 							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
 							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomRealVariable("sift.col_auto_merge_wal_pct",
+							 "Percent of the WAL the server writes that the automatic rewrite of a sift_col index may add.",
+							 "The rewrite writes the whole index, so it waits until the server has written 100 / this percent times the bytes of the index since the index was last written "
+							 "(its build or its last rewrite): 5 bounds the rewrites at a twentieth of the WAL, and the churn that makes one worth it is the churn that wrote that WAL. "
+							 "0 does not wait. sift.col_maintain(index) ignores it.",
+							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_max_active",
+							"Client backends of the database running a statement above which the automatic rewrite of a sift_col index waits for a quieter moment.",
+							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again. 0: never waits.",
+							&sift_col_auto_merge_max_active, 0, 0, 10000, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
+							"Size of the segments the automatic rewrite of a sift_col index writes, which then rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
+							"A step rewrites the partition with most dirty units (over sift.col_auto_merge_dirty_pct of its own), or the overlays the promotions left over the partitions, "
+							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
+							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole.",
+							&sift_col_auto_merge_partition_kb, 0, 0, MAX_KILOBYTES, PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
+							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
+							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
+							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written: 6, 4 to keep them readable by pg_sift 3.1, or 3 for pg_sift 3.0.",
-							"Segments already written keep their minor; a 3.2 library reads them all. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known.",
+							"Column format minor of the segments written (15, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
+							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
+							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option key_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one whose key_columns keep a key list or a bitmap.",
 							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
 							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.test_col_rollup_panic",
 							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
 							NULL, &sift_test_col_rollup_panic, 0, 0, 1, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_col_merge_panic",
+							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
+							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_refresh_sleep_ms",
+							"Testing: the refresh of a segment (sift.col_refresh, the rollup worker) sleeps this long after the new segment is written and before it replaces the old one (0 = no).",
+							NULL, &sift_test_col_refresh_sleep_ms, 0, 0, 60000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_col_dict_cache",
-							"Testing: kB of parsed segment dictionaries the backend keeps for the next query.",
-							NULL, &sift_cdict_cache_kb, 65536, 0, INT_MAX, PGC_USERSET, GUC_UNIT_KB | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_verify_inval",
 							 "Testing: the heap check of sift.col_verify invalidates the index's relcache entry (what another session's VACUUM or ANALYZE does) at every tuple.",
 							 NULL, &sift_test_col_verify_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -180,32 +346,94 @@ sift_col_init(void)
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "cluster_advice",
+					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
+					   true, ShareUpdateExclusiveLock);
+	add_enum_reloption(col_relopt_kind, "dict_lookup",
+					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
+					   dict_lookup_names, SIFT_COL_DICT_AUTO,
+					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
+	add_bool_reloption(col_relopt_kind, "cube_minmax",
+					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
+					   true, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "rollup_dims",
+						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...' (default off; the segments are column format minor 8)",
+						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "calendar_columns",
+						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
+						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_columns",
+						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4 and date foreign key columns and the columns named *_id that are not unique and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, and 15 for a key list or bitmap (default auto)",
+						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_columns",
+						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
+						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "point_columns",
+						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
+						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "point_tid_columns",
+						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 16, which only 3.3 and later read, and the lists take 1 to 5 bytes per row (default none)",
+						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "return_columns",
+						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
+						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "superunit",
+					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
+					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', or off",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
 }
 
+static const relopt_parse_elt col_relopt_tab[] = {
+	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
+	{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
+	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, vacuum_truncate)},
+	{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
+	{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
+	{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
+	{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
+	{"rollup_dims", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup_dims)},
+	{"calendar_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, calendar_columns)},
+	{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
+	{"cluster_advice", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cluster_advice)},
+	{"cube_minmax", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, cube_minmax)},
+	{"dict_lookup", RELOPT_TYPE_ENUM, offsetof(SiftColOptions, dict_lookup)},
+	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
+	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
+	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
+	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
+	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
+};
+
 static bytea *
 col_amoptions(Datum reloptions, bool validate)
 {
-	static const relopt_parse_elt tab[] = {
-		{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
-		{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
-		{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, vacuum_truncate)},
-		{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
-		{"compression", RELOPT_TYPE_STRING, offsetof(SiftColOptions, compression)},
-		{"preagg", RELOPT_TYPE_STRING, offsetof(SiftColOptions, preagg)},
-		{"rollup", RELOPT_TYPE_STRING, offsetof(SiftColOptions, rollup)},
-		{"rollup_on_demand", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, rollup_on_demand)},
-	};
+	SiftColOptions *o = build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), col_relopt_tab, lengthof(col_relopt_tab));
 
-	return (bytea *) build_reloptions(reloptions, validate, col_relopt_kind, sizeof(SiftColOptions), tab, lengthof(tab));
+	if (validate && o && o->superunit == 1)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("superunit must be 0 or between %d and %d", SIFT_SUPER_MIN_FAN, SIFT_SUPER_MAX_FAN)));
+	return (bytea *) o;
 }
+
+#ifdef SIFT_TESTING
+/* The options of an index with none set and the table that parses them, for sift._test_reloptions() */
+extern const void *sift_col_test_reloptions(const relopt_parse_elt **tab, int *n);
+
+const void *
+sift_col_test_reloptions(const relopt_parse_elt **tab, int *n)
+{
+	*tab = col_relopt_tab;
+	*n = lengthof(col_relopt_tab);
+	return col_amoptions((Datum) 0, false);
+}
+#endif
 
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -242,11 +470,67 @@ sift_col_alter_check(Relation index)
 }
 
 const char *
+sift_col_options_key_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->key_columns ? (const char *) o + o->key_columns : NULL;
+}
+
+const char *
+sift_col_options_point_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->point_columns ? (const char *) o + o->point_columns : "";
+}
+
+const char *
+sift_col_options_point_tid_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
+}
+
+const char *
+sift_col_options_order_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_columns ? (const char *) o + o->order_columns : "";
+}
+
+const char *
+sift_col_options_return_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->return_columns ? (const char *) o + o->return_columns : "";
+}
+
+const char *
 sift_col_options_rollup(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->rollup ? (const char *) o + o->rollup : "";
+}
+
+const char *
+sift_col_options_rollup_dims(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->rollup_dims ? (const char *) o + o->rollup_dims : "";
+}
+
+const char *
+sift_col_options_calendar_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->calendar_columns ? (const char *) o + o->calendar_columns : "";
 }
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
@@ -262,7 +546,8 @@ build_rel(Relation index, MemoryContext mcxt)
 	int			n = 0;
 
 	if (index->rd_index->indnatts != natts)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns"),
+						errhint("List the columns in the index key: a sift_col index stores all of them.")));
 	r->natts = natts;
 	r->first = palloc((natts + 1) * sizeof(int));
 	r->nleaves = palloc((natts + 1) * sizeof(int));
@@ -283,8 +568,11 @@ build_rel(Relation index, MemoryContext mcxt)
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
 					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(att->attname))));
-		if (n + k > SIFT_COL_MAX_COLS)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a sift_col index holds at most %d columns", SIFT_COL_MAX_COLS)));
+		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
+							errdetail("Column \"%s\" brings the index to %d columns and paths.", NameStr(att->attname), n + k),
+							errhint("Leave out the columns the queries do not read, or create several indexes: the planner picks among them.")));
 		r->first[a] = n;
 		r->json[a] = isjson;
 		r->name[a] = att->atttypid == NAMEOID;
@@ -302,6 +590,16 @@ build_rel(Relation index, MemoryContext mcxt)
 			d->parent = d->parent < 0 ? -1 : n + d->parent;
 		}
 		n += k;
+	}
+	r->ret = palloc0((natts + 1) * sizeof(bool));
+	{
+		const char *err = return_walk(sift_col_options_return_columns(index), r, desc);
+
+		if (err)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: %s", err)));
+		for (int a = 1; a <= natts; a++)
+			if (r->ret[a] && index->rd_index->indkey.values[a - 1] == 0)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid return_columns option: \"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname))));
 	}
 	r->schema = sift_cschema_create(mcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
@@ -322,6 +620,26 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid preagg option: %s", err)));
 		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup option: %s", err)));
+		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_dims(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid rollup_dims option: %s", err)));
+		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid calendar_columns option: %s", err)));
+		r->pagg.minmax = sift_col_options(index)->cube_minmax;
+		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_columns option: %s", err)));
+		r->pagg.super = sift_col_options(index)->superunit;
+		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
+		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
+		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON ||
+				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));
+		for (int a = 1; a <= natts; a++)
+			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
+				r->pagg.lookup[r->first[a]] = true;
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
@@ -359,6 +677,7 @@ sift_col_test_inval(Relation index)
 const SiftColIndexMeta *
 sift_col_index_defs(Relation index)
 {
+	/* check-memory: allow hands out &r->meta at once; the callers copy it before any lock (sift_col_index_meta, col_layout) */
 	SiftColRel *r = sift_col_rel(index);
 
 	r->meta.valid = index->rd_index->indisvalid && index->rd_index->indisready && index->rd_index->indislive;
@@ -393,60 +712,46 @@ sift_col_att_expr(Relation index, int attno)
 	}
 }
 
-SiftColIndexMeta *
-sift_col_index_meta(Relation index)
-{
-	const SiftColIndexMeta *d = sift_col_index_defs(index);
-	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
-	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	BlockNumber allvis;
-	Relation	heap;
-	BlockNumber relpages;
-
-	*m = *d;
-	sift_dir_read(index, snap);
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		const SiftSegEntry *e = &snap->segs[i];
-
-		if (e->kind == SIFT_SEG_IMMUTABLE)
-		{
-			m->stats.nrows += e->ndocs;
-			m->stats.bytes += e->bytes;
-			m->stats.nsegments++;
-		}
-		else
-			m->stats.nwbuf++;
-	}
-	m->stats.nunits = sift_cseg_dir_units(snap);
-	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
-	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
-	heap = table_open(d->heapoid, AccessShareLock);
-	relpages = RelationGetNumberOfBlocks(heap);
-	visibilitymap_count(heap, &allvis, NULL);
-	m->stats.heap_pages = relpages;
-	m->stats.allvisible_frac = relpages > 0 ? (double) allvis / relpages : 0;
-	table_close(heap, AccessShareLock);
-	pfree(snap);
-	return m;
-}
-
 /*
  * The leaf statistics of an index's immutable segments, memoized per backend: the key of an entry is the index and the generations of
- * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. Eight indexes
- * are kept (the oldest is dropped).
+ * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. A plan reads
+ * every partition of a table (4096 at most for the pushdown), so the memo holds as many indexes, and is dropped whole when it grows past them.
  */
-#define LEAF_STATS_CACHE	8
+#define LEAF_STATS_CACHE	8192
 
-static struct
+/*
+ * The planner needs the share of the units that hold each pre-aggregate section, not the count: reading the sections of every unit costs
+ * a few buffers each (2.5 for an index of seven leaves and a cube), on the first plan of every backend. The units of an index are counted
+ * up to PRE_CENSUS_UNITS together, shared out over its segments in proportion to their units and at least PRE_CENSUS_MIN of each, spread
+ * evenly; an index of fewer units is counted whole.
+ */
+#define PRE_CENSUS_UNITS	256
+#define PRE_CENSUS_MIN		2
+
+typedef struct LeafEntry
 {
-	Oid			index;
+	Oid			index;			/* hash key */
 	uint64		stamp;
 	int			ncols;
 	SiftColLeafStats *st;
 	SiftColZones *zones;
-}			leaf_cache[LEAF_STATS_CACHE];
-static int	leaf_cache_next;
+	SiftColPreStats *pre;
+}			LeafEntry;
+
+static HTAB *leaf_cache;
+
+uint32
+sift_col_pagg_hash(Relation index)
+{
+	const char *a = sift_col_options_preagg(index),
+			   *b = sift_col_options_rollup(index),
+			   *c = sift_col_options_rollup_dims(index),
+			   *d = sift_col_options_calendar_columns(index);
+
+	return hash_bytes((const unsigned char *) a, strlen(a)) ^ (hash_bytes((const unsigned char *) b, strlen(b)) * 31) ^
+		(hash_bytes((const unsigned char *) c, strlen(c)) * 17) ^ (hash_bytes((const unsigned char *) d, strlen(d)) * 13) ^
+		(sift_col_options(index)->cube_minmax ? 0x9e3779b9 : 0) ^ ((uint32) sift_col_format_minor * 0x85ebca6b);
+}
 
 static void
 zones_free(SiftColZones *zs)
@@ -477,73 +782,180 @@ zones_new(const SiftColIndexMeta *d)
 	return zs;
 }
 
-static int
-leaf_cache_entry(Relation index)
+/* a sample is filled once: the arrays keep the units sampled, not the room for all of them (an index of a few units is 16 bytes a leaf) */
+static void
+zones_shrink(SiftColZones *zs)
+{
+	for (int c = 0; c < zs->ncols; c++)
+		if (zs->lo[c] != NULL)
+		{
+			zs->lo[c] = repalloc(zs->lo[c], Max(zs->n, 1) * sizeof(int64));
+			zs->hi[c] = repalloc(zs->hi[c], Max(zs->n, 1) * sizeof(int64));
+		}
+}
+
+static LeafEntry *
+leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 {
 	const SiftColIndexMeta *d = sift_col_index_defs(index);
-	SiftDirSnapshot dir;
+	SiftDirSnapshot own;
+	const SiftDirSnapshot *dir = snap;
 	uint64		stamp = index->rd_locator.relNumber;	/* REINDEX starts the generations over */
-	int			slot = -1;
+	Oid			key = RelationGetRelid(index);
+	LeafEntry  *e;
 
-	sift_dir_read(index, &dir);
-	for (int i = 0; i < dir.nsegs; i++)
-		stamp = stamp * 31 + dir.segs[i].gen * 8 + dir.segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
-	for (int i = 0; i < LEAF_STATS_CACHE; i++)
-		if (leaf_cache[i].st != NULL && leaf_cache[i].index == RelationGetRelid(index))
-			slot = i;
-	if (slot >= 0 && leaf_cache[slot].stamp == stamp && leaf_cache[slot].ncols == d->ncols)
-		return slot;
-	if (slot < 0)
-		slot = leaf_cache_next++ % LEAF_STATS_CACHE;
-	if (leaf_cache[slot].st)
+	stamp = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
+	if (dir == NULL)
 	{
-		pfree(leaf_cache[slot].st);
-		zones_free(leaf_cache[slot].zones);
+		sift_dir_read(index, &own);
+		dir = &own;
 	}
-	leaf_cache[slot].st = NULL;
+	for (int i = 0; i < dir->nsegs; i++)
+		stamp = stamp * 31 + dir->segs[i].gen * 8 + dir->segs[i].format + 1;	/* a rewrite of a segment changes its format, and the kinds it keeps */
+	if (leaf_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};
+
+		leaf_cache = hash_create("sift_col leaf statistics", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
+	if (e != NULL && e->stamp == stamp && e->ncols == d->ncols)
+		return e;
+	if (e != NULL)
+	{
+		pfree(e->st);
+		pfree(e->pre);
+		zones_free(e->zones);
+		hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
+	}
+	else if (hash_get_num_entries(leaf_cache) >= LEAF_STATS_CACHE)
+	{
+		HASH_SEQ_STATUS seq;
+
+		hash_seq_init(&seq, leaf_cache);
+		while ((e = hash_seq_search(&seq)) != NULL)
+		{
+			pfree(e->st);
+			pfree(e->pre);
+			zones_free(e->zones);
+			hash_search(leaf_cache, &e->index, HASH_REMOVE, NULL);
+		}
+	}
 	{
 		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col leaf statistics", ALLOCSET_DEFAULT_SIZES);
 		SiftColLeafStats *st = MemoryContextAlloc(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
+		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
+		const SiftCPaggSpec *spec = &sift_col_rel(index)->pagg;
 		SiftColZones *zs = zones_new(d);
+		uint64		nunits = sift_cseg_dir_units(dir),
+					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS);
 
 		for (int c = 0; c < d->ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
-		for (int i = 0; i < dir.nsegs; i++)
+		for (int i = 0; i < dir->nsegs; i++)
 		{
 			SiftColSegment *seg;
+			SiftCPaggCensus census;
+			double		w;
 
-			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
+			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 				continue;
-			seg = sift_cseg_open(index, &dir.segs[i], cx);
+			seg = sift_cseg_open(index, &dir->segs[i], cx);
 			for (int c = 0; c < d->ncols; c++)
 				sift_cseg_leaf_stats(seg, c, &st[c]);
 			sift_cseg_zone_sample(seg, zs);
+			sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
+			/* the units counted stand for the units of the segment */
+			w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
+			pre->units += census.units * w;
+			for (int k = 0; k < spec->ndims; k++)
+			{
+				pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
+				pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
+			}
+			for (int k = 0; k < spec->nrollups; k++)
+				if (spec->rollup[k].list >= 0)
+					pre->roll[spec->rollup[k].list] += census.roll[k] * w;
+				else
+					pre->rows += census.roll[k] * w;
 			sift_cseg_close(seg);
 		}
-		for (int i = 0; i < dir.nsegs; i++)
-			if (dir.segs[i].kind != SIFT_SEG_IMMUTABLE && dir.segs[i].format < SIFT_COL_FORMAT_KINDS)
+		for (int i = 0; i < dir->nsegs; i++)
+			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
 				for (int c = 0; c < d->ncols; c++)
 					st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
 		MemoryContextDelete(cx);
-		leaf_cache[slot].index = RelationGetRelid(index);
-		leaf_cache[slot].stamp = stamp;
-		leaf_cache[slot].ncols = d->ncols;
-		leaf_cache[slot].st = st;
-		leaf_cache[slot].zones = zs;
-		return slot;
+		zones_shrink(zs);
+		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
+		e->stamp = stamp;
+		e->ncols = d->ncols;
+		e->st = st;
+		e->zones = zs;
+		e->pre = pre;
+		return e;
 	}
+}
+
+const SiftColPreStats *
+sift_col_pre_stats(Relation index)
+{
+	return leaf_cache_entry(index, NULL)->pre;
 }
 
 const SiftColLeafStats *
 sift_col_leaf_stats(Relation index)
 {
-	return leaf_cache[leaf_cache_entry(index)].st;
+	return leaf_cache_entry(index, NULL)->st;
 }
 
 const SiftColZones *
 sift_col_zones(Relation index)
 {
-	return leaf_cache[leaf_cache_entry(index)].zones;
+	return leaf_cache_entry(index, NULL)->zones;
+}
+
+SiftColIndexMeta *
+sift_col_index_meta(Relation index, SiftColLeafMemo *memo)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	SiftColIndexMeta *m = palloc(sizeof(SiftColIndexMeta));
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	Relation	heap;
+	BlockNumber relpages;
+
+	*m = *d;
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
+			m->stats.nrows += e->ndocs;
+			m->stats.bytes += e->bytes;
+			m->stats.nsegments++;
+		}
+		else
+			m->stats.nwbuf++;
+	}
+	m->stats.nunits = sift_cseg_dir_units(snap);
+	m->stats.wbuf_ovf = sift_cwbuf_overflow(snap);
+	m->stats.wbuf_jnull = sift_cwbuf_jnull(snap);
+	heap = table_open(d->heapoid, AccessShareLock);
+	relpages = RelationGetNumberOfBlocks(heap);
+	m->stats.heap_pages = relpages;
+	m->stats.allvisible_frac = relpages > 0 ? (double) sift_vis_count_allvisible(heap, relpages) / relpages : 0;
+	table_close(heap, AccessShareLock);
+	if (memo != NULL)
+	{
+		LeafEntry  *e = leaf_cache_entry(index, snap);
+
+		memo->leaves = e->st;
+		memo->zones = e->zones;
+		memo->pre = e->pre;
+	}
+	pfree(snap);
+	return m;
 }
 
 bool
@@ -609,6 +1021,7 @@ bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
+	/* check-memory: allow copies the hint and the row context, and fetches the entry again to store the hint (#558) */
 	SiftColRel *r = sift_col_rel(index);
 	SiftCWbufHint hint = r->hint;
 	MemoryContext rowcxt = r->rowcxt;
@@ -622,6 +1035,7 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	sift_col_rel(index)->hint = hint;
 	if (crossed)
 		sift_col_maint_after_seal(index);
+	sift_col_vacuum_tick(RelationGetRelid(index), RelationGetRelid(heap), 0);
 	return false;
 }
 
@@ -631,54 +1045,27 @@ col_amvalidate(Oid opclassoid)
 	return true;
 }
 
-static void
-col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost,
-						Cost *indexTotalCost, Selectivity *indexSelectivity, double *indexCorrelation, double *indexPages)
-{
-	/* the operator class has no operators, so no index path exists; the column scans use the index through col/col.h */
-	*indexStartupCost = *indexTotalCost = 1.0e30;
-	*indexSelectivity = 1.0;
-	*indexCorrelation = 0.0;
-	*indexPages = 1.0;
-}
-
-static IndexScanDesc
-col_ambeginscan(Relation index, int nkeys, int norderbys)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift_col indexes cannot be scanned as ordinary indexes"),
-			 errhint("They serve the column scans of the planner, not index scans.")));
-	return NULL;
-}
-
-static void
-col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys)
-{
-}
-
-static void
-col_amendscan(IndexScanDesc scan)
-{
-}
-
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = sift_am_routine(0, 1, true);
+	IndexAmRoutine *am = sift_am_routine(8, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;
 	am->aminsert = sift_col_aminsert;
 	am->ambulkdelete = sift_col_ambulkdelete;
 	am->amvacuumcleanup = sift_col_amvacuumcleanup;
-	am->amcostestimate = col_amcostestimate;
+	am->amcostestimate = sift_col_amcostestimate;
 	am->amoptions = col_amoptions;
 	am->ambuildphasename = sift_col_ambuildphasename;
 	am->amvalidate = col_amvalidate;
-	am->ambeginscan = col_ambeginscan;
-	am->amrescan = col_amrescan;
-	am->amendscan = col_amendscan;
+	am->ambeginscan = sift_col_ambeginscan;
+	am->amrescan = sift_col_amrescan;
+	am->amgetbitmap = sift_col_amgetbitmap;
+	am->amgettuple = sift_col_amgettuple;
+	am->amcanreturn = sift_col_amcanreturn;
+	am->amendscan = sift_col_amendscan;
+	am->amsearcharray = am->amsearchnulls = true;
 
 	PG_RETURN_POINTER(am);
 }

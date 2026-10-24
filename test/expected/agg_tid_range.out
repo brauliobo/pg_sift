@@ -93,16 +93,12 @@ SELECT n, (SELECT count(*) FROM th WHERE ctid >= lo::tid AND ctid <= hi::tid) AS
 
 RESET sift.enable_agg;
 -- all the ranges, all the forms: the plan is SiftAgg, the result is the normal plan's
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th');
- statements | scanned | differing_rows 
-------------+---------+----------------
-         78 |      78 |              0
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('th');
+ statements | scanned | differing_rows | failing 
+------------+---------+----------------+---------
+         78 |      78 |              0 | 
 (1 row)
-
-SELECT * FROM all_ranges('th') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
- n | form | plan | result_rows | vs_normal_plan 
----+------+------+-------------+----------------
-(0 rows)
 
 -- the plan shows the range, and the scan reads the superblocks it touches only
 SELECT plan_of('SELECT count(*) FROM th WHERE ctid >= ''(10,1)'' AND ctid < ''(20,1)''') AS range,
@@ -141,16 +137,12 @@ FROM th JOIN th_before USING (id) WHERE th.ctid <> th_before.tid AND (th.ctid::t
  t
 (1 row)
 
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th');
- statements | scanned | differing_rows 
-------------+---------+----------------
-         78 |      78 |              0
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('th');
+ statements | scanned | differing_rows | failing 
+------------+---------+----------------+---------
+         78 |      78 |              0 | 
 (1 row)
-
-SELECT * FROM all_ranges('th') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
- n | form | plan | result_rows | vs_normal_plan 
----+------+------+-------------+----------------
-(0 rows)
 
 -- a range that ends at the offset of a new version
 SELECT * FROM same(format('SELECT count(*) AS n, sum(v) AS s FROM th WHERE ctid >= %L AND ctid <= %L', (SELECT min(ctid) FROM th WHERE id % 5 = 0 AND ctid > '(100,0)'), (SELECT max(ctid) FROM th WHERE id % 5 = 0 AND ctid < '(200,0)')));
@@ -226,16 +218,12 @@ SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS s
 UPDATE tt SET v = v + 1 WHERE id % 7 = 0;
 DELETE FROM tt WHERE id % 11 = 0;
 INSERT INTO tt SELECT i, i % 7, i % 100, repeat('n', 100) FROM generate_series(30001, 31000) i;
-SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt');
- statements | scanned | differing_rows 
-------------+---------+----------------
-         78 |      78 |              0
+SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
+       array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('tt');
+ statements | scanned | differing_rows | failing 
+------------+---------+----------------+---------
+         78 |      78 |              0 | 
 (1 row)
-
-SELECT * FROM all_ranges('tt') WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0;
- n | form | plan | result_rows | vs_normal_plan 
----+------+------+-------------+----------------
-(0 rows)
 
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= ''(255,30)'' AND ctid < ''(257,10)'' AND v < 60 GROUP BY g');
   plan   | result_rows | vs_normal_plan 

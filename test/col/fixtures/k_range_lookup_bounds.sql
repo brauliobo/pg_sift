@@ -4,5 +4,5 @@
 -- key: 1
 -- scenario: yes
 SELECT p.label, count(*) AS n, sum(o.total) AS total
-FROM orders o JOIN periods p ON o.placed_at >= lower(p.range) AND o.placed_at < upper(p.range)
+FROM orders o JOIN spans p ON o.placed_at >= lower(p.range) AND o.placed_at < upper(p.range)
 GROUP BY p.label ORDER BY 1 NULLS FIRST

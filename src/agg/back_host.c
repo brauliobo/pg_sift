@@ -125,7 +125,7 @@ backend_finish(AggExec *ex)
 	if (!sift_aggbe_finish(ex->be, ex->be_state))
 		return;
 	table_reset(ex);
-	ex->n_units = ex->n_pre_units = ex->n_rows = ex->n_tuples = 0;
+	ex->n_units = ex->n_pre_units = ex->n_super = ex->n_rows = ex->n_tuples = 0;
 	pg_atomic_write_u32(&ex->shared->next, 0);
 	scan_items(ex);
 }

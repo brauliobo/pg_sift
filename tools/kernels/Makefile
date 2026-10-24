@@ -8,12 +8,12 @@
 OUT     ?= /tmp/sift-kernels-tools
 N       ?= 2
 
-LIB      = $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c \
-           $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c \
-           $(SRC)/col/shred_kern.c $(SRC)/col/shred_kern_avx2.c $(SRC)/col/shred_kern_avx512.c \
-           $(SRC)/col/codec_kern.c $(SRC)/col/codec_avx2.c $(SRC)/col/codec_avx512.c \
-           $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c \
-           $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c
+LIB      = $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c $(SRC)/bm25/kernels_neon.c \
+           $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c $(SRC)/col/kern_neon.c \
+           $(SRC)/col/shred_kern.c $(SRC)/col/shred_kern_avx2.c $(SRC)/col/shred_kern_avx512.c $(SRC)/col/shred_kern_neon.c \
+           $(SRC)/col/codec_kern.c $(SRC)/col/codec_avx2.c $(SRC)/col/codec_avx512.c $(SRC)/col/codec_neon.c \
+           $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c $(SRC)/agg/kern_neon.c \
+           $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c $(SRC)/bm25/bitmap_neon.c
 HDR      = $(SRC)/bm25/kernels.h $(SRC)/bm25/kernels_int.h $(SRC)/col/kern.h $(SRC)/col/kern_int.h $(SRC)/col/shred.h $(SRC)/agg/kern.h $(SRC)/col/codec.h $(SRC)/col/codec_int.h harness.h
 
 include ../tools.mk
@@ -22,9 +22,9 @@ $(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OUT)/alt.
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
 bench-col: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench col
+	$(FLOCK) $(OUT)/bench col
 
 bench-shred: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench shred
+	$(FLOCK) $(OUT)/bench shred
 
 .PHONY: bench-col bench-shred

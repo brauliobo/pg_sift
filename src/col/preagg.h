@@ -3,7 +3,8 @@
  * or rewritten, and what a reader may answer from it without reading the unit's chunks. Portable (core/host.h only).
  *
  *   - per INT leaf: the exact sum and the sum of squares as 128-bit integers (the zone's int64 sum overflows, this does not);
- *   - per unit: a mini cube, GROUP BY dim -> count and, for the configured measures, (non-NULL count, sum). A dim is a scalar leaf of
+ *   - per unit: a mini cube, GROUP BY dim -> count and, for the configured measures, (non-NULL count, sum and, from column format minor 7 when
+ *     the index asks for it, the minimum and maximum of an integer measure). A dim is a scalar leaf of
  *     a few distinct values in the unit: a dictionary-coded text leaf (the group key is the segment code) or an integer, date or
  *     numeric leaf (the key is the stored integer). So "count per country", "revenue per category", "orders per month" (a leaf that
  *     holds date_trunc('month', ts)) are one add per group and unit instead of one per row;
@@ -31,13 +32,22 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_MAX_ROLLUPS	8			/* rollups of an option: one per list */
 #define SIFT_PAGG_ROLLUP_TUPLES	4096		/* the most tuples of a rollup in a unit (explicit rollup(...)); the default takes at most a 32nd of the unit's elements, at least 64 */
 #define SIFT_PAGG_ROLLUP_MIN	64
+#define SIFT_PAGG_ROWS_CELLS	4096		/* the most cells (tuples) of the rollup of a unit's rows ... */
+#define SIFT_PAGG_ROWS_RATIO	10			/* ... and at most a 10th of the unit's rows (at least SIFT_PAGG_ROLLUP_MIN): a tuple costs about 15 rows to read, so past a 16th the unit scans anyway; a unit with more has none and scans */
 #define SIFT_PAGG_MAX_MEAS		8
+#define SIFT_PAGG_CAL			128			/* a calendar dim (the cells of a date or timestamp leaf) has the directory leaf grain * this + the leaf (SIFT_COL_MAX_COLS leaves precede it); asked of a reader, this + the leaf is the dim at the grain the unit has */
+#define SIFT_CAL_DAY			1			/* the grains of a cell, finest first: a day, a month, a year; the key of a cell is its first day, as days since 2000-01-01 (a date) */
+#define SIFT_CAL_MONTH			2
+#define SIFT_CAL_YEAR			3
 #define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
 #define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
+#define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
+#define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
+#define SIFT_PAGG_CAL_PERMILLE	50			/* the calendar dims of a unit together may take this much of its bytes (at least twice the minimum budget) */
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
@@ -68,6 +78,8 @@ typedef struct SiftCPaggDim
 {
 	int16		leaf;
 	uint8		nmeas;
+	bool		cal;					/* leaf is a date or timestamp leaf and the dim groups it by calendar cells: each unit stores the finest grain (SIFT_CAL_*) that fits, the key of a cell being its first day */
+	uint8		grain;					/* cal: 0, the writer chooses the grain; else exactly this grain (a stored dim, which the verify recomputes) */
 	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
@@ -75,7 +87,7 @@ typedef struct SiftCPaggDim
 /* The rollup of one list: the dims it may hold (a unit keeps the ones that fit) and its measures */
 typedef struct SiftCPaggRollup
 {
-	int16		list;					/* the GROUP leaf */
+	int16		list;					/* the GROUP leaf; -1: the rows of the unit (column format minor 8), dims and measures are top-level leaves */
 	uint8		ndims;
 	int16		dim[SIFT_PAGG_MAX_RDIMS];
 	uint8		nmeas;
@@ -88,6 +100,16 @@ typedef struct SiftCPaggSpec
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
+	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
+	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
+	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that keep their keys in every unit (option key_columns, column format minors 10 and 15; col/setsum.h) */
+	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */
+	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
+	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */
+	bool		pres[SIFT_COL_MAX_COLS];	/* the leaves of set that can keep every distinct key of a unit as a bitmap or a list (column format minor 15; col/setsum.h) */
+	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
+	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
+	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
 	int			ndims;
 	SiftCPaggDim dim[SIFT_PAGG_MAX_DIMS];	/* top level only */
 	int			nrollups;
@@ -101,7 +123,27 @@ typedef struct SiftCPaggSpec
  * or float leaf, not a date/time/bool, of the same list or the top level)
  */
 extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
+/* The leaf names of an option that lists columns ('a, b', empty or off for none): sets leaf[c] for each, checked by ok (false: the message bad); s NULL checks the syntax only */
+extern const char *sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
+										bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);
+
+/*
+ * Adds to a default spec the calendar dim of every date, timestamp and timestamptz leaf of the top level, with the measures of a default dim: a unit then
+ * stores, for the leaf, the groups of its days, else of its months, else of its years (the finest that fits the cell limit and the byte budget), and every
+ * key that is a function of the cell (date_trunc, extract, ::date) is a histogram of the unit (docs/COL-PREAGG.md 2). A timestamptz is stored as UTC days.
+ * A sift_table has no index option to ask for it, so its writer adds it to the default; column format minor 8.
+ */
+extern void sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec);
+/* The first day (days since 2000-01-01) of the cell of a grain that holds a day, and of the cell after the one that starts at day */
+extern int64 sift_cpagg_cal_cell(int grain, int64 day);
+extern int64 sift_cpagg_cal_next(int grain, int64 day);
+/* Can a stored cell key of a leaf of this type (SIFT_COLT_*) be one: the first day of a cell of the grain, a day the type holds */
+extern bool sift_cpagg_cal_key_ok(int type, int grain, int64 key);
+/* Is leaf c a date, timestamp or timestamptz leaf of the top level that has calendar cells? */
+extern bool sift_cpagg_cal_type(const SiftColSchema *s, int c);
+/* The date, timestamp and timestamptz leaves of the top level with no calendar dim in spec, in leaf order, at most max of them in out; returns how many there are */
+extern int	sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max);
 
 /* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
@@ -121,6 +163,18 @@ extern const char *sift_cpagg_syntax(const char *opt);
  */
 extern const char *sift_cpagg_rollup_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
 extern const char *sift_cpagg_rollup_syntax(const char *opt);
+/*
+ * The `rollup_dims` option: "a, b" or "a, b: m1, m2" (top-level scalar leaves; the measures are the integer and numeric top-level leaves when none are named): the
+ * rollup of the rows of every unit, a cell per distinct combination of the dims (list -1 of spec). "" / "off": none. Same returns as sift_cpagg_rollup_apply.
+ */
+extern const char *sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
+extern const char *sift_cpagg_rows_syntax(const char *opt);
+/*
+ * The `calendar_columns` option: "a, b" or "all" (date, timestamp and timestamptz columns of the top level): the calendar dims of sift_cpagg_spec_calendar for
+ * these columns only. Refused for a schema with JSON path leaves. "" / "off": none. Same returns as sift_cpagg_rollup_apply.
+ */
+extern const char *sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec);
+extern const char *sift_cpagg_calendar_syntax(const char *opt);
 
 /* One leaf of a unit as the writer sees it, in the key domain; key is the segment's code for a dictionary leaf. n: the rows of the unit, the elements of the unit's list for a leaf of one */
 typedef struct SiftCPaggCol
@@ -147,12 +201,51 @@ extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
 extern void sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, Size unit_bytes,
 							StringInfo out, StringInfo eout);
 
+/*
+ * Superunits (column format minor 12, docs/COL-PREAGG.md section 10): the units of a segment in groups of `fan` consecutive ones, each group with the
+ * merged exact sums of every INT leaf and the merged cube of the dims all its units hold. A float measure is left out of the merged cube (its sum
+ * depends on the order of the additions, which the units fix).
+ */
+#define SIFT_SUPER_MIN_FAN		2
+#define SIFT_SUPER_MAX_FAN		256
+#define SIFT_SUPER_DEFAULT_FAN	16			/* the default of the reloption superunit: +1.0% of the index, a whole-table aggregate 4 to 7 times faster, and the groups stay small enough for a range to cut few of them */
+#define SIFT_SUPER_LEAF_OK		0x2			/* in SiftCSuperLeaf.flags, above SIFT_CAGG_SUMSQ_OVF: the leaf is summarised for this group */
+
+/* One INT or text leaf of one group of units, 64 bytes as stored (a text leaf has no sums, and its min and max are bounds of the codes) */
+typedef struct SiftCSuperLeaf
+{
+	int64		min;					/* key domain, of the units that hold a value; 0 when none does */
+	int64		max;
+	uint32		nnull;
+	uint32		nvals;
+	uint64		sum_lo;
+	uint64		sum_hi;
+	uint64		sumsq_lo;				/* 0 with SIFT_CAGG_SUMSQ_OVF */
+	uint64		sumsq_hi;
+	uint32		flags;					/* SIFT_CAGG_SUMSQ_OVF | SIFT_SUPER_LEAF_OK; 0: the leaf has no summary in this group */
+	uint32		zflags;					/* SIFT_COLZ_CONST: one value in all the group */
+} SiftCSuperLeaf;
+
+StaticAssertDecl(sizeof(SiftCSuperLeaf) == 64, "a superunit leaf record is 64 bytes");
+
+/*
+ * The summary of the leaf over n units (their SiftCAgg); false when a unit flags an overflow value or inline text, has no sums while sums is set (an INT leaf has
+ * them, a text leaf only counts), or the values exceed 2^32
+ */
+extern bool sift_cpagg_super_leaf(const SiftCAgg *u, uint32 n, bool sums, SiftCSuperLeaf *out);
+/*
+ * The cube of n units (their blobs, length 0: none) merged by group key, appended to out in the format of a unit's cube; nothing is appended when no dim
+ * is in every unit with the same measures. false when a blob does not decode. Allocates in the current memory context, which the caller resets.
+ */
+extern bool sift_cpagg_super_cube(const SiftColSchema *s, const uint8 *const *blob, const uint32 *len, uint32 n, StringInfo out);
+
 /* A decoded cube. Group arrays are in ascending key order, the NULL group (when has_null) last with no key */
 typedef struct SiftCHistDim
 {
 	int			leaf;
 	uint32		ngroups;
 	bool		has_null;
+	bool		minmax;					/* the cube holds min and max for the INT measures */
 	int			nmeas;
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 	int64	   *key;					/* [ngroups] (the NULL group's is 0) */
@@ -160,6 +253,8 @@ typedef struct SiftCHistDim
 	uint32	   *nn[SIFT_PAGG_MAX_MEAS];	/* non-NULL values of the measure in each group */
 	SiftCI128  *sum[SIFT_PAGG_MAX_MEAS];	/* INT measure: exact sum; NULL for a float measure */
 	double	   *sumf[SIFT_PAGG_MAX_MEAS];	/* float measure: sum in row order; NULL for an INT one */
+	int64	   *min[SIFT_PAGG_MAX_MEAS];	/* INT measure of a cube with minmax: the smallest and the largest value of each group (key domain; 0 where nn is 0), else NULL */
+	int64	   *max[SIFT_PAGG_MAX_MEAS];
 } SiftCHistDim;
 
 typedef struct SiftCHist
@@ -222,7 +317,7 @@ extern bool sift_cpagg_rollup_dim(const SiftColSchema *s, const SiftCRollup *r, 
 extern bool sift_cpagg_decode(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, SiftCHist *h);
 /* Decodes only the dim of this leaf: 1 found (out set), 0 the unit has none (the cap, the byte budget, an overflow), -1 the bytes are not a cube of this schema */
 extern int	sift_cpagg_decode_dim(const SiftColSchema *s, const uint8 *blob, uint32 len, MemoryContext mcxt, int leaf, SiftCHistDim *out);
-/* The rollup of the list group in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
+/* The rollup of the list group (-1: of the rows) in an element blob (NULL: none, or the bytes are not an element blob of this schema: *len is then UINT32_MAX) */
 extern const uint8 *sift_cpagg_elem_cube(const SiftColSchema *s, const uint8 *eblob, uint32 elen, int group, uint32 *len);
 /* The dim with this leaf, NULL if the unit has none (the cap, the budget, an overflow) */
 /* The measure slot of leaf m in the dim, -1 if it is not stored */
@@ -230,10 +325,29 @@ extern int	sift_cpagg_meas_slot(const SiftCHistDim *d, int m);
 
 /*
  * C4 for the sidecar: recomputes the cube and the rollups of the stored dims and measures from the unit's columns and compares the bytes;
- * false on any difference. A blob of length 0 is none.
+ * false on any difference, or when the cube holds min and max (minmax) a calendar dim or a rollup of the rows and the segment's column format (format) may not. A blob of length 0 is none.
  */
 extern bool sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows, const uint8 *blob, uint32 len,
-							 const uint8 *eblob, uint32 elen);
+							 const uint8 *eblob, uint32 elen, int format);
+/*
+ * What the stored sidecar of the units of a segment holds, against what the spec of the index writes now (sift_col_refresh, the planner's share of the
+ * units that have a section). Read from the headers of the blobs only. dim[i], mm[i] and roll[i] count the units that hold the dim of spec dim i (with
+ * min and max), and the rollup of spec rollup i; odd counts the units that hold something the spec no longer asks: a dim or a list it does not
+ * name, other measures (exactly its own with cube(...)), other rollup dims (exactly its own with rollup(...)), min and max it does not ask, or
+ * bytes that do not parse. minmax: whether the spec's min and max are written at all (the setting and the kinds of the segment allow minor 7).
+ */
+typedef struct SiftCPaggCensus
+{
+	uint32		units;
+	uint32		odd;
+	uint32		dim[SIFT_PAGG_MAX_DIMS];
+	uint32		mm[SIFT_PAGG_MAX_DIMS];
+	uint32		roll[SIFT_PAGG_MAX_ROLLUPS];
+} SiftCPaggCensus;
+
+/* Adds one unit (blobs of length 0: none) */
+extern void sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
+							  SiftCPaggCensus *c);
 /* The leaves a stored cube and element blob read (lists, dims and measures), marked true in need[ncols]; false when they do not decode */
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Extension lifecycle with existing indexes: pg_dump | psql and pg_restore round trips, ALTER EXTENSION UPDATE
-# along a multi-step upgrade path (the real pg_sift--1.0--1.1.sql, 1.1--1.2.sql, 1.2--3.0.sql, 3.0--3.1.sql and 3.1--3.2.sql in a private
-# extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 1.0 -> 3.2 and 3.1 -> 3.2 with a fresh 3.2 install), installation through extension_control_path and dynamic_library_path
+# along a multi-step upgrade path (the real pg_sift--1.0--1.1.sql, 1.1--1.2.sql, 1.2--3.0.sql, 3.0--3.1.sql, 3.1--3.2.sql and 3.2--3.3.sql in a private
+# extension_control_path directory; 1.0 -> 3.0 and 1.2 -> 3.0 are compared with a fresh 3.0 install, 3.1 -> 3.2 with a fresh 3.2 install, 1.0, 3.0, 3.1 and 3.2 -> 3.3 with a fresh 3.3 install), installation through extension_control_path and dynamic_library_path
 # alone, and a same-major pg_upgrade that carries the index files over. Every step: sift.verify with
 # heapallindexed and index results equal to a sequential scan.
 . "$(dirname "$0")/lib.bash"
@@ -56,7 +56,9 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 # the databases pg_upgrade carries over; upg (an update path run) needs extension_control_path
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
-plan $((41 + $(wc -w <<<"$DBS")))
+# the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
+UPG_CHECKS=73
+plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 node_init life 6
 node_start life || bail "start failed"
 q life postgres "CREATE DATABASE src" >/dev/null
@@ -87,7 +89,7 @@ check "pg_dump keeps the extension as one object" test "$(pgc life pg_dump src |
 if (( PG_MAJOR >= 18 )); then
 	# extension_control_path and dynamic_library_path are the only install: nothing else makes sift available
 	check "sift is available through extension_control_path" test "$(q life postgres \
-		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 3.2
+		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 3.3
 	check "the library loads through dynamic_library_path" test "$(vq life src \
 		"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'")" == 1
 	check "without the path the extension is not found" test "$(q life postgres "SET extension_control_path = '/nonexistent'" \
@@ -96,7 +98,7 @@ if (( PG_MAJOR >= 18 )); then
 	# upgrade path: the real scripts of every version
 	UPD=$(dir life)/upd
 	mkdir -p "$UPD/extension"
-	cp "$SHAREDIR"/extension/pg_sift--{1.0,1.1,1.2,3.0,3.1,3.2}.sql "$SHAREDIR"/extension/pg_sift--{1.0--1.1,1.1--1.2,1.2--3.0,3.0--3.1,3.1--3.2}.sql "$UPD/extension/"
+	cp "$SHAREDIR"/extension/pg_sift--{1.0,1.1,1.2,3.0,3.1,3.2,3.3}.sql "$SHAREDIR"/extension/pg_sift--{1.0--1.1,1.1--1.2,1.2--3.0,3.0--3.1,3.1--3.2,3.2--3.3}.sql "$UPD/extension/"
 	cp "$SHAREDIR/extension/pg_sift.control" "$UPD/extension/pg_sift.control"
 	PATHSET="SET extension_control_path = '$UPD:\$system'"
 	q life postgres "CREATE DATABASE upg" >/dev/null
@@ -107,8 +109,8 @@ if (( PG_MAJOR >= 18 )); then
 	formats() { q life upg "SELECT coalesce(string_agg(format::text, ',' ORDER BY gen) FILTER (WHERE kind = 'immutable'), '') FROM sift._test_segment_formats('docs_idx')"; }
 	check "the index built before the update has a segment of format 2" test "$(formats)" == 2
 	before=$(q life upg "SELECT fp() || ranked()")
-	check "the update path chains the five steps" test "$(q life upg "$PATHSET" \
-		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '3.2'")" == "1.0--1.1--1.2--3.0--3.1--3.2"
+	check "the update path chains the six steps" test "$(q life upg "$PATHSET" \
+		"SELECT path FROM pg_extension_update_paths('pg_sift') WHERE source = '1.0' AND target = '3.3'")" == "1.0--1.1--1.2--3.0--3.1--3.2--3.3"
 	# the objects of the extension by description, with the definition of the functions
 	MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(CASE classid WHEN 'pg_proc'::regclass THEN pg_get_functiondef(objid) END, '')
 		FROM pg_depend WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e'
@@ -138,25 +140,100 @@ if (( PG_MAJOR >= 18 )); then
 		= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 5)::text k, count(*) c FROM docs WHERE body @@> 'gamma' GROUP BY 1) g)"
 	q life upg "CREATE INDEX docs_kw ON docs USING sift (((id % 5)::text)) WITH (analyzer = keyword)" >/dev/null
 	check "sift.facets works on the updated 3.0 extension" test "$(q life upg "$FACETS")" == t
-	q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
-	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.2
-	q life postgres "CREATE DATABASE fresh32" "CREATE DATABASE upg31" >/dev/null
-	q life fresh32 "CREATE EXTENSION pg_sift" >/dev/null
-	check "3.0 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
+	upd=$(LC_ALL=C q life upg "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	# a text index of an older release cannot say whether it holds a word over 255 bytes, so it is listed as required; a keyword index never held one
+	check "the 1.0 to 3.3 update warns that the text index needs a REINDEX and skips the keyword one" test "$(grep -c 'REINDEX INDEX CONCURRENTLY public.docs_idx;' <<<"$upd")/$(grep -c docs_kw <<<"$upd")" == 1/0
+	check "ALTER EXTENSION UPDATE runs the next script" test "$(q life upg "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.3
+	q life postgres "CREATE DATABASE fresh32" "CREATE DATABASE fresh33" "CREATE DATABASE upg31" "CREATE DATABASE upg32" >/dev/null
+	q life fresh32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" >/dev/null
+	check "a fresh 3.3 install prints nothing about a REINDEX" test -z "$(LC_ALL=C q life fresh33 "CREATE EXTENSION pg_sift" 2>&1)"
+	check "3.0 updated to 3.3 has the objects of a fresh 3.3 install" test "$(q life upg "$MEMBERS")" == "$(q life fresh33 "$MEMBERS")"
 	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" \
 		"CREATE TABLE kinds31 (id int, doc jsonb)" \
 		"INSERT INTO kinds31 SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END) FROM generate_series(1,8000) i" \
 		"SET sift.col_format_minor = 4" "CREATE INDEX kinds31_col ON kinds31 USING sift_col (id,doc) WITH (paths = 'doc[]{s text}')" \
+		"CREATE INDEX kinds31_old ON kinds31 USING sift_col (id,doc) WITH (paths = 'doc[]{s text}')" \
 		"ALTER EXTENSION pg_sift UPDATE TO '3.2'" >/dev/null
 	KINDQ="SELECT count(*) FROM kinds31 WHERE jsonb_path_exists(doc, '\$[*] ? (@.s != \"gift\")')"
 	check "a minor 4 index survives the 3.1 SQL upgrade with exact JSON null answers" test "$(q life upg31 "SET sift.enable_agg = on" "$KINDQ" | tail -n 1)" == "$(q life upg31 "SET sift.enable_agg = off" "$KINDQ" | tail -n 1)"
 	q life upg31 "REINDEX INDEX kinds31_col" >/dev/null
-	check "REINDEX after the upgrade writes complete kinds in minor 6" test "$(q life upg31 "SELECT min(format) FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == 6
+	check "REINDEX after the upgrade writes complete kinds (in minor 12, with the sections that are on by default)" test "$(q life upg31 "SELECT min(format) FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == 12
 	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
+	# the 3.2 scripts are the released ones: the functions of 3.3 come with 3.2--3.3.sql and pg_sift--3.3.sql only
+	NEWFN="SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
+		AND proname IN ('col_refresh', 'col_clustering', 'stats', 'stats_reset', 'col_rollup_misses', 'explain_why', 'upgrade_commands')"
+	check "a fresh 3.2 install has none of the functions added in 3.3" test "$(q life fresh32 "$NEWFN")" == ""
+	# the last step of the chain names the index of minor 4 that nothing rewrote, not the one the REINDEX above rewrote
+	upd=$(LC_ALL=C q life upg31 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	check "the 3.1 to 3.3 update prints the REINDEX of an index written at minor 4 with JSON paths" grep -qF "REINDEX INDEX CONCURRENTLY public.kinds31_old;" <<<"$upd"
+	check "the update does not list the index that was reindexed" test "$(grep -c kinds31_col <<<"$upd")" == 0
+	check "3.1 updated to 3.3 has the objects of a fresh 3.3 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh33 "$MEMBERS")"
+	q life upg32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE items (id int, kind int, val int)" \
+		"INSERT INTO items SELECT g, g % 5, g FROM generate_series(1, 5000) g" "SET sift.col_format_minor = 6" "CREATE INDEX items_col ON items USING sift_col (id, kind, val)" \
+		"SELECT sift.col_promote('items_col')" "CREATE INDEX items_late ON items USING sift_col (id, kind, val)" \
+		"ALTER INDEX items_late SET (key_columns = 'kind')" "CREATE TABLE tbl32 (id int, at timestamp) USING sift_table" \
+		"INSERT INTO tbl32 SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32" >/dev/null
+	q life upg32 "CREATE TABLE tbl32_new (id int, at timestamp) USING sift_table" \
+		"INSERT INTO tbl32_new SELECT g, timestamp '2026-01-01' + g * interval '1 hour' FROM generate_series(1, 3000) g" "VACUUM tbl32_new" >/dev/null
+	upd=$(LC_ALL=C q life upg32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	check "the 3.2 to 3.3 update warns with the REINDEX of the index whose option came after its units" grep -qF "REINDEX INDEX CONCURRENTLY public.items_late;" <<<"$upd"
+	check "the update lists the index without options: the units of 3.2 lack cube_minmax and superunit, which are on by default" grep -qF "REINDEX INDEX CONCURRENTLY public.items_col;" <<<"$upd"
+	check "the printed command runs" q life upg32 "REINDEX INDEX CONCURRENTLY public.items_late"
+	check "the update names the sift_table written without calendar cells, with a VACUUM FULL, and not the one written by this library" test \
+		"$(grep -c 'VACUUM FULL public.tbl32;' <<<"$upd")/$(grep -c 'public.tbl32_new;' <<<"$upd")" == 1/0
+	q life upg32 "VACUUM FULL public.tbl32" >/dev/null
+	check "after the VACUUM FULL the table is in column format 8 and no longer listed" test "$(q life upg32 "SELECT (SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32') WHERE kind = 'columns') || ':' || \
+		(SELECT count(*) FROM sift.upgrade_commands() WHERE kind = 'rewrite')")" == 8:0
+	check "a VACUUM FULL under sift.col_format_minor = 6 writes format 4" test "$(q life upg32 "SET sift.col_format_minor = 6" "VACUUM FULL tbl32_new" \
+		"SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32_new') WHERE kind = 'columns'")" == 4
+	check "3.2 updated to 3.3 has the objects of a fresh 3.3 install" test "$(q life upg32 "$MEMBERS")" == "$(q life fresh33 "$MEMBERS")"
+	# the schema is made by the server from the control file and is not a member of the extension (ALTER EXTENSION ADD SCHEMA refuses it), as in 3.2:
+	# DROP EXTENSION empties it and keeps its privileges, and CREATE EXTENSION gives the objects and privileges of a fresh install again
+	ACLS="SELECT string_agg(x, ' ' ORDER BY x) FROM (SELECT 'schema ' || coalesce(nspacl::text, '') x FROM pg_namespace WHERE nspname = 'sift'
+		UNION ALL SELECT 'relation ' || oid::regclass || ' ' || relacl FROM pg_class WHERE relnamespace = 'sift'::regnamespace AND relacl IS NOT NULL
+		UNION ALL SELECT 'function ' || oid::regprocedure || ' ' || proacl FROM pg_proc WHERE pronamespace = 'sift'::regnamespace AND proacl IS NOT NULL) s"
+	check "the privileges of the schema sift and its objects after each update path are those of a fresh 3.3 install" test "$(for d in upg upg31 upg32; do q life $d "$ACLS"; done | sort -u)" == "$(q life fresh33 "$ACLS")"
+	check "a fresh 3.3 install gives PUBLIC USAGE on the schema sift" test "$(q life fresh33 "SELECT has_schema_privilege('public', 'sift', 'USAGE')")" == t
+	q life postgres "CREATE DATABASE again33" >/dev/null
+	q life again33 "CREATE EXTENSION pg_sift" >/dev/null
+	again_members=$(q life again33 "$MEMBERS"); again_acls=$(q life again33 "$ACLS")
+	q life again33 "DROP EXTENSION pg_sift" >/dev/null
+	check "DROP EXTENSION leaves the schema sift empty" test "$(q life again33 "SELECT (SELECT count(*) FROM pg_namespace WHERE nspname = 'sift') || '/' || (SELECT count(*) FROM pg_class WHERE relnamespace = 'sift'::regnamespace) || '/' || (SELECT count(*) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace)")" == 1/0/0
+	q life again33 "REVOKE USAGE ON SCHEMA sift FROM PUBLIC" "CREATE EXTENSION pg_sift" >/dev/null
+	check "CREATE EXTENSION after DROP EXTENSION gives the objects and privileges of a fresh install, also when PUBLIC lost the schema meanwhile" test "$(q life again33 "$MEMBERS")|$(q life again33 "$ACLS")" == "$again_members|$again_acls"
+	check "the functions added in 3.3 exist after a fresh 3.3 install and after each update path" test "$(for d in fresh33 upg upg31 upg32; do q life $d "$NEWFN"; done | sort -u)" == "col_clustering,col_refresh,col_rollup_misses,explain_why,stats,stats_reset,upgrade_commands"
+	check "the functions added in 3.3 run on an index written before the update" test "$(q life upg32 "SELECT sift.stats_reset()" \
+		"SELECT remaining FROM sift.col_refresh('items_col', 0)" "SELECT count(*) > 0 FROM sift.col_clustering('items_col')" \
+		"SELECT count(*) >= 0 FROM sift.stats()" "SELECT count(*) >= 0 FROM sift.col_rollup_misses()" \
+		"SELECT count(*) > 0 FROM sift.explain_why('SELECT kind, count(*) FROM items GROUP BY 1')" | tr -d '\n')" == "1tttt"   # remaining 1: the segment of an index written before the update lacks the sections that are on by default
+	# 22 indexes: the first 20 commands and the count of the rest; an index that another session holds is never waited for
+	q life postgres "CREATE DATABASE cap32" "CREATE DATABASE lock32" >/dev/null
+	q life cap32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
+		"SET sift.col_format_minor = 6" "DO \$\$ BEGIN FOR i IN 1..22 LOOP EXECUTE format('CREATE INDEX f_%s ON f USING sift_col (id, g)', i); EXECUTE format('ALTER INDEX f_%s SET (key_columns = ''g'')', i); END LOOP; END \$\$" >/dev/null
+	upd=$(LC_ALL=C q life cap32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	check "the update lists 20 commands" test "$(grep -c 'REINDEX INDEX CONCURRENTLY' <<<"$upd")" == 20
+	check "the update counts the rest" grep -qx "and 2 more" <<<"$upd"
+	q life postgres "CREATE DATABASE none32" >/dev/null
+	q life none32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
+		"CREATE INDEX f_1 ON f USING sift_col (id, g)" >/dev/null
+	upd32=$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
+	check "an update with nothing to do says so, and that a 3.2 library cannot read what 3.3 writes next" test "$(grep -cF -e "nothing to REINDEX or rewrite" -e "a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6" <<<"$upd32")" == 2
+	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
+		"SET sift.col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (key_columns = 'g')" >/dev/null
+	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
+	for _ in $(seq 100); do
+		[[ $(q life lock32 "SELECT count(*) FROM pg_locks WHERE locktype = 'relation' AND mode = 'AccessExclusiveLock' AND granted AND relation = 'f_1'::regclass") != 0 ]] && break
+		sleep 0.1
+	done
+	upd=$(LC_ALL=C q life lock32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1); rc=$?
+	q life lock32 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lock32' AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null; wait
+	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for what to REINDEX or rewrite did not run' <<<"$upd")/$(q life lock32 \
+		"SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 0/1/3.3
+	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands()")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
-	check "the rollup refresh views exist after a fresh 3.2 install" test "$(q life fresh32 "$ROLLUPSQL")" == t
-	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.2" test "$(q life upg "$ROLLUPSQL")" == t
-	check "sift.facet_counts and sift.field_query exist and answer after ALTER EXTENSION UPDATE 3.0 to 3.2" test "$(q life upg \
+	check "the rollup refresh views exist after a fresh 3.3 install" test "$(q life fresh33 "$ROLLUPSQL")" == t
+	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to 3.3" test "$(q life upg "$ROLLUPSQL")" == t
+	check "sift.facet_counts and sift.field_query exist and answer after ALTER EXTENSION UPDATE 3.0 to 3.3" test "$(q life upg \
 		"SELECT (SELECT string_agg(value || ':' || count, ',' ORDER BY value) FROM sift.facet_counts('docs', 'body', 'gamma', '[{\"name\": \"k\", \"expr\": \"id % 5\"}]'))
 			= (SELECT string_agg(k || ':' || c, ',' ORDER BY k) FROM (SELECT (id % 5)::text k, count(*) c FROM docs WHERE body @@> 'gamma' GROUP BY 1) g)
 			AND sift.field_query('gamma', 'body') IS NOT NULL")" == t
@@ -172,6 +249,88 @@ if (( PG_MAJOR >= 18 )); then
 	COLOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$COLQ" | tail -n 1)
 	check "the index with minor 3 and minor 4 segments verifies and answers the same" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
+	# minor 7 segments (the cube also holds min and max; on by default since 3.3) join an index of minor 3 segments: the units written before scan, the others answer, the results are the heap's
+	q life upg "CREATE TABLE colm (id int, grp int, v numeric(10,2))" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX colm_col ON colm USING sift_col (id, grp, v) WITH (superunit = 0)" "RESET sift.col_format_minor" \
+		"ALTER INDEX colm_col SET (cube_minmax = true)" "INSERT INTO colm SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('colm_col')" >/dev/null
+	MMQ="SELECT string_agg(grp || ':' || lo || ':' || hi, ',' ORDER BY grp) FROM (SELECT grp, min(v) lo, max(v) hi FROM colm GROUP BY grp) g"
+	MMOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$MMQ" | tail -n 1)
+	check "an index with minor 3 and minor 7 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('colm_col') WHERE kind = 'immutable'")" == 3,7
+	check "the index with minor 3 and minor 7 segments verifies and answers min and max as the heap" test "$(q life upg "SELECT sift.col_verify('colm_col', true)" \
+		"SET sift.enable_agg = on" "$MMQ" | tail -n 1)" == "$MMOFF"
+	# a sift_table with a timestamp column written as minor 3 takes the writes of the default setting (the month of the column is a dim of the cube): the units written before scan, the others answer, the results are the plain plan's
+	q life upg "SET sift.col_format_minor = 3" "CREATE TABLE tblm (id int, ts timestamp, v numeric(10,2), d date, tz timestamptz) USING sift_table" \
+		"INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(1, 30000) g" "VACUUM tblm" >/dev/null
+	q life upg "INSERT INTO tblm SELECT g, timestamp '2020-01-01' + g * interval '1 hour', g % 1000 / 8.0, date '2020-01-01' + g / 24, timestamptz '2020-01-01+00' + g * interval '1 hour' FROM generate_series(30001, 60000) g" "VACUUM tblm" >/dev/null
+	MONQ="SELECT string_agg(m || ':' || n || ':' || s, ',' ORDER BY m) FROM (SELECT date_trunc('month', ts)::date m, count(*) n, sum(v) s FROM tblm GROUP BY 1) g"
+	MONOFF=$(q life upg "SET sift.enable_agg = off" "$MONQ" | tail -n 1)
+	CALQ="SELECT string_agg(y || ':' || n || ':' || s, ',' ORDER BY y) FROM (SELECT extract(isoyear FROM d) y, count(*) n, sum(v) s FROM tblm WHERE d >= '2020-03-01' AND d < '2025-03-01' GROUP BY 1) g"
+	CALOFF=$(q life upg "SET sift.enable_agg = off" "$CALQ" | tail -n 1)
+	TZQ="SELECT string_agg(m || ':' || n, ',' ORDER BY m) FROM (SELECT date_trunc('quarter', tz AT TIME ZONE 'UTC')::date m, count(*) n FROM tblm WHERE tz >= '2021-01-01+00' GROUP BY 1) g"
+	TZOFF=$(q life upg "SET sift.enable_agg = off" "$TZQ" | tail -n 1)
+	check "a sift_table with minor 3 and minor 8 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.table_segments('tblm') WHERE kind = 'columns'")" == 3,8
+	check "the sift_table with minor 3 and minor 8 segments answers the months as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the ISO years of a date range as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" | tail -n 1)" == "$CALOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the UTC quarters of a timestamptz as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$TZQ" | tail -n 1)" == "$TZOFF"
+	# minor 9 segments (the rollup of the rows; opt-in) join an index of minor 3 and minor 7 segments: the units written before scan, the others answer, the results are the heap's
+	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v) WITH (superunit = 0)" "RESET sift.col_format_minor" \
+		"ALTER INDEX rowr_col SET (cube_minmax = true)" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(20001, 30000) g" \
+		"SELECT sift.col_promote('rowr_col')" "ALTER INDEX rowr_col SET (rollup_dims = 'a, b')" \
+		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(30001, 40000) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
+	RRQ="SELECT string_agg(a || ':' || b || ':' || n || ':' || s, ',' ORDER BY a, b) FROM (SELECT a, b, count(*) n, sum(v) s FROM rowr GROUP BY a, b) g"
+	RROFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$RRQ" | tail -n 1)
+	check "an index with minor 3, minor 7 and minor 9 segments" test "$(q life upg "SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) FROM sift.col_segments('rowr_col') WHERE kind = 'immutable'")" == 3,7,9
+	check "the index with minor 3, 7 and 9 segments verifies and answers the two-key group as the heap" test "$(q life upg "SELECT sift.col_verify('rowr_col', true)" \
+		"SET sift.enable_agg = on" "$RRQ" | tail -n 1)" == "$RROFF"
+	# minor 10 segments (the small-set summary of a bigint leaf; opt-in) join an index of minor 3 segments: the units written before are read, the others skip by their summary, the results are the heap's
+	q life upg "CREATE TABLE cols8 (id int, grp bigint, v numeric(10,2))" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols8_col ON cols8 USING sift_col (id, grp, v) WITH (superunit = 0)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols8_col SET (key_columns = 'grp')" "INSERT INTO cols8 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols8_col')" >/dev/null
+	S8Q="SELECT count(*) || ':' || sum(v) FROM cols8 WHERE grp = 7919"
+	S8OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S8Q" | tail -n 1)
+	check "an index with minor 3 and minor 10 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols8_col') WHERE kind = 'immutable') x")" == 3,10
+	check "the index with minor 3 and minor 10 segments verifies and answers an equality as the heap" test "$(q life upg "SELECT sift.col_verify('cols8_col', true)" \
+		"SET sift.enable_agg = on" "$S8Q" | tail -n 1)" == "$S8OFF"
+	# minor 12 segments (a summary of each group of units; on by default since 3.3) join an index of minor 3 segments: the groups answer, the units written before are read one by one, the results are the heap's
+	q life upg "CREATE TABLE cols (id int, grp int, v numeric(10,2), pad text)" "ALTER TABLE cols ALTER COLUMN pad SET STORAGE PLAIN" \
+		"INSERT INTO cols SELECT g, g % 9, g % 1000 / 8.0, repeat('p', 1500) FROM generate_series(1, 12000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols_col ON cols USING sift_col (id, grp, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols_col SET (superunit = 4)" "INSERT INTO cols SELECT g, g % 9, g % 1000 / 8.0, repeat('p', 1500) FROM generate_series(12001, 24000) g" \
+		"VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) cols" "SELECT sift.col_promote('cols_col')" >/dev/null
+	SUQ="SELECT string_agg(grp || ':' || n || ':' || s, ',' ORDER BY grp) FROM (SELECT grp, count(*) n, sum(v) s FROM cols GROUP BY grp) g"
+	SUOFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$SUQ" | tail -n 1)
+	check "an index with minor 3 and minor 12 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols_col') WHERE kind = 'immutable') x")" == 3,12
+	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
+		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
+	# minor 13 segments (the sorted run of a leaf; opt-in) join an index of minor 3 segments: the units written before are read whole, the others by their run, the results are the heap's; REINDEX gives every unit its run
+	q life upg "CREATE TABLE cols13 (id int, grp int, v numeric(10,2))" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols13_col ON cols13 USING sift_col (id, grp, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols13_col SET (order_columns = 'grp, v')" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols13_col')" >/dev/null
+	S13Q="SELECT string_agg(id || ':' || grp, ',' ORDER BY grp DESC, id) FROM (SELECT id, grp FROM cols13 ORDER BY grp DESC, id LIMIT 300) x"
+	S13OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S13Q" | tail -n 1)
+	check "an index with minor 3 and minor 13 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")" == 3,13
+	check "the index with minor 3 and minor 13 segments verifies and answers an ORDER BY .. LIMIT as the heap" test "$(q life upg "SELECT sift.col_verify('cols13_col', true)" \
+		"SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "$S13OFF"
+	q life upg "REINDEX INDEX cols13_col" >/dev/null
+	check "after REINDEX every segment of the index is minor 13 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")/$(q life upg \
+		"SELECT sift.col_verify('cols13_col', true)" "SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "13/$S13OFF"
+	# minor 15 segments (the key list or bitmap of an int leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
+	q life upg "CREATE TABLE cols15 (id int, k int, v numeric(10,2))" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols15_col ON cols15 USING sift_col (id, k, v)" "RESET sift.col_format_minor" \
+		"ALTER INDEX cols15_col SET (key_columns = 'k')" "INSERT INTO cols15 SELECT g, g % 5000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
+		"SELECT sift.col_promote('cols15_col')" >/dev/null
+	S15Q="SELECT count(DISTINCT k), count(*), sum(v) FROM cols15"
+	S15OFF=$(q life upg "SET sift.enable_agg = off" "SET sift.enable_col = off" "$S15Q" | tail -n 1)
+	check "an index with minor 3 and minor 15 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")" == 3,15
+	check "the index with minor 3 and minor 15 segments verifies and answers a count(DISTINCT) as the heap" test "$(q life upg "SELECT sift.col_verify('cols15_col', true)" \
+		"SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "$S15OFF"
+	q life upg "REINDEX INDEX cols15_col" >/dev/null
+	check "after REINDEX every segment of the index is minor 15 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols15_col') WHERE kind = 'immutable') x")/$(q life upg \
+		"SELECT sift.col_verify('cols15_col', true)" "SET sift.enable_agg = on" "$S15Q" | tail -n 1)" == "15/$S15OFF"
 	# the sift_table written by 3.0 takes the writes of 3.1 (column minor 4 groups beside its minor 3 ones)
 	q life upg "INSERT INTO tbl SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" "VACUUM tbl" >/dev/null
 	# paths declared on the updated extension: the rewrite writes them, and the query answers as the jsonb column does
@@ -191,12 +350,14 @@ if (( PG_MAJOR >= 18 )); then
 		"SELECT fp() = seq() AND (SELECT count(*) FROM docs WHERE body @@> 'afterupdate') = 1")" == t
 	check "the mixed column index survives the crash" test "$(q life upg "SELECT sift.col_verify('colt_col', true)" \
 		"SET sift.enable_agg = on" "$COLQ" | tail -n 1)" == "$COLOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the months as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$MONQ" | tail -n 1)" == "$MONOFF"
+	check "the sift_table with minor 3 and minor 8 segments answers the date range and the UTC quarters as before after the crash" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$CALQ" "$TZQ" | tail -n 2 | tr '\n' '|')" == "$CALOFF|$TZOFF|"
 	q life upg "SELECT sift.merge('docs_idx', true)" >/dev/null
 	check "a merge rewrites the mixed index in format 3 (verified, results equal to a scan)" \
 		test "$(formats)$(vq life upg "SELECT fp() = seq()")" == 3t
 	q life upg "DROP EXTENSION pg_sift_test" >/dev/null
 else
-	skip 29 "extension_control_path needs PostgreSQL 18"
+	skip "$UPG_CHECKS" "extension_control_path needs PostgreSQL 18"
 fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with

@@ -8,16 +8,28 @@
 #include "access/relation.h"
 #include "access/stratnum.h"
 #include "access/tableam.h"
+#include "catalog/pg_enum.h"
 #include "catalog/pg_opfamily_d.h"
 #include "executor/executor.h"
+#include "executor/nodeHash.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "utils/builtins.h"
+#include "utils/catcache.h"
+#include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
+#include "utils/numeric.h"
 #include "utils/tuplesort.h"
+#include "utils/uuid.h"
+#include "utils/varlena.h"
 
+#include "agg/part.h"
 #include "agg/topn.h"
 #include "core/cmp.h"
 #include "core/compat.h"
@@ -27,6 +39,9 @@
 /* Superblocks whose zones tell whether the sort column follows the table */
 #define TOPN_PROBES		6
 
+bool		sift_topn_zone_keys = true;
+bool		sift_topn_runs = true;
+
 bool
 sift_topn_key_ok(const SiftSrcLeaf *lf)
 {
@@ -34,51 +49,111 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		return false;
 	switch (lf->typid)
 	{
+		case BOOLOID:
 		case INT2OID:
 		case INT4OID:
 		case DATEOID:
 			return lf->vtype == SCV_I32 || lf->vtype == SCV_I64;
+		case NUMERICOID:
+			/* a wide numeric is read through the dictionary of its datums (agg/wide.c), a NaN among them, which numeric_cmp sorts last */
+			return lf->vtype == SCV_I64 || (lf->wide && lf->vtype == SCV_CODE);
+		case INTERVALOID:
+			/* read through the dictionary of its datums (agg/wide.c); interval_cmp compares the total, so 1 mon and 30 days tie */
+			return lf->wide && lf->vtype == SCV_CODE;
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
-		case NUMERICOID:
+		case CASHOID:
+		case TIMEOID:
 			return lf->vtype == SCV_I64;
 		case FLOAT4OID:
 		case FLOAT8OID:
 			return lf->vtype == SCV_F64;
+		case TEXTOID:
+		case VARCHAROID:
+		case UUIDOID:
+		case BYTEAOID:
+		case INETOID:
+			return lf->vtype == SCV_CODE;
 		default:
-			return false;
+			/* an enum is the vector of the OIDs of its values: the scan ranks them in the order of the type */
+			return type_is_enum(lf->typid) && lf->vtype == SCV_I32 && !lf->wide;
 	}
 }
 
 Node *
-sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, int nout, const int *attno, Node *count, Node *offset)
+sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset)
 {
 	List	   *l = list_make1_int(nkey);
 
 	for (int j = 0; j < nkey; j++)
+	{
 		l = lappend_int(lappend_int(l, leaf[j]), (desc[j] ? 1 : 0) | (nulls_first[j] ? 2 : 0));
+		l = lappend_int(lappend_int(lappend_int(l, (int) sortop[j]), (int) cmp[j]), (int) collid[j]);
+		l = lappend_int(lappend_int(lappend_int(lappend_int(l, xf[j].kind), (int) (uint32) xf[j].c), (int) (uint32) ((uint64) xf[j].c >> 32)), (int) xf[j].coll);
+	}
 	l = lappend_int(l, nout);
 	for (int c = 0; c < nout; c++)
 		l = lappend_int(l, attno[c]);
-	return (Node *) list_make3(l, count, offset);
+	l = lappend_int(l, flags);
+	return (Node *) list_make4(l, count, offset, exprs);
 }
 
 #define SPEC_KEYS(spec)		((List *) linitial((List *) (spec)))
 #define SPEC_COUNT(spec)	((Node *) lsecond((List *) (spec)))
 #define SPEC_OFFSET(spec)	((Node *) lthird((List *) (spec)))
+#define SPEC_EXPRS(spec)	((List *) lfourth((List *) (spec)))
 
-/* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants */
+/* The rows the scan holds for LIMIT and OFFSET, as EXPLAIN shows them: their sum when they are constants; ", sorted" when the plan sorts every row that passes; ", stored dictionary" when the first key is read as the codes of the stored dictionary */
 char *
 sift_topn_limit_text(Node *spec)
 {
 	Node	   *count = SPEC_COUNT(spec),
 			   *offset = SPEC_OFFSET(spec);
+	int			flags = llast_int(SPEC_KEYS(spec));
+	const char *how = psprintf("%s%s", (flags & TOPN_SORT) ? ", sorted" : "", (flags & TOPN_RAWKEY) ? ", stored dictionary" : "");
+	int64		n;
 
-	if (IsA(count, Const) && (offset == NULL || IsA(offset, Const)))
-		return psprintf("%d", (int) (DatumGetInt64(((Const *) count)->constvalue) + (offset ? DatumGetInt64(((Const *) offset)->constvalue) : 0)));
-	return pstrdup("by parameter");
+	if (IsA(count, Const) && (offset == NULL || IsA(offset, Const)) &&
+		!pg_add_s64_overflow(DatumGetInt64(((Const *) count)->constvalue), offset ? DatumGetInt64(((Const *) offset)->constvalue) : 0, &n))
+		return psprintf(INT64_FORMAT "%s", n, how);
+	return psprintf("by parameter%s", how);
 }
+
+/* The bytes of a dictionary entry, copied out of the unit: what a heap entry holds for a key of byte strings (kept at int64 in TopEnt.k) */
+typedef struct KeyBlob
+{
+	uint32		len;
+	char		data[FLEXIBLE_ARRAY_MEMBER];
+} KeyBlob;
+
+/*
+ * A sort expression: PostgreSQL's own ExprState over a virtual row of the leaves it reads, evaluated for every row of a unit that passes (the normal plan
+ * evaluates a sort expression for each of them, so an error is raised for the same rows), its results kept as a vector of the type the key sorts by
+ */
+typedef struct TopIn
+{
+	int			leaf;
+	Oid			typid;
+	SiftSrcVecType vtype;
+	int			scale;			/* numeric leaf: digits after the point */
+	const SiftSrcVec *v;		/* the unit's */
+	Datum	   *memo;			/* a leaf of strings: the datum of each code of the unit's dictionary, once built */
+	bool	   *built;
+} TopIn;
+
+typedef struct TopExpr
+{
+	ExprState  *state;
+	ExprContext *econtext;
+	TupleTableSlot *slot;
+	int			nin;
+	TopIn	   *in;
+	Oid			rtype;
+} TopExpr;
+
+static SiftSrcVecType expr_vtype(Oid typid);
+static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt);
 
 typedef struct TopKey
 {
@@ -86,7 +161,43 @@ typedef struct TopKey
 	bool		desc;
 	bool		nulls_first;
 	SiftSrcVecType vtype;
+	/* a key of byte strings (text, uuid, bytea, inet; vtype SCV_CODE): an entry holds a KeyBlob of the dictionary entry, compared as PostgreSQL's sort does */
+	bool		blob;
+	uint8		bkind;			/* BK_*: how two entries compare */
+	Oid			typid;			/* the type of the column of the sort when the rows go to a tuplesort */
+	Oid			sortop;
+	Oid			collid;
+	FmgrInfo   *cmp;			/* BK_FMGR: the btree comparison function of the type */
+	int16		typlen;			/* BK_FMGR: the length of the type, -1 for a varlena (an interval is 16 bytes, padded in the dictionary) */
+	int			xk;				/* TXK_*: what the key does to its leaf's value (agg/topn.h) */
+	int64		xc;				/* TXK_COALESCE: the constant */
+	Oid			xcoll;			/* TXK_LOWER, TXK_UPPER: the collation of the call */
+	FmgrInfo   *xfn;
+	struct TopExpr *x;			/* TXK_EXPR: the evaluator of the sort expression */
+	SiftSrcVec	xv;				/* ... its result for the rows of the unit */
+	KeyBlob   **xmemo;			/* TXK_LOWER, TXK_UPPER: the result for each code of the dictionary (xid, xbytes, xn) once it is known (NULL: not yet) */
+	const void *xid;
+	const char *xbytes;
+	uint32		xn;
+	/* a key of an enum: the OIDs of its values (ascending) and the position of each in the order of the type, which is the key */
+	uint32		nenum;
+	Oid		   *eoid;
+	uint32	   *erank;
 } TopKey;
+
+#define BK_TEXT		0			/* the bytes of a text: varstr_cmp under the collation of the query (byte order under C, strcoll then byte order else) */
+#define BK_UUID		1			/* 16 bytes: memcmp, as uuid_cmp */
+#define BK_BYTEA	2			/* the varlena image: memcmp of the contents, then the length, as byteacmp */
+#define BK_FMGR		3			/* any other datum image (inet): the type's own comparison function, on an aligned copy */
+
+#define KEY_BLOB(v)		((const KeyBlob *) (uintptr_t) (v))
+
+/* A key's value as a position in the sort order: NULLs in front of or behind the values, the values by the direction (class -1: no bound) */
+typedef struct Rank
+{
+	int			cls;
+	uint64		ord;
+} Rank;
 
 typedef struct TopEnt
 {
@@ -95,20 +206,69 @@ typedef struct TopEnt
 	uint32		row;
 	uint8		nul;			/* bit j: key j is NULL */
 	ItemPointerData tid;
+	uint16		part;			/* the partition of the row's heap (a partitioned table), else 0 */
 } TopEnt;
+
+/* The rows of a partition are fetched through its own slot and index fetch, its columns by the attribute numbers of the partition */
+typedef struct TopFetch
+{
+	TupleTableSlot *slot;
+	IndexFetchTableData *fetch;
+	int		   *attno;
+} TopFetch;
+
+/*
+ * The order code of a dictionary of a first key that compares as bytes (text under C, uuid, bytea): ord[code] puts the entries in the key's order, so that a
+ * row is compared with the bar as two integers. exact: ord is 1 + the position of the entry in byte order (no two codes tie); else it is the first 8 bytes of the
+ * entry, big endian, and entries that share them tie and are compared as bytes. A prefix is made once the rows compared with the dictionary as bytes reach
+ * ORD_PREFIX_ROWS of its entries (making it costs as many compares: the table of ranks as well as the prefixes), and dropped for the dictionary when more than a quarter of the comparisons of a unit
+ * tie. An exact code is made when the dictionary has its order (SiftSrcDict.order): stored, or sorted after the scans of a backend reached a few times its
+ * entries. A dictionary of more than ORD_MAX_ENTRIES entries has none.
+ */
+#define ORD_CACHE		8
+#define ORD_MAX_ENTRIES	(1 << 20)
+#define ORD_PREFIX_ROWS	0.5
+#define ORD_FORCE_ROWS	1000		/* rows per entry that make a dictionary sort at once (cdict_order) */
+
+typedef struct OrdCode
+{
+	const void *id;
+	const char *bytes;
+	uint32		n;
+	uint64		rows;			/* rows compared with the dictionary as bytes so far */
+	uint64	   *ord;			/* NULL: not made */
+	bool		exact;
+	bool		useless;		/* a prefix that most rows tie on: the rows are compared as bytes */
+} OrdCode;
 
 struct SiftTopN
 {
 	int			limit;			/* rows the heap holds; 0: none wanted (a LIMIT that leaves nothing) */
-	Tuplesortstate *sort;		/* all the rows that pass, when there is no bound the heap can hold (NULL, past the cap): sorted by the keys and the TID */
+	bool		totals;			/* the aggregates over every row that passes are computed in this scan (TOPN_TOTALS): all units are read */
+	bool		all;			/* no bound the heap can hold (NULL, past the cap, more keys): every row that passes is kept, sorted by the keys and the TID at the end */
+	int64	   *mem;			/* ... in memory while they fit work_mem: nkey keys, the NULL flags (a bit for each key), the TID's number, for each row */
+	int64		nmem;
+	int64		capmem;
+	int			stride;			/* int64s of a row of mem */
+	Tuplesortstate *sort;		/* ... else a tuplesort of them (work_mem, then disk) */
 	TupleTableSlot *sin,
 			   *sout;			/* the rows going in and out of sort: the keys, then the TID as a number */
 	int64		nsort;
 	int			pos;			/* the next row of res */
 	int			nkey;
-	TopKey		key[SIFT_TOPN_MAX_KEYS];
+	TopKey	   *key;
+	int			nblob;			/* keys of byte strings */
+	int			nexpr;			/* keys that are sort expressions */
+	MemoryContext ucxt;			/* the copies of the unit's entries that the rows of one unit hold (reset at the next unit) */
+	MemoryContext ocxt;			/* the order codes of the dictionaries (unit_ord) */
+	struct OrdCode *oc;			/* ORD_CACHE of them */
+	int			oc_next;
+	int64		nord[3];		/* units compared by an exact order code, by a prefix, as bytes */
+	int64		nties;			/* comparisons of the unit that a prefix could not decide */
 	int			nout;
 	int		   *attno;
+	int64		skip;			/* the first rows the Limit above throws away (OFFSET): given as rows of NULLs, not read from the heap */
+	int64		emitted;
 	TopEnt	   *heap;			/* the best rows so far, the worst at heap[0] */
 	int			n;
 	TopEnt	   *lh;				/* the best rows of the unit */
@@ -120,6 +280,16 @@ struct SiftTopN
 	TopEnt	   *ce;				/* the rows whose first key is not worse than the n-th of the unit's and of the heap */
 	uint32	   *cand;			/* the rows of ce */
 	uint32	   *rows;
+	int64	   *skey;			/* sort: the keys of the rows of a unit, nkey for each row, and whether each is NULL */
+	bool	   *snull;
+	uint32	   *rwin;			/* a window of a sorted run (sift_topn_unit) */
+	int			budget;			/* rows a unit gives in the first pass of a walk through sorted runs (0: all it can), sift_topn_run_budget */
+	bool		revisit;		/* the second pass: only the units the first left unfinished */
+	bool		yielded;		/* trunc[rpos] was given out and is not yet done */
+	struct RunTrunc *trunc;
+	int			ntrunc,
+				captrunc,
+				rpos;
 	ItemPointerData *tids;		/* the TIDs of the rows of a unit (sort), or of the heap rows of a unit */
 	TopEnt	   *res;			/* after sift_topn_finish: the heap in order */
 	/* the visit order */
@@ -135,15 +305,20 @@ struct SiftTopN
 		int64		best;
 	}			probe[TOPN_PROBES];
 	/* the walk (sift_topn_walk_*): the zone and the number of units of every superblock, and the superblocks by their best bound */
-	SiftSrcZone *wzone;
+	int			wkeys;				/* leading sort keys whose zones bound the walk */
+	Rank	   *wbound;			/* wkeys per superblock: the best rank its zone allows for that key */
 	uint32	   *wunits;
 	uint32	   *word;
 	uint32		wpos;
 	Snapshot	snap;
-	TupleTableSlot *fslot;
-	IndexFetchTableData *fetch;	/* the heap row of a TID: the version an index scan finds, along a HOT chain */
+	SiftSrcSource *src;
+	Relation	rel;			/* the table the rows are fetched from: partitioned, or the heap */
+	int			nfetch;			/* 1, or the partitions of a partitioned table: the fetches are made when a row of the partition is the first */
+	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
+	int64		nrun;			/* units read through their sorted run */
 	int64		fetched;
+	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
 };
 
 /* The value of a LIMIT or OFFSET expression of the plan, evaluated as the Limit node does when it starts */
@@ -155,18 +330,20 @@ eval_bound(Node *e, ExprContext *econtext, PlanState *parent, bool *isnull)
 
 /*
  * LIMIT + OFFSET, whatever the values the plan was made for: false when no heap can hold them (no limit, past the cap, an overflow).
- * A negative sum is a rows-wanted of zero: the Limit node above raises its error before it asks for a row.
+ * A negative sum is a rows-wanted of zero: the Limit node above raises its error before it asks for a row. *offset: the OFFSET (0 for NULL).
  */
 static bool
-bound_rows(Node *spec, ExprContext *econtext, PlanState *parent, int *rows)
+bound_rows(Node *spec, ExprContext *econtext, PlanState *parent, int *rows, int64 *offset)
 {
 	bool		isnull,
 				offnull = true;
 	int64		count = eval_bound(SPEC_COUNT(spec), econtext, parent, &isnull),
-				offset = SPEC_OFFSET(spec) ? eval_bound(SPEC_OFFSET(spec), econtext, parent, &offnull) : 0,
 				n;
 
-	if (isnull || pg_add_s64_overflow(count, offnull ? 0 : offset, &n) || n > SIFT_TOPN_MAX_ROWS)
+	*offset = SPEC_OFFSET(spec) ? eval_bound(SPEC_OFFSET(spec), econtext, parent, &offnull) : 0;
+	if (offnull)
+		*offset = 0;
+	if (isnull || pg_add_s64_overflow(count, *offset, &n) || n > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS))
 		return false;
 	*rows = Max(n, 0);
 	return true;
@@ -178,18 +355,21 @@ sort_begin(SiftTopN *t)
 {
 	int			n = t->nkey + 1;
 	TupleDesc	desc = CreateTemplateTupleDesc(n);
-	AttrNumber	att[SIFT_TOPN_MAX_KEYS + 1];
-	Oid			op[SIFT_TOPN_MAX_KEYS + 1],
-				coll[SIFT_TOPN_MAX_KEYS + 1] = {InvalidOid};
-	bool		nf[SIFT_TOPN_MAX_KEYS + 1];
+	AttrNumber *att = palloc(n * sizeof(AttrNumber));
+	Oid		   *op = palloc(n * sizeof(Oid)),
+			   *coll = palloc0(n * sizeof(Oid));
+	bool	   *nf = palloc(n * sizeof(bool));
 
 	for (int j = 0; j < n; j++)
 	{
 		bool		key = j < t->nkey;
+		bool		blob = key && t->key[j].blob;
 
-		TupleDescInitEntry(desc, j + 1, NULL, INT8OID, -1, 0);
+		TupleDescInitEntry(desc, j + 1, NULL, blob ? t->key[j].typid : INT8OID, -1, 0);
 		att[j] = j + 1;
-		op[j] = get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, key && t->key[j].desc ? BTGreaterStrategyNumber : BTLessStrategyNumber);
+		/* a key of byte strings sorts by the operator and collation of the query: the comparator of the heap plan itself */
+		op[j] = blob ? t->key[j].sortop : get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, key && t->key[j].desc ? BTGreaterStrategyNumber : BTLessStrategyNumber);
+		coll[j] = blob ? t->key[j].collid : InvalidOid;
 		nf[j] = key && t->key[j].nulls_first;
 	}
 	sift_tupdesc_finalize(desc);
@@ -198,30 +378,161 @@ sort_begin(SiftTopN *t)
 	return tuplesort_begin_heap(desc, n, att, op, coll, nf, work_mem, NULL, TUPLESORT_RANDOMACCESS);
 }
 
+/* The slot and the index fetch of a heap: of the partition part of a partitioned table, with the attribute numbers it has for the columns of the scan tuple (by the names of the table's) */
+static void
+fetch_begin(SiftTopN *t, int part)
+{
+	TopFetch   *f = &t->pf[part];
+	Relation	heap = t->rel;
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(t));
+
+	f->attno = t->attno;
+	if (heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		heap = sift_aggpart_heap(t->src, part);
+		f->attno = palloc(Max(t->nout, 1) * sizeof(int));
+		for (int c = 0; c < t->nout; c++)
+			f->attno[c] = get_attnum(RelationGetRelid(heap), get_attname(RelationGetRelid(t->rel), t->attno[c], false));
+	}
+	f->slot = table_slot_create(heap, NULL);
+	f->fetch = sift_table_index_fetch_begin(heap);
+	MemoryContextSwitchTo(old);
+}
+
+typedef struct EnumItem
+{
+	Oid			oid;
+	float4		order;
+	uint32		rank;
+} EnumItem;
+
+static int
+enum_by_order(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const EnumItem *) a)->order, ((const EnumItem *) b)->order);
+}
+
+static int
+enum_by_oid(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const EnumItem *) a)->oid, ((const EnumItem *) b)->oid);
+}
+
+/* The values of an enum in the order of the type (pg_enum.enumsortorder, which ALTER TYPE ... ADD VALUE BEFORE/AFTER changes without touching a row), read when the scan opens */
+static void
+enum_ranks(TopKey *k, Oid typid)
+{
+	CatCList   *list = SearchSysCacheList1(ENUMTYPOIDNAME, ObjectIdGetDatum(typid));
+	EnumItem   *it = palloc(Max(list->n_members, 1) * sizeof(EnumItem));
+
+	for (int i = 0; i < list->n_members; i++)
+	{
+		Form_pg_enum e = (Form_pg_enum) GETSTRUCT(&list->members[i]->tuple);
+
+		it[i] = (EnumItem) {.oid = e->oid, .order = e->enumsortorder};
+	}
+	qsort(it, list->n_members, sizeof(EnumItem), enum_by_order);
+	for (int i = 0; i < list->n_members; i++)
+		it[i].rank = i;
+	qsort(it, list->n_members, sizeof(EnumItem), enum_by_oid);
+	k->nenum = list->n_members;
+	k->eoid = palloc(Max(k->nenum, 1) * sizeof(Oid));
+	k->erank = palloc(Max(k->nenum, 1) * sizeof(uint32));
+	for (uint32 i = 0; i < k->nenum; i++)
+	{
+		k->eoid[i] = it[i].oid;
+		k->erank[i] = it[i].rank;
+	}
+	pfree(it);
+	ReleaseCatCacheList(list);
+}
+
 SiftTopN *
-sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
+sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftTopN   *t = palloc0(sizeof(SiftTopN));
 	List	   *l = SPEC_KEYS(spec);
 	int			i = 0;
 	bool		bounded;
+	int64		offset;
+	int			flags;
 
 	t->nkey = list_nth_int(l, i++);
+	t->key = palloc(t->nkey * sizeof(TopKey));
 	for (int j = 0; j < t->nkey; j++)
 	{
 		int			leaf = list_nth_int(l, i++),
 					fl = list_nth_int(l, i++);
+		Oid			sortop = (Oid) list_nth_int(l, i++),
+					cmp = (Oid) list_nth_int(l, i++),
+					collid = (Oid) list_nth_int(l, i++);
+		TopKey	   *k = &t->key[j];
+		int			xk = list_nth_int(l, i++);
+		uint32		xlo = (uint32) list_nth_int(l, i++),
+					xhi = (uint32) list_nth_int(l, i++);
+		Oid			xcoll = (Oid) list_nth_int(l, i++);
 
-		t->key[j] = (TopKey) {leaf, fl & 1, (fl & 2) != 0, lay->leaf[leaf].vtype};
+		*k = (TopKey) {.leaf = leaf, .desc = fl & 1, .nulls_first = (fl & 2) != 0, .vtype = leaf >= 0 ? lay->leaf[leaf].vtype : expr_vtype(xcoll),
+			.xk = xk, .xc = (int64) (((uint64) xhi << 32) | xlo), .xcoll = xcoll};
+		if (leaf >= 0 && xk == TXK_NONE && type_is_enum(lay->leaf[leaf].typid))
+			enum_ranks(k, lay->leaf[leaf].typid);
+		if (xk == TXK_EXPR)
+		{
+			k->x = expr_open(list_nth(SPEC_EXPRS(spec), (int) xlo), lay, xcoll, econtext, cxt);
+			t->nexpr++;
+		}
+		if (xk == TXK_LOWER || xk == TXK_UPPER)
+		{
+			k->xfn = palloc0(sizeof(FmgrInfo));
+			fmgr_info(xk == TXK_LOWER ? F_LOWER_TEXT : F_UPPER_TEXT, k->xfn);
+		}
+		if (k->vtype == SCV_CODE)
+		{
+			k->blob = true;
+			k->bkind = cmp == F_BTTEXTCMP ? BK_TEXT : cmp == F_UUID_CMP ? BK_UUID : cmp == F_BYTEACMP ? BK_BYTEA : BK_FMGR;
+			k->typid = k->bkind == BK_TEXT ? TEXTOID : leaf >= 0 ? lay->leaf[leaf].typid : xcoll;
+			k->sortop = sortop;
+			k->collid = collid;
+			if (k->bkind == BK_FMGR)
+			{
+				k->cmp = palloc0(sizeof(FmgrInfo));
+				fmgr_info(cmp, k->cmp);
+				k->typlen = get_typlen(k->typid);
+			}
+			t->nblob++;
+		}
 	}
+	if (t->nblob > 0 || t->nexpr > 0)
+		t->ucxt = AllocSetContextCreate(cxt, "sift top-N unit", ALLOCSET_DEFAULT_SIZES);
+	if (t->nblob > 0)
+		t->oc = palloc0(ORD_CACHE * sizeof(OrdCode));
+	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */
+	for (t->wkeys = 1; sift_topn_zone_keys && t->wkeys < t->nkey && t->key[t->wkeys].leaf >= 0 && (t->key[t->wkeys].vtype == SCV_I32 || t->key[t->wkeys].vtype == SCV_I64); t->wkeys++)
+		;
 	t->nout = list_nth_int(l, i++);
 	t->attno = palloc(Max(t->nout, 1) * sizeof(int));
 	for (int c = 0; c < t->nout; c++)
 		t->attno[c] = list_nth_int(l, i++);
-	bounded = bound_rows(spec, econtext, parent, &t->limit);
-	if (!bounded)
-		t->sort = sort_begin(t);
+	bounded = bound_rows(spec, econtext, parent, &t->limit, &offset);
+	/* a heap entry holds SIFT_TOPN_MAX_KEYS keys: more keys sort every row, as no bound does */
+	flags = list_nth_int(l, i++);
+	if ((flags & TOPN_SORT) || (t->nkey > sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && t->limit > 0))
+		bounded = false;
+	if (flags & TOPN_SKIP_OFFSET)
+		t->skip = offset;
+	t->all = !bounded;
+	t->totals = (flags & TOPN_TOTALS) != 0;
+	if (flags & TOPN_RAWKEY)
+		sift_colsrc_set_raw(src, t->key[0].leaf);
+	if (t->all && t->nblob > 0)
+		t->sort = sort_begin(t);		/* byte strings do not fit the array of integers: the tuplesort holds them, in memory up to work_mem */
+	else if (t->all)
+	{
+		t->stride = t->nkey + (t->nkey + 63) / 64 + 1;
+		t->mem = palloc(1024 * t->stride * sizeof(int64));
+		t->capmem = 1024;
+	}
 	else if (t->limit > 0)
 	{
 		t->heap = palloc(t->limit * sizeof(TopEnt));
@@ -230,8 +541,12 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 		t->tids = palloc(t->limit * sizeof(ItemPointerData));
 	}
 	t->snap = snapshot;
-	t->fslot = table_slot_create(heap, NULL);
-	t->fetch = sift_table_index_fetch_begin(heap);
+	t->src = src;
+	t->rel = heap;
+	t->nfetch = heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ? sift_aggpart_count(src) : 1;
+	t->pf = palloc0(t->nfetch * sizeof(TopFetch));
+	if (heap->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
+		fetch_begin(t, 0);
 	MemoryContextSwitchTo(old);
 	return t;
 }
@@ -239,22 +554,29 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, Relation heap, Snapshot sna
 void
 sift_topn_close(SiftTopN *t)
 {
-	if (t->fslot)
-		ExecDropSingleTupleTableSlot(t->fslot);
-	if (t->fetch)
-		table_index_fetch_end(t->fetch);
+	for (int i = 0; i < t->nfetch; i++)
+	{
+		if (t->pf[i].slot)
+			ExecDropSingleTupleTableSlot(t->pf[i].slot);
+		if (t->pf[i].fetch)
+			table_index_fetch_end(t->pf[i].fetch);
+	}
 	if (t->sort)
 	{
 		ExecDropSingleTupleTableSlot(t->sin);
 		ExecDropSingleTupleTableSlot(t->sout);
 		tuplesort_end(t->sort);
 	}
+	if (t->ucxt)
+		MemoryContextDelete(t->ucxt);
+	if (t->ocxt)
+		MemoryContextDelete(t->ocxt);
 }
 
 bool
 sift_topn_empty(const SiftTopN *t)
 {
-	return t->sort == NULL && t->limit == 0;
+	return !t->all && t->limit == 0;
 }
 
 int
@@ -275,6 +597,46 @@ sift_topn_fetched(const SiftTopN *t)
 	return t->fetched;
 }
 
+/* < 0, 0, > 0: the entry a sorts before, with or after b, ascending, as the type's btree comparison of the query's operator class says */
+static int
+bytes_cmp(const TopKey *k, const char *a, uint32 la, const char *b, uint32 lb)
+{
+	switch (k->bkind)
+	{
+		case BK_TEXT:
+			return varstr_cmp(a, la, b, lb, k->collid);
+		case BK_UUID:
+			return memcmp(a, b, 16);
+		case BK_BYTEA:
+			{
+				int			c = memcmp(a + VARHDRSZ, b + VARHDRSZ, Min(la, lb) - VARHDRSZ);
+
+				return c != 0 ? c : SIFT_CMP3(la, lb);
+			}
+		default:
+			{
+				union
+				{
+					char		c[64];
+					int64		align;
+				}			x,
+							y;
+				char	   *pa = la <= sizeof(x.c) ? x.c : palloc(la),
+						   *pb = lb <= sizeof(y.c) ? y.c : palloc(lb);
+				int			c;
+
+				memcpy(pa, a, la);
+				memcpy(pb, b, lb);
+				c = DatumGetInt32(FunctionCall2Coll(k->cmp, k->collid, PointerGetDatum(pa), PointerGetDatum(pb)));
+				if (pa != x.c)
+					pfree(pa);
+				if (pb != y.c)
+					pfree(pb);
+				return c;
+			}
+	}
+}
+
 /* < 0: a sorts before b by the first nk keys */
 static int
 key_cmp_n(const SiftTopN *t, const TopEnt *a, const TopEnt *b, int nk)
@@ -288,6 +650,16 @@ key_cmp_n(const SiftTopN *t, const TopEnt *a, const TopEnt *b, int nk)
 			return an == t->key[j].nulls_first ? -1 : 1;
 		if (an || a->k[j] == b->k[j])
 			continue;
+		if (t->key[j].blob)
+		{
+			const KeyBlob *x = KEY_BLOB(a->k[j]),
+					   *y = KEY_BLOB(b->k[j]);
+			int			c = bytes_cmp(&t->key[j], x->data, x->len, y->data, y->len);
+
+			if (c == 0)
+				continue;
+			return (c < 0) != t->key[j].desc ? -1 : 1;
+		}
 		return (a->k[j] < b->k[j]) != t->key[j].desc ? -1 : 1;
 	}
 	return 0;
@@ -357,16 +729,40 @@ heap_push(const SiftTopN *t, TopEnt *h, int *n, const TopEnt *e)
 	h[i] = *e;
 }
 
+/* the position of the enum value oid in the order of its type */
+static inline int64
+enum_rank(const TopKey *k, Oid oid)
+{
+	uint32		lo = 0,
+				hi = k->nenum;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (k->eoid[mid] < oid)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo == k->nenum || k->eoid[lo] != oid)
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("enum value %u was added while the scan was running", oid)));
+	return k->erank[lo];
+}
+
 /* the key of row i; floats map to integers of the same order (NaN last); a numeric NaN is PG_INT64_MAX in the vector (SiftSrcVec.ovf) */
 static inline bool
 row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 {
 	if (v->isnull && v->isnull[i])
-		return false;
+	{
+		*out = k->xc;
+		return k->xk == TXK_COALESCE;
+	}
 	switch (k->vtype)
 	{
 		case SCV_I32:
-			*out = ((const int32 *) v->data)[i];
+			*out = k->nenum ? enum_rank(k, ((const int32 *) v->data)[i]) : ((const int32 *) v->data)[i];
 			break;
 		case SCV_I64:
 			*out = ((const int64 *) v->data)[i];
@@ -387,6 +783,392 @@ row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 			}
 	}
 	return true;
+}
+
+static KeyBlob *blob_new(MemoryContext cxt, const char *p, uint32 len);
+
+/* the string through lower() or upper() as the call of the query does it: a copy in the arena of the unit */
+static KeyBlob *
+xform_blob(SiftTopN *t, const TopKey *k, const char *p, uint32 len)
+{
+	MemoryContext old = MemoryContextSwitchTo(t->ucxt);
+	struct varlena *in = palloc(VARHDRSZ + len),
+			   *out;
+	KeyBlob    *b;
+
+	SET_VARSIZE(in, VARHDRSZ + len);
+	memcpy(VARDATA(in), p, len);
+	out = (struct varlena *) DatumGetPointer(FunctionCall1Coll(k->xfn, k->xcoll, PointerGetDatum(in)));
+	b = blob_new(t->ucxt, VARDATA_ANY(out), VARSIZE_ANY_EXHDR(out));
+	MemoryContextSwitchTo(old);
+	return b;
+}
+
+/*
+ * The entry `code` of a dictionary as the bytes of key j: a datum image (bytea, inet) is stored padded, the length the key means is its varlena
+ * header's; a lower() or upper() key is the call's result, evaluated once for an entry of a unit
+ */
+static inline void
+key_entry(SiftTopN *t, int j, const SiftSrcDict *d, uint32 code, const char **p, uint32 *len)
+{
+	TopKey	   *k = &t->key[j];
+
+	*p = d->bytes + d->off[code];
+	*len = d->off[code + 1] - d->off[code];
+	if (k->bkind == BK_BYTEA || (k->bkind == BK_FMGR && k->typlen < 0))
+	{
+		varattrib_4b h;
+
+		memcpy(&h, *p, sizeof(uint32));
+		*len = VARSIZE_4B(&h);
+	}
+	else if (k->bkind == BK_FMGR)
+		*len = k->typlen;
+	if (k->xfn)
+	{
+		KeyBlob    *b;
+
+		if (k->xid != d->id || k->xbytes != d->bytes || k->xn != d->n)
+		{
+			k->xmemo = MemoryContextAllocZero(t->ucxt, Max(d->n, 1) * sizeof(KeyBlob *));
+			k->xid = d->id;
+			k->xbytes = d->bytes;
+			k->xn = d->n;
+		}
+		if ((b = k->xmemo[code]) == NULL)
+			b = k->xmemo[code] = xform_blob(t, k, *p, *len);
+		*p = b->data;
+		*len = b->len;
+	}
+}
+
+static KeyBlob *
+blob_new(MemoryContext cxt, const char *p, uint32 len)
+{
+	KeyBlob    *b = MemoryContextAlloc(cxt, offsetof(KeyBlob, data) + len);
+
+	b->len = len;
+	memcpy(b->data, p, len);
+	return b;
+}
+
+/* the key j of row i of v, of any key type: a byte string is a copy in the arena of the unit */
+static bool
+row_val(SiftTopN *t, int j, const SiftSrcVec *v, int i, int64 *out)
+{
+	const char *p;
+	uint32		len;
+
+	if (!t->key[j].blob)
+		return row_key(&t->key[j], v, i, out);
+	if (v->isnull && v->isnull[i])
+		return false;
+	key_entry(t, j, v->dict, ((const uint32 *) v->data)[i], &p, &len);
+	*out = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
+	return true;
+}
+
+/* ---- sort expressions (TXK_EXPR) ---- */
+
+/* The vector a key of this result type is kept in: the integer types by their width, floats widened, anything else as byte strings of a dictionary */
+static SiftSrcVecType
+expr_vtype(Oid typid)
+{
+	switch (typid)
+	{
+		case BOOLOID:
+		case INT2OID:
+		case INT4OID:
+		case DATEOID:
+			return SCV_I32;
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case TIMEOID:
+			return SCV_I64;
+		case FLOAT4OID:
+		case FLOAT8OID:
+			return SCV_F64;
+		default:
+			return SCV_CODE;
+	}
+}
+
+/* xs: the expression over Vars numbered 1.. and the leaves they stand for, in that order */
+static TopExpr *
+expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt)
+{
+	MemoryContext old = MemoryContextSwitchTo(cxt);
+	TopExpr    *x = palloc0(sizeof(TopExpr));
+	List	   *leaves = lsecond(xs);
+	TupleDesc	desc;
+
+	x->nin = list_length(leaves);
+	x->in = palloc0(Max(x->nin, 1) * sizeof(TopIn));
+	desc = CreateTemplateTupleDesc(Max(x->nin, 1));
+	for (int a = 0; a < x->nin; a++)
+	{
+		const SiftSrcLeaf *lf = &lay->leaf[list_nth_int(leaves, a)];
+
+		x->in[a] = (TopIn) {.leaf = lf->id, .typid = lf->typid, .vtype = lf->vtype, .scale = lf->scale};
+		TupleDescInitEntry(desc, a + 1, NULL, lf->typid, -1, 0);
+	}
+	sift_tupdesc_finalize(desc);
+	x->slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	x->econtext = CreateStandaloneExprContext();
+	x->econtext->ecxt_scantuple = x->slot;
+	/* the parameters of the statement (the leader only: the planner does not give a sort expression with one to workers) */
+	x->econtext->ecxt_param_list_info = outer->ecxt_param_list_info;
+	/* no parent: the Vars are of the slot above whatever the scan's own tuple is */
+	x->state = ExecInitExpr((Expr *) linitial(xs), NULL);
+	x->rtype = rtype;
+	MemoryContextSwitchTo(old);
+	return x;
+}
+
+/* The datum of the entry c of the string dictionary of an input, built once for the unit */
+static Datum
+in_entry(SiftTopN *t, TopIn *in, uint32 c)
+{
+	const SiftSrcDict *d = in->v->dict;
+	const char *p = d->bytes + d->off[c];
+	uint32		len = d->off[c + 1] - d->off[c];
+	char	   *r;
+
+	if (in->built[c])
+		return in->memo[c];
+	switch (in->typid)
+	{
+		case TEXTOID:
+		case VARCHAROID:
+			r = MemoryContextAlloc(t->ucxt, VARHDRSZ + len);
+			SET_VARSIZE(r, VARHDRSZ + len);
+			memcpy(VARDATA(r), p, len);
+			break;
+		case UUIDOID:
+			r = MemoryContextAlloc(t->ucxt, len);
+			memcpy(r, p, len);
+			break;
+		default:				/* bytea, inet: the image of the datum, its header says the length */
+			{
+				varattrib_4b h;
+
+				memcpy(&h, p, sizeof(uint32));
+				len = VARSIZE_4B(&h);
+				r = MemoryContextAlloc(t->ucxt, len);
+				memcpy(r, p, len);
+			}
+	}
+	in->built[c] = true;
+	return in->memo[c] = PointerGetDatum(r);
+}
+
+static Datum
+in_datum(SiftTopN *t, TopIn *in, int i, bool *isnull)
+{
+	const SiftSrcVec *v = in->v;
+
+	*isnull = v->isnull && v->isnull[i];
+	if (*isnull)
+		return (Datum) 0;
+	switch (in->vtype)
+	{
+		case SCV_I32:
+			return Int32GetDatum(((const int32 *) v->data)[i]);
+		case SCV_I64:
+			if (in->typid != NUMERICOID)
+				return Int64GetDatum(((const int64 *) v->data)[i]);
+			if (v->ovf && ((v->ovf[i / 64] >> (i % 64)) & 1))
+				return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+			return NumericGetDatum(int64_div_fast_to_numeric(((const int64 *) v->data)[i], in->scale));
+		case SCV_F64:
+			return in->typid == FLOAT4OID ? Float4GetDatum((float4) ((const double *) v->data)[i]) : Float8GetDatum(((const double *) v->data)[i]);
+		default:
+			return in_entry(t, in, ((const uint32 *) v->data)[i]);
+	}
+}
+
+/*
+ * The key j of every row of the unit that passes, from PostgreSQL's evaluation of its expression over those rows' leaves: one result for each
+ * (the normal plan computes the sort expression of every row that passes the WHERE, and raises its errors for them). The result is the vector a
+ * key of the leaf of that type would be, and the rest of the scan reads it as such.
+ */
+static void
+expr_eval_unit(SiftTopN *t, TopKey *k, SiftTopLeaf leaf, void *ctx, const uint64 *rmask, int nrow)
+{
+	TopExpr    *x = k->x;
+	int			nw = (nrow + 63) / 64,
+				npass = 0,
+				at = 0,
+				esz = k->vtype == SCV_I32 ? sizeof(int32) : k->vtype == SCV_CODE ? sizeof(uint32) : sizeof(int64);
+	uint8	   *nul = MemoryContextAllocZero(t->ucxt, Max(nrow, 1));
+	char	   *data = MemoryContextAllocZero(t->ucxt, Max(nrow, 1) * (Size) esz);
+	SiftSrcDict *dict = NULL;
+	uint32	   *off = NULL;
+	StringInfoData bytes = {0};
+	MemoryContext tup = x->econtext->ecxt_per_tuple_memory;
+
+	for (int w = 0; w < nw; w++)
+		npass += pg_popcount64(rmask[w]);
+	for (int a = 0; a < x->nin; a++)
+	{
+		TopIn	   *in = &x->in[a];
+
+		in->v = leaf(ctx, in->leaf);
+		if (in->vtype == SCV_CODE)
+		{
+			in->memo = MemoryContextAllocZero(t->ucxt, Max(in->v->dict->n, 1) * sizeof(Datum));
+			in->built = MemoryContextAllocZero(t->ucxt, Max(in->v->dict->n, 1));
+		}
+	}
+	if (k->vtype == SCV_CODE)
+	{
+		MemoryContext old = MemoryContextSwitchTo(t->ucxt);
+
+		dict = palloc0(sizeof(SiftSrcDict));
+		off = palloc((npass + 1) * sizeof(uint32));
+		initStringInfo(&bytes);
+		off[0] = 0;
+		MemoryContextSwitchTo(old);
+	}
+	for (int w = 0; w < nw; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			int			i = w * 64 + pg_rightmost_one_pos64(b);
+			bool		isnull;
+			Datum		d;
+			MemoryContext old = MemoryContextSwitchTo(tup);
+
+			ExecClearTuple(x->slot);
+			for (int a = 0; a < x->nin; a++)
+				x->slot->tts_values[a] = in_datum(t, &x->in[a], i, &x->slot->tts_isnull[a]);
+			ExecStoreVirtualTuple(x->slot);
+			MemoryContextSwitchTo(old);
+			d = ExecEvalExprSwitchContext(x->state, x->econtext, &isnull);
+			if (isnull)
+				nul[i] = 1;
+			switch (k->vtype)
+			{
+				case SCV_I32:
+					((int32 *) data)[i] = x->rtype == INT2OID ? DatumGetInt16(d) : x->rtype == BOOLOID ? DatumGetBool(d) : DatumGetInt32(d);
+					break;
+				case SCV_I64:
+					((int64 *) data)[i] = DatumGetInt64(d);
+					break;
+				case SCV_F64:
+					((double *) data)[i] = x->rtype == FLOAT4OID ? DatumGetFloat4(d) : DatumGetFloat8(d);
+					break;
+				default:
+					if (!isnull)
+					{
+						MemoryContext o2 = MemoryContextSwitchTo(t->ucxt);
+
+						if (k->bkind == BK_UUID)
+							appendBinaryStringInfo(&bytes, DatumGetPointer(d), UUID_LEN);
+						else
+						{
+							struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+							uint32		len = VARSIZE_ANY_EXHDR(v);
+
+							if (k->bkind == BK_TEXT)
+								appendBinaryStringInfo(&bytes, VARDATA_ANY(v), len);
+							else
+							{
+								/* the image of the datum, with the four byte header the entries of a dictionary have */
+								varattrib_4b hdr;
+
+								SET_VARSIZE(&hdr, VARHDRSZ + len);
+								appendBinaryStringInfo(&bytes, (char *) &hdr, VARHDRSZ);
+								appendBinaryStringInfo(&bytes, VARDATA_ANY(v), len);
+							}
+						}
+						MemoryContextSwitchTo(o2);
+					}
+					((uint32 *) data)[i] = at;
+					off[++at] = bytes.len;
+			}
+			ResetExprContext(x->econtext);
+			if ((i & 4095) == 4095)
+				CHECK_FOR_INTERRUPTS();
+		}
+	k->xv = (SiftSrcVec) {.data = data, .isnull = nul, .n = nrow};
+	if (dict)
+	{
+		*dict = (SiftSrcDict) {.id = dict, .n = at, .off = off, .bytes = bytes.data};
+		k->xv.dict = dict;
+	}
+}
+
+/* The key j of the rows t->cand[0..n): read from the leaf, or taken from the vector of the expression */
+static void
+key_rows(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int j, int n, SiftSrcVec *v)
+{
+	const TopKey *k = &t->key[j];
+	int			esz = k->vtype == SCV_I32 ? sizeof(int32) : k->vtype == SCV_CODE ? sizeof(uint32) : sizeof(int64);
+	char	   *data;
+	uint8	   *nul;
+
+	if (k->x == NULL)
+	{
+		sift_colsrc_read_rows(src, unit, k->leaf, t->cand, n, v);
+		return;
+	}
+	data = MemoryContextAlloc(t->ucxt, Max(n, 1) * (Size) esz);
+	nul = MemoryContextAlloc(t->ucxt, Max(n, 1));
+	for (int x = 0; x < n; x++)
+	{
+		memcpy(data + (Size) x * esz, (const char *) k->xv.data + (Size) t->cand[x] * esz, esz);
+		nul[x] = k->xv.isnull[t->cand[x]];
+	}
+	*v = (SiftSrcVec) {.data = data, .isnull = nul, .dict = k->xv.dict, .n = n};
+}
+
+/* The heap of the result keeps its own copies of the byte strings of the entries it takes, and frees them when it drops the row */
+static void
+res_own(SiftTopN *t, TopEnt *e)
+{
+	MemoryContext cxt = GetMemoryChunkContext(t);
+
+	for (int j = 0; j < t->nkey; j++)
+		if (t->key[j].blob && !((e->nul >> j) & 1))
+		{
+			const KeyBlob *b = KEY_BLOB(e->k[j]);
+
+			e->k[j] = (int64) (uintptr_t) blob_new(cxt, b->data, b->len);
+		}
+}
+
+static void
+res_free(const SiftTopN *t, const TopEnt *e)
+{
+	for (int j = 0; j < t->nkey; j++)
+		if (t->key[j].blob && !((e->nul >> j) & 1))
+			pfree((void *) KEY_BLOB(e->k[j]));
+}
+
+static void
+res_push(SiftTopN *t, const TopEnt *e)
+{
+	TopEnt		c = *e,
+				old;
+
+	if (t->nblob == 0)
+	{
+		heap_push(t, t->heap, &t->n, e);
+		return;
+	}
+	if (t->n == t->limit)
+	{
+		if (ent_cmp(t, e, &t->heap[0]) >= 0)
+			return;
+		old = t->heap[0];
+		res_own(t, &c);
+		heap_push(t, t->heap, &t->n, &c);
+		res_free(t, &old);
+		return;
+	}
+	res_own(t, &c);
+	heap_push(t, t->heap, &t->n, &c);
 }
 
 static int
@@ -421,8 +1203,12 @@ grow_unit_buffers(SiftTopN *t, int nrow)
 	t->cnul = grow(t, t->cnul, t->ccap);
 	t->cand = grow(t, t->cand, t->ccap * sizeof(uint32));
 	t->ce = grow(t, t->ce, t->ccap * sizeof(TopEnt));
-	if (t->sort)
+	if (t->all)
+	{
 		t->tids = grow(t, t->tids, t->ccap * sizeof(ItemPointerData));
+		t->skey = grow(t, t->skey, (Size) t->ccap * t->nkey * sizeof(int64));
+		t->snull = grow(t, t->snull, (Size) t->ccap * t->nkey);
+	}
 }
 
 /* The rows cand[0..nc) (ascending) with their first key in ce: the other keys, by position */
@@ -433,17 +1219,42 @@ read_other_keys(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc
 	{
 		SiftSrcVec	v;
 
-		sift_colsrc_read_rows(src, unit, t->key[j].leaf, t->cand, nc, &v);
+		key_rows(t, src, unit, j, nc, &v);
 		for (int x = 0; x < nc; x++)
-			if (!row_key(&t->key[j], &v, x, &t->ce[x].k[j]))
+			if (!row_val(t, j, &v, x, &t->ce[x].k[j]))
 				t->ce[x].nul |= 1 << j;
 	}
+}
+
+static void share_bar(SiftTopN *t);
+
+/* The partition of the unit the source is at: the TIDs it gives are those of that partition's heap */
+static inline uint16
+unit_part(const SiftTopN *t, SiftSrcSource *src)
+{
+	return t->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE ? sift_aggpart_current(src) : 0;
+}
+
+/* The key a row has in the order of ties: its TID, those of the partitions one after the other */
+static inline uint64
+tie_key(const ItemPointerData *tid, uint16 part)
+{
+	return tid_key(tid) | (uint64) part << 48;
+}
+
+static inline void
+tie_tid(int64 tie, ItemPointerData *tid, uint16 *part)
+{
+	ItemPointerSet(tid, (tie >> 16) & PG_UINT32_MAX, tie & 0xFFFF);
+	*part = tie >> 48;
 }
 
 /* The best n of those rows by all the keys go to the heap with their TIDs */
 static void
 finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 {
+	uint16		part;
+
 	t->ln = 0;
 	read_other_keys(t, src, unit, nc);
 	for (int x = 0; x < nc; x++)
@@ -454,23 +1265,19 @@ finish_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, int nc)
 		t->rows[i] = t->lh[i].row;
 	qsort(t->rows, t->ln, sizeof(uint32), row_cmp);
 	sift_colsrc_tids(src, unit, t->rows, t->ln, t->tids);
+	part = unit_part(t, src);
 	for (int i = 0; i < t->ln; i++)
 	{
 		TopEnt	   *e = &t->lh[i];
 		uint32	   *at = bsearch(&e->row, t->rows, t->ln, sizeof(uint32), row_cmp);
 
 		e->tid = t->tids[at - t->rows];
-		e->tie = tid_key(&e->tid);
-		heap_push(t, t->heap, &t->n, e);
+		e->part = part;
+		e->tie = tie_key(&e->tid, part);
+		res_push(t, e);
 	}
+	share_bar(t);
 }
-
-/* The first key as a position in the sort order: NULLs in front of or behind the values, the values by the direction */
-typedef struct Rank
-{
-	int			cls;
-	uint64		ord;
-} Rank;
 
 static inline Rank
 rank_of(const TopKey *k, bool isnull, int64 v)
@@ -494,40 +1301,838 @@ ent_rank(const SiftTopN *t, const TopEnt *e)
 	return rank_of(&t->key[0], e->nul & 1, e->k[0]);
 }
 
+/*
+ * The rank of the n-th row so far: the heap's worst when it is full, or the bound the participants of a parallel scan share when that sorts
+ * before it. A row or a zone strictly after it cannot be in the result, whoever holds the n rows.
+ */
+static bool
+bar_rank(const SiftTopN *t, Rank *bar)
+{
+	bool		have = t->n == t->limit;
+
+	if (have)
+		*bar = ent_rank(t, &t->heap[0]);
+	if (t->shared)
+	{
+		uint64		b = pg_atomic_read_u64(t->shared);
+		Rank		r = {1, b};
+
+		if (b != PG_UINT64_MAX && (!have || rank_after(*bar, r)))
+		{
+			*bar = r;
+			have = true;
+		}
+	}
+	return have;
+}
+
+/* a full heap whose worst row has a value tightens the bound of the other participants (a NULL worst row is not a rank among the values) */
+static void
+share_bar(SiftTopN *t)
+{
+	Rank		w;
+	uint64		cur;
+
+	if (t->shared == NULL || t->n < t->limit || t->key[0].blob)
+		return;
+	w = ent_rank(t, &t->heap[0]);
+	cur = pg_atomic_read_u64(t->shared);
+	while (w.cls == 1 && w.ord < cur && !pg_atomic_compare_exchange_u64(t->shared, &cur, w.ord))
+		;
+}
+
+/* Bytes of the rows kept in memory before they go to a tuplesort: hash_mem, as the other tables of the scan (one allocation is MaxAllocSize at most) */
+static int64
+sort_memory(void)
+{
+	return Min((int64) get_hash_memory_limit(), (int64) 512 << 20);
+}
+
+/* A row of mem: the keys (0 for a NULL), the NULL flags, the TID's number */
+static inline int64 *
+mem_row(const SiftTopN *t, int64 i)
+{
+	return t->mem + i * t->stride;
+}
+
+static inline bool
+mem_null(const SiftTopN *t, const int64 *r, int j)
+{
+	return (r[t->nkey + j / 64] >> (j % 64)) & 1;
+}
+
+static void
+sort_put_tuple(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
+{
+	ExecClearTuple(t->sin);
+	for (int j = 0; j < t->nkey; j++)
+	{
+		const TopKey *key = &t->key[j];
+
+		if (!key->blob || isnull[j])
+			t->sin->tts_values[j] = Int64GetDatum(k[j]);
+		else if (key->bkind == BK_TEXT)
+		{
+			struct varlena *v = MemoryContextAlloc(t->ucxt, VARHDRSZ + KEY_BLOB(k[j])->len);
+
+			SET_VARSIZE(v, VARHDRSZ + KEY_BLOB(k[j])->len);
+			memcpy(VARDATA(v), KEY_BLOB(k[j])->data, KEY_BLOB(k[j])->len);
+			t->sin->tts_values[j] = PointerGetDatum(v);
+		}
+		else
+			t->sin->tts_values[j] = PointerGetDatum(KEY_BLOB(k[j])->data);	/* the image of a datum: what the tuplesort copies */
+		t->sin->tts_isnull[j] = isnull[j];
+	}
+	t->sin->tts_values[t->nkey] = Int64GetDatum(tid);
+	t->sin->tts_isnull[t->nkey] = false;
+	ExecStoreVirtualTuple(t->sin);
+	tuplesort_puttupleslot(t->sort, t->sin);
+}
+
+/* The rows in memory go to the tuplesort: work_mem is spent */
+static void
+mem_spill(SiftTopN *t)
+{
+	bool	   *isnull = palloc(t->nkey * sizeof(bool));
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(t));
+
+	t->sort = sort_begin(t);
+	MemoryContextSwitchTo(old);
+	for (int64 i = 0; i < t->nmem; i++)
+	{
+		const int64 *r = mem_row(t, i);
+
+		for (int j = 0; j < t->nkey; j++)
+			isnull[j] = mem_null(t, r, j);
+		sort_put_tuple(t, r, isnull, r[t->stride - 1]);
+	}
+	pfree(isnull);
+	pfree(t->mem);
+	t->mem = NULL;
+}
+
+/* One row that passes (no bound for the heap): kept in memory while the rows fit work_mem, else in the tuplesort */
+static void
+sort_put(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
+{
+	int64	   *r;
+
+	if (t->mem && (t->nmem + 1) * t->stride * (int64) sizeof(int64) > sort_memory())
+		mem_spill(t);
+	if (t->mem == NULL)
+	{
+		sort_put_tuple(t, k, isnull, tid);
+		return;
+	}
+	if (t->nmem == t->capmem)
+	{
+		t->capmem *= 2;
+		t->mem = repalloc(t->mem, t->capmem * t->stride * sizeof(int64));
+	}
+	r = mem_row(t, t->nmem++);
+	memset(r, 0, t->stride * sizeof(int64));
+	for (int j = 0; j < t->nkey; j++)
+		if (isnull[j])
+			r[t->nkey + j / 64] |= (int64) 1 << (j % 64);
+		else
+			r[j] = k[j];
+	r[t->stride - 1] = tid;
+}
+
+static int
+mem_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftTopN *t = arg;
+	const int64 *x = a,
+			   *y = b;
+
+	for (int j = 0; j < t->nkey; j++)
+	{
+		bool		xn = mem_null(t, x, j),
+					yn = mem_null(t, y, j);
+
+		if (xn != yn)
+			return xn == t->key[j].nulls_first ? -1 : 1;
+		if (xn || x[j] == y[j])
+			continue;
+		return (x[j] < y[j]) != t->key[j].desc ? -1 : 1;
+	}
+	return SIFT_CMP3(x[t->stride - 1], y[t->stride - 1]);
+}
+
 /* With no bound for the heap: every row that passes goes to the sort, with its keys and its TID */
 static void
 sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
 {
-	int			nc = 0;
+	int			nk = t->nkey,
+				nc = 0;
+	uint16		part;
 
 	grow_unit_buffers(t, nrow);
 	for (int w = 0; w < (nrow + 63) / 64; w++)
 		for (uint64 b = rmask[w]; b; b &= b - 1)
 		{
-			TopEnt	   *e = &t->ce[nc];
-
-			memset(e, 0, sizeof(TopEnt));
 			t->cand[nc] = w * 64 + pg_rightmost_one_pos64(b);
-			e->nul = !row_key(&t->key[0], key0, t->cand[nc++], &e->k[0]);
+			t->snull[(Size) nc * nk] = !row_val(t, 0, key0, t->cand[nc], &t->skey[(Size) nc * nk]);
+			nc++;
 		}
 	if (nc == 0)
 		return;
-	read_other_keys(t, src, unit, nc);
-	sift_colsrc_tids(src, unit, t->cand, nc, t->tids);
-	for (int x = 0; x < nc; x++)
+	for (int j = 1; j < nk; j++)
 	{
-		ExecClearTuple(t->sin);
-		for (int j = 0; j < t->nkey; j++)
-		{
-			t->sin->tts_values[j] = Int64GetDatum(t->ce[x].k[j]);
-			t->sin->tts_isnull[j] = (t->ce[x].nul >> j) & 1;
-		}
-		t->sin->tts_values[t->nkey] = Int64GetDatum(tid_key(&t->tids[x]));
-		t->sin->tts_isnull[t->nkey] = false;
-		ExecStoreVirtualTuple(t->sin);
-		tuplesort_puttupleslot(t->sort, t->sin);
+		SiftSrcVec	v;
+
+		key_rows(t, src, unit, j, nc, &v);
+		for (int x = 0; x < nc; x++)
+			t->snull[(Size) x * nk + j] = !row_val(t, j, &v, x, &t->skey[(Size) x * nk + j]);
 	}
+	sift_colsrc_tids(src, unit, t->cand, nc, t->tids);
+	part = unit_part(t, src);
+	for (int x = 0; x < nc; x++)
+		sort_put(t, &t->skey[(Size) x * nk], &t->snull[(Size) x * nk], tie_key(&t->tids[x], part));
 	t->nsort += nc;
+}
+
+/* The sign of a row of the first key (a NULL, or the entry `code` of dictionary d) against the entry bar, by the first key alone: < 0 before it, > 0 after it */
+static int
+vs_bar(SiftTopN *t, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
+{
+	const TopKey *k = &t->key[0];
+	bool		bn = bar->nul & 1;
+	const char *p;
+	uint32		len;
+	int			c;
+
+	if (isnull != bn)
+		return isnull == k->nulls_first ? -1 : 1;
+	if (isnull)
+		return 0;
+	key_entry(t, 0, d, code, &p, &len);
+	c = bytes_cmp(k, p, len, KEY_BLOB(bar->k[0])->data, KEY_BLOB(bar->k[0])->len);
+	return k->desc ? -c : c;
+}
+
+/* Is the row strictly after the bar? The bar only moves toward the front, so an entry that was after it stays after it: worse[code] remembers it, and a unit of few distinct strings compares each once */
+static bool
+after_bar(SiftTopN *t, uint8 *worse, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
+{
+	if (isnull)
+		return vs_bar(t, d, true, 0, bar) > 0;
+	if (worse[code])
+		return true;
+	if (vs_bar(t, d, false, code, bar) <= 0)
+		return false;
+	worse[code] = 1;
+	return true;
+}
+
+/* Entries of a sorted run are read in windows that double up to this many */
+#define RUN_WIN_MIN		32
+#define RUN_WIN_MAX		512
+
+/* A unit whose run the first pass left at the group of rank next: the rows before it are taken */
+typedef struct RunTrunc
+{
+	uint64		id;
+	uint32		sb;
+	Rank		next;
+	bool		done;
+} RunTrunc;
+
+typedef struct RunWalk
+{
+	SiftTopN   *t;
+	SiftSrcSource *src;
+	const SiftSrcUnit *unit;
+	const SiftSrcVec *key0;
+	const uint64 *rmask;
+	uint32		n;				/* rows of the unit: entries of the run */
+	uint32		lo,
+				hi;				/* the entries rwin holds */
+	uint32		win;
+	int			nc;				/* candidate rows in t->cand */
+	int			passing;		/* rows that pass in the groups taken so far */
+	Rank		bar;
+	bool		barred;
+	bool		have;			/* prev is the rank of the group before */
+	Rank		prev;
+	int			budget;			/* rows to take before leaving the rest of the unit to the second pass (0: no limit) */
+	bool		resumed;		/* the second pass of this unit: the groups before resume are taken */
+	Rank		resume;
+	bool		trunc;
+	Rank		next;			/* trunc: the rank of the first group left */
+} RunWalk;
+
+static void
+run_corrupt(RunWalk *w, const char *what)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg("sift_col sorted run is corrupted"),
+			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what)));
+}
+
+/* The row at position pos of the run; the window is read toward the direction of the walk */
+static uint32
+run_at(RunWalk *w, uint32 pos, bool back)
+{
+	if (pos < w->lo || pos >= w->hi)
+	{
+		uint32		cnt = back ? Min(w->win, pos + 1) : Min(w->win, w->n - pos),
+					lo = back ? pos + 1 - cnt : pos;
+
+		sift_colsrc_run_read(w->src, w->unit, w->t->key[0].leaf, lo, cnt, w->t->rwin);
+		w->lo = lo;
+		w->hi = lo + cnt;
+		w->win = Min(w->win * 2, RUN_WIN_MAX);
+	}
+	return w->t->rwin[pos - w->lo];
+}
+
+static void
+run_key(RunWalk *w, uint32 row, int64 *v)
+{
+	if (!row_key(&w->t->key[0], w->key0, row, v))
+		run_corrupt(w, "has a NULL row among those with a value");
+}
+
+/* A group of equal first keys, rank, begins: false when the first pass took it. The ranks must come in order */
+static bool
+run_open(RunWalk *w, Rank rank)
+{
+	if (w->have && !rank_after(rank, w->prev))
+		run_corrupt(w, "is not in the order of its keys");
+	w->prev = rank;
+	w->have = true;
+	return !(w->resumed && rank_after(w->resume, rank));
+}
+
+/* The group ends; its rows that pass are t->cand[g0, nc), backwards when the walk was. With one sort key the tied rows after the n-th come after it by TID and are not in the result */
+static void
+run_close(RunWalk *w, int g0, Rank rank, bool back)
+{
+	SiftTopN   *t = w->t;
+
+	for (int a = g0, b = w->nc - 1; back && a < b; a++, b--)
+	{
+		uint32		x = t->cand[a];
+
+		t->cand[a] = t->cand[b];
+		t->cand[b] = x;
+	}
+	if (t->nkey == 1)
+		w->nc = Min(w->nc, g0 + t->limit - w->passing);
+	w->passing += w->nc - g0;
+	if (w->passing >= t->limit && (!w->barred || rank_after(w->bar, rank)))
+	{
+		w->bar = rank;
+		w->barred = true;
+	}
+}
+
+/* Whether the rows of the group at hand reach the n-th, so that the rest of an ascending group is out */
+static bool
+run_full(const RunWalk *w, int g0)
+{
+	return w->t->nkey == 1 && w->passing + w->nc - g0 >= w->t->limit;
+}
+
+static inline bool
+run_pass(const RunWalk *w, uint32 row)
+{
+	return w->rmask[row >> 6] >> (row & 63) & 1;
+}
+
+static bool
+run_stop(const RunWalk *w, Rank r)
+{
+	return w->barred && rank_after(r, w->bar);
+}
+
+/* The first pass has its rows: the group of rank r and the ones after are left to the second pass, which the heap's bar may spare */
+static bool
+run_cut(RunWalk *w, Rank r)
+{
+	if (w->budget == 0 || w->passing < w->budget)
+		return false;
+	w->trunc = true;
+	w->next = r;
+	return true;
+}
+
+/* The rows of the NULL group (positions [nvals, nvals + nnull)) */
+static void
+run_nulls(RunWalk *w, uint32 nvals, uint32 nnull)
+{
+	Rank		r = rank_of(&w->t->key[0], true, 0);
+	int			g0 = w->nc;
+	uint32		prev = 0;
+
+	if (nnull == 0 || run_stop(w, r) || !run_open(w, r))
+		return;
+	for (uint32 pos = nvals; pos < nvals + nnull; pos++)
+	{
+		uint32		row = run_at(w, pos, false);
+
+		if (pos > nvals && row <= prev)
+			run_corrupt(w, "has the rows of equal keys out of order");
+		prev = row;
+		if (!run_pass(w, row))
+			continue;
+		w->t->cand[w->nc++] = row;
+		if (run_full(w, g0))
+			break;
+	}
+	run_close(w, g0, r, false);
+}
+
+/*
+ * The rows with a value, best group first, until a group cannot be in the result. A row is tested against the mask before its key is read, so the
+ * keys of the rows that do not pass (zero in a vector read for the rows that pass only) are never looked at; a group is the rows that pass with an
+ * equal key. The run holds equal keys by row ascending: a descending walk meets them backwards and puts them right at the end of the group.
+ */
+static void
+run_values(RunWalk *w, uint32 nvals)
+{
+	const TopKey *k0 = &w->t->key[0];
+	bool		desc = k0->desc,
+				open = false,
+				skip = false;
+	int			g0 = 0;
+	int64		gv = 0;
+	uint32		prev = 0;
+	Rank		r = {0};
+
+	for (uint32 i = 0; i < nvals; i++)
+	{
+		uint32		row = run_at(w, desc ? nvals - 1 - i : i, desc);
+		int64		v;
+
+		if (!run_pass(w, row))
+			continue;
+		run_key(w, row, &v);
+		if (open && v == gv)
+		{
+			if (desc ? row >= prev : row <= prev)
+				run_corrupt(w, "has the rows of equal keys out of order");
+		}
+		else
+		{
+			if (open && !skip)
+				run_close(w, g0, r, desc);
+			r = rank_of(k0, false, v);
+			if (run_stop(w, r) || run_cut(w, r))
+				return;
+			open = true;
+			skip = !run_open(w, r);
+			g0 = w->nc;
+			gv = v;
+		}
+		prev = row;
+		if (skip)
+			continue;
+		w->t->cand[w->nc++] = row;
+		if (!desc && run_full(w, g0))
+			break;
+	}
+	if (open && !skip)
+		run_close(w, g0, r, desc);
+}
+
+/*
+ * The unit from its sorted run (docs/COL.md 2.14): the groups of equal first keys in the order of the sort, from the best, until one cannot be in the
+ * result, where the rows are read and tested one by one otherwise. The candidates are what the other loop finds: the rows that pass whose first key is
+ * not after the n-th of the unit's or the heap's, so the rest is the same. False: the unit has no run, or the rows that pass are too few for the walk
+ * to pay (it reads about n / share of the rows that pass) and the heap has no bar yet.
+ */
+static bool
+run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+{
+	RunWalk		w = {.t = t, .src = src, .unit = unit, .key0 = key0, .rmask = rmask, .n = nrow, .win = RUN_WIN_MIN};
+	uint32		nvals,
+				nnull,
+				npass = 0;
+	uint64		id;
+	int			m = 0;
+	const TopKey *k0 = &t->key[0];
+	RunTrunc   *rt = NULL;
+
+	/* the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
+	if (!sift_topn_runs || k0->xk != TXK_NONE || k0->leaf < 0 || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
+		return false;
+	if (t->revisit)
+	{
+		/* the units the first pass finished, or took no run of, are not read again */
+		for (int i = 0; i < t->ntrunc && rt == NULL; i++)
+			if (t->trunc[i].id == id && !t->trunc[i].done)
+				rt = &t->trunc[i];
+		if (rt == NULL)
+			return true;
+		rt->done = true;
+		w.resumed = true;
+		w.resume = rt->next;
+	}
+	else
+	{
+		for (int i = 0; i < (nrow + 63) / 64; i++)
+			npass += pg_popcount64(rmask[i]);
+		/* a unit with fewer rows than the walk would take for its own bar is read through the run only when the heap's bar already cuts it */
+		if ((uint64) (t->limit + 1) * 2 > npass && !bar_rank(t, &w.bar))
+			return false;
+		w.budget = t->budget;
+	}
+	grow_unit_buffers(t, nrow);
+	if (t->rwin == NULL)
+		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * sizeof(uint32));
+	w.barred = bar_rank(t, &w.bar);
+	if (rt && run_stop(&w, rt->next))
+		return true;
+	if (k0->nulls_first)
+		run_nulls(&w, nvals, nnull);
+	run_values(&w, nvals);
+	if (!k0->nulls_first && !w.trunc)
+		run_nulls(&w, nvals, nnull);
+	/* the rows whose value overflowed the leaf are tested one by one: the run does not order them */
+	for (uint32 pos = nvals + nnull; pos < (uint32) nrow && !w.resumed; pos++)
+	{
+		uint32		row = run_at(&w, pos, false);
+
+		if (rmask[row >> 6] >> (row & 63) & 1)
+			t->cand[w.nc++] = row;
+	}
+	qsort(t->cand, w.nc, sizeof(uint32), row_cmp);
+	for (int q = 0; q < w.nc; q++)
+	{
+		TopEnt	   *e = &t->ce[m];
+		int64		v = 0;
+		bool		isnull = !row_key(k0, key0, t->cand[q], &v);
+
+		if (q > 0 && t->cand[q] == t->cand[q - 1])
+			run_corrupt(&w, "names a row twice");
+		if (w.barred && rank_after(rank_of(k0, isnull, v), w.bar))
+			continue;
+		memset(e, 0, sizeof(TopEnt));
+		e->k[0] = v;
+		e->nul = isnull;
+		e->row = e->tie = t->cand[q];
+		t->cand[m++] = e->row;
+	}
+	t->nrun++;
+	if (w.trunc)
+	{
+		if (t->ntrunc == t->captrunc)
+		{
+			t->captrunc = Max(16, 2 * t->captrunc);
+			t->trunc = grow(t, t->trunc, t->captrunc * sizeof(RunTrunc));
+		}
+		t->trunc[t->ntrunc++] = (RunTrunc) {id, unit->sb, w.next, false};
+	}
+	if (m > 0)
+		finish_unit(t, src, unit, m);
+	return true;
+}
+
+/* the first 8 bytes of an entry (after the varlena header of a bytea), most significant first, zero padded: it orders the entries as they are up to a tie */
+static uint64
+key_prefix(uint8 bkind, const char *p, uint32 len)
+{
+	uint64		k = 0;
+	uint32		m;
+
+	if (bkind == BK_BYTEA)
+	{
+		varattrib_4b h;
+
+		/* an entry of the dictionary is padded to its alignment: the bytes after the varlena image are not part of the value (key_entry) */
+		if (len >= sizeof(uint32))
+		{
+			memcpy(&h, p, sizeof(uint32));
+			len = Min(len, VARSIZE_4B(&h));
+		}
+		p += Min(len, VARHDRSZ);
+		len -= Min(len, VARHDRSZ);
+	}
+	m = Min(len, 8);
+	for (uint32 i = 0; i < 8; i++)
+		k = k << 8 | (i < m ? (uint8) p[i] : 0);
+	return k;
+}
+
+/* The order code of the dictionary d for a unit with npass rows to compare (NULL: none, they are compared as bytes) */
+static OrdCode *
+unit_ord(SiftTopN *t, const SiftSrcDict *d, int64 npass)
+{
+	const TopKey *k = &t->key[0];
+	OrdCode    *oc = NULL;
+	const uint32 *sorted;
+
+	if (k->leaf < 0 || k->x || k->xfn || d->n == 0 || d->n > sift_limit(topn_code_entries, ORD_MAX_ENTRIES) ||
+		!((k->bkind == BK_TEXT && sift_collate_is_c(k->collid)) || k->bkind == BK_UUID || k->bkind == BK_BYTEA))
+		return NULL;
+	for (int i = 0; i < ORD_CACHE && oc == NULL; i++)
+		if (t->oc[i].id == d->id && t->oc[i].bytes == d->bytes && t->oc[i].n == d->n)
+			oc = &t->oc[i];
+	if (oc == NULL)
+	{
+		oc = &t->oc[t->oc_next++ % ORD_CACHE];
+		if (oc->ord)
+			pfree(oc->ord);
+		*oc = (OrdCode) {.id = d->id,.bytes = d->bytes,.n = d->n};
+	}
+	if (oc->exact)
+		return oc;
+	oc->rows += npass;
+	/* the order of a dictionary is that of its entries as bytes: a bytea entry is a varlena image, which starts with its length, not the order of byteacmp */
+	sorted = d->order && k->bkind != BK_BYTEA ? d->order(d->octx, npass) : NULL;
+	if (oc->rows < d->n * ORD_PREFIX_ROWS || (sorted == NULL && oc->useless))
+		return NULL;
+	if (sorted == NULL && oc->ord)
+		return oc;
+	if (t->ocxt == NULL)
+		t->ocxt = AllocSetContextCreate(MemoryContextGetParent(t->ucxt), "sift top-N order codes", ALLOCSET_DEFAULT_SIZES);
+	if (oc->ord == NULL)
+		oc->ord = MemoryContextAlloc(t->ocxt, (Size) d->n * sizeof(uint64));
+	if (sorted)
+	{
+		oc->exact = true;
+		for (uint32 i = 0; i < d->n; i++)
+			oc->ord[sorted[i]] = i + 1;
+	}
+	else
+		for (uint32 c = 0; c < d->n; c++)
+			oc->ord[c] = key_prefix(k->bkind, d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	return oc;
+}
+
+/* the codes of the dictionary in byte order, for an exact code: the dictionary has them, or sorts now (the cache may have parsed it again since the code was made) */
+static const uint32 *
+dict_sorted(const SiftSrcDict *d)
+{
+	const uint32 *sorted = d->order(d->octx, 0);
+
+	return sorted ? sorted : d->order(d->octx, (uint64) d->n * ORD_FORCE_ROWS);
+}
+
+/* the entry with this code compared with the bytes of a key, as the sort does */
+static int
+code_vs_blob(SiftTopN *t, const SiftSrcDict *d, uint32 code, const KeyBlob *b)
+{
+	const char *p;
+	uint32		len;
+
+	key_entry(t, 0, d, code, &p, &len);
+	return bytes_cmp(&t->key[0], p, len, b->data, b->len);
+}
+
+/* The bar as a code (on: false when there is none, or it is NULL, which is compared as a NULL is): a row is strictly after it when its code is above ob.v (below it, for DESC) */
+typedef struct OrdBar
+{
+	bool		on;
+	uint64		v;
+} OrdBar;
+
+static void
+ord_bar(SiftTopN *t, OrdBar *ob, const OrdCode *oc, const SiftSrcDict *d, const uint32 *code, const TopEnt *bar)
+{
+	const TopKey *k = &t->key[0];
+
+	ob->on = oc != NULL && bar != NULL && !(bar->nul & 1);
+	if (!ob->on)
+		return;
+	if (bar == &t->lh[0])
+		ob->v = oc->ord[code[bar->row]];		/* the unit's n-th: an entry of this dictionary */
+	else if (oc->exact)
+	{
+		/* an entry of another unit: its place among the entries, after the last one that is not above it (ASC) or the last one below it (DESC) */
+		const KeyBlob *b = KEY_BLOB(bar->k[0]);
+		const uint32 *sorted = dict_sorted(d);
+		uint32		lo = 0,
+					hi = d->n;
+
+		SIFT_BISECT(uint32, m, lo, hi, k->desc ? code_vs_blob(t, d, sorted[m], b) < 0 : code_vs_blob(t, d, sorted[m], b) <= 0);
+		ob->v = lo + (k->desc ? 1 : 0);
+	}
+	else
+		ob->v = key_prefix(k->bkind, KEY_BLOB(bar->k[0])->data, KEY_BLOB(bar->k[0])->len);
+}
+
+/* Is the row strictly after the bar? By the codes unless they tie (not exact), then as bytes; without a code, as after_bar does */
+static inline bool
+row_after(SiftTopN *t, const OrdCode *oc, const OrdBar *ob, uint8 *worse, const SiftSrcDict *d, bool isnull, uint32 code, const TopEnt *bar)
+{
+	if (oc && ob->on && !isnull)
+	{
+		uint64		a = oc->ord[code];
+
+		if (a != ob->v)
+			return t->key[0].desc ? a < ob->v : a > ob->v;
+		if (oc->exact)
+			return false;
+		t->nties++;
+		return vs_bar(t, d, false, code, bar) > 0;
+	}
+	return worse ? after_bar(t, worse, d, isnull, code, bar) : vs_bar(t, d, isnull, code, bar) > 0;
+}
+
+/* Does the row come after the unit's n-th, or tie with it (the rows are visited in order, so a tie comes after)? */
+static inline bool
+row_not_before(SiftTopN *t, const OrdCode *oc, const uint32 *codes, const SiftSrcDict *d, bool isnull, uint32 code)
+{
+	const TopEnt *l0 = &t->lh[0];
+
+	if (oc && !isnull && !(l0->nul & 1))
+	{
+		uint64		a = oc->ord[code],
+					c = oc->ord[codes[l0->row]];
+
+		if (a != c)
+			return t->key[0].desc ? a < c : a > c;
+		if (oc->exact)
+			return true;
+		t->nties++;
+	}
+	return vs_bar(t, d, isnull, code, l0) >= 0;
+}
+
+/*
+ * sift_topn_unit for a first key of byte strings: the bar is the heap's worst entry or the unit's n-th so far (whichever sorts first), and the rows are
+ * compared with it by the entry of the dictionary, as the type's comparison says, or by the order code of the dictionary when it has one.
+ */
+static void
+unit_blob(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+{
+	const uint32 *code = key0->data;
+	const TopEnt *bar = t->n == t->limit ? &t->heap[0] : NULL;
+	int			nw = (nrow + 63) / 64,
+				m = 0,
+				nc = 0;
+	int64		npass = 0;
+	OrdCode    *oc;
+	uint8	   *worse = NULL;
+	OrdBar		ob;
+
+	for (int w = 0; w < nw; w++)
+		npass += pg_popcount64(rmask[w]);
+	oc = unit_ord(t, key0->dict, npass);
+	/* a string that was after the bar is remembered by its code: worth the byte a code when the rows of the unit are not few against the entries */
+	if (oc == NULL && npass * 8 >= key0->dict->n)
+		worse = MemoryContextAllocZero(t->ucxt, Max(key0->dict->n, 1));
+	t->nord[oc ? (oc->exact ? 0 : 1) : 2]++;
+	t->nties = 0;
+	grow_unit_buffers(t, nrow);
+	t->ln = 0;
+	ord_bar(t, &ob, oc, key0->dict, code, bar);
+	for (int w = 0; w < nw; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			int			i = w * 64 + pg_rightmost_one_pos64(b);
+			bool		isnull = key0->isnull && key0->isnull[i];
+			TopEnt		e;
+
+			if (bar && row_after(t, oc, &ob, worse, key0->dict, isnull, code[i], bar))
+				continue;
+			t->crow[m] = i;
+			t->ck[m] = code[i];
+			t->cnul[m++] = isnull;
+			/* a row that ties with the unit's n-th stays a candidate, but it comes after it: the rows are visited in order */
+			if (t->ln == t->limit && row_not_before(t, oc, code, key0->dict, isnull, code[i]))
+				continue;
+			memset(&e, 0, sizeof(e));
+			e.nul = isnull;
+			e.row = e.tie = i;
+			if (!isnull)
+			{
+				const char *p;
+				uint32		len;
+
+				key_entry(t, 0, key0->dict, code[i], &p, &len);
+				e.k[0] = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
+			}
+			heap_push(t, t->lh, &t->ln, &e);
+			if (t->ln == t->limit && (bar == NULL || key_cmp_n(t, &t->lh[0], bar, 1) < 0))
+				bar = &t->lh[0];
+			if (bar == &t->lh[0])
+				ord_bar(t, &ob, oc, key0->dict, code, bar);
+		}
+	for (int q = 0; q < m; q++)
+	{
+		TopEnt	   *e = &t->ce[nc];
+
+		if (bar && row_after(t, oc, &ob, worse, key0->dict, t->cnul[q], t->ck[q], bar))
+			continue;
+		memset(e, 0, sizeof(TopEnt));
+		e->nul = t->cnul[q];
+		e->row = t->cand[nc] = t->crow[q];
+		e->tie = e->row;
+		if (!t->cnul[q])
+		{
+			const char *p;
+			uint32		len;
+
+			key_entry(t, 0, key0->dict, t->ck[q], &p, &len);
+			e->k[0] = (int64) (uintptr_t) blob_new(t->ucxt, p, len);
+		}
+		nc++;
+	}
+	if (oc && !oc->exact && t->nties * 4 > npass)
+		oc->useless = true;
+	if (nc > 0)
+		finish_unit(t, src, unit, nc);
+}
+
+/*
+ * Sorted runs in a walk over the units: the first pass takes about 2 n / units rows of each (their best, so that together they hold the n best of all but
+ * for the odd unit with more), which fills the heap with a bar close to the last, and leaves the units that have more rows below it to a second pass,
+ * which reads only them (sift_topn_revisit_next) and takes the rows after the ones taken. One pass over the units, each at most as far as the n-th row
+ * of the heap in the end needs, where one unit after the other would take n / k rows of the k-th.
+ */
+void
+sift_topn_run_budget(SiftTopN *t, uint32 units)
+{
+	int			b;
+
+	if (!sift_topn_runs || t->key[0].xk != TXK_NONE || t->key[0].leaf < 0 || t->all || t->sort || t->limit <= 0 || units < 8)
+		return;
+	b = Max(2, (int) (((uint64) t->limit * 2 + units - 1) / units));
+	if (b * 2 < t->limit)
+		t->budget = b;
+}
+
+static int
+trunc_cmp(const void *a, const void *b)
+{
+	const RunTrunc *x = a,
+			   *y = b;
+
+	return rank_after(x->next, y->next) ? 1 : rank_after(y->next, x->next) ? -1 : 0;
+}
+
+/* The superblock of the next unit the first pass left unfinished whose rest the bar does not exclude; false when there is none */
+bool
+sift_topn_revisit_next(SiftTopN *t, uint32 *sb)
+{
+	Rank		bar;
+
+	if (!t->revisit)
+	{
+		t->revisit = true;
+		t->rpos = 0;
+		if (t->ntrunc > 1)
+			qsort(t->trunc, t->ntrunc, sizeof(RunTrunc), trunc_cmp);
+	}
+	if (t->yielded)
+		t->trunc[t->rpos].done = true;
+	t->yielded = false;
+	while (t->rpos < t->ntrunc && t->trunc[t->rpos].done)
+		t->rpos++;
+	if (t->rpos >= t->ntrunc)
+		return false;
+	if (bar_rank(t, &bar) && rank_after(t->trunc[t->rpos].next, bar))
+		return false;
+	*sb = t->trunc[t->rpos].sb;
+	/* done when the next is asked for, whether the unit was read (it marks itself) or its zone could not beat the bar now */
+	t->yielded = true;
+	return true;
 }
 
 /*
@@ -537,7 +2142,7 @@ sort_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSr
  * the n-th).
  */
 void
-sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, SiftTopLeaf leaf, void *ctx)
 {
 	const TopKey *k0 = &t->key[0];
 	Rank		bar = {0, 0},
@@ -547,18 +2152,40 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 				m = 0,
 				nc = 0;
 
-	if (t->sort)
+	if (t->ucxt)
+	{
+		MemoryContextReset(t->ucxt);
+		for (int j = 0; j < t->nkey; j++)
+			t->key[j].xid = NULL;
+	}
+	if (t->nexpr > 0)
+	{
+		for (int j = 0; j < t->nkey; j++)
+			if (t->key[j].x)
+				expr_eval_unit(t, &t->key[j], leaf, ctx, rmask, nrow);
+		if (t->key[0].x)
+			key0 = &t->key[0].xv;
+	}
+	if (t->all)
 	{
 		sort_unit(t, src, unit, key0, rmask, nrow);
 		return;
 	}
+	if (k0->blob)
+	{
+		unit_blob(t, src, unit, key0, rmask, nrow);
+		return;
+	}
+	if (t->revisit)
+	{
+		(void) run_unit(t, src, unit, key0, rmask, nrow);
+		return;
+	}
+	if (run_unit(t, src, unit, key0, rmask, nrow))
+		return;
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
-	if (t->n == t->limit)
-	{
-		bar = ent_rank(t, &t->heap[0]);
-		barred = true;
-	}
+	barred = bar_rank(t, &bar);
 	for (int w = 0; w < nw; w++)
 		for (uint64 b = rmask[w]; b; b &= b - 1)
 		{
@@ -604,10 +2231,31 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 		finish_unit(t, src, unit, nc);
 }
 
+/* The zone of the key's values from the zone of its leaf: coalesce(x, c) is c where x is NULL */
+static SiftSrcZone
+key_zone(const TopKey *k, const SiftSrcZone *z)
+{
+	SiftSrcZone o = *z;
+
+	/* the zone is of OIDs, which are not in the order of the values */
+	o.inexact |= k->nenum > 0;
+	if (k->xk != TXK_COALESCE || o.inexact || z->nnull == 0)
+		return o;
+	if (z->nnull == z->nvals)
+		o.min = o.max = k->xc;
+	else
+	{
+		o.min = Min(z->min, k->xc);
+		o.max = Max(z->max, k->xc);
+	}
+	o.nnull = 0;
+	return o;
+}
+
 bool
 sift_topn_wants_zones(const SiftTopN *t)
 {
-	return t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64;
+	return !t->all && !t->totals && t->key[0].leaf >= 0 && t->key[0].nenum == 0 && (t->key[0].vtype == SCV_I32 || t->key[0].vtype == SCV_I64);
 }
 
 /*
@@ -616,31 +2264,32 @@ sift_topn_wants_zones(const SiftTopN *t)
  * counts the dead rows too: it only ever says "no" for a unit that has nothing better.
  */
 bool
-sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
+sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *zone)
 {
 	const TopKey *k = &t->key[0];
-	const TopEnt *w;
-	bool		wnull;
-	int64		best;
+	SiftSrcZone zk = key_zone(k, zone);
+	const SiftSrcZone *z = &zk;
+	Rank		bar,
+				best;
 
-	if (t->sort || t->n < t->limit || z->inexact)
+	if (t->all || z->inexact || !bar_rank(t, &bar))
 		return true;
-	w = &t->heap[0];
-	wnull = w->nul & 1;
-	if (z->nnull > 0 && (k->nulls_first || wnull))
-		return true;
-	if (z->nnull == z->nvals)
-		return wnull;
-	if (wnull)
-		return !k->nulls_first;
-	best = k->desc ? z->max : z->min;
-	return k->desc ? best >= w->k[0] : best <= w->k[0];
+	if (z->nnull > 0 && k->nulls_first)
+		best = (Rank) {0, 0};
+	else if (z->nnull == z->nvals)
+		best = (Rank) {k->nulls_first ? 0 : 2, 0};
+	else
+		best = rank_of(k, false, k->desc ? z->max : z->min);
+	return !rank_after(best, bar);
 }
 
 /* The zone of the unit of superblock sb, probed before the scan; it may be passed in any order */
 void
-sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *z)
+sift_topn_probe(SiftTopN *t, uint32 sb, const SiftSrcZone *zone)
 {
+	SiftSrcZone zk = key_zone(&t->key[0], zone);
+	const SiftSrcZone *z = &zk;
+
 	if (t->nprobe < TOPN_PROBES && !z->inexact && z->nnull < z->nvals)
 	{
 		t->probe[t->nprobe].sb = sb;
@@ -733,7 +2382,7 @@ sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
 	MemoryContext cxt = GetMemoryChunkContext(t);
 
 	t->nsb = nsb;
-	t->wzone = MemoryContextAllocZero(cxt, nsb * sizeof(SiftSrcZone));
+	t->wbound = MemoryContextAllocZero(cxt, (Size) nsb * t->wkeys * sizeof(Rank));
 	t->wunits = MemoryContextAllocZero(cxt, nsb * sizeof(uint32));
 	t->word = MemoryContextAlloc(cxt, nsb * sizeof(uint32));
 	for (uint32 i = 0; i < nsb; i++)
@@ -741,44 +2390,103 @@ sift_topn_walk_begin(SiftTopN *t, uint32 nsb)
 	t->wpos = 0;
 }
 
+int
+sift_topn_walk_keys(const SiftTopN *t)
+{
+	return t->wkeys;
+}
+
+/* The best rank key j can have in a unit with this zone: before every rank when the zone is not exact, a NULL first under NULLS FIRST, else the bound of the values (NULLs last when there are no values) */
+static Rank
+zone_best(const TopKey *k, const SiftSrcZone *zone)
+{
+	SiftSrcZone zk = key_zone(k, zone);
+	const SiftSrcZone *z = &zk;
+
+	if (z->inexact)
+		return (Rank) {-1, 0};
+	if (z->nnull == z->nvals || (z->nnull > 0 && k->nulls_first))
+		return rank_of(k, true, 0);
+	return rank_of(k, false, k->desc ? z->max : z->min);
+}
+
+/* z: the zones of the first sift_topn_walk_keys keys of superblock sb */
 void
 sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z)
 {
-	t->wzone[sb] = *z;
+	for (int j = 0; j < t->wkeys; j++)
+		t->wbound[(Size) sb * t->wkeys + j] = zone_best(&t->key[j], &z[j]);
 	t->wunits[sb] = units;
 }
 
-/* 0: holds rows that sort first whatever the bound (a NULL under NULLS FIRST, a zone that is not exact); 1: by its bound; 2: only NULLs under NULLS LAST */
 static int
-walk_class(const SiftTopN *t, const SiftSrcZone *z)
+rank_cmp(Rank a, Rank b)
 {
-	if (z->inexact || (z->nnull > 0 && t->key[0].nulls_first))
-		return 0;
-	return z->nnull == z->nvals ? 2 : 1;
+	return rank_after(a, b) ? 1 : rank_after(b, a) ? -1 : 0;
 }
 
+/* The superblocks by the best row they can hold, key by key: a unit whose bound on the keys so far ties with another is ordered by the next key */
 static int
 walk_cmp(const void *pa, const void *pb, void *arg)
 {
 	const SiftTopN *t = arg;
 	uint32		a = *(const uint32 *) pa,
 				b = *(const uint32 *) pb;
-	const SiftSrcZone *za = &t->wzone[a],
-			   *zb = &t->wzone[b];
-	int			ca = walk_class(t, za),
-				cb = walk_class(t, zb);
 
-	if (ca != cb)
-		return ca < cb ? -1 : 1;
-	if (ca == 1)
+	for (int j = 0; j < t->wkeys; j++)
 	{
-		int64		ba = t->key[0].desc ? za->max : za->min,
-					bb = t->key[0].desc ? zb->max : zb->min;
+		int			c = rank_cmp(t->wbound[(Size) a * t->wkeys + j], t->wbound[(Size) b * t->wkeys + j]);
 
-		if (ba != bb)
-			return (ba < bb) != t->key[0].desc ? -1 : 1;
+		if (c != 0)
+			return c;
 	}
 	return SIFT_CMP3(a, b);
+}
+
+/*
+ * Can a row of a superblock with these bounds on the leading keys sort before the n-th best so far, or tie with it? A bound on each key is a
+ * lower bound of its rows' keys, so a row's keys are not before the bounds in key order: the superblock is out when its bound is behind the
+ * n-th on a key that the bounds before it tie on, and in when it is ahead of it (or a bound is none).
+ */
+static bool
+bounds_viable(const SiftTopN *t, const Rank *bound)
+{
+	const TopEnt *w;
+
+	if (t->all || t->n < t->limit)
+		return true;
+	w = &t->heap[0];
+	for (int j = 0; j < t->wkeys; j++)
+	{
+		int			c = rank_cmp(bound[j], rank_of(&t->key[j], (w->nul >> j) & 1, w->k[j]));
+
+		if (c != 0)
+			return c < 0;
+	}
+	return true;
+}
+
+static bool
+walk_viable(const SiftTopN *t, uint32 sb)
+{
+	return bounds_viable(t, &t->wbound[(Size) sb * t->wkeys]);
+}
+
+/*
+ * The walk of a parallel scan, where a participant has no table of the bounds (the leader's order is all it gets): the superblock it takes
+ * next, by the zones z of its leading keys. The first key is tested against the bound of every participant, all of them against the n-th row
+ * of this participant's heap, which is no better than the n-th of the result.
+ */
+bool
+sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z)
+{
+	Rank		bound[SIFT_TOPN_MAX_KEYS];
+
+	if (!sift_topn_zone_viable(t, &z[0]))
+		return false;
+	for (int j = 0; j < t->wkeys; j++)
+		bound[j] = zone_best(&t->key[j], &z[j]);
+	return bounds_viable(t, bound);
 }
 
 void
@@ -793,7 +2501,7 @@ sift_topn_walk_next(SiftTopN *t, uint32 *sb)
 	if (t->wpos >= t->nsb)
 		return false;
 	*sb = t->word[t->wpos];
-	if (!sift_topn_zone_viable(t, &t->wzone[*sb]))
+	if (!walk_viable(t, *sb))
 	{
 		for (; t->wpos < t->nsb; t->wpos++)
 			t->skipped += t->wunits[t->word[t->wpos]];
@@ -809,6 +2517,8 @@ sift_topn_finish(SiftTopN *t)
 	t->pos = 0;
 	if (t->sort)
 		tuplesort_performsort(t->sort);
+	else if (t->all)
+		qsort_arg(t->mem, t->nmem, t->stride * sizeof(int64), mem_cmp, t);
 	else
 	{
 		t->res = t->heap;
@@ -816,24 +2526,33 @@ sift_topn_finish(SiftTopN *t)
 	}
 }
 
-/* The next row of the result: the TID of the sort, or of the heap in order */
+/* The next row of the result: the TID of the sort, or of the heap in order, and the partition it is in */
 static bool
-next_tid(SiftTopN *t, ItemPointerData *tid)
+next_tid(SiftTopN *t, ItemPointerData *tid, uint16 *part)
 {
 	bool		isnull;
 	int64		tie;
 
-	if (t->sort == NULL)
+	if (t->mem)
+	{
+		if (t->pos >= t->nmem)
+			return false;
+		tie = mem_row(t, t->pos++)[t->stride - 1];
+		tie_tid(tie, tid, part);
+		return true;
+	}
+	if (!t->all)
 	{
 		if (t->pos >= t->n)
 			return false;
-		*tid = t->res[t->pos++].tid;
+		*tid = t->res[t->pos].tid;
+		*part = t->res[t->pos++].part;
 		return true;
 	}
 	if (!tuplesort_gettupleslot(t->sort, true, false, t->sout, NULL))
 		return false;
 	tie = DatumGetInt64(slot_getattr(t->sout, t->nkey + 1, &isnull));
-	ItemPointerSet(tid, tie >> 16, tie & 0xFFFF);
+	tie_tid(tie, tid, part);
 	return true;
 }
 
@@ -841,27 +2560,148 @@ bool
 sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 {
 	ItemPointerData tid;
+	uint16		part;
+	TopFetch   *f;
 	bool		call_again = false,
 				all_dead;
 
-	if (!next_tid(t, &tid))
+	if (!next_tid(t, &tid, &part))
 		return false;
+	if (t->emitted++ < t->skip)
+	{
+		ExecClearTuple(slot);
+		memset(slot->tts_isnull, true, t->nout * sizeof(bool));
+		ExecStoreVirtualTuple(slot);
+		return true;
+	}
+	f = &t->pf[part];
+	if (f->slot == NULL)
+		fetch_begin(t, part);
 	/* the TID is the root of a HOT chain when the row was updated without a new index entry: the fetch follows the chain to the visible version */
-	if (!table_index_fetch_tuple(t->fetch, &tid, t->snap, t->fslot, &call_again, &all_dead))
-		elog(ERROR, "sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid));
+	if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("sift: top-N row (%u,%u) is not in the heap", ItemPointerGetBlockNumber(&tid), ItemPointerGetOffsetNumber(&tid)),
+				 errhint("REINDEX the index.")));
 	t->fetched++;
 	ExecClearTuple(slot);
 	for (int c = 0; c < t->nout; c++)
-		slot->tts_values[c] = slot_getattr(t->fslot, t->attno[c], &slot->tts_isnull[c]);
+		slot->tts_values[c] = slot_getattr(f->slot, f->attno[c], &slot->tts_isnull[c]);
 	ExecStoreVirtualTuple(slot);
 	ExecMaterializeSlot(slot);
 	return true;
+}
+
+/* ---- parallel scan: the participants keep a heap each, the leader merges them ---- */
+
+#define TOPN_MAGIC	0x544F5031
+
+bool
+sift_topn_parallel_ok(const SiftTopN *t)
+{
+	return !t->all && !t->totals && t->limit > 0;
+}
+
+void
+sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound)
+{
+	t->shared = bound;
+}
+
+void
+sift_topn_bound_init(pg_atomic_uint64 *bound)
+{
+	pg_atomic_init_u64(bound, PG_UINT64_MAX);
+}
+
+/* A worker takes the order of the leader's probes */
+void
+sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse)
+{
+	t->nsb = nsb;
+	t->reverse = reverse;
+}
+
+const uint32 *
+sift_topn_walk_order(const SiftTopN *t)
+{
+	return t->word;
+}
+
+void
+sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs)
+{
+	t->skipped += n;
+	t->nrun += runs;
+}
+
+int64
+sift_topn_runs_read(const SiftTopN *t)
+{
+	return t->nrun;
+}
+
+/* units compared with the bar by an exact order code (0), by a prefix (1), as bytes (2) */
+int64
+sift_topn_ord_units(const SiftTopN *t, int how)
+{
+	return t->nord[how];
+}
+
+/* The heap of a worker, for the leader: the entries are the keys and the TID of the rows, not the rows */
+void
+sift_topn_export(const SiftTopN *t, StringInfo b)
+{
+	uint32		h[2] = {TOPN_MAGIC, t->n};
+
+	appendBinaryStringInfo(b, (const char *) h, sizeof(h));
+	appendBinaryStringInfo(b, (const char *) t->heap, t->n * sizeof(TopEnt));
+	/* then the byte strings of the entries, in the order of the entries and keys: a KeyBlob each, for the keys that are not NULL */
+	for (int i = 0; t->nblob > 0 && i < t->n; i++)
+		for (int j = 0; j < t->nkey; j++)
+			if (t->key[j].blob && !((t->heap[i].nul >> j) & 1))
+				appendBinaryStringInfo(b, (const char *) KEY_BLOB(t->heap[i].k[j]), offsetof(KeyBlob, data) + KEY_BLOB(t->heap[i].k[j])->len);
+}
+
+void
+sift_topn_import(SiftTopN *t, const char *data, Size len)
+{
+	uint32		h[2];
+	Size		off;
+
+	SIFT_INVARIANT(len >= sizeof(h), "sift: bad message of a parallel top-N");
+	memcpy(h, data, sizeof(h));
+	SIFT_INVARIANT(h[0] == TOPN_MAGIC && (Size) h[1] <= (len - sizeof(h)) / sizeof(TopEnt), "sift: bad message of a parallel top-N");
+	off = sizeof(h) + h[1] * sizeof(TopEnt);
+	for (uint32 i = 0; i < h[1]; i++)
+	{
+		TopEnt		e;
+
+		memcpy(&e, data + sizeof(h) + i * sizeof(TopEnt), sizeof(e));
+		for (int j = 0; j < t->nkey; j++)
+			if (t->key[j].blob && !((e.nul >> j) & 1))
+			{
+				uint32		n;
+
+				SIFT_INVARIANT(len - off >= sizeof(n), "sift: bad message of a parallel top-N");
+				memcpy(&n, data + off, sizeof(n));
+				SIFT_INVARIANT(len - off - sizeof(n) >= n, "sift: bad message of a parallel top-N");
+				e.k[j] = (int64) (uintptr_t) blob_new(CurrentMemoryContext, data + off + sizeof(n), n);
+				off += sizeof(n) + n;
+			}
+		res_push(t, &e);
+		for (int j = 0; j < t->nkey; j++)
+			if (t->key[j].blob && !((e.nul >> j) & 1))
+				pfree((void *) KEY_BLOB(e.k[j]));
+	}
+	SIFT_INVARIANT(off == len, "sift: bad message of a parallel top-N");
 }
 
 void
 sift_topn_rewind(SiftTopN *t)
 {
 	t->pos = 0;
+	t->emitted = 0;
 	if (t->sort)
 		tuplesort_rescan(t->sort);
 }
@@ -869,5 +2709,5 @@ sift_topn_rewind(SiftTopN *t)
 int64
 sift_topn_sorted(const SiftTopN *t)
 {
-	return t->sort ? t->nsort : -1;
+	return t->all ? t->nsort : -1;
 }

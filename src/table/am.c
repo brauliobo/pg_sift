@@ -46,7 +46,20 @@
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
 bool		sift_tbl_inline_promote = true;
+int			sift_tbl_backpressure = 0;
 char	   *sift_tbl_compression_spec = NULL;
+
+/* The directory is half full from the first merge on (dir_pressure), so a threshold at or under that is no backpressure */
+static bool
+backpressure_check_hook(int *newval, void **extra, GucSource source)
+{
+	if (*newval > 0 && *newval <= 50)
+	{
+		GUC_check_errdetail("The value is 0 (off) or a percent above 50, where the directory is already filling.");
+		return false;
+	}
+	return true;
+}
 
 static void
 check_compression(const char *spec)
@@ -70,22 +83,62 @@ sift_tbl_define_gucs(void)
 							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",
 							&sift_tbl_write_buffer_limit, 4096, 2048, 8192,
 							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_wide_rows",
+							 "Accepts a row of a sift_table that does not fit one write buffer (up to PostgreSQL's 1 GB), in pages beyond the buffer's table (format 11).",
+							 "Off: such a row is refused. On (the default): the write buffer that takes it is marked format 11, which a build that does not know it cannot write to; rows that fit keep the layout of earlier versions.",
+							 &sift_tbl_wide_rows, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_inline_promote",
 							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_dict_lookup",
+							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string.",
+							 NULL, &sift_col_table_lookup, false,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_backpressure",
+							"Percent of the directory of a sift_table from which a writer that needs a new write buffer first waits for the maintenance lock and merges.",
+							"0 (off): a writer waits only when the directory is nearly full. Above 50, the percent of the entries.",
+							&sift_tbl_backpressure, 0, 0, 99,
+							PGC_USERSET, 0, backpressure_check_hook, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_async_promote",
+							 "A backend that closes a write buffer of a sift_table asks a background worker to promote it, where it promotes it itself.",
+							 "Needs sift.async_maintenance and sift.table_inline_promote. From half of the directory on the writer promotes and merges itself.",
+							 &sift_tbl_async_promote, false, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_bulk_groups",
+							 "COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups, with no write buffer to promote.",
+							 "On by default. Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
+							 &sift_tbl_bulk_groups, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag",
-							 "A backend that closes a write buffer of a sift_table asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
-							 "Needs sift.async_maintenance. The worker clears no index entry: VACUUM still has to run for those.",
-							 &sift_tbl_auto_defrag, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "A backend that closes a write buffer of a sift_table, or deletes, updates or reads it, asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
+							 "Needs sift.async_maintenance. With sift.table_auto_defrag_indexes the worker runs a whole VACUUM when the dead rows reach sift.table_auto_defrag_dead_pct; without it the worker clears no index entry and VACUUM still has to run for those.",
+							 &sift_tbl_auto_defrag, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_free_pct",
 							"Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them.",
 							NULL, &sift_tbl_auto_defrag_free_pct, 25, 1, 100,
 							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_auto_defrag_delay",
-							"Milliseconds the background pass of a sift_table waits after each segment it rewrites.",
-							"0 never waits.", &sift_tbl_auto_defrag_delay, 10, 0, 10000,
+							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
+							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
 							PGC_USERSET, GUC_UNIT_MS, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_dead_pct",
+							"Percent of the rows of a sift_table that are tombstones from which the background pass is asked for.",
+							"The pass rewrites the segments that are more than sift.table_dead_rewrite_pct percent dead; 100 never asks for dead rows.",
+							&sift_tbl_auto_defrag_dead_pct, 5, 1, 100, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_budget",
+							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
+							"The worker passes again while the budget stopped the last one. 0 is no limit.",
+							&sift_tbl_auto_defrag_budget, 128, 0, 1048576, PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_max_active",
+							"Client backends of the database running a statement above which the background pass of a sift_table waits for a quieter moment.",
+							"The worker looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all, and between the merges of a pass; a later request asks again. 0: never waits.",
+							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.table_auto_defrag_wal_rate",
+							"Kilobytes of WAL per second the background pass of a sift_table may write on average.",
+							"After a step that put it ahead of that rate the worker sleeps until the rate is met. A rewritten segment makes every backend that reads it load its dictionaries again, so the rate also bounds how often that happens. 0: no limit.",
+							&sift_tbl_auto_defrag_wal_rate, 0, 0, INT_MAX, PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_auto_defrag_coalesce",
+							 "The background pass of a sift_table merges the small column groups next to the ones it rewrites into one group.",
+							 NULL, &sift_tbl_auto_defrag_coalesce, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_auto_defrag_indexes",
 							 "The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included.",
 							 "Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM.",
@@ -170,10 +223,34 @@ insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions opt
 	pgstat_count_heap_insert(rel, 1);
 }
 
+/* A row of COPY, CREATE TABLE AS or REFRESH MATERIALIZED VIEW (they pass a bulk insert state) goes into a column group when sift.table_bulk_groups says so */
+static bool
+insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
+{
+	SiftTblRel *st;
+	MinimalTuple mtup;
+
+	if (bistate == NULL || !sift_tbl_bulk_groups)
+		return false;
+	st = sift_tbl_rel(rel);
+	sift_tbl_ensure_init(rel);
+	sift_tbl_layout_ready(rel, st);
+	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
+		return false;
+	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
+	mtup = form_mtuple(rel, slot);
+	sift_tbl_load_row(rel, st, mtup, cid, &slot->tts_tid);
+	slot->tts_tableOid = RelationGetRelid(rel);
+	heap_free_minimal_tuple(mtup);
+	pgstat_count_heap_insert(rel, 1);
+	return true;
+}
+
 static void
 tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
-	insert_one(rel, slot, cid, options, 0);
+	if (!insert_bulk(rel, slot, cid, options, bistate))
+		insert_one(rel, slot, cid, options, 0);
 }
 
 static void
@@ -205,7 +282,8 @@ static void
 tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	for (int i = 0; i < nslots; i++)
-		insert_one(rel, slots[i], cid, options, 0);
+		if (!insert_bulk(rel, slots[i], cid, options, bistate))
+			insert_one(rel, slots[i], cid, options, 0);
 }
 
 /*
@@ -216,6 +294,7 @@ static TM_Result
 tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wait, LockWaitPolicy policy,
 		   bool locking, TM_FailureData *tmfd, SiftTblDel *del)
 {
+	sift_tbl_auto_defrag_tick(rel, st);
 	for (;;)
 	{
 		SiftTblRowVer rv;
@@ -233,8 +312,8 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 				tmfd->xmax = InvalidTransactionId;
 				return TM_Deleted;
 			}
-			elog(ERROR, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
-				 ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
+			SIFT_INVARIANT(false, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
+						   ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
 		}
 		sift_tbl_free_row(&rv);
 		sift_tbl_del_state(st, rv.key, del);
@@ -247,7 +326,7 @@ tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wa
 				UnlockTuple(rel, tid, ExclusiveLock);
 				if (del->cid >= cid || locking)
 					return TM_SelfModified;
-				elog(ERROR, "attempted to modify a tuple deleted by an earlier command of \"%s\"", RelationGetRelationName(rel));
+				SIFT_INVARIANT(false, "attempted to modify a tuple deleted by an earlier command of \"%s\"", RelationGetRelationName(rel));
 				break;
 			case SIFT_TBL_DEL_DELETED:
 				UnlockTuple(rel, tid, ExclusiveLock);
@@ -286,7 +365,10 @@ log_old_row(Relation rel, SiftTblRel *st, SiftTblOp op, ItemPointer otid, Minima
 	SiftTblRowVer rv;
 
 	if (!sift_tbl_fetch_row(rel, st, otid, &rv))
-		elog(ERROR, "could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 	sift_tbl_log_change(rel, op, newrow, rv.tuple);
 	heap_freetuple(rv.tuple);
 }
@@ -413,7 +495,10 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 			sift_tbl_tomb_append(rel, st, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TBL_TOMB_LOCK, 0);
 		UnlockTuple(rel, tid, ExclusiveLock);
 		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
-			elog(ERROR, "could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
+			ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel)),
+				 errhint("A concurrent merge or defrag replaced the rows it reads: retry the statement.")));
 		sift_tbl_store(slot, rv.tuple);
 		return TM_Ok;
 	}
@@ -422,6 +507,7 @@ tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot 
 static void
 tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
+	sift_tbl_load_finish(rel);
 }
 
 static void
@@ -433,7 +519,9 @@ tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator
 	if (BLCKSZ != 8192)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_table needs BLCKSZ 8192")));
+				 errmsg("sift_table needs BLCKSZ 8192"),
+				 errdetail("This server has BLCKSZ %d.", BLCKSZ),
+				 errhint("Use a PostgreSQL build with the default 8 kB block size.")));
 	sift_tbl_layout_check(rel);
 	*freezeXid = RecentXmin;
 	*minmulti = GetOldestMultiXactId();

@@ -48,7 +48,7 @@ rel_index(RelOptInfo *rel, Oid indexoid)
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->indexoid == indexoid)
 			return ii;
-	elog(ERROR, "sift: index %u is not an index of the planned relation", indexoid);
+	SIFT_INVARIANT(false, "sift: index %u is not an index of the planned relation", indexoid);
 	return NULL;
 }
 
@@ -110,12 +110,14 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 			   *residual = NIL,
 			   *cuts = NIL,
 			   *cut_exprs;
+	bool		ranked = DatumGetInt32(list_nth_node(Const, best->custom_private, SIFT_PRIV_MODE)->constvalue) == SIFT_MODE_RANKED;
 
+	/* the clauses come in the order PostgreSQL runs them in: by security level first, so a policy's quals are the residual's first */
 	foreach_node(RestrictInfo, rinfo, clauses)
 	{
 		Expr	   *q;
 
-		if (scan_match_clause((Node *) rinfo, ii, &q))
+		if (scan_match_clause(root, (Node *) rinfo, ii, ranked, &q))
 			continue;
 		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
 			cuts = lappend(cuts, rinfo);
@@ -131,6 +133,8 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->custom_private = list_copy_head(best->custom_private, SIFT_NPRIV);
 	cs->custom_exprs = list_make5(copyObject(list_nth(best->custom_private, SIFT_NPRIV)), residual,
 								  limit_params(root, best, cuts_from_above(cuts, rel->relid)), copyObject(keys), cut_exprs);
+	if (rel_secured(root, rel))
+		cs->custom_exprs = lappend(cs->custom_exprs, NIL);
 	cs->methods = &sift_scan_plan_methods;
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, ii->indexoid);
 	if (custom_plans != NIL)

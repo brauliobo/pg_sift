@@ -187,7 +187,7 @@ def host_rows(dataset, tier, path):
     grab = lambda key, pat='(.*)': (re.search(r'^%s: %s' % (key, pat), text, re.M) or [None, ''])[1].strip().replace(';', ',')
     cpu = re.sub(r'\s+\d+-Core Processor$', '', grab('cpu'))
     quota = re.sub(r' \(.*', '', grab('cpu quota'))
-    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('sift', grab('sift commit')),
+    words = [('date', grab('date')[:10]), ('cpu', cpu), ('threads', grab('cpu threads', r'(\d+)')), ('quota', '' if quota in ('', 'none') else quota), ('pg', grab('postgres')), ('version', grab('engines', r'sift (\S+)')), ('sift', grab('sift commit')),
              ('elasticsearch', grab('elasticsearch', r'(\S+)'))]
     out.append((dataset, tier, '-', '-', ';'.join('%s=%s' % kv for kv in words if kv[1]), 'session', 1, 1, 1, '-', *single(1)))
     return out

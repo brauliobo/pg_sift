@@ -4,5 +4,5 @@
 -- key: -
 -- scenario: yes
 SELECT p.label, count(o.id) AS orders, count(*) AS rows
-FROM periods p LEFT JOIN orders o ON o.placed_at <@ p.range
+FROM spans p LEFT JOIN orders o ON o.placed_at <@ p.range
 GROUP BY p.label ORDER BY p.label NULLS FIRST

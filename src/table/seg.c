@@ -14,11 +14,15 @@
 #include "access/heapam.h"
 #include "access/table.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/tupmacs.h"
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_inherits.h"
+#include "commands/event_trigger.h"
+#include "nodes/parsenodes.h"
 #include "utils/acl.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -43,6 +47,7 @@
 #include "col/pg.h"
 #include "col/seg.h"
 #include "core/lane.h"
+#include "core/limits.h"
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
@@ -172,10 +177,10 @@ layout_build_for(Relation rel, MemoryContext cxt, const char *paths)
 	l->exc = n;
 	defs[n] = (SiftColDef) {.id = n,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = SIFT_COLS_VAR,.attno = 0,.type = SIFT_COLT_BYTEA,.path = "exceptions"};
 	n++;
-	if (n > SIFT_COL_MAX_COLS)
+	if (n > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("a sift_table holds at most %d columns", SIFT_COL_MAX_COLS - 1),
+				 errmsg("a sift_table holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS) - 1),
 				 errdetail("Table \"%s\" has %d%s.", RelationGetRelationName(rel), n - 1 - npath, npath ? " and its declared paths hold the rest" : "")));
 	l->schema = sift_cschema_create(cxt, defs, n);
 	pfree(defs);
@@ -233,6 +238,69 @@ sift_tbl_layout_check(Relation rel)
 
 	(void) layout_build(rel, cx);
 	MemoryContextDelete(cx);
+}
+
+PG_FUNCTION_INFO_V1(sift_table_ddl_check);
+
+/*
+ * The event trigger after ALTER TABLE: a column added, a column's type changed or a column renamed (declared paths follow the name of a
+ * jsonb column) fails with the message of CREATE TABLE when the sift_table, or a partition of it, would hold more leaves than a segment,
+ * instead of at its next write. DROP COLUMN is not checked, so that a table made too wide by 3.2 can be narrowed.
+ *
+ * Before CREATE TRIGGER: pg_repack's first step on a table is the trigger repack.repack_trigger. It copies the rows into a heap table and
+ * swaps the files, which would replace the column segments of a sift_table with heap pages and lose the table, so the trigger is refused.
+ */
+Datum
+sift_table_ddl_check(PG_FUNCTION_ARGS)
+{
+	Node	   *stmt;
+	RangeVar   *rv = NULL;
+
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
+		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_EVENT_TRIGGER_PROTOCOL_VIOLATED), errmsg("not fired by the event trigger manager")));
+	stmt = ((EventTriggerData *) fcinfo->context)->parsetree;
+	if (IsA(stmt, AlterTableStmt))
+	{
+		foreach_node(AlterTableCmd, cmd, ((AlterTableStmt *) stmt)->cmds)
+			if (cmd->subtype == AT_AddColumn || cmd->subtype == AT_AlterColumnType)
+				rv = ((AlterTableStmt *) stmt)->relation;
+	}
+	else if (IsA(stmt, RenameStmt) && ((RenameStmt *) stmt)->renameType == OBJECT_COLUMN)
+		rv = ((RenameStmt *) stmt)->relation;
+	else if (IsA(stmt, CreateTrigStmt))
+	{
+		CreateTrigStmt *ts = (CreateTrigStmt *) stmt;
+
+		if (list_length(ts->funcname) > 0 && strcmp(strVal(llast(ts->funcname)), "repack_trigger") == 0)
+		{
+			Oid			relid = RangeVarGetRelid(ts->relation, AccessShareLock, true);
+			Relation	rel = OidIsValid(relid) ? relation_open(relid, NoLock) : NULL;
+
+			if (rel && sift_tbl_is_table(rel))
+				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								errmsg("pg_repack cannot rewrite the sift_table \"%s\"", RelationGetRelationName(rel)),
+								errdetail("pg_repack copies the rows into a heap table and swaps the files, which would destroy the column segments."),
+								errhint("Use CLUSTER ... USING <index> or VACUUM FULL, which rewrite a sift_table; pg_repack --only-indexes is fine.")));
+			if (rel)
+				relation_close(rel, NoLock);
+		}
+	}
+	if (rv)
+	{
+		Oid			relid = RangeVarGetRelid(rv, NoLock, true);
+
+		/* the statement holds the lock of each table it altered */
+		if (OidIsValid(relid))
+			foreach_oid(oid, find_all_inheritors(relid, NoLock, NULL))
+			{
+				Relation	rel = relation_open(oid, NoLock);
+
+				if (sift_tbl_is_table(rel))
+					sift_tbl_layout_check(rel);
+				relation_close(rel, NoLock);
+			}
+	}
+	PG_RETURN_NULL();
 }
 
 static int64

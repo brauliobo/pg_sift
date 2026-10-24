@@ -69,6 +69,7 @@
 #include "agg/part.h"
 #include "agg/spec.h"
 #include "col/kern.h"
+#include "col/preagg.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/topn.h"
@@ -99,6 +100,8 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 	{
 		case SAA_COUNT_STAR:
 			acc->n[g] += v->rows;
+			break;
+		case SAA_COUNT_DISTINCT:		/* its values are added by the histogram's fold (preagg_hist) */
 			break;
 		case SAA_COUNT:
 			acc->n[g] += v->nn;
@@ -169,10 +172,33 @@ preagg_zones(AggExec *ex)
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
+		/* the groups of the dim test the comparisons on its leaf, the cells of a calendar dim by their span (cal_keep) */
 		if (z->leaf != ex->pa.dim &&
 			(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.nnull > 0 || !a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
 	}
+	return true;
+}
+
+/*
+ * count(DISTINCT leaf) of a leaf of key_columns: the bitmap or list of the unit's values added to the aggregate's set. False when the unit has none; the values
+ * added so far do no harm, the scan of the unit adds them again to a set.
+ */
+static bool
+preagg_presence(AggExec *ex, int ai, int leaf)
+{
+	SiftSrcPresence p;
+
+	if (!sift_colsrc_unit_presence(ex->src, &ex->unit, leaf, &p))
+		return false;
+	if (p.nkeys > 0)
+	{
+		for (uint32 i = 0; i < p.nkeys; i++)
+			ex->acc[ai].n[0] += dist_add(ex, ex->dist[ai], 0, (uint32) p.keys[i]);
+		pfree((int64 *) p.keys);
+	}
+	else
+		ex->acc[ai].n[0] += dist_or_words(ex, ex->dist[ai], 0, p.wbase, p.words, p.nwords);
 	return true;
 }
 
@@ -192,6 +218,12 @@ preagg_sums(AggExec *ex)
 		v[ai].rows = v[ai].nn = nrow;
 		if (leaf < 0)
 			continue;
+		if (a->kind == SAA_COUNT_DISTINCT)
+		{
+			if (!preagg_presence(ex, ai, leaf))
+				return false;
+			continue;
+		}
 		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums))
 			return false;
 		v[ai] = (PaVal) {nrow, ua.nvals - ua.nnull, ua.sum, ua.has_minmax, ua.min, ua.max};
@@ -239,7 +271,8 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 		int			ai = i - s->npred;
 		const SiftAggPred *p = ai < 0 ? s->pred[i] : s->agg[ai].filter;
 
-		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim)
+		/* the comparisons on the leaf of a calendar dim are decided by the span of each cell, not by its first day (cal_keep) */
+		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim || (ex->pa.cal && sift_aggspec_zone_cmp(p, ex->lay, ex->nbase)))
 			continue;
 		if (!bound)
 		{
@@ -248,8 +281,9 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 
 			for (int k = 0; k < ng - h->has_null; k++)
 			{
+				/* a cell of a timestamp is tested at its first microsecond */
 				if (wide)
-					((int64 *) data)[k] = h->key[k];
+					((int64 *) data)[k] = ex->pa.cal ? h->key[k] * USECS_PER_DAY : h->key[k];
 				else
 					((uint32 *) data)[k] = (uint32) h->key[k];
 			}
@@ -273,6 +307,56 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 }
 
 /*
+ * The cells of the histogram of a calendar dim that the comparisons on its leaf keep, ANDed into *keep (NULL: all pass so far). A cell is decided by its
+ * whole span, first to last instant: inside the interval it passes, outside it does not, and the NULL group never does. False: an interval cuts a cell, the
+ * cell's rows differ, and the unit is scanned.
+ */
+static bool
+cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
+{
+	bool		date = ex->lay->leaf[ex->pa.dim].vtype == SCV_I32;
+	int			ng = h->ngroups,
+				nk = ng - h->has_null;
+
+	for (int z = 0; z < ex->nprune; z++)
+	{
+		const SiftSrcPrune *pz = &ex->prune[z];
+
+		if (pz->leaf != ex->pa.dim)
+			continue;
+		if (*keep == NULL)
+		{
+			*keep = MemoryContextAlloc(ex->ucxt, ((ng + 63) / 64 + PADW) * sizeof(uint64));
+			fill_ones(*keep, ng);
+		}
+		for (int g = 0; g < ng; g++)
+		{
+			int64		first = h->key[g],
+						next = sift_cpagg_cal_next(h->grain, first),
+						last;
+
+			if (g >= nk)
+			{
+				(*keep)[g / 64] &= ~(UINT64CONST(1) << (g % 64));
+				continue;
+			}
+			if (date)
+				last = next - 1;
+			else
+			{
+				first *= USECS_PER_DAY;
+				last = next > PG_INT64_MAX / USECS_PER_DAY ? PG_INT64_MAX : next * USECS_PER_DAY - 1;
+			}
+			if (last < pz->lo || first > pz->hi)
+				(*keep)[g / 64] &= ~(UINT64CONST(1) << (g % 64));
+			else if (first < pz->lo || last > pz->hi)
+				return false;
+		}
+	}
+	return true;
+}
+
+/*
  * The ids of key ki for the kept groups or tuples: the unit's dictionary entries, or the integers. A group is NULL when isnull[g] (NULL: the
  * groups from nonnull on are, the NULL group of a histogram being its last)
  */
@@ -287,6 +371,25 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 	bool		cover = false;
 
 #define PA_NULL(g) (isnull ? isnull[g] : (g) >= nonnull)
+	if (k->numk)
+	{
+		/* the program of one leaf: the ids of its values, as the scan gives them */
+		for (int j = 0; j < nkept; j++)
+			ids[j] = PA_NULL(kept[j]) ? 0 : idmap_id(&k->im, key[kept[j]]);
+		return;
+	}
+	if (k->bucket || k->cal)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+
+		/* a calendar dim: its keys are the first days of cells (days since 2000-01-01), whose expression is evaluated once for each cell */
+		if (!k->wcap)
+			ident_go_wide(ex, k);
+		for (int j = 0; j < nkept; j++)
+			ids[j] = PA_NULL(kept[j]) ? key_null_id(ex, ki) : ident_wide_id(ex, k, key[kept[j]]);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	if (dict)
 		map = dict_kmap(ex, dict_slot(ex, dict), dict, ki);
 	for (int j = 0; j < nkept && !dict; j++)
@@ -379,22 +482,30 @@ preagg_hist(AggExec *ex)
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
-	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim, &h))
+	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim + (ex->pa.cal ? SIFT_SRC_CAL : 0), &h))
+		return false;
+	/* the cells of a grain the key or the tests are not constant over, or no cells (the unit had too many, or an infinity): the unit is scanned */
+	if (ex->pa.cal && (h.grain <= 0 || !(ex->pa.calmask >> h.grain & 1)))
 		return false;
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
 		int			leaf = pa_leaf(&s->agg[ai]);
 		int			m = 0;
+		bool		mm = s->agg[ai].kind == SAA_MIN || s->agg[ai].kind == SAA_MAX;
 
 		while (leaf >= 0 && leaf != ex->pa.dim && m < h.nmeas && h.meas[m] != leaf)
 			m++;
-		if (leaf >= 0 && leaf != ex->pa.dim && (m == h.nmeas || (s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
+		/* a unit written without min and max (an older segment, an index that does not ask for them) is scanned */
+		if (leaf >= 0 && leaf != ex->pa.dim &&
+			(m == h.nmeas || (mm ? h.min[m] == NULL : s->agg[ai].kind != SAA_COUNT && h.sum[m] == NULL && h.sumf[m] == NULL)))
 			return false;
 		if (leaf >= 0 && (s->agg[ai].kind == SAA_SUM_F64 || s->agg[ai].kind == SAA_AVG_F64) && !preagg_floats(ex, leaf, true))
 			return false;
-		slot[ai] = leaf < 0 ? -1 : leaf == ex->pa.dim ? -2 : m;
+		slot[ai] = leaf < 0 ? -1 : s->agg[ai].kind == SAA_COUNT_DISTINCT ? -3 : leaf == ex->pa.dim ? -2 : m;
 	}
 	keep = preagg_keep(ex, &h, fkeep);
+	if (ex->pa.cal && !cal_keep(ex, &h, &keep))
+		return false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
 	for (uint32 k = 0; k < h.ngroups; k++)
 		if (keep == NULL || sift_colsrc_bit(keep, k))
@@ -411,6 +522,19 @@ preagg_hist(AggExec *ex)
 			int			m = slot[ai];
 
 			v[ai].rows = v[ai].nn = h.count[kept[j]];
+			if (m == -3)
+			{
+				/* the group is one value: a NULL group adds none, any other adds its id (the value for a 32-bit leaf, the id over all dictionaries for text) */
+				if (kept[j] < h.ngroups - h.has_null)
+				{
+					uint32		id = h.dict ? dict_amap(ex, dict_slot(ex, h.dict), h.dict, ai)[(uint32) h.key[kept[j]]] : (uint32) h.key[kept[j]];
+
+					if (dist_add(ex, ex->dist[ai], gid[j], id))
+						ex->acc[ai].n[gid[j]]++;
+				}
+				v[ai] = (PaVal) {0};
+				continue;
+			}
 			if (m == -2)
 				v[ai].nn = kept[j] < h.ngroups - h.has_null ? h.count[kept[j]] : 0;
 			else if (m >= 0)
@@ -418,6 +542,12 @@ preagg_hist(AggExec *ex)
 				v[ai].nn = h.nn[m][kept[j]];
 				v[ai].sum = h.sum[m] ? h.sum[m][kept[j]] : 0;
 				v[ai].sumf = h.sumf[m] ? h.sumf[m][kept[j]] : 0;
+				if (h.min[m])
+				{
+					v[ai].has_mm = v[ai].nn > 0;
+					v[ai].min = h.min[m][kept[j]];
+					v[ai].max = h.max[m][kept[j]];
+				}
 			}
 			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], kept[j]))
 				v[ai] = (PaVal) {0};				/* the rows of the group fail the FILTER: they add nothing to this aggregate */
@@ -635,7 +765,8 @@ preagg_rollup(AggExec *ex)
 			   *gid;
 	uint64	   *keep,
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
-	int			nkept = 0;
+	int			nkept = 0,
+				qlevel = s->group >= 0;
 
 	ex->pa_miss = true;
 	if (!rollup_cheaper(ex))
@@ -680,11 +811,12 @@ preagg_rollup(AggExec *ex)
 	if (s->npred > 0 || has_filter(s))
 		rollup_bind(ex, &r);
 	keep = NULL;
+	/* the conjuncts of a scan of the elements that are the rows' are zone comparisons the unit lies inside (preagg_zones); those of the rows' rollup all test dims */
 	for (int i = 0; i < s->npred; i++)
-		if (s->pred[i]->level == 1)
-			keep = pred_pass(ex, s->pred[i], 1, r.ntuples, keep);
+		if (s->pred[i]->level == qlevel)
+			keep = pred_pass(ex, s->pred[i], qlevel, r.ntuples, keep);
 	for (int ai = 0; ai < s->naggs; ai++)
-		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, 1, r.ntuples, NULL) : NULL;
+		fkeep[ai] = s->agg[ai].filter ? pred_pass(ex, s->agg[ai].filter, qlevel, r.ntuples, NULL) : NULL;
 	for (int d = 0; d < ex->pa.ndims; d++)
 		ex->uvec_ok[ex->pa.rdim[d]] = false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
@@ -756,27 +888,47 @@ preagg_arith(AggExec *ex)
 	return true;
 }
 
+/* the unit answered from the histogram of hdim (its calendar cells when hcal) */
+static bool
+preagg_hist_hdim(AggExec *ex)
+{
+	bool		ok;
+
+	ex->pa.dim = ex->pa.hdim;
+	ex->pa.cal = ex->pa.hcal;
+	ok = preagg_zones(ex) && preagg_hist(ex);
+	ex->pa.dim = -1;
+	ex->pa.cal = false;
+	return ok;
+}
+
 bool
 preagg_unit(AggExec *ex)
 {
-	if (ex->pa.list >= 0 && rollup_skip(ex))
+	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
 		return false;
 	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_arith(ex))
 		return false;
-	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
+	/* the rollup of the rows tests the comparisons on its tuples, so the unit need not lie inside them; a unit without it waits for a merge, nothing is asked for */
+	if (ex->pa.rows)
 	{
-		bool		ok;
-
-		/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
-		ex->pa.dim = ex->pa.hdim;
-		ok = preagg_zones(ex) && preagg_hist(ex);
-		ex->pa.dim = -1;
-		return ok;
+		if (preagg_rollup(ex))
+			return true;
+		ex->n_rollup_miss += ex->pa_miss;
+		return false;
 	}
+	/* the zone is not inside a comparison on the dim: its groups that pass it, the other comparisons still hold for the zone */
+	if (ex->pa.hdim >= 0 && !preagg_zones(ex))
+		return preagg_hist_hdim(ex);
 	if (!preagg_zones(ex))
 		return false;
 	if (ex->pa.list < 0)
-		return ex->pa.dim < 0 ? preagg_sums(ex) : preagg_hist(ex);
+	{
+		if (ex->pa.dim >= 0)
+			return preagg_hist(ex);
+		/* the sums lack something the unit does not keep (the key list of a leaf of key_columns): its histogram of hdim may hold it */
+		return preagg_sums(ex) || (ex->pa.hdim >= 0 && preagg_hist_hdim(ex));
+	}
 	if (preagg_rollup(ex))
 		return true;
 	/* the unit is clean but its rollup lacks something: scan it now, and ask for the rollup it should have */
@@ -800,7 +952,8 @@ preagg_init(AggExec *ex)
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
-	if (ex->pa_on && ex->pa.list >= 0)
+	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && sift_colsrc_super(ex->src, true);
+	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);
 		sift_aggspec_unit_costs(ex->spec, ex->lay, &ex->pa_elem_cost, &ex->pa_tuple_cost);
@@ -813,10 +966,11 @@ preagg_init(AggExec *ex)
 
 		if (!st->ready)
 			eval_operand(ex, p, st);
-		if (ex->pa_on && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
+		/* the tuples of the rollup of the rows test the comparison themselves, whatever interval it gives the zones */
+		if (ex->pa_on && !ex->pa.rows && (st->cnull || (p->kind == SAP_IN && !st->in_dense)))
 		{
 			/* the groups of the dim's histogram test an IN list with gaps, which gives the zones no interval: the sums cannot answer */
-			if (!st->cnull && p->leaf == ex->pa.hdim)
+			if (!st->cnull && p->leaf == ex->pa.hdim && !ex->pa.hcal)
 			{
 				ex->pa.dim = ex->pa.hdim;
 				ex->pa.hdim = -1;

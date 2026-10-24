@@ -1,0 +1,70 @@
+-- The default cube holds 16 dimensions. In an index of more columns the calendar cells of the dates come first, then the other columns in their order, the date
+-- columns' own histograms last (a day cell answers what they do); a NOTICE names the columns left out. Nothing gives way when all fit, or for a cube(...) the
+-- user wrote. The same choice at REINDEX; the answers are the plain plan's.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = notice;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '120s';
+
+-- 20 columns that can be dimensions (3 of them dates) and the calendar cells of the dates: 23 asked for, 16 held
+CREATE TABLE cp (id int, l1 int, l2 int, l3 int, l4 int, l5 int, l6 int, l7 int, l8 int, l9 int, l10 int, l11 int, l12 int,
+                 h1 int, h2 int, d1 date, d2 date, d3 date, v int, m numeric(10,2), pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE cp ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO cp SELECT i, i / 5000, i / 3000, i / 2000, (i / 1000) % 40, i % 7, i % 12, (i / 700) % 30, i % 4, i % 9, (i / 900) % 25, i % 3, (i / 400) % 60,
+                      hashint4(i) & 2147483647, hashint4(i + 1) & 2147483647, date '2024-01-01' + i / 300, date '2023-01-01' + i / 250, date '2022-06-01' + i / 400,
+                      hashint4(i + 9) & 1023, (i % 977) / 7.0, repeat('x', 150) FROM generate_series(1, 60000) i;
+VACUUM (FREEZE, ANALYZE) cp;
+
+CREATE FUNCTION cp_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION cp_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		scanned := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, scanned);
+	END LOOP;
+END $$;
+CREATE FUNCTION cp_held(i regclass) RETURNS text LANGUAGE sql AS
+$$ SELECT string_agg(leaf || ':' || regexp_replace(held, ' in .*', ''), ' ' ORDER BY leaf) FROM sift.index_advice(i) WHERE held IS NOT NULL AND (kind = 'date' OR leaf IN ('l12', 'v', 'id', 'h1')) $$;
+CREATE TABLE cp_q (n int, shape text, q text);
+INSERT INTO cp_q VALUES
+	(1, 'month',            'SELECT date_trunc(''month'', d1), count(*), sum(m) FROM cp GROUP BY 1'),
+	(2, 'month, second',    'SELECT date_trunc(''month'', d2), count(*) FROM cp GROUP BY 1'),
+	(3, 'year of a window', 'SELECT extract(year FROM d3), count(*) FROM cp WHERE d3 >= date ''2022-09-01'' AND d3 < date ''2023-03-01'' GROUP BY 1'),
+	(4, 'the day',          'SELECT d1, count(*) FROM cp GROUP BY 1'),
+	(5, 'a dimension',      'SELECT l5, count(*), sum(m) FROM cp GROUP BY 1');
+
+-- the NOTICE names what was left out; the dates keep their cells
+CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m, id, h1, h2) WITH (key_columns = 'off');
+SELECT cp_held('cp_col');
+SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u.scanned FROM cp_q, LATERAL cp_units(q) u ORDER BY n;
+
+-- REINDEX decides the same
+REINDEX INDEX cp_col;
+SELECT cp_held('cp_col');
+DROP INDEX cp_col;
+
+-- all fit: 9 plain columns, the 3 dates and 1 more, and the cells of the 3 dates (16): the dates' own histograms kept
+CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
+SELECT cp_held('cp_fit');
+DROP INDEX cp_fit;
+
+-- a cube(...) of the user is kept as written, and calendar_columns names the dates it wants
+CREATE INDEX cp_fixed ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m) WITH (key_columns = 'off', preagg = 'cube(l1; l2; l3; l4; l5; l6; l7; l8; l9; l10; l11; l12; d1; d2; d3; v)', calendar_columns = 'off');
+SELECT cp_held('cp_fixed');
+DROP INDEX cp_fixed;
+
+DROP TABLE cp, cp_q;
+DROP FUNCTION cp_rows(text, bool), cp_units(text), cp_held(regclass);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

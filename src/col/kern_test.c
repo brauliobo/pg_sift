@@ -27,6 +27,7 @@
 PG_FUNCTION_INFO_V1(sift_test_col_kernels);
 PG_FUNCTION_INFO_V1(sift_test_col_kernels_active);
 PG_FUNCTION_INFO_V1(sift_test_col_level);
+PG_FUNCTION_INFO_V1(sift_test_simd_detected);
 
 #define MAXN		5000
 #define CASES		40
@@ -526,10 +527,17 @@ sift_test_col_kernels_active(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_level(PG_FUNCTION_ARGS)
 {
-	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512; l++)
+	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_TOP; l++)
 		if (sift_colk == sift_col_kernels_for(l))
 			PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(l)));
 	elog(ERROR, "sift_col_kern: the active table is none of the levels");
+}
+
+/* The best level the CPU supports, whatever sift.simd says: the tests state their expectation of a level against it, not against an architecture */
+Datum
+sift_test_simd_detected(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(sift_cpu.detected)));
 }
 
 #endif							/* SIFT_TESTING */

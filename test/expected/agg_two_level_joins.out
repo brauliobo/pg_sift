@@ -15,11 +15,14 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, 'k' || i % 5, date '2
                                                                                  'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j)) END
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.parts[]{cat text, sign text, score float8}');
-CREATE TABLE lookup (kind text, cat text, mcat text) WITH (autovacuum_enabled = false);
+NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 192 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+CREATE TABLE lookup (kind text, cat text, mapped_cat text) WITH (autovacuum_enabled = false);
 INSERT INTO lookup SELECT 'k' || k, 'cat_' || c, 'm' || (k + c) % 3 FROM generate_series(0, 4) k, generate_series(0, 5) c WHERE (k + c) % 5 <> 0;
-CREATE TABLE lookup_empty (kind text, cat text, mcat text);
-CREATE TABLE lookup_alt (kind text, cat text, mcat text) WITH (autovacuum_enabled = false);
-INSERT INTO lookup_alt SELECT kind, cat, 'x' || mcat FROM lookup WHERE cat <> 'cat_2';
+CREATE TABLE lookup_empty (kind text, cat text, mapped_cat text);
+CREATE TABLE lookup_alt (kind text, cat text, mapped_cat text) WITH (autovacuum_enabled = false);
+INSERT INTO lookup_alt SELECT kind, cat, 'x' || mapped_cat FROM lookup WHERE cat <> 'cat_2';
 VACUUM (FREEZE, ANALYZE) items;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) lookup;
@@ -31,15 +34,15 @@ CREATE FUNCTION report(lk text DEFAULT 'lookup', spans text DEFAULT $p$(VALUES (
                        parent_join text DEFAULT 'JOIN items pa ON pa.id = e.parent_id AND pa.enabled', lk2 text DEFAULT NULL) RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH scoped AS NOT MATERIALIZED (SELECT e.id, e.parent_id, e.doc, e.kind, p.span FROM events e JOIN %s ON e.ts <@ p.range %s),
 	  mapped AS (
-	    SELECT s.id, s.parent_id, s.span, rm.mcat AS category, avg(o.score) AS score, count(s.id) AS n
+	    SELECT s.id, s.parent_id, s.span, rm.mapped_cat AS category, avg(o.score) AS score, count(s.id) AS n
 	    FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, sign text, score float8)
-	    LEFT JOIN LATERAL (SELECT mcat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
-	    WHERE rm.mcat IS NOT NULL GROUP BY s.id, s.parent_id, s.span, rm.mcat
+	    LEFT JOIN LATERAL (SELECT mapped_cat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
+	    WHERE rm.mapped_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.span, rm.mapped_cat
 	    UNION ALL
 	    SELECT s.id, s.parent_id, s.span, NULL::text, avg(o.score), count(s.id)
 	    FROM scoped s CROSS JOIN LATERAL jsonb_to_recordset(s.doc['parts']) o(cat text, sign text, score float8)
-	    LEFT JOIN LATERAL (SELECT mcat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
-	    WHERE rm.mcat IS NOT NULL GROUP BY s.id, s.parent_id, s.span)
+	    LEFT JOIN LATERAL (SELECT mapped_cat FROM %s m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true
+	    WHERE rm.mapped_cat IS NOT NULL GROUP BY s.id, s.parent_id, s.span)
 	  SELECT coalesce(category, 'all_cats') AS category, span, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n,
 	         count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
 	  FROM mapped GROUP BY category, span ORDER BY 1, 2$q$, spans, parent_join, lk, coalesce(lk2, lk))
@@ -154,7 +157,7 @@ SELECT same(overlapping()) AS dirty_overlapping;
  t
 (1 row)
 
-UPDATE lookup SET mcat = 'm9' WHERE cat = 'cat_1';
+UPDATE lookup SET mapped_cat = 'm9' WHERE cat = 'cat_1';
 SELECT same(report()) AS dirty_lookup;
  dirty_lookup 
 --------------

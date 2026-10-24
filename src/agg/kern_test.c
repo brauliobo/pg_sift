@@ -56,7 +56,7 @@ sift_test_aggkern_equiv(PG_FUNCTION_ARGS)
 		CHECK_FOR_INTERRUPTS();
 		agk_case_gen(&r, &c, -1);
 		agk_run(&sift_aggkern_scalar, &c, &ref);
-		for (SiftSimdLevel l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_AVX512; l++)
+		for (SiftSimdLevel l = SIFT_SIMD_AVX2; l <= SIFT_SIMD_TOP; l++)
 		{
 			if (sift_aggkern_for(l) == sift_aggkern_for(l - 1))
 				continue;
@@ -73,7 +73,7 @@ Datum
 sift_test_aggkern_level(PG_FUNCTION_ARGS)
 {
 	sift_aggkern_init();
-	for (SiftSimdLevel l = SIFT_SIMD_AVX512; l > SIFT_SIMD_SCALAR; l--)
+	for (SiftSimdLevel l = SIFT_SIMD_TOP; l > SIFT_SIMD_SCALAR; l--)
 		if (sift_aggk == sift_aggkern_for(l) && sift_aggkern_for(l) != sift_aggkern_for(l - 1))
 			PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(l)));
 	PG_RETURN_TEXT_P(cstring_to_text(sift_simd_level_name(SIFT_SIMD_SCALAR)));

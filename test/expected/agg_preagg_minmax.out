@@ -1,0 +1,501 @@
+-- min() and max() of an integer measure per group of the cube: an index with the option cube_minmax stores them in every group of every unit (column
+-- format minor 7), and the units that are exact answer them from the groups. Every query runs three ways, which must give the same rows (text): from
+-- the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
+-- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.col_format_minor = 6.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
+-- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 7
+SET max_parallel_maintenance_workers = 0;
+\ir test/agg_preagg_helpers.sql
+\set ECHO none
+\ir test/agg_preagg_units.sql
+\set ECHO none
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'by kind',             'SELECT kind, min(val), max(val), min(small), max(small), min(amt), max(amt) FROM %s GROUP BY kind'),
+	(2, 'by text key',         'SELECT grp, min(val), max(val), count(val), sum(small) FROM %s GROUP BY grp'),
+	(3, 'whole: zone',         'SELECT min(val), max(val), min(amt), max(amt) FROM %s'),
+	(4, 'with the sums',       'SELECT kind, count(*), sum(val), avg(small), min(val), max(val) FROM %s GROUP BY kind'),
+	(5, 'only NULLs',          'SELECT kind, min(val), max(val) FROM %s WHERE kind = 3 GROUP BY kind'),
+	(6, 'no rows, grouped',    'SELECT kind, min(val), max(val) FROM %s WHERE id > 100000000 GROUP BY kind'),
+	(7, 'keys in list',        'SELECT kind, min(val), max(val) FROM %s WHERE kind IN (0, 1, 3) GROUP BY kind'),
+	(8, 'test of dim, no key', 'SELECT min(val), max(val), min(small) FROM %s WHERE grp = ''g05'''),
+	(9, 'FILTER on the dim',   'SELECT min(val) FILTER (WHERE kind = 1), max(val) FILTER (WHERE kind = 2) FROM %s'),
+	(10, 'FILTER on the key',  'SELECT kind, min(val) FILTER (WHERE kind > 1), max(small) FILTER (WHERE kind < 4) FROM %s GROUP BY kind'),
+	(11, 'other test: scan',   'SELECT kind, min(val), max(val) FROM %s WHERE small > 0 GROUP BY kind'),
+	(12, 'min of the key',     'SELECT kind, min(kind), max(kind), count(*) FROM %s GROUP BY kind'),
+	(13, 'float: scan',        'SELECT kind, min(flt), max(flt) FROM %s GROUP BY kind'),
+	(14, 'having, limit',      'SELECT kind, max(val) FROM %s GROUP BY kind HAVING min(val) < 0 ORDER BY 2 DESC, 1 LIMIT 3'),
+	(15, 'expression: scan',   'SELECT kind, min(val + 1), max(small * 2) FROM %s GROUP BY kind'),
+	(16, 'grouping sets',      'SELECT kind, grp, min(val), max(val) FROM %s GROUP BY GROUPING SETS ((kind), (grp), ())'),
+	(17, 'two keys: scan',     'SELECT kind, grp, min(val) FROM %s GROUP BY kind, grp'),
+	(18, 'int4 beside int8',   'SELECT grp, min(small), max(small), min(val), max(val) FROM %s GROUP BY grp'),
+	(19, 'zone covers some',   'SELECT kind, min(val), max(val) FROM %s WHERE id < 20000 GROUP BY kind');
+-- one row per query: whether the three ways agree, and how much the first answered from metadata
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
+	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+-- the same, summed up for a table whose answers need not be listed
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 19) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
+$$;
+-- kind 0: near 2^62 (two rows pass 2^63), kind 1: near -2^62, kind 2: the extremes of int8 with both signs, kind 3: only NULLs, kind 4: small values,
+-- a fifth of them NULL, kind 5: values that repeat; small: int4 with NULLs and negatives; amt: numeric(10,2); flt: float8
+CREATE TABLE mm (id int, kind int, grp text, val bigint, small int, amt numeric(10, 2), flt float8, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO mm
+SELECT g, g % 6, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
+       CASE g % 6 WHEN 0 THEN 4611686018427387904 - g % 1000
+                  WHEN 1 THEN -4611686018427387904 + g % 1000
+                  WHEN 2 THEN CASE WHEN g % 12 = 2 THEN 9223372036854775807 - g % 7 ELSE -9223372036854775807 - 1 + g % 7 END
+                  WHEN 3 THEN NULL
+                  WHEN 4 THEN CASE WHEN g % 5 = 0 THEN NULL ELSE g % 100 - 50 END
+                  ELSE (g % 997) * 3 + 1 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 - 50 END,
+       (g % 71) / 7.0 - 3, repeat('p', 200)
+FROM generate_series(1, 40000) g;
+-- an explicit cube with the measures; the default cube; the same without the option; an index built under minor 6, which has no section; an index that
+-- gets the option after it was built
+CREATE TABLE mc (LIKE mm) WITH (autovacuum_enabled = off);
+CREATE TABLE md (LIKE mm) WITH (autovacuum_enabled = off);
+CREATE TABLE mo (LIKE mm) WITH (autovacuum_enabled = off);
+CREATE TABLE mf (LIKE mm) WITH (autovacuum_enabled = off);
+CREATE TABLE mx (LIKE mm) WITH (autovacuum_enabled = off);
+INSERT INTO mc SELECT * FROM mm;
+INSERT INTO md SELECT * FROM mm;
+INSERT INTO mo SELECT * FROM mm;
+INSERT INTO mf SELECT * FROM mm;
+INSERT INTO mx SELECT * FROM mm;
+DROP TABLE mm;
+CREATE INDEX mc_col ON mc USING sift_col (id, kind, grp, val, small, amt, flt)
+	WITH (write_buffer_limit = 4096, cube_minmax = true, preagg = 'cube(kind: val, small, amt, flt; grp: val, small, amt)', superunit = 0);
+CREATE INDEX md_col ON md USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+CREATE INDEX mo_col ON mo USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+SET sift.col_format_minor = 6;
+CREATE INDEX mf_col ON mf USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+RESET sift.col_format_minor;
+CREATE INDEX mx_col ON mx USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CALL pa_settle();
+-- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) mc, md, mo, mf, mx;
+SELECT sift.col_verify('mc_col', true), sift.col_verify('md_col', true), sift.col_verify('mf_col', true);
+ col_verify | col_verify | col_verify 
+------------+------------+------------
+            |            | 
+(1 row)
+
+-- 1. built, every page all-visible: the index with the option answers the min and max queries from its groups, the others scan
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | all  | t
+  2 | by text key         | all  | t
+  3 | whole: zone         | all  | t
+  4 | with the sums       | all  | t
+  5 | only NULLs          | all  | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | all  | t
+  9 | FILTER on the dim   | all  | t
+ 10 | FILTER on the key   | all  | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | all  | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | all  | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+SELECT * FROM pa_sum('md');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |      10 |        1 |      2
+(1 row)
+
+SELECT * FROM pa_sum('mo');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       1 |        0 |      0
+(1 row)
+
+SELECT * FROM pa_sum('mf');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       1 |        0 |     12
+(1 row)
+
+-- 2. a few pages change (update, delete): their units are scanned, the others answer
+UPDATE mc SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM mc WHERE id BETWEEN 18000 AND 18100;
+UPDATE md SET val = -(val / 2), small = small + 1 WHERE id BETWEEN 100 AND 200;
+DELETE FROM md WHERE id BETWEEN 18000 AND 18100;
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | some | t
+  2 | by text key         | some | t
+  3 | whole: zone         | some | t
+  4 | with the sums       | some | t
+  5 | only NULLs          | some | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | some | t
+  9 | FILTER on the dim   | some | t
+ 10 | FILTER on the key   | some | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | some | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | some | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+SELECT * FROM pa_sum('md');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       0 |       11 |      2
+(1 row)
+
+-- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mc, md;
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | some | t
+  2 | by text key         | some | t
+  3 | whole: zone         | some | t
+  4 | with the sums       | some | t
+  5 | only NULLs          | some | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | some | t
+  9 | FILTER on the dim   | some | t
+ 10 | FILTER on the key   | some | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | some | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | some | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+-- 4. rows in the write buffer, then sealed
+INSERT INTO mc SELECT g, g % 6, 'g' || (g % 40), CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g % 9, g / 7.0, g / 3.0, repeat('p', 200)
+FROM generate_series(300001, 301500) g;
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | some | t
+  2 | by text key         | some | t
+  3 | whole: zone         | some | t
+  4 | with the sums       | some | t
+  5 | only NULLs          | some | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | some | t
+  9 | FILTER on the dim   | some | t
+ 10 | FILTER on the key   | some | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | some | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | some | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+SELECT sift.col_promote('mc_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mc;
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | some | t
+  2 | by text key         | some | t
+  3 | whole: zone         | some | t
+  4 | with the sums       | some | t
+  5 | only NULLs          | some | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | some | t
+  9 | FILTER on the dim   | some | t
+ 10 | FILTER on the key   | some | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | some | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | some | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+-- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
+SELECT sift.col_merge('mc_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mc;
+SELECT sift.col_verify('mc_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | all  | t
+  2 | by text key         | all  | t
+  3 | whole: zone         | all  | t
+  4 | with the sums       | all  | t
+  5 | only NULLs          | all  | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | all  | t
+  9 | FILTER on the dim   | all  | t
+ 10 | FILTER on the key   | all  | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | all  | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | all  | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+-- 6. the option comes after the build: the segments written before have no min and max (their units scan), the ones written after have them, and a merge
+-- of both writes them for every unit. Under minor 6 the option is ignored
+SELECT * FROM pa_sum('mx');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       1 |        0 |      0
+(1 row)
+
+ALTER INDEX mx_col SET (cube_minmax = true);
+INSERT INTO mx SELECT g, g % 6, 'g' || (g % 30), g * 1000, g % 9, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 320000) g;
+SELECT sift.col_promote('mx_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mx;
+SELECT * FROM pa_check('mx');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | some | t
+  2 | by text key         | some | t
+  3 | whole: zone         | all  | t
+  4 | with the sums       | some | t
+  5 | only NULLs          | some | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | none | t
+  9 | FILTER on the dim   | some | t
+ 10 | FILTER on the key   | some | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | some | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | some | t
+ 19 | zone covers some    | none | t
+(19 rows)
+
+SELECT sift.col_verify('mx_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT sift.col_merge('mx_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mx;
+SELECT sift.col_verify('mx_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM pa_sum('mx');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |      10 |        1 |      2
+(1 row)
+
+SET sift.col_format_minor = 6;
+INSERT INTO mf SELECT g, g % 6, 'g' || (g % 30), g * 1000, g % 9, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
+SELECT sift.col_promote('mf_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+RESET sift.col_format_minor;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mf;
+SELECT sift.col_verify('mf_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM pa_sum('mf');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       1 |        0 |     12
+(1 row)
+
+-- the switch off again: a merge of the units that hold them writes none
+ALTER INDEX mx_col SET (cube_minmax = false);
+SELECT sift.col_merge('mx_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) mx;
+SELECT sift.col_verify('mx_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM pa_sum('mx');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       1 |        0 |      0
+(1 row)
+
+-- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
+SET max_parallel_maintenance_workers = 2;
+SET min_parallel_table_scan_size = 0;
+SET parallel_leader_participation = off;
+REINDEX INDEX mc_col;
+RESET parallel_leader_participation;
+SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('mc_col');
+ parallel_segments 
+-------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('mc_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('mc');
+ differ 
+--------
+      0
+(1 row)
+
+SET max_parallel_maintenance_workers = 0;
+REINDEX INDEX mc_col;
+SELECT * FROM pa_check('mc');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | by kind             | all  | t
+  2 | by text key         | all  | t
+  3 | whole: zone         | all  | t
+  4 | with the sums       | all  | t
+  5 | only NULLs          | all  | t
+  6 | no rows, grouped    | none | t
+  7 | keys in list        | -    | t
+  8 | test of dim, no key | all  | t
+  9 | FILTER on the dim   | all  | t
+ 10 | FILTER on the key   | all  | t
+ 11 | other test: scan    | none | t
+ 12 | min of the key      | -    | t
+ 13 | float: scan         | -    | t
+ 14 | having, limit       | all  | t
+ 15 | expression: scan    | -    | t
+ 16 | grouping sets       | -    | t
+ 17 | two keys: scan      | -    | t
+ 18 | int4 beside int8    | all  | t
+ 19 | zone covers some    | some | t
+(19 rows)
+
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT * FROM pa_sum('mc');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |      10 |        1 |      2
+(1 row)
+
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+-- a transaction that deleted rows sees them gone, another does not until it commits
+BEGIN;
+DELETE FROM md WHERE id BETWEEN 1 AND 100;
+SELECT * FROM pa_sum('md');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       0 |       11 |      2
+(1 row)
+
+ROLLBACK;
+SELECT * FROM pa_sum('md');
+ queries | differ | all_pre | some_pre | no_pre 
+---------+--------+---------+----------+--------
+      19 |      0 |       0 |       11 |      2
+(1 row)
+
+-- the switch
+SET sift.agg_preagg = off;
+SELECT pre IS NULL AS off FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
+ off 
+-----
+ t
+(1 row)
+
+RESET sift.agg_preagg;
+SELECT pre > 0 AS on FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
+ on 
+----
+ t
+(1 row)
+
+DROP TABLE mc, md, mo, mf, mx, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text, int, int), pa_sum(text, int, int);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

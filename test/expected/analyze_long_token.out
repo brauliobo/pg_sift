@@ -1,0 +1,76 @@
+-- a word over a term long (255 bytes) is its start, U+FFFF and a hash of all of it: words that share their start stay apart
+CREATE EXTENSION pg_sift;
+CREATE TABLE lt (id int, body text);
+INSERT INTO lt VALUES (1, repeat('a', 280) || 'one'), (2, repeat('a', 280) || 'two'), (3, 'other'),
+	(4, repeat('a', 255)), (5, repeat('a', 256)), (6, repeat('ж', 128)), (7, repeat('ж', 127) || 'з'),
+	(8, 'before ' || repeat('Ab1', 100) || ' after');
+CREATE INDEX lt_idx ON lt USING sift (body);
+CREATE FUNCTION lt_ids(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '-') FROM lt WHERE body @@> q $$;
+CREATE FUNCTION lt_ids_seq(q text) RETURNS text LANGUAGE sql SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
+	SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '-') FROM lt WHERE body @@> q $$;
+-- tokens: up to 255 bytes as written, longer ones hashed, whole characters only, offsets cover the word
+SELECT id, octet_length(f.token) AS bytes, right(f.token, 16) AS tail, f.pos, f.start_offset, f.end_offset
+FROM lt JOIN LATERAL sift.tokenize(body, 'lt_idx') f ON true WHERE octet_length(body) > 200 ORDER BY id, f.pos;
+ id | bytes |       tail       | pos | start_offset | end_offset 
+----+-------+------------------+-----+--------------+------------
+  1 |   255 | fb645c548dbea5f7 |   0 |            0 |        283
+  2 |   255 | af55055463339941 |   0 |            0 |        283
+  4 |   255 | aaaaaaaaaaaaaaaa |   0 |            0 |        255
+  5 |   255 | fd2916200943d825 |   0 |            0 |        256
+  6 |   255 | f48ca4cc288cc325 |   0 |            0 |        128
+  7 |   255 | f48ca3cc288cc172 |   0 |            0 |        128
+  8 |     6 | before           |   0 |            0 |          6
+  8 |   255 | 8f90bd1cf23dd545 |   1 |            7 |        307
+  8 |     5 | after            |   2 |          308 |        313
+(9 rows)
+
+-- the index finds the word asked for and no other with the same start; a scan of the heap agrees
+SELECT left(q, 1) || '*' || length(q) || right(q, 3) AS word, lt_ids(q) AS ids, lt_ids(q) = lt_ids_seq(q) AS same
+FROM (VALUES (repeat('a', 280) || 'one'), (repeat('a', 280) || 'two'), (repeat('a', 280) || 'six'), (repeat('a', 255)),
+	(repeat('a', 256)), (repeat('ж', 128)), (repeat('ж', 127) || 'з'), (repeat('AB1', 100)), (repeat('ab1', 100))) v(q);
+   word   | ids | same 
+----------+-----+------
+ a*283one | 1   | t
+ a*283two | 2   | t
+ a*283six | -   | t
+ a*255aaa | 4   | t
+ a*256aaa | 5   | t
+ ж*128жжж | 6   | t
+ ж*128жжз | 7   | t
+ A*300AB1 | 8   | t
+ a*300ab1 | 8   | t
+(9 rows)
+
+-- a prefix longer than the start of a hashed word finds it
+SELECT length(q) AS prefix_len, lt_ids(q || '*') AS ids, lt_ids(q || '*') = lt_ids_seq(q || '*') AS same
+FROM (VALUES (repeat('a', 100)), (repeat('a', 240)), (repeat('a', 280))) v(q);
+ prefix_len |   ids   | same 
+------------+---------+------
+        100 | 1,2,4,5 | t
+        240 | 1,2,4,5 | t
+        280 | 1,2,4,5 | t
+(3 rows)
+
+SELECT sift.verify('lt_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+INSERT INTO lt VALUES (9, repeat('a', 280) || 'one');
+SELECT lt_ids(repeat('a', 280) || 'one'), lt_ids(repeat('a', 280) || 'two');
+ lt_ids | lt_ids 
+--------+--------
+ 1,9    | 2
+(1 row)
+
+SELECT sift.verify('lt_idx', true);
+ verify 
+--------
+ 
+(1 row)
+
+DROP TABLE lt;
+DROP EXTENSION pg_sift;
+DROP FUNCTION lt_ids(text), lt_ids_seq(text);

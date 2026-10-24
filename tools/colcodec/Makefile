@@ -13,9 +13,9 @@ KT       = ../kernels
 PGINC   := $(shell pg_config --includedir-server)
 PGLIB   := -L$(shell pg_config --libdir)
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=gnu11 -march=x86-64 -mtune=generic -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
-           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I$(PGINC) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
-LDLIBS   = -lm -lzstd -llz4
+CFLAGS  += -std=gnu11 $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Wextra -Wno-unused-function -Wno-unused-parameter \
+           -Wno-sign-compare $(SIFT_INC) -I$(KT) -I$(PGINC) $(SIFT_PGCPP) -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
+LDLIBS   = -lm $(SIFT_PGLIBS) -lzstd -llz4
 OUT     ?= /tmp/sift-col-compress/out
 ifdef SANITIZE
 CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined
@@ -23,9 +23,9 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/compress.c \
-                               bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
-                               col/kern.c col/kern_avx2.c col/kern_avx512.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c)
+CODEC    = $(addprefix $(SRC)/,col/codec.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/codec_neon.c col/compress.c \
+                               bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/kernels_neon.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
+                               col/kern.c col/kern_avx2.c col/kern_avx512.c col/kern_neon.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c)
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(CODEC)) $(OUT)/shim.o $(OUT)/ccshim.o $(OUT)/pgshim.o
 HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/compress.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/kern*.h $(SRC)/col/col.h) ccshim.h
 
@@ -58,13 +58,13 @@ $(OUT)/bench: bench.c gen.h $(OBJ) $(HDR)
 	$(CC) $(CFLAGS) -o $@ bench.c $(OBJ) $(PGLIB) -lpgport $(LDLIBS)
 
 research: $(OUT)/research
-	flock /tmp/sift-perf.lock $(OUT)/research $(ARGS)
+	$(FLOCK) $(OUT)/research $(ARGS)
 
 test: $(OUT)/test
 	$(OUT)/test $(N)
 
 bench: $(OUT)/bench
-	flock /tmp/sift-perf.lock $(OUT)/bench $(ARGS)
+	$(FLOCK) $(OUT)/bench $(ARGS)
 
 clean:
 	rm -rf $(OUT) $(OUT)-san

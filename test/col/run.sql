@@ -23,6 +23,7 @@ CREATE TABLE coldiff.results (
 	used boolean,               -- the plan has Custom Scan (SiftAgg)
 	gather boolean,             -- the plan has a Gather
 	shape_ok boolean,           -- the expectation of the query holds (NULL: no expectation or not checked for this variant)
+	slug text,                  -- why the variant kept the normal plan (the refusal slug of sift.explain_refusals; testing builds, not for a prepared statement)
 	ref_ms float8, ms float8,   -- the reference and the variant
 	detail text);
 
@@ -67,13 +68,13 @@ CREATE FUNCTION coldiff.iso(txt text) RETURNS text IMMUTABLE LANGUAGE sql AS $$
 	SELECT coalesce(coldiff.header(txt) ->> 'isolation', 'read committed') $$;
 
 -- The macros of bench/sql/analytics/queries (expand() of bench/steps/analytics.py is the reference): {stores} the members of the set
--- of analytics_sets, {sources} the quoted members of the set 'sources', {period(col)} the label of the period, {range(col)} both periods.
+-- of analytics_sets, {sources} the quoted members of the set 'sources', {span(col)} the label of the range, {range(col)} both ranges.
 CREATE FUNCTION coldiff.expand(q text, setname text) RETURNS text STABLE LANGUAGE plpgsql AS $$
 BEGIN
 	q := replace(q, '{stores}', (SELECT coalesce(string_agg(member, ',' ORDER BY member::int), '-1') FROM analytics_sets WHERE set_name = setname));
 	q := replace(q, '{sources}', (SELECT coalesce(string_agg(quote_literal(member), ',' ORDER BY member), '''''') FROM analytics_sets WHERE set_name = 'sources'));
-	q := regexp_replace(q, '\{period\(([^)]*)\)\}', 'CASE WHEN \1 >= ''2024-11-01'' AND \1 <= ''2025-10-31'' THEN ''current'' '
-						'WHEN \1 >= ''2023-11-01'' AND \1 <= ''2024-10-31'' THEN ''current-1'' ELSE NULL END', 'g');
+	q := regexp_replace(q, '\{span\(([^)]*)\)\}', 'CASE WHEN \1 >= ''2024-11-01'' AND \1 <= ''2025-10-31'' THEN ''span_a'' '
+						'WHEN \1 >= ''2023-11-01'' AND \1 <= ''2024-10-31'' THEN ''span_b'' ELSE NULL END', 'g');
 	RETURN regexp_replace(q, '\{range\(([^)]*)\)\}', '\1 >= ''2023-11-01'' AND \1 <= ''2025-10-31''', 'g');
 END $$;
 
@@ -241,18 +242,27 @@ END $$;
 
 -- One corpus file (txt) in one transaction: the reference, then each variant, compared; rows into coldiff.results. runs > 1: the
 -- times of the reference and of "on" are the median of that many extra runs (a warm run each). mutate: coldiff.mutate on the "on*" runs.
+-- The refusal slug of the arm a statement is about (topn with a LIMIT, distinct with a DISTINCT, else single), planned under the settings of the session
+CREATE FUNCTION coldiff.refusal(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE want text := CASE WHEN stmt ~* '\mLIMIT\M' THEN 'topn' WHEN stmt ~* '\mDISTINCT\M' THEN 'distinct' ELSE 'single' END; s text;
+BEGIN
+	EXECUTE format('SELECT slug FROM sift._test_explain_why(%L) WHERE NOT used AND slug IS NOT NULL ORDER BY arm = %L DESC, arm = ''single'' DESC LIMIT 1', stmt, want) INTO s;
+	RETURN s;
+EXCEPTION WHEN OTHERS THEN RETURN NULL;
+END $$;
+
 CREATE FUNCTION coldiff.run_query(scen text, qname text, txt text, variants text[], runs int DEFAULT 1, mutate text DEFAULT NULL,
 								  rel float8 DEFAULT 1e-9, abs_tol float8 DEFAULT 1e-12) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
 	h jsonb := coldiff.header(txt); gucs text[] := ARRAY(SELECT jsonb_array_elements_text(coalesce(h -> 'guc', '[]')));
 	setname text; sets text[]; q text; stmt text; plan text; v text; err_ref text; err_got text; msg text; used boolean; gat boolean;
-	shape_ok boolean; t0 timestamptz; ref_ms float8; ms float8; times float8[]; name text; expect text := coalesce(h ->> 'expect', 'any');
+	shape_ok boolean; slug text; t0 timestamptz; ref_ms float8; ms float8; times float8[]; name text; expect text := coalesce(h ->> 'expect', 'any');
 	keycols int[]; wanted_error boolean := coalesce(h ->> 'error', '') IN ('yes', 'either'); req text; ok boolean; i int; mutated text;
 	shape text := coalesce(h ->> 'shape', CASE WHEN qname ~ '^[SG][0-9]+$' THEN qname END);
 BEGIN
 	-- a fixture that expects the scan runs where the tiny table makes the btree plan look cheap too: its page costs are raised unless it sets them
 	-- or the run is at the server's costs (coldiff.sh --default-costs, on a table large enough for them)
-	IF scen <> 'analytics' AND coalesce(current_setting('coldiff.default_costs', true), '0') = '0' AND coalesce(h ->> 'expect', 'any') = 'agg' AND NOT EXISTS (SELECT 1 FROM unnest(gucs) g WHERE g ~ '^\s*seq_page_cost') THEN
+	IF scen <> 'analytics' AND coalesce(current_setting('coldiff.default_costs', true), '0') = '0' AND (coalesce(h ->> 'expect', 'any') = 'agg' OR coalesce(current_setting('coldiff.capability', true), '0') = '1') AND NOT EXISTS (SELECT 1 FROM unnest(gucs) g WHERE g ~ '^\s*seq_page_cost') THEN
 		gucs := gucs || ARRAY['seq_page_cost = 10000', 'random_page_cost = 10000'];
 	END IF;
 	sets := CASE WHEN coalesce(h ->> 'sets', '-') IN ('-', '') THEN ARRAY[NULL]::text[] ELSE string_to_array(h ->> 'sets', ' ') END;
@@ -324,6 +334,7 @@ BEGIN
 			END IF;
 			plan := coldiff.explain(stmt);
 			used := plan LIKE '%Custom Scan (SiftAgg)%';
+			slug := CASE WHEN NOT used AND v = 'on' AND NOT h ? 'prepare' THEN coldiff.refusal(stmt) END;
 			gat := plan LIKE '%Gather%';
 			mutated := NULL;
 			IF mutate IS NOT NULL AND v LIKE 'on%' AND err_got IS NULL THEN mutated := coldiff.mutate('coldiff_got', mutate); END IF;
@@ -336,8 +347,8 @@ BEGIN
 			END IF;
 			-- a scenario dirties the heap pages (the visibility checks make the scan dearer than a btree plan under the raised page costs): only its results are compared there
 			shape_ok := CASE WHEN coalesce(nullif(current_setting('coldiff.no_index', true), ''), '0') = '1' THEN NULL WHEN expect = 'agg' AND v = 'on' AND scen NOT LIKE 'scenario-%' THEN used WHEN expect = 'plain' AND v LIKE 'on%' AND coalesce(nullif(current_setting('coldiff.on_table', true), ''), '0') <> '1' THEN NOT used END;
-			INSERT INTO coldiff.results (scenario, name, shape, expect, variant, ok, used, gather, shape_ok, ref_ms, ms, detail)
-			VALUES (scen, name, shape, expect, v, msg IS NULL, used, gat, shape_ok, ref_ms, ms,
+			INSERT INTO coldiff.results (scenario, name, shape, expect, variant, ok, used, gather, shape_ok, slug, ref_ms, ms, detail)
+			VALUES (scen, name, shape, expect, v, msg IS NULL, used, gat, shape_ok, slug, ref_ms, ms,
 					nullif(concat(coalesce(msg, CASE WHEN err_ref IS NOT NULL THEN 'both raise ' || left(err_ref, 80) END),
 								  CASE WHEN mutated IS NOT NULL THEN ' [mutated: ' || mutated || ']' END), ''));
 			PERFORM coldiff.reset(gucs);

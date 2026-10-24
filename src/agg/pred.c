@@ -169,7 +169,21 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 				st->in_hasnull = true;
 				continue;
 			}
-			v = sift_aggspec_operand_int(p->argtype, el[i]);
+			if (p->argtype == NUMERICOID)
+			{
+				/* the element as the scaled integer of the leaf, if a stored value can equal it */
+				if (numeric_is_nan(DatumGetNumeric(el[i])))
+				{
+					st->in_hasnan = true;
+					continue;
+				}
+				numeric_operand(st, SCMP_EQ, ex->lay->leaf[p->leaf].scale, PG_INT64_MAX, el[i]);
+				if (st->konst >= 0)
+					continue;
+				v = (int64) st->cn;
+			}
+			else
+				v = sift_aggspec_operand_int(p->argtype, el[i]);
 			if (!wide && (v < PG_INT32_MIN || v > PG_INT32_MAX))
 				continue;		/* no int4 value equals it */
 			vals[nv++] = v;
@@ -177,6 +191,7 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 			hi = Max(hi, v);
 		}
 		in_build(st, vals, nv, lo, hi);
+		st->konst = -1;
 	}
 	MemoryContextSwitchTo(old);
 	st->ready = true;
@@ -238,7 +253,7 @@ cmp_int(uint64 *out, const void *v, int slot, int n, SiftCmpOp op, int64 c)
 }
 
 /* the rows of `rows` (n bits) are in out (res) or are not */
-static void
+void
 set_rows(const uint64 *rows, int n, bool res, uint64 *out)
 {
 	for (int w = 0; w < (n + 63) / 64; w++)
@@ -314,7 +329,7 @@ eval_cmp(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 			sift_aggk->cmp_f64(out, (const double *) v->data + start, n, op, st->cd);
 			break;
 		default:
-			elog(ERROR, "sift: comparison on a dictionary leaf");
+			SIFT_INVARIANT(false, "sift: comparison on a dictionary leaf");
 	}
 	if (v->ovf && lf->typid == NUMERICOID)
 		set_rows(v->ovf + start / 64, n, st->nan_res, out);
@@ -604,14 +619,11 @@ elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
 	const uint32 *offs = elem_offs(ex, p->leaf2);
 	uint32		r = t->ridx[j],
 				ref[SIFT_AGG_MAX_CLEAVES] = {0};
-	Tup			xt = {0};
+	Tup			xt = {.cout = ex->xcout};
 
 	for (int k = 0; k < cb->nleaves; k++)
 		if (cb->leaf[k] < 0)
-		{
 			ref[k] = t->cout[cb->refcombo[k]][j];
-			xt.cout[cb->refcombo[k]] = ex->xcout[cb->refcombo[k]];
-		}
 	if (st->rowmask_ok && st->memo_row == r && memcmp(ref, st->memo_ref, sizeof(ref)) == 0)
 		return st->memo_res;
 	if (p->pass_poison)
@@ -644,6 +656,25 @@ elem_exists(AggExec *ex, const Tup *t, int j, const SiftAggPred *p)
 	st->memo_row = r;
 	memcpy(st->memo_ref, ref, sizeof(ref));
 	return st->memo_res;
+}
+
+/*
+ * A cast of the leaf (SRK_CAST, SRK_IOCAST) in a condition of the rows or in the FILTER of an aggregate: a row whose value SQL cannot convert passes
+ * the test and goes on, and raises where the rows that the conditions keep reach the aggregates (check_overflow)
+ */
+static void
+or_poison(AggExec *ex, const SiftAggPred *p, int start, int n, uint64 *out)
+{
+	PredState  *st = &ex->ps[p->id];
+
+	if (!st->poison_ok)
+	{
+		st->poison = NULL;
+		leaf_overflow_rows(ex, p->leaf, &st->poison);
+		st->poison_ok = true;
+	}
+	for (int w = 0; st->poison && w < (n + 63) / 64; w++)
+		out[w] |= st->poison[start / 64 + w];
 }
 
 /* the bitmap of a row level predicate over the unit's rows, computed once */
@@ -758,6 +789,8 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_TYPE:
 		case SAP_WIDE:
 		case SAP_ELEM_EXISTS:
-			elog(ERROR, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
+			SIFT_INVARIANT(false, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
 	}
+	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT))
+		or_poison(ex, p, start, n, out);
 }

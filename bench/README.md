@@ -23,6 +23,7 @@ bench/bench all                    # setup + run + report on the slim tier (the 
 bench/bench all --full             # the full-size tier (218,058 articles, 236,262 places) with the cold-cache tables: about an hour
 bench/bench all --docs             # the slim tier plus the cold-cache tables, then docs/results, docs/img and the generated blocks of README.md and docs/BENCHMARKS.md
 bench/bench regress --run          # sift against a build of an older release (sift_ref, --ref, default v1.1.0): exit 1 on a regression, about 1 minute of measurements
+bench/bench kit                    # docker only: PostgreSQL + pg_sift, 100,000 orders, the ten store questions with and without the pushdown, answers compared: 10-15 minutes on a laptop
 bench/bench du                     # what the work directory and the store hold; bench/bench clean [--cache|--build|--all] frees it
 ```
 
@@ -31,6 +32,14 @@ bench/bench du                     # what the work directory and the store hold;
 Scale: the default is the slim tier (50,000 articles, 34,165 places of cities15000, two to three rounds of cells of at most 1 s). It is meant to keep the ordering of the engines of the full tier at a fraction of the time and disk (the full tier's results are not published; ratios move with the size). `--full` (or `--tier full`) uses all 218,058
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus (docs/BENCHMARKS.md).
+
+**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "updates search store"`: the update, delete and VACUUM section, articles and places, the online store; about 75 minutes
+at the published size) and rewrites their blocks. It is resumable (a stage that finished with the same code, settings and host is skipped; `bench resume` continues an interrupted run), holds `SIFT_BENCH_HOST_LOCK` (a lock shared with the
+other benchmarks of the host) for the run, and says in the header of each block the version, date, host and load it was measured at. `--calm` is for a timer: it measures only when the pressure of the host stays below the quiet gate
+(`scripts/quiet.sh`) and exits 75 otherwise; `--pr BASE` commits `docs/results`, `docs/img` and the blocks on a new branch and opens a pull request against BASE (it never merges). `bench/refresh.service` and `bench/refresh.timer` are a
+user unit and a weekly timer (Sunday 03:00, a random delay of up to an hour) that run `refresh --calm --pr`; the header of the service says what to install (a clone of its own, the environment file); nothing installs them. The cheap gate
+`scripts/check-bench-fresh.sh` (lint; no measurement) fails when a generated block of README.md or docs/BENCHMARKS.md or a chart differs from what `bench readme` and `bench store render` generate from `docs/results`, and warns when the results are from
+another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them. `bench/bench refresh --prepare` builds the image and generates the data of the update, delete and VACUUM section first (nice, no host lock), so the measuring run starts at once.
 
 **One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
 `docs/results/*.tsv`, `docs/img/*.svg`, the slim section of `docs/BENCHMARKS.md` and the blocks of `README.md` (between the `<!-- bench:NAME:begin -->` / `<!-- bench:NAME:end -->` lines; `bench/bench readme` rewrites
@@ -62,7 +71,7 @@ blocks of the docs):
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory (`--docs` also writes `docs/results/<dataset>.tsv`, redraws `docs/img` and, for the slim tier, rewrites the blocks of README.md and docs/BENCHMARKS.md) |
 
-The other commands: `scaling` (the aggregates of the store orders by partitions, 1 to 4096, and parallel workers, on a scratch cluster: `steps/scaling.sh`; `docs/results/scaling.tsv`), `charts` (redraw the SVGs of `docs/img` from the committed `docs/results`; the store charts, `steps/store_charts.py`, come in a light and a dark variant and name their results file and host), `readme` (rewrite the generated blocks of README.md and docs/BENCHMARKS.md from them), `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
+The other commands: `scaling` (the aggregates of the store orders by partitions, 1 to 4096, and parallel workers, on a scratch cluster: `steps/scaling.sh`; `docs/results/scaling.tsv`), `charts` (redraw the SVGs of `docs/img` from the committed `docs/results`; the store charts, `steps/store_charts.py` and `steps/bench_charts.py` (the aggregate questions with pg_duckdb, the scale charts with log-log slopes, the cases, the shapes, the cost per row), come in a light and a dark variant and name their results files and host), `readme` (rewrite the generated blocks of README.md and docs/BENCHMARKS.md from them), `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
 oracle / pgx-bm25, every engine of `--engines` when none is named, pgx-bm25 included; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `shred` (documents per second of the sift_col jsonb shredder and elements per second of its SIMD kernels, docs/COL-SHRED.md), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
@@ -272,7 +281,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
 | `regress.py` | the regression check of `results.tsv` files (`regress`) |
-| `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes) |
+| `charts.py` | SVG charts of `docs/results/*.tsv` into `docs/img`, all five engines in every chart, an NA as a gap (`charts`; stdlib only, same tables give the same bytes); `store_charts.py` and `bench_charts.py` draw the aggregate, scale, case and shape charts (light and dark) |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\|start\|stop\|destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench` (in a scratch target; only the stripped binary stays): one `$BENCH_WORK/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
@@ -283,9 +292,13 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch (DESIGN.md (l), its own scratch cluster under `$FACET_TMP`); speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |
 | `remote.sh` | sync, build, run and clean the whole harness on a remote host (`remote`) |
+| `refresh.sh` | `bench/bench refresh`: `final --docs` for the stages of the README (search, store) behind the host lock and the quiet gate, then `scripts/check-bench-fresh.sh`; `--pr` opens the pull request |
 | `final.sh`, `gap.sh`, `gap.py` | `bench/bench final` (the release pass in stages with budgets and resume, `--dry-run`); the pg_sift profile behind docs/BENCH-GAP.md |
+| `store_section.py`, `section_render.py` | `bench/bench store section`: the update, delete and VACUUM section of the README (`docs/results/updates.json`): PostgreSQL, `sift_col` and `sift_table` with the defaults of the build (`sift.table_auto_defrag` is on) and `sift_col` with the opt-in automatic vacuum and merge (lane `sift_maint`: `ALTER DATABASE ... SET` of `sift.col_auto_merge`; the settings of every lane are read back into the results) change a table in bulk at 200,000 (three runs) and 1,000,000 orders, then four clients of mixed churn and of 1,000-row inserts (pgbench), with the WAL of every phase; the renderer states the README block, the part of docs/BENCHMARKS.md and `docs/img/updates-reads.svg` from those rows, with the losses and their causes only where the rows have them (`store.py render`) |
 | `store.sh`, `store.py` | the online-store benchmark against Citus (columnar), Elasticsearch and ClickHouse (`store`): docker containers, seeded data, load, warm and cold runs, updates, the Markdown tables of README.md and docs/BENCHMARKS.md |
 | `duckdb.sh`, `duckdb.py` | pg_duckdb against pg_sift and PostgreSQL on the store questions (`duckdb`): two docker containers, the heap and a Parquet file as pg_duckdb's data, warm and cold; rows to `docs/results/duckdb.tsv`, rendered by `extras.py` |
+| `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared; `cases.py check` is `scripts/check-bench-cases.sh` |
+| `cases_render.py`, `cases_discover.py` | the generated block "What got faster in 3.3" (the README's chart and table of the application-shaped cases, the case table of docs/BENCHMARKS.md), from `docs/results/cases.tsv` and `cases-scale.tsv`; the candidate cases of a corpus (`cases --discover`) |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
@@ -461,6 +474,28 @@ running (ClickHouse `system.merges` and unfinished mutations, Elasticsearch `_no
 with `scripts/quiet.sh` (pressure stall information below 10% for CPU and I/O). A batch that runs anyway is marked NOISY in the results. After the load the same wait
 runs, so the merges that follow the load (ClickHouse `OPTIMIZE`, Elasticsearch force-merge) are over before anything is timed. The ClickHouse container turns off the logs of
 its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) because an idle server writing them uses 3-7% of a CPU.
+
+## Cases: one per optimization (`bench/bench cases`)
+
+The benchmarks above measure fixed questions; an optimization that adds a query shape appears in no number until someone writes a case for it. `bench/cases.tsv` is the registry (one row per case: the CHANGELOG
+phrase it measures, the dataset and index, the plan the scan must show, the baselines, the README block it feeds, whether it is a headline) and `bench/cases/ID.sql` holds the statement in the layout of
+`sql/store/queries` (`--@ pg` for every lane, `--@ sift` or `--@ duck` to replace it, `--@ setup` DDL after the index, `--@ prepare` / `--@ load` / `--@ check` for a case that times a load). The data is
+the `orders` table of the store benchmark with two derived columns (`segment_id`, 6,313 values; `order_date`), its btrees and a `sift_col` index with the options of the row.
+
+```sh
+bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
+bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
+bench/bench cases --docs --rows 1000000    # the published size: docs/results/cases.tsv and the generated blocks (steps/cases.sh)
+bench/bench cases --scales 1,10,100 --docs # the curve: every case at 1x, 10x and 100x of --rows (20 million orders at 100x of 200,000), the planner's plan at each size, docs/results/cases-scale.tsv and the block "What got faster in 3.3, by size" with the crossover of each case; a host with the memory and the hours: `bench/bench refresh --stages scale --budget 0`
+bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict]   # the coverage gate (scripts/check-bench-cases.sh), no measurement
+```
+
+Lanes: `sift` is the planner's own choice and its EXPLAIN must match the `plan` of the row (a case that falls back to the normal plan fails, and so does a wrong answer: every lane is compared with `native`,
+the same table and statement with `sift.enable_agg = off`); variants are further sift lanes with settings (`scan`: `sift.agg_preagg = off`, the units scanned; `bulk_off`: the write buffers); `pg_duckdb` is
+a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
+store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block: `--docs` writes `docs/results/cases.tsv`, and `bench/bench readme` (`steps/cases_render.py`) renders the table "What got faster in 3.3" in README.md and docs/BENCHMARKS.md, and the headline cases (the `headline` column of the registry) in Performance highlights.
+
+**Finding the cases nobody wrote.** `bench/bench cases --discover` (`steps/cases_discover.py`) measures the statements of a corpus on PostgreSQL (`sift.enable_agg = off`) and on pg_sift, one backend, answers compared, and lists the shapes that the scan answers at least `--min-gain` (2) times faster and that no case of the registry has, ranked by weight times median gain, into `bench/out/cases-proposed.tsv`: a proposal with a draft registry row, for a person to accept (write `bench/cases/ID.sql` and the row, then `bench/bench cases --cases ID --docs`), never a case added by itself. A shape is the set of features of the SQL (aggregates, `DISTINCT`, group-by forms, top-N and its sort expressions, window, join kinds, `UNION ALL`, CTE, lateral, grouping sets, calendar), not its tables or literals. Sources: `--shapes FILE` (the layout of `test/plan/shapes.sql`, the default corpus of the plan gate, with an optional `-- weight: n`), `--fuzz SEEDS` (the query families of `test/fuzz/diff_fuzz.py`, weighted by the family), `--results FILE` (TSV `id native_ms sift_ms [weight [shape]]` or the JSONL of an application's corpus run, measured elsewhere, so a private corpus is ranked without its SQL being copied). A statement whose answer differs between the two plans is printed first and fails the run, and the losses (the scan slower than native) are listed too.
 
 ## Remote host
 

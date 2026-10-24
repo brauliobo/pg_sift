@@ -71,12 +71,6 @@ agk_cmp_f64_scalar(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 }
 
 void
-agk_between_f64_scalar(uint64 *out, const double *v, int n, double lo, double hi)
-{
-	PRED_BITS(out, n, i, f8_cmp(v[i], lo) >= 0 && f8_cmp(v[i], hi) <= 0);
-}
-
-void
 agk_lut_i32_scalar(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut)
 {
 	PRED_BITS(out, n, i, (uint32) v[i] - (uint32) base < nlut && lut[(uint32) v[i] - (uint32) base] != 0);
@@ -109,15 +103,6 @@ agk_sum_i32_scalar(const int32 *v, const uint64 *mask, int n)
 
 	FOREACH_ROW(mask, n, i, s += v[i]);
 	return s;
-}
-
-double
-agk_sum_f64_scalar(const double *v, const uint64 *mask, int n)
-{
-	double		a[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-
-	FOREACH_ROW(mask, n, i, a[i & 7] += v[i]);
-	return agk_canon_nan(((a[0] + a[1]) + (a[2] + a[3])) + ((a[4] + a[5]) + (a[6] + a[7])));
 }
 
 bool
@@ -192,6 +177,29 @@ agk_count_gid_scalar(int64 *cnt, const uint32 *gid, const uint64 *mask, int n)
 }
 
 void
+sift_aggk_count_gid_n(int64 *const *cnt, int nc, const uint32 *gid, const uint64 *mask, int n)
+{
+	int64	   *a = cnt[0],
+			   *b = nc > 1 ? cnt[1] : a,
+			   *c = nc > 2 ? cnt[2] : a;
+
+	switch (nc)
+	{
+		case 1:
+			FOREACH_ROW(mask, n, i, a[gid[i]]++);
+			break;
+		case 2:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; a[g]++; b[g]++; });
+			break;
+		case 3:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; a[g]++; b[g]++; c[g]++; });
+			break;
+		default:
+			FOREACH_ROW(mask, n, i, { uint32 g = gid[i]; for (int k = 0; k < nc; k++) cnt[k][g]++; });
+	}
+}
+
+void
 agk_sum_gid_i32_scalar(int64 *acc, const uint32 *gid, const int32 *v, const uint64 *mask, int n)
 {
 	FOREACH_ROW(mask, n, i, acc[gid[i]] += v[i]);
@@ -203,17 +211,6 @@ agk_sum_gid_f64_scalar(double *acc, const uint32 *gid, const double *v, const ui
 	FOREACH_ROW(mask, n, i, acc[gid[i]] += v[i]);
 }
 
-int64
-agk_count_changes_scalar(const uint32 *v, const uint64 *mask, int n, uint32 *prev)
-{
-	int64		cnt = 0;
-	uint32		p = *prev;
-
-	FOREACH_ROW(mask, n, i, { cnt += v[i] != p; p = v[i]; });
-	*prev = p;
-	return cnt;
-}
-
 #define AGK_INIT(s)	.s = agk_##s##_scalar,
 
 const SiftAggKernels sift_aggkern_scalar = {AGK_SLOTS(AGK_INIT)};
@@ -221,6 +218,10 @@ const SiftAggKernels sift_aggkern_scalar = {AGK_SLOTS(AGK_INIT)};
 const SiftAggKernels *
 sift_aggkern_for(SiftSimdLevel level)
 {
+#if defined(SIFT_HAVE_NEON)
+	if (level >= SIFT_SIMD_NEON && sift_cpu.detected >= SIFT_SIMD_NEON)
+		return &sift_aggkern_neon;
+#endif
 #if defined(__x86_64__)
 	if (level >= SIFT_SIMD_AVX512 && sift_cpu.detected >= SIFT_SIMD_AVX512)
 		return &sift_aggkern_avx512;

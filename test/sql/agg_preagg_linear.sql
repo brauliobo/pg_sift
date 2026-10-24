@@ -8,30 +8,9 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
+\ir test/agg_preagg_helpers.sql
 
--- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
-CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		workers := coalesce(substring(l from 'Workers Planned: (\d+)')::int, workers);
-	END LOOP;
-EXCEPTION WHEN OTHERS THEN
-	units := NULL; pre := NULL; workers := NULL;
-END $$;
+\ir test/agg_preagg_units.sql
 
 CREATE TABLE ev (id int, kind int, grp text, n8 bigint, m8 bigint, pad text) WITH (autovacuum_enabled = off);
 
@@ -67,23 +46,20 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS 
 $$;
 
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
-	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
-	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
-$$;
-
--- a snapshot held by another session of this database (the refresh worker rewriting a segment) keeps the pages of rows written since from
--- becoming all-visible, so the units stay scanned: wait for the queue to drain
-CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
-DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 20) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE plpgsql AS $$
+DECLARE state text;
 BEGIN
-	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
-	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
-		IF clock_timestamp() > deadline THEN
-			RAISE EXCEPTION 'not settled';
-		END IF;
-		PERFORM pg_sleep(0.01);
-	END LOOP;
+	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
+	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
+	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
+	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
+	RAISE LOG 'pa_sum %: % | heap all-visible % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT relallvisible || '/' || relpages FROM pg_class WHERE oid = tbl::regclass),
+		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
+		(SELECT count(*) FROM sift.col_rollup_queue()),
+		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
+		 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
+	RETURN NEXT;
 END $$;
 
 -- n8: values of a few million with NULLs; every 1000th row of the ids 30001 to 40000 holds an int8 extreme, the rows of the group g_null have no n8
@@ -109,7 +85,7 @@ CREATE INDEX ec_col ON ec USING sift_col (id, kind, grp, n8, m8) WITH (write_buf
 CREATE INDEX ed_col ON ed USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096);
 CREATE INDEX eo_col ON eo USING sift_col (id, kind, grp, n8, m8) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
+VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) ec, ed, eo;
 SELECT sift.col_verify('ec_col', true);
 
 -- 1. built, every page all-visible
@@ -132,7 +108,7 @@ SELECT * FROM pa_check('ec');
 SELECT * FROM pa_sum('ed');
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
-VACUUM (index_cleanup on, disable_page_skipping) ec, ed;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec, ed;
 SELECT * FROM pa_check('ec');
 
 -- 4. rows in the write buffer (a kind no unit holds), then sealed
@@ -141,12 +117,12 @@ FROM generate_series(300001, 301500) g;
 SELECT * FROM pa_check('ec');
 SELECT kind, sum(n8 + 1), sum(n8 * 3) FROM ec WHERE kind >= 7 GROUP BY kind ORDER BY kind;
 SELECT sift.col_promote('ec_col') >= 0 AS promoted;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT * FROM pa_check('ec');
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
 SELECT sift.col_merge('ec_col', true) >= 0 AS merged;
-VACUUM (index_cleanup on, disable_page_skipping) ec;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) ec;
 SELECT sift.col_verify('ec_col', true);
 SELECT * FROM pa_check('ec');
 

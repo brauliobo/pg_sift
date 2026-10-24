@@ -14,10 +14,15 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 	pa->aggs = true;
 	if (spec->off)
 		return;
+	for (int c = 0; c < SIFT_COL_MAX_COLS && pa->npres < SIFT_SRC_MAX_DIMS; c++)
+		if (spec->pres[c])
+			pa->pres[pa->npres++] = c;
 	for (int d = 0; d < spec->ndims; d++)
 	{
 		pa->dim[pa->ndims].leaf = spec->dim[d].leaf;
 		pa->dim[pa->ndims].nmeas = spec->dim[d].nmeas;
+		pa->dim[pa->ndims].minmax = spec->minmax;
+		pa->dim[pa->ndims].cal = spec->dim[d].cal;
 		for (int m = 0; m < spec->dim[d].nmeas; m++)
 			pa->dim[pa->ndims].meas[m] = spec->dim[d].meas[m];
 		pa->ndims++;
@@ -95,6 +100,7 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 	h->key = d.key;
 	h->count = d.count;
 	h->nmeas = d.nmeas;
+	h->grain = d.leaf / SIFT_PAGG_CAL;
 	for (int m = 0; m < d.nmeas; m++)
 	{
 		h->meas[m] = leaf_of_col ? leaf_of_col[d.meas[m]] : d.meas[m];
@@ -103,6 +109,8 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 		h->nn[m] = d.nn[m];
 		h->sum[m] = d.sum[m];
 		h->sumf[m] = d.sumf[m];
+		h->min[m] = d.min[m];
+		h->max[m] = d.max[m];
 	}
 	if (def->store == SIFT_COLS_STR)
 	{

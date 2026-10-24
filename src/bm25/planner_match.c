@@ -55,16 +55,6 @@ sift_index_matches_key(IndexOptInfo *index, Node *expr)
 	return equal(expr, linitial(index->indexprs));
 }
 
-/* Do quals of a policy or a security barrier view, which the rel's other quals must not run before, sit on the rel? */
-bool
-rel_secured(PlannerInfo *root, RelOptInfo *rel)
-{
-	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-		if (rinfo->security_level < root->qual_security_level)
-			return true;
-	return false;
-}
-
 bool
 sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
 {
@@ -126,10 +116,31 @@ sift_match_any_clause(Node *clause, IndexOptInfo *index, Expr **array)
 	return true;
 }
 
-/* A qual the scan answers: a query, or an array of queries ORed */
+/* Do quals of a policy or a security barrier view, which the rel's other quals must not run before, sit on the rel? */
 bool
-scan_match_clause(Node *clause, IndexOptInfo *index, Expr **query)
+rel_secured(PlannerInfo *root, RelOptInfo *rel)
 {
+	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
+		if (rinfo->security_level < root->qual_security_level)
+			return true;
+	return false;
+}
+
+/*
+ * A qual the scan answers: a query, or an array of queries ORed. The match is not leakproof, so a rel with security quals
+ * keeps it out of the scan, unless sift.rls_scores lets a ranked scan answer the user's own matches (never a policy's: a policy's
+ * word is a qual of the heap row, and as a term of the query its weight would enter the score): the scan reads the index, and a
+ * row it returns has passed the security quals first (cscan.c scan_verify).
+ */
+bool
+scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query)
+{
+	if (ranked && sift_rls_scores && IsA(clause, RestrictInfo))
+	{
+		if (((RestrictInfo *) clause)->security_level < root->qual_security_level)
+			return false;
+		clause = (Node *) ((RestrictInfo *) clause)->clause;
+	}
 	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query);
 }
 
@@ -187,6 +198,7 @@ score_operand(Node *arg, Index relid)
 bool
 score_cutoff(Node *clause, Index relid, bool *lower)
 {
+	static Oid	float_family;	/* a system catalog row: the lookup scans pg_opclass, and this runs for every clause of every partition */
 	OpExpr	   *op;
 	Node	   *cutoff;
 	int			strategy;
@@ -194,12 +206,13 @@ score_cutoff(Node *clause, Index relid, bool *lower)
 
 	if (!IsA(clause, OpExpr) || list_length((op = (OpExpr *) clause)->args) != 2)
 		return false;
-	/* before the opclass lookup, a scan of the catalog that every clause of every query would pay */
+	if (!OidIsValid(float_family))
+		float_family = get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID));
+	strategy = get_op_opfamily_strategy(op->opno, float_family);
+	if (strategy == 0 || strategy == BTEqualStrategyNumber)
+		return false;
 	score_left = score_operand(linitial(op->args), relid);
 	if (!score_left && !score_operand(lsecond(op->args), relid))
-		return false;
-	strategy = get_op_opfamily_strategy(op->opno, get_opclass_family(GetDefaultOpClass(FLOAT8OID, BTREE_AM_OID)));
-	if (strategy == 0 || strategy == BTEqualStrategyNumber)
 		return false;
 	cutoff = score_left ? lsecond(op->args) : linitial(op->args);
 	if (contain_var_clause(cutoff) || contain_volatile_functions(cutoff) || contain_subplans(cutoff))
@@ -254,7 +267,7 @@ is_partition(RelOptInfo *rel)
 	return rel->reloptkind == RELOPT_OTHER_MEMBER_REL;
 }
 
-/* sift.score / max_score of rel in the final target list and in the query's first sort key */
+/* sift.score / max_score of rel in the final target list, in HAVING and in the query's first sort key */
 List *
 score_exprs(PlannerInfo *root, RelOptInfo *rel)
 {
@@ -262,6 +275,7 @@ score_exprs(PlannerInfo *root, RelOptInfo *rel)
 	List	   *own = NIL;
 
 	score_walker((Node *) root->processed_tlist, &refs);
+	score_walker(root->parse->havingQual, &refs);
 	foreach_ptr(Node, e, refs.found)
 		own = lappend(own, is_partition(rel) ? adjust_appendrel_attrs_multilevel(root, e, rel, rel->top_parent) : e);
 	refs = (ScoreRefs) {rel->relid, own};
@@ -354,8 +368,7 @@ add_key(KeyedOrder *ko, PathKey *pk, EquivalenceMember *em)
 {
 	Oid			sortop = sift_pathkey_sortop(pk, em->em_datatype);
 
-	if (!OidIsValid(sortop))
-		elog(ERROR, "sift: missing ordering operator for type %u in operator family %u", em->em_datatype, pk->pk_opfamily);
+	SIFT_INVARIANT(OidIsValid(sortop), "sift: missing ordering operator for type %u in operator family %u", em->em_datatype, pk->pk_opfamily);
 	ko->exprs = lappend(ko->exprs, em->em_expr);
 	ko->keyops = list_concat(ko->keyops,
 							 list_make3(makeConst(OIDOID, -1, InvalidOid, sizeof(Oid), ObjectIdGetDatum(sortop), false, true),

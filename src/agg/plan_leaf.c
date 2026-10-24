@@ -281,7 +281,7 @@ key_leaf(AggCtx *c, int att, List *path, Oid typid)
 				val;
 	SiftSrcLeaf *v;
 
-	if (n == 0 || c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (n == 0 || agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	for (int i = 0; i < c->lay->nleaves; i++)
 	{
@@ -323,7 +323,7 @@ types_leaf(AggCtx *c, Node *call)
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].types && c->vleaf[j].obj == base)
 			return c->lay->nleaves - c->nvleaf + j;
-	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	v = vleaf_add(c, leaf_of(c, base)->attno, leaf_of(c, base)->path, SCV_CODE, TEXTOID);
 	strlcpy(v->name, "#typeof", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
@@ -344,7 +344,7 @@ count_leaf(AggCtx *c, int grp)
 	for (int j = 0; j < c->nvleaf; j++)
 		if (c->vleaf[j].count && c->vleaf[j].obj == grp)
 			return nbase + j;
-	if (c->nvleaf >= SIFT_AGG_MAX_VLEAVES || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
+	if (agg_width_hit(c->nvleaf, virtual_leaves, sift_limit(virtual_leaves, SIFT_AGG_MAX_VLEAVES), "virtual leaves") || c->lay->nleaves >= SIFT_COLSRC_MAX_LEAVES)
 		return -1;
 	v = vleaf_add(c, leaf_of(c, grp)->attno, leaf_of(c, grp)->path, SCV_I32, INT4OID);
 	strlcpy(v->name, "#count", NAMEDATALEN);	/* not the scalar of the path: scalar_leaf skips it */
@@ -531,6 +531,78 @@ func_var_leaf(AggCtx *c, Var *v)
 	}
 }
 
+/* jsonb_array_length of a top level array leaf: its count leaf */
+static int
+array_length_leaf(AggCtx *c, Node *e)
+{
+	JsonRef		a = {0};
+
+	if (!json_access(c, linitial(func_args(e)), &a) || a.as_text || a.att == 0)
+		return -1;
+	for (int i = 0; i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->kind == SCL_ARRAY && l->attno == a.att && l->parent < 0 && !l->lossy && paths_equal(l->path, a.path))
+			return count_leaf(c, i);
+	}
+	return -1;
+}
+
+/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
+static int
+each_value_cast_leaf(AggCtx *c, Node *e, Oid fid, Oid cast_to, const JsonRef *r)
+{
+	int			leaf;
+
+	if (cast_to == InvalidOid || json_cast_target(fid) == InvalidOid || cast_to != exprType(e) || r->att != 0 || c->func_kind != FK_EACH ||
+		r->fcol != 2 || (c->group < 0 && c->func_key == NULL))
+		return -1;
+	leaf = c->func_key ? member_leaf(c, cast_to) : child_leaf(c, c->group, "value", cast_to);
+	c->cast_pending = leaf + 1;
+	return leaf;
+}
+
+/* a typed jsonb path, as text or through a cast, of a stored column or of the unnested function's row */
+static int
+json_path_leaf(AggCtx *c, Node *e, Oid fid, Oid cast_to, const JsonRef *r)
+{
+	Oid			want = cast_to != InvalidOid ? cast_to : r->as_text ? TEXTOID : InvalidOid;
+
+	if (want == InvalidOid || exprType(e) != want || (cast_to != InvalidOid && cast_to != want))
+		return -1;
+	if (cast_to != InvalidOid && !(r->as_text || json_cast_target(fid) != InvalidOid))
+		return -1;
+	if (r->att > 0)
+	{
+		int			l = scalar_leaf(c, r->att, r->path, want);
+
+		if (l >= 0)
+		{
+			c->txt_pending = cast_to == InvalidOid && r->as_text ? l + 1 : 0;
+			c->io_pending = cast_to != InvalidOid && r->as_text ? l + 1 : 0;
+			c->cast_pending = cast_to != InvalidOid && !r->as_text ? l + 1 : 0;
+		}
+		return l >= 0 ? l : key_leaf(c, r->att, r->path, want);
+	}
+	if (c->group < 0)
+		return -1;
+	if (c->func_kind == FK_ELEMENTS && r->fcol == 1 && list_length(r->path) == 1)
+	{
+		int			l = child_leaf(c, c->group, strVal(linitial(r->path)), want);
+
+		if (l >= 0)
+		{
+			c->io_pending = cast_to != InvalidOid && r->as_text ? l + 1 : 0;
+			c->cast_pending = cast_to != InvalidOid && !r->as_text ? l + 1 : 0;
+		}
+		return l;
+	}
+	if (c->func_kind == FK_EACH && r->fcol == 2 && r->path == NIL)
+		return child_leaf(c, c->group, "value", want);
+	return -1;
+}
+
 /*
  * The leaf an expression reads, -1 if it is not exactly a stored value: an attribute or index expression, a Var of the
  * unnested function's row type, a typed jsonb path of either, or the length of an array leaf.
@@ -547,6 +619,7 @@ match_leaf_node(AggCtx *c, Node *e)
 	c->rec_pending = 0;
 	c->cast_pending = 0;
 	c->txt_pending = 0;
+	c->io_pending = 0;
 	e = strip_relabel(e);
 	if (IsA(e, Var) && ((Var *) e)->varno == c->func_rti && c->func_rti != 0)
 		return func_var_leaf(c, (Var *) e);
@@ -554,20 +627,7 @@ match_leaf_node(AggCtx *c, Node *e)
 		return scalar_leaf(c, att, NIL, exprType(e));
 	fid = func_of(e);
 	if (fid == F_JSONB_ARRAY_LENGTH)
-	{
-		JsonRef		a = {0};
-
-		if (!json_access(c, linitial(func_args(e)), &a) || a.as_text || a.att == 0)
-			return -1;
-		for (int i = 0; i < c->lay->nleaves; i++)
-		{
-			SiftSrcLeaf *l = leaf_of(c, i);
-
-			if (l->kind == SCL_ARRAY && l->attno == a.att && l->parent < 0 && !l->lossy && paths_equal(l->path, a.path))
-				return count_leaf(c, i);
-		}
-		return -1;
-	}
+		return array_length_leaf(c, e);
 	if (fid == F_JSONB_TYPEOF)
 		return types_leaf(c, e);
 	inner = e;
@@ -587,41 +647,8 @@ match_leaf_node(AggCtx *c, Node *e)
 	if (!json_access(c, inner, &r))
 		return -1;
 	if (IsA(inner, Var) || attr_of_expr(c, inner) > 0)
-	{
-		/* the jsonb value itself, but for its cast to a number or boolean: the value of jsonb_each */
-		if (cast_to != InvalidOid && json_cast_target(fid) != InvalidOid && cast_to == exprType(e) && r.att == 0 && c->func_kind == FK_EACH &&
-			r.fcol == 2 && (c->group >= 0 || c->func_key != NULL))
-		{
-			int			leaf = c->func_key ? member_leaf(c, cast_to) : child_leaf(c, c->group, "value", cast_to);
-
-			c->cast_pending = leaf + 1;
-			return leaf;
-		}
-		return -1;
-	}
-	{
-		Oid			want = cast_to != InvalidOid ? cast_to : r.as_text ? TEXTOID : InvalidOid;
-
-		if (want == InvalidOid || exprType(e) != want || (cast_to != InvalidOid && cast_to != want))
-			return -1;
-		if (cast_to != InvalidOid && !(r.as_text || json_cast_target(fid) != InvalidOid))
-			return -1;
-		if (r.att > 0)
-		{
-			int			l = scalar_leaf(c, r.att, r.path, want);
-
-			if (l >= 0)
-				c->txt_pending = cast_to == InvalidOid && r.as_text ? l + 1 : 0;
-			return l >= 0 ? l : key_leaf(c, r.att, r.path, want);
-		}
-		if (c->group < 0)
-			return -1;
-		if (c->func_kind == FK_ELEMENTS && r.fcol == 1 && list_length(r.path) == 1)
-			return child_leaf(c, c->group, strVal(linitial(r.path)), want);
-		if (c->func_kind == FK_EACH && r.fcol == 2 && r.path == NIL)
-			return child_leaf(c, c->group, "value", want);
-	}
-	return -1;
+		return each_value_cast_leaf(c, e, fid, cast_to, &r);
+	return json_path_leaf(c, e, fid, cast_to, &r);
 }
 
 /* match_leaf_node, noting the leaves read by the cast function of jsonb: before PostgreSQL 18 it raises for a JSON null (reads_json_null_cast) */

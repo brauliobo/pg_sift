@@ -31,7 +31,7 @@ fi
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
 # the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs)
-GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
+GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*' ':!scripts/bench-cases.allow')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 die() { echo "release: $*" >&2; exit 1; }
 soft() { if [[ -n $DRY ]]; then log "dry run, would stop: $*"; else die "$*"; fi; }	# a precondition of the real release, a note in a dry run
@@ -73,6 +73,11 @@ preflight() {
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
+	# the benchmark numbers: blocks that differ from docs/results stop a release, results of an older MAJOR.MINOR are a warning (bench/bench refresh, docs/RELEASE.md)
+	local fresh; fresh=$("$R/scripts/check-bench-fresh.sh" 2>&1) || soft "the benchmark blocks of README.md differ from docs/results: $fresh"
+	grep '^warning:' <<<"$fresh" | while read -r f; do log "$f"; done || true
+	# every speed claim of Unreleased has a case in bench/cases.tsv, or a reasoned line in scripts/bench-cases.allow: the number of lines left is the one to watch
+	local cases; cases=$("$R/scripts/check-bench-cases.sh" --strict 2>&1) || soft "$(grep -c 'claims a speed with no case' <<<"$cases") speed lines of CHANGELOG.md Unreleased have no bench case (scripts/check-bench-cases.sh --strict): cover them in bench/cases.tsv or add them to scripts/bench-cases.allow with a reason"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")
@@ -142,6 +147,9 @@ check_upgrade() {
 	# The setting exists once a function of the library ran in the session.
 	min=$(q "$sock" $port sift <<<"SELECT sift.verify('docs_idx', true); SELECT min_val FROM pg_settings WHERE name = 'sift.col_format_minor'" | tail -1) || true
 	if [[ -n $min ]]; then
+		# server-wide, as docs/UPGRADING.md "Going back" does: the background worker of sift.col_auto_merge (on by default since 3.3) rewrites the index
+		# with the setting of its own process, not the session's, and its default would put a section the previous library cannot read into it
+		q "$sock" $port sift -c "ALTER SYSTEM SET sift.col_format_minor = $min" -c "SELECT pg_reload_conf()" >/dev/null
 		q "$sock" $port sift <<<"DROP INDEX docs_idx; SET sift.col_format_minor = $min; REINDEX INDEX docs_col; INSERT INTO docs SELECT i, i % 9, i % 100, 'x' FROM generate_series(30001, 30500) i; VACUUM docs"
 		q "$sock" $port sift <<<"SELECT sift.col_verify('docs_col', true)" >/dev/null
 		b=$(q "$sock" $port sift <<<"$ANSC"); pgt "$W/new" "$U" $port stop >/dev/null
@@ -174,6 +182,8 @@ check_versions() {
 	[[ $(sed -n 's/^pkgver=//p' "$R/packaging/PKGBUILD") == "$VERSION" ]] || bad+=("packaging/PKGBUILD pkgver")
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || [[ $(<"$R/$f/VERSION") == "$VERSION" ]] || bad+=("$f/VERSION"); done
 	grep -q "release-$VERSION-blue" "$R/README.md" || bad+=("README.md badge")
+	grep -q "^version: \"$VERSION\"" "$R/packaging/pgxman.yaml" || bad+=("packaging/pgxman.yaml")
+	[[ $(grep -c "\"version\": \"$VERSION\"" "$R/META.json") == 2 ]] || bad+=("META.json")
 	grep -q "^## $VERSION - " "$R/CHANGELOG.md" || bad+=("CHANGELOG.md heading")
 	(( ${#bad[@]} == 0 )) || { echo "not at $VERSION: ${bad[*]}"; return 1; }
 }
@@ -206,10 +216,11 @@ bump() {
 	done
 	sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" "$R/packaging/PKGBUILD"
 	sed -i "s/release-$oldre-blue/release-$VERSION-blue/" "$R/README.md"
+	sed -i "s/$oldre/$VERSION/g" "$R/packaging/pgxman.yaml" "$R/META.json"
 	sed -i "s/\([^0-9.]\)$oldre\([^0-9]\)/\1$VERSION\2/g" "$R/docs/USAGE.md"
 	sed -i "s/^V=$oldre\$/V=$VERSION/" "$R/sqlite/README.md"
 	check_versions || return 1
-	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD sqlite/README.md
+	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || g add "$f/VERSION" "$f/CHANGELOG.md"; done
 	g commit -q -m "release: $VERSION
 

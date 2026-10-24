@@ -9,6 +9,9 @@ INSERT INTO ev
 SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + i % 3000 END, 1 + i % 40, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 120000) i;
 CREATE INDEX ev_col ON ev USING sift_col (entity_id, src_id, day, kind, amount);
+NOTICE:  sift_col index ev_col keeps the keys of entity_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1568 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: src_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE ents (id int, country int, tier int);
 INSERT INTO ents SELECT i, i % 30, i % 4 FROM generate_series(1, 3000) i;

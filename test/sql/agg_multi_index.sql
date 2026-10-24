@@ -5,19 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
-	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
-	RETURN r;
-END $$;
+\ir test/agg_helpers.sql
 
-CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text := runq(q, false); b text := runq(q, true);
-BEGIN
-	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
-END $$;
+\ir test/agg_same_helpers.sql
 
 -- the index the pushdown scans, or native when the plan has no SiftAgg
 CREATE FUNCTION used_index(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -69,6 +59,6 @@ SELECT used_index('SELECT grp, sum((doc ->> $$n$$)::float8) FROM mi GROUP BY grp
 
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool);
-DROP FUNCTION used_index(text);
+DROP FUNCTION used_index(text), outcome, pushed, runs_in_scan;
 DROP TABLE mi, mi_dim;
 DROP EXTENSION pg_sift;

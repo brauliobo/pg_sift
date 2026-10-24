@@ -71,7 +71,7 @@ unsupported_clause(AggCtx *c, Node *n)
 }
 
 /* does the right side read a column (or aggregate, or CTE) of the query, or above it when skip is 1? */
-static bool
+bool
 reads_outer(AggCtx *c, RangeTblEntry *e, int skip)
 {
 	/* the expressions of a function or VALUES list are in the query itself, the body of a sub-select one level below it */
@@ -97,6 +97,9 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 
 	switch (e->rtekind)
 	{
+		case RTE_RELATION:
+			*what = e->relkind == RELKIND_PARTITIONED_TABLE ? "partitioned" : "filtered";
+			break;
 		case RTE_CTE:
 		{
 			PlannerInfo *owner = c->root;
@@ -106,23 +109,23 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 			*what = "cte";
 			/* A CTE of a query level that reads nothing of the queries around it has no changing outer-row inputs, wherever it is referenced. */
 			if (e->self_reference || cte_owner_correlated(owner))
-				return false;
+				return agg_refuse_on(JOIN_CHILD, "the CTE is recursive, or reads the queries around it");
 			break;
 		}
 		case RTE_SUBQUERY:
 			*what = "subquery";
 			if (e->subquery->rowMarks != NIL || contain_volatile_functions((Node *) e->subquery))
-				return false;
+				return agg_refuse_on(JOIN_CHILD, "the sub-select locks rows or calls a volatile function");
 			break;
 		case RTE_VALUES:
 			*what = "values";
 			if (contain_volatile_functions((Node *) e->values_lists))
-				return false;
+				return agg_refuse_on(JOIN_CHILD, "the VALUES list calls a volatile function");
 			break;
 		default:
 			*what = "function";
 			if (contain_volatile_functions((Node *) e->functions))
-				return false;
+				return agg_refuse_on(JOIN_CHILD, "the function in FROM is volatile");
 			break;
 	}
 	/*
@@ -130,11 +133,13 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	 * scan replays its groups when rescanned (agg_rescan) and never sees it. Only the query's own tables are an input of the child.
 	 */
 	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || reads_outer(c, e, 1))
-		return false;
+		return agg_refuse_on(JOIN_CHILD, "the child is not a base relation of this query level, or reads the queries around it");
 	if (reads_outer(c, e, 0) || !bms_is_empty(rel->lateral_relids))
 		return (e->rtekind == RTE_SUBQUERY || e->rtekind == RTE_FUNCTION) && planned_correlated_child(c, e, rel, jc);
-	if ((jc->cpath = child_path(rel, false)) == NULL || jc->cpath->rows > sift_agg_lookup_max_rows)
-		return false;
+	if ((jc->cpath = child_path(rel, false)) == NULL)
+		return agg_refuse_on(JOIN_CHILD, "the child has no plan the scan can run once");
+	if (!agg_lookup_fits(jc->cpath->rows, jc->cpath->pathtarget->width))
+		return agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "the child is estimated at %.0f rows of width %d", jc->cpath->rows, jc->cpath->pathtarget->width);
 	jc->j.child = 0;
 	foreach_ptr(JoinCtx, o, c->joins)
 		jc->j.child += o->cpath != NULL && o->j.params == NIL;
@@ -172,6 +177,36 @@ nullable_filters(AggCtx *c, FromScan *fs, List *quals, Index dim)
 	return rest;
 }
 
+/*
+ * The right side of a semi or anti join that is a tree of joined tables (IN (SELECT .. FROM a LEFT JOIN b ..)): PostgreSQL's plan of the join it
+ * made of the tree, read once when the scan starts, gives the keys. It must not read the rows of the query's other tables.
+ */
+static bool
+add_tree_join(AggCtx *c, LeftJoin *lj, JoinCtx *jc)
+{
+	RelOptInfo *rel = find_join_rel(c->root, lj->tree);
+	Path	   *best = NULL;
+
+	if (rel == NULL)
+		return agg_refuse_on(JOIN_CHILD, "PostgreSQL did not plan the tables on the right of the semi or anti join as a join of their own");
+	if (!bms_is_empty(rel->lateral_relids) || contain_volatile_functions((Node *) c->root->parse->jointree))
+		return agg_refuse_on(JOIN_CHILD, "the tables on the right of the semi or anti join read the query's other tables, or call a volatile function");
+	foreach_ptr(Path, p, rel->pathlist)
+		if (p->param_info == NULL && !p->parallel_aware && p->parallel_workers == 0 && !IsA(p, GatherPath) && !IsA(p, GatherMergePath) &&
+			(best == NULL || p->total_cost < best->total_cost))
+			best = p;
+	if (best == NULL)
+		return agg_refuse_on(JOIN_CHILD, "the tables on the right of the semi or anti join have no plan the scan can run once");
+	if (!agg_lookup_fits(best->rows, best->pathtarget->width))
+		return agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "the keys of the semi or anti join are estimated at %.0f rows of width %d", best->rows, best->pathtarget->width);
+	jc->cpath = best;
+	jc->tree = true;
+	jc->j.child = 0;
+	foreach_ptr(JoinCtx, o, c->joins)
+		jc->j.child += o->cpath != NULL && o->j.params == NIL;
+	return true;
+}
+
 /* a table or plan in the FROM list besides the scanned one: it joins by equality of its columns to leaves */
 bool
 add_join(AggCtx *c, FromScan *fs, Index rti)
@@ -179,18 +214,33 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 	RangeTblEntry *e = rt_fetch(rti, c->root->parse->rtable);
 	JoinCtx    *jc = palloc0(sizeof(JoinCtx));
 	const char *what = NULL;
+	bool		filtered = false;
+	LeftJoin   *tree = NULL;
 
 	jc->rti = rti;
 	jc->j.child = -1;
 	jc->j.fslot = -1;
-	if (e->rtekind == RTE_RELATION)
+	/* the rows of a table of a FULL JOIN that a condition of its sub-select or view left out are no rows of the join: its plan reads them */
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		filtered |= lj->rti == rti && lj->kind == SJ_FULL && c->root->simple_rel_array[rti] != NULL &&
+			c->root->simple_rel_array[rti]->baserestrictinfo != NIL;
+	foreach_ptr(LeftJoin, lj, fs->lefts)
+		if (lj->rti == rti && lj->tree != NULL)
+			tree = lj;
+	if (tree != NULL)
+	{
+		if (!add_tree_join(c, tree, jc))
+			return agg_refuse(JOIN_CHILD);
+		what = "join";
+	}
+	else if (e->rtekind == RTE_RELATION && e->relkind != RELKIND_PARTITIONED_TABLE && !filtered)
 	{
 		if (e->relkind != RELKIND_RELATION)
-			return false;
+			return agg_refuse_f(TABLE_KIND, "the joined relation %s is not a plain table", get_rel_name(e->relid));
 		jc->j.relid = e->relid;
 	}
 	else if (!add_plan_join(c, e, rti, jc, &what))
-		return false;
+		return agg_refuse(JOIN_CHILD);
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == rti)
 		{
@@ -209,8 +259,9 @@ add_join(AggCtx *c, FromScan *fs, Index rti)
 /*
  * `column = value` or `column = ANY (array)` (IN (list)) among the table's own conditions (the value reads no column, is not volatile and takes no
  * executor parameter): the rows of the table that can match are those of an index scan on the column, when the table has a btree on it (the executor
- * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A list that keeps a large share of the table is read faster by
- * the heap scan than through the index, so it is only for a list the statistics of the table expect to keep a small share.
+ * looks, map_load). The conjunct stays in the filter; this only narrows what is read. A condition that keeps a large share of the table is read faster
+ * by the heap scan than through the index (a random heap fetch for each row), so it is only for a condition the statistics of the table expect to keep
+ * a small share.
  */
 static bool
 index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, Node **val, bool *any)
@@ -247,6 +298,8 @@ index_qual(AggCtx *c, JoinCtx *jc, Node *q, Oid *opno, Oid *coll, Node **col, No
 			l = r;
 			r = strip_relabel(linitial(op->args));
 		}
+		if (clause_selectivity(c->root, q, jc->rti, JOIN_INNER, NULL) * AGG_IDX_ROW >= AGG_JOIN_ROW)
+			return false;
 	}
 	else
 		return false;
@@ -290,7 +343,7 @@ join_filter(AggCtx *c, JoinCtx *jc, List *conds)
 	join_index_quals(c, jc, conds);
 
 	if (!combo_slot_in(c, jc, normalize_expr(c, (Node *) make_ands_explicit(conds)), false, false, &ci, &si) || ci != jc->combo)
-		return false;
+		return agg_refuse_on(JOIN_CONDITION, "the join filter is not an expression of the scanned table's leaves and the joined columns");
 	jc->j.fslot = si;
 	return true;
 }
@@ -376,18 +429,18 @@ order_lookups(AggCtx *c, List *quals)
 			continue;
 		}
 		if (!order_inner_lookups(c, pending, quals, &ordered, &done))
-			return false;
+			return agg_refuse(JOIN_CONDITION);
 		pending = NIL;
 		foreach_ptr(Node, q, jc->clauses)
 			if (!bms_is_subset(lookup_inputs(c, q), bms_add_member(bms_copy(done), jc->rti)))
-				return false;
+				return agg_refuse_on(JOIN_CONDITION, "a join condition reads a table that no earlier lookup reaches");
 		if (jc->j.params != NIL && !bms_is_subset(lookup_inputs(c, (Node *) jc->args), done))
-			return false;
+			return agg_refuse_on(JOIN_CONDITION, "the parameters of a joined child read a table that no earlier lookup reaches");
 		ordered = lappend(ordered, jc);
 		done = bms_add_member(done, jc->rti);
 	}
 	if (!order_inner_lookups(c, pending, quals, &ordered, &done))
-		return false;
+		return agg_refuse(JOIN_CONDITION);
 	Assert(list_length(c->combos) == list_length(c->joins));
 	foreach_ptr(JoinCtx, jc, ordered)
 	{
@@ -468,6 +521,31 @@ drop_pushed(AggCtx *c, List *quals)
 	return kept;
 }
 
+/* every column of the query's own level is NULL, as in the row an outer join makes for a preserved row that nothing matched */
+static Node *
+null_row_mutator(Node *n, void *ctx)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0)
+		return (Node *) makeNullConst(((Var *) n)->vartype, ((Var *) n)->vartypmod, ((Var *) n)->varcollid);
+	if (IsA(n, PlaceHolderVar))
+		return null_row_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, ctx);
+	return expression_tree_mutator(n, null_row_mutator, ctx);
+}
+
+/* does the condition hold for the row of NULL columns? Then it is no filter of the rows the scan reads, but of the joined rows */
+static bool
+null_row_passes(Node *q)
+{
+	Node	   *e;
+
+	if (contain_volatile_functions(q) || checkExprHasSubLink(q) || contain_subplans(q))
+		return false;
+	e = eval_const_expressions(NULL, null_row_mutator(q, NULL));
+	return IsA(e, Const) && !((Const *) e)->constisnull && DatumGetBool(((Const *) e)->constvalue);
+}
+
 /*
  * The conjuncts of the WHERE and of the ON clauses that read a joined table. Those of an inner join are its ON clause (the same rows
  * either way); those of an outer, semi or anti join filter its output rows (*post). In the ON clause of every join an equality of a
@@ -496,9 +574,21 @@ join_quals(AggCtx *c, List **quals, List **post, bool nullable_input)
 		else
 			*post = lappend(*post, q);
 	}
-	/* a WHERE the scanned table's NULL row can pass is evaluated after the outer join: it is not a filter of the rows the scan reads */
+	/*
+	 * A WHERE that reads the scanned table only is evaluated after a preserved join: a row it drops after matching is no row of the join, so
+	 * it is no filter of the rows the scan reads but of the matched tuples (post), and the rows nothing matched, which have NULL columns,
+	 * must pass it (a condition they fail would drop them, which the scan does not).
+	 */
 	if (rest != NIL && !nullable_input && preserved_join(c))
-		return false;
+	{
+		foreach_ptr(Node, q, rest)
+		{
+			if (!null_row_passes(q))
+				return agg_refuse_on(OUTER_JOIN, "a WHERE the rows of the preserved side that nothing matched fail is evaluated after the outer join");
+			*post = lappend(*post, q);
+		}
+		rest = NIL;
+	}
 	*quals = rest;
 	return true;
 }
@@ -585,6 +675,76 @@ rekey_chains(AggCtx *c, List *quals)
 	return out;
 }
 
+/* the equality of the elements x and y of two jsonb arrays, as a comparison of their type (NULL: the types differ, or have no equality) */
+static Node *
+element_equality(Node *x, Node *y)
+{
+	TypeCacheEntry *tc;
+
+	if (exprType(x) != exprType(y) || exprCollation(x) != exprCollation(y))
+		return NULL;
+	tc = lookup_type_cache(exprType(x), TYPECACHE_EQ_OPR);
+	if (!OidIsValid(tc->eq_opr))
+		return NULL;
+	return (Node *) make_opclause(tc->eq_opr, BOOLOID, false, (Expr *) x, (Expr *) y, InvalidOid, exprCollation(x));
+}
+
+/* `jsonb_build_array(x) = jsonb_build_array(y)`, in the form of the equality op of two arrays */
+static Node *
+element_array_equality(OpExpr *op, FuncExpr *l, FuncExpr *r, Node *x, Node *y)
+{
+	OpExpr	   *e = makeNode(OpExpr);
+	FuncExpr   *a = makeNode(FuncExpr),
+			   *b = makeNode(FuncExpr);
+
+	*e = *op;
+	*a = *l;
+	*b = *r;
+	a->args = list_make1(x);
+	b->args = list_make1(y);
+	e->args = list_make2(a, b);
+	return (Node *) e;
+}
+
+/*
+ * `jsonb_build_array(a1, ..) = jsonb_build_array(b1, ..)` holds when each pair of elements is equal, a NULL (the JSON null) being equal
+ * to itself only. An element of the same type on both sides whose JSON image is its value (an integer, a date, a text of a deterministic
+ * collation) that equals a column of the joined table is a key that equals NULLs; each of the others stays a condition of the table's rows.
+ * False, and the clause as it is, when no element is a key. Without keys the rows of the table are all tested for every tuple.
+ */
+static bool
+array_keys(AggCtx *c, JoinCtx *jc, Node *q, List **conds)
+{
+	OpExpr	   *op = (OpExpr *) q;
+	FuncExpr   *l,
+			   *r;
+	List	   *rest = NIL;
+	int			nkey = jc->j.nkey;
+	ListCell   *la,
+			   *lb;
+
+	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || get_opcode(op->opno) != F_JSONB_EQ)
+		return false;
+	l = linitial(op->args);
+	r = lsecond(op->args);
+	if (!IsA(l, FuncExpr) || !IsA(r, FuncExpr) || l->funcid != F_JSONB_BUILD_ARRAY_ANY || r->funcid != F_JSONB_BUILD_ARRAY_ANY ||
+		l->funcvariadic || r->funcvariadic || list_length(l->args) != list_length(r->args))
+		return false;
+	forboth(la, l->args, lb, r->args)
+	{
+		Node	   *x = lfirst(la),
+				   *y = lfirst(lb),
+				   *eq = element_equality(x, y);
+
+		if (eq == NULL || (!join_clause(c, jc, eq, true) && !join_expr_clause(c, jc, eq, true)))
+			rest = lappend(rest, element_array_equality(op, l, r, x, y));
+	}
+	if (jc->j.nkey == nkey)
+		return false;
+	*conds = list_concat(*conds, rest);
+	return true;
+}
+
 bool
 setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post)
 {
@@ -600,9 +760,9 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 		if (jc->kind == SJ_INNER)
 			probe_quals = list_concat(probe_quals, list_copy(jc->clauses));
 	if (!order_lookups(c, probe_quals))
-		return false;
+		return agg_refuse(JOIN_CONDITION);
 	if (!join_quals(c, quals, post, false) || !join_quals(c, scan_quals, scan_post, true))
-		return false;
+		return agg_refuse(WHERE);
 	/* an EXISTS in the ON clause of an inner join filters its tuples, as in the WHERE (inside the nullable input of a preserved join, if there is one) */
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->kind == SJ_INNER)
@@ -629,23 +789,23 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 			if (member_arg(c, arg))		/* the child gets the JSON null as it is: the cast it makes of it raises where SQL does */
 				c->jcast = casts;
 			if (w.bad || (w.jc && w.jc->combo >= jc->combo))
-				return false;
+				return agg_refuse_on(JOIN_CONDITION, "a join key expression reads a table joined after it, or a leaf the scan cannot evaluate");
 			for (int p = 0; p < w.nl; p++)
 			{
 				if (combo_leaf(cb, w.leaf[p], true, w.ptype[p], w.ptypmod[p], w.pcoll[p]) < 0)
-					return false;
+					return agg_refuse_limit(SHAPE_WIDTH, combo_leaves, SIFT_AGG_MAX_CLEAVES, "no room in a value combination for a leaf of the key expression (it holds at most that many, or has the leaf with another type)");
 				use_matched_leaf(c, w.leaf[p]);
 			}
 			foreach_ptr(Var, v, w.vars)
 				if (combo_reference(c, cb, join_of_var(c, (Node *) v), v) < 0)
-					return false;
+					return agg_refuse_on(JOIN_CONDITION, "a key expression reads a column of another joined table that cannot be looked up first");
 			jc->j.args = lappend(jc->j.args, expr);
 		}
 		foreach_ptr(Node, q, jc->clauses)
-			if (jc->j.params != NIL || (!join_clause(c, jc, q) && !join_expr_clause(c, jc, q)))
+			if (jc->j.params != NIL || (!array_keys(c, jc, q, &conds) && !join_clause(c, jc, q, false) && !join_expr_clause(c, jc, q, false)))
 				conds = lappend(conds, q);
 		if ((jc->j.nkey == 0 && conds == NIL && jc->j.params == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
-			return false;
+			return agg_refuse_on(JOIN_CONDITION, "a join with no equality between its columns and the scanned table's leaves (a range, an inequality or ON true)");
 	}
 	return true;
 }
@@ -657,7 +817,7 @@ child_pos(List *vars, int att)
 	foreach_ptr(Var, v, vars)
 		if (v->varattno == att)
 			return foreach_current_index(v) + 1;
-	elog(ERROR, "sift: column %d is not an output of the joined plan", att);
+	SIFT_INVARIANT(false, "sift: column %d is not an output of the joined plan", att);
 }
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
@@ -685,6 +845,9 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 		if (jc->cpath != NULL && jc->j.params == NIL && !own_level)
 			cp->custom_paths = lappend(cp->custom_paths, jc->cpath);
 	}
+	if (c->spine != NULL)
+		cp->custom_paths = lappend(cp->custom_paths, c->spine);
+	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
 }
 
@@ -718,7 +881,7 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 		if (jc->cpath == NULL || jc->j.scoped)
 			continue;
 		if (!child_cols_kept(c, jc))
-			return false;
+			return agg_refuse_on(JOIN_CHILD, "a column of the child that the query reads is not one the scan can pass on");
 		if (jc->j.params != NIL)
 			continue;
 		/* the plan of a child with an identity outputs all its columns: the arms that share it number them alike */
@@ -729,7 +892,18 @@ child_paths(AggCtx *c, SiftAggSpec *s)
 		{
 			Var		   *own = copyObject(v);
 
-			own->varnullingrels = NULL;
+			/* the plan of a tree of joins outputs the columns as the join above its outer joins sees them */
+			if (jc->tree)
+			{
+				own = NULL;
+				foreach_ptr(Expr, x, jc->cpath->pathtarget->exprs)
+					if (IsA(x, Var) && ((Var *) x)->varno == v->varno && ((Var *) x)->varattno == v->varattno)
+						own = copyObject((Var *) x);
+				if (own == NULL)
+					return agg_refuse_on(JOIN_CHILD, "a column of the keys' join is not an output of its plan");
+			}
+			else
+				own->varnullingrels = NULL;
 			add_column_to_pathtarget(t, (Expr *) own, 0);
 		}
 		set_pathtarget_cost_width(c->root, t);

@@ -20,13 +20,13 @@ END $$;
 SET sift.col_format_minor = 5;
 ERROR:  invalid value for parameter "sift.col_format_minor": 5
 DETAIL:  Column format minor 5 is written for wide leaves only, whatever the setting.
-HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1) or 6.
+HINT:  Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13, 14 or 15.
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
 	   CASE WHEN i % 11 = 0 THEN 'NaN' ELSE i / 3.0 END FROM generate_series(1, 30000) i;
 -- narrow only (numeric(18, 2) is one INT leaf): the setting's minor, as in 3.1
 SET sift.col_format_minor = 3;
-CREATE INDEX g_narrow ON g USING sift_col (id, grp, p);
+CREATE INDEX g_narrow ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow');
  fmt 
 -----
@@ -34,7 +34,7 @@ SELECT fmt('g_narrow');
 (1 row)
 
 RESET sift.col_format_minor;
-CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p);
+CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow4');
  fmt 
 -----
@@ -43,10 +43,10 @@ SELECT fmt('g_narrow4');
 
 -- each wide type alone, under either setting
 SET sift.col_format_minor = 3;
-CREATE INDEX g_w ON g USING sift_col (w);
-CREATE INDEX g_m ON g USING sift_col (m);
-CREATE INDEX g_iv ON g USING sift_col (iv);
-CREATE INDEX g_n ON g USING sift_col (any_n);
+CREATE INDEX g_w ON g USING sift_col (w) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_m ON g USING sift_col (m) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_iv ON g USING sift_col (iv) WITH (cube_minmax = false, superunit = 0);
+CREATE INDEX g_n ON g USING sift_col (any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
  fmt | fmt | fmt | fmt 
 -----+-----+-----+-----
@@ -56,7 +56,7 @@ SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
 RESET sift.col_format_minor;
 DROP INDEX g_w, g_m, g_iv, g_n;
 -- a narrow index grows nothing of the wide minor; a mixed one is wide as a whole
-CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n);
+CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_all');
  fmt 
 -----

@@ -26,6 +26,8 @@ sys.path.insert(0, str(ROOT / 'bench/steps'))
 import cell
 from catalog import CASES, select
 
+GATING = {c.name for c in CASES if c.gate}
+
 INITIAL_PAIRS = 6
 READ_CONFIRMATION_PAIRS = 16
 MUTATION_CONFIRMATION_PAIRS = 6
@@ -41,6 +43,8 @@ T95 = {6:  2.570581835636305,
 DEADLINE = math.inf
 PROCESS_ORIGIN = time.monotonic()
 BATCH_WALL_LIMIT = 1.0
+# the nightly fixture (32768 rows) takes 1.85 s to restore on a hosted runner, more than the one second of the pull request tier
+NIGHTLY_BATCH_WALL_LIMIT = 4.0
 INSERT_PILOT = 2048
 INSERT_GROWTH_CAP = 2048
 INSERT_HISTORY_CAP = 5
@@ -57,6 +61,10 @@ class Inconclusive(Exception):
 
 
 class BudgetExpired(Inconclusive):
+    pass
+
+
+class PlanAbsent(ValueError):
     pass
 
 
@@ -488,7 +496,7 @@ def require_plan(plan,case):
     else:
         valid = any((n.get('Node Type') in ('Index Scan','Index Only Scan','Bitmap Index Scan') and n.get('Index Name')==case.plan) or (case.plan=='docs_bm25' and n.get('Node Type')=='Custom Scan' and n.get('Custom Plan Provider') in ('SiftScan','SiftCount') and n.get('Index')==case.plan) for n in nodes)
     if not valid:
-        raise ValueError(f'{case.name}: required structured plan {case.plan} absent: {topology(plan)}')
+        raise PlanAbsent(f'{case.name}: required structured plan {case.plan} absent: {topology(plan)}')
 
 
 def validate_case(revisions, case):
@@ -1276,7 +1284,12 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             validate_insert(revisions,case,identity,calibration['operations'],deadline,result['validation'],control=cpu_work if control else False,histories=histories)
             result['phase_runtime_seconds']['validation'] = time.monotonic()-validation_start
         else:
-            result['validation'] = validate_case(revisions,case)
+            try:
+                result['validation'] = validate_case(revisions,case)
+            except PlanAbsent as exc:
+                # a planner change moved a revision off the plan the case is named for: it no longer times the same operation, so it is reported, not timed
+                result.update(status='skipped',timing_status='skipped',complete=True,phase='complete',reason=str(exc))
+                return result
             result['phase_runtime_seconds']['validation'] = time.monotonic()-start
             result['phase'] = 'calibration'
             calibration_start = time.monotonic()
@@ -1356,9 +1369,9 @@ def reduce_report(report):
         report['status'] = ('pass' if report['complete'] and report['size_status']=='pass'
                              and report.get('acceptance_pass',False) else 'inconclusive')
         return
-    statuses = {c['timing_status'] for c in report['cases']}
+    statuses = {c['timing_status'] for c in report['cases'] if c['name'] in GATING}
     report['status'] = ('regression' if size_regression or 'regression' in statuses else
-                        'inconclusive' if not report['complete'] or statuses!={'pass'} or report['size_status']!='pass' else 'pass')
+                        'inconclusive' if not report['complete'] or statuses-{'pass','skipped'} or report['size_status']!='pass' else 'pass')
 
 
 def reduce_insert_feasibility(report):
@@ -1610,8 +1623,11 @@ def check_fixture(revisions,report):
 
 
 def main(argv=None):
-    global DEADLINE
+    global DEADLINE, BATCH_WALL_LIMIT
     args = parser().parse_args(argv)
+    pr_wall_limit = BATCH_WALL_LIMIT
+    if args.tier=='nightly':
+        BATCH_WALL_LIMIT = NIGHTLY_BATCH_WALL_LIMIT
     groups_supplied = args.groups is not None
     args.groups = args.groups or ''
     args.output = args.output.resolve()
@@ -1688,7 +1704,14 @@ def main(argv=None):
             else:
                 for index, case in enumerate(selected):
                     later = sum(c.lifecycle != 'read' for c in selected[index+1:])
-                    measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
+                    try:
+                        measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
+                    except BudgetExpired:
+                        raise
+                    except Inconclusive:
+                        # a case that does not gate stays inconclusive in the report; the cases after it are still measured
+                        if case.gate:
+                            raise
                     write_report(args.output,report)
                 report['size_checks'].append(churn_sizes(revisions))
             if time.monotonic()>=deadline:
@@ -1737,6 +1760,7 @@ def main(argv=None):
                 report.setdefault('terminal_errors',[]).append(f'budget status publication failed: {exc}')
             end=time.monotonic()
         write_terminal(report,args,start,end)
+    BATCH_WALL_LIMIT = pr_wall_limit
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]

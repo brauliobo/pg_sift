@@ -1,0 +1,108 @@
+-- The caches of the value combinations of an expression or a lookup join are a memo, not a table the answer needs: past the limit of entries
+-- (16.7 million) they start again, they do not raise. sift.test_limits lowers the limit so that a few thousand rows reach it. Every query runs
+-- as the scan and as the normal plan; the rows must be the same, and the plan shows how often the caches started again.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+CREATE TABLE ev (id int PRIMARY KEY, kind text, big bigint, doc jsonb, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev
+SELECT i, 'k' || (abs(hashint4(i)) % 700), (i % 3000)::bigint * 1000003,
+       jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('cat', 'cat_' || i % 9, 'score', (i % 400) / 4.0),
+                                                     jsonb_build_object('cat', 'cat_' || (i + 3) % 9, 'score', (i % 250) / 2.0))),
+       (i % 1000) / 10.0
+FROM generate_series(1, 12000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, kind, big, doc, amount) WITH (paths = 'doc.parts[]{cat text, score float8}');
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE maps (kind text, label text) WITH (autovacuum_enabled = false);
+INSERT INTO maps SELECT 'k' || k, 'L' || k % 300 FROM generate_series(0, 699) k WHERE k % 11 <> 0;
+CREATE INDEX maps_idx ON maps (kind);
+CREATE TABLE groups (label text, grp text) WITH (autovacuum_enabled = false);
+INSERT INTO groups SELECT 'L' || l, 'G' || l % 40 FROM generate_series(0, 299) l WHERE l % 13 <> 0;
+CREATE INDEX groups_idx ON groups (label);
+VACUUM (FREEZE, ANALYZE) maps;
+VACUUM (FREEZE, ANALYZE) groups;
+CREATE TABLE cases (n int, shape text, q text);
+INSERT INTO cases VALUES
+	(1, 'lookup join, text key',    'SELECT coalesce(m.label, ''none'') AS label, count(*) AS n, sum(ev.amount) AS total FROM ev LEFT JOIN maps m ON m.kind = ev.kind GROUP BY 1'),
+	(2, 'lookup join on a lookup',  'SELECT coalesce(g.grp, ''none'') AS grp, count(*) AS n FROM ev LEFT JOIN maps m ON m.kind = ev.kind LEFT JOIN groups g ON g.label = m.label GROUP BY 1'),
+	(3, 'inner lookup join',        'SELECT m.label, count(*) AS n, sum(ev.amount) AS total FROM ev JOIN maps m ON m.kind = ev.kind GROUP BY 1'),
+	(4, 'expression, two leaves',   'SELECT o.cat || '':'' || (o.score::int % 50)::text AS k, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
+	(5, 'expression, one wide leaf', 'SELECT (o.score * 3)::int % 97 AS k, count(*) AS n, sum(o.score) AS total FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) GROUP BY 1'),
+	(6, 'expression in a filter',   'SELECT o.cat, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.doc[''parts'']) o(cat text, score float8) WHERE (o.score::int % 7) <> 3 GROUP BY 1');
+-- the scan and the normal plan give the same rows; restarted: how many times the caches started again
+CREATE FUNCTION check_case(q text, OUT pushed bool, OUT restarted int, OUT differences bigint, OUT nrows bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO nrows FROM r_off;
+	SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+	pushed := false;
+	restarted := 0;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
+		restarted := coalesce(substring(l from 'Combo Caches Restarted: (\d+)')::int, restarted);
+	END LOOP;
+	DROP TABLE r_off, r_on;
+END $$;
+-- the limit as it is: nothing starts again
+SELECT n, shape, c.pushed, c.restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+ n |           shape           | pushed | restarted | nrows | differences 
+---+---------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key     | t      |         0 |   301 |           0
+ 2 | lookup join on a lookup   | t      |         0 |    41 |           0
+ 3 | inner lookup join         | t      |         0 |   300 |           0
+ 4 | expression, two leaves    | t      |         0 |   450 |           0
+ 5 | expression, one wide leaf | t      |         0 |    97 |           0
+ 6 | expression in a filter    | t      |         0 |     9 |           0
+(6 rows)
+
+-- 64 entries: the caches start again many times, the rows stay the same
+SET sift.test_limits = 'combo_entries=64';
+SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+ n |           shape           | pushed | restarted | nrows | differences 
+---+---------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key     | t      | t         |   301 |           0
+ 2 | lookup join on a lookup   | t      | t         |    41 |           0
+ 3 | inner lookup join         | t      | t         |   300 |           0
+ 4 | expression, two leaves    | t      | t         |   450 |           0
+ 5 | expression, one wide leaf | t      | t         |    97 |           0
+ 6 | expression in a filter    | t      | t         |     9 |           0
+(6 rows)
+
+-- 0: they start again before every chunk
+SET sift.test_limits = 'combo_entries=0';
+SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+ n |           shape           | pushed | restarted | nrows | differences 
+---+---------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key     | t      | t         |   301 |           0
+ 2 | lookup join on a lookup   | t      | t         |    41 |           0
+ 3 | inner lookup join         | t      | t         |   300 |           0
+ 4 | expression, two leaves    | t      | t         |   450 |           0
+ 5 | expression, one wide leaf | t      | t         |    97 |           0
+ 6 | expression in a filter    | t      | t         |     9 |           0
+(6 rows)
+
+-- workers start their own caches again
+RESET sift.test_limits;
+SET sift.test_limits = 'combo_entries=64';
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SELECT n, shape, c.pushed, c.restarted > 0 AS restarted, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
+ n |           shape           | pushed | restarted | nrows | differences 
+---+---------------------------+--------+-----------+-------+-------------
+ 1 | lookup join, text key     | t      | t         |   301 |           0
+ 2 | lookup join on a lookup   | t      | t         |    41 |           0
+ 3 | inner lookup join         | t      | t         |   300 |           0
+ 4 | expression, two leaves    | t      | t         |   450 |           0
+ 5 | expression, one wide leaf | t      | t         |    97 |           0
+ 6 | expression in a filter    | t      | t         |     9 |           0
+(6 rows)
+
+RESET sift.test_limits;
+DROP TABLE ev, maps, groups, cases;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
+DROP FUNCTION check_case;

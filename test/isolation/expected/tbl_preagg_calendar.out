@@ -1,0 +1,149 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1rr s2del s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa;
+ count
+------
+120000
+(1 row)
+
+step s2del: DELETE FROM iso_pa WHERE id % 50 = 0;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+117600|t   |none|t         |none     
+(1 row)
+
+
+starting permutation: s1rr s2ins s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa;
+ count
+------
+120000
+(1 row)
+
+step s2ins: INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour', date '2024-06-01' + i / 24 FROM generate_series(1, 3000) i;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |some|t         |some     
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+123000|t   |some|t         |some     
+(1 row)
+
+
+starting permutation: s1rr s2upd s3v s1q s1c s1q
+step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa;
+ count
+------
+120000
+(1 row)
+
+step s2upd: UPDATE iso_pa SET v = v + 1, ts = ts + interval '90 days', d = d + 90 WHERE id % 1000 = 0;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
+(1 row)
+
+step s1c: COMMIT;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
+(1 row)
+
+
+starting permutation: s2b s2del s3v s1q s2c s1q
+step s2b: BEGIN;
+step s2del: DELETE FROM iso_pa WHERE id % 50 = 0;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+117600|t   |none|t         |none     
+(1 row)
+
+
+starting permutation: s2b s2ins s3v s1q s2c s1q
+step s2b: BEGIN;
+step s2ins: INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour', date '2024-06-01' + i / 24 FROM generate_series(1, 3000) i;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |some|t         |some     
+(1 row)
+
+step s2c: COMMIT;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+123000|t   |some|t         |some     
+(1 row)
+
+
+starting permutation: s2b s2upd s3v s1q s2a s3v s1q
+step s2b: BEGIN;
+step s2upd: UPDATE iso_pa SET v = v + 1, ts = ts + interval '90 days', d = d + 90 WHERE id % 1000 = 0;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
+(1 row)
+
+step s2a: ROLLBACK;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre|same_range|pre_range
+------+----+---+----------+---------
+120000|t   |all|t         |all      
+(1 row)
+
+
+starting permutation: s2b s2del s2a s3v s1q
+step s2b: BEGIN;
+step s2del: DELETE FROM iso_pa WHERE id % 50 = 0;
+step s2a: ROLLBACK;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre|same_range|pre_range
+------+----+---+----------+---------
+120000|t   |all|t         |all      
+(1 row)
+
+
+starting permutation: s2b s2ins s2a s3v s1q
+step s2b: BEGIN;
+step s2ins: INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour', date '2024-06-01' + i / 24 FROM generate_series(1, 3000) i;
+step s2a: ROLLBACK;
+step s3v: VACUUM iso_pa;
+step s1q: SELECT * FROM iso_pa_check();
+     n|same|pre|same_range|pre_range
+------+----+---+----------+---------
+120000|t   |all|t         |all      
+(1 row)
+

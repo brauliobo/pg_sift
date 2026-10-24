@@ -116,7 +116,8 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want
 	{
 		if (!sift_colz_available((int) form))
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("string list uses compression algorithm %u, which this build does not provide", form)));
+							errmsg("string list uses compression algorithm %u, which this build does not provide", form),
+							errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
 		if (!sift_colz_decompress((int) form, blob + pos, clen, b, total))
 			CC_CORRUPT("compressed string bytes are damaged");
 	}

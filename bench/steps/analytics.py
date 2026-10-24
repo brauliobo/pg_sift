@@ -30,8 +30,8 @@ sys.path.insert(0, HERE)
 from stats import number, summary  # noqa: E402  (steps/stats.py)
 SQL = os.path.join(HERE, '..', 'sql', 'analytics')
 PERF = os.path.join(HERE, 'perf.sh')
-CURRENT = ('2024-11-01', '2025-10-31')
-PREVIOUS = ('2023-11-01', '2024-10-31')
+SPAN_A = ('2024-11-01', '2025-10-31')
+SPAN_B = ('2023-11-01', '2024-10-31')
 SECTIONS = {'heap': 'pg', 'col': 'pg', 'flat': 'flat', 'ch': 'ch'}
 NULL = '\\N'
 
@@ -80,15 +80,15 @@ def load_corpus(corpus, queries_file):
     return [parse_query(p) for p in names]
 
 
-def period(col):
-    return (f"CASE WHEN {col} >= '{CURRENT[0]}' AND {col} <= '{CURRENT[1]}' THEN 'current' "
-            f"WHEN {col} >= '{PREVIOUS[0]}' AND {col} <= '{PREVIOUS[1]}' THEN 'previous' ELSE NULL END")
+def span(col):
+    return (f"CASE WHEN {col} >= '{SPAN_A[0]}' AND {col} <= '{SPAN_A[1]}' THEN 'span_a' "
+            f"WHEN {col} >= '{SPAN_B[0]}' AND {col} <= '{SPAN_B[1]}' THEN 'span_b' ELSE NULL END")
 
 
 def expand(sql, stores, sources):
-    """{stores} the store ids of the set, {sources} the quoted sources, {range(col)} both periods, {period(col)} the period label"""
-    macros = {'stores': lambda a: stores, 'sources': lambda a: sources, 'period': period,
-              'range': lambda a: f"{a} >= '{PREVIOUS[0]}' AND {a} <= '{CURRENT[1]}'"}
+    """{stores} the store ids of the set, {sources} the quoted sources, {range(col)} both ranges, {span(col)} the range label"""
+    macros = {'stores': lambda a: stores, 'sources': lambda a: sources, 'span': span,
+              'range': lambda a: f"{a} >= '{SPAN_B[0]}' AND {a} <= '{SPAN_A[1]}'"}
     return re.sub(r'\{(\w+)(?:\(([^)]*)\))?\}', lambda m: macros[m.group(1)](m.group(2)), sql)
 
 

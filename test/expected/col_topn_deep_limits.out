@@ -1,0 +1,126 @@
+-- The limits of the top-N heap lowered (sift.test_limits: topn_rows, topn_keys), so that the sort of every row that passes runs on a few rows:
+-- the pushed plan and the plain plan give the same rows in the same order, at the cap, over it, with ties and NULLs, for a generic plan.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+CREATE TABLE cl (id int PRIMARY KEY, a int, b int, c int, f float8, amount numeric(10,2), ts timestamp);
+INSERT INTO cl
+SELECT i, (hashint4(i) & 2147483647) % 9, (hashint4(i + 1) & 2147483647) % 4, (hashint4(i + 2) & 2147483647) % 3,
+	   CASE WHEN i % 11 = 0 THEN NULL WHEN i % 17 = 0 THEN 'NaN'::float8 ELSE ((hashint4(i + 3) & 2147483647) % 500) / 7.0 END,
+	   CASE WHEN i % 13 = 0 THEN NULL ELSE ((hashint4(i + 4) & 2147483647) % 900)::numeric / 10 END,
+	   timestamp '2024-01-01' + (hashint4(i + 5) & 2147483647) % 100000 * interval '1 second'
+FROM generate_series(1, 6000) i;
+CREATE INDEX cl_col ON cl USING sift_col (id, a, b, c, f, amount, ts);
+VACUUM (ANALYZE) cl;
+CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+END $$;
+-- 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan, ' sorted' when it keeps no heap, and the number of rows
+CREATE FUNCTION cl_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS cl_a, cl_b;
+	PERFORM cl_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE cl_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM cl_mode(false);
+	EXECUTE 'CREATE TEMP TABLE cl_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM cl_a EXCEPT ALL SELECT pos, r FROM cl_b) UNION ALL (SELECT pos, r FROM cl_b EXCEPT ALL SELECT pos, r FROM cl_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END ||
+		   CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sorted' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
+END $$;
+CREATE TABLE cl_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO cl_q VALUES
+	('limit_under',  $q$SELECT id, ts FROM cl WHERE a = 3 ORDER BY ts DESC, id LIMIT 10 OFFSET 20$q$),
+	('at_cap',       $q$SELECT id, ts FROM cl WHERE a = 3 ORDER BY ts DESC, id LIMIT 30 OFFSET 20$q$),
+	('over_cap',     $q$SELECT id, ts FROM cl WHERE a = 3 ORDER BY ts DESC, id LIMIT 30 OFFSET 21$q$),
+	('limit_over',   $q$SELECT id, ts FROM cl ORDER BY ts, id LIMIT 60$q$),
+	('offset_deep',  $q$SELECT id, ts FROM cl ORDER BY ts, id LIMIT 5 OFFSET 3000$q$),
+	('desc_nulls',   $q$SELECT id, f FROM cl ORDER BY f DESC NULLS FIRST, id LIMIT 25 OFFSET 100$q$),
+	('asc_nulls',    $q$SELECT id, f FROM cl ORDER BY f NULLS LAST, id DESC LIMIT 25 OFFSET 100$q$),
+	('numeric',      $q$SELECT id, amount FROM cl ORDER BY amount DESC NULLS LAST, id LIMIT 25 OFFSET 200$q$),
+	('ties',         $q$SELECT id, a FROM cl ORDER BY a, id LIMIT 20 OFFSET 700$q$),
+	('three_keys',   $q$SELECT id, a, b, c FROM cl ORDER BY a DESC, b, c DESC, id LIMIT 40 OFFSET 55$q$),
+	('past_rows',    $q$SELECT id FROM cl WHERE a = 3 ORDER BY ts, id LIMIT 10 OFFSET 5000$q$),
+	('expression',   $q$SELECT id, ts, amount * 2 AS a2 FROM cl ORDER BY ts, id LIMIT 10 OFFSET 80$q$);
+SET sift.test_limits = 'topn_rows=50';
+SELECT tag, cl_check(q) FROM cl_q ORDER BY tag COLLATE "C";
+NOTICE:  table "cl_a" does not exist, skipping
+NOTICE:  table "cl_b" does not exist, skipping
+     tag     |      cl_check       
+-------------+---------------------
+ asc_nulls   | same+topn sorted 25
+ at_cap      | same+topn 30
+ desc_nulls  | same+topn sorted 25
+ expression  | same+topn sorted 10
+ limit_over  | same+topn sorted 60
+ limit_under | same+topn 10
+ numeric     | same+topn sorted 25
+ offset_deep | same+topn sorted 5
+ over_cap    | same+topn sorted 30
+ past_rows   | same+topn sorted 0
+ three_keys  | same+topn sorted 40
+ ties        | same+topn sorted 20
+(12 rows)
+
+-- more keys than the heap holds (one), whatever the rows
+SET sift.test_limits = 'topn_keys=1';
+SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'desc_nulls', 'ties', 'three_keys', 'expression') ORDER BY tag COLLATE "C";
+     tag     |      cl_check       
+-------------+---------------------
+ desc_nulls  | same+topn sorted 25
+ expression  | same+topn sorted 10
+ limit_under | same+topn sorted 10
+ three_keys  | same+topn sorted 40
+ ties        | same+topn sorted 20
+(5 rows)
+
+SET sift.test_limits = 'topn_rows=50, topn_keys=2';
+SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'over_cap', 'three_keys') ORDER BY tag COLLATE "C";
+     tag     |      cl_check       
+-------------+---------------------
+ limit_under | same+topn 10
+ over_cap    | same+topn sorted 30
+ three_keys  | same+topn sorted 40
+(3 rows)
+
+RESET sift.test_limits;
+-- a generic plan: LIMIT and OFFSET are parameters, the plan assumes 1000 rows, and the scan reads their values when it starts and decides
+-- between the heap and the sort
+SET sift.test_limits = 'topn_rows=2000';
+SET plan_cache_mode = force_generic_plan;
+CREATE FUNCTION cl_generic(lim bigint, off bigint) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS cl_a, cl_b;
+	DEALLOCATE ALL;
+	PREPARE cl_g (bigint, bigint) AS SELECT id, ts FROM cl ORDER BY ts DESC, id LIMIT $1 OFFSET $2;
+	PERFORM cl_mode(true);
+	FOR line IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) EXECUTE cl_g(%s, %s)', lim, off) LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE format('CREATE TEMP TABLE cl_a AS EXECUTE cl_g(%s, %s)', lim, off);
+	PERFORM cl_mode(false);
+	DEALLOCATE cl_g;
+	PREPARE cl_g (bigint, bigint) AS SELECT id, ts FROM cl ORDER BY ts DESC, id LIMIT $1 OFFSET $2;
+	EXECUTE format('CREATE TEMP TABLE cl_b AS EXECUTE cl_g(%s, %s)', lim, off);
+	SELECT count(*) INTO n FROM ((SELECT * FROM cl_a EXCEPT ALL SELECT * FROM cl_b) UNION ALL (SELECT * FROM cl_b EXCEPT ALL SELECT * FROM cl_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sorted' ELSE ' heap' END || ' ' || (SELECT count(*) FROM cl_b);
+END $$;
+SELECT v, cl_generic(l, o) FROM (VALUES (10, 0), (10, 1990), (10, 1991), (3000, 0), (5, 2500)) x(l, o), LATERAL (SELECT format('%s+%s', l, o) AS v) y ORDER BY l, o;
+    v    |    cl_generic    
+---------+------------------
+ 5+2500  | same sorted 5
+ 10+0    | same heap 10
+ 10+1990 | same heap 10
+ 10+1991 | same sorted 10
+ 3000+0  | same sorted 3000
+(5 rows)
+
+RESET plan_cache_mode;
+RESET sift.test_limits;
+DROP FUNCTION cl_generic(bigint, bigint), cl_check(text), cl_mode(bool);
+DROP TABLE cl, cl_q;
+DROP EXTENSION pg_sift;

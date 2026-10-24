@@ -1,5 +1,5 @@
 -- `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` is the member k of each row: a row without it stays, with NULL columns. Its value is read at the
--- row level (or by a correlated child through casts), with PostgreSQL's results and errors; before PostgreSQL 18 the normal plan runs.
+-- row level (or by a correlated child through casts), with PostgreSQL's results and errors; before PostgreSQL 18 the cast of a JSON null raises, so a unit that may hold one keeps the normal plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, entity_id int, metrics jsonb);
@@ -11,22 +11,7 @@ FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, metrics) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE result text;
-BEGIN
-  PERFORM set_config('sift.enable_agg', enabled::text, true);
-  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
-  RETURN result;
-EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
-END $$;
-CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE line text; found bool := false;
-BEGIN
-  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  RETURN found;
-END $$;
+\ir test/agg_helpers.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
@@ -72,11 +57,14 @@ SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS 
 INSERT INTO facts VALUES (20004, 4, '{"p_total": null}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT label, same FROM check_query('json null', $q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20004$q$);
+-- the unit that holds the JSON null keeps the scan from the queries of the member before PostgreSQL 18 (its cast raises there where the scan reads NULL)
+SELECT runs_in_scan($q$SELECT count(*) AS n, sum(CAST(r.value AS float)) AS total FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'$q$)
+       = (current_setting('server_version_num')::int >= 180000) AS json_null_scanned_from_18;
 -- a document that is not an object raises PostgreSQL's error for the rows that reach the join, and so does a member that is no number: the scan is not used
 INSERT INTO facts VALUES (20003, 3, '[1, 2]'), (20005, 5, '{"p_total": "abc"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('array document', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20003$q$);
 SELECT * FROM check_query('string member', $q$SELECT count(*), sum(CAST(r.value AS float)) FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total' WHERE f.id = 20005$q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts;
 DROP EXTENSION pg_sift;

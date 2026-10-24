@@ -11,26 +11,7 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, entity_id, amount, metrics, code) WITH (paths = 'metrics.* float8');
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE entities;
--- pushed: the plan PostgreSQL costs cheapest; eligible: the plan when its own table scans are off, which a Custom Scan (SiftAgg) beats only if the query is one it can run
-CREATE FUNCTION check_query(q text) RETURNS TABLE (pushed bool, eligible bool, differences bigint) LANGUAGE plpgsql AS $$
-DECLARE line text;
-BEGIN
-  SET LOCAL sift.enable_agg = off;
-  EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.enable_agg = on;
-  EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
-  SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
-  pushed := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  SET LOCAL enable_seqscan = off;
-  SET LOCAL enable_indexscan = off;
-  SET LOCAL enable_bitmapscan = off;
-  SET LOCAL enable_indexonlyscan = off;
-  eligible := false;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP eligible := eligible OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  DROP TABLE r_off, r_on;
-  RETURN NEXT;
-END $$;
+\ir test/agg_check_query.sql
 -- A UNION ALL of arms, one reading the item: every arm contributes a row, NULL items included.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n, count(DISTINCT f.id) AS ids, sum(f.amount) AS total
@@ -80,13 +61,13 @@ SELECT * FROM check_query($q$
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN f.code > '6' THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
 $q$);
--- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each). The outer-joined member keeps the normal plan before PostgreSQL 18 (columns: the plan is the pushed one from 18 on).
-SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_query($q$
+-- The fan-out reads the member of a LEFT JOIN LATERAL jsonb_each on a constant key: a row level value of the index (agg_left_each).
+SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int > 6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY 1
-$q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;
+$q$);
 DROP FUNCTION check_query(text);
 DROP TABLE facts, entities;
 DROP EXTENSION pg_sift;

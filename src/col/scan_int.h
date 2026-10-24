@@ -22,8 +22,21 @@ typedef struct ColCursor
 {
 	SiftColSegment *seg;
 	uint64	   *keep;			/* units that passed the zone maps, nsb bits */
+	uint64	   *setcut;			/* units a small-set summary cleared, nsb bits */
+	uint64	   *ckeep;			/* keep and setcut kept between begins (in the source's sigcx) while the predicates stay the same, and the words of units they hold the answer for */
+	uint64	   *csetcut;
+	uint64	   *cdone;
+	uint32		cgen;			/* the generation of the predicates they were made for (SiftColSource.sig_gen); 0: none */
+	const SiftColSegment *cseg;	/* and the segment: a table's source is kept between statements and its segments change */
+	uint64		cseg_gen;
 	uint32		cur;
 	uint32		end;
+	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
+	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
+	uint32		nprow;
+	uint32		pat;			/* the first of them not yet handed to a unit */
+	int			ppred;
+	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -79,6 +92,7 @@ typedef struct ColUnit
 	SiftColSource *src;
 	SiftColSegment *seg;		/* NULL for an in-memory unit */
 	uint32		u;
+	uint32		nsu;			/* a superunit: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -86,6 +100,10 @@ typedef struct ColUnit
 	SiftColBatch *batch;
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
+	bool		codes_only;		/* sift_col_read_text: a STR leaf is read as codes, without its dictionary */
+	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
+	uint32		nprow;
+	int			ppred;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
@@ -95,6 +113,14 @@ typedef struct ColUnit
 	uint64		av[SIFT_PAGEMASK_WORDS];
 	ColGroup   *grp;
 	ColSelCache selc;
+	struct
+	{
+		int			col;		/* the leaf whose run was looked for last (valid with known) */
+		bool		known;
+		bool		found;
+		SiftCRun	r;
+		uint64		at;
+	}			run;
 } ColUnit;
 
 /* The test of a predicate on a dictionary leaf of a stored segment, made once for every unit that shares the dictionary (seg_test) */
@@ -118,11 +144,11 @@ struct SiftColSource
 	Snapshot	snap;
 	uint32		flags;
 	const SiftColSchema *schema;
-	SiftDirSnapshot dir;
 	uint32		dir_checked;	/* the directory version segments_current last compared with, and its answer */
 	bool		dir_current;
 	SiftVis		vis;
 	SiftColVisibility visibility;
+	bool		super;			/* sift_col_super */
 	int			nseg;
 	ColCursor  *seg;
 	ColMem	   *mem;
@@ -136,10 +162,25 @@ struct SiftColSource
 	ColUnit		cu;
 	uint64		inl_seq;		/* ids of the dictionaries of inline chunks */
 	uint32		batch_seq;		/* in-memory units made by sift_col_unit_batch, for their dictionary ids */
-	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
+	MemoryContext sigcx;		/* the predicates of the last begin and the bitmaps the cursors made under them */
+	SiftColPred *sig;
+	int			nsig;
+	uint32		sig_gen;
+	uint32		counted;		/* the sig_gen whose pruned units sift_col_kept_map counted for the whole scan: a cursor counts none of them (0: none) */
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
+	SiftKey    *ptid;			/* the heap addresses the point directories answered since the last begin, in sift_col_begin's memory (SIFT_COLO_POINT_TIDS) */
+	uint32		nptid;
+	uint32		capptid;
+	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
+	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
+	SiftDirSnapshot dir;
 };
+
+/* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
+extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
+/* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
+extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 
 static inline void
 set_ones(uint64 *bits, uint32 n)

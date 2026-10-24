@@ -445,8 +445,7 @@ nd_get(const CcNode *nd, uint32 i)
 int64
 sift_cc_get(const SiftCc *c, uint32 row)
 {
-	if (row >= c->n)
-		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("row %u is past the end of a column chunk of %u rows", row, c->n)));
+	SIFT_INVARIANT(row < c->n, "row %u is past the end of a column chunk of %u rows", row, c->n);
 	return nd_get(c->root, row);
 }
 
@@ -469,8 +468,7 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 		nd_i64(c->root, all);
 		for (uint32 k = 0; k < m; k++)
 		{
-			if (idx[k] >= c->n)
-				ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR), errmsg("row %u is past the end of a column chunk of %u rows", idx[k], c->n)));
+			SIFT_INVARIANT(idx[k] < c->n, "row %u is past the end of a column chunk of %u rows", idx[k], c->n);
 			dst[k] = all[idx[k]];
 		}
 		pfree(all);

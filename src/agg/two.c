@@ -391,7 +391,7 @@ cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 			*dv = a->d[ai][g] / (double) a->n[ai][g];
 			return true;
 		default:
-			elog(ERROR, "sift: unexpected inner aggregate");
+			SIFT_INVARIANT(false, "sift: unexpected inner aggregate");
 	}
 	return false;
 }
@@ -502,13 +502,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 			continue;
 		acc->n[og]++;
 		if (o->kind == SAA_O_SUM_I64)
-		{
-			if (pg_add_s64_overflow(acc->i[og], iv, &acc->i[og]))
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("sift: a sum of the aggregate scan exceeds bigint"),
-						 errhint("Set sift.enable_agg to off for this query.")));
-		}
+			acc->w[og] += iv;
 		else
 		{
 			acc->d[og] += dv;
@@ -518,17 +512,30 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 	}
 }
 
+/* the group of a tuple of key ids */
+static uint32
+ids_gid(AggExec *ex, const uint32 *ids)
+{
+	uint32		gid = 0;
+
+	if (ex->hash)
+		return hash_group(ex, ids);
+	for (int j = 0; j < ex->spec->nkeys; j++)
+		gid += ids[j] * ex->ks[j].mult;
+	return gid;
+}
+
 /*
  * The group that cell g of arm k belongs to (in grouping set `set`): the outer keys the arm (and the set) have, and the set's number.
- * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps.
+ * The cell itself is a group of the arm's keys with the hidden ones, which no group keeps. sid: the ids of the spine row the cell is
+ * joined to, for the keys the spine gives.
  */
 static uint32
-cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
+cell_outer_gid(AggExec *ex, int k, uint32 g, int set, const uint32 *sid)
 {
 	SiftAggSpec *s = ex->spec;
 	uint32		mask = s->arm[k].keymask,
-				ids[SIFT_AGG_MAX_KEYS] = {0},
-				gid = 0;
+				ids[SIFT_AGG_MAX_KEYS] = {0};
 
 	if (s->nsets)
 	{
@@ -538,11 +545,38 @@ cell_outer_gid(AggExec *ex, int k, uint32 g, int set)
 	for (int j = 0; j < s->nkeys; j++)
 		if (mask >> j & 1)
 			ids[j] = cell_key(ex, k, g, j);
-	if (ex->hash)
-		return hash_group(ex, ids);
-	for (int j = 0; j < s->nkeys; j++)
-		gid += ids[j] * ex->ks[j].mult;
-	return gid;
+	for (int o = 0; sid && o < s->spine->nout; o++)
+		if (!s->nsets || s->setmask[set] >> s->spine->outkey[o] & 1)
+			ids[s->spine->outkey[o]] = sid[o];
+	return ids_gid(ex, ids);
+}
+
+/* The cell (arm k, group g) of the row `row` joins the spine rows its keys equal: it is a cell of the group of each. */
+static void
+spine_cell(AggExec *ex, int k, uint32 g, uint64 row)
+{
+	const SiftAggSpine *sa = ex->spec->spine;
+	SpineSt    *sp = ex->spine;
+	uint32		ids[SIFT_AGG_MAX_JKEYS],
+				n;
+	const uint32 *rows;
+
+	for (int p = 0; p < sa->npair; p++)
+		ids[p] = sa->pair[p].key[k] < 0 ? 0 : cell_key(ex, k, g, sa->pair[p].key[k]);
+	n = spine_rows(ex, k, ids, &rows);
+	for (uint32 i = 0; i < n; i++)
+	{
+		sp->hit[rows[i]] = true;
+		for (int set = 0; set < Max(ex->spec->nsets, 1); set++)
+		{
+			uint32		og = cell_outer_gid(ex, k, g, set, &sp->oid[(Size) rows[i] * sa->nout]);
+
+			if (ex->hash && ex->ngroups > ex->gcap)
+				groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+			ex->seen[og]++;
+			cell_into(ex, k, g, og, row);
+		}
+	}
 }
 
 /*
@@ -568,6 +602,11 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 	}
 	if (a->hstate && !cell_having(ex, k, g))
 		return;
+	if (s->spine)
+	{
+		spine_cell(ex, k, g, row);
+		return;
+	}
 	if (s->nsets == 0 && sa->hmask == 0)
 	{
 		ex->seen[g]++;
@@ -575,13 +614,49 @@ flush_cell(AggExec *ex, int k, uint32 g, uint64 row)
 		return;
 	}
 	for (int set = 0; set < Max(s->nsets, 1); set++)
-		ex->setg[set] = cell_outer_gid(ex, k, g, set);
+		ex->setg[set] = cell_outer_gid(ex, k, g, set, NULL);
 	if (ex->hash && ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		ex->seen[ex->setg[set]]++;
 		cell_into(ex, k, g, ex->setg[set], row);
+	}
+}
+
+/*
+ * A row of the preserved spine that no cell joined is a row of NULL arm columns: it makes a group of its own (or joins the group of those
+ * values) in each grouping set, and what the aggregates see of it is count(*) = 1 where they have no FILTER, and NULLs.
+ */
+void
+spine_tail(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggSpine *sa = s->spine;
+	SpineSt    *sp = ex->spine;
+
+	for (uint32 r = 0; sa->left && r < sp->nrow; r++)
+	{
+		if (sp->hit[r])
+			continue;
+		for (int set = 0; set < Max(s->nsets, 1); set++)
+		{
+			uint32		ids[SIFT_AGG_MAX_KEYS] = {0},
+						og;
+
+			if (s->nsets)
+				ids[s->nkeys - 1] = set + 1;
+			for (int o = 0; o < sa->nout; o++)
+				if (!s->nsets || s->setmask[set] >> sa->outkey[o] & 1)
+					ids[sa->outkey[o]] = sp->oid[(Size) r * sa->nout + o];
+			og = ids_gid(ex, ids);
+			if (ex->hash && ex->ngroups > ex->gcap)
+				groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+			ex->seen[og]++;
+			for (int oi = 0; oi < s->naggs; oi++)
+				if (s->agg[oi].kind == SAA_O_COUNT_STAR && s->agg[oi].ncond == 0)
+					ex->acc[oi].n[og]++;
+		}
 	}
 }
 

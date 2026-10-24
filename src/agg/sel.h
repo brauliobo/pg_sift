@@ -16,7 +16,7 @@
 typedef struct SiftAggSel
 {
 	const SiftFilter *keep;		/* NULL: no restriction */
-	bool		compact;		/* the current unit is compacted */
+	bool		compact;		/* the current unit is compacted: by the match set, or narrowed to the rows the filters left */
 	SiftColSel	sel;			/* the kept rows, in the numbering of the unit as stored */
 	uint32		nrow;			/* rows of the unit as stored */
 	int64		units_skipped;	/* units without a kept row */
@@ -24,13 +24,17 @@ typedef struct SiftAggSel
 	MemoryContext mcxt;
 	uint32	   *idx;			/* compact: the ordinal, in the unit as stored, of each kept row */
 	uint32		idxcap;
+	Oid			heapoid;		/* the table whose plans an unexpected overflow value invalidates */
 } SiftAggSel;
 
 /* Before the first use: mcxt holds the buffers for the life of the source */
-extern void sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt);
+extern void sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt, Oid heapoid);
 
 /* Restricts the unit the source is at to keep; false when no row of it is kept (the source goes on to the next unit). *nrow: the rows the executor sees */
 extern bool sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow);
+
+/* The unit goes on as the rows of bits (in the numbering the executor sees, which is not compacted yet) alone, renumbered 0..*nrow-1 as a match set's few rows are */
+extern void sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, const uint64 *bits, uint32 *nrow);
 
 /* The unit's operations, in the numbering the executor sees (a.keep NULL: the unit as stored) */
 extern void sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec);
@@ -45,8 +49,11 @@ extern void sift_aggsel_stored(SiftAggSel *a, SiftColSource *src, const SiftColU
 /* Does any of the first nrow bits stand */
 extern bool sift_aggsel_rows_left(const uint64 *bits, uint32 nrow);
 
-/* The value-overflow error: a row of the scan's snapshot has a value its source cannot store */
-extern void sift_aggsel_overflow_error(void);
+/*
+ * The value-overflow error: a row of the scan's snapshot has a value its source cannot store and the plan did not know of it. The plans of the
+ * table are invalid from now on, so the statement run again is planned with the leaf flagged (the normal plan, or a source that reads the row again).
+ */
+extern void sift_aggsel_overflow_error(Oid heapoid);
 /* A segment written before the JSON types of its leaves were stored (column format minor 3) cannot answer a typeof or JSON null test */
 extern void sift_aggsel_types_unknown_error(void);
 

@@ -82,9 +82,9 @@ def wait_quiet(limit=300):
 class Session:
     """one psql process kept open; run() returns (milliseconds as psql timed the statement, its rows, the error or warning)"""
 
-    def __init__(self, port, timeout, setting):
+    def __init__(self, port, timeout, setting, db='bench', host='127.0.0.1'):
         env = {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout}
-        self.p = subprocess.Popen(['psql', '-X', '-qAt', '-F', '|', '-h', '127.0.0.1', '-p', str(port), '-U', 'postgres', '-d', 'bench'],
+        self.p = subprocess.Popen(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
         self.p.stdin.write('\\set VERBOSITY terse\n')
         if setting:

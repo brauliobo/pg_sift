@@ -1,5 +1,5 @@
 -- A correlated LIMIT 1 lookup of a table by a unique key is read by the scan as a lookup table (its rows hashed by key); the rows are those
--- of PostgreSQL's plan of it. A key the table can repeat, a condition or an order in the child, or a key that is not an equality keep the child.
+-- of PostgreSQL's plan of it. A key the table can repeat, an order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- a LATERAL child can only run as a nested loop: without one the scan is the plan, with the child or its table as lookup
@@ -29,8 +29,37 @@ CREATE TABLE dims_id (id int, a int, b int, label text, score int);
 INSERT INTO dims_id SELECT row_number() OVER (), a, b, label, score FROM dims;
 CREATE UNIQUE INDEX dims_id_key ON dims_id (id);
 CREATE INDEX dims_id_ab ON dims_id (a, b);
+-- three times the rows of the distinct inputs: reading the table once costs less than a run of the child for each input
+CREATE TABLE dims_wide (a int, b int, label text, score int);
+INSERT INTO dims_wide SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 599) x, generate_series(0, 100) y;
+CREATE UNIQUE INDEX dims_wide_key ON dims_wide (a, b);
+-- three versions of each (a, b), in no order, a unique index on the key and the version: the latest is the one row an ORDER BY returns
+CREATE TABLE vers (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, ts int NOT NULL, dt date NOT NULL, label text, score int);
+INSERT INTO vers SELECT row_number() OVER (), a, b, z, date '2020-01-01' + z, 'v' || a || '_' || b || '_' || z, a * 3 + b + z * 7
+ FROM (SELECT x AS a, y AS b, z FROM generate_series(0, 199) x, generate_series(0, 100) y, generate_series(1, 3) z ORDER BY (x * 131 + y * 17 + z * 7) % 1009) q;
+CREATE UNIQUE INDEX vers_key ON vers (a, b, ts);
+CREATE UNIQUE INDEX vers_dt ON vers (a, b, dt);
+-- the order column holds NULLs, the primary key breaks the ties; the same rows with a repeated version
+CREATE TABLE vers_null (id int PRIMARY KEY, a int, b int, ts int, label text, score int);
+INSERT INTO vers_null SELECT id, a, b, CASE WHEN ts >= 2 THEN NULL ELSE ts END, label, score FROM vers;
+CREATE INDEX vers_null_ab ON vers_null (a, b);
+CREATE TABLE vers_null_key (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, ts int, label text, score int);
+INSERT INTO vers_null_key SELECT * FROM vers_null;
+CREATE UNIQUE INDEX vers_null_key_ts ON vers_null_key (a, b, ts);
+CREATE TABLE vers_dup (id int, a int NOT NULL, b int NOT NULL, ts int NOT NULL, label text, score int);
+INSERT INTO vers_dup SELECT id, a, b, ts, label, score FROM vers;
+INSERT INTO vers_dup SELECT id + 100000, a, b, ts, 'again', score + 1000 FROM vers WHERE a < 20 AND ts = 3;
+CREATE INDEX vers_dup_key ON vers_dup (a, b, ts);
+CREATE TABLE dims_label (label text, score int);
+INSERT INTO dims_label SELECT label, score FROM dims;
+CREATE UNIQUE INDEX dims_label_key ON dims_label (label);
+-- a key two rows hold, one updated in place: the index finds the new version first, a heap scan the other row
+CREATE TABLE pick (a int, label text) WITH (fillfactor = 50);
+INSERT INTO pick VALUES (7, 'first'), (7, 'second');
+CREATE INDEX pick_a ON pick (a);
+UPDATE pick SET label = 'first, updated' WHERE label = 'first';
 VACUUM (FREEZE, ANALYZE) facts;
-ANALYZE dims, dims_text, dims3, dims_dup, dims_id;
+ANALYZE pick, dims_label, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup;
 -- whether the query is pushed to the scan, the rows it differs by from the plan without it, and the tables the scan read as first-row lookups
 CREATE FUNCTION check_first(q text) RETURNS TABLE (pushed bool, differences bigint, lookups int) LANGUAGE plpgsql AS $$
 DECLARE l text;
@@ -97,27 +126,223 @@ $q$);
  t      |           0 |       1
 (1 row)
 
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims_wide x WHERE x.a = f.a AND x.b = f.b LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- ORDER BY .. LIMIT 1: the key's first row by the order, when a unique index holds the key and the order columns (NOT NULL), whichever way it is sorted
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f JOIN LATERAL (SELECT label FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.b = f.b AND x.a = f.a AND x.score > 100 ORDER BY x.dt DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order column is not in the output, the output is not the order column, a condition drops the latest row
+SELECT * FROM check_first($q$
+ SELECT d.ts, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT ts FROM vers x WHERE x.a = f.a AND x.b = f.b AND x.ts < 3 ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order column holds NULLs: the primary key is in the order, so there is no tie, and NULLs come where the sort puts them
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC, x.id DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts NULLS LAST, x.id LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- the order is not total: a NULL order column under a unique index that takes NULLs for different, a version some keys repeat, no unique index
+-- on the key and the order, a text or expression order, four order columns
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null_key x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_dup x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.label LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts + 1 DESC LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts, x.dt, x.id, x.score LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- laterals one after the other, the second keyed by a column of the first's row: two lookup tables
+SELECT * FROM check_first($q$
+ SELECT e.score % 10 AS g, count(*) AS n, sum(e.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true
+ LEFT JOIN LATERAL (SELECT score FROM dims_label WHERE dims_label.label = d.label LIMIT 1) e ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       2
+(1 row)
+
+-- the rows a plan finds first for a key that is repeated depend on the plan (here the index and the heap disagree): the lookup table cannot
+-- tell which the child returns, so the child runs
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM pick WHERE pick.a = f.a LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM pick WHERE pick.a = f.a ORDER BY label LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
 -- every kind of aggregate over the facts, grouped by a column of the lookup row: the float sums are merged in the order of the scan's lanes,
--- which a scan decides from the spec with the lookup table, not the child run per input
-SELECT agg, r.* FROM unnest(ARRAY['count(*)', 'count(f.w)', 'count(DISTINCT f.w)', 'sum(f.amount)', 'avg(f.amount)', 'sum(f.w)', 'avg(f.w)', 'min(f.w)', 'max(f.w)',
+-- which a scan decides from the spec with the lookup table, not the child run per input; the same for each form of the child
+SELECT shape, agg, r.* FROM unnest(ARRAY['count(*)', 'count(f.w)', 'count(DISTINCT f.w)', 'sum(f.amount)', 'avg(f.amount)', 'sum(f.w)', 'avg(f.w)', 'min(f.w)', 'max(f.w)',
  'sum(f.w) FILTER (WHERE f.amount > 500)', 'sum(f.w), avg(d.score), count(d.label)']) agg,
+ unnest(ARRAY['dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1', 'dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1',
+ 'dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1', 'vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1']) shape,
  LATERAL check_first(format($q$
- SELECT d.score / 100 AS g, %s FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true GROUP BY 1
+ SELECT d.score / 100 AS g, %s FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM %s) d ON true GROUP BY 1
+$q$, agg, shape)) r;
+                                   shape                                   |                  agg                   | pushed | differences | lookups 
+---------------------------------------------------------------------------+----------------------------------------+--------+-------------+---------
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | count(*)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | count(f.w)                             | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | count(DISTINCT f.w)                    | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | sum(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | avg(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | sum(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | avg(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | min(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | max(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | sum(f.w) FILTER (WHERE f.amount > 500) | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1                          | sum(f.w), avg(d.score), count(d.label) | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | count(*)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | count(f.w)                             | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | count(DISTINCT f.w)                    | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | sum(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | avg(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | sum(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | avg(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | min(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | max(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | sum(f.w) FILTER (WHERE f.amount > 500) | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1     | sum(f.w), avg(d.score), count(d.label) | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | count(*)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | count(f.w)                             | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | count(DISTINCT f.w)                    | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | sum(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | avg(f.amount)                          | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | sum(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | avg(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | min(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | max(f.w)                               | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | sum(f.w) FILTER (WHERE f.amount > 500) | t      |           0 |       1
+ dims WHERE dims.a = f.a AND dims.b = f.b ORDER BY dims.score DESC LIMIT 1 | sum(f.w), avg(d.score), count(d.label) | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | count(*)                               | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | count(f.w)                             | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | count(DISTINCT f.w)                    | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | sum(f.amount)                          | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | avg(f.amount)                          | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | sum(f.w)                               | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | avg(f.w)                               | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | min(f.w)                               | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | max(f.w)                               | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | sum(f.w) FILTER (WHERE f.amount > 500) | t      |           0 |       1
+ vers WHERE vers.a = f.a AND vers.b = f.b ORDER BY vers.ts DESC LIMIT 1    | sum(f.w), avg(d.score), count(d.label) | t      |           0 |       1
+(44 rows)
+
+-- laterals one after the other, grouped by a column of the second
+SELECT agg, r.* FROM unnest(ARRAY['count(*)', 'sum(f.amount)', 'sum(f.w)', 'avg(f.w)', 'min(f.w)', 'count(DISTINCT f.w)']) agg,
+ LATERAL check_first(format($q$
+ SELECT e.score / 100 AS g, %s
+ FROM facts f LEFT JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b LIMIT 1) d ON true
+ LEFT JOIN LATERAL (SELECT score FROM dims_label WHERE dims_label.label = d.label LIMIT 1) e ON true GROUP BY 1
 $q$, agg)) r;
-                  agg                   | pushed | differences | lookups 
-----------------------------------------+--------+-------------+---------
- count(*)                               | t      |           0 |       1
- count(f.w)                             | t      |           0 |       1
- count(DISTINCT f.w)                    | t      |           0 |       1
- sum(f.amount)                          | t      |           0 |       1
- avg(f.amount)                          | t      |           0 |       1
- sum(f.w)                               | t      |           0 |       1
- avg(f.w)                               | t      |           0 |       1
- min(f.w)                               | t      |           0 |       1
- max(f.w)                               | t      |           0 |       1
- sum(f.w) FILTER (WHERE f.amount > 500) | t      |           0 |       1
- sum(f.w), avg(d.score), count(d.label) | t      |           0 |       1
-(11 rows)
+         agg         | pushed | differences | lookups 
+---------------------+--------+-------------+---------
+ count(*)            | t      |           0 |       2
+ sum(f.amount)       | t      |           0 |       2
+ sum(f.w)            | t      |           0 |       2
+ avg(f.w)            | t      |           0 |       2
+ min(f.w)            | t      |           0 |       2
+ count(DISTINCT f.w) | t      |           0 |       2
+(6 rows)
 
 -- the rows the lookups return
 SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
@@ -137,7 +362,74 @@ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS la
    |    5 |        |        0
 (11 rows)
 
--- a key some rows repeat, a unique index on other columns, a condition, an order, an offset, a column that is not the table's, a key that is an
+-- a condition on the row: the key's row when it passes, none when it does not (a comparison with a constant, a null test, AND/OR/NOT, a column of
+-- the key, a column the child does not return, a condition no row passes)
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s, count(d.label) AS labelled
+ FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.label, count(*) AS n
+ FROM facts f JOIN LATERAL (SELECT label FROM dims WHERE dims.a = f.a AND dims.b = f.b AND (dims.score < 50 OR NOT dims.b >= 3) AND dims.label IS NOT NULL LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims3 x WHERE x.a = f.a AND x.b = f.b AND x.t = f.t AND x.a > 20 AND x.label <> 'l5_5' LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score < 0 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       1
+(1 row)
+
+-- a condition that can raise an error (the row with a = 250 divides by zero, the facts never ask for it) or that is not a comparison with a constant
+-- (a list, the outer row) stays with the child
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims_wide x WHERE x.a = f.a AND x.b = f.b AND x.score / (x.a - 250) < 1 LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score IN (3, 10, 400) LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+SELECT * FROM check_first($q$
+ SELECT d.score % 10 AS g, count(*) AS n
+ FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > f.amount LIMIT 1) d ON true GROUP BY 1
+$q$);
+ pushed | differences | lookups 
+--------+-------------+---------
+ t      |           0 |       0
+(1 row)
+
+-- a key some rows repeat, a unique index on other columns, an order, an offset, a column that is not the table's, a key that is an
 -- expression of the outer row (the child compares a parameter): the child runs
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
@@ -160,15 +452,6 @@ $q$);
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims_id WHERE dims_id.a = f.a AND dims_id.b = f.b LIMIT 1) d ON true GROUP BY 1
-$q$);
- pushed | differences | lookups 
---------+-------------+---------
- t      |           0 |       0
-(1 row)
-
-SELECT * FROM check_first($q$
- SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
- FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > 100 LIMIT 1) d ON true GROUP BY 1
 $q$);
  pushed | differences | lookups 
 --------+-------------+---------
@@ -244,5 +527,5 @@ $q$);
 
 DROP FUNCTION explain_first(text);
 DROP FUNCTION check_first(text);
-DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id;
+DROP TABLE facts, dims, dims_text, dims3, dims_dup, dims_id, dims_wide, vers, vers_null, vers_null_key, vers_dup, pick, dims_label;
 DROP EXTENSION pg_sift;

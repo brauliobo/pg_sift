@@ -44,6 +44,12 @@ sift_colz_bound(int alg, Size n)
 	return 0;
 }
 
+#ifdef SIFT_HAVE_ZSTD
+/* The contexts of the backend, made once: ZSTD_compress and ZSTD_decompress make and free one for each call, which a dictionary of 200,000 strings in blocks of 64 does 3,000 times (the bytes are the same) */
+static ZSTD_CCtx *zstd_cctx;
+static ZSTD_DCtx *zstd_dctx;
+#endif
+
 Size
 sift_colz_compress(int alg, int level, const void *src, Size n, void *dst, Size cap)
 {
@@ -58,7 +64,11 @@ sift_colz_compress(int alg, int level, const void *src, Size n, void *dst, Size 
 #ifdef SIFT_HAVE_ZSTD
 	if (alg == SIFT_CC_ALG_ZSTD)
 	{
-		size_t		r = ZSTD_compress(dst, cap, src, n, level ? level : 3);
+		size_t		r;
+
+		if (zstd_cctx == NULL)
+			zstd_cctx = ZSTD_createCCtx();
+		r = zstd_cctx != NULL ? ZSTD_compressCCtx(zstd_cctx, dst, cap, src, n, level ? level : 3) : ZSTD_compress(dst, cap, src, n, level ? level : 3);
 
 		return ZSTD_isError(r) ? 0 : r;
 	}
@@ -75,7 +85,11 @@ sift_colz_decompress(int alg, const void *src, Size clen, void *dst, Size rawlen
 #endif
 #ifdef SIFT_HAVE_ZSTD
 	if (alg == SIFT_CC_ALG_ZSTD)
-		return ZSTD_decompress(dst, rawlen, src, clen) == rawlen;
+	{
+		if (zstd_dctx == NULL)
+			zstd_dctx = ZSTD_createDCtx();
+		return (zstd_dctx != NULL ? ZSTD_decompressDCtx(zstd_dctx, dst, rawlen, src, clen) : ZSTD_decompress(dst, rawlen, src, clen)) == rawlen;
+	}
 #endif
 	return false;
 }

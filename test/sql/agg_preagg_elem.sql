@@ -15,33 +15,7 @@ SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ae (id int, grp int, items jsonb, tags jsonb, pad text) WITH (autovacuum_enabled = off);
 
-CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.agg_preagg', pre::text, true);
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN OTHERS THEN
-	RETURN 'ERROR: ' || SQLERRM;
-END $$;
-
--- the refresh worker of a query that found a unit without its rollup holds a snapshot while it rewrites the segment: a VACUUM that runs meanwhile
--- cannot make the pages of rows written since all-visible, so the units stay scanned. Wait for the conditions themselves: the queue drained and no
--- other session of this database holding a snapshot (the worker leaves the queue only after it committed, but any session would hold the horizon).
-CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
-DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
-BEGIN
-	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
-	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
-		IF clock_timestamp() > deadline THEN
-			RAISE EXCEPTION 'not settled: queue %, snapshots %', (SELECT count(*) FROM sift.col_rollup_queue()),
-				(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
-				 WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL);
-		END IF;
-		PERFORM pg_sleep(0.01);
-	END LOOP;
-END $$;
+\ir test/agg_preagg_helpers.sql
 
 -- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg, or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT workers int) LANGUAGE plpgsql AS $$
@@ -105,7 +79,8 @@ BEGIN
 	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
 	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
 	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
-	RAISE LOG 'pa_sum %: % | units exact % | queue % | snapshots %', tbl, state,
+	RAISE LOG 'pa_sum %: % | heap all-visible % | units exact % | queue % | snapshots %', tbl, state,
+		(SELECT relallvisible || '/' || relpages FROM pg_class WHERE oid = tbl::regclass),
 		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
 		(SELECT count(*) FROM sift.col_rollup_queue()),
 		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
@@ -177,14 +152,14 @@ FROM ae WHERE id <= 14000;
 INSERT INTO ac SELECT * FROM ae;
 INSERT INTO ao SELECT * FROM ae;
 INSERT INTO a3 SELECT * FROM ae;
-CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
+CREATE INDEX ae_col ON ae USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096,
-	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
-CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
-CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off');
+	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])', cube_minmax = false, superunit = 0);
+CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 3;
-CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096);
+CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
@@ -210,7 +185,7 @@ SET sift.col_rollup_on_demand = off;
 CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
 FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
-CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}');
+CREATE INDEX ap_col ON ap USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}', cube_minmax = false, superunit = 0);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap;
 SELECT count(*) = 4 AS elements, count(DISTINCT e.kind) = 2 AS kinds, count(DISTINCT e.n) = 2 AS nums
 FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int);

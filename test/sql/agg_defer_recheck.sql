@@ -7,21 +7,9 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
-	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
-END $$;
+\ir test/agg_helpers.sql
 
--- 'same' when the scan and the normal plan end alike (the rows or the error), else both outcomes
-CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a text := runq(q, false); b text := runq(q, true);
-BEGIN
-	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
-END $$;
+\ir test/agg_same_helpers.sql
 
 -- the plan, and the rows the scan read again from the heap
 CREATE FUNCTION plan_of(q text, OUT scan bool, OUT gather bool, OUT reread bigint) LANGUAGE plpgsql AS $$
@@ -117,5 +105,5 @@ DROP FUNCTION plan_of(text);
 DROP FUNCTION same(text);
 DROP FUNCTION runq(text, bool);
 DROP TABLE cases, events;
-DROP FUNCTION ev_payload(int);
+DROP FUNCTION ev_payload(int), outcome, pushed, runs_in_scan;
 DROP EXTENSION pg_sift;

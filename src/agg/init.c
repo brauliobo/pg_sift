@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
 #include "executor/nodeSubplan.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -31,8 +32,7 @@ find_param(Node *expr)
 	Param	   *p = NULL;
 
 	param_walker(expr, &p);
-	if (p == NULL)
-		elog(ERROR, "sift: aggregate plan expression without its input");
+	SIFT_INVARIANT(p != NULL, "sift: aggregate plan expression without its input");
 	return p;
 }
 
@@ -61,11 +61,12 @@ init_param_mutator(Node *n, AggExec *ex)
 }
 
 /*
- * The expression of a lookup table. A sub-plan in it (its state, hash table and the scans it starts) lives in the query's memory: PostgreSQL ends
- * the sub-plans after this node, which frees its own memory.
+ * The state of an expression of the scan that is kept for it (a lookup table, a combination). A sub-plan in it (its state, hash table, the scans
+ * it starts and the slots it puts in the executor's tuple table) lives in the query's memory: PostgreSQL ends the sub-plans after this node,
+ * which frees its own memory.
  */
 static ExprState *
-init_lut_expr(AggExec *ex, Node *expr)
+init_expr(AggExec *ex, Node *expr)
 {
 	MemoryContext old = MemoryContextSwitchTo(contain_subplans(expr) ? ex->css.ss.ps.state->es_query_cxt : ex->cxt);
 	ExprState  *e = ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
@@ -139,7 +140,7 @@ semi_lut_build(AggExec *ex, int ci)
 				hi = PG_INT32_MIN;
 	bool	   *keep;
 
-	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || cb->nleaves != 1 || m->ktext[0] ||
+	if ((j->kind != SJ_SEMI && j->kind != SJ_ANTI && j->kind != SJ_INNER) || j->nkey != 1 || j->keypos[0] < 0 || j->keynull[0] || cb->nleaves != 1 || m->ktext[0] ||
 		cb->leaf[0] < 0 || cb->leaf[0] >= ex->nbase || !sift_agg_semi_lut || combo_read(ex, ci) ||
 		cb->nslots != (j->fslot >= 0 ? 1 : 0) || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return;
@@ -223,7 +224,7 @@ register_pred(AggExec *ex, SiftAggPred *p)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-		st->expr = init_lut_expr(ex, p->expr);
+		st->expr = init_expr(ex, p->expr);
 		st->param = find_param(p->expr);
 		rt_init(&st->rt, 1);
 		if (ex->lay->leaf[p->leaf].vtype == SCV_I32)
@@ -268,9 +269,10 @@ register_key(AggExec *ex, int ki)
 		k->ident = true;
 	else if (sk->kind == SAK_LUT)
 	{
-		k->expr = init_lut_expr(ex, sk->expr);
+		k->expr = init_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
 		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
 	}
 	else if (sk->kind == SAK_NUM)
 	{
@@ -298,6 +300,7 @@ register_combos(AggExec *ex)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	bool		preserved = false;
+	int			nj = 0;
 
 	join_first_rows(ex);
 	for (int j = 0; j < s->njoin; j++)
@@ -305,6 +308,22 @@ register_combos(AggExec *ex)
 
 	ex->comcxt = AllocSetContextCreate(ex->cxt, "sift agg combo", ALLOCSET_SMALL_SIZES);
 	ex->cs = palloc0(Max(s->ncombo, 1) * sizeof(ComboSt));
+	ex->clbase = palloc0(Max(s->ncombo, 1) * sizeof(int));
+	ex->xcout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	ex->cfree = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	ex->cfree_ok = palloc0(Max(s->ncombo, 1) * sizeof(bool));
+	for (int ci = 0; ci < s->ncombo; ci++)
+		nj += s->combo[ci].join >= 0 && !s->join[s->combo[ci].join].scoped;
+	ex->jcombo = palloc0(Max(nj, 1) * sizeof(int));
+	ex->stage = palloc0(Max(nj, 1) * sizeof(Tup));
+	ex->alcout = palloc0(Max(nj, 1) * sizeof(uint32 **));
+	ex->seid = palloc0(Max(nj, 1) * sizeof(uint32 *));
+	ex->t0.cout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	for (int x = 0; x < nj; x++)
+	{
+		ex->stage[x].cout = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+		ex->alcout[x] = palloc0(Max(s->ncombo, 1) * sizeof(uint32 *));
+	}
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		SiftAggCombo *cb = &s->combo[ci];
@@ -319,7 +338,7 @@ register_combos(AggExec *ex)
 		cs->tbyval = palloc0(Max(cb->nslots, 1) * sizeof(bool));
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
-			cs->slot[sl] = ExecInitExpr((Expr *) cb->slot[sl].expr, EXPR_PARENT(ex));
+			cs->slot[sl] = init_expr(ex, (Node *) cb->slot[sl].expr);
 			get_typlenbyval(exprType(cb->slot[sl].expr), &cs->tlen[sl], &cs->tbyval[sl]);
 		}
 		for (int p = 0; p < cb->nleaves; p++)
@@ -348,10 +367,10 @@ register_combos(AggExec *ex)
 		combo_reset(ex, ci);
 		if (cb->join >= 0)
 			foreach_ptr(Node, arg, s->join[cb->join].args)
-				cs->args = lappend(cs->args, ExecInitExpr((Expr *) arg, EXPR_PARENT(ex)));
+				cs->args = lappend(cs->args, init_expr(ex, arg));
 		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
 			if (s->join[cb->join].keyexpr[k])
-				cs->kx[k] = ExecInitExpr((Expr *) s->join[cb->join].keyexpr[k], EXPR_PARENT(ex));
+				cs->kx[k] = init_expr(ex, (Node *) s->join[cb->join].keyexpr[k]);
 		ex->clbase[ci] = ex->ncl;
 		ex->ncl += cb->nleaves;
 		if (cb->join >= 0 && !s->join[cb->join].scoped)
@@ -378,8 +397,7 @@ scan_buffers(AggExec *ex)
 		st->sel = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		st->tidx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		st->ridx = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
-		for (int y = 0; y <= x; y++)
-			st->cout[ex->jcombo[y]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
+		st->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		ex->seid[x] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	}
 	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
@@ -402,9 +420,11 @@ scan_buffers(AggExec *ex)
 	ex->pri = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->gid = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->kids = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
+	ex->knul = MemoryContextAlloc(ex->cxt, (Size) Max(s->nkeys, 1) * (VECW + PADW) * sizeof(uint64));
 	ex->cu32 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->c64 = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	ex->okb = MemoryContextAlloc(ex->cxt, maxv);
+	ex->ncnt = MemoryContextAlloc(ex->cxt, (s->naggs + 1) * sizeof(int64 *));
 	ex->fwin = MemoryContextAllocZero(ex->cxt, maxv);
 	ex->nb = MemoryContextAlloc(ex->cxt, maxv);
 	ex->vstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * maxv * sizeof(double));

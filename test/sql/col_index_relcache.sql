@@ -88,3 +88,4 @@ DROP TABLE rb;
 DROP FUNCTION rb_norm(jsonb);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
+DROP FUNCTION col_verified(regclass), rb_pushed(), rb_q(boolean);

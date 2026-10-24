@@ -33,6 +33,8 @@ extern void sift_cschema_serialize(const SiftColSchema *s, StringInfo out);
 /* NULL if the bytes are not a schema (the caller raises ERRCODE_INDEX_CORRUPTED) */
 extern SiftColSchema *sift_cschema_parse(MemoryContext mcxt, const void *data, Size len);
 
+struct SiftCDictLook;
+
 typedef struct SiftCDict
 {
 	MemoryContext mcxt;
@@ -42,22 +44,84 @@ typedef struct SiftCDict
 	char	   *bytes;
 	Size		nbytes;
 	Size		bytescap;
-	uint32	   *slots;			/* open addressing table of code + 1; built lazily by intern / find */
+	uint32	   *slots;			/* open addressing table of code + 1; built by intern, and by find once the dictionary has been asked a few times */
 	uint32		nslots;
+	uint32		finds;			/* linear finds so far, before the table is worth building */
+	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
+	uint64		orows;			/* rows of top-N scans compared with the strings so far (cdict_order) */
+	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
+	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
+	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
+	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 } SiftCDict;
+
+/* The two searches a test makes of a dictionary, for one that stays in the stream */
+typedef struct SiftCDictLook
+{
+	int64		(*find) (const struct SiftCDictLook *look, const char *s, uint32 len);
+	uint32		(*match) (const struct SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut);
+} SiftCDictLook;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
 /* The code of the value, adding it when new; len <= SIFT_COL_MAX_VALUE (ERRCODE_PROGRAM_LIMIT_EXCEEDED otherwise) */
 extern uint32 sift_cdict_intern(SiftCDict *d, const char *s, uint32 len);
 /* The code, or -1 */
 extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
+/* Whether a string passes a LT, LE, GT, GE (byte order) or PREFIX predicate on the string c */
+extern bool sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c);
+/* Sets in lut the bit of every code whose string satisfies op (LT, LE, GT, GE in byte order, PREFIX) against c; returns how many */
+extern uint32 sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut);
+/* Bytewise order of strings */
+extern int	sift_cstr_cmp(const char *a, uint32 alen, const char *b, uint32 blen);
+/* The strings of a dictionary in byte order, by position: a search of them is the same whether they are in memory or in the stream */
+typedef struct SiftCSorted
+{
+	uint32		n;
+	const char *(*str) (const void *ctx, uint32 pos, uint32 *len);
+	const void *ctx;
+} SiftCSorted;
+static inline int
+sift_csorted_cmp(const SiftCSorted *s, uint32 pos, const SiftColValue *c)
+{
+	uint32		len;
+	const char *p = s->str(s->ctx, pos, &len);
+
+	return sift_cstr_cmp(p, len, c->v.s, c->len);
+}
+
+static inline bool
+sift_csorted_prefix(const SiftCSorted *s, uint32 pos, const SiftColValue *c)
+{
+	uint32		len;
+	const char *p = s->str(s->ctx, pos, &len);
+
+	return sift_cstr_matches(SIFT_COLOP_PREFIX, p, len, c);
+}
+
+extern uint32 sift_csorted_bound(const SiftCSorted *s, const SiftColValue *c, bool after);
+extern void sift_csorted_range(const SiftCSorted *s, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to);
 /* The bytes and length of a code < d->n */
 extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
+#define DICT_PLAIN		0
+#define DICT_STRS		1
+#define DICT_LOOKUP		2
+#define DICT_BLOCKS		3
+#define DICT_HEAD		(2 * sizeof(uint32))
+#define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
+#define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
+#define DICT_BLOCK_RAW_MAX	(DICT_BLOCK * (SIFT_COL_DICT_MAX_ENTRY + 1))	/* the most bytes of a block before compression: a length and the string of each */
+#define DICT_BLOCK_HEAD		4			/* u8 algorithm (0: raw, else SIFT_CC_ALG_*), u8 0, u16 raw bytes */
 /*
  * DICTS section entry: u32 form, u32 n, then the plain dictionary (u32 off[n + 1], bytes) or, when the policy is not "none" and it is
- * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain
+ * smaller, the codec's string list (lengths as an integer cascade, bytes under the cold wrapper rule). pol NULL: plain. form: 0 for these, or the form that
+ * is read in place (docs/COL.md 2.15): u32 form 3 (DICT_BLOCKS), u32 n, u32 length of every string (0: they differ), u32 bytes of the strings,
+ * u32 boff[blocks + 1], the blocks of DICT_BLOCK strings each in code order (a length byte for each string unless they have one length, then the strings,
+ * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned),
+ * which the search of a string reads
  */
-extern void sift_cdict_serialize(const SiftCDict *d, const SiftCcPolicy *pol, StringInfo out);
+extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
+/* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
+extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
@@ -76,6 +140,7 @@ typedef struct SiftCVals
 	uint32	   *voff;			/* n + 1 entries once a value was added */
 	char	   *vb;
 	Size		vcap;
+	bool		noted;			/* the leaf went past the unit's byte budget and the NOTICE was raised */
 } SiftCVals;
 
 typedef struct SiftColBatch

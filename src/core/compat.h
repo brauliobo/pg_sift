@@ -15,10 +15,18 @@
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/numeric.h"
+#include "utils/pg_locale.h"
 #include "utils/tuplestore.h"
 
 #if PG_VERSION_NUM >= 180000
 #include "commands/explain_format.h"
+#endif
+
+/* A deliberate case fall-through: 19 builds with -Wimplicit-fallthrough=5, which ignores the comment form (its own is pg_fallthrough, absent in 17 and 18) */
+#if PG_VERSION_NUM >= 190000
+#define sift_fallthrough	pg_fallthrough
+#else
+#define sift_fallthrough	__attribute__((fallthrough))
 #endif
 
 /* Table AM scan flags (19): the plain heap scan options */
@@ -262,6 +270,13 @@ eclass_member_iterator_next(EquivalenceMemberIterator *it)
 	return NULL;
 }
 
+#endif
+
+/* Does the collation order by bytes (C, POSIX)? 17 has a function for it, 18 and later a flag of the locale */
+#if PG_VERSION_NUM >= 180000
+#define sift_collate_is_c(collid) (pg_newlocale_from_collation(collid)->collate_is_c)
+#else
+#define sift_collate_is_c(collid) lc_collate_is_c(collid)
 #endif
 
 #endif							/* SIFT_COMPAT_H */

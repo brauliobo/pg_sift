@@ -7,6 +7,8 @@
 #include "nodes/extensible.h"
 
 #include "agg/colsrc.h"
+#include "agg/refuse.h"
+#include "core/limits.h"
 #include "agg/search.h"
 #include "agg/spec.h"
 
@@ -21,6 +23,10 @@ typedef enum FuncKind
 } FuncKind;
 
 /* a table joined by equality to leaves (SiftAggJoin) and the combos that evaluate expressions of leaves and its columns (SiftAggCombo) */
+/* is a count of a shape at its limit (registry id lim, value sift_limit(lim, MACRO))? Then the refusal is noted (slug shape_width), naming what the query has more of */
+#define agg_width_hit(n, lim, value, what) \
+	((n) >= (value) && (agg_refused_limit(SHAPE_WIDTH, lim, value, "%d " what, (int) (n) + 1), true))
+
 typedef struct JoinCtx
 {
 	Index		rti;
@@ -34,6 +40,7 @@ typedef struct JoinCtx
 	PlannerInfo *subroot;		/* the query level its native plan was made in */
 	List	   *cvars;			/* its columns the spec reads (Var, one per column): what the path outputs */
 	double		frows;			/* a child that j.first reads as a lookup table: the rows of its table */
+	bool		tree;			/* the child is PostgreSQL's plan of the tree of tables on the right of a semi or anti join (rti is the table its ON clause reads) */
 } JoinCtx;
 
 typedef struct SlotReq
@@ -93,11 +100,14 @@ typedef struct AggCtx
 	Index		func_rti;
 	FuncKind	func_kind;
 	RangeTblFunction *func;
+	bool		part_key;		/* the group key holds every column of the partition key of the table, and the scanned partitions are its direct children */
+	bool		func_left;		/* LEFT JOIN LATERAL over the list, ON true or the lateral's own conditions: a row without a passing element is one NULL tuple (sift.agg_left_lateral) */
 	const char *func_key;		/* LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k': r.value is the member k of each row, no unnest */
 	int			func_obj;		/* ... and the object leaf of doc */
 	Bitmapset  *func_ovf;		/* ... and the leaves that make the scan unfit when a unit holds what they cannot store (a document that is no object raises in jsonb_each) */
 	int			group;			/* leaf of the unnested array/object, -1 */
 	Bitmapset  *used;			/* leaves the spec reads */
+	Bitmapset  *reused;			/* ... of those, the leaves that more than one use_leaf named */
 	Bitmapset  *read;			/* leaves whose values it reads, not only their JSON types */
 	Bitmapset  *jcast;			/* leaves read through the cast function of jsonb to a number or boolean (before PostgreSQL 18 it raises for a JSON null) */
 	List	   *dpctx;			/* deparse context of expr_text */
@@ -111,6 +121,12 @@ typedef struct AggCtx
 	Bitmapset  *cast_bad;		/* ... and the leaves read in any other way */
 	Oid			cast_want;		/* unconditional_cast: the type of the cast it looks for */
 	int			txt_pending;	/* 1 + the text leaf match_leaf just resolved from `doc ->> 'k'` (0: none), which the use_leaf that follows takes */
+	int			io_pending;		/* 1 + the leaf match_leaf just resolved from `(doc ->> 'k')::T` (0: none), which the use_leaf that follows takes */
+	Bitmapset  *io_ok;			/* leaves read only through such a cast ... */
+	Bitmapset  *io_bad;			/* ... and the leaves read in any other way */
+	Bitmapset  *order_refused;	/* leaves scalar_recheck refused only because PostgreSQL's order of the conditions decides whether a row raises */
+	int			dirty_leaf;		/* the leaf that scalar_recheck refused last for the reason dirty_why (NULL: none) */
+	const char *dirty_why;
 	Bitmapset  *txt_ok;			/* text leaves read only as `doc ->> 'k'` ... */
 	Bitmapset  *txt_bad;		/* ... and the leaves read in any other way */
 	int			npred;			/* ids handed out to predicate nodes */
@@ -126,7 +142,14 @@ typedef struct AggCtx
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
+	double		path_rows;		/* the groups of the rows the lookup lists can pass, 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
+	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
+	double		topn_fetch;		/* ... the rows it reads from the heap */
+	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */
+	double		topn_xcost;		/* ... PostgreSQL's cost of its sort expressions for a row that passes, and of the row they are evaluated over */
+	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
+	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
 	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
@@ -134,6 +157,7 @@ typedef struct AggCtx
 	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 	bool		detached;		/* root is a query level below the one being planned (the arms of a two level aggregate): its paths are planned there */
+	Path	   *spine;			/* the plan of the spine's rows (SiftAggSpine): the only child of the path */
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -196,12 +220,15 @@ typedef struct ComboWalk
 #define AGG_GEN_HYP			200.0	/* a row of a hypothetical-set aggregate: sorted by the scan for its groups, then again by the aggregate (no gain over the normal plan) */
 #define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
 #define AGG_GEN_GROUP		150.0	/* a group's final function and state, or the sort of an ordered-set group */
+#define AGG_GROUP_KEY_BYTES	40.0	/* a group key's share of the table: its id maps and the ids of the group (agg/group.c), without the value's own bytes */
+#define AGG_GROUP_SLACK		1.3		/* the group arrays grow by doubling: on average a third is room, measured 185 bytes a group for 5 aggregates and one key */
 
 typedef struct LeftJoin
 {
 	Index		rti;			/* the right side, a table */
 	List	   *quals;			/* its ON clause */
 	SiftJoinKind kind;
+	Relids		tree;			/* a semi or anti join to a tree of joined tables: the relids of the join PostgreSQL planned for it; rti is its one table the ON clause reads */
 } LeftJoin;
 
 typedef struct FromScan
@@ -213,7 +240,10 @@ typedef struct FromScan
 	bool		ok;
 	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
 	bool		flippable;		/* a LEFT or FULL JOIN of two tables was met: the scan may be the other one */
+	int			skip;			/* the tables of the FROM list passed over before the scanned one: they are joined to it (inner joins only) */
+	int			ntables;		/* the tables the FROM list has */
 	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
+	Bitmapset  *hidden;			/* the tables of the trees on the right of semi and anti joins besides the one the join reads: their plan is the child's */
 } FromScan;
 
 /* Aggrefs of the output, each once; false if a column is used outside the keys and aggregates */
@@ -238,6 +268,7 @@ extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define AGG_FIRST_ROW		1.0		/* a row of a table read as the first-row lookup of a child (agg/first.c): its hash costs 0.2 us a row where a run of the child costs 1.6 us, which the model counts as 8.5 */
 #define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
@@ -255,6 +286,7 @@ extern int match_leaf(AggCtx *c, Node *e);
 extern Node *normalize_expr(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
+extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);
 extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
@@ -265,6 +297,7 @@ extern bool lut_leaf_ok(AggCtx *c, int leaf);
 extern bool combo_leaf_ok(AggCtx *c, int leaf);
 extern bool raising_walker(Node *n, void *context);
 extern bool leaf_stats_range(AggCtx *c, int leaf, int64 *lo, int64 *hi);
+extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
 extern const char *bucket_text(int secs);
@@ -305,9 +338,9 @@ extern int combo_leaf(ComboCtx *cb, int id, bool typed, Oid ptype, int32 ptypmod
 extern ComboCtx *new_combo(AggCtx *c, int join);
 extern int combo_index(AggCtx *c, ComboCtx *cb);
 extern int combo_reference(AggCtx *c, ComboCtx *cb, JoinCtx *jc, Var *v);
-extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q);
+extern bool join_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_walker(Node *n, ComboWalk *w);
-extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q);
+extern bool join_expr_clause(AggCtx *c, JoinCtx *jc, Node *q, bool nullsafe);
 extern bool combo_slot_in(AggCtx *c, JoinCtx *force, Node *expr, bool is_key, bool after_joins, int *ci, int *si);
 extern bool combo_slot(AggCtx *c, Node *expr, bool is_key, int *ci, int *si);
 extern Node *lower_scoped(AggCtx *c, int ci, Node *expr);
@@ -348,16 +381,24 @@ extern bool out_walker(Node *n, OutWalk *w);
 extern double elems_of(AggCtx *c, int grp);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
+extern double in_list_table_bytes(AggCtx *c, const SiftAggPred *p);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
-extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
+extern Cost agg_open_cost(int nparts);
+extern double agg_stage_normal;
+extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
+extern double filter_rows_ratio(AggCtx *c);
+extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
+extern double group_count(AggCtx *c, const SiftAggSpec *s);
+extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
 extern double agg_share_rows(AggCtx *c);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
 extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
+extern int	parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
 						 List *scan_tlist, int nworkers);
 extern bool child_paths(AggCtx *c, SiftAggSpec *s);

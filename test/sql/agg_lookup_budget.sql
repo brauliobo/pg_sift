@@ -1,0 +1,53 @@
+-- The rows of a sub-select joined to the aggregate scan are bounded by memory (sift.agg_lookup_max_kb: the estimated rows times their width plus 64 bytes a row), not by a
+-- row count: a sub-select the planner expects to return 2,000,000 rows (the statistics of the table are set to that) is a lookup table of the scan, and the older
+-- sift.agg_lookup_max_rows, when set, still limits the rows alone. The rows are the normal plan's in every case.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE ev (id int PRIMARY KEY, n int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 500, i % 100 FROM generate_series(1, 20000) i;
+CREATE INDEX ev_col ON ev USING sift_col (n, amount);
+CREATE TABLE bigdim (id int, k int) WITH (autovacuum_enabled = false);
+INSERT INTO bigdim SELECT i, i % 7 FROM generate_series(0, 999) i;
+VACUUM (FREEZE, ANALYZE) ev, bigdim;
+-- the planner expects 2,000,000 rows of it: reltuples over the pages it has
+UPDATE pg_class SET reltuples = 2000000 WHERE relname = 'bigdim';
+
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_off;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0;
+END $$;
+SELECT format('SELECT d.k, count(*) AS c, sum(amount) AS s FROM ev JOIN (SELECT id, k FROM bigdim LIMIT %s) d ON d.id = ev.n GROUP BY d.k', 5000000) AS q \gset
+
+SHOW sift.agg_lookup_max_kb;
+SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
+SELECT same(:'q') AS default_budget;
+
+-- the older setting limits the rows, whatever their width
+SET sift.agg_lookup_max_rows = 1000000;
+SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
+SELECT same(:'q') AS rows_limit;
+RESET sift.agg_lookup_max_rows;
+
+-- a smaller memory budget: 2,000,000 rows of 8 bytes and the 64 of a row are 137 MB
+SET sift.agg_lookup_max_kb = 131072;
+SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
+SELECT same(:'q') AS small_budget;
+SET sift.agg_lookup_max_kb = 262144;
+SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
+RESET sift.agg_lookup_max_kb;
+
+DROP FUNCTION same(text);
+DROP TABLE ev, bigdim;
+DROP EXTENSION pg_sift;

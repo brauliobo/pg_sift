@@ -86,6 +86,44 @@ column did not change: the index finds rows by their TID and the new row version
 cannot let the insert be skipped. A table whose indexed texts are large (100 kB) and whose other columns change often should leave room
 for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) and keep other indexes off the updated columns.
 
+## A `sift_col` index at 30 million rows
+
+One run each on 2026-10-23, build 4f0d7334 (plus the `col_verify` fix), PostgreSQL 18.6, 16 cores, 188 GB of memory, `shared_buffers = 8GB`, autovacuum off,
+a table of 29,526,504 rows in arrival order (28 GB of heap, 13 columns, 22 leaves with five JSON paths). Sizes and WAL are exact; times are indicative. They show the size of
+an effect on that host, not a guarantee, and nothing here is measured above 30 million rows yet.
+
+| build | workers | `maintenance_work_mem` | seconds | WAL | segments | private memory, all processes |
+|---|---|---|---|---|---|---|
+| `CREATE INDEX` | 0 | 1GB | 65.6 | 746 MB | 1 | 150 MB |
+| `CREATE INDEX` | 2 | 1GB | 31.1 | 750 MB | 3 | 160 MB |
+| `CREATE INDEX` | 8 | 2GB | 17.0 | 750 MB | 9 | 186 MB |
+| `CREATE INDEX` | 16 | 4GB | 16.9 | 750 MB | 9 | 188 MB |
+| `CREATE INDEX CONCURRENTLY` | 8 | 2GB | 26.1 | 750 MB | 9 | 766 MB |
+| `REINDEX` | 8 | 2GB | 17.2 | 750 MB | 9 | 188 MB |
+| `REINDEX CONCURRENTLY` | 8 | 2GB | 25.5 | 750 MB | 9 | 766 MB |
+
+- **The index is 743 MB of segments (25 bytes a row, 2.6% of the heap) and its build writes that much WAL plus 0.5%**: the pages are logged once. The build is linear in the rows
+  (2.2 us a row serial) and no worker count above 8 helped on this host. PostgreSQL grants one participant per 32 MB of `maintenance_work_mem`, so a build asked for 16 workers with
+  less than 544 MB runs with fewer, without a message. `pg_stat_progress_create_index` shows `blocks_done` rising to `blocks_total` (3,728,640 here) during a parallel scan.
+- **A concurrent build costs 1.5x the time and about 600 MB more memory**, from the validation pass that sorts the row identifiers of the whole table; it also waits for every
+  transaction older than it, as any `CREATE INDEX CONCURRENTLY` does.
+- **A parallel build leaves a segment for each participant (3 with 2 workers, 9 with 8, and also 9 when 16 were asked for), and the first `VACUUM` after it rewrites them into one**: 31.5 s and
+  747 MB of WAL, and the file doubles (1.42 GB for 0.71 GB of live segments; the next `VACUUM` changed nothing): the free space is in front of the live segment, and a `REINDEX`
+  compacts it. `sift.col_merge(index, true)` on the same index took 31.0 s and 747 MB of WAL.
+- **A rewrite is the cost of the whole index, not of the change.** Six daily cycles of 29,526 inserts, 14,763 scattered updates and 29,526 updates of one burst each: `VACUUM` took
+  0.5 to 3 s and `sift.col_maintain` 5 ms until the write buffers and dirty units crossed the threshold, and then rewrote everything (31 and 33 s, 1.0 and 1.2 GB of WAL with the
+  table's own): a rewrite came every 2 to 3 days of such changes. The file stayed at 2.1x the live segments (1.52 GB for 0.72 GB). Plan for the free space of the rewrite (about 2x the index) and for its WAL;
+  `sift.col_index_status` shows `index_bytes`, `free_bytes`, `dirty_segments`, `dead_pct` and why a rewrite is `due` in 13 ms (`sift.col_leaves` takes 0.4 s, the other
+  views 4 to 36 ms at 14,565 units).
+- **A hot standby** gives the same answers, the same plan and a faster scan than the primary (the aggregate over 29.8M rows: 134 to 138 ms against 163 to 166 ms). It replays a
+  100,000-row insert 0.2 s after the commit, a rewrite of 765 MB of WAL in 0.8 s and a `REINDEX` of 769 MB in 1.0 s (700 to 900 MB/s); a base backup of the 33 GB database took 47 s.
+  It needs `hot_standby_feedback` for long queries, as above.
+- **Crash recovery** is the redo of generic WAL and nothing else: after a rewrite and a `REINDEX` (1,463 MB of WAL since the checkpoint) the server accepted connections 3.3 s
+  after `pg_ctl stop -m immediate` (a b-tree `REINDEX` and insert, 463 MB: 1.3 s), with the same answers.
+- **`sift.col_verify(index, true)`** holds a 40-byte hash for every live row, in one array that doubles: 29.7M rows took 70 s and 2.3 GB of private memory, so the check needs
+  about 80 bytes of memory a row. Before this release it failed with `invalid memory alloc request size` above 16.7 million rows.
+- **`pg_dump` writes only `CREATE INDEX`**: a restore builds the index again, at the times above.
+
 ## Settings that matter
 
 | Setting | Effect |
@@ -93,7 +131,7 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
 | `maintenance_work_mem`, `max_parallel_maintenance_workers` | `CREATE INDEX` speed and segment count (above) |
 | `temp_file_limit`, `temp_tablespaces` | `CREATE INDEX` runs and merge staging (above) |
 | `autovacuum` and its scale factors | marks dead documents, promotes and merges; the index does not shrink without it |
-| `hot_standby_feedback = on` on replicas | merges free blocks a replica query may still read; without feedback such a query fails with a retryable "segment recycled during scan" (40001) |
+| `hot_standby_feedback = on` on replicas | merges free blocks a replica query may still read; without feedback the replay waits for such a query up to `max_standby_streaming_delay` and then cancels it (`sift.standby_conflicts`, on), as for a heap query; with that setting off it fails at once with a retryable "segment recycled during scan" (40001) |
 | `max_worker_processes` | the maintenance worker needs a slot; when none is free the log says so and the inserting session promotes and merges itself |
 | `sift.log_min_duration` | logs promotions, merges and worker runs that take at least that long (default 1s, -1 off) |
 | `sift.async_maintenance` | off: only VACUUM and the inserting sessions promote and merge |
@@ -111,7 +149,8 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   frequencies, expansion limits) include rows the role cannot see, so a score and an `EXPLAIN` estimate would depend on hidden rows (before
   2.0.1 a score of 4.99 for a term of 20 visible documents was `ln(1 + (3020 - 20 + 0.5) / (20 + 0.5))`, computed with the 3,000 rows a policy hid).
   Its matches come from a sequential scan, which is slower on a large table, and `sift.score()` raises an error. The table owner, who
-  bypasses the policy, keeps the scan.
+  bypasses the policy, keeps the scan. With `sift.rls_scores = on` (superuser) the role gets the ranked scan, and a score then does depend
+  on the hidden rows ([USAGE.md](USAGE.md#row-level-security)).
 - **`ALTER INDEX ... SET/RESET`** of `k1`, `b` or an analyzer option (`stemmer`, `fields`, `analyzer`, `prefix_index`, folding)
   needs a `REINDEX`. Until then queries and inserts on the table fail ("built with other analyzer options"), and the statement warns about
   it. To change them without downtime build the new index with `CREATE INDEX CONCURRENTLY` and drop the old one.
@@ -119,7 +158,7 @@ for HOT updates: `ALTER TABLE t SET (fillfactor = 80)` (applies to new pages) an
   (`sift.score()`, `ORDER BY`, `LIMIT` and `count(*)` work). A NULL element is skipped; a NULL or empty array matches no rows. A list with no
   score or order that is estimated above 100,000 rows (after a `LIMIT`) is left to the bitmap scan, which was as fast or faster there
   on a 1,000,000-row table ([docs/results/any-array.tsv](results/any-array.tsv)).
-- **`FOR UPDATE`, `UPDATE`, `DELETE`, `MERGE`**: matching works through a bitmap scan; `sift.score()` in those statements is an error
-  (rank in a `SELECT` and change the rows by key).
+- **`FOR UPDATE`, `UPDATE`, `DELETE`, `MERGE`**: matching works through a bitmap scan; `sift.score()` read straight from a table those statements
+  join is an error; a subquery or `WITH` query that reads it is planned apart (rank there and change the rows by key).
 - **Indexes beyond 2^31 blocks (16 TB).** The orphan sweep and `sift.verify` collect block numbers in PostgreSQL `Bitmapset`s, which stop at
   2^31 members: an index larger than that is untested and unsupported (the format itself allows 32 TB).

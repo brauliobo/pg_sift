@@ -11,6 +11,8 @@
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/scan_unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
+/* A superunit (sift_col_super): its segment and the index of its group there; false for any other unit */
+extern bool sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k);
 
 /*
  * May the pre-aggregates of this unit stand for the rows a query without filters sees: the unit is stored, has no dead row and every page it
@@ -18,6 +20,12 @@ extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, 
  * exactly the rows of the unit; a predicate on top is the consumer's (zone cover test, docs/COL-PREAGG.md section 4).
  */
 extern bool sift_col_unit_preagg_ok(const SiftColUnit *unit);
+
+/*
+ * The key presence of leaf col in a stored unit that is exact (col/setsum.h, kind PRES): the key of bit 0 divided by 64, the words and their number, valid
+ * until the next call on the segment. false for a superunit, a unit that is not exact or has no presence for the leaf.
+ */
+extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
 
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);

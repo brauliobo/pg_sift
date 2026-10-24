@@ -32,12 +32,21 @@ ctest_range(SiftCTest *t, int64 lo, int64 hi)
 static void
 ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 {
-	uint32		m = 0;
+	uint32		m = 0,
+				asc = 1;
 
-	qsort(keys, n, sizeof(int64), sift_cmp_i64);
-	for (uint32 i = 0; i < n; i++)
-		if (m == 0 || keys[m - 1] != keys[i])
-			keys[m++] = keys[i];
+	/* the keys of a set the executor made arrive ascending, at every begin of a range of units: not sorted again */
+	while (asc < n && keys[asc - 1] < keys[asc])
+		asc++;
+	if (asc < n)
+	{
+		qsort(keys, n, sizeof(int64), sift_cmp_i64);
+		for (uint32 i = 0; i < n; i++)
+			if (m == 0 || keys[m - 1] != keys[i])
+				keys[m++] = keys[i];
+	}
+	else
+		m = n;
 	if (m == 0)
 		t->kind = negate ? SIFT_CT_NONNULL : SIFT_CT_NONE;
 	else if (m == 1)
@@ -117,34 +126,7 @@ ctest_make_num(const SiftColDef *def, const SiftColPred *p, SiftCTest *t)
 			}
 			break;
 		default:
-			elog(ERROR, "sift_col: operator %d is not defined on a numeric column", p->op);
-	}
-}
-
-/* Bytewise order of dictionary values (the C collation) */
-static int
-str_cmp(const char *a, uint32 alen, const char *b, uint32 blen)
-{
-	int			r = memcmp(a, b, Min(alen, blen));
-
-	return r != 0 ? r : (alen > blen) - (alen < blen);
-}
-
-static bool
-str_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c)
-{
-	switch (op)
-	{
-		case SIFT_COLOP_LT:
-			return str_cmp(s, len, c->v.s, c->len) < 0;
-		case SIFT_COLOP_LE:
-			return str_cmp(s, len, c->v.s, c->len) <= 0;
-		case SIFT_COLOP_GT:
-			return str_cmp(s, len, c->v.s, c->len) > 0;
-		case SIFT_COLOP_GE:
-			return str_cmp(s, len, c->v.s, c->len) >= 0;
-		default:					/* PREFIX */
-			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
+			SIFT_INVARIANT(false, "sift_col: operator %d is not defined on a numeric column", p->op);
 	}
 }
 
@@ -157,13 +139,13 @@ ctest_lut_finish(SiftCTest *t, uint64 *lut, uint32 ncodes)
 	t->kind = SIFT_CT_LUT;
 	t->lo = PG_INT64_MAX;
 	t->hi = PG_INT64_MIN;
-	for (uint32 c = 0; c < ncodes; c++)
-		if (sift_col_bit_test(lut, c))
+	for (uint32 w = 0; w < SIFT_COL_NWORDS(ncodes); w++)
+		if (lut[w])
 		{
-			count++;
-			t->lo = Min(t->lo, c);
-			t->hi = Max(t->hi, c);
-			t->fold[(c & 255) >> 6] |= UINT64CONST(1) << (c & 63);
+			count += pg_popcount64(lut[w]);
+			t->lo = Min(t->lo, (int64) w * 64 + pg_rightmost_one_pos64(lut[w]));
+			t->hi = Max(t->hi, (int64) w * 64 + pg_leftmost_one_pos64(lut[w]));
+			t->fold[w & 3] |= lut[w];		/* code & 255 is the bit of the word w & 3 */
 		}
 	t->fold_valid = true;
 	t->lut = lut;
@@ -177,14 +159,14 @@ ctest_lut_finish(SiftCTest *t, uint64 *lut, uint32 ncodes)
 static void
 ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 {
-	uint64	   *lut;
+	uint64	   *lut = NULL;
 	int64	   *codes = NULL;
 	uint32		nfound = 0;
 
-	if (dict == NULL)
-		elog(ERROR, "sift_col: a test on a text column needs its dictionary");
+	SIFT_INVARIANT(dict != NULL, "sift_col: a test on a text column needs its dictionary");
 	t->pred = p;
-	lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
+	if (p->op != SIFT_COLOP_EQ && p->op != SIFT_COLOP_NE)
+		lut = palloc0(SIFT_COL_NWORDS(dict->n) * sizeof(uint64));
 	switch (p->op)
 	{
 		case SIFT_COLOP_EQ:
@@ -207,20 +189,26 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 			}
 			if (t->kind == SIFT_CT_SET || t->kind == SIFT_CT_NSET)
 			{
-				/* several codes: the same answer as a LUT over the dictionary */
-				SiftCTest	set = *t;
+				/* several codes: the same answer as a LUT over the dictionary (the members, or all the others) */
+				bool		negate = t->kind == SIFT_CT_NSET;
 
 				memset(t, 0, sizeof(*t));
-				for (uint32 c = 0; c < dict->n; c++)
-					if (set_has(&set, c) != (set.kind == SIFT_CT_NSET))
-						lut[c >> 6] |= UINT64CONST(1) << (c & 63);
+				if (negate)
+				{
+					memset(lut, 0xff, dict->n / 64 * sizeof(uint64));
+					if (dict->n % 64)
+						lut[dict->n / 64] = (UINT64CONST(1) << (dict->n % 64)) - 1;
+				}
+				for (uint32 i = 0; i < nfound; i++)
+					if (negate)
+						lut[codes[i] >> 6] &= ~(UINT64CONST(1) << (codes[i] & 63));
+					else
+						lut[codes[i] >> 6] |= UINT64CONST(1) << (codes[i] & 63);
 				ctest_lut_finish(t, lut, dict->n);
 			}
 			return;
 		default:
-			for (uint32 c = 0; c < dict->n; c++)
-				if (str_matches(p->op, SIFT_COL_DICT_STR(dict, c), cdict_len(dict, c), &p->vals[0]))
-					lut[c >> 6] |= UINT64CONST(1) << (c & 63);
+			sift_cdict_match(dict, p->op, &p->vals[0], lut);
 			ctest_lut_finish(t, lut, dict->n);
 	}
 }
@@ -232,7 +220,7 @@ sift_ctest_make_strs(const SiftColPred *p, SiftCTest *t)
 	if (p->op == SIFT_COLOP_ISNULL || p->op == SIFT_COLOP_NOTNULL)
 		t->kind = p->op == SIFT_COLOP_ISNULL ? SIFT_CT_ISNULL : SIFT_CT_NOTNULL;
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
-		elog(ERROR, "sift_col: predicate without a constant");
+		SIFT_INVARIANT(false, "sift_col: predicate without a constant");
 	else if (p->nvals < 1)
 		t->kind = p->op == SIFT_COLOP_IN ? SIFT_CT_NONE : SIFT_CT_NONNULL;
 	else
@@ -249,7 +237,7 @@ sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, Si
 	else if (def->store == SIFT_COLS_VAR)
 		sift_ctest_make_strs(p, t);
 	else if (p->nvals < 1 && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN)
-		elog(ERROR, "sift_col: predicate without a constant");
+		SIFT_INVARIANT(false, "sift_col: predicate without a constant");
 	else if (def->store == SIFT_COLS_STR)
 		ctest_make_str(dict, p, t);
 	else
@@ -556,7 +544,7 @@ strs_match(SiftColOp op, const SiftColPred *p, const char *s, uint32 len)
 					return true;
 			return false;
 		default:
-			return str_matches(op, s, len, &p->vals[0]);
+			return sift_cstr_matches(op, s, len, &p->vals[0]);
 	}
 }
 

@@ -27,6 +27,8 @@
 #include "agg/sel.h"
 #include "agg/wide.h"
 #include "core/popcount.h"
+#include "core/store.h"
+#include "core/visibility.h"
 #include "col/col.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -74,7 +76,7 @@ leaf_vtype(const SiftColDef *def)
 		case SIFT_COLS_STR:
 			return SCV_CODE;
 		default:
-			elog(ERROR, "sift: leaf of storage %d has no column vector type", def->store);
+			SIFT_INVARIANT(false, "sift: leaf of storage %d has no column vector type", def->store);
 	}
 	return SCV_I32;
 }
@@ -100,8 +102,7 @@ path_below(const char *path, const char *att)
 
 	if (*path == '\0')
 		return NIL;
-	if (strncmp(path, att, alen) != 0)
-		elog(ERROR, "sift: leaf path \"%s\" does not start with its attribute \"%s\"", path, att);
+	SIFT_INVARIANT(strncmp(path, att, alen) == 0, "sift: leaf path \"%s\" does not start with its attribute \"%s\"", path, att);
 	initStringInfo(&key);
 	while (*p)
 	{
@@ -212,12 +213,18 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 
 		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
 		st->ovf_units[i] = st->ovf[i] ? Max(ls[i].novf, 1.0) / Max(ls[i].nunits, 1.0) : 0;
+		st->ovf_frac[i] = ls[i].ovf_vals > 0 ? ls[i].ovf_slots / ls[i].ovf_vals : -1;
 		st->nokinds[i] = ls[i].nokinds;
 		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
 		if (def->kind == SIFT_COLK_GROUP)
 		{
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
+		}
+		if (ls[i].set_units > 0)
+		{
+			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
+			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
 		st->ndistinct[i] = nonnull;
 		if (def->store == SIFT_COLS_STR && !ls[i].inl)
@@ -229,14 +236,16 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->max[i] = (double) ls[i].max;
 			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / ((double) ls[i].max - (double) ls[i].min + 1.0), 1.0);
 		}
-	}
+	}	/* an element that overflowed has its row read again: the share of rows is the elements' times those of a row */
+	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (cols[i].parent >= 0 && st->ovf_frac[i] > 0)
+			st->ovf_frac[i] = Min(1.0, st->ovf_frac[i] * Max(st->elems_per_row[cols[i].parent], 1.0));
 }
 
 /* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide */
 static const SiftSrcZones *
-col_zones(Relation index, const SiftColIndexMeta *meta)
+col_zones(const SiftColZones *zs, const SiftColIndexMeta *meta)
 {
-	const SiftColZones *zs = sift_col_zones(index);
 	SiftSrcZones *z;
 
 	if (zs->n == 0 || meta->stats.nunits <= 0)
@@ -256,7 +265,8 @@ col_zones(Relation index, const SiftColIndexMeta *meta)
 static void
 col_stats(Relation index, SiftSrcStats *st)
 {
-	SiftColIndexMeta *meta = sift_col_index_meta(index);
+	SiftColLeafMemo memo;
+	SiftColIndexMeta *meta = sift_col_index_meta(index, &memo);
 	bool		wovf[SIFT_COLSRC_MAX_LEAVES],
 				wjnull[SIFT_COLSRC_MAX_LEAVES];
 
@@ -271,8 +281,28 @@ col_stats(Relation index, SiftSrcStats *st)
 		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
 		wjnull[i] = (meta->stats.wbuf_jnull & SIFT_COL_OVF_BIT(i)) != 0;
 	}
-	sift_colsrc_leaf_stats(meta->cols, meta->ncols, sift_col_leaf_stats(index), wovf, wjnull, st);
-	st->zones = col_zones(index, meta);
+	sift_colsrc_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
+	st->zones = col_zones(memo.zones, meta);
+	st->rows_miss = memo.pre->units > 0 ? 1.0 - Min(memo.pre->rows / memo.pre->units, 1.0) : 0.0;
+	for (int i = 0; memo.pre->units > 0 && i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
+	{
+		st->dim_miss[i] = 1.0 - Min(memo.pre->dim[i] / memo.pre->units, 1.0);
+		st->mm_miss[i] = 1.0 - Min(memo.pre->mm[i] / memo.pre->units, 1.0);
+		st->roll_miss[i] = 1.0 - Min(memo.pre->roll[i] / memo.pre->units, 1.0);
+	}
+}
+
+static void
+col_stamp(Relation index, SiftSrcStamp *st)
+{
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+
+	st->file = index->rd_locator.relNumber;
+	st->options = sift_col_pagg_hash(index);
+	st->version = sift_dir_version(index);
+	st->pages = RelationGetNumberOfBlocks(heap);
+	st->visible = sift_vis_count_allvisible(heap, st->pages);
+	table_close(heap, AccessShareLock);
 }
 
 static void *
@@ -290,10 +320,11 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
 	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
+	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
 	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
 	src->ugen = 1;
-	sift_aggsel_init(&src->sel, mcxt);
+	sift_aggsel_init(&src->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
@@ -309,7 +340,7 @@ col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
@@ -366,6 +397,43 @@ zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftCol
 	}
 }
 
+/* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
+static bool
+zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z)
+{
+	if (p[0].col != z->leaf || p[0].vals[0].v.i != z->lo)
+		return false;
+	if (z->nvals == 0)
+		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
+	if (p[1].op != SIFT_COLOP_IN || p[1].nvals != z->nvals)
+		return false;
+	for (int i = 0; i < z->nvals; i++)
+		if (p[1].vals[i].v.i != z->vals[i])
+			return false;
+	return true;
+}
+
+/*
+ * The zone tests of the entries that are no junction, into src->zpred. A begin comes for every range of units a worker takes, and a set of many values
+ * is converted to column values and copied for each: the tests of the last begin stay while the entries hold the same ranges and values.
+ */
+static void
+zone_tests(ColSource *src, const SiftSrcPrune *prune, int nprune)
+{
+	int			n = 0;
+
+	if (src->zpred == NULL)
+		src->zpred = MemoryContextAllocZero(src->cxt, 2 * SIFT_COLSRC_MAX_LEAVES * sizeof(SiftColPred));
+	for (int k = 0; k < nprune; k++)
+		if (prune[k].nkids == 0)
+		{
+			if (n >= src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
+				zone_preds(src->cxt, &prune[k], MemoryContextAllocZero(src->cxt, 2 * sizeof(SiftColValue)), &src->zpred[n]);
+			n += 2;
+		}
+	src->nzpred = n;
+}
+
 /* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin) */
 static SiftColPrune
 zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
@@ -387,16 +455,14 @@ zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
 	return c;
 }
 
-static void
-col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
-{
-	ColSource  *src = impl;
-	SiftColValue vals[2 * SIFT_COLSRC_MAX_LEAVES] = {{{0}}};
-	SiftColPred	preds[2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE];
-	int			n = 0;
+#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
 
-	if (src->rck)
-		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
+/* The predicates a begin over the prune entries tests (the zone trees and the tests behind them are made once for the entries) */
+static int
+col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
+{
+	int			n;
+
 	if (src->zfor != prune)
 	{
 		src->zfor = prune;
@@ -406,12 +472,9 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 			if (prune[k].nkids > 0)
 				src->zone[src->nzone++] = zone_tree(src->cxt, &prune[k]);
 	}
-	for (int k = 0; k < nprune; k++)
-		if (prune[k].nkids == 0)
-		{
-			zone_preds(src->cxt, &prune[k], &vals[n], &preds[n]);
-			n += 2;
-		}
+	zone_tests(src, prune, nprune);
+	memcpy(preds, src->zpred, src->nzpred * sizeof(SiftColPred));
+	n = src->nzpred;
 	for (int i = 0; i < src->nspred; i++)
 		preds[n++] = src->spred[i];
 	for (int i = 0; i < src->nflt; i++)
@@ -419,7 +482,30 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	for (int i = 0; i < src->nwtest; i++)
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			preds[n++] = src->wtest[i].pred;
+	return n;
+}
+
+static void
+col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+{
+	ColSource  *src = impl;
+	SiftColPred	preds[COL_PREDS_MAX];
+	int			n;
+
+	if (src->rck)
+		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
+	n = col_preds(src, prune, nprune, preds);
 	sift_col_begin_zones(src->cs, preds, n, src->zone, src->nzone, sb_lo, sb_hi);
+}
+
+static bool
+col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
+{
+	ColSource  *src = impl;
+	SiftColPred	preds[COL_PREDS_MAX];
+	int			n = col_preds(src, prune, nprune, preds);
+
+	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept);
 }
 
 static bool
@@ -428,6 +514,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 	ColSource  *src = impl;
 	uint32		nrow;
 
+	src->sel.compact = false;
 	if (src->rck)
 	{
 		bool		again = src->rck->taken && recheck_pending(src);
@@ -446,8 +533,43 @@ col_next(void *impl, SiftSrcUnit *unit)
 	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
 	unit->nrow = nrow;
+	unit->nsu = src->unit.nsu;
 	unit->priv = src;
 	return true;
+}
+
+/* The rows of bits are few: the unit goes on as them alone. Not the unit of rows read again from the heap, which has no stored numbering to go back to. */
+static bool
+col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
+{
+	ColSource  *src = impl;
+	uint32		nrow;
+
+	if (src->sel.compact || (src->rck && src->rck->active))
+		return false;
+	sift_aggsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
+	unit->nrow = nrow;
+	return true;
+}
+
+static void
+col_super(void *impl, bool on)
+{
+	sift_col_super(((ColSource *) impl)->cs, on);
+}
+
+static uint32
+col_super_span(void *impl)
+{
+	return sift_col_super_span(((ColSource *) impl)->cs);
+}
+
+static void
+col_split(void *impl, const SiftSrcUnit *unit)
+{
+	ColSource  *src = impl;
+
+	sift_col_unit_split(src->cs, &src->unit);
 }
 
 static void
@@ -462,7 +584,7 @@ col_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPoi
 {
 	ColSource  *src = impl;
 
-	if (src->sel.keep && src->sel.compact)
+	if (src->sel.compact)
 	{
 		uint32	   *ords = palloc(Max(n, 1) * sizeof(uint32));
 
@@ -494,13 +616,31 @@ col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 	return n;
 }
 
+/* the stored numbering: not a unit of a match set, of rows read again from the heap, or narrowed to a few rows */
+static bool
+col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	ColSource  *src = impl;
+
+	
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows)
+		return false;
+	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
+}
+
+static void
+col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
+{
+	sift_col_run_read(&((ColSource *) impl)->unit, leaf, pos, cnt, rows);
+}
+
 bool
 col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	SiftColZone cz;
 
-	if (((ColSource *) impl)->lay->leaf[leaf].wide)
-		return false;				/* a NaN is a dictionary entry */
+	if (col_wide(impl, leaf) || ((ColSource *) impl)->unit.nsu > 0)
+		return false;				/* a NaN is a dictionary entry; a superunit holds no overflow value */
 	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
 	return cz.has_ovf;
 }
@@ -535,7 +675,18 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim), NULL, h);
+	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, h);
+}
+
+static bool
+col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	SiftCPresence c;
+
+	if (!sift_col_unit_presence(&((ColSource *) impl)->unit, leaf, &c))
+		return false;
+	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
+	return true;
 }
 
 /* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */
@@ -545,7 +696,7 @@ col_gpu_unit(void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
 {
 	SiftColGpuUnit cg;
 
-	if (((ColSource *) impl)->sel.keep || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
+	if (((ColSource *) impl)->sel.keep || ((ColSource *) impl)->sel.compact || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
 		return false;
 	*g = (SiftSrcGpuUnit) {cg.store, cg.gen, cg.unit, cg.nrows};
 	return true;
@@ -648,6 +799,7 @@ static const SiftSrcProvider col_provider = {
 	.owns_table = col_owns_table,
 	.layout = col_layout,
 	.stats = col_stats,
+	.stamp = col_stamp,
 	.open = col_open,
 	.open_part = col_open_part,
 	.close = col_close,
@@ -655,7 +807,11 @@ static const SiftSrcProvider col_provider = {
 	.source_layout = col_source_layout,
 	.nsb = col_nsb,
 	.begin = col_begin,
+	.kept = col_kept,
 	.next = col_next,
+	.super = col_super,
+	.split = col_split,
+	.super_span = col_super_span,
 	.read = col_read,
 	.live = col_live,
 	.vet = col_vet,
@@ -668,12 +824,16 @@ static const SiftSrcProvider col_provider = {
 	.zone = col_zone,
 	.zone_range = col_zone_range,
 	.overflow = col_overflow,
+	.run_info = col_run_info,
+	.run_read = col_run_read,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
 	.read_sel = col_read_sel,
+	.narrow = col_narrow,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
+	.set_raw = col_set_raw,
 	.set_recheck = col_set_recheck,
 	.overflow_raise = col_overflow_raise,
 	.recheck_rows = col_recheck_rows,
@@ -687,6 +847,7 @@ static const SiftSrcProvider col_provider = {
 	.unit_exact = col_unit_exact,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
+	.unit_presence = col_unit_presence,
 	.gpu_unit = col_gpu_unit,
 	.gpu_dense = col_gpu_dense,
 	.gpu_chunk = col_gpu_chunk,

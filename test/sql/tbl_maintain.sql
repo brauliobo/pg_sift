@@ -2,6 +2,8 @@
 -- maintained keeps every row and answer, drops the dead rows from its segments and gives the space back like the table that is vacuumed,
 -- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
 CREATE EXTENSION pg_sift;
+-- the shipped default is on (the test clusters run with it off, as without autovacuum: a pass changes the layouts the tests count)
+SELECT boot_val AS shipped_default FROM pg_settings WHERE name = 'sift.table_auto_defrag';
 SET sift.table_auto_defrag = off;
 CREATE TABLE mt (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE mv (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);
@@ -42,7 +44,10 @@ RESET enable_bitmapscan;
 SELECT busy, dead_rows, merged FROM sift.table_maintain('mt');
 
 -- the index still holds an entry for each dead row (read: returned by the index, fetched: found live), which a VACUUM after it removes
--- and so ends at the size of the VACUUM alone
+-- and so ends at the size of the VACUUM alone. The counts of the scans above are flushed first: the backend flushes its pending counts when it
+-- goes idle more than a second after the last flush, so whether the reset below drops them or the flush after the scan adds them depends on the
+-- speed of the run. The 1961 entries of ids 100 to 5000 are not counted: that scan marked them dead (LP_DEAD) and the next one skips them
+SELECT pg_stat_force_next_flush();
 BEGIN;
 SET LOCAL enable_seqscan = off;
 SET LOCAL enable_bitmapscan = off;

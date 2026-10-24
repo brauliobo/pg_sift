@@ -1,6 +1,7 @@
 # Logical replication of a sift_table. shared_preload_libraries is needed only to publish one (the custom resource manager of
-# its change records can only be registered at preload time): an unpublished table works without it, a published one fails
-# with 0A000 and an actionable hint, and with pg_sift preloaded its inserts, updates and deletes reach the subscriber.
+# its change records can only be registered at preload time): an unpublished table works without it, CREATE and ALTER PUBLICATION
+# of one fail with 0A000 and an actionable hint (and so does the first DML of a publication the trigger did not see), and with
+# pg_sift preloaded its inserts, updates and deletes reach the subscriber.
 use strict;
 use warnings FATAL => 'all';
 use FindBin;
@@ -29,8 +30,34 @@ subtest 'without preload an unpublished table works under wal_level = logical' =
 	is($plain->safe_psql('postgres', 'SELECT count(*) FROM orders'), 1, 'DML and TRUNCATE work');
 };
 
+subtest 'without preload CREATE and ALTER PUBLICATION of a sift_table raise 0A000 with the way out' => sub {
+	my %refused = (
+		'CREATE PUBLICATION pub FOR TABLE orders' => 'a table',
+		'CREATE PUBLICATION pub FOR ALL TABLES' => 'all tables',
+		'CREATE PUBLICATION pub FOR TABLES IN SCHEMA public' => 'a schema',
+	);
+	for my $ddl (sort keys %refused)
+	{
+		my ($ret, $out, $err) = $plain->psql('postgres', $ddl, extra_params => [ '-v', 'VERBOSITY=verbose' ]);
+		isnt($ret, 0, "$refused{$ddl} fails");
+		like($err, qr/ERROR:  0A000: sift_table table "public\.orders" is published/, 'SQLSTATE 0A000, names the table');
+		like($err, qr/shared_preload_libraries/, 'names the setting');
+		like($err, qr/heap staging table/, 'offers the staging table');
+	}
+	is($plain->safe_psql('postgres', 'SELECT count(*) FROM pg_publication'), 0, 'no publication was left behind');
+	$plain->safe_psql('postgres', 'CREATE TABLE staging (id int PRIMARY KEY); CREATE PUBLICATION pub_heap FOR TABLE staging');
+	my ($ret, $out, $err) = $plain->psql('postgres', 'ALTER PUBLICATION pub_heap ADD TABLE orders', extra_params => [ '-v', 'VERBOSITY=verbose' ]);
+	isnt($ret, 0, 'adding the sift_table to a heap publication fails');
+	like($err, qr/ERROR:  0A000: sift_table table "public\.orders" is published/, 'with the same error');
+	is($plain->safe_psql('postgres', "SELECT count(*) FROM pg_publication_rel WHERE prrelid = 'orders'::regclass"), 0, 'the table was not added');
+	$plain->safe_psql('postgres', 'DROP PUBLICATION pub_heap; DROP TABLE staging');
+};
+
 subtest 'without preload a published table raises 0A000 with the way out' => sub {
+	# a publication the trigger did not see (it was made before the trigger, or while it was off): the first DML is the last resort
+	$plain->safe_psql('postgres', 'ALTER EVENT TRIGGER sift_publication_check DISABLE');
 	$plain->safe_psql('postgres', 'CREATE PUBLICATION pub FOR TABLE orders');
+	$plain->safe_psql('postgres', 'ALTER EVENT TRIGGER sift_publication_check ENABLE');
 	for my $dml ("INSERT INTO orders VALUES (2, 's', 2, 'x')", "UPDATE orders SET note = 'y' WHERE id = 1", "DELETE FROM orders WHERE id = 1")
 	{
 		my ($ret, $out, $err) = $plain->psql('postgres', $dml, extra_params => [ '-v', 'VERBOSITY=verbose' ]);

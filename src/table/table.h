@@ -51,7 +51,10 @@
 #define SIFT_TBL_MAX_OFF		MaxHeapTuplesPerPage
 #define SIFT_TBL_MAX_WBUF_PAGES 1024
 #define SIFT_TBL_VBLOCKS_SB		SIFT_SB_PAGES
-#define SIFT_TBL_TOMB_LOCK_BLKNO 3	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them */
+#define SIFT_TBL_TOMB_LOCK_BLKNO 4	/* LockPage target: appenders share, the tombstone rewrite of VACUUM excludes them. Not SIFT_WORKER_LOCK_BLKNO: a worker holds that one for a whole pass, and every delete would wait for it */
+StaticAssertDecl(SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_WORKER_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_ACTIVE_LOCK_BLKNO &&
+				 SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_MAINT_LOCK_BLKNO && SIFT_TBL_TOMB_LOCK_BLKNO != SIFT_DIRECTORY_BLKNO,
+				 "the lock targets of a relation are distinct");
 #define SIFT_TBL_ROW_MAX_INLINE	(BLCKSZ / 2)	/* a row above this goes to overflow pages */
 
 /* The next vblock to hand out: the field a table has no other use for (col-core: SIFT_COL_META_NEXT_VBLOCK) */
@@ -88,6 +91,7 @@ typedef struct SiftTblPageHdr
 
 #define SIFT_TBL_PAGE_SEALED	0x0001	/* = SIFT_WBUFPAGE_SEALED: set on every page when the segment is sealed (sift_lane_flag_sealed_pages) */
 #define SIFT_TBL_PAGE_OVFDATA	0x0100	/* continuation bytes of an overflow row, no slots */
+#define SIFT_TBL_PAGE_TAIL		0x0200	/* an OVFDATA page the write buffer's page table does not list (no vblock): the bytes of a row too wide for the table of its buffer */
 
 #define TBL_PAGE(page)	((SiftTblPageHdr *) SiftPageGetData(page))
 #define TBL_PAGE_INIT	MAXALIGN(sizeof(SiftTblPageHdr))
@@ -181,6 +185,8 @@ typedef struct SiftTblRel
 	uint64		tomb_synced;
 	BlockNumber tomb_last;
 	uint32		tomb_lastcnt;
+	uint32		tomb_seqbase;	/* the entries of the logs read before the current one, which only follows them (tomb_follow) */
+	bool		tomb_followed;
 	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
 	uint32		nents;
 	uint32		capents;
@@ -200,9 +206,11 @@ typedef struct SiftTblRel
 	Relation	curvers_rel;
 	MemoryContext curvers_cxt;
 	bool		fresh;			/* the new table of a rewrite: nobody else reads it, its released extents are reusable at once */
-	/* what this backend saw when it last asked for the background pass (sift_tbl_auto_defrag_check) */
+	/* what this backend saw when it last asked for the background pass (auto_defrag_check), and when it last looked (sift_tbl_auto_defrag_tick) */
 	uint64		defrag_tombs;
 	int64		defrag_free;
+	int64		defrag_at;
+	uint64		defrag_vblock;	/* the next virtual block then: a write buffer opened since is a writer that reuses the free blocks */
 } SiftTblRel;
 
 /* The cache of rel (created on first use); ReadBuffer-level state is not held */
@@ -274,10 +282,13 @@ extern SiftTblVerState sift_tbl_ver_state(Relation rel, Snapshot snapshot, const
 
 /* The record of TID offset off in a write buffer page (locked or a copy); NULL when there is none */
 extern const SiftTblRec *sift_tbl_page_rec(Page page, uint64 gen, uint32 off);
+/* The bytes of an overflow row that a continuation page of write buffer gen holds; a page that is none, or holds no bytes, is corruption */
+extern uint32 sift_tbl_ovf_piece(Page page, uint64 gen);
 /* The row of a record as a HeapTuple (an overflow row is read from its pages); t_self/t_tableOid are the caller's */
 extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key);
 extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
 extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
+extern bool sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber vblock, Page copy, uint64 *gen, bool *held);
 extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
 /* The version header of a write buffer record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
@@ -312,6 +323,7 @@ extern Buffer sift_tbl_lock_page(Relation rel, const SiftTblSeg *seg, uint32 idx
 
 /* Tombstones */
 extern void sift_tbl_tomb_sync(Relation rel, SiftTblRel *st);
+extern uint64 sift_tbl_tomb_entries(Relation rel, SiftTblRel *st);
 extern void sift_tbl_tomb_append(Relation rel, SiftTblRel *st, uint64 key, TransactionId xid, CommandId cid,
 								 SiftTblTombKind kind, uint64 succ);
 /*
@@ -411,6 +423,8 @@ typedef enum SiftTblOp
 extern void sift_tbl_init(void);
 /* True when changes to rel must be logged for decoding; 0A000 when they must but pg_sift is not preloaded */
 extern bool sift_tbl_check_publication(Relation rel);
+/* Is the table published for logical decoding (wal_level = logical): the same test without the error for a missing resource manager */
+extern bool sift_tbl_published(Relation rel);
 /* newrow: the row after the change (NULL for DELETE); old: the row before it (NULL for INSERT), reduced to its replica identity */
 extern void sift_tbl_log_change(Relation rel, SiftTblOp op, MinimalTuple newrow, HeapTuple old);
 
@@ -498,8 +512,12 @@ extern void sift_tbl_src_register(void);
  * waiting unless vacuum).
  */
 extern int	sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum);
-/* A writer closed a write buffer: promotes, freezes the groups whose rows are final and merges while the directory is more than half full */
-extern void sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait);
+/* A writer closed a write buffer: promotes, freezes the groups whose rows are final and merges (steps at most) while the directory is more
+ * than half full; returns the write buffers promoted. A close takes SIFT_TBL_SETTLE_STEPS, a writer held back by sift.table_backpressure
+ * SIFT_TBL_ROOM_STEPS. */
+extern int	sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, int steps);
+#define SIFT_TBL_SETTLE_STEPS	4
+#define SIFT_TBL_ROOM_STEPS		16
 /* Clears the unfrozen flag of the groups whose live rows all committed before oldest; the maintenance lock held. The groups changed. */
 extern int	sift_tbl_freeze_groups(Relation rel, SiftTblRel *st, TransactionId oldest);
 
@@ -521,8 +539,8 @@ extern void sift_tbl_aborted_runs(Relation rel, SiftTblRel *st, SiftTblKeyRuns *
 extern int	sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st);
 /* The rows of the groups that count as live for the statistics: not those of a writer that is still running or aborted */
 extern double sift_tbl_group_live_rows(Relation rel, SiftTblRel *st);
-/* One merge step over the column segments (the maintenance lock held); true when it merged. Rows that committed before oldest become frozen. Segments of another column layout are left alone. */
-extern bool sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest);
+/* One merge step over the column segments (the maintenance lock held); the bytes of the segments it merged, 0 when it did nothing. Rows that committed before oldest become frozen. Segments of another column layout are left alone. */
+extern uint64 sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest);
 /* Clears the liveness of the group rows cb reports dead (VACUUM); only segments of the superblocks in [sb_lo, sb_hi] */
 extern int64 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi);
 
@@ -530,9 +548,29 @@ extern PGDLLIMPORT int sift_tbl_write_buffer_limit;
 extern PGDLLIMPORT int sift_tbl_max_segments;
 extern PGDLLIMPORT int sift_tbl_vblock_floor;
 extern PGDLLIMPORT int sift_tbl_init_gate;
-extern PGDLLIMPORT bool sift_tbl_inline_promote;
-extern PGDLLIMPORT char *sift_tbl_compression_spec;
 extern PGDLLIMPORT int sift_tbl_seal_gate;
+#ifdef SIFT_TESTING
+/* Test only: waits for the advisory lock of this number to be free (0 = no gate), so that a test holds a window open */
+extern void sift_tbl_gate(int number);
+#else
+#define sift_tbl_gate(number)	((void) 0)
+#endif
+extern PGDLLIMPORT bool sift_tbl_inline_promote;
+extern PGDLLIMPORT bool sift_tbl_wide_rows;
+extern PGDLLIMPORT int sift_tbl_backpressure;
+extern PGDLLIMPORT char *sift_tbl_compression_spec;
+
+/* Why the bulk load of rel (COPY, CREATE TABLE AS, REFRESH MATERIALIZED VIEW) keeps the write buffers; NULL when its rows may be written straight into groups */
+extern const char *sift_tbl_bulk_refusal(Relation rel);
+/*
+ * sift.table_bulk_groups: the rows of a load are encoded into column groups instead of write buffer pages (table/load.c). wanted: does the load
+ * of rel qualify (decided once per load, and kept until it ends); row: encodes mtup under the next TID of the load, which it returns in tid;
+ * finish: writes the rows that wait (the end of the command; the end of the transaction is the last chance). frozen: rows with no writer.
+ */
+extern PGDLLIMPORT bool sift_tbl_bulk_groups;
+extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
+extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, MinimalTuple mtup, CommandId cid, ItemPointer tid);
+extern void sift_tbl_load_finish(Relation rel);
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */
 extern void sift_tbl_define_gucs(void);
@@ -554,14 +592,14 @@ extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 /* The default of sift.table_dead_rewrite_pct: segments kept up to a third dead hold the file near 1.4 times its live size */
 #define SIFT_TBL_DEAD_PCT	30
 
-/* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone */
-extern bool sift_tbl_mostly_dead(Relation rel, const SiftSegEntry *e);
+/* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone, the most dead first */
 extern PGDLLIMPORT int sift_tbl_dead_rewrite_pct;
+extern PGDLLIMPORT bool sift_tbl_coalesce;
 
 /*
  * Space maintenance without VACUUM (table/vacuum.c, docs/COL-TAM.md section 7): sift_tbl_maintain is VACUUM's work on the column segments
  * and the file minus what needs the indexes (their cleanup, and so the tombstone rewrite). The background pass is requested by the backend
- * that closes a write buffer when sift_tbl_auto_defrag_check finds the table worth it.
+ * that closes a write buffer, deletes or reads when sift_tbl_auto_defrag_tick finds the table worth it.
  */
 typedef struct SiftTblMaintain
 {
@@ -575,12 +613,21 @@ typedef struct SiftTblMaintain
 
 /* The caller holds ShareUpdateExclusiveLock on rel. background: a worker (throttled, short exclusive window); clear: also clears the dead rows */
 extern void sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r);
-extern void sift_tbl_auto_defrag_check(Relation rel, SiftTblRel *st);
+/* Asks for the pass when the table is worth it; at most once per sift.maintenance_naptime of a backend. Called where rows are deleted and read as well as where a write buffer closes: a table of small writes may close none */
+extern void sift_tbl_auto_defrag_tick(Relation rel, SiftTblRel *st);
 extern PGDLLEXPORT void sift_tbl_maint_worker_main(Datum main_arg);
-extern PGDLLEXPORT void sift_tbl_maint_clear_worker_main(Datum main_arg);
+extern PGDLLEXPORT void sift_tbl_settle_worker_main(Datum main_arg);
+/* sift.table_async_promote: a writer that closed a write buffer asks the worker to settle it instead of doing it; false when it has to settle itself */
+extern bool sift_tbl_settle_async(Relation rel, SiftTblRel *st);
+extern PGDLLIMPORT bool sift_tbl_async_promote;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_dead_pct;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_max_active;
+extern PGDLLIMPORT int sift_tbl_auto_defrag_wal_rate;
+extern PGDLLIMPORT bool sift_tbl_auto_defrag_coalesce;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_indexes;
 
 #endif							/* SIFT_TABLE_H */

@@ -13,7 +13,7 @@ typedef struct Tup
 	uint32	   *sel;
 	uint32	   *tidx;
 	uint32	   *ridx;
-	uint32	   *cout[SIFT_AGG_MAX_COMBOS];
+	uint32	  **cout;			/* per combo of the spec */
 } Tup;
 
 #endif

@@ -7,7 +7,7 @@ SELECT i, i%3,
  jsonb_build_object('flag', CASE WHEN i%2=0 THEN false END,
   'entries', CASE WHEN i%2=0 THEN '[{"bucket":"x","value":2}]'::jsonb
                  ELSE '[{"bucket":"x","value":8},{"bucket":"x","value":10}]'::jsonb END,
-  'notes', CASE WHEN i%3=0 THEN '[{"kind":"reply"}]'::jsonb ELSE '[]'::jsonb END),
+  'notes', CASE WHEN i%3=0 THEN '[{"kind":"kind_a"}]'::jsonb ELSE '[]'::jsonb END),
  jsonb_build_object('p_total', i%10), repeat('payload',50)
 FROM generate_series(1,10000) i;
 CREATE INDEX events_col ON events USING sift_col(id,entity_id,document,metrics,jsonb_exists(document,'flag'))
@@ -59,14 +59,14 @@ $q$);
  t      | t        |           0
 (1 row)
 
--- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics. The outer-joined member keeps the normal plan before PostgreSQL 18 (columns: the plan is the pushed one from 18 on).
-SELECT pushed <> old AS pushed, eligible <> old AS eligible, differences FROM check_shape($q$
+-- Correlated UNION children read the member of an outer-joined jsonb_each through casts, with their native cast semantics.
+SELECT * FROM check_shape($q$
  SELECT category, count(DISTINCT f.id) AS ids,
- count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "reply")')) AS replies
+ count(DISTINCT f.id) FILTER(WHERE jsonb_path_exists(f.document,'$.notes[*] ? (@.kind == "kind_a")')) AS kind_a_n
  FROM events f LEFT JOIN LATERAL jsonb_each(f.metrics) r ON r.key='p_total'
  JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::int>6 THEN 'high' ELSE 'low' END) c ON true
  GROUP BY category
-$q$), (SELECT current_setting('server_version_num')::int < 180000 AS old) v;
+$q$);
  pushed | eligible | differences 
 --------+----------+-------------
  t      | t        |           0

@@ -25,7 +25,6 @@ typedef struct AgkCase
 	double	   *f64;
 	uint32	   *code;			/* < ncode */
 	uint64	   *mask;			/* n bits */
-	uint64	   *mask2;
 	int			ncode;
 	uint32	   *map;			/* ncode entries */
 	int32	   *v2;				/* around gbase, for lut_i32 */
@@ -46,10 +45,7 @@ typedef struct AgkCase
 	int			nrows;
 	uint64	   *rowmask;
 	uint32	   *parent;			/* n entries < nrows */
-	uint32		prev0;
 	double		cf,
-				lof,
-				hif,
 				cf2;
 	void	   *mem[AGK_MAXMEM];
 	int			nmem;
@@ -271,9 +267,7 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 	c->v2 = AGK_ARR(c, r, int32, n);
 	c->k32 = AGK_ARR(c, r, int32, n);
 	c->mask = AGK_ARR(c, r, uint64, c->nw);
-	c->mask2 = AGK_ARR(c, r, uint64, c->nw);
 	agk_gen_mask(r, c->mask, n);
-	agk_gen_mask(r, c->mask2, n);
 
 	c->ncode = agk_pick_size(r, 5000);
 	c->nlut = sift_rng_below(r, 4) == 0 ? sift_rng_below(r, 3) : agk_pick_size(r, 1000);
@@ -346,11 +340,8 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 				pmode == 1 ? (uint32) ((int64) e * c->nrows / Max(n, 1)) :
 				(e > 0 && sift_rng_below(r, 4) ? parent_step(r, c->parent[e - 1], c->nrows) : sift_rng_below(r, c->nrows));
 	}
-	c->prev0 = sift_rng_below(r, 3) ? UINT32_MAX : sift_rng_below(r, c->ncode);
 
 	c->cf = agk_pick_f64(r, c->f64, n);
-	c->lof = agk_pick_f64(r, c->f64, n);
-	c->hif = agk_pick_f64(r, c->f64, n);
 	c->cf2 = agk_special(r);
 }
 
@@ -419,10 +410,6 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		BM("cmp_f64", k->cmp_f64(bm, c->f64, n, ops[o], c->cf));
 		BM("cmp_f64 special", k->cmp_f64(bm, c->f64, n, ops[o], c->cf2));
 	}
-	BM("between_f64", k->between_f64(bm, c->f64, n, c->lof, c->hif));
-	BM("between_f64 swapped", k->between_f64(bm, c->f64, n, c->hif, c->lof));
-	BM("between_f64 special lo", k->between_f64(bm, c->f64, n, c->cf2, c->hif));
-	BM("between_f64 special hi", k->between_f64(bm, c->f64, n, c->lof, c->cf2));
 	BM("lut_i32", k->lut_i32(bm, c->v2, n, c->gbase, c->nlut, c->lut2));
 	BM("gather_bits", k->gather_bits(bm, c->rowmask, c->parent, n));
 
@@ -448,8 +435,6 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 
 		AGK_HV(res, k->sum_i32(c->i32, mm, n));
 		agk_step(res, "sum_i32");
-		AGK_HV(res, k->sum_f64(c->f64, mm, n));
-		agk_step(res, "sum_f64");
 		{
 			double		amx = 1.5;
 			bool		fin = k->absmax_f64(c->f64, mm, n, &amx);
@@ -492,21 +477,14 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		agk_step(res, "sum_gid_i32");
 		memcpy(facc, c->facc0, (size_t) c->ngrp * 8);
 		k->sum_gid_f64(facc, c->gid, c->f64, mm, n);
+		/* the NaN of inf - inf is negative on x86-64 and positive on AArch64, and a payload follows the operand order: a sum compares as NaN, and the pinned digests must not depend on the CPU */
+		for (int g = 0; g < c->ngrp; g++)
+			facc[g] = facc[g] != facc[g] ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : facc[g];
 		agk_hash(res, facc, (size_t) c->ngrp * 8);
 		agk_step(res, "sum_gid_f64");
 		AGK_FREE(cnt);
 		AGK_FREE(iacc);
 		AGK_FREE(facc);
-
-		{
-			uint32		prev = c->prev0;
-
-			AGK_HV(res, k->count_changes(c->code, mm, n, &prev));
-			AGK_HV(res, prev);
-			AGK_HV(res, k->count_changes(c->code, c->mask2, n, &prev));
-			AGK_HV(res, prev);
-			agk_step(res, "count_changes");
-		}
 	}
 #undef BM
 	AGK_FREE(bm);

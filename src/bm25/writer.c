@@ -205,16 +205,15 @@ flush_sb(SiftSegmentWriter *w)
 void
 sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n)
 {
-	if (w->pw)
-		elog(ERROR, "sift: segment docs must be added before terms");
+	SIFT_INVARIANT(!w->pw, "sift: segment docs must be added before terms");
 	for (int i = 0; i < n; i++)
 	{
 		BlockNumber blk = sift_key_block(keys[i]);
 		uint32		off = keys[i] & 0xFFFF,
 					page = blk & (SIFT_SB_PAGES - 1);
 
-		if ((w->ndocs > 0 && keys[i] <= w->last) || off < 1 || off > MAXOFF)
-			elog(ERROR, "sift: segment doc (%u,%u) dl %u out of order or invalid", blk, off, dl[i]);
+		SIFT_INVARIANT(!((w->ndocs > 0 && keys[i] <= w->last) || off < 1 || off > MAXOFF), "sift: segment doc (%u,%u) dl %u out of order or invalid",
+					   blk, off, dl[i]);
 		if (sift_block_sb(blk) != w->sb)
 		{
 			flush_sb(w);
@@ -240,8 +239,7 @@ start_terms(SiftSegmentWriter *w)
 {
 	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
-	if (w->ndocs == 0)
-		elog(ERROR, "sift: segment terms without docs");
+	SIFT_INVARIANT(w->ndocs != 0, "sift: segment terms without docs");
 	flush_sb(w);
 	w->hdr.sb_hi = w->sb;
 	sw_pad4(w->sw);
@@ -266,8 +264,7 @@ sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len)
 {
 	if (w->pw == NULL)
 		start_terms(w);
-	if (len < 1 || len > SIFT_MAX_TERM_BYTES)
-		elog(ERROR, "sift: term of %d bytes", len);
+	SIFT_INVARIANT(len >= 1 && len <= SIFT_MAX_TERM_BYTES, "sift: term of %d bytes", len);
 	memcpy(w->term, term, len);
 	w->termlen = len;
 	return w->pw;

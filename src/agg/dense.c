@@ -173,6 +173,8 @@ dense_count(AggExec *ex, int64 *cnt, const uint64 *ok, const uint64 *mask, int n
 
 	if (ex->spec->nkeys == 0)
 		cnt[0] += sift_colk->bits_count(ok, nw);
+	else if (ex->hist == NULL && ok == mask)
+		ex->ncnt[ex->nncnt++] = cnt;		/* counted with seen at the end of the chunk */
 	else if (ex->hist == NULL)
 		sift_aggk->count_gid(cnt, ex->gid, ok, n);
 	else if (ok == mask)
@@ -264,10 +266,11 @@ dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 		return false;
 	ex->cstart = start;
 	ex->cn = n;
-	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	ex->n_tuples += cnt;
 	ex->n_dense++;
 	ex->hist = NULL;
+	ex->nncnt = 0;
 	if (ex->spec->nkeys == 0)
 		ex->seen[0] += cnt;
 	else if (ex->gcap <= n / 8)
@@ -286,8 +289,10 @@ dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 			ex->seen[g] += ex->hist[g];
 	}
 	else
-		sift_aggk->count_gid(ex->seen, ex->gid, mask, n);
+		ex->ncnt[ex->nncnt++] = ex->seen;
 	for (int i = 0; i < ex->spec->naggs; i++)
 		dense_update(ex, i, start, n, mask);
+	if (ex->nncnt > 0)
+		sift_aggk_count_gid_n(ex->ncnt, ex->nncnt, ex->gid, mask, n);
 	return true;
 }

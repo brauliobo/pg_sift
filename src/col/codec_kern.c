@@ -185,9 +185,30 @@ const SiftCcKernels sift_cc_kernels_scalar = {
 	.alp_f4 = alp_f4_scalar,
 };
 
+#if defined(SIFT_HAVE_NEON)
+const SiftCcKernels sift_cc_kernels_neon = {
+	.unpack32 = sift_cc_unpack32_neon,
+	.unpack_range32 = unpack_range32_scalar,
+	.prefix32 = prefix32_scalar,
+	.prefix64 = prefix64_scalar,
+	.max32 = max32_scalar,
+	.alp_keys_f8 = alp_keys_f8_scalar,
+	.alp_keys_f4 = alp_keys_f4_scalar,
+	.rle_expand32 = rle_expand32_scalar,
+	.scale32 = scale32_scalar,
+	.scale64 = scale64_scalar,
+	.alp_f8 = alp_f8_scalar,
+	.alp_f4 = alp_f4_scalar,
+};
+#endif
+
 const SiftCcKernels *
 sift_cc_kernels_for(SiftSimdLevel level)
 {
+#if defined(SIFT_HAVE_NEON)
+	if (level >= SIFT_SIMD_NEON && sift_cpu.detected >= SIFT_SIMD_NEON)
+		return &sift_cc_kernels_neon;
+#endif
 #if defined(__x86_64__)
 	if (level > sift_cpu.detected)
 		level = sift_cpu.detected;

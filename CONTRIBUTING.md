@@ -1,6 +1,6 @@
 # Contributing
 
-pg_sift needs PostgreSQL 17 or 18 (19 is experimental) with the server headers (`pg_config` on `PATH`) and gcc or clang.
+pg_sift needs PostgreSQL 17, 18 or 19 with the server headers (`pg_config` on `PATH`) and gcc or clang.
 
 ```sh
 make                                # builds pg_sift.so; PG_CONFIG=/path/to/pg_config picks another installation
@@ -10,7 +10,7 @@ scripts/ci.sh affected              # the same, only the jobs your diff against 
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
-`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) are Linux only.
+`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only. Where a host cannot run a stage it says so and skips it: the Perl TAP tests (Homebrew's PostgreSQL has no `src/test/perl`), the compatibility tests that build a release older than 3.2.0 (x86-64 only) and the benchmark generators (Python 3.12).
 
 `scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
 installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
@@ -49,6 +49,11 @@ ASan/UBSan and the TSan stress test) needs `cc`, `make`, the SQLite development 
 extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use no POPCNT or vector instruction, and `scripts/package-sqlite.sh`
 builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`)
 unmodified against the host implementation in `sqlite/host/`.
+
+**Errors say what to do.** An ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) carries an `errhint` or an `errdetail`; no ERROR is
+XX000: a condition the code rules out is `SIFT_INVARIANT(cond, "text")` (`core/host.h`, an `Assert` in an assert build), anything a user or the data can reach is an `ereport`
+with its own errcode (XX001/XX002 for damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the lint job and in `scripts/ci.sh`; a test-only hook
+outside a `*_test.c` file says `check-errors: allow` in a comment on the call.
 
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
 `src/core/host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `core/host.h` (documented at the top of that file) and, when

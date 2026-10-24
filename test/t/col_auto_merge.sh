@@ -6,9 +6,10 @@
 # lower bound set by the pages it writes); and with the maintenance lock held (a VACUUM stopped at its cleanup gate, a testing build) it is skipped while queries and inserts go on.
 . "$(dirname "$0")/lib.bash"
 
-plan 12
+plan 16
 node_init am 20 "autovacuum = off
-sift.log_min_duration = 0"
+sift.log_min_duration = 0
+sift.maintenance_naptime = 200"
 node_start am || bail "start failed"
 D=$(dir am)
 sql am "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
@@ -85,4 +86,19 @@ check "maintenance lock held: a query, an insert and an update are served" test 
 check "the VACUUM ended well and the rewrite is still due" test "$(grep -c ERROR "$D/vacuum")|$(due)" == "0|dirty units"
 sql am "SELECT sift.col_maintain('facts_idx')" >/dev/null
 check "afterwards the call rewrites it and the answers are the heap's" test "$(state)|$(groups on)" == "1 segments, 0 dirty, 0 buffered|$(groups off)"
+
+# 5. sift.col_auto_merge_max_active: with that many other backends running a statement the worker waits (it looks again after the naptime, twice as late
+# each time) and rewrites once they are done
+sql am "ALTER DATABASE postgres SET sift.col_auto_merge_max_active = 1" >/dev/null
+churn 5
+for i in 1 2; do sql am "SELECT pg_sleep(4)" >/dev/null & done
+sleep 0.5
+sql am "VACUUM facts" >/dev/null
+sleep 2
+check "busy (3 backends running a statement over 1): the worker waits" scattered
+check "the rewrite is still due" test "$(due)" == "dirty units"
+check "quiet again: the worker rewrote it, one clean segment" await_rewrite
+check "and the answers are the heap's" test "$(groups on)" == "$(groups off)"
+wait
+sql am "ALTER DATABASE postgres RESET sift.col_auto_merge_max_active" >/dev/null
 finish

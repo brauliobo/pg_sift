@@ -96,8 +96,7 @@ sift_par_attach(SiftPar *par)
 	SpinLockAcquire(&sh->mutex);
 	par->slot = sh->nattached++;
 	SpinLockRelease(&sh->mutex);
-	if (par->slot >= sh->nslots)
-		elog(ERROR, "sift: more parallel participants than planned");
+	SIFT_INVARIANT(par->slot < sh->nslots, "sift: more parallel participants than planned");
 }
 
 bool
@@ -128,8 +127,7 @@ sift_par_check_units(SiftPar *par, int64 nunit, uint64 sig)
 	}
 	same = sh->units_n == nunit && sh->units_sig == sig;
 	SpinLockRelease(&sh->mutex);
-	if (!same)
-		elog(ERROR, "sift: parallel participants bound different unit lists");
+	SIFT_INVARIANT(same, "sift: parallel participants bound different unit lists");
 }
 
 bool

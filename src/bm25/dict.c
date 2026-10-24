@@ -206,13 +206,11 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 	int			shared = 0;
 	bool		inl = (info->flags & SIFT_TERM_INLINE) != 0;
 
-	if (len < 1 || len > SIFT_MAX_TERM_BYTES ||
-		(w->prevlen >= 0 && sift_term_cmp(w->prev, w->prevlen, term, len) >= 0))
-		elog(ERROR, "sift: dictionary terms must be non-empty, at most %d bytes and strictly ascending",
-			 SIFT_MAX_TERM_BYTES);
-	if (!inl && info->post_off != ALIGN4(w->post_end))
-		elog(ERROR, "sift: term blob at %llu, expected %llu",
-			 (unsigned long long) info->post_off, (unsigned long long) ALIGN4(w->post_end));
+	SIFT_INVARIANT(len >= 1 && len <= SIFT_MAX_TERM_BYTES &&
+				   (w->prevlen < 0 || sift_term_cmp(w->prev, w->prevlen, term, len) < 0),
+				   "sift: dictionary terms must be non-empty, at most %d bytes and strictly ascending", SIFT_MAX_TERM_BYTES);
+	SIFT_INVARIANT(inl || info->post_off == ALIGN4(w->post_end), "sift: term blob at %llu, expected %llu",
+				   (unsigned long long) info->post_off, (unsigned long long) ALIGN4(w->post_end));
 	if (w->nblk == 0)
 	{
 		SiftDictIdx e = {prefix8(term, len), (uint32) w->dict_len, w->nslots};
@@ -220,7 +218,8 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 		if (w->dict_len > SIFT_DICT_MAX)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("sift: segment dictionary exceeds 4 GB")));
+					 errmsg("sift: segment dictionary exceeds 4 GB"),
+					 errhint("Partition the table so that each index holds fewer distinct terms.")));
 		if (w->nidx % SIFT_DICT_ROOT_FANOUT == 0)
 		{
 			if (w->nidx / SIFT_DICT_ROOT_FANOUT == w->maxroot)
@@ -737,7 +736,7 @@ sift_matcher_create(const SiftQNode *leaf)
 			m->lolen = regex_prefix(leaf, &m->lo);
 			break;
 		default:
-			elog(ERROR, "sift: query node kind %d has no term matcher", leaf->kind);
+			SIFT_INVARIANT(false, "sift: query node kind %d has no term matcher", leaf->kind);
 	}
 	if (leaf->field)
 	{

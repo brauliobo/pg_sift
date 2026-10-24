@@ -109,9 +109,9 @@ SELECT sift.col_promote('k_col');
 (1 row)
 
 SELECT fmt('k_col');
- fmt 
------
- 3,6
+ fmt  
+------
+ 3,12
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -189,7 +189,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -234,7 +234,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -584,7 +584,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -624,3 +624,7 @@ SELECT n, t_check(q) FROM q ORDER BY n;
 (9 rows)
 
 DROP TABLE k;
+DROP FUNCTION doc, doc_full, fmt, t_check, t_outcome, t_pushed, t_rows, tfmt;
+DROP TABLE q;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

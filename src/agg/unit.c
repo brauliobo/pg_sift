@@ -67,6 +67,7 @@
 #include "agg/back.h"
 #include "agg/kern.h"
 #include "agg/part.h"
+#include "agg/sel.h"
 #include "agg/spec.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
@@ -75,15 +76,6 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
-
-static void
-overflow_error(void)
-{
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift: a column of the aggregate scan holds values its index cannot store"),
-			 errhint("Set sift.enable_agg to off for this query.")));
-}
 
 /* bits [lo, hi) of a bit vector cleared */
 static void
@@ -167,10 +159,18 @@ topn_viable(AggExec *ex)
 }
 
 /* the rows that pass go to the heap of the best n, by the sort leaves (agg/topn.h) */
+static const SiftSrcVec *
+topn_leaf_vec(void *ex, int leaf)
+{
+	return get_vec(ex, leaf);
+}
+
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, get_vec(ex, sift_topn_leaf(ex->topn, 0)), rmask, nrow);
+	int			leaf = sift_topn_leaf(ex->topn, 0);
+
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, leaf >= 0 ? get_vec(ex, leaf) : NULL, rmask, nrow, topn_leaf_vec, ex);
 }
 
 /* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */
@@ -226,6 +226,19 @@ leaf_rechecked(const SiftAggSpec *s, int leaf)
 	return false;
 }
 
+/* the rows of own that the FILTER of an aggregate of gate (bit j: agg[j]) keeps: the rows whose cast the aggregates evaluate */
+static void
+gate_rows(AggExec *ex, uint64 gate, uint64 *own)
+{
+	int			nrw = (ex->unit.nrow + 63) / 64;
+	uint64	   *keep = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+
+	for (int j = 0; j < ex->spec->naggs; j++)
+		if (gate >> j & 1)
+			sift_colk->bits_or(keep, row_bitmap(ex, ex->spec->agg[j].filter), nrw);
+	sift_colk->bits_and(own, keep, nrw);
+}
+
 /*
  * The rows of the unit that hold a value the index cannot store in a leaf the scan reads, NULL when there is none. The leaves after the source's
  * read their values from one of its leaves (the value column of a member of an object, the array of a length): theirs count too.
@@ -239,7 +252,24 @@ overflow_rows(AggExec *ex, bool rechecked, bool lists_only)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->leaves[i] < ex->nbase && s->recheck[i] != SRK_RECORDSET_LAZY && (s->recheck[i] != SRK_NONE) == rechecked &&
 			(s->recheck[i] == SRK_RECORDSET ? lists_only || !ex->recheck_after_late : !lists_only))
-			leaf_overflow_rows(ex, s->leaves[i], &rows);
+		{
+			uint64	   *own = NULL;
+
+			if (!rechecked || !s->gate[i])
+				leaf_overflow_rows(ex, s->leaves[i], &rows);
+			else
+			{
+				leaf_overflow_rows(ex, s->leaves[i], &own);
+				if (own)
+				{
+					gate_rows(ex, s->gate[i], own);
+					if (!rows)
+						rows = own;
+					else
+						sift_colk->bits_or(rows, own, (ex->unit.nrow + 63) / 64);
+				}
+			}
+		}
 	for (int j = 0; j < s->nvleaf && !lists_only; j++)
 	{
 		if (s->vleaf[j].types)
@@ -276,7 +306,7 @@ check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 		return;
 	if (rechecked)
 		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	overflow_error();
+	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /*
@@ -300,7 +330,7 @@ check_overflow_after_late(AggExec *ex, const uint64 *live)
 	if (sift_colk->bits_count(rows, nrw) == 0)
 		return;
 	sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	overflow_error();
+	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /* check_overflow for the rows that keep an element of the unit, at the point the aggregates read them (SRK_CAST) */
@@ -316,6 +346,8 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
 #define SPARSE_RATIO	8
+/* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 3% (ten keys of 300 parents) it costs what it saves */
+#define NARROW_RATIO	32
 
 /* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
 static bool
@@ -343,13 +375,14 @@ wide_filters(AggExec *ex, uint64 *rmask)
 	return true;
 }
 
+/* what the scan derived from the rows of the unit */
 static void
-unit_begin(AggExec *ex)
+unit_forget(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 
-	MemoryContextReset(ex->ucxt);
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
+	memset(ex->nvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
 	memset(ex->gpar, 0, ex->lay->nleaves * sizeof(uint32 *));
 	for (int i = 0; i < s->npreds_total; i++)
@@ -357,7 +390,32 @@ unit_begin(AggExec *ex)
 		ex->ps[i].rowmask_ok = false;
 		ex->ps[i].poison_ok = false;
 	}
+}
+
+static void
+unit_begin(AggExec *ex)
+{
+	MemoryContextReset(ex->ucxt);
+	unit_forget(ex);
 	ex->n_units++;
+}
+
+/*
+ * The source's filters left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
+ * as those rows alone, so that the rest of the work (the leaves, the offsets and owners of the elements of a list) costs what they do, not
+ * what the unit does. rmask becomes all of them, nrow their number.
+ */
+static void
+unit_narrow(AggExec *ex, uint64 **rmask, int *nrow)
+{
+	SiftSrcUnit *u = &ex->unit;
+
+	if (!sift_colsrc_narrow(ex->src, u, *rmask))
+		return;
+	*nrow = u->nrow;
+	*rmask = MemoryContextAllocZero(ex->ucxt, ((*nrow + 63) / 64 + PADW) * sizeof(uint64));
+	fill_ones(*rmask, *nrow);
+	unit_forget(ex);
 }
 
 /*
@@ -420,11 +478,12 @@ unit_rows(AggExec *ex, uint64 *rmask, int nrow)
 	apply_late(ex, rmask, nrow, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow(ex, rmask, true);
-	if (ex->topn)
-		topn_unit(ex, rmask, nrow);
-	else
+	/* the aggregates of a top-N first: it reads the other sort keys of a few rows into the buffers of their leaves, which an aggregate over such a leaf reads whole */
+	if (!ex->topn || ex->spec->naggs > 0)
 		for (int st = 0; st < nrow; st += VEC)
 			agg_chunk(ex, st, Min(VEC, nrow - st), rmask + st / 64);
+	if (ex->topn)
+		topn_unit(ex, rmask, nrow);
 }
 
 /* The elements of the kept rows that the conjuncts on the elements keep, as a bitmap over the elements of the unit */
@@ -486,6 +545,42 @@ elems_vet(AggExec *ex, uint64 *em, int nrow)
 		}
 }
 
+/*
+ * LEFT JOIN LATERAL .. ON true: a kept row none of whose elements passes the lateral's own conditions is one tuple with NULL element columns.
+ * The rows are those of the row mask without a kept element, found before the snapshot check takes elements away: a row the snapshot does not
+ * see is no row at all.
+ */
+static void
+null_rows(AggExec *ex, const uint64 *rmask, const uint64 *em, int nrow)
+{
+	int			nrw = (nrow + 63) / 64;
+	uint64	   *has = MemoryContextAlloc(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+
+	rows_of_elems(ex->offs, nrow, em, has);
+	ex->nullrows = MemoryContextAllocZero(ex->ucxt, (nrw + PADW) * sizeof(uint64));
+	for (int w = 0; w < nrw; w++)
+		ex->nullrows[w] = rmask[w] & ~has[w];
+	if (sift_colk->bits_count(ex->nullrows, nrw) == 0)
+		ex->nullrows = NULL;
+}
+
+/* The tuples of the rows with no element: the rows themselves, their element columns NULL */
+static void
+unit_null_tuples(AggExec *ex, int nrow)
+{
+	uint64	   *nm = ex->nullrows;
+
+	ex->nullrows = NULL;
+	sift_colsrc_vet(ex->src, &ex->unit, nm);
+	ex->nullpass = true;
+	ex->qlevel = 0;
+	apply_late(ex, nm, nrow, 0);
+	for (int st = 0; st < nrow; st += VEC)
+		agg_chunk(ex, st, Min(VEC, nrow - st), nm + st / 64);
+	ex->nullpass = false;
+	ex->qlevel = 1;
+}
+
 /* A unit of elements: the elements of the kept rows, vetted, the late conjuncts, then the chunks */
 static void
 unit_elems(AggExec *ex, uint64 *rmask, int nrow)
@@ -496,12 +591,16 @@ unit_elems(AggExec *ex, uint64 *rmask, int nrow)
 	build_parents(ex);
 	m = ex->nelem;
 	em = elems_kept(ex, rmask, nrow);
+	if (ex->spec->left_lateral)
+		null_rows(ex, rmask, em, nrow);
 	elems_vet(ex, em, nrow);
 	apply_late(ex, em, m, ex->qlevel);
 	if (ex->recheck_late)
 		check_overflow_elems(ex, em);
 	for (int st = 0; st < m; st += VEC)
 		agg_chunk(ex, st, Min(VEC, m - st), em + st / 64);
+	if (ex->nullrows)
+		unit_null_tuples(ex, nrow);
 }
 
 void
@@ -513,17 +612,29 @@ process_unit(AggExec *ex)
 			   *cand;
 
 	unit_begin(ex);
-	if (nrow > 0 && ex->pa_on && preagg_unit(ex))
+	if (nrow > 0 && ex->pa_on && !ex->spec->left_lateral && preagg_unit(ex))
 	{
-		ex->n_pre_units++;
+		/* a superunit stands for its units: they count as the units they are */
+		ex->n_units += Max(u->nsu, 1) - 1;
+		ex->n_super += u->nsu > 0;
+		ex->n_pre_units += Max(u->nsu, 1);
 		ex->row_base += nrow;
 		CHECK_FOR_INTERRUPTS();
+		return;
+	}
+	if (u->nsu > 0)
+	{
+		/* its summary cannot answer here (a predicate that cuts through the group, a dim or a measure it lacks): the units of the group come one by one */
+		sift_colsrc_split(ex->src, u);
+		ex->n_units--;
+		if (ex->n_super == 0 && ++ex->n_split >= 4)
+			sift_colsrc_super(ex->src, false);
 		return;
 	}
 	ex->n_rows += nrow;
 	if (nrow == 0)
 		return;
-	if (sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
+	if (!ex->spec->left_lateral && sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
 	{
 		ex->row_base += nrow;
 		CHECK_FOR_INTERRUPTS();
@@ -547,6 +658,9 @@ process_unit(AggExec *ex)
 		ex->row_base += nrow;
 		return;
 	}
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_narrow(ex->src) &&
+		sift_colk->bits_count(rmask, (nrow + 63) / 64) * NARROW_RATIO < nrow)
+		unit_narrow(ex, &rmask, &nrow);
 	unit_conjuncts(ex, rmask, cand, nrow);
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);

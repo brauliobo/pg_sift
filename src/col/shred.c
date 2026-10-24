@@ -15,6 +15,7 @@
 
 #include "bm25/analyze.h"
 #include "col/kern.h"
+#include "core/limits.h"
 #include "col/shred_int.h"
 
 #define IS_NUMERIC(t)	((t) >= SIFT_SHRED_INT2 && (t) <= SIFT_SHRED_FLOAT8)
@@ -178,7 +179,7 @@ sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool
 	sh->spec = spec;
 	sh->limits.max_elems = limits && limits->max_elems ? limits->max_elems : SIFT_SHRED_DEFAULT_ELEMS;
 	sh->limits.max_bytes = limits && limits->max_bytes ? limits->max_bytes : SIFT_SHRED_DEFAULT_BYTES;
-	sh->limits.max_keys = limits && limits->max_keys ? limits->max_keys : SIFT_SHRED_DEFAULT_KEYS;
+	sh->limits.max_keys = limits && limits->max_keys ? limits->max_keys : sift_limit(shred_keys, SIFT_SHRED_DEFAULT_KEYS);
 	sh->doc.col = palloc0(spec->ncols * sizeof(SiftShredCol));
 	sh->doc.grp = palloc0(spec->ngroups * sizeof(SiftShredGroup));
 	sh->frames = palloc(MAX_FRAMES * sizeof(SiftShredFrame));
@@ -480,8 +481,7 @@ sift_shred_enter(SiftShred *sh, bool is_array)
 	}
 	if (t->kind != N_OBJ)
 		list_set(sh, t, SIFT_SHRED_VALUE);
-	if (sh->nframes == sh->maxframes)
-		elog(ERROR, "sift shred: nesting deeper than the spec allows");
+	SIFT_INVARIANT(sh->nframes != sh->maxframes, "sift shred: nesting deeper than the spec allows");
 	f = &sh->frames[sh->nframes++];
 	f->node = t;
 	f->pending = NULL;
@@ -724,8 +724,7 @@ sift_shred_number(SiftShred *sh, const char *text, int len)
 void
 sift_shred_finish(SiftShred *sh)
 {
-	if (sh->nframes != 0)
-		elog(ERROR, "sift shred: finished with %d containers open", sh->nframes);
+	SIFT_INVARIANT(sh->nframes == 0, "sift shred: finished with %d containers open", sh->nframes);
 }
 
 void

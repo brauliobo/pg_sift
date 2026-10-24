@@ -26,6 +26,46 @@ sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
+/* 'a, b': the names of the leaves an option takes, each one ok(); empty or 'off': none. s NULL: the syntax only. Returns NULL, or why the option is not valid */
+const char *
+sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
+					 bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad)
+{
+	const char *p = opt;
+
+	while (*p == ' ')
+		p++;
+	if (*p == '\0' || strcmp(p, "off") == 0)
+		return NULL;
+	for (;;)
+	{
+		const char *end = strchr(p, ',');
+		size_t		len = end ? (size_t) (end - p) : strlen(p);
+		int			c = -1;
+
+		while (len > 0 && p[len - 1] == ' ')
+			len--;
+		if (len == 0)
+			return "empty column name";
+		if (s != NULL)
+		{
+			for (int i = 0; i < s->ncols && c < 0; i++)
+				if (strlen(names[i]) == len && strncmp(names[i], p, len) == 0)
+					c = i;
+			if (c < 0)
+				return "unknown column";
+			if (!ok(s, &s->cols[c]))
+				return bad;
+			leaf[c] = true;
+		}
+		if (end == NULL)
+			return NULL;
+		p = end + 1;
+		while (*p == ' ')
+			p++;
+	}
+}
+
 /* a scalar INT or float leaf, not a date/time/bool, of the top level (parent < 0) or of the elements of the list parent */
 static bool
 meas_in(const SiftColSchema *s, const SiftColDef *m, int parent)
@@ -119,6 +159,66 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 			rollup_default(s, c, &spec->rollup[spec->nrollups]);
 			spec->nrollups += spec->rollup[spec->nrollups].ndims > 0;
 		}
+}
+
+/*
+ * Room for n calendar cells in the default cube: the cap is 16 dimensions and the default fills it with the plain columns in their order, which left the
+ * cells of the dates out of an index of more than 16 columns (a GROUP BY of a month then scans every unit). The plain dimensions of the default give way, the
+ * date and timestamp columns first (the cells of a day answer what their own histogram does) and then the last columns; none gives way when all fit, or
+ * for a cube(...) the user wrote.
+ */
+static void
+make_room(const SiftColSchema *s, SiftCPaggSpec *spec, int n)
+{
+	for (int pass = 0; pass < 2 && !spec->fixed; pass++)
+		for (int d = spec->ndims - 1; d >= 0 && spec->ndims + n > SIFT_PAGG_MAX_DIMS; d--)
+		{
+			if (spec->dim[d].cal || sift_cpagg_cal_type(s, spec->dim[d].leaf) != (pass == 0))
+				continue;
+			memmove(spec->dim + d, spec->dim + d + 1, (spec->ndims - d - 1) * sizeof(spec->dim[0]));
+			spec->ndims--;
+		}
+}
+
+void
+sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec)
+{
+	int			ncal = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+		ncal += sift_cpagg_cal_type(s, c) && depth1(s, &s->cols[c]) && plain_type(&s->cols[c]);
+	make_room(s, spec, ncal);
+	for (int c = 0; c < s->ncols; c++)
+	{
+		SiftCPaggDim *sd;
+
+		if (!sift_cpagg_cal_type(s, c) || !depth1(s, &s->cols[c]) || !plain_type(&s->cols[c]) || spec->ndims == SIFT_PAGG_MAX_DIMS)
+			continue;
+		sd = &spec->dim[spec->ndims++];
+		sd->leaf = c;
+		sd->cal = true;
+		sd->nmeas = default_meas(s, c, sd->meas);
+		sd->lean = SIFT_PAGG_DEF_MEAS;
+	}
+}
+
+int
+sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max)
+{
+	int			n = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+	{
+		bool		have = false;
+
+		if (!sift_cpagg_cal_type(s, c) || !depth1(s, &s->cols[c]) || !plain_type(&s->cols[c]))
+			continue;
+		for (int d = 0; d < spec->ndims; d++)
+			have |= spec->dim[d].leaf == c && spec->dim[d].cal;
+		if (!have && n++ < max)
+			out[n - 1] = c;
+	}
+	return n;
 }
 
 typedef struct OptCur
@@ -445,6 +545,177 @@ parse_rollup_dims(const char *opt, const SiftColSchema *s, const char *const *na
 		qsort(spec->rollup, spec->nrollups, sizeof(SiftCPaggRollup), cmp_rollup_list);
 	}
 	return NULL;
+}
+
+/* a measure of the rows' rollup: an integer or numeric top-level leaf (a float sum depends on the order of the additions, so none is stored) */
+static bool
+rows_meas_ok(const SiftColSchema *s, const SiftColDef *m)
+{
+	return meas_in(s, m, -1) && m->store == SIFT_COLS_INT;
+}
+
+/* "a, b" or "a, b: m1, m2" (dims, then measures) of the rows of a unit: the rollup of list -1 (column format minor 8); "off" and "" name none */
+static const char *
+parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+	SiftCPaggRollup ru = {.list = -1};
+	int			nrows = 0;
+
+	if (is_word(opt, "off"))
+		return NULL;
+	do
+	{
+		char	   *dn = take_name(c);
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a column name is missing";
+		nrows++;
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a column of the index", dn);
+		if (s->cols[leaf].parent >= 0)
+			return psprintf("\"%s\" is a leaf of a list: name it in rollup", dn);
+		if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
+			return psprintf("\"%s\" must be a boolean, integer, date, numeric or text column", dn);
+		for (int j = 0; j < ru.ndims; j++)
+			if (ru.dim[j] == leaf)
+				return psprintf("\"%s\" is named twice", dn);
+		if (ru.ndims == SIFT_PAGG_MAX_RDIMS)
+			return psprintf("a rollup of the rows holds at most %d columns", SIFT_PAGG_MAX_RDIMS);
+		ru.dim[ru.ndims++] = leaf;
+	} while (eat(c, ','));
+	if (nrows < 2)
+		return "rollup_dims needs at least two columns (the cube answers one)";
+	if (eat(c, ':'))
+	{
+		do
+		{
+			char	   *mn = take_name(c);
+			int			m;
+
+			if (*mn == '\0')
+				return "a measure name is missing";
+			if (!s)
+				continue;
+			if ((m = find_scalar(s, names, mn)) < 0)
+				return psprintf("\"%s\" is not a column of the index", mn);
+			if (!rows_meas_ok(s, &s->cols[m]))
+				return psprintf("measure \"%s\" must be a smallint, integer, bigint or numeric column", mn);
+			if (ru.nmeas == SIFT_PAGG_MAX_MEAS)
+				return "a rollup holds at most 8 measures";
+			ru.meas[ru.nmeas++] = m;
+		} while (eat(c, ','));
+	}
+	else if (s)
+	{
+		/* no measures named: the integer and numeric columns that are not dims, decimals first */
+		for (int pass = 0; pass < 2; pass++)
+			for (int m = 0; m < s->ncols && ru.nmeas < SIFT_PAGG_MAX_MEAS; m++)
+			{
+				bool		dim = false;
+
+				for (int j = 0; j < ru.ndims; j++)
+					dim |= ru.dim[j] == m;
+				if (!dim && rows_meas_ok(s, &s->cols[m]) && (s->cols[m].type == SIFT_COLT_NUMERIC) == (pass == 0))
+					ru.meas[ru.nmeas++] = m;
+			}
+	}
+	if (*c->p)
+		return psprintf("unexpected \"%s\"", c->p);
+	if (s && spec->nrollups == SIFT_PAGG_MAX_ROLLUPS)
+		return "a rollup option holds at most 8 lists";
+	if (s)
+	{
+		memmove(spec->rollup + 1, spec->rollup, spec->nrollups * sizeof(SiftCPaggRollup));	/* ascending list order: the rows' -1 first */
+		spec->rollup[0] = ru;
+		spec->nrollups++;
+	}
+	return NULL;
+}
+
+const char *
+sift_cpagg_rows_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+}
+
+const char *
+sift_cpagg_rows_syntax(const char *opt)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_rows(opt, NULL, NULL, NULL);
+}
+
+/* "all", "off", or the date and timestamp columns "a, b" of the calendar cells of every unit (column format minor 8) */
+static const char *
+parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	OptCur		cur = {opt};
+	OptCur	   *c = &cur;
+	bool		all = is_word(opt, "all");
+
+	if (is_word(opt, "off"))
+		return NULL;
+	if (s && s->kinds)
+		return "needs a schema without paths or kinds";
+	if (all)
+	{
+		if (s)
+		{
+			sift_cpagg_spec_calendar(s, spec);
+			spec->cal_all = true;
+		}
+		return NULL;
+	}
+	do
+	{
+		char	   *dn = take_name(c);
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a column name is missing";
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a column of the index", dn);
+		if (!sift_cpagg_cal_type(s, leaf) || !depth1(s, &s->cols[leaf]) || !plain_type(&s->cols[leaf]))
+			return psprintf("\"%s\" must be a date, timestamp or timestamptz column", dn);
+		for (int j = 0; j < spec->ndims; j++)
+			if (spec->dim[j].leaf == leaf && spec->dim[j].cal)
+				return psprintf("\"%s\" is named twice", dn);
+		make_room(s, spec, 1);
+		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
+			return "too many dimensions";
+		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true, .lean = SIFT_PAGG_DEF_MEAS};
+		spec->dim[spec->ndims].nmeas = default_meas(s, leaf, spec->dim[spec->ndims].meas);
+		spec->ndims++;
+	} while (eat(c, ','));
+	return *c->p ? psprintf("unexpected \"%s\"", c->p) : NULL;
+}
+
+const char *
+sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	if (opt == NULL || rest_blank(opt))
+	{
+		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (minor 8 has no kinds) */
+		if (!spec->off && !spec->fixed && !s->kinds)
+		{
+			sift_cpagg_spec_calendar(s, spec);
+			spec->cal_all = true;
+		}
+		return NULL;
+	}
+	return parse_calendar(opt, s, names, spec->off ? &(SiftCPaggSpec) {0} : spec);
+}
+
+const char *
+sift_cpagg_calendar_syntax(const char *opt)
+{
+	return opt == NULL || rest_blank(opt) ? NULL : parse_calendar(opt, NULL, NULL, NULL);
 }
 
 const char *

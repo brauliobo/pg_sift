@@ -85,8 +85,7 @@ pgagg_lookup(PgAgg *pa, Oid aggfn, Oid restype)
 	bool		isnull;
 	Datum		init;
 
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for aggregate %u", aggfn);
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", aggfn);
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
 	fmgr_info(ag->aggtransfn, &pa->trans);
 	pa->strict = pa->trans.fn_strict;

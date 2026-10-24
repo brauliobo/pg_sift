@@ -32,8 +32,8 @@ sift_kern_expand_scalar(uint64 *out, const uint64 *mask, const uint64 *base, con
 	return left;
 }
 
-static void
-tf_decode_scalar(uint8 *tf, const uint8 *l1, const uint8 *nib, const uint8 *esc,
+void
+sift_kern_tf_decode_scalar(uint8 *tf, const uint8 *l1, const uint8 *nib, const uint8 *esc,
 				 SiftTfPos *pos, uint32 count)
 {
 	for (uint32 i = 0; i < count; i++, pos->rank++)
@@ -80,8 +80,8 @@ bm25_accum_scalar(float4 *scores, const uint64 *mask, int npages, const uint8 *t
 	return r;
 }
 
-static int
-bm25_sel_scalar(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
+int
+sift_kern_bm25_sel_scalar(float4 *scores, const uint64 *mask, const uint64 *cand, int npages, const uint8 *tf,
 				const float4 *knorm, float4 w)
 {
 	int			r = 0;
@@ -113,15 +113,15 @@ max_merge_scalar(float4 *scores, const float4 *other, const uint64 *mask, int np
 				 scores[s] = scores[s] > other[s] ? scores[s] : other[s]);
 }
 
-static void
-ub_accum_scalar(float4 *ub, const uint8 *bounds, float4 w, int n)
+void
+sift_kern_ub_accum_scalar(float4 *ub, const uint8 *bounds, float4 w, int n)
 {
 	for (int i = 0; i < n; i++)
 		ub[i] += w * (float4) bounds[i];
 }
 
-static int
-select_gt_scalar(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask,
+int
+sift_kern_select_gt_scalar(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask,
 				 int npages, float4 theta)
 {
 	int			n = 0;
@@ -155,16 +155,21 @@ sift_kern_vm_scalar(uint64 *pagemask, const uint8 *vmbytes)
 			even_bits(sift_kern_ld64(vmbytes + 16 * i + 8)) << 32;
 }
 
+/* Lane j of row m: rank of bit j among the set bits of m, 0x80 (PSHUFB and TBL zero) if clear */
+#define XL(m, j)	((((m) >> (j)) & 1) ? BELOW(m, j) : 0x80)
+#define XROW(m)		ROW8(XL, m)
+const uint8 sift_kern_lut_expand[256][8] = {R256(XROW)};
+
 const SiftKernels sift_kernels_scalar = {
 	.expand = sift_kern_expand_scalar,
-	.tf_decode = tf_decode_scalar,
+	.tf_decode = sift_kern_tf_decode_scalar,
 	.knorm = knorm_scalar,
 	.bm25_accum = bm25_accum_scalar,
-	.bm25_sel = bm25_sel_scalar,
+	.bm25_sel = sift_kern_bm25_sel_scalar,
 	.prune_gt = prune_gt_scalar,
 	.max_merge = max_merge_scalar,
-	.ub_accum = ub_accum_scalar,
-	.select_gt = select_gt_scalar,
+	.ub_accum = sift_kern_ub_accum_scalar,
+	.select_gt = sift_kern_select_gt_scalar,
 	.vm_allvisible = sift_kern_vm_scalar,
 };
 
@@ -173,6 +178,10 @@ sift_kernels_for(SiftSimdLevel level)
 {
 	if (level > sift_cpu.detected)
 		return NULL;
+#if defined(SIFT_HAVE_NEON)
+	if (level == SIFT_SIMD_NEON)
+		return &sift_kernels_neon;
+#endif
 #if defined(__x86_64__)
 	if (level == SIFT_SIMD_AVX512)
 		return &sift_kernels_avx512;

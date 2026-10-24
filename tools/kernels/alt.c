@@ -8,6 +8,7 @@
  */
 #include "harness.h"
 
+#if defined(__x86_64__)
 #include <immintrin.h>
 
 #define IN_REG(x) __asm__("" : "+v"(x))
@@ -155,3 +156,5 @@ alt_bm25_tfvar(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 		var == 1 ? tfvar(scores, mask, npages, tf, knorm, w, 1) :
 		tfvar(scores, mask, npages, tf, knorm, w, 2);
 }
+
+#endif							/* __x86_64__ */

@@ -13,7 +13,7 @@
 #                                                       freezes and drops them
 #
 # Prints PASS / FAIL / SKIP lines (test/t/old_lib_refusal.sh turns them into TAP); exit 0 when all pass, 1 on a FAIL, 77 when there is nothing
-# to run (no older release in the repository, PostgreSQL 17, which has no extension_control_path to hold two builds, or no testing build).
+# to run (no older release in the repository, an older release than 3.2.0 on a CPU other than x86-64, PostgreSQL 17, which has no extension_control_path to hold two builds, PostgreSQL 19, which no release builds on, or no testing build).
 #
 # SIFT_OLD_REF (default v3.0.1; the library of the tree with the 3.1 write path is the one under test), SIFT_OLD_SRC (a source tree of
 # the older release instead of the archive), SIFT_OLD_DIR (where it is built, default ~/.cache/sift/old-lib/<commit>), SIFT_TMP and SIFT_PORT as
@@ -34,7 +34,9 @@ skip() { echo "SKIP $*" >&2; exit 77; }
 build() {
 	local rev dir major
 	major=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
-	((major >= 18)) || skip "PostgreSQL $major cannot hold two builds (no extension_control_path)"
+	((major == 18)) || skip "PostgreSQL $major: 17 cannot hold two builds (no extension_control_path) and the released libraries do not build on 19"
+	# their CPU probes are x86 only: 3.2.0 is the first release that builds elsewhere
+	[[ $(uname -m) == x86_64 || $(printf '%s\n' "${OLD_REF#v}" 3.2.0 | sort -V | head -1) == 3.2.0 ]] || skip "$OLD_REF builds on x86-64 only (AArch64 since 3.2.0)"
 	if [[ -n ${SIFT_OLD_SRC:-} ]]; then
 		rev=$(git -C "$SIFT_OLD_SRC" rev-parse --short HEAD 2>/dev/null || echo src)
 	else
@@ -45,7 +47,7 @@ build() {
 		mkdir -p "$dir/src"
 		# the tests that need the same older release start together on two lanes: the second waits for the build of the first
 		exec 9>"$dir.lock"
-		flock 9
+		! command -v flock >/dev/null || flock 9
 		if [[ ! -f $dir/root/.flavor ]]; then
 			if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
 			# the production flavor, the library users get (not the ASan one of a sanitized run: the older server does not preload the runtime); its own
@@ -100,6 +102,7 @@ checks() { # LOG of the older server
 	expect_refused "... by a fetch of one row" "SELECT * FROM unf LIMIT 1"
 	expect_refused "... by an INSERT" "INSERT INTO unf VALUES (0, 'x')"
 	expect_refused "... by VACUUM" "VACUUM unf"
+	expect_refused "a table loaded by COPY into column groups is refused by a scan" "SELECT count(*) FROM unf_b"
 	expect_refused "a table whose unfrozen groups were frozen is refused as well (the format is never lowered)" "SELECT count(*) FROM unf_v"
 	expect_rows "a table rewritten by VACUUM FULL is read again" "SELECT count(*) || ':' || sum(id) FROM unf_f" "$want"
 	query "SELECT 1"
@@ -131,6 +134,11 @@ run() {
 	load_table unf
 	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf') > 0") == t ]]; then pass "the loop left a table with unfrozen groups"
 	else fail "the loop left a table with unfrozen groups"; echo "tables not written by the new write path: nothing to refuse"; return 1; fi
+	# a table loaded by COPY into column groups carries the same unfrozen groups
+	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "SET sift.table_bulk_groups = on" -c "CREATE TABLE unf_b (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
+		-c "COPY unf_b FROM PROGRAM 'seq 1 2000 | sed ''s/.*/&\trow &/'''" >/dev/null
+	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf_b') > 0") == t ]]; then pass "a COPY into column groups left a table with unfrozen groups"
+	else fail "a COPY into column groups left a table with unfrozen groups"; fi
 	load_table unf_v
 	load_table unf_f
 	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "SET sift.col_format_minor = 3" -c "VACUUM (FULL) unf_f" >/dev/null

@@ -112,3 +112,4 @@ COMMIT;
 
 DROP TABLE sc;
 DROP EXTENSION pg_sift;
+DROP FUNCTION scroll_walk(regclass,text);

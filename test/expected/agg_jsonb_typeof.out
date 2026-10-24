@@ -390,10 +390,10 @@ INSERT INTO e_q (q) VALUES
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''n'') <> ''number'' OR grp = 1'),
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'' OR jsonb_typeof(attrs->''b'') IS NULL');
 SELECT n, t_check(q) FROM e_q ORDER BY n;
- n  |                                        t_check                                        
-----+---------------------------------------------------------------------------------------
-  1 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
-  2 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22P02
+ n  |                                                                                         t_check                                                                                         
+----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
+  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
   3 | same
   4 | same
   5 | same
@@ -408,7 +408,7 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  14 | same
  15 | same
  16 | same
- 17 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
+ 17 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
  18 | same
  19 | same
  20 | same
@@ -420,12 +420,12 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  26 | same
 (26 rows)
 
--- a read of the leaf that no type filter guards keeps the normal plan
+-- a read of the leaf that no type filter guards: the rows that hold a value it cannot store are read again from the heap (agg_scalar_dirty)
 SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS unguarded,
        t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE jsonb_typeof(attrs->''s'') = ''string''') AS other_leaf;
- unguarded  | other_leaf 
-------------+------------
- not pushed | not pushed
+ unguarded | other_leaf 
+-----------+------------
+ same      | same
 (1 row)
 
 -- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
@@ -445,10 +445,10 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
 
 UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |                                        t_check                                        
-----+---------------------------------------------------------------------------------------
+ n  |                                                                                         t_check                                                                                         
+----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
   1 | same
-  2 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22P02
+  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
   3 | same
   8 | same
  12 | same
@@ -459,9 +459,9 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
 
 INSERT INTO e VALUES (7003, 2, '{"m": 1e999}');
 SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
- n |                                        t_check                                        
----+---------------------------------------------------------------------------------------
- 1 | pushed: error 0A000 (Set sift.enable_agg to off for this query.); normal: error 22003
+ n |                                                                                         t_check                                                                                         
+---+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
 (1 row)
 
 DELETE FROM e WHERE id IN (7002, 7003);
@@ -578,9 +578,9 @@ SELECT sift.col_promote('g_col');
 (1 row)
 
 SELECT fmt('g_col');
- fmt 
------
- 3,6
+ fmt  
+------
+ 3,12
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -599,7 +599,7 @@ SELECT sift.col_merge('g_col', true);
 SELECT fmt('g_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -626,9 +626,9 @@ SELECT sift.col_promote('g_col');
 
 RESET sift.col_format_minor;
 SELECT fmt('g_col');
- fmt 
------
- 6,3
+ fmt  
+------
+ 12,3
 (1 row)
 
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
@@ -666,7 +666,7 @@ REINDEX INDEX g_col;
 SELECT fmt('g_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -682,7 +682,7 @@ VACUUM g;
 SELECT fmt('g_col');
  fmt 
 -----
- 6
+ 12
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;

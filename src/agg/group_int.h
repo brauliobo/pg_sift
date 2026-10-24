@@ -24,6 +24,7 @@ typedef struct KeyState
 	uint32	   *wid;
 	uint32		nwide;			/* the entries of the open addressing table */
 	int64		bucket;			/* LUT keys on a timestamp leaf: the microseconds one evaluation covers (the table maps bucket numbers to ids); 0: not one */
+	bool		cal;			/* LUT keys on a date leaf: the units answered from calendar cells map the first day of a cell (the table of wide values) to ids */
 	uint32		nullid;			/* LUT keys on integer leaves: the id of expr(NULL) */
 	uint32		cap;			/* direct mode: ids 0..cap-1 */
 	uint32		mult;
@@ -63,8 +64,9 @@ ids_hash(const uint32 *ids, int nk, uint32 nslot)
 AggAcc *acc_alloc(AggExec *ex, uint32 cap);
 void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void direct_layout(AggExec *ex);
-void hash_init(AggExec *ex);
+void hash_init(AggExec *ex, uint32 groups);
 void direct_grow(AggExec *ex);
+bool direct_oversized(AggExec *ex, uint64 total);
 uint32 ident_add(AggExec *ex, KeyState *k, int64 v);
 uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
 void ident_go_wide(AggExec *ex, KeyState *k);

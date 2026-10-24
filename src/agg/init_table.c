@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "executor/nodeAgg.h"
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
@@ -22,7 +23,7 @@ join_filter_leaf(AggExec *ex, int ci, int k, int *leaf)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	const SiftSrcLeaf *lf;
 
-	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || cb->level != 0)
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->keypos[k] < 0 || j->keynull[k] || cb->level != 0)
 		return false;
 	*leaf = cb->leaf[j->keypos[k]];
 	if (*leaf < 0 || *leaf >= ex->nbase)
@@ -66,6 +67,42 @@ join_live_rows(AggExec *ex, int ci, MemoryContext caller)
 		}
 		ResetExprContext(ex->lutcx);
 	}
+	return live;
+}
+
+/*
+ * A top-N has no join to test the rows of its heap again, so the keys must be those of the rows that hold the rest of the ON clause (the table's
+ * own conditions, which the planner has checked read no leaf of the scan) when the table was loaded whole. live: the rows kept so far, NULL all.
+ */
+static bool *
+join_own_rows(AggExec *ex, int ci, bool *live)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const MapTab *m = ex->cs[ci].map;
+
+	if (j->fslot < 0 || m->filtered)
+		return live;
+	if (live == NULL)
+	{
+		live = palloc(Max(m->nrow, 1) * sizeof(bool));
+		memset(live, true, m->nrow);
+	}
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		bool		isnull;
+		Datum		d;
+
+		if (!live[r])
+			continue;
+		for (int c = 0; c < j->ncol; c++)
+			map_bind(ex, cb->nleaves + c, m, r, c);
+		d = ExecEvalExprSwitchContext(ex->cs[ci].slot[j->fslot], ex->lutcx, &isnull);
+		live[r] = !isnull && DatumGetBool(d);
+		if ((r & 1023) == 1023)
+			ResetExprContext(ex->lutcx);
+	}
+	ResetExprContext(ex->lutcx);
 	return live;
 }
 
@@ -115,7 +152,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 	List	   *add = NIL;
 	int			total = s->npreds_total;
 
-	if (!sift_agg_join_filter || s->topn)
+	/* the joins of a top-N are only these filters: whatever the setting says */
+	if (!sift_agg_join_filter && !s->topn)
 		goto done;
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
@@ -145,6 +183,8 @@ join_filters(AggExec *ex, MemoryContext caller)
 			ex->ps = repalloc(ex->ps, (total + 1) * sizeof(PredState));
 			memset(&ex->ps[total], 0, sizeof(PredState));
 			live = join_live_rows(ex, ci, caller);
+			if (s->topn)
+				live = join_own_rows(ex, ci, live);
 			if ((p = join_filter_pred(ex, ci, k, leaf, total, live)) != NULL)
 			{
 				add = lappend(add, p);
@@ -205,7 +245,14 @@ table_init(AggExec *ex)
 	uint64		total = 1;
 
 	ex->hash = false;
-	ex->direct_max = ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	/*
+	 * The arrays of the direct table are allocated for every slot of the product of the key ranges, whether a group falls in it or not: a
+	 * statement of 28 aggregates over keys that fill 1,200 of a million slots holds 218 MB. Past twice hash memory the groups go to the hash
+	 * table, which holds what they use (at least the slots a lane gets).
+	 */
+	ex->direct_max = Min((uint64) ex->direct_max,
+						 Max((uint64) LANE_DIRECT_MAX, 2 * (uint64) get_hash_memory_limit() / (sizeof(int64) * (1 + Max(s->naggs, 1)))));
 	ex->ngroups = 0;
 	ex->hkey = NULL;
 	ex->hkcap = 0;
@@ -215,7 +262,7 @@ table_init(AggExec *ex)
 	for (int j = 0; j < s->nkeys; j++)
 	{
 		KeyState   *k = &ex->ks[j];
-		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket};
+		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .cal = k->cal};
 
 		*k = keep;
 		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
@@ -227,18 +274,23 @@ table_init(AggExec *ex)
 				ident_add(ex, k, i);
 		else if (k->numk)
 			idmap_init(&k->im);
-		else if ((s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64) || k->bucket)
+		else if ((s->key[j].kind == SAK_LEAF && key_lf(ex, j)->vtype == SCV_F64) || k->bucket || (k->ident && spill_started(ex)))
 			ident_go_wide(ex, k);
 	}
 	/* room for the groups the planner expects of one key, instead of doubling the arrays as the ids come */
-	if (s->nkeys == 1 && !ex->lanes && s->est_groups > PRESIZE_MIN && s->est_groups <= ex->direct_max)
-		ex->ks[0].cap = pg_nextpower2_32((uint32) s->est_groups);
+	if (s->nkeys == 1 && !ex->lanes && spill_presize_ok(ex))
+	{
+		double		eg = part_flush_on(ex) ? s->est_groups / s->nparts : s->est_groups;
+
+		if (eg > PRESIZE_MIN && eg <= ex->direct_max)
+			ex->ks[0].cap = pg_nextpower2_32((uint32) eg);
+	}
 	for (int j = 0; j < s->nkeys; j++)
 		total = Min((uint64) ex->direct_max + 1, total * ex->ks[j].cap);
-	if (total > ex->direct_max)
+	if (total > ex->direct_max || direct_oversized(ex, total))
 	{
-		hash_init(ex);
-		total = 1024;
+		total = Max(1024, spill_keep(ex));
+		hash_init(ex, (uint32) total);
 	}
 	else
 		direct_layout(ex);
@@ -281,7 +333,11 @@ table_init(AggExec *ex)
 			continue;
 		}
 		if (a->kind == SAA_COUNT_DISTINCT)
+		{
 			ex->dist[i] = dist_new(ex, !a->num.n && a->leaf >= 0 && ex->lay->leaf[a->leaf].vtype != SCV_CODE);
+			if (i < 64 && (ex->dist_hash >> i & 1))
+				dist_start_hash(ex->dist[i]);
+		}
 		else if (a->kind == SAA_O_COUNT_KEY)
 			ex->dist[i] = dist_new(ex, false);
 		if ((a->kind >= SAA_M_COUNT && a->kind <= SAA_M_AVG) || a->kind == SAA_M_PG)
@@ -292,6 +348,7 @@ table_init(AggExec *ex)
 		ot_init(&ex->aot[i], tc->eq_opr, a->argtype, a->collid);
 	}
 	MemoryContextSwitchTo(old);
+	spill_floor(ex);
 }
 
 /* forgets every group (the dictionary maps hold key ids of the table) */

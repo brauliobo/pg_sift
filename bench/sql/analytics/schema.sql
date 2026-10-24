@@ -26,8 +26,8 @@ CREATE TABLE orders (
     deleted_at timestamp without time zone
 );
 
--- metric key of a source -> metric and aspect (a key without a row falls back to the split of the key at the underscore)
-CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_aspect text);
+-- metric key of a source -> metric and part (a key without a row falls back to the split of the key at the underscore)
+CREATE TABLE metrics_map (source text NOT NULL, metric_key text NOT NULL, mapped_metric text, mapped_part text);
 -- raw item category -> canonical category ('' = not mapped) of the orders whose items are not normalized
 CREATE TABLE categories_map (category text NOT NULL, mapped_category text NOT NULL);
 -- raw item kind -> canonical kind ('' = none)

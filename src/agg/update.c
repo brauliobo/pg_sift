@@ -12,7 +12,7 @@
 #include "agg/dense_int.h"
 
 /* the id (1..) over all dictionaries of each entry of d, for the values count(DISTINCT) of aggregate ai counts */
-static uint32 *
+uint32 *
 dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 {
 	SiftAggAgg *a = &ex->spec->agg[ai];
@@ -359,10 +359,14 @@ typedef struct AggUpd
 	const SiftSrcLeaf *lf;
 } AggUpd;
 
+/* n of the aggregate += its tuples of the chunk; those that take every tuple wait for the end of the chunk, when one pass counts them all with seen */
 static void
 upd_count(const AggUpd *u)
 {
-	sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
+	if (u->ok == NULL)
+		u->ex->ncnt[u->ex->nncnt++] = u->acc->n;
+	else
+		sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
 }
 
 static void
@@ -614,7 +618,7 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 			direct_update(ex, ai, u.ok, nsel);
 			break;
 		default:
-			elog(ERROR, "sift: aggregate kind %d is not a scan aggregate", a->kind);
+			SIFT_INVARIANT(false, "sift: aggregate kind %d is not a scan aggregate", a->kind);
 	}
 }
 
@@ -637,6 +641,9 @@ post_holds(AggExec *ex, const SiftAggPred *p, const Tup *t, int j)
 		return elem_exists(ex, t, j, p);
 	if (p->kind == SAP_MATCHED)
 		return cs->maprow[t->cout[p->leaf][j]] != UINT32_MAX;
+	/* a combo of the scanned table's columns only (a WHERE after a preserved join) has no join: its rows are resolved for the tuples */
+	if (ex->spec->combo[p->leaf].join < 0)
+		return combo_val(ex, p->leaf, combo_outs(ex, p->leaf)[j], p->op) != 0;
 	return cs->val[(size_t) t->cout[p->leaf][j] * ex->spec->combo[p->leaf].nslots + p->op] != 0;
 }
 
@@ -695,6 +702,7 @@ set_tuples(AggExec *ex, const Tup *t, int set)
 		own->sel = MemoryContextAlloc(ex->cxt, (VEC + PADW + 16) * sizeof(uint32));
 		own->tidx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
 		own->ridx = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+		own->cout = MemoryContextAllocZero(ex->cxt, ex->spec->ncombo * sizeof(uint32 *));
 		for (int x = 0; x < ex->nj; x++)
 			own->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
 	}
@@ -731,9 +739,13 @@ agg_tuples(AggExec *ex, Tup *t)
 	ex->sel = t->sel;
 	ex->tidx = t->tidx;
 	ex->ridx = t->ridx;
-	memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 	if (s->npost > s->nprepost)
+	{
 		t->n = post_filter(ex, t, s->nprepost, s->npost, ex->nj, -1);
+		/* the free combos were resolved for the tuples as they came */
+		memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
+	}
 	if (t->n == 0)
 		return;
 	if (s->narms > 0)
@@ -750,7 +762,7 @@ agg_tuples(AggExec *ex, Tup *t)
 			continue;
 		/* the free combos are resolved for the tuples they were asked for: the set's own are not the chunk's */
 		if (st != t || ex->cur != t)
-			memset(ex->cfree_ok, 0, sizeof(ex->cfree_ok));
+			memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
 		ex->cur = st;
 		ex->sel = st->sel;
 		ex->tidx = st->tidx;
@@ -758,12 +770,26 @@ agg_tuples(AggExec *ex, Tup *t)
 		ex->curset = set;
 		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
 		compute_gids(ex, st->n);
-		sift_aggk->count_gid(ex->seen, ex->gid, NULL, st->n);
+		ex->ncnt[0] = ex->seen;
+		ex->nncnt = 1;
 		for (int i = 0; i < s->naggs; i++)
 			if (!s->setaggs || (s->setaggs[i] >> set & 1))
 				agg_update(ex, i, ex->cstart, ex->cn, st->n);
+		sift_aggk_count_gid_n(ex->ncnt, ex->nncnt, ex->gid, NULL, st->n);
 	}
 	ex->arm_mask = ~(uint32) 0;
+}
+
+/* the stage's tuples: the outputs of the earlier joins are copied only by a stage that repeats or drops tuples, so a chain of one-row lookups holds one array per stage */
+Tup *
+stage_tuples(AggExec *ex, int s)
+{
+	Tup		   *own = &ex->stage[s];
+
+	if (s > 0 && own->cout[ex->jcombo[0]] == NULL)
+		for (int y = 0; y < s; y++)
+			own->cout[ex->jcombo[y]] = MemoryContextAlloc(ex->cxt, (VEC + PADW) * sizeof(uint32));
+	return own;
 }
 
 static void
@@ -777,7 +803,7 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	const SiftSrcVec *v = pass ? NULL : get_vec(ex, cb->leaf[0]);
 	const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == ex->qlevel ? in->tidx : in->ridx;
 	const int32 *x = pass ? NULL : (const int32 *) v->data;
-	Tup		   *own = &ex->stage[s];
+	Tup		   *own = stage_tuples(ex, s);
 	int			k = 0;
 
 	for (int i = 0; i < in->n; i++)
@@ -839,11 +865,13 @@ join_stage(AggExec *ex, int s, Tup *in)
 
 		for (int i = 0; i < n; i++)
 			own->cout[ci][i] = cs->ent[eid[i]].base;
+		al.cout = memcpy(ex->alcout[s], in->cout, ex->spec->ncombo * sizeof(uint32 *));
 		al.cout[ci] = own->cout[ci];
 		join_stage(ex, s + 1, &al);
 		return;
 	}
 	/* the entries of this stage's tuples stay in eid only until the next stage resolves its own: keep a copy */
+	own = stage_tuples(ex, s);
 	eid = memcpy(ex->seid[s], eid, n * sizeof(uint32));
 	for (int j = 0, e = 0; j < n;)
 	{
@@ -885,7 +913,8 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	Tup		   *t = &ex->t0;
 	int			nw = (n + 63) / 64;
 
-	if (ex->dense && !ex->hash && ex->rsel == NULL && dense_chunk(ex, start, n, mask))
+	combo_trim(ex);
+	if (ex->dense && !ex->hash && ex->rsel == NULL && !ex->nullpass && dense_chunk(ex, start, n, mask))
 		return;
 	t->n = sift_colk->bits_to_idx(mask, nw, 0, t->sel);
 	if (t->n == 0)
@@ -894,7 +923,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	ex->cn = n;
 	for (int j = 0; j < t->n; j++)
 		t->tidx[j] = start + t->sel[j];
-	if (ex->spec->group >= 0)
+	if (ex->spec->group >= 0 && !ex->nullpass)
 	{
 		const uint32 *par = unit_parent(ex);
 

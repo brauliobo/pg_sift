@@ -5,6 +5,7 @@
 #define SIFT_AGG_LOOKUP_INT_H
 
 #include "access/xlogdefs.h"
+#include "portability/instr_time.h"
 #include "storage/relfilelocator.h"
 
 #include "agg/agg_fwd_int.h"
@@ -43,6 +44,7 @@ typedef struct MapTab
 	int			nkey;
 	int			ncol;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	bool		knull[SIFT_AGG_MAX_JKEYS];	/* a row whose key is NULL is in the chain of the NULL id 0 (SiftAggJoin.keynull) */
 	uint32		nrow;
 	uint32		cap;
 	KeyDict		kd[SIFT_AGG_MAX_JKEYS];
@@ -55,7 +57,19 @@ typedef struct MapTab
 	bool		filtered;		/* only rows that hold the ON clause's own conditions were loaded (map_load) */
 	bool		keep;			/* the side is preserved: the rows no tuple matched are output rows of NULL leaves; a row with a NULL key is in no chain */
 	bool	   *hit;			/* keep: the rows some tuple matched */
+	ExprState  *kx[SIFT_AGG_MAX_JKEYS];	/* while the rows are loaded: the key expressions of the table's columns (SiftAggJoin.tkey), evaluated in kcx for each row */
+	ExprContext *kcx;
 } MapTab;
+
+/* does a NULL key of the row equal nothing, so that it is in no chain? */
+static inline bool
+map_key_dead(const MapTab *m, const uint32 *kid)
+{
+	for (int k = 0; k < m->nkey; k++)
+		if (kid[k] == 0 && !m->knull[k])
+			return true;
+	return false;
+}
 
 /* the integer key k of a row */
 static inline int64
@@ -88,6 +102,7 @@ typedef struct MapShared
 	uint32		nrow;
 	uint32		nslot;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
+	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
 	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
@@ -157,6 +172,14 @@ LookFinger *lookcache_finger(Relation rel);
 bool lookcache_refused(const char *key, Relation rel);
 MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
 bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
+bool cols_cover(const LookCols *have, const LookCols *need);
+
+/* lookshm.c */
+MapTab *lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
+bool lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
+bool lookshm_claim(const char *key, MemoryContext mcxt);
+void lookshm_unclaim(const char *key);
+Size lookshm_bytes(void);
 
 #pragma GCC visibility pop
 

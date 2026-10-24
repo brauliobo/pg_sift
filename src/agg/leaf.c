@@ -85,8 +85,12 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 
 	if (!get_op_hash_functions(eqop, &lhs, &rhs))
 	{
-		if (get_opcode(eqop) != F_CASH_EQ)
-			elog(ERROR, "sift: no hash function for operator %u", eqop);
+		if (SIFT_EQ_BY_IMAGE(get_opcode(eqop)))
+		{
+			ot_init_image(t, typid);
+			return;
+		}
+		SIFT_INVARIANT(get_opcode(eqop) == F_CASH_EQ, "sift: no hash function for operator %u", eqop);
 		lhs = F_HASHINT8;		/* money has no hash operator class, and is its int64 */
 	}
 	fmgr_info(lhs, &t->hashfn);
@@ -197,11 +201,8 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 
 	if (had && lo >= old_lo && hi <= old_hi)
 		return;
-	if (span > MAX_RANGE)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: a column range of %lld values is too wide for the aggregate scan", (long long) span),
-				 errhint("Set sift.enable_agg to off for this query.")));
+	/* the callers test rt_span first */
+	Assert(span <= MAX_RANGE);
 	if (r->mem == NULL || nlo < r->plo || nhi > r->phi)
 	{
 		/* twice the room, on the side the range grows (bounded by MAX_RANGE): a range that creeps along is not copied every time */
@@ -224,9 +225,11 @@ rt_cover(RangeTab *r, int32 lo, int32 hi, FillFn fill, void *arg)
 	r->tab = r->mem + (int64) (nlo - r->plo) * r->esize;
 	r->lo = nlo;
 	r->hi = nhi;
-	for (int64 v = nlo; v <= (had ? old_lo - 1 : nhi); v++)
+	/* check-memory: allow the bounds are int32 values, v is 64 bits */
+	for (int64 v = nlo; v <= (had ? (int64) old_lo - 1 : nhi); v++)
 		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
-	for (int64 v = had ? old_hi + 1 : nhi + 1; v <= nhi; v++)
+	/* check-memory: allow the bounds are int32 values, v is 64 bits */
+	for (int64 v = had ? (int64) old_hi + 1 : (int64) nhi + 1; v <= nhi; v++)
 		fill(arg, (int32) v, (char *) r->tab + (v - nlo) * r->esize);
 }
 
@@ -255,7 +258,7 @@ leaf_datum(Oid typid, int64 iv)
 		default:
 			if (type_is_enum(typid))
 				return ObjectIdGetDatum((Oid) iv);
-			elog(ERROR, "sift: unexpected integer leaf type %u", typid);
+			SIFT_INVARIANT(false, "sift: unexpected integer leaf type %u", typid);
 	}
 	return (Datum) 0;
 }
@@ -389,20 +392,25 @@ dict_code(const SiftSrcDict *d, const char *key)
 	return PG_UINT32_MAX;
 }
 
-/* the value of the element of each row that eq marks, esz bytes of it (a constant at the callers) */
+/* the value of the element of each row that eq marks, esz bytes of it (a constant at the callers): the marked elements are walked, the row of one found by the offsets */
 static pg_attribute_always_inline void
 vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, const uint32 *offs, int nrow, size_t esz)
 {
-	for (int r = 0; r < nrow; r++)
-	{
-		int64		e = last_bit(eq, offs[r], offs[r + 1]);
+	const uint32 m = offs[nrow];
+	int			r = 0;
 
-		if (e >= 0)
+	for (uint32 w = 0; w * 64 < m; w++)
+		for (uint64 b = eq[w]; b; b &= b - 1)
 		{
+			uint32		e = w * 64 + pg_rightmost_one_pos64(b);
+
+			if (e >= m)
+				return;
+			while (offs[r + 1] <= e)
+				r++;
 			memcpy(data + (size_t) r * esz, (const char *) val->data + (size_t) e * esz, esz);
 			isnull[r] = val->isnull ? val->isnull[e] : 0;
 		}
-	}
 }
 
 /* the elements of the unit whose key is the one of vleaf j; a row owns at most one (the member names of an object are distinct). *offs: the elements of each row */
@@ -492,9 +500,45 @@ read_vleaf(AggExec *ex, int leaf, SiftSrcVec *out)
 		read_member_leaf(ex, leaf, out);
 }
 
+/* is the leaf an element column of the list the query unnests (a child of its leaf, at any depth)? */
+static bool
+unnested_leaf(AggExec *ex, int leaf)
+{
+	for (int p = ex->lay->leaf[leaf].parent; p >= 0; p = ex->lay->leaf[p].parent)
+		if (p == ex->spec->group)
+			return true;
+	return false;
+}
+
+/* the dictionary of a text leaf of the NULL tuples: no value, so the one code (0) is the NULL one */
+static const uint32 null_dict_off[1] = {0};
+static const SiftSrcDict null_dict = {.id = &null_dict, .n = 0, .off = null_dict_off, .bytes = ""};
+
+/* the column of the NULL tuples of a LEFT lateral: no element, so every element leaf is NULL (the data slots are readable zeros) */
+static const SiftSrcVec *
+null_vec(AggExec *ex, int leaf)
+{
+	if (!ex->nvec_ok[leaf])
+	{
+		int			n = ex->unit.nrow;
+		size_t		esz = ex->lay->leaf[leaf].vtype == SCV_I64 || ex->lay->leaf[leaf].vtype == SCV_F64 ? 8 : 4;
+		SiftSrcVec *v = &ex->nvec[leaf];
+
+		v->data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, n * esz + SIFT_AGG_PAD * esz + SIFT_SIMD_ALIGN));
+		v->isnull = memset(MemoryContextAlloc(ex->ucxt, n + SIFT_AGG_PAD), 1, n + SIFT_AGG_PAD);
+		v->dict = &null_dict;
+		v->n = n;
+		v->ovf = NULL;
+		ex->nvec_ok[leaf] = true;
+	}
+	return &ex->nvec[leaf];
+}
+
 const SiftSrcVec *
 get_vec(AggExec *ex, int leaf)
 {
+	if (ex->nullpass && leaf < ex->nbase && unnested_leaf(ex, leaf))
+		return null_vec(ex, leaf);
 	if (!ex->uvec_ok[leaf])
 	{
 		if (leaf >= ex->nbase)
@@ -611,6 +655,7 @@ num_div(SiftAggNxOp op, sift_i128 v, sift_i128 d)
 static void
 nan_cast_error(int bytes)
 {
+	/* check-errors: allow (the heap raises it, with this SQLSTATE and without a hint) */
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("cannot convert NaN to %s", bytes == 2 ? "smallint" : bytes == 4 ? "integer" : "bigint")));

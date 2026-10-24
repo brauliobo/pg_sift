@@ -14,6 +14,9 @@ my $rows = knob('SIFT_ROWS', 40000, 40000);
 my $conf = "sift.table_max_segments = 16\nsift.table_write_buffer_limit = 2048\nwal_consistency_checking = 'generic'";
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(md5(string_agg(id || v, $$,$$ ORDER BY id)), $$-$$) FROM %s';
 my $load = "INSERT INTO %s SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g";
+# a loop of single-row INSERTs: no command closes the write buffers as a whole
+my $loop = 'DO $$ BEGIN FOR g IN 1..' . $rows . q{ LOOP INSERT INTO %s VALUES (g, repeat('x', 1000) || g); END LOOP; END $$};
+my %loads = (command => $load, loop => $loop);
 my $tagged = 'SELECT sift._test_tbl_tagged($$%s$$) > 0';
 my $want = $rows . ':' . $rows * ($rows + 1) / 2;
 
@@ -56,40 +59,46 @@ subtest 'a standby replays the groups of a running transaction and sees the rows
 	is($primary->safe_psql('postgres', sprintf($tagged, 'r')), 'f', 'no group carries a writer any more');
 };
 
-subtest 'a rollback leaves nothing on either node and VACUUM returns the space' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE a (id int, v text) USING sift_table WITH (autovacuum_enabled = false)');
-	$primary->safe_psql('postgres', 'BEGIN; ' . sprintf($load, 'a') . '; ROLLBACK');
+for my $kind (sort keys %loads) {
+subtest "a rollback of a $kind load leaves nothing on either node and VACUUM returns the space" => sub {
+	my ($t, $sql) = ("a_$kind", $loads{$kind});
+	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false)");
+	$primary->safe_psql('postgres', 'BEGIN; ' . sprintf($sql, $t) . '; ROLLBACK');
 	$primary->wait_for_catchup($standby);
-	is(count($primary, 'a') . count($standby, 'a'), '00', 'no rows');
-	$primary->safe_psql('postgres', 'VACUUM a; VACUUM a');
+	is(count($primary, $t) . count($standby, $t), '00', 'no rows');
+	$primary->safe_psql('postgres', "VACUUM $t; VACUUM $t");
 	$primary->wait_for_catchup($standby);
-	is($primary->safe_psql('postgres', sprintf($tagged, 'a')), 'f', 'the groups are gone');
-	is($primary->safe_psql('postgres', "SELECT relation_blocks < 100 FROM sift.table_space('a')"), 't', 'the space is back');
-	$primary->safe_psql('postgres', sprintf($load, 'a'));
+	is($primary->safe_psql('postgres', sprintf($tagged, $t)), 'f', 'the groups are gone');
+	is($primary->safe_psql('postgres', "SELECT relation_blocks < 100 FROM sift.table_space('$t')"), 't', 'the space is back');
+	$primary->safe_psql('postgres', sprintf($sql, $t));
 	$primary->wait_for_catchup($standby);
-	is(digest($standby, 'a'), digest($primary, 'a'), 'the table takes a new load');
+	is(digest($standby, $t), digest($primary, $t), 'the table takes a new load');
 };
+}
 
-subtest 'a crash in the middle of the transaction leaves nothing' => sub {
-	$primary->safe_psql('postgres', 'CREATE TABLE c (id int, v text) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO c VALUES (-1, $$before$$)');
+for my $kind (sort keys %loads) {
+subtest "a crash in the middle of a $kind load leaves nothing" => sub {
+	my ($t, $sql) = ("c_$kind", $loads{$kind});
+	$primary->safe_psql('postgres', "CREATE TABLE $t (id int, v text) USING sift_table WITH (autovacuum_enabled = false); INSERT INTO $t VALUES (-1, \$\$before\$\$)");
 	my $bg = $primary->background_psql('postgres', on_error_stop => 0);
 	my $pid = $bg->query_safe('SELECT pg_backend_pid()');
 	$bg->query_safe('BEGIN');
-	$bg->query_safe(sprintf($load, 'c'));
-	is($bg->query_safe(sprintf($tagged, 'c')), 't', 'the transaction carries column groups');
+	$bg->query_safe(sprintf($sql, $t));
+	is($bg->query_safe(sprintf($tagged, $t)), 't', 'the transaction carries column groups');
 	my $log_offset = -s $primary->logfile;
 	SiftTest::kill_expected($pid);
 	$primary->wait_for_log(qr/database system is ready to accept connections/, $log_offset);
 	eval { $bg->quit };
-	is(digest($primary, 'c'), '1:-1:' . $primary->safe_psql('postgres', "SELECT md5('-1before')"), 'only the row from before is there');
-	$primary->safe_psql('postgres', 'VACUUM c; VACUUM c');
-	is($primary->safe_psql('postgres', sprintf($tagged, 'c')), 'f', 'VACUUM swept the groups of the dead transaction');
-	is(count($primary, 'c'), 1, 'still one row');
-	$primary->safe_psql('postgres', 'DELETE FROM c; ' . sprintf($load, 'c'));
-	is(count($primary, 'c'), $rows, 'a new load goes through');
+	is(digest($primary, $t), '1:-1:' . $primary->safe_psql('postgres', "SELECT md5('-1before')"), 'only the row from before is there');
+	$primary->safe_psql('postgres', "VACUUM $t; VACUUM $t");
+	is($primary->safe_psql('postgres', sprintf($tagged, $t)), 'f', 'VACUUM swept the groups of the dead transaction');
+	is(count($primary, $t), 1, 'still one row');
+	$primary->safe_psql('postgres', "DELETE FROM $t; " . sprintf($sql, $t));
+	is(count($primary, $t), $rows, 'a new load goes through');
 	$primary->wait_for_catchup($standby);
-	is(digest($standby, 'c'), digest($primary, 'c'), 'the standby agrees after the crash and the new load');
+	is(digest($standby, $t), digest($primary, $t), 'the standby agrees after the crash and the new load');
 };
+}
 
 subtest 'a commit survives an immediate stop' => sub {
 	$primary->safe_psql('postgres', 'CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false)');

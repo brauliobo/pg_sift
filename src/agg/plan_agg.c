@@ -102,9 +102,12 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	RegProcedure lhs,
 				rhs;
 
-	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ)
+	if (!get_op_hash_functions(sgc->eqop, &lhs, &rhs) && get_opcode(sgc->eqop) != F_CASH_EQ && !SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)))
 		return false;
 	expr = normalize_expr(c, expr);
+	/* groups by the image of the value: only a column, whose images are the ones the leaf stores */
+	if (SIFT_EQ_BY_IMAGE(get_opcode(sgc->eqop)) && match_leaf(c, expr) < 0)
+		return false;
 	k->typid = exprType(expr);
 	k->typmod = exprTypmod(expr);
 	k->collid = exprCollation(expr);
@@ -339,8 +342,7 @@ minmax_kind(Aggref *a, Oid argtype)
 				opcintype;
 	SortStrategy strategy;
 
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for aggregate %u", a->aggfnoid);
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", a->aggfnoid);
 	sortop = ((Form_pg_aggregate) GETSTRUCT(tup))->aggsortop;
 	ReleaseSysCache(tup);
 	if (!OidIsValid(sortop) || !get_ordering_op_properties(sortop, &opfamily, &opcintype, &strategy) ||
@@ -633,8 +635,9 @@ bool
 compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 {
 	SiftAggAgg	fresh;
-	Bitmapset  *used;
-	bool		other;
+	Bitmapset  *outer;
+	bool		other,
+				ok = true;
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
@@ -650,12 +653,17 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 			return false;
 	}
 	fresh = *out;
-	used = bms_copy(c->used);
+	outer = c->used;
+	c->used = NULL;
 	other = c->other_group;
-	if (compile_native_agg(c, a, out, ai))
-		return true;
-	*out = fresh;
-	c->used = used;
-	c->other_group = other;
-	return compile_gen(c, a, out, ai);
+	if (!compile_native_agg(c, a, out, ai))
+	{
+		*out = fresh;
+		c->used = NULL;
+		c->other_group = other;
+		ok = compile_gen(c, a, out, ai);
+	}
+	out->reads = c->used;
+	c->used = bms_union(outer, c->used);
+	return ok;
 }

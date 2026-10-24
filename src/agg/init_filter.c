@@ -9,12 +9,25 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 
+#include "port/pg_bitutils.h"
+
 #include "agg/part.h"
 #include "agg/wide.h"
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 
-/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, or a hash table of values far apart), sorted */
+/*
+ * The members of an IN list that travel with its zone test. A set prunes the units whose zone holds none of its members: a unit meets one of n
+ * members with probability about 1 - exp(-n / units) when the keys are clustered, so a set of more than a few times the units prunes almost none
+ * and is left to its range. The least is what a few units already gain from a handful of members.
+ */
+static uint32
+zone_set_max(AggExec *ex)
+{
+	return Min(Max(ZONE_SET_MAX, 2 * sift_colsrc_nsb(ex->src)), ZONE_SET_CAP);
+}
+
+/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, a bit table, or a hash table of values far apart), sorted */
 static int64 *
 set_values(const PredState *st, int *n)
 {
@@ -23,10 +36,17 @@ set_values(const PredState *st, int *n)
 	*n = 0;
 	if (st->in_htab)
 	{
+		/* check-memory: allow in_hmask is the capacity of a hash table minus one (pred_in.c) */
 		for (uint64 h = 0; h <= st->in_hmask; h++)
 			if (st->in_hused[h])
 				vals[(*n)++] = st->in_htab[h];
 		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
+	}
+	else if (st->in_bits)
+	{
+		for (uint64 w = 0; w < (st->in_nbits + 63) / 64; w++)
+			for (uint64 b = st->in_bits[w]; b != 0; b &= b - 1)
+				vals[(*n)++] = (int64) ((uint64) st->in_lo + w * 64 + pg_rightmost_one_pos64(b));
 	}
 	else
 		for (uint32 i = 0; i < st->in_nlut; i++)
@@ -50,6 +70,9 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 		return false;
 	if (p->kind == SAP_IN)
 	{
+		/* the NaNs of a numeric leaf are in no zone */
+		if (st->in_hasnan)
+			return false;
 		/* no value in the set: a unit's zone holds none */
 		if (st->in_nv == 0)
 		{
@@ -60,10 +83,8 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 		{
 			lo = st->in_lo;
 			hi = st->in_hi;
-			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell. A byte table longer than
-			 * ZONE_SET_MAX is left to its range: the values are sorted again at each begin of a range of units, about 1 us each, and a
-			 * set that long meets the zone of almost every unit */
-			if (!st->in_dense && (st->in_htab || st->in_nv <= ZONE_SET_MAX))
+			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell */
+			if (!st->in_dense && st->in_nv <= zone_set_max(ex))
 				z->vals = set_values(st, &z->nvals);
 		}
 	}
@@ -95,7 +116,24 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 	return true;
 }
 
-/* z, ANDed with the test of its leaf in tests (a leaf is one entry: its range narrows, the first set stays) */
+/* the values both sorted sets hold (none: the range of the test is empty, which prunes every unit) */
+static const int64 *
+meet_values(const int64 *a, int na, const int64 *b, int nb, int *n)
+{
+	int64	   *out = palloc(Max(Min(na, nb), 1) * sizeof(int64));
+
+	*n = 0;
+	for (int i = 0, j = 0; i < na && j < nb;)
+		if (a[i] < b[j])
+			i++;
+		else if (a[i] > b[j])
+			j++;
+		else
+			out[(*n)++] = a[i++], j++;
+	return out;
+}
+
+/* z, ANDed with the test of its leaf in tests (a leaf is one entry: its range narrows, its sets meet) */
 static List *
 and_zone(List *tests, const SiftSrcPrune *z)
 {
@@ -112,6 +150,16 @@ and_zone(List *tests, const SiftSrcPrune *z)
 	{
 		t->nvals = z->nvals;
 		t->vals = z->vals;
+	}
+	else if (z->nvals > 0)
+	{
+		/* two sets of keys on one leaf (a dimension filter and a lookup's keys): a unit has to hold a value of both */
+		t->vals = meet_values(t->vals, t->nvals, z->vals, z->nvals, &t->nvals);
+		if (t->nvals == 0)
+		{
+			t->lo = PG_INT64_MAX;
+			t->hi = PG_INT64_MIN;
+		}
 	}
 	return tests;
 }
@@ -216,6 +264,7 @@ prune_init(AggExec *ex)
 {
 	List	   *tests = NIL;
 
+	ex->skip = NULL;
 	for (int i = 0; i < ex->spec->npred; i++)
 		tests = zone_tests(ex, ex->spec->pred[i], tests);
 	ex->prune = MemoryContextAlloc(ex->cxt, Max(list_length(tests), 1) * sizeof(SiftSrcPrune));
@@ -284,7 +333,8 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		int64	   *set = palloc(FILTER_MAX_SET * sizeof(int64));
 		int			n = 0;
 
-		if ((p->op && st->in_hasnull) || st->in_htab)
+		/* the NaN rows of a numeric leaf are the executor's */
+		if ((p->op && st->in_hasnull) || st->in_htab || st->in_hasnan)
 			return false;
 		for (uint32 i = 0; i < st->in_nlut; i++)
 			if (st->in_lut[i] && n++ < FILTER_MAX_SET)
@@ -339,9 +389,9 @@ recheck_init(AggExec *ex)
 	for (int i = 0; i < s->nleaves; i++)
 		if (s->recheck[i] != SRK_NONE)
 		{
-			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i], NULL, InvalidOid);
+			sift_colsrc_set_recheck(ex->src, s->leaves[i], s->recheck[i] == SRK_RECORDSET_LAZY ? SRK_RECORDSET : s->recheck[i] == SRK_CAST_TESTED ? SRK_CAST : s->recheck[i] == SRK_IOCAST ? SRK_TEXT : s->recheck[i], NULL, InvalidOid);
 			ex->recheck = true;
-			ex->recheck_late |= s->recheck[i] == SRK_CAST;
+			ex->recheck_late |= s->recheck[i] == SRK_CAST || s->recheck[i] == SRK_IOCAST;
 			if (s->recheck[i] == SRK_RECORDSET)
 				for (int k = 0; k < s->npred; k++)
 					ex->recheck_after_late |= s->pred[k]->late && s->pred[k]->level == 0;
@@ -420,8 +470,7 @@ wide_init(AggExec *ex)
 			wide_operand(ex, s->pred[i], &t[n++]);
 			ex->pushed[i] = true;
 		}
-	if (n > 0 && sift_colsrc_set_wide(ex->src, t, n) != n)
-		elog(ERROR, "sift: the source did not take the conjuncts on wide leaves");
+	SIFT_INVARIANT(n == 0 || sift_colsrc_set_wide(ex->src, t, n) == n, "sift: the source did not take the conjuncts on wide leaves");
 	ex->nwide = n;
 	MemoryContextSwitchTo(old);
 }

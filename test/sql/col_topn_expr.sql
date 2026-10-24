@@ -1,0 +1,156 @@
+-- ORDER BY coalesce(<integer, date or timestamp column>, <constant>), lower(<text column>), upper(<text column>) LIMIT n: sort expressions the scan evaluates itself,
+-- because none of them can raise (the normal plan evaluates a sort expression for every row that passes; an expression that can, stays with it). Every query runs
+-- twice, the plain plan as the reference (sift.enable_agg off) and the pushed one, and the rows are compared in order: asc and desc, NULLs, the constant inside, below
+-- and above the values (zones of units that are all NULL, or hold none), ties, collations, the heap, the sort of every row, workers, rows in the write buffer.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+CREATE TABLE tc (id int PRIMARY KEY, g int, a int, b bigint, c smallint, d date, t timestamp, z timestamptz, s text, v varchar(12));
+INSERT INTO tc
+SELECT i, i % 7,
+	-- a follows the table, with stretches of NULLs (units that are all NULL) and the limits of the type
+	CASE WHEN i % 4000 < 900 THEN NULL WHEN i = 17000 THEN 2147483647 WHEN i = 21000 THEN -2147483648 ELSE i / 3 END,
+	CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN 9223372036854775807 WHEN i % 991 = 0 THEN -9223372036854775807 - 1 ELSE (i * 104729::bigint) % 1000003 - 500000 END,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 101 = 0 THEN 32767 WHEN i % 103 = 0 THEN -32768 ELSE (i * 37) % 2000 - 1000 END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 5003 = 0 THEN 'infinity' ELSE DATE '2020-01-01' + (i / 40) END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + (i % 7000) * interval '29 minutes' END,
+	CASE WHEN i % 4 = 0 THEN NULL WHEN i % 5009 = 0 THEN '-infinity' ELSE TIMESTAMPTZ '2020-01-01 00:00:00+00' + (i % 9000) * interval '17 minutes' END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 23 = 0 THEN ''
+		ELSE (ARRAY['Zed','apple','Apple','banana','éclair','Ärger','b','B','a b','a-b','z','10','9','ß','ss','日本','é日','_x','  ','İstanbul','ǅ','ΣΑΣ'])[1 + i % 22] || (i % 211) END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE 'V' || (i % 53) END
+FROM generate_series(1, 30000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tc_col ON tc USING sift_col (id, g, a, b, c, d, t, z, s, v);
+RESET sift.test_limits;
+VACUUM (ANALYZE) tc;
+
+CREATE FUNCTION tc_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN pushed THEN workers ELSE 0 END::text, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
+CREATE FUNCTION tc_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tc_a, tc_b;
+	PERFORM tc_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tc_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM tc_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE tc_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tc_a EXCEPT ALL SELECT pos, r FROM tc_b) UNION ALL (SELECT pos, r FROM tc_b EXCEPT ALL SELECT pos, r FROM tc_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || CASE WHEN plan ~ ', sorted' THEN '+sorted' ELSE '' END || ' ' || (SELECT count(*) FROM tc_b);
+END $$;
+
+-- a collation of the C library or ICU other than C, when the build has one (strcoll orders case and accents, lower() and upper() follow its ctype)
+CREATE FUNCTION tc_coll() RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') $$;
+
+CREATE TABLE tc_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO tc_q VALUES
+	('int_asc',          $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5000), id LIMIT 25$q$),
+	('int_desc',         $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5000) DESC, id DESC LIMIT 25$q$),
+	('int_below',        $q$SELECT id, a FROM tc ORDER BY coalesce(a, -1), id LIMIT 40$q$),
+	('int_above',        $q$SELECT id, a FROM tc ORDER BY coalesce(a, 100000) DESC, id LIMIT 40$q$),
+	('int_max',          $q$SELECT id, a FROM tc ORDER BY coalesce(a, 2147483647) DESC, id LIMIT 25$q$),
+	('int_min',          $q$SELECT id, a FROM tc ORDER BY coalesce(a, -2147483648), id LIMIT 25$q$),
+	('int_offset',       $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5000), id LIMIT 20 OFFSET 900$q$),
+	('int_filter',       $q$SELECT id, a FROM tc WHERE g IN (2, 3) AND id > 3000 ORDER BY coalesce(a, 4000) DESC, id LIMIT 30$q$),
+	('int_ties',         $q$SELECT id, g, a FROM tc ORDER BY coalesce(g, 0), coalesce(a, 100), id LIMIT 30$q$),
+	('int_two_keys',     $q$SELECT id, g, a FROM tc ORDER BY coalesce(a, 7), g DESC, id LIMIT 30$q$),
+	('bigint_asc',       $q$SELECT id, b FROM tc ORDER BY coalesce(b, 0), id LIMIT 25$q$),
+	('bigint_desc',      $q$SELECT id, b FROM tc ORDER BY coalesce(b, 9223372036854775807) DESC, id LIMIT 25$q$),
+	('bigint_min',       $q$SELECT id, b FROM tc ORDER BY coalesce(b, -9223372036854775807 - 1), id LIMIT 25$q$),
+	('smallint',         $q$SELECT id, c FROM tc ORDER BY coalesce(c, 0::smallint) DESC, id LIMIT 25$q$),
+	('date',             $q$SELECT id, d FROM tc ORDER BY coalesce(d, DATE '2021-06-01'), id LIMIT 25$q$),
+	('date_desc',        $q$SELECT id, d FROM tc ORDER BY coalesce(d, DATE '2021-06-01') DESC, id LIMIT 25$q$),
+	('date_infinity',    $q$SELECT id, d FROM tc ORDER BY coalesce(d, 'infinity'::date) DESC, id LIMIT 25$q$),
+	('timestamp',        $q$SELECT id, t FROM tc ORDER BY coalesce(t, TIMESTAMP '2020-03-01 12:00:00'), id LIMIT 25$q$),
+	('timestamptz_desc', $q$SELECT id, z FROM tc ORDER BY coalesce(z, TIMESTAMPTZ '2020-03-01 12:00:00+00') DESC, id LIMIT 25$q$),
+	('lower',            $q$SELECT id, s FROM tc ORDER BY lower(s), id LIMIT 25$q$),
+	('upper_desc',       $q$SELECT id, s FROM tc ORDER BY upper(s) DESC, id LIMIT 25$q$),
+	('lower_nulls_first',$q$SELECT id, s FROM tc ORDER BY lower(s) NULLS FIRST, id LIMIT 25$q$),
+	('upper_nulls_last', $q$SELECT id, s FROM tc ORDER BY upper(s) DESC NULLS LAST, id DESC LIMIT 25$q$),
+	('lower_offset',     $q$SELECT id, s FROM tc ORDER BY lower(s), id LIMIT 20 OFFSET 700$q$),
+	('lower_filter',     $q$SELECT id, s FROM tc WHERE g IN (1, 3) AND id > 5000 ORDER BY upper(s) DESC, id LIMIT 30$q$),
+	('lower_c',          $q$SELECT id, s FROM tc ORDER BY lower(s COLLATE "C"), id LIMIT 25$q$),
+	('upper_c_desc',     $q$SELECT id, s FROM tc ORDER BY upper(s COLLATE "C") DESC, id LIMIT 25$q$),
+	('lower_locale',     format($q$SELECT id, s FROM tc ORDER BY lower(s COLLATE %I), id LIMIT 25 OFFSET 3$q$, tc_coll())),
+	('upper_locale',     format($q$SELECT id, s FROM tc ORDER BY upper(s COLLATE %I) DESC NULLS FIRST, id LIMIT 25$q$, tc_coll())),
+	('varchar',          $q$SELECT id, v FROM tc ORDER BY lower(v), id DESC LIMIT 30$q$),
+	('lower_then_int',   $q$SELECT id, g, s FROM tc ORDER BY g DESC, lower(s), id LIMIT 30$q$),
+	('int_then_lower',   $q$SELECT id, a, s FROM tc ORDER BY coalesce(a, 300), lower(s), id LIMIT 30$q$),
+	('three_keys',       $q$SELECT id FROM tc ORDER BY coalesce(a, 10), upper(s), coalesce(d, DATE '2020-06-01') DESC, id LIMIT 30$q$),
+	('six_keys',         $q$SELECT id, a, s FROM tc ORDER BY g, coalesce(a, 5), b, coalesce(d, DATE '2021-01-01'), upper(s), lower(v), id LIMIT 30$q$),
+	('deep_page',        $q$SELECT id, s FROM tc ORDER BY upper(s) DESC, id LIMIT 20 OFFSET 20000$q$),
+	('all_rows',         $q$SELECT id, a FROM tc ORDER BY coalesce(a, 5000), id LIMIT 200000$q$),
+	('past_the_heap',    $q$SELECT id, s FROM tc ORDER BY lower(s), id LIMIT 100001$q$);
+
+SELECT tag, tc_check(q) FROM tc_q ORDER BY tag COLLATE "C";
+
+-- workers: each keeps a heap of the keys it saw, the leader merges them
+SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'bigint_asc', 'date_desc', 'lower', 'upper_desc', 'lower_locale', 'three_keys', 'int_then_lower', 'six_keys') ORDER BY tag COLLATE "C";
+
+-- the sort of every row that passes with a string key spills (work_mem), and a deep page
+SET work_mem = '64kB';
+SELECT tc_check($q$SELECT id, s FROM tc ORDER BY lower(s), id LIMIT 20 OFFSET 20000$q$) AS spilled_lower,
+	   tc_check($q$SELECT id, a, s FROM tc ORDER BY coalesce(a, 500) DESC, upper(s), id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
+RESET work_mem;
+
+-- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
+INSERT INTO tc SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, DATE '2019-12-31' - i % 5, NULL, NULL,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE '!Ǆ' || i || 'zz' END, 'w' || i
+FROM generate_series(1, 700) i;
+UPDATE tc SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
+UPDATE tc SET a = -5, d = NULL WHERE id % 89 = 0;
+DELETE FROM tc WHERE id % 83 = 0;
+SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'int_below', 'bigint_asc', 'date', 'timestamp', 'lower', 'upper_desc', 'lower_locale', 'varchar', 'three_keys', 'deep_page') ORDER BY tag COLLATE "C";
+SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'upper_desc', 'int_then_lower') ORDER BY tag COLLATE "C";
+VACUUM tc;
+SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'date_desc', 'lower', 'upper_desc') ORDER BY tag COLLATE "C";
+
+-- overflow strings (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the plan that would read the key leaves the query to the normal plan
+CREATE TABLE tv (id int PRIMARY KEY, w text);
+INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
+SET sift.test_limits = 'unit_bytes=65536';
+CREATE INDEX tv_col ON tv USING sift_col (id, w);
+RESET sift.test_limits;
+ANALYZE tv;
+SELECT tc_check($q$SELECT id, w FROM tv ORDER BY upper(w) DESC, id LIMIT 10$q$) AS overflow_key;
+
+-- the sorted run of a column (order_columns) orders the column, not coalesce(column, constant), which moves the NULLs among the values: the scan reads the units
+-- of the expression row by row, where the plain column goes through the run
+CREATE TABLE tq (id int, kn int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE tq ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tq SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END, repeat('x', 1500) FROM generate_series(1, 12000) g;
+CREATE INDEX tq_col ON tq USING sift_col (id, kn) WITH (order_columns = 'kn', cube_minmax = false, superunit = 0);
+ANALYZE tq;
+CREATE FUNCTION tq_runs(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM tc_mode(true, 0);
+	PERFORM set_config('seq_page_cost', '1000', true);
+	PERFORM set_config('random_page_cost', '1000', true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+		IF line ~ 'Units Read By Sorted Run' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT tq_runs($q$SELECT id, kn FROM tq ORDER BY kn, id LIMIT 30$q$) AS column_by_run,
+	   tq_runs($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$q$) AS coalesce_by_run;
+SELECT tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20), id LIMIT 30$q$) AS coalesce_asc,
+	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 20) DESC, id LIMIT 30 OFFSET 100$q$) AS coalesce_desc,
+	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, -1), id LIMIT 30$q$) AS coalesce_below,
+	   tc_check($q$SELECT id, kn FROM tq ORDER BY coalesce(kn, 100), id DESC LIMIT 30$q$) AS coalesce_above;
+DROP TABLE tc, tc_q, tq, tv;
+DROP FUNCTION tc_check(text,integer), tc_coll(), tc_mode(boolean,integer), tq_runs(text);
+DROP EXTENSION pg_sift_test, pg_sift;

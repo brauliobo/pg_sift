@@ -8,30 +8,13 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-CREATE FUNCTION runq(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
-	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
-	RETURN r;
-EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
-END $$;
+\ir test/agg_helpers.sql
 
 -- 'same' when the scan and the normal plan end alike (the rows or the error), else both outcomes
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);
 BEGIN
 	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 120), left(b, 120)) END;
-END $$;
-
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
 END $$;
 
 -- the values a member can hold that a float8 leaf cannot store, and the numbers it can
@@ -93,7 +76,7 @@ INSERT INTO l_t SELECT id, 0, jsonb_build_object('l', val) FROM list_kinds;
 SELECT k.id, k.kind, same(q[1]) AS length_sum, same(q[2]) AS length_filter FROM list_kinds k, LATERAL l_q(k.id) q ORDER BY k.id;
 SELECT pushed((l_q(1))[1]) AS dirty_length_pushed, same('SELECT grp, sum(jsonb_array_length(doc -> $$l$$)) FROM l_t GROUP BY grp') AS dirty_length_same;
 
--- a scalar leaf: the same casts of a path declared float8
+-- a scalar leaf: the same casts of a path declared float8; the scan takes the query and reads the rows that hold such a value from the heap
 CREATE TABLE s_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO s_t SELECT i, i % 5, jsonb_build_object('k', i % 10) FROM generate_series(1, 3000) i;
 CREATE INDEX s_t_col ON s_t USING sift_col (id, grp, doc) WITH (paths = 'doc.k float8');
@@ -130,6 +113,6 @@ DROP FUNCTION l_q(int);
 DROP FUNCTION m_q(int);
 DROP FUNCTION pushed(text);
 DROP FUNCTION same(text);
-DROP FUNCTION runq(text, bool);
+DROP FUNCTION runq(text, bool), outcome, runs_in_scan;
 DROP TABLE r_t, s_t, list_kinds, l_t, m_t, kinds;
 DROP EXTENSION pg_sift;

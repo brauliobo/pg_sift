@@ -100,7 +100,8 @@ SELECT * FROM chk('vacuum');
  vacuum | SiftAgg     |           0 | SiftAgg   |         0 | SiftAgg     |           0
 (1 row)
 
--- without the index the plans are the normal ones, with an index that lacks a column too
+-- without the index the plans are the normal ones, with an index that lacks a column too (the shared CTE takes the scan for the aggregates the index covers when
+-- they cost 1.15 times less than the work they replace and the plan with the ordinary reader of the rest totals at most 1.1 times the shared one)
 DROP INDEX events_col;
 SELECT * FROM chk('drop index');
     step    | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 
@@ -112,7 +113,7 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind);
 SELECT * FROM chk('narrow index');
      step     | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 
 --------------+-------------+-------------+-----------+-----------+-------------+-------------
- narrow index | normal      |           0 | normal    |         0 | normal      |           0
+ narrow index | normal      |           0 | normal    |         0 | SiftAgg     |           0
 (1 row)
 
 DROP INDEX events_col;
@@ -128,10 +129,10 @@ ALTER TABLE events ALTER COLUMN kind TYPE varchar(20);
 SELECT * FROM chk('table rewrite');
      step      | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 
 ---------------+-------------+-------------+-----------+-----------+-------------+-------------
- table rewrite | SiftAgg     |           0 | SiftAgg   |         0 | normal      |           0
+ table rewrite | SiftAgg     |           0 | SiftAgg   |         0 | SiftAgg     |           0
 (1 row)
 
--- the rewrite left no page all-visible: the pushdown of the shared CTE, whose inline plan has to cost half of the other, waits for VACUUM
+-- the rewrite left no page all-visible: the scans check the rows of their pages in the heap, and are still the cheaper plan of the shared CTE
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM chk('vacuum after rewrite');
          step         | lookup_plan | lookup_diff | path_plan | path_diff | shared_plan | shared_diff 

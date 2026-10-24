@@ -9,13 +9,21 @@
 #include "access/heapam.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_type_d.h"
 #include "commands/progress.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#ifdef SIFT_TESTING
+#include "bm25/build.h"
+#endif
+#include "col/am.h"
 #include "col/build.h"
+#include "col/shred.h"
+#include "core/limits.h"
 #include "core/ops.h"
 #include "core/cmp.h"
 
@@ -45,8 +53,7 @@ struct ColBuild
 	SiftSegEntry *segs;
 	int			nsegs;
 	int			maxsegs;
-	pg_atomic_uint64 *done;		/* parallel: the rows of all the participants */
-	bool		leader;
+	bool		shared;			/* a participant of a parallel build */
 	double		indexed;
 	double		reported;
 };
@@ -73,7 +80,8 @@ end_segment(ColBuild *b)
 	if (b->w == NULL)
 		return;
 	if (b->nsegs == b->maxsegs)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs)));
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build needs more than %d segments", b->maxsegs),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	b->w = NULL;
 }
@@ -82,7 +90,7 @@ end_segment(ColBuild *b)
 static uint64
 next_gen(ColBuild *b)
 {
-	return b->done ? sift_store_new_gen(b->index) : b->nsegs + 1;
+	return b->shared ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
 static void
@@ -174,17 +182,12 @@ flush_page(ColBuild *b)
 	CHECK_FOR_INTERRUPTS();
 }
 
-/* The rows indexed so far are added to the total of the participants; the serial build and the leader show it */
+/* The rows indexed since the last report; a worker's go to the progress of the leader */
 static void
 report_rows(ColBuild *b)
 {
-	uint64		total = b->indexed;
-
-	if (b->done)
-		total = pg_atomic_add_fetch_u64(b->done, (uint64) (b->indexed - b->reported));
+	pgstat_progress_parallel_incr_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) (b->indexed - b->reported));
 	b->reported = b->indexed;
-	if (b->done == NULL || b->leader)
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) total);
 }
 
 static void
@@ -216,7 +219,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 }
 
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, pg_atomic_uint64 *done, bool leader)
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -239,8 +242,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->page = InvalidBlockNumber;
 	b->segs = segs;
 	b->maxsegs = maxsegs;
-	b->done = done;
-	b->leader = leader;
+	b->shared = shared;
 	return b;
 }
 
@@ -251,6 +253,7 @@ sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info)
 	double		tuples = table_index_build_scan(heap, b->index, info, false, true, build_cb, b, NULL);
 
 	MemoryContextSwitchTo(old);
+	report_rows(b);
 	return tuples;
 }
 
@@ -270,6 +273,8 @@ sift_colb_scan_sb(ColBuild *b, Relation heap, IndexInfo *info, Snapshot snapshot
 	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
 	tuples = table_index_build_range_scan(heap, b->index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
 	MemoryContextSwitchTo(old);
+	pgstat_progress_parallel_incr_param(PROGRESS_SCAN_BLOCKS_DONE, Min(SIFT_SB_PAGES, nblocks - start));
+	report_rows(b);
 	return tuples;
 }
 
@@ -343,7 +348,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, NULL, true);
+	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, false);
 	int			nsegs;
 
 	if (heap->rd_rel->reltuples > 0)
@@ -351,6 +356,9 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
 	res->heap_tuples = sift_colb_scan(b, heap, info);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
+#ifdef SIFT_TESTING
+	sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
+#endif
 	nsegs = sift_colb_end(b);
 	res->index_tuples = sift_colb_rows(b);
 	sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);
@@ -360,19 +368,99 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	return res;
 }
 
+/*
+ * The keys of a wildcard path (m.*) past the dictionary of the shredder (SIFT_SHRED_DEFAULT_KEYS per index) leave the key and its values as
+ * overflow, and a query that reads the leaf keeps the normal plan: the units that hold one are counted from the zones of the finished segments.
+ */
+static void
+notice_key_overflow(Relation index)
+{
+	const SiftColIndexMeta *d = sift_col_index_defs(index);
+	const SiftColLeafStats *ls = NULL;
+
+	for (int c = 0; c < d->ncols; c++)
+	{
+		const SiftColDef *def = &d->cols[c];
+		size_t		n = def->path ? strlen(def->path) : 0;
+
+		if (def->parent < 0 || n <= 4 || strcmp(def->path + n - 4, "#key") != 0)
+			continue;
+		if (ls == NULL)
+			ls = sift_col_leaf_stats(index);
+		if (ls[c].novf > 0)
+			ereport(NOTICE,
+					(errmsg("sift_col index \"%s\": the keys of %.*s passed the %d keys the index keeps in %.0f of %.0f units (%.1f%%)",
+							RelationGetRelationName(index), (int) (n - 4), def->path, (int) sift_limit(shred_keys, SIFT_SHRED_DEFAULT_KEYS),
+							ls[c].novf, ls[c].nunits, 100.0 * ls[c].novf / Max(ls[c].nunits, 1)),
+					 errdetail("The keys and values past the limit are read from the heap, and a query that reads the leaf keeps the normal plan."),
+					 errhint("Declare the keys that queries read by name in the paths option instead of a wildcard, or keep the map out of the index.")));
+	}
+}
+
+/* The option writes column format minor 16, which a library before 3.3 refuses, and takes a longer build for the heap addresses it lists: said once, where it is used */
+static void
+notice_point_tid(Relation index)
+{
+	const SiftColLeafStats *ls;
+	const SiftColIndexMeta *d;
+	double		units = 0;
+
+	if (sift_col_options_point_tid_columns(index)[0] == '\0')
+		return;
+	d = sift_col_index_defs(index);
+	ls = sift_col_leaf_stats(index);
+	for (int c = 0; c < d->ncols; c++)
+		units = Max(units, ls[c].point_tid_units);
+	if (units <= 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": point_tid_columns lists the heap addresses of the rows", RelationGetRelationName(index)),
+			 errdetail("A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65%% longer than without a directory."),
+			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
+}
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
+	bool		chosen;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table")));
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
+						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
+	/* the bitmap scan compares bytes, which is equality only under a deterministic collation (a query matches the index collation exactly) */
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		Oid			opc = index->rd_opcintype[i];
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+		SiftColDef	def[SIFT_COL_MAX_LANES];
+
+		if ((opc == TEXTOID || opc == BPCHAROID) && OidIsValid(index->rd_indcollation[i]) && !get_collation_isdeterministic(index->rd_indcollation[i]))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_%s_ops needs a deterministic collation", opc == TEXTOID ? "text" : "bpchar"),
+							errhint("Use the default operator class for a column under a nondeterministic collation.")));
+		/* a char without a length holds values the leaf does not keep as its equality; a numeric is scanned only as the scaled integer of numeric(p <= 18, s) */
+		if (opc == BPCHAROID && att->atttypmod < 0)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_bpchar_ops needs char(n)"),
+							errhint("Use the default operator class for a column of type bpchar.")));
+		if (opc == NUMERICOID && (sift_col_att_leaves(att, def) != 1 || def[0].store != SIFT_COLS_INT))
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18"),
+							errhint("Use the default operator class for a numeric column of another precision.")));
+	}
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 #endif
+	chosen = sift_col_auto_keys(heap, index);
 	if (info->ii_ParallelWorkers > 0)
 		res = sift_colp_build(heap, index, info);
-	return res ? res : serial_build(heap, index, info);
+	if (res == NULL)
+		res = serial_build(heap, index, info);
+	notice_key_overflow(index);
+	notice_point_tid(index);
+	sift_col_report_caps(index);
+	sift_col_vacuum_notice(heap, index);
+	if (chosen)
+		sift_col_auto_keys_report(index);
+	return res;
 }
 
 void

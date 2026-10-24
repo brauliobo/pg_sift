@@ -223,3 +223,108 @@ g|count|      sum
 2|13337|280020682
 (3 rows)
 
+
+starting permutation: wb wloop wtag wown rscan ridx rbm ragg wc rscan ridx rbm ragg
+step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wloop: DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$;
+step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
+carries_its_writer
+------------------
+t                 
+(1 row)
+
+step wown: SELECT count(*) FROM iso_big;
+count
+-----
+40010
+(1 row)
+
+step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
+count|sum
+-----+---
+   10| 55
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_big WHERE id > 0;
+count
+-----
+   10
+(1 row)
+
+step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_big WHERE id > 20000;
+count
+-----
+    0
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*), sum(id) FROM iso_big GROUP BY 1 ORDER BY 1;
+g|count|sum
+-+-----+---
+0|    3| 18
+1|    4| 22
+2|    3| 15
+(3 rows)
+
+step wc: COMMIT;
+step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
+count|      sum
+-----+---------
+40010|840020055
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_big WHERE id > 0;
+count
+-----
+40010
+(1 row)
+
+step rbm: SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_big WHERE id > 20000;
+count
+-----
+21000
+(1 row)
+
+step ragg: SET sift.enable_agg = on; SET cpu_tuple_cost = 0.5; SELECT id % 3 AS g, count(*), sum(id) FROM iso_big GROUP BY 1 ORDER BY 1;
+g|count|      sum
+-+-----+---------
+0|13336|279993018
+1|13337|280006355
+2|13337|280020682
+(3 rows)
+
+
+starting permutation: wb wloop wtag rscan wa rscan ridx rv rscan
+step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wloop: DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$;
+step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
+carries_its_writer
+------------------
+t                 
+(1 row)
+
+step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
+count|sum
+-----+---
+   10| 55
+(1 row)
+
+step wa: ROLLBACK;
+step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
+count|sum
+-----+---
+   10| 55
+(1 row)
+
+step ridx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_big WHERE id > 0;
+count
+-----
+   10
+(1 row)
+
+step rv: VACUUM iso_big;
+step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
+count|sum
+-----+---
+   10| 55
+(1 row)
+

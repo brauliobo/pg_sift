@@ -20,6 +20,8 @@
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
+#include "catalog/partition.h"
+#include "utils/partcache.h"
 #include "access/stratnum.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
@@ -28,6 +30,7 @@
 #include "commands/defrem.h"
 #include "catalog/pg_index.h"
 #include "miscadmin.h"
+#include "core/limits.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
@@ -96,12 +99,12 @@ vleaf_source(AggCtx *c, int j)
 /*
  * The key of `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'`, NULL for any other outer join of the function. An object has one member
  * per key, so the join is the member k of each row (a row without it keeps NULL columns): a row level value, not an unnest. A JSON null and
- * a missing key are the same NULL there; before PostgreSQL 18 a JSON null raises where the missing key does not, so the normal plan stays.
+ * a missing key are the same NULL there; before PostgreSQL 18 the cast of a JSON null raises where the missing key does not, so the plan stays
+ * normal while some unit may hold one (reads_json_null_cast).
  */
 static const char *
 left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 {
-#if PG_VERSION_NUM >= 180000
 	OpExpr	   *op;
 	Node	   *a,
 			   *b;
@@ -126,9 +129,61 @@ left_each_key(LeftJoin *lj, Index rti, FuncKind kind)
 		((Const *) b)->constisnull)
 		return NULL;
 	return TextDatumGetCString(((Const *) b)->constvalue);
-#else
-	return NULL;
-#endif
+}
+
+/*
+ * LEFT JOIN LATERAL over the list of a row: its own conditions (the lateral's WHERE, the ON clause) say which elements exist, and a row with
+ * none is one tuple with NULL element columns. A condition above the join on an element column that PostgreSQL did not turn into an inner join
+ * (it is not strict) would see that NULL tuple: the plan stays normal.
+ */
+static bool
+left_lateral(AggCtx *c, FromScan *fs, LeftJoin *lj, Index rti)
+{
+	if (!sift_agg_left_lateral || lj->kind != SJ_LEFT || (c->func_kind != FK_RECORDSET && c->func_kind != FK_ELEMENTS))
+		return false;
+	foreach_ptr(Node, q, fs->quals)
+		if (bms_is_member(rti, pull_varnos(c->root, q)))
+			return false;
+	fs->quals = list_concat(fs->quals, list_copy(lj->quals));
+	return true;
+}
+
+/*
+ * Does the group key hold every column of the partition key, as the column itself? A row of a group is then in the one partition that holds the
+ * value of the key, and the groups of a partition are final when its units end. The partitions are read one after the other, so a partition
+ * of a partition would end a group that goes on in the next.
+ */
+static bool
+group_has_partition_key(AggCtx *c, List *keys)
+{
+	Relation	rel;
+	PartitionKey pk;
+	bool		ok;
+
+	if (c->nparts == 0)
+		return false;
+	/* even_if_detached: a partition the snapshot still sees may be mid-DETACH CONCURRENTLY, which the call otherwise refuses with an error */
+	for (int i = 0; i < c->nparts; i++)
+		if (get_partition_parent(c->partheap[i], true) != c->heapoid)
+			return false;
+	rel = table_open(c->heapoid, NoLock);
+	pk = RelationGetPartitionKey(rel);
+	ok = pk != NULL && pk->partnatts > 0;
+	for (int i = 0; ok && i < pk->partnatts; i++)
+	{
+		AttrNumber	att = get_partition_col_attnum(pk, i);
+		bool		hit = false;
+
+		foreach_ptr(Node, e, keys)
+		{
+			Node	   *x = strip_relabel(e);
+
+			hit |= att != 0 && IsA(x, Var) && ((Var *) x)->varno == c->relid && ((Var *) x)->varattno == att;
+		}
+		ok = hit;
+	}
+	table_close(rel, NoLock);
+	return ok;
 }
 
 bool
@@ -136,26 +191,30 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
-	Bitmapset  *allrtis = NULL;
+	Bitmapset  *allrtis;
 	List	   *live_rtis = NIL,
 			   *joined = NIL;
-	int			nin = 0;
+	int			nin = 0,
+				skip = fs->skip;
 
 	scan_from((Node *) parse->jointree, fs);
+	allrtis = bms_copy(fs->hidden);
 	if (!fs->ok)
-		return false;
+		return agg_refuse_on(FROM_SHAPE, "the FROM tree has a join other than the inner, left, semi, anti or preserved joins of tables the scan reads");
 	/*
 	 * A semi, anti or preserved join whose table has no relation entry was not removed as a useless LEFT JOIN: PostgreSQL 18 merged it into another
 	 * scan of the same table by a unique key (self-join elimination), and moved its conditions to the one it kept, which the FROM tree does not say.
 	 */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->kind != SJ_LEFT && root->simple_rel_array[lj->rti] == NULL)
-			return false;
+			return agg_refuse_on(FROM_SHAPE, "PostgreSQL merged a joined table into another scan of the same table (self-join elimination)");
 	/* Join removal leaves the original FROM tree in place, but removes its base relations. */
 	foreach_int(rti, fs->rtis)
 		if (root->simple_rel_array[rti] != NULL)
 			live_rtis = lappend_int(live_rtis, rti);
 	fs->rtis = live_rtis;
+	foreach_int(rti, fs->rtis)
+		fs->ntables += rt_fetch(rti, parse->rtable)->rtekind == RTE_RELATION;
 	c->root = root;
 	c->group = -1;
 	c->nulling = fs->ojrels;
@@ -170,17 +229,23 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 
 			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
 				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
-				return false;
-			/* read through a view, PostgreSQL checks row security as the view owner (usually exempt); the scan refuses it, where the normal plan answers */
+				return agg_refuse(TABLE_KIND);
+			/*
+			 * A table with row-level security read through a view of an owner the policies do not apply to: PostgreSQL adds no condition, and the scan,
+			 * which checks row-level security for the invoking role, would refuse the query the normal plan answers.
+			 */
 			if (e->relkind == RELKIND_RELATION && e->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(parse->rteperminfos, e)->checkAsUser) &&
 				check_enable_rls(e->relid, InvalidOid, true) == RLS_ENABLED)
-				return false;
-			if (c->relid == 0)
+				return agg_refuse_on(TABLE_KIND, "the table has row-level security and is read through a view");
+			if (c->relid == 0 && skip == 0)
 				c->relid = rti;
-			else if (part || c->joinless)
-				return false;
+			else if (c->joinless)
+				return agg_refuse_on(FROM_SHAPE, "a second table of the FROM list is read by a query that joins no table");
 			else
+			{
 				joined = lappend_int(joined, rti);
+				skip -= c->relid == 0;
+			}
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
 				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
@@ -191,56 +256,60 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			/* the scan unnests the elements that pass: a row without one is no row of an outer join (it keeps NULL columns) */
 			foreach_ptr(LeftJoin, lj, fs->lefts)
 				if (lj->rti == rti && (c->func_key = left_each_key(lj, rti, c->func_kind)) == NULL)
-					return false;
+				{
+					if (!left_lateral(c, fs, lj, rti))
+						return agg_refuse(OUTER_JOIN);
+					c->func_left = true;
+				}
 		}
 		else if (input_rel == NULL || c->joinless ||
 				 (e->rtekind != RTE_SUBQUERY && e->rtekind != RTE_VALUES && e->rtekind != RTE_FUNCTION && e->rtekind != RTE_CTE))
-			return false;
+			return agg_refuse_on(FROM_SHAPE, "a FROM item is not a table, a lateral function the scan unnests, a sub-select, a VALUES list, a function or a CTE");
 		else
 			joined = lappend_int(joined, rti);
 	}
 	if (c->relid == 0)
-		return false;
+		return agg_refuse_on(FROM_SHAPE, "the FROM list has no table to scan");
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)
-			return false;
+			return agg_refuse(OUTER_JOIN);
 	c->rel = root->simple_rel_array[c->relid];
 	c->heapoid = planner_rt_fetch(c->relid, root)->relid;
 	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
 	if (c->rel == NULL || !find_source(c, &ii))
-		return false;
+		return agg_refuse(NO_SOURCE);
 	c->nsiblings = list_length(joined) + (c->func_rti != 0);
 	foreach_int(rti, joined)
 		if (!add_join(c, fs, rti))
-			return false;
+			return agg_refuse(JOIN_CHILD);
 	if (input_rel != NULL)
 	{
 		if (!bms_is_member(c->relid, input_rel->relids))
-			return false;
+			return agg_refuse_on(FROM_SHAPE, "the scanned table is not an input of the aggregate");
 		for (int m = -1; (m = bms_next_member(input_rel->relids, m)) >= 0;)
 			if (rt_fetch(m, parse->rtable)->rtekind != RTE_JOIN)
 			{
 				if (!bms_is_member(m, allrtis))
-					return false;
+					return agg_refuse_f(FROM_SHAPE, "the aggregate reads the table %s, which the FROM tree does not name", rt_fetch(m, parse->rtable)->eref->aliasname);
 				nin++;
 			}
 		if (nin + list_length(c->joins) < list_length(fs->rtis))
-			return false;
+			return agg_refuse_on(FROM_SHAPE, "a table of the FROM tree is not an input of the aggregate");
 	}
 	/* the rows of a preserved side that nothing matched are known at the end of a single scan of one join */
-	if (fs->ojrels && (input_rel == NULL || c->nparts > 0))
-		return false;
+	if (fs->ojrels && input_rel == NULL)
+		return agg_refuse(OUTER_JOIN);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (sift_aggjoin_preserves(jc->kind) && jc != llast(c->joins))
-			return false;
+			return agg_refuse(OUTER_JOIN);
 	build_attexprs(c);
 	if (c->func_rti)
 	{
 		int			leaf = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
 
 		if (leaf < 0)
-			return false;
+			return agg_refuse(UNNEST_LEAF);
 		if (c->func_key)
 			c->func_obj = leaf;
 		else
@@ -252,19 +321,39 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	return true;
 }
 
-/* agg_base, then the other table of an outer join of two tables as the scanned one when the first did not give a plan (a preserved side) */
+/*
+ * agg_base, then another table of the FROM list as the scanned one when the first did not give a plan: the other table of an outer join of two
+ * tables (a preserved side), or, with inner joins only, each of the tables in turn (the one with the column index, which the others are joined to)
+ */
 static bool
 agg_base_either(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	List	   *planned;
+	int			ntables;
 
 	if (agg_base(c, root, input_rel, fs))
 		return true;
 	if (!fs->flippable)
-		return false;
+	{
+		ntables = fs->ntables;
+		if (fs->lefts != NIL || c->joinless)
+			return agg_refuse_on(FROM_SHAPE, "no other table of the FROM list can be the scanned one");
+		planned = c->planned;
+		for (int skip = 1; skip < ntables; skip++)
+		{
+			memset(c, 0, sizeof(AggCtx));
+			c->planned = planned;
+			agg_refuse_retry();
+			*fs = (FromScan) {.ok = true,.skip = skip};
+			if (agg_base(c, root, input_rel, fs))
+				return true;
+		}
+		return agg_refuse_on(FROM_SHAPE, "no other table of the FROM list can be the scanned one");
+	}
 	planned = c->planned;
 	memset(c, 0, sizeof(AggCtx));
 	c->planned = planned;
+	agg_refuse_retry();
 	*fs = (FromScan) {.ok = true, .flip = true};
 	return agg_base(c, root, input_rel, fs);
 }
@@ -281,6 +370,7 @@ agg_spec_new(AggCtx *c)
 	s->partindex = c->partindex;
 	s->partprune = c->partprune;
 	s->group = c->group;
+	s->left_lateral = c->func_left;
 	return s;
 }
 
@@ -308,6 +398,40 @@ post_pred(AggCtx *c, Node *q)
 	return IsA(q, SubPlan) ? compile_exists_post(c, (SubPlan *) q) : compile_combo_pred(c, normalize_expr(c, q));
 }
 
+typedef struct MissingCol
+{
+	AggCtx	   *c;
+	AttrNumber	att;
+} MissingCol;
+
+/* the first column of the scanned table that a condition reads and the index does not hold */
+static bool
+missing_column_walker(Node *n, MissingCol *m)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var) && ((Var *) n)->varno == m->c->relid && ((Var *) n)->varlevelsup == 0)
+	{
+		foreach_ptr(Node, a, m->c->attexpr)
+			if (a && IsA(a, Var) && ((Var *) a)->varattno == ((Var *) n)->varattno)
+				return false;
+		m->att = ((Var *) n)->varattno;
+		return true;
+	}
+	return expression_tree_walker(n, missing_column_walker, m);
+}
+
+/* the refusal of a condition the scan cannot test: it names the column of the table that the index lacks, when that is why */
+static bool
+where_refused(AggCtx *c, Node *q)
+{
+	MissingCol	m = {c, InvalidAttrNumber};
+
+	if (sift_explain_refusals && missing_column_walker(q, &m) && m.att > 0)
+		return agg_refuse_f(WHERE, "the index does not hold the column \"%s\"", get_attname(planner_rt_fetch(c->relid, c->root)->relid, m.att, false));
+	return agg_refuse(WHERE);
+}
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -319,7 +443,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	StringInfoData txt;
 
 	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
-		return false;
+		return agg_refuse(JOIN_CONDITION);
 	quals = list_concat(quals, scan_quals);
 	s->pred = palloc(Max(list_length(quals), 1) * sizeof(SiftAggPred *));
 	s->post = palloc(Max(list_length(quals) + list_length(joined) + list_length(scan_post), 1) * sizeof(SiftAggPred *));
@@ -336,7 +460,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		if (p == NULL)
 			p = compile_pred(c, e);
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return where_refused(c, q);
 		if (p->level > 1)
 			s->post[s->npost++] = p;
 		else
@@ -348,7 +472,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return where_refused(c, q);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
@@ -358,7 +482,7 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 		SiftAggPred *p = post_pred(c, q);
 
 		if (p == NULL || unsupported_clause(c, q))
-			return false;
+			return where_refused(c, q);
 		s->post[s->npost++] = p;
 		appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", p->desc);
 	}
@@ -383,7 +507,10 @@ spec_deps(PlannerInfo *root, SiftAggSpec *s)
 			record_deps(root, s->combo[i].slot[k].expr);
 	for (int i = 0; i < s->njoin; i++)
 		for (int k = 0; k < s->join[i].nkey; k++)
+		{
 			record_deps(root, s->join[i].keyexpr[k]);
+			record_deps(root, s->join[i].tkey[k]);
+		}
 	for (int a = 0; a < s->narms; a++)
 	{
 		for (int i = 0; i < s->arm[a].nfilter; i++)
@@ -403,16 +530,22 @@ stats_expr(AggCtx *c, Node *e)
 	return att > 0 ? list_nth(c->attexpr, att - 1) : e;
 }
 
+/*
+ * rows: what the groups are made of. By PostgreSQL's estimate of the groups (distinct false) they are no more than the rows its statistics
+ * of the table expect after the filters; by the distinct values of the key columns they are no more than the rows given, whatever the
+ * filters keep (a column's values under the filters on it alone, column_distinct).
+ */
 static double
-set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows)
+set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows, bool distinct)
 {
 	double		n = 0;
 
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
-		List	   *sub = NIL;
+		List	   *sub = NIL,
+				   *rest = NIL;
 		double		bucketed = 1.0,
-					g;
+					g = 1.0;
 
 		for (int j = 0; j < list_length(keys); j++)
 		{
@@ -425,8 +558,18 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 			else
 				sub = lappend(sub, stats_expr(c, list_nth(keys, j)));
 		}
+		foreach_ptr(Node, e, sub)
+		{
+			double		nd;
+
+			if (distinct && IsA(e, Var) && ((Var *) e)->varno == c->relid && (nd = column_distinct(c, (Var *) e)) > 0)
+				g *= nd;
+			else
+				rest = lappend(rest, e);
+		}
 		/* Min and Max evaluate their arguments more than once: the estimate is made once */
-		g = sub == NIL ? 1.0 : estimate_num_groups(root, sub, rows, NULL, NULL);
+		if (rest != NIL)
+			g *= Max(estimate_num_groups(root, rest, rows, NULL, NULL), 1.0);
 		n += Min(rows, Max(g, 1.0) * bucketed);
 	}
 	return n;
@@ -437,7 +580,7 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
  * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
  * (sift_aggspec_parallel_ok).
  */
-static int
+int
 parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
@@ -496,6 +639,12 @@ reads_overflow(AggCtx *c, const SiftAggSpec *s)
 		{
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not read \"%s\": some unit holds values the leaf cannot store", leaf_name(c, m)),
 							 errhint("docs/COL-DIRTY-UNITS.md")));
+			if (bms_is_member(m, c->order_refused))
+				agg_refused_f(DIRTY_ORDER, "%s: PostgreSQL decides whether the cast of a row that raises runs before another condition drops the row", leaf_name(c, m));
+			else if (c->dirty_why && c->dirty_leaf == m)
+				agg_refused_f(DIRTY_UNITS, "%s: %s", leaf_name(c, m), c->dirty_why);
+			else
+				agg_refused_on(DIRTY_UNITS, leaf_name(c, m));
 			return true;
 		}
 	return false;
@@ -521,6 +670,7 @@ reads_json_null_cast(AggCtx *c)
 			ereport(DEBUG1, (errmsg("sift: the aggregate pushdown does not cast \"%s\": some unit may hold a JSON null there, which the cast raises for before PostgreSQL 18",
 									leaf_name(c, src)),
 							 errhint("docs/COL.md 2.2")));
+			agg_refused_on(ERROR_PARITY, leaf_name(c, src));
 			return true;
 		}
 	}
@@ -531,17 +681,28 @@ reads_json_null_cast(AggCtx *c)
 bool
 spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, List *keys)
 {
-	if (c->other_group || types_guard_reads(c))
-		return false;
+	double		lists;
+
+	if (c->other_group)
+		return agg_refuse_on(FROM_SHAPE, "the query reads the elements of a second list besides the one it unnests");
+	if (types_guard_reads(c))
+		return agg_refuse_on(ERROR_PARITY, "a jsonb_typeof guard (FILTER or CASE) wraps a read of the same path: the leaf cannot hold the values the guard skips");
+	/* the NULL tuples are found before the late conjuncts run, so a late one on the elements could not give a row whose elements all fail it its tuple */
+	if (s->left_lateral)
+		for (int i = 0; i < s->npred; i++)
+			if (s->pred[i]->level == 1 && s->pred[i]->late)
+				return agg_refuse_on(WHERE, "a condition of the LEFT JOIN LATERAL may raise an error and is evaluated after the elements are kept");
 	share_ordered(s);
 	if (c->group < 0)
 		for (int i = 0; i < c->lay->nleaves; i++)
 			if (bms_is_member(i, c->used) && leaf_of(c, i)->parent >= 0)
-				return false;
+				return agg_refuse_f(FROM_SHAPE, "%s is an element of a list the query does not unnest", leaf_name(c, i));
 	if (c->group >= 0 && !bms_is_member(c->group, c->used))
-		return false;
-	if (list_length(c->combos) > SIFT_AGG_MAX_COMBOS || list_length(c->joins) > SIFT_AGG_MAX_JOINS)
-		return false;
+		return agg_refuse_f(FROM_SHAPE, "the unnested list %s is read by no leaf", leaf_name(c, c->group));
+	if (list_length(c->combos) > sift_limit(combos, SIFT_AGG_MAX_COMBOS))
+		return agg_refuse_limit(SHAPE_WIDTH, combos, sift_limit(combos, SIFT_AGG_MAX_COMBOS), "%d value combinations", list_length(c->combos));
+	if (list_length(c->joins) > sift_limit(joins, SIFT_AGG_MAX_JOINS))
+		return agg_refuse_limit(SHAPE_WIDTH, joins, sift_limit(joins, SIFT_AGG_MAX_JOINS), "%d lookup-joined tables", list_length(c->joins));
 	typeof_reads(c, s);
 	s->npreds_total = c->npred;
 	s->nvleaf = c->nvleaf;
@@ -550,9 +711,18 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	/* the columns a recordset declares and the query does not read are leaves of the spec too: one the source cannot read again keeps the plan */
 	finish_leaves(c, s);
 	if (reads_overflow(c, s) || reads_json_null_cast(c))
-		return false;
+		return agg_refuse(DIRTY_UNITS);
 	finish_combos(c, s);
-	s->est_groups = set_groups(c, root, s, keys, input_rel->rows);
+	s->est_groups = set_groups(c, root, s, keys, input_rel->rows, false);
+	s->est_rows = input_rel->rows;
+	/*
+	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of all the rows
+	 * the lists can pass: a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
+	 * again for each row, while a count that is too large only makes it hash or materialize. A filter of the table that has no statistics
+	 * keeps a guess of the rows as well (filter_rows_ratio).
+	 */
+	lists = lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c);
+	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists, true) : 0;
 	if (c->search)
 		s->search = c->search->spec;
 
@@ -568,7 +738,23 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
  * has. A custom plan sees the array and needs none of this.
  */
 int			sift_agg_param_set_size = 1000;
-int			sift_agg_lookup_max_rows = 1000000;
+int			sift_agg_lookup_max_rows = -1;
+int			sift_agg_lookup_max_kb = 256 * 1024;
+
+/* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
+#define AGG_LOOKUP_ROW_OVERHEAD	64
+
+/*
+ * Do `rows` rows of `width` bytes fit the lookup tables the scan loads when it starts? A rows limit that was set (the older form of
+ * sift.agg_lookup_max_kb) is compared with the rows alone.
+ */
+bool
+agg_lookup_fits(double rows, int width)
+{
+	if (sift_agg_lookup_max_rows >= 0)
+		return rows <= sift_agg_lookup_max_rows;
+	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) sift_agg_lookup_max_kb * 1024;
+}
 
 static double
 param_set_ratio(AggCtx *c)
@@ -648,7 +834,7 @@ row_scan_of(Path *p)
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel);
+	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false);
 
 	if (f <= 1.0)
 		return;
@@ -660,17 +846,48 @@ param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *
 		}
 }
 
+/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
+#define GROUP_NOSPILL_FACTOR	32
+/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
+#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
+
 /* the cost; adds the paths to output_rel */
 void
 agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *keys, List *scan_tlist)
 {
-	int			nworkers;
+	int			nworkers,
+				nospill = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
+	double		state,
+				table;
 
-	if (!spec_finish(c, s, root, input_rel, keys) || !first_fits(s) || !child_paths(c, s))
+	if (!spec_finish(c, s, root, input_rel, keys))
+		return;
+	/* only a count(DISTINCT) carries a set per group, which is what makes the table of a partition's groups worth finishing early: the tuples of the others cost more than the table */
+	if (c->part_key && sift_aggspec_spillable(s) && !sift_aggspec_ordered(s))
+		for (int i = 0; i < s->naggs; i++)
+			s->part_final |= s->agg[i].kind == SAA_COUNT_DISTINCT;
+	if (!first_fits(s))
+	{
+		agg_refused(FIRST_MEMORY);
+		return;
+	}
+	table = group_table_bytes(s, group_count(c, s), &state);
+	/* a scan that cannot spill holds all its groups: the estimate may go far past hash memory (an OOM kill is the other end of it) but not to the sizes of a table of millions of groups */
+	if (table > (double) nospill * Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) && !sift_aggspec_spillable(s))
+	{
+		agg_refused_on(GROUP_MEMORY, psprintf("about %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB",
+											  group_count(c, s), table / 1024.0, (double) get_hash_memory_limit() / 1024.0, nospill,
+											  Max((double) get_hash_memory_limit(), (double) GROUP_NOSPILL_BASE) / 1024.0));
+		return;
+	}
+	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
+	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
+	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
+		nworkers = 0;
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
 }
@@ -682,7 +899,7 @@ key_of_ref(Query *parse, int ref)
 	foreach_node(SortGroupClause, sgc, parse->groupClause)
 		if (sgc->tleSortGroupRef == ref)
 			return foreach_current_index(sgc);
-	elog(ERROR, "sift: grouping column %d not found", ref);
+	SIFT_INVARIANT(false, "sift: grouping column %d not found", ref);
 }
 
 /* GROUPING(columns): the keys of its arguments; the executor makes its bitmask of the set of each group */
@@ -690,7 +907,7 @@ bool
 compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out)
 {
 	if (g->agglevelsup != 0 || parse->groupingSets == NIL)
-		return false;
+		return agg_refuse_on(GROUPING_SETS, "GROUPING() of an outer query level, or in a query without grouping sets");
 	out->kind = SAA_GROUPING;
 	out->leaf = -1;
 	out->restype = INT4OID;
@@ -770,8 +987,12 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		return;
 
 	/* keys */
-	if (list_length(groupClause) + (parse->groupingSets != NIL) > SIFT_AGG_MAX_KEYS)
+	if (list_length(groupClause) + (parse->groupingSets != NIL) > sift_limit(group_keys, SIFT_AGG_MAX_KEYS))
+	{
+		agg_refused_limit(TOO_MANY_KEYS, group_keys, sift_limit(group_keys, SIFT_AGG_MAX_KEYS), "%d group keys (grouping sets count as one more)",
+						  list_length(groupClause) + (parse->groupingSets != NIL));
 		return;
+	}
 	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
 	foreach_node(SortGroupClause, sgc, groupClause)
 	{
@@ -781,7 +1002,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 		if (IsA(e, Const) && parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause))
 			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
+		{
+			agg_refused_f(GROUP_KEY, "the group key %s is not a leaf, or an expression of leaves, the scan reads", expr_text(c, e));
 			return;
+		}
 		combo_set_key(c, &s->key[s->nkeys], s->nkeys);
 		ow.keys = lappend(ow.keys, e);
 		scan_tlist = lappend(scan_tlist, makeTargetEntry((Expr *) e, list_length(scan_tlist) + 1, NULL, false));
@@ -789,12 +1013,16 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	}
 	if (parse->groupingSets != NIL)
 		add_sets(parse, s, &scan_tlist);
+	c->part_key = parse->groupingSets == NIL && !parse->hasDistinctOn && group_has_partition_key(c, ow.keys);
 
 	/* DISTINCT ON: the other columns are the first row's */
 	if (parse->hasDistinctOn)
 	{
 		if (!distinct_on_more(c, parse, &more) || !first_aggs(c, target, ow.keys, more, &firsts))
+		{
+			agg_refused(DISTINCT_ON);
 			return;
+		}
 		ow.aggs = firsts;
 	}
 	else
@@ -806,7 +1034,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	if (gextra && gextra->havingQual)
 		out_walker((Node *) gextra->havingQual, &ow);
 	if (ow.bad)
+	{
+		agg_refused(OUTPUT_EXPR);
 		return;
+	}
 	s->agg = palloc0(Max(list_length(ow.aggs), 1) * sizeof(SiftAggAgg));
 	foreach_ptr(Node, a, ow.aggs)
 	{
@@ -814,7 +1045,10 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 
 		if (!(IsA(a, GroupingFunc) ? compile_grouping(parse, (GroupingFunc *) a, &s->agg[s->naggs]) :
 			  compile_agg(c, (Aggref *) a, &s->agg[s->naggs], s->naggs)))
+		{
+			agg_refused_f(AGGREGATE, "%s is not an aggregate the scan computes over its arguments, filter and ordering", IsA(a, Aggref) ? get_func_name(((Aggref *) a)->aggfnoid) : "GROUPING()");
 			return;
+		}
 		if (first)
 		{
 			first_mode(&s->agg[s->naggs], list_length(more), lead);
@@ -829,6 +1063,7 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 
 int			agg_index_pick;
 int			agg_index_usable;
+double		agg_stage_normal = HUGE_VAL;
 
 static void
 upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -837,17 +1072,31 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 
 	if (stage == UPPERREL_ORDERED)
 	{
+		agg_arm_begin("topn", false);
 		topn_paths(root, input_rel, output_rel);
+		agg_arm_end();
 		return;
 	}
 	if (!sift_enable_agg || parse->commandType != CMD_SELECT || parse->hasTargetSRFs || root->rowMarks != NIL || parse->hasRecursive)
+	{
+		if (stage == UPPERREL_GROUP_AGG && parse->commandType == CMD_SELECT)
+		{
+			agg_arm_begin("single", true);
+			agg_refuse_note(sift_enable_agg ? AGG_REFUSE_QUERY_KIND : AGG_REFUSE_DISABLED, NULL);
+			agg_arm_end();
+		}
 		return;
+	}
 	/* SELECT DISTINCT of a plain scan is a group-by with no aggregate; over a grouped or windowed query it is not the scan's */
 	if (stage == UPPERREL_DISTINCT)
 	{
 		if (parse->distinctClause != NIL && root->upper_targets[UPPERREL_DISTINCT] != NULL &&
 			!(parse->hasAggs || parse->groupClause || parse->groupingSets || parse->hasWindowFuncs || parse->havingQual))
+		{
+			agg_arm_begin("distinct", true);
 			group_paths(root, input_rel, output_rel, root->upper_targets[UPPERREL_DISTINCT], NULL, parse->distinctClause);
+			agg_arm_end();
+		}
 		return;
 	}
 	if (stage != UPPERREL_GROUP_AGG || parse->hasDistinctOn || !(parse->hasAggs || parse->groupClause || parse->groupingSets))
@@ -858,11 +1107,27 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 		rt_fetch(((RangeTblRef *) linitial(parse->jointree->fromlist))->rtindex, parse->rtable)->rtekind == RTE_SUBQUERY)
 	{
 		if (!parse->hasWindowFuncs && sift_agg_two_level_on)
+		{
+			agg_arm_begin("two_level", false);
 			sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+			agg_arm_end();
+		}
 		return;
 	}
+	/* a join of a spine and the arms of a two level aggregate; any other join is the single level's */
+	if (!parse->hasWindowFuncs && sift_agg_two_level_on && list_length(parse->jointree->fromlist) == 1 &&
+		(IsA(linitial(parse->jointree->fromlist), JoinExpr) || IsA(linitial(parse->jointree->fromlist), FromExpr)))
+	{
+		agg_arm_begin("two_level", false);
+		sift_agg_two_level(root, input_rel, output_rel, (GroupPathExtraData *) extra);
+		agg_arm_end();
+	}
+	agg_arm_begin("single", true);
 	group_paths(root, input_rel, output_rel, output_rel->reltarget, (GroupPathExtraData *) extra, parse->groupClause);
+	agg_arm_end();
+	agg_arm_begin("rows", false);
 	sift_agg_rows_paths(root, input_rel, output_rel, extra);
+	agg_arm_end();
 }
 
 static bool
@@ -880,16 +1145,25 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 {
 	int			outer_pick = agg_index_pick,
 				outer_usable = agg_index_usable;
+	double		outer_normal = agg_stage_normal;
+	AggStage	st;
 
+	agg_stage_begin(&st, root);
 	agg_index_usable = 0;
+	agg_stage_normal = HUGE_VAL;
+	foreach_ptr(Path, p, output_rel->pathlist)
+		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
+			agg_stage_normal = Min(agg_stage_normal, p->total_cost);
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
 		upper_paths_on(root, stage, input_rel, output_rel, extra);
 		if (has_agg_path(output_rel) || agg_index_pick + 1 >= agg_index_usable)
 			break;
 	}
+	agg_stage_end(&st);
 	agg_index_pick = outer_pick;
 	agg_index_usable = outer_usable;
+	agg_stage_normal = outer_normal;
 }
 
 /* the native plans of the correlated children, made now that the plan has its place in the statement; true when the spec holds their IDs */
@@ -923,6 +1197,39 @@ plan_correlated_children(PlannerInfo *root, CustomPath *best, SiftAggSpec *spec)
 	return planned;
 }
 
+#if PG_VERSION_NUM < 180000
+/*
+ * A set without a constant key nulls it. PostgreSQL's Agg reads the key as a column of its input, found by its sort-group reference; the output of a
+ * custom scan is matched by expression, and setrefs.c never swaps a bare Const for a column, so the output would keep the constant. A relabel to the
+ * type it has is no Const: the output reads the column of the scan tuple, which the scan sets to NULL in the sets without the key. (The path keeps
+ * its target: the plan above, built for the Const, needs no projection.)
+ */
+static void
+const_keys_as_columns(PlannerInfo *root, CustomScan *cs)
+{
+	foreach_node(TargetEntry, te, cs->scan.plan.targetlist)
+	{
+		bool		key = false;
+
+		if (!IsA(te->expr, Const) || te->ressortgroupref == 0)
+			continue;
+		foreach_node(SortGroupClause, sgc, root->parse->groupClause)
+			key |= sgc->tleSortGroupRef == te->ressortgroupref;
+		if (!key)
+			continue;
+		foreach_node(TargetEntry, st, cs->custom_scan_tlist)
+			if (IsA(st->expr, Const) && equal(st->expr, te->expr))
+			{
+				Node	   *k = (Node *) te->expr;
+
+				st->expr = (Expr *) makeRelabelType((Expr *) copyObject(k), exprType(k), exprTypmod(k), exprCollation(k), COERCE_IMPLICIT_CAST);
+				te->expr = (Expr *) copyObject(st->expr);
+				break;
+			}
+	}
+}
+#endif
+
 static Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
@@ -936,6 +1243,10 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	cs->scan.scanrelid = 0;
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = copyObject(scan_tlist);
+#if PG_VERSION_NUM < 180000
+	if (root->parse->groupingSets != NIL)
+		const_keys_as_columns(root, cs);
+#endif
 	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
 	cs->methods = &sift_agg_plan_methods;
 	if (root->hasHavingQual && root->parse->havingQual)

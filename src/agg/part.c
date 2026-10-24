@@ -18,17 +18,24 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "partitioning/partbounds.h"
+#include "partitioning/partdesc.h"
+#include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/hsearch.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/fmgroids.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
+#include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
 #include "agg/part.h"
 #include "core/cmp.h"
+#include "core/limits.h"
 
 #define PART_DICT_ID_BASE	UINT64CONST(0x6000000000000000)	/* no id of a provider has these bits: the engine's counters and pointers are below, its flags above */
 
@@ -43,8 +50,10 @@ typedef struct PartId
 typedef struct PartSource
 {
 	int			n;
-	Relation   *heap;
-	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads: the pruned ones are never opened (the first's always is: the layout) */
+	Relation	parent;
+	Oid		   *heapoid;
+	Relation   *heap;			/* NULL until a partition is opened or its bound read the first time; the pruned ones are not opened at all (the first's always is: the layout) */
+	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads */
 	SiftSrcSource **src;
 	Oid		   *indexoid;
 	Snapshot	snapshot;
@@ -91,7 +100,11 @@ unit_of(void *impl)
 	return &ps_of(impl)->cunit;
 }
 
-/* what the scan checks for a query on a partitioned table: its row security; PostgreSQL's executor checked the privileges (of the role, or of the view owner) */
+/*
+ * What PostgreSQL checks for a query on a partitioned table: row security of the table, not the partitions'. Its privileges were checked by the
+ * executor for the columns the query reads, as the role or as the owner of the view the table is read through: a check here for the invoking role on
+ * the whole table refused a role with column privileges or a view the plain plan answers.
+ */
 static void
 check_access(Relation parent)
 {
@@ -100,7 +113,8 @@ check_access(Relation parent)
 	if (check_enable_rls(relid, InvalidOid, true) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(parent))));
+				 errmsg("sift_col indexes cannot be used on table \"%s\", which has row-level security", RelationGetRelationName(parent)),
+				 errhint("Run the statement as the table owner or as a role with BYPASSRLS; the normal plan applies the policies.")));
 }
 
 static const SiftSrcProvider part_provider;
@@ -110,6 +124,8 @@ open_part(PartSource *ps, int i)
 {
 	if (ps->src[i] != NULL)
 		return;
+	if (ps->heap[i] == NULL)
+		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
 	ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
 	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt);
 }
@@ -132,20 +148,21 @@ sift_aggpart_open(Relation parent, int n, const Oid *heaps, const Oid *indexes, 
 	PartSource *ps = MemoryContextAllocZero(mcxt, sizeof(PartSource));
 	SiftSrcSource *out = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
-	if (n <= 0 || n > SIFT_AGG_MAX_PARTS)
-		elog(ERROR, "sift: %d partitions in a scan, from 1 to %d", n, SIFT_AGG_MAX_PARTS);
+	SIFT_INVARIANT(n > 0 && n <= sift_limit(partitions, SIFT_AGG_MAX_PARTS), "sift: %d partitions in a scan, from 1 to %d", n,
+				   (int) sift_limit(partitions, SIFT_AGG_MAX_PARTS));
 	check_access(parent);
 	ps->n = n;
-	ps->snapshot = snapshot;
+	ps->parent = parent;
+	ps->snapshot = RegisterSnapshot(snapshot);	/* once for all the sources: the partitions' own registrations are held by this one (SIFT_COLO_SNAP_HELD) */
 	ps->mcxt = mcxt;
-	ps->heap = MemoryContextAlloc(mcxt, n * sizeof(Relation));
+	ps->heapoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
+	memcpy(ps->heapoid, heaps, n * sizeof(Oid));
+	ps->heap = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->index = MemoryContextAllocZero(mcxt, n * sizeof(Relation));
 	ps->src = MemoryContextAllocZero(mcxt, n * sizeof(SiftSrcSource *));
 	ps->indexoid = MemoryContextAlloc(mcxt, n * sizeof(Oid));
 	memcpy(ps->indexoid, indexes, n * sizeof(Oid));
 	ps->off = MemoryContextAllocZero(mcxt, (n + 1) * sizeof(uint32));
-	for (int i = 0; i < n; i++)
-		ps->heap[i] = table_open(heaps[i], AccessShareLock);
 	open_part(ps, 0);
 	ps->nleaves = sift_colsrc_source_layout(ps->src[0])->nleaves;
 	ps->id = MemoryContextAllocZero(mcxt, NSLOTS(ps->nleaves) * sizeof(PartId));
@@ -168,8 +185,10 @@ part_close(void *impl)
 			sift_colsrc_close(ps->src[i]);
 			index_close(ps->index[i], NoLock);
 		}
-		table_close(ps->heap[i], NoLock);
+		if (ps->heap[i])
+			table_close(ps->heap[i], NoLock);
 	}
+	UnregisterSnapshot(ps->snapshot);
 }
 
 static const SiftSrcLayout *
@@ -196,7 +215,8 @@ count_sbs(PartSource *ps)
 			total += sift_colsrc_nsb(ps->src[i]);
 	}
 	if (total > PG_UINT32_MAX)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number")));
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the partitions of a scan hold more superblocks than the scan can number"),
+						errhint("Filter on the partition key so that the scan reads fewer partitions, or set sift.enable_agg to off for this query.")));
 	ps->off[ps->n] = (uint32) total;
 	ps->have_off = true;
 }
@@ -366,28 +386,58 @@ key_vals(Node *cl)
 	return kv;
 }
 
-#define HASH_MAX_COMBOS		4096	/* the combinations of values a hash partition is tested with: a larger product keeps the partition */
+#define HASH_MAX_COMBOS		1048576	/* the combinations of values the remainders of one hash level are computed for: a larger product keeps the level's partitions */
+
+/* the remainders a hash level (its parent and modulus) gives the combinations of the values the conditions leave its key columns: NULL rem, every one */
+typedef struct HashLevel
+{
+	Oid			parent;
+	int			modulus;
+	int			nrem;
+	uint64	   *rem;			/* sorted, distinct */
+} HashLevel;
+
+static int
+cmp_u64(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
 
 /*
- * Can a row whose key columns take the values of the sets (KeyVals of the conditions) be in the partition of the hash level f
- * (satisfies_hash_partition(table, modulus, remainder, columns ..))? The remainder of each combination of values is computed as PostgreSQL
- * computes it for a row, with the support function of the level's partition key. A column without a set, or too many combinations: yes.
+ * The remainder of each combination of values the sets (KeyVals of the conditions) leave the key columns of the hash level f
+ * (satisfies_hash_partition(table, modulus, remainder, columns ..)), computed as PostgreSQL computes it for a row, with the support function of
+ * the level's partition key: once for the level, so that testing a partition is a search (O(values + partitions), not O(values x partitions)).
+ * A column without a set, or too many combinations: every remainder is possible (rem NULL).
  */
-static bool
-hash_may_hold(FuncExpr *f, List *sets)
+static const HashLevel *
+hash_level(FuncExpr *f, List *sets, List **levels)
 {
-	Relation	level = relation_open(DatumGetObjectId(((Const *) linitial(f->args))->constvalue), AccessShareLock);
-	PartitionKey key = RelationGetPartitionKey(level);
-	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue),
-				remainder = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
+	Oid			parent = DatumGetObjectId(((Const *) linitial(f->args))->constvalue);
+	int			modulus = DatumGetInt32(((Const *) lsecond(f->args))->constvalue);
+	Relation	level;
+	PartitionKey key;
 	KeyVals    *kv[PARTITION_MAX_KEYS] = {NULL};
 	int			idx[PARTITION_MAX_KEYS] = {0};
 	Datum		values[PARTITION_MAX_KEYS];
 	bool		isnull[PARTITION_MAX_KEYS] = {false};
 	uint64		combos = 1;
-	bool		known = true,
-				may;
+	bool		known = true;
+	HashLevel  *hl;
+	uint64	   *rem;
+	int			nrem = 0;
 
+	foreach_ptr(HashLevel, h, *levels)
+		if (h->parent == parent && h->modulus == modulus)
+			return h;
+	hl = palloc0(sizeof(HashLevel));
+	hl->parent = parent;
+	hl->modulus = modulus;
+	*levels = lappend(*levels, hl);
+	level = relation_open(parent, AccessShareLock);
+	key = RelationGetPartitionKey(level);
 	for (int j = 0; j < key->partnatts; j++)
 	{
 		Node	   *a = list_nth(f->args, 3 + j);
@@ -401,46 +451,308 @@ hash_may_hold(FuncExpr *f, List *sets)
 			known = false;
 		else if (kv[j]->n == 0)
 		{
-			relation_close(level, NoLock);
-			return false;
+			relation_close(level, NoLock);	/* a NULL or an empty list matches nothing: no remainder */
+			hl->rem = palloc(sizeof(uint64));
+			return hl;
 		}
-		else
+		else if (known)
+		{
 			combos *= kv[j]->n;
+			known = combos <= (uint64) sift_limit(hash_part_combos, HASH_MAX_COMBOS);
+		}
 	}
-	if (!known || combos > HASH_MAX_COMBOS)
+	if (!known)
 	{
 		relation_close(level, NoLock);
-		return true;
+		return hl;
 	}
-	may = false;
+	rem = palloc(combos * sizeof(uint64));
 	for (;;)
 	{
 		int			j;
 
 		for (j = 0; j < key->partnatts; j++)
 			values[j] = kv[j]->val[idx[j]];
-		if (compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus == remainder)
-		{
-			may = true;
-			break;
-		}
+		rem[nrem++] = compute_partition_hash_value(key->partnatts, key->partsupfunc, key->partcollation, values, isnull) % modulus;
 		for (j = 0; j < key->partnatts && ++idx[j] == kv[j]->n; j++)
 			idx[j] = 0;
 		if (j == key->partnatts)
 			break;
 	}
 	relation_close(level, NoLock);
-	return may;
+	qsort(rem, nrem, sizeof(uint64), cmp_u64);
+	{
+		int			k = 0;
+
+		for (int i = 0; i < nrem; i++)
+			if (i == 0 || rem[i] != rem[i - 1])
+				rem[k++] = rem[i];
+		nrem = k;
+	}
+	hl->rem = rem;
+	hl->nrem = nrem;
+	return hl;
 }
 
 /* is the partition out of reach of the rows the sets of values describe: one of its hash levels has no remainder for them? */
 static bool
-hash_refuted(List *bound, List *sets)
+hash_refuted(List *bound, List *sets, List **levels)
 {
 	foreach_ptr(Node, q, bound)
-		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == F_SATISFIES_HASH_PARTITION && !hash_may_hold((FuncExpr *) q, sets))
-			return true;
+		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == F_SATISFIES_HASH_PARTITION)
+		{
+			FuncExpr   *f = (FuncExpr *) q;
+			const HashLevel *hl = hash_level(f, sets, levels);
+			uint64		r = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
+
+			if (hl->rem != NULL && bsearch(&r, hl->rem, hl->nrem, sizeof(uint64), cmp_u64) == NULL)
+				return true;
+		}
 	return false;
+}
+
+typedef struct BoundKey
+{
+	Oid			part;
+	Oid			parent;
+} BoundKey;
+
+typedef struct BoundEntry
+{
+	BoundKey	key;
+	bool		ok;
+	List	   *bound;
+} BoundEntry;
+
+static MemoryContext bound_cx;
+static HTAB *bound_cache;
+static bool bound_stale;
+
+/* a relation changed (a partition, an ancestor, the table): the bounds are read again, as PostgreSQL does for its own copy; dropped by the next part_bound, not under a caller that still reads one */
+static void
+bound_inval(Datum arg, Oid relid)
+{
+	bound_stale = true;
+}
+
+/*
+ * The bound of a partition in the terms of the columns of the table, kept for the backend: every execution of a generic plan prunes the
+ * partitions again, and translating the bounds of thousands of them was most of its start. A relation cache invalidation drops them all.
+ * The entry is valid until the next call.
+ */
+static List *
+bound_copy(List *l)
+{
+	MemoryContext old = MemoryContextSwitchTo(bound_cx);
+	List	   *c = copyObject(l);
+
+	MemoryContextSwitchTo(old);
+	return c;
+}
+
+/* the heap of partition i is opened for its bound the first time only: the bound of a partition the backend has read is in the cache, and needs no relation */
+static const BoundEntry *
+part_bound(PartSource *ps, int i, Oid parent)
+{
+	BoundKey	key = {ps->heapoid[i], parent};
+	BoundEntry *e;
+	BoundEntry	fresh;
+	QualVars	qv = {key.part, parent, true};
+	bool		found;
+
+	if (bound_stale && bound_cache != NULL)
+		MemoryContextReset(bound_cx);
+	if (bound_stale)
+	{
+		bound_cache = NULL;
+		bound_stale = false;
+	}
+	if (bound_cache != NULL && (e = hash_search(bound_cache, &key, HASH_FIND, NULL)) != NULL)
+		return e;
+	if (ps->heap[i] == NULL)
+		ps->heap[i] = table_open(key.part, AccessShareLock);
+	fresh.key = key;
+	fresh.bound = (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
+	fresh.ok = qv.ok;
+	if (bound_stale)			/* the lookups above invalidated: the bound is as of before it, the next call reads it again */
+		return (const BoundEntry *) memcpy(palloc(sizeof(fresh)), &fresh, sizeof(fresh));
+	if (bound_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(BoundKey), .entrysize = sizeof(BoundEntry)};
+
+		if (bound_cx == NULL)
+		{
+			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition bounds", ALLOCSET_DEFAULT_SIZES);
+			CacheRegisterRelcacheCallback(bound_inval, (Datum) 0);
+		}
+		ctl.hcxt = bound_cx;
+		bound_cache = hash_create("sift partition bounds", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(bound_cache, &key, HASH_ENTER, &found);
+	e->ok = fresh.ok;
+	e->bound = bound_copy(fresh.bound);
+	return e;
+}
+
+/* the range of values a column can take under the conditions that compare it with constants */
+typedef struct KeyRange
+{
+	bool		have_lo,
+				have_hi;
+	Datum		lo,
+				hi;
+} KeyRange;
+
+static int
+key_cmp(PartitionKey key, Datum a, Datum b)
+{
+	return DatumGetInt32(FunctionCall2Coll(&key->partsupfunc[0], key->partcollation[0], a, b));
+}
+
+/* the bound of one side: the smaller of the upper bounds, the larger of the lower ones */
+static void
+range_narrow(PartitionKey key, KeyRange *r, bool upper, Datum d)
+{
+	bool	   *have = upper ? &r->have_hi : &r->have_lo;
+	Datum	   *cur = upper ? &r->hi : &r->lo;
+
+	if (!*have || (key_cmp(key, d, *cur) < 0) == upper)
+		*cur = d;
+	*have = true;
+}
+
+/* what the conditions `key op const` and `key = ANY (const array)`, with the operators of the key's operator family, leave the single column of a range key */
+static KeyRange
+key_range(PartitionKey key, List *conds)
+{
+	KeyRange	r = {0};
+
+	foreach_ptr(Node, cl, conds)
+	{
+		List	   *args;
+		Oid			opno,
+					collid;
+		bool		any = IsA(cl, ScalarArrayOpExpr);
+		Node	   *l,
+				   *x;
+		Const	   *c;
+		int			strat;
+
+		if (IsA(cl, OpExpr))
+		{
+			args = ((OpExpr *) cl)->args;
+			opno = ((OpExpr *) cl)->opno;
+			collid = ((OpExpr *) cl)->inputcollid;
+		}
+		else if (any && ((ScalarArrayOpExpr *) cl)->useOr)
+		{
+			args = ((ScalarArrayOpExpr *) cl)->args;
+			opno = ((ScalarArrayOpExpr *) cl)->opno;
+			collid = ((ScalarArrayOpExpr *) cl)->inputcollid;
+		}
+		else
+			continue;
+		if (list_length(args) != 2 || collid != key->partcollation[0])
+			continue;
+		l = linitial(args);
+		x = lsecond(args);
+		if (!IsA(l, Var) || ((Var *) l)->varlevelsup != 0 || ((Var *) l)->varattno != key->partattrs[0] || !IsA(x, Const) || ((Const *) x)->constisnull)
+			continue;
+		c = (Const *) x;
+		strat = get_op_opfamily_strategy(opno, key->partopfamily[0]);
+		if (any)
+		{
+			int16		len;
+			bool		byval;
+			char		align;
+			Datum	   *elems;
+			bool	   *nulls;
+			int			nelems;
+			Datum		lowest = 0,
+						highest = 0;
+			bool		some = false;
+
+			if (strat != BTEqualStrategyNumber || get_element_type(c->consttype) != key->parttypid[0])
+				continue;
+			get_typlenbyvalalign(key->parttypid[0], &len, &byval, &align);
+			deconstruct_array(DatumGetArrayTypeP(c->constvalue), key->parttypid[0], len, byval, align, &elems, &nulls, &nelems);
+			for (int i = 0; i < nelems; i++)
+				if (!nulls[i])
+				{
+					if (!some || key_cmp(key, elems[i], lowest) < 0)
+						lowest = elems[i];
+					if (!some || key_cmp(key, elems[i], highest) > 0)
+						highest = elems[i];
+					some = true;
+				}
+			if (some)
+			{
+				range_narrow(key, &r, false, lowest);
+				range_narrow(key, &r, true, highest);
+			}
+			continue;
+		}
+		if (c->consttype != key->parttypid[0] || ((Var *) l)->vartype != key->parttypid[0])
+			continue;
+		if (strat == BTLessStrategyNumber || strat == BTLessEqualStrategyNumber || strat == BTEqualStrategyNumber)
+			range_narrow(key, &r, true, c->constvalue);
+		if (strat == BTGreaterStrategyNumber || strat == BTGreaterEqualStrategyNumber || strat == BTEqualStrategyNumber)
+			range_narrow(key, &r, false, c->constvalue);
+	}
+	return r;
+}
+
+/*
+ * The partitions of a table split by range on one column that its rows can be in when the conditions bound that column, from the bounds
+ * PostgreSQL keeps (two bisections): the partitions between the bounds' places, and the default partition, which holds what no other does.
+ * False when the bounds do not decide (another strategy or several columns, no condition on the column).
+ */
+static bool
+range_window(Relation parent, List *conds, PartitionDesc *pd, Bitmapset **window)
+{
+	PartitionKey key = RelationGetPartitionKey(parent);
+	PartitionBoundInfo bi;
+	KeyRange	r;
+	int			first = 0;
+	int			last;
+	bool		eq;
+
+	if (key->strategy != PARTITION_STRATEGY_RANGE || key->partnatts != 1 || key->partattrs[0] == 0)
+		return false;
+	*pd = RelationGetPartitionDesc(parent, false);
+	bi = (*pd)->boundinfo;
+	r = key_range(key, conds);
+	if (bi == NULL || (!r.have_lo && !r.have_hi))
+		return false;
+	last = bi->ndatums;
+	if (r.have_lo)
+		first = partition_range_datum_bsearch(key->partsupfunc, key->partcollation, bi, 1, &r.lo, &eq) + 1;
+	if (r.have_hi)
+		last = partition_range_datum_bsearch(key->partsupfunc, key->partcollation, bi, 1, &r.hi, &eq) + 1;
+	*window = NULL;
+	for (int k = first; k <= last; k++)
+		if (bi->indexes[k] >= 0)
+			*window = bms_add_member(*window, bi->indexes[k]);
+	if (bi->default_index >= 0)
+		*window = bms_add_member(*window, bi->default_index);
+	return true;
+}
+
+/*
+ * Is partition i, the next of the table's own partitions in the order of their bounds (pd->oids; the partitions of a partitioned partition stand
+ * for it and are not found), outside the window? *next is where the next one is looked for.
+ */
+static bool
+outside_window(PartSource *ps, int i, PartitionDesc pd, const Bitmapset *window, int *next)
+{
+	int			j = *next;
+
+	while (j < pd->nparts && pd->oids[j] != ps->heapoid[i] && !pd->is_leaf[j])
+		j++;
+	if (j >= pd->nparts || pd->oids[j] != ps->heapoid[i])
+		return false;
+	*next = j + 1;
+	return !bms_is_member(j, window);
 }
 
 /* drops the partitions the conditions refute, or all of them (none); returns how many it dropped now */
@@ -448,20 +760,31 @@ static int
 prune(PartSource *ps, Oid parent, List *conds, List *sets, bool none)
 {
 	int			dropped = 0;
+	List	   *levels = NIL;
+	int			next = 0;
+	PartitionDesc pd = NULL;
+	Bitmapset  *window = NULL;
+	bool		bounded;
 
 	if (ps->opened)
 		return 0;				/* the partitions are read already: the keys came too late */
 	if (ps->skip == NULL)
 		ps->skip = palloc0(ps->n * sizeof(bool));
+	bounded = !none && range_window(ps->parent, conds, &pd, &window);
 	for (int i = 0; i < ps->n; i++)
 	{
-		QualVars	qv = {RelationGetRelid(ps->heap[i]), parent, true};
-		List	   *bound;
+		const BoundEntry *b;
 
 		if (ps->skip[i])
 			continue;
-		bound = none ? NIL : (List *) qual_vars_mutator((Node *) RelationGetPartitionQual(ps->heap[i]), &qv);
-		if (none || (qv.ok && bound != NIL && (predicate_refuted_by(bound, conds, false) || hash_refuted(bound, sets))))
+		if (bounded && outside_window(ps, i, pd, window, &next))
+		{
+			ps->skip[i] = true;
+			dropped++;
+			continue;
+		}
+		b = none ? NULL : part_bound(ps, i, parent);
+		if (none || (b->ok && b->bound != NIL && (predicate_refuted_by(b->bound, conds, false) || hash_refuted(b->bound, sets, &levels))))
 		{
 			ps->skip[i] = true;
 			dropped++;
@@ -552,7 +875,7 @@ sift_aggpart_prune_keys(SiftSrcSource *src, Oid parent, const Node *col, const i
 			foreach_ptr(OpExpr, op, conds)
 				set_opfuncid(op);
 		}
-		if ((uint64) nk * ps->n <= KEYS_MAX_TESTS)
+		if ((uint64) nk * ps->n <= (uint64) sift_limit(part_key_tests, KEYS_MAX_TESTS))
 		{
 			ScalarArrayOpExpr *any = makeNode(ScalarArrayOpExpr);
 
@@ -597,15 +920,27 @@ static void
 part_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	PartSource *ps = impl;
+	int			lo,
+				hi;
 
 	count_sbs(ps);
 	ps->lo = sb_lo;
 	ps->hi = sb_hi;
 	ps->prune = prune;
 	ps->nprune = nprune;
-	ps->next = 0;
-	while (ps->next < ps->n && ps->off[ps->next + 1] <= sb_lo)
-		ps->next++;
+	/* the first partition that ends past sb_lo (the offsets only grow): a scan of thousands of partitions begins once for each item */
+	lo = 0;
+	hi = ps->n;
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (ps->off[mid + 1] <= sb_lo)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	ps->next = lo;
 	if (ps->cur >= 0)
 		sift_colsrc_unpin(ps->src[ps->cur]);
 	ps->cur = -1;
@@ -620,7 +955,7 @@ part_next(void *impl, SiftSrcUnit *unit)
 	{
 		if (ps->cur >= 0 && sift_colsrc_next(ps->src[ps->cur], &ps->cunit))
 		{
-			*unit = (SiftSrcUnit) {ps->off[ps->cur] + ps->cunit.sb, ps->cunit.nrow, ps};
+			*unit = (SiftSrcUnit) {.sb = ps->off[ps->cur] + ps->cunit.sb,.nrow = ps->cunit.nrow,.priv = ps};
 			return true;
 		}
 		if (!start_next(ps))
@@ -707,6 +1042,8 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		sift_colsrc_counters(ps->src[i], &pc);
 		c->units += pc.units;
 		c->units_pruned += pc.units_pruned;
+		c->units_set_pruned += pc.units_set_pruned;
+		c->units_search_pruned += pc.units_search_pruned;
 		c->rows += pc.rows;
 		c->bytes += pc.bytes;
 		c->rows_vetted += pc.rows_vetted;
@@ -795,6 +1132,17 @@ part_tolerate_ovf(void *impl, int leaf)
 	for (int i = 0; i < ps->n; i++)
 		if (ps->src[i])
 			sift_colsrc_tolerate_ovf(ps->src[i], leaf);
+}
+
+static void
+part_set_raw(void *impl, int leaf)
+{
+	PartSource *ps = impl;
+
+	open_rest(ps);
+	for (int i = 0; i < ps->n; i++)
+		if (ps->src[i])
+			sift_colsrc_set_raw(ps->src[i], leaf);
 }
 
 static void
@@ -904,9 +1252,83 @@ part_recheck_rows(void *impl, const SiftSrcUnit *unit)
 	return sift_colsrc_recheck_rows(cur_of(impl), unit_of(impl));
 }
 
+/* ---- the top-N: the rows of a unit are the partition's, its TIDs are the partition's heap's ---- */
+
+static void
+part_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
+{
+	sift_colsrc_tids(cur_of(impl), unit_of(impl), rows, n, tids);
+}
+
+static void
+part_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
+{
+	sift_colsrc_zone(cur_of(impl), unit_of(impl), leaf, z);
+}
+
+/* the zone over the partitions of the superblocks [lo, hi) together: the units they hold add up, the range is the union of the ranges that have a value */
+static uint32
+part_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	PartSource *ps = impl;
+	uint32		units = 0;
+
+	count_sbs(ps);
+	*z = (SiftSrcZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
+	for (int i = 0; i < ps->n && ps->off[i] < hi; i++)
+	{
+		uint32		from = Max(lo, ps->off[i]),
+					to = Min(hi, ps->off[i + 1]);
+		SiftSrcZone pz;
+
+		if (from >= to)
+			continue;
+		open_part(ps, i);
+		units += sift_colsrc_zone_range(ps->src[i], from - ps->off[i], to - ps->off[i], leaf, &pz);
+		z->nvals += pz.nvals;
+		z->nnull += pz.nnull;
+		z->inexact |= pz.inexact;
+		if (pz.nnull < pz.nvals)
+		{
+			z->min = Min(z->min, pz.min);
+			z->max = Max(z->max, pz.max);
+		}
+	}
+	return units;
+}
+
+static void
+part_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
+{
+	sift_colsrc_read_rows(cur_of(impl), unit_of(impl), leaf, rows, n, vec);
+	vec->dict = presented(impl, leaf, vec->dict);
+}
+
+int
+sift_aggpart_count(SiftSrcSource *src)
+{
+	return ps_of(src->impl)->n;
+}
+
+int
+sift_aggpart_current(SiftSrcSource *src)
+{
+	return ps_of(src->impl)->cur;
+}
+
+Relation
+sift_aggpart_heap(SiftSrcSource *src, int i)
+{
+	PartSource *ps = src->impl;
+
+	if (ps->heap[i] == NULL)
+		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
+	return ps->heap[i];
+}
+
 /*
- * No match set (select), no top-N (tids, zone, zone_range, read_rows): the planner never gives a partitioned table a search or a ranked scan.
- * The others are the partitions' own; a provider that lacks one of them has no partitions (sift_colsrc_can_part).
+ * No match set (select): the planner never gives a partitioned table a search. The others are the partitions' own; a provider that lacks
+ * one of them has no partitions (sift_colsrc_can_part), or no top-N (sift_colsrc_can_tids).
  */
 static const SiftSrcProvider part_provider = {
 	.close = part_close,
@@ -927,9 +1349,14 @@ static const SiftSrcProvider part_provider = {
 	.read_sel = part_read_sel,
 	.filter_types = part_filter_types,
 	.tolerate_ovf = part_tolerate_ovf,
+	.set_raw = part_set_raw,
 	.set_recheck = part_set_recheck,
 	.overflow_raise = part_overflow_raise,
 	.recheck_rows = part_recheck_rows,
+	.tids = part_tids,
+	.zone = part_zone,
+	.zone_range = part_zone_range,
+	.read_rows = part_read_rows,
 	.read_types = part_read_types,
 	.read_jnull = part_read_jnull,
 	.prune_str = part_prune_str,
@@ -968,9 +1395,37 @@ sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b)
 	return true;
 }
 
+SiftPartStats *
+sift_aggpart_pack_stats(const SiftSrcStats *s, int nleaves)
+{
+	SiftPartStats *p = palloc(offsetof(SiftPartStats, leaf) + Min(nleaves, SIFT_COLSRC_MAX_LEAVES) * sizeof(p->leaf[0]));
+
+	p->nrows = s->nrows;
+	p->nunits = s->nunits;
+	p->bytes = s->bytes;
+	p->allvisible_frac = s->allvisible_frac;
+	p->exact_frac = s->exact_frac;
+	p->rows_miss = s->rows_miss;
+	p->nleaves = Min(nleaves, SIFT_COLSRC_MAX_LEAVES);
+	for (int i = 0; i < p->nleaves; i++)
+	{
+		p->leaf[i].elems_per_row = s->elems_per_row[i];
+		p->leaf[i].dim_miss = s->dim_miss[i];
+		p->leaf[i].mm_miss = s->mm_miss[i];
+		p->leaf[i].roll_miss = s->roll_miss[i];
+		p->leaf[i].ndistinct = s->ndistinct[i];
+		p->leaf[i].min = s->min[i];
+		p->leaf[i].max = s->max[i];
+		p->leaf[i].ovf = s->ovf[i];
+		p->leaf[i].nokinds = s->nokinds[i];
+		p->leaf[i].jnull = s->jnull[i];
+	}
+	return p;
+}
+
 /* the number of a leaf's values is a lower bound over several sources (the distinct values of a leaf may repeat among them), its range the union */
 void
-sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
+sift_aggpart_add_stats(SiftSrcStats *tot, const SiftPartStats *s)
 {
 	double		w = tot->nrows + s->nrows;
 
@@ -978,25 +1433,31 @@ sift_aggpart_add_stats(SiftSrcStats *tot, const SiftSrcStats *s)
 	{
 		tot->allvisible_frac = (tot->allvisible_frac * tot->nrows + s->allvisible_frac * s->nrows) / w;
 		tot->exact_frac = (tot->exact_frac * tot->nrows + s->exact_frac * s->nrows) / w;
+		tot->rows_miss = (tot->rows_miss * tot->nrows + s->rows_miss * s->nrows) / w;
 	}
-	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
+	for (int i = 0; i < s->nleaves; i++)
 	{
 		if (w > 0)
-			tot->elems_per_row[i] = (tot->elems_per_row[i] * tot->nrows + s->elems_per_row[i] * s->nrows) / w;
+		{
+			tot->elems_per_row[i] = (tot->elems_per_row[i] * tot->nrows + s->leaf[i].elems_per_row * s->nrows) / w;
+			tot->dim_miss[i] = (tot->dim_miss[i] * tot->nrows + s->leaf[i].dim_miss * s->nrows) / w;
+			tot->mm_miss[i] = (tot->mm_miss[i] * tot->nrows + s->leaf[i].mm_miss * s->nrows) / w;
+			tot->roll_miss[i] = (tot->roll_miss[i] * tot->nrows + s->leaf[i].roll_miss * s->nrows) / w;
+		}
 		if (tot->min[i] == 0 && tot->max[i] == 0)
 		{
-			tot->min[i] = s->min[i];
-			tot->max[i] = s->max[i];
+			tot->min[i] = s->leaf[i].min;
+			tot->max[i] = s->leaf[i].max;
 		}
-		else if (s->min[i] != 0 || s->max[i] != 0)
+		else if (s->leaf[i].min != 0 || s->leaf[i].max != 0)
 		{
-			tot->min[i] = Min(tot->min[i], s->min[i]);
-			tot->max[i] = Max(tot->max[i], s->max[i]);
+			tot->min[i] = Min(tot->min[i], s->leaf[i].min);
+			tot->max[i] = Max(tot->max[i], s->leaf[i].max);
 		}
-		tot->ndistinct[i] = Max(tot->ndistinct[i], s->ndistinct[i]);
-		tot->ovf[i] |= s->ovf[i];
-		tot->nokinds[i] |= s->nokinds[i];
-		tot->jnull[i] |= s->jnull[i];
+		tot->ndistinct[i] = Max(tot->ndistinct[i], s->leaf[i].ndistinct);
+		tot->ovf[i] |= s->leaf[i].ovf;
+		tot->nokinds[i] |= s->leaf[i].nokinds;
+		tot->jnull[i] |= s->leaf[i].jnull;
 	}
 	tot->nrows += s->nrows;
 	tot->nunits += s->nunits;

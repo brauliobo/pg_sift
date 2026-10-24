@@ -2,17 +2,7 @@
 -- plan shapes and the statements sift.score() may appear in (DESIGN.md (e), (f))
 CREATE EXTENSION pg_sift;
 
--- the plan text, and the SiftScan node of EXPLAIN (ANALYZE, FORMAT JSON)
-CREATE FUNCTION sift_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-	r text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		r := r || l || E'\n';
-	END LOOP;
-	RETURN rtrim(r, E'\n');
-END $$;
+\ir test/sift_plan.sql
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;
@@ -145,7 +135,9 @@ CREATE FUNCTION join_diff(q text, q0 text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
 	n bigint;
 BEGIN
-	EXECUTE format('SELECT count(*) FROM (((%s) EXCEPT (%s)) UNION ALL ((%s) EXCEPT (%s))) d', q, q0, q0, q) INTO n;
+	-- the scores, not the ids: which of the rows tied at the limit a join method keeps is its own business
+	EXECUTE format('SELECT count(*) FROM ((SELECT score FROM (%s) a(id, score) EXCEPT ALL SELECT score FROM (%s) b(id, score))
+		UNION ALL (SELECT score FROM (%s) b(id, score) EXCEPT ALL SELECT score FROM (%s) a(id, score))) d', q, q0, q0, q) INTO n;
 	RETURN n;
 END $$;
 SELECT sift_plan('SELECT r.id, jg.label, sift.score(r.ctid) FROM r JOIN jg USING (grp) WHERE r.body @@> ''quick fox'' ORDER BY sift.score(r.ctid) DESC LIMIT 5') ~ 'SiftScan' AS scan;

@@ -34,13 +34,15 @@ extern void sift_maint_unlock(Relation index);
 
 /*
  * SiftDirMutator that replaces segments in the directory: the generations old[0..nold) are dropped (their totals leave the metapage) and neu, if any,
- * takes the place of the first of them (its totals enter it)
+ * takes the place of the first of them (its totals enter it), followed by more[0..nmore) (a merge that cut its output into partitions)
  */
 typedef struct SiftMaintSwitch
 {
 	const uint64 *old;			/* generations replaced */
 	int			nold;
 	const SiftSegEntry *neu;	/* the replacement or NULL */
+	const SiftSegEntry *more;	/* the replacements after neu */
+	int			nmore;
 } SiftMaintSwitch;
 
 extern void sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg);
@@ -63,8 +65,23 @@ extern SiftMaintInputs sift_maint_inputs(Relation index, const SiftSegEntry *in,
 extern void sift_maint_replace(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, SiftExtent *release,
 							   int nrelease, const char *what, TimestampTz start, int64 docs);
 
+/* The same with nneu replacements (neu[0..nneu)), side by side where the first replaced segment was, in one switch */
+extern void sift_maint_replace_n(Relation index, const uint64 *old, int nold, const SiftSegEntry *neu, int nneu, SiftExtent *release,
+								 int nrelease, const char *what, TimestampTz start, int64 docs);
+
+/* Counts a failed background transaction of the worker of the index (after AbortCurrentTransaction) for the backoff and sift.workers; err: the error it was aborted by */
+extern void sift_maint_record_failure(Oid indexoid, ErrorData *err);
+
 /* Registers a dynamic background worker running function in pg_sift for this index */
 extern bool sift_maint_request_worker(Relation index, const char *function);
+
+/*
+ * Are more than max_active client backends of this database running a statement (0: no limit, never busy); and the wait of a worker, with no
+ * transaction (so no snapshot that holds the horizon back), until they are not: it looks again after sift.maintenance_naptime, then twice as late
+ * each time, 8 times. False: it stayed busy.
+ */
+extern bool sift_maint_busy(int max_active);
+extern bool sift_maint_wait_quiet(int max_active);
 
 /* The common start of a worker: context of its errors, signals, connection to the database of the request; returns the index OID */
 extern Oid	sift_maint_worker_connect(Datum main_arg, ErrorContextCallback *errctx);
@@ -82,7 +99,8 @@ typedef enum SiftMergeGoal
 {
 	SIFT_GOAL_ANY,
 	SIFT_GOAL_BACKGROUND,
-	SIFT_GOAL_VACUUM
+	SIFT_GOAL_VACUUM,
+	SIFT_GOAL_REWRITE			/* a step of sift_mops_rewrite whose reason is not the write buffer alone */
 } SiftMergeGoal;
 
 /*
@@ -109,6 +127,7 @@ typedef struct SiftMaintOps
 	void		(*vacuum_refresh) (Relation index);	/* NULL: nothing to refresh after VACUUM's merges (the maintenance lock is held) */
 	void		(*vacuum_skipped) (Relation index, Relation heap);	/* NULL: nothing; VACUUM skipped the vacuuming of the indexes (no ambulkdelete), so rows the heap dropped may be live in the index (the maintenance lock is held) */
 	const char *(*rewrite_due) (Relation index, bool automatic);	/* NULL: the kind has no rewrite rule; else why the index is worth a rewrite of all its segments now, or NULL (the maintenance lock is held) */
+	bool		(*rewrite_all) (const char *why);	/* NULL: every reason rewrites all the segments; else false when the reason is met by promoting the write buffer and the merges of the policy */
 	void		(*vacuum_done) (Relation index);	/* NULL: nothing; called at the end of VACUUM's cleanup, the maintenance lock released */
 } SiftMaintOps;
 
@@ -139,8 +158,9 @@ extern int	sift_mops_sql_promote(const SiftMaintOps *ops, Relation index);
 extern int	sift_mops_sql_merge(const SiftMaintOps *ops, Relation index, bool force);
 
 /*
- * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges every segment into
- * one. The maintenance lock is not waited for: when a VACUUM, a merge or the worker holds it, nothing is done. automatic: the call is the
+ * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges what the kind's
+ * SIFT_GOAL_REWRITE step picks (every segment, or the ones the churn touched) a step at a time, the maintenance lock held for one step only.
+ * The lock is not waited for to begin with (when a VACUUM, a merge or the worker holds it, nothing is done), but between steps. automatic: the call is the
  * server's own (the limit on the bytes rewritten applies). Returns the merges made, -1 when nothing was due or the lock was busy.
  */
 extern int	sift_mops_rewrite(const SiftMaintOps *ops, Relation index, bool automatic);

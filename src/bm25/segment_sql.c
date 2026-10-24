@@ -6,6 +6,7 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/xlog.h"
 #include "access/table.h"
 #include "access/tableam.h"
@@ -13,6 +14,7 @@
 #include "funcapi.h"
 #include "common/pg_prng.h"
 #include "lib/bloomfilter.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -20,10 +22,13 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 
 #include "bm25/analyze.h"
 #include "bm25/kernels.h"
 #include "bm25/wbuf.h"
+#include "col/pg.h"
+#include "bm25/maint_int.h"
 #include "core/ops.h"
 #include "bm25/segment.h"
 #include "core/sql.h"
@@ -153,8 +158,7 @@ sift_index_info(PG_FUNCTION_ARGS)
 	Datum		v[10];
 	bool		nulls[10] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
@@ -169,6 +173,87 @@ sift_index_info(PG_FUNCTION_ARGS)
 	nulls[9] = RecoveryInProgress();
 	v[9] = BoolGetDatum(!nulls[9] && sift_maintenance_busy(index));
 	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift.worker_state(index) behind the sift.workers view: whether maintenance is at work on the index, and for an index whose last background step
+ * failed what it was and when it is tried next. The delay is the one the background keeps (backoff_ms of bm25/maint.c). NULL while another session holds the index in a lock this probe would wait for (a REINDEX).
+ */
+Datum
+sift_worker_state(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	index;
+	SiftDirSnapshot *snap;
+	TupleDesc	tupdesc;
+	Datum		v[8];
+	bool		nulls[8] = {0};
+	uint32		failures;
+	int			sealed = 0;
+
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
+	if (!ConditionalLockRelationOid(relid, AccessShareLock))
+		PG_RETURN_NULL();
+	index = try_index_open(relid, NoLock);
+	if (index == NULL)
+	{
+		UnlockRelationOid(relid, AccessShareLock);
+		PG_RETURN_NULL();
+	}
+	if (index->rd_rel->relam != sift_catalog()->am && !sift_col_is_index(index))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a sift index", RelationGetRelationName(index))));
+	snap = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		sealed += snap->segs[i].kind == SIFT_SEG_WBUF_SEALED;
+	failures = snap->meta.flags & SIFT_META_FAILURES_MASK;
+	v[0] = Int32GetDatum(snap->nsegs);
+	v[1] = Int32GetDatum(sealed);
+	nulls[2] = RecoveryInProgress();
+	v[2] = BoolGetDatum(!nulls[2] && sift_maintenance_busy(index));
+	v[3] = Int32GetDatum(failures);
+	nulls[5] = failures == 0;
+	if (!nulls[5])
+		v[5] = TimestampTzGetDatum(snap->meta.maint_requested_at +
+								   backoff_ms(&snap->meta) * INT64CONST(1000));
+	/* a build without the note counted the failure and left it zero */
+	nulls[4] = nulls[6] = nulls[7] = nulls[5] || snap->meta.maint_failed_at == 0;
+	if (!nulls[4])
+	{
+		/* the note is a page's bytes: cut it where it ends, and refuse what is not text of the database encoding */
+		char		msg[SIFT_MAINT_ERRMSG_LEN];
+
+		memcpy(msg, snap->meta.maint_errmsg, sizeof(msg));
+		msg[sizeof(msg) - 1] = '\0';
+		v[4] = TimestampTzGetDatum(snap->meta.maint_failed_at);
+		v[6] = CStringGetTextDatum(unpack_sql_state(snap->meta.maint_errcode));
+		v[7] = CStringGetTextDatum(pg_verifymbstr(msg, strlen(msg), true) ? msg : "(unreadable)");
+	}
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+}
+
+/*
+ * sift.index_format(rel): the on-disk format of the metapage of a sift index, a sift_col index or a sift_table, the minor a build must read to
+ * open it. A newer minor than this build reads is refused here as everywhere (scripts/upgrade_check.sql reports it).
+ */
+Datum
+sift_index_format(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+	TupleDesc	tupdesc;
+	Datum		v[2];
+	bool		nulls[2] = {0};
+
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
+	sift_dir_read(rel, snap);
+	v[0] = Int32GetDatum(snap->meta.format_major);
+	v[1] = Int32GetDatum(snap->meta.format_minor);
+	relation_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
 }
 
@@ -690,8 +775,7 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 	Datum		v[5];
 	bool		nulls[5] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -751,8 +835,7 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	memcpy(blob, VARDATA_ANY(b), len);
 	pc = sift_post_open_blob(&info, blob, CurrentMemoryContext);
 	cur = sift_post_cursor(pc);
@@ -762,7 +845,9 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 
 		/* a cursor ends after at most one group per posting and per group number: a damaged blob must not keep it running */
 		if (n > SIFT_GRP_MAXTIDS || ++groups > Min(info.df, 1 << 24))
-			elog(ERROR, "cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("cursor does not end: group of %llu postings, group number %llu", (unsigned long long) n, (unsigned long long) groups)));
 		CHECK_FOR_INTERRUPTS();
 		sift_post_group_tf(pc, tf);
 		for (uint64 i = 0; i < n; i++)

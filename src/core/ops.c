@@ -1,29 +1,32 @@
 /*
- * core/ops.c - privilege check of the maintenance functions, LOG lines of maintenance, ALTER INDEX warning
+ * core/ops.c - privilege check of the maintenance functions, LOG lines of maintenance, the checks after ALTER INDEX ... SET (options)
  * (see core/ops.h). Nothing here runs on the query or aminsert paths.
  */
 #include "postgres.h"
 
 #include "access/genam.h"
 #include "access/relation.h"
-#include "catalog/namespace.h"
+#include "access/xact.h"
+#include "catalog/objectaccess.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 #include "miscadmin.h"
-#include "nodes/parsenodes.h"
-#include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/timestamp.h"
 
 #include "core/sift.h"
 #include "bm25/analyze.h"
+#include "col/pg.h"
 #include "core/ops.h"
 #include "core/store.h"
 
 int			sift_log_min_duration = 1000;
 
-static ProcessUtility_hook_type prev_utility_hook;
+static object_access_hook_type prev_object_access_hook;
 
 void
 sift_check_maintain(Relation index)
@@ -118,55 +121,73 @@ analyzer_changed(Relation index)
 	return snap->meta.analyzer_hash != cfg.hash;
 }
 
-/* The index an ALTER INDEX ... SET / RESET (options) changed, InvalidOid for any other command */
-static Oid
-altered_options_index(AlterTableStmt *stmt)
-{
-	bool		set = false;
-
-	if (stmt->objtype != OBJECT_INDEX)
-		return InvalidOid;
-	foreach_node(AlterTableCmd, cmd, stmt->cmds)
-		set |= cmd->subtype == AT_SetRelOptions || cmd->subtype == AT_ResetRelOptions;
-	return set ? RangeVarGetRelid(stmt->relation, NoLock, true) : InvalidOid;
-}
-
 static void
-warn_analyzer_options(Oid relid)
+warn_analyzer_options(Relation index)
 {
-	Relation	index = relation_open(relid, NoLock);
-
-	if (index->rd_rel->relam == sift_catalog()->am && analyzer_changed(index))
+	if (analyzer_changed(index))
 		ereport(WARNING,
 				(errmsg("index \"%s\" was built with other analyzer options", RelationGetRelationName(index)),
 				 errdetail("Queries and inserts on its table fail until the index is rebuilt with REINDEX."),
 				 errhint("To change them without downtime, CREATE INDEX CONCURRENTLY a new index with the options and drop this one.")));
-	relation_close(index, NoLock);
 }
 
-static void
-sift_utility(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, ProcessUtilityContext context,
-			 ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest, QueryCompletion *qc)
+/* The reloptions of an index as the catalog holds them now (a copy), NULL when it has none */
+static ArrayType *
+index_reloptions_copy(HeapTuple tuple)
 {
-	Node	   *stmt = pstmt->utilityStmt;
+	bool		isnull;
+	Datum		d = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
 
-	if (prev_utility_hook)
-		prev_utility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-	else
-		standard_ProcessUtility(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-	if (IsA(stmt, AlterTableStmt))
+	return isnull ? NULL : DatumGetArrayTypePCopy(d);
+}
+
+/*
+ * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
+ * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
+ * ProcessUtility hook: the first ALTER of a session that has not used sift loads this library while it runs, after the utility hook of the statement was
+ * read, and PostgreSQL reads the object access hook when the catalog row is updated. That is before the command counter moves on: the old row is the one
+ * in the cache until then, so the options are compared across the increment, and the check reads the new ones.
+ */
+static void
+sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg)
+{
+	HeapTuple	tuple;
+	ArrayType  *before = NULL;
+	bool		ours = false;
+
+	if (prev_object_access_hook)
+		prev_object_access_hook(access, classId, objectId, subId, arg);
+	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
+		return;
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
+	if (HeapTupleIsValid(tuple))
 	{
-		Oid			relid = altered_options_index((AlterTableStmt *) stmt);
+		Form_pg_class cls = (Form_pg_class) GETSTRUCT(tuple);
 
-		if (relid != InvalidOid)
+		ours = cls->relkind == RELKIND_INDEX && (cls->relam == sift_catalog()->am || cls->relam == sift_col_am_oid());
+		if (ours)
+			before = index_reloptions_copy(tuple);
+		ReleaseSysCache(tuple);
+	}
+	if (!ours)
+		return;
+	CommandCounterIncrement();
+	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
+	if (HeapTupleIsValid(tuple))
+	{
+		ArrayType  *after = index_reloptions_copy(tuple);
+		bool		same = before == NULL || after == NULL ? before == after : VARSIZE(before) == VARSIZE(after) && memcmp(before, after, VARSIZE(before)) == 0;
+
+		ReleaseSysCache(tuple);
+		if (!same)
 		{
-			Relation	index = relation_open(relid, NoLock);
+			Relation	index = relation_open(objectId, NoLock);
 
-			/* an option that does not fit the index (a name that is not a leaf) fails the ALTER, not the next use of the index */
-			sift_col_alter_check(index);
+			if (sift_col_is_index(index))
+				sift_col_alter_check(index);
+			else
+				warn_analyzer_options(index);
 			relation_close(index, NoLock);
-			if (sift_catalog()->am != InvalidOid)
-				warn_analyzer_options(relid);
 		}
 	}
 }
@@ -178,6 +199,6 @@ sift_ops_init(void)
 							"Logs the promotions, merges and maintenance worker runs of an index that take at least this long (ms), -1 to log none.",
 							NULL, &sift_log_min_duration, 1000, -1, INT_MAX,
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
-	prev_utility_hook = ProcessUtility_hook;
-	ProcessUtility_hook = sift_utility;
+	prev_object_access_hook = object_access_hook;
+	object_access_hook = sift_object_access;
 }

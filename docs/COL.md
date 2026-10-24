@@ -38,7 +38,7 @@ class `sift.col_ops` (the default one, for any type), GUC `sift.enable_col`, fun
 - **No duplicate table, no heap column storage.** All values the index holds are copies taken at `ambuild` / `aminsert`. A row is read
   from the index only if the MVCC rule of section 3 allows it, else the heap is asked.
 
-## 2. Format (format major 1, col minor 6; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2)
+## 2. Format (format major 1, col minor 14; minors 3 and 4 are read side by side; minor 5 for the wide leaves of section 2.11; minor 6 is the complete kinds of section 2.2; minor 7 is the min and max of the cube, minor 8 the calendar cells (days, months or years) of a date or timestamp as a dim of the cube of a sift_table, and minor 9 the rollup of the rows of a unit, docs/COL-PREAGG.md section 2; minor 10 is the exact keys or bloom filter and minor 15 the key list or bitmap of a leaf in a unit, section 2.13; minor 12 is the superunit summaries of docs/COL-PREAGG.md section 10, in a directory of version 4; minor 13 is the sorted run of section 2.14, in a directory of version 5)
 
 The metapage (block 0), directory (block 1), free list, extents, pages (`SiftPageOpaque`), generations and generic WAL protocol are those
 of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What differs:
@@ -46,7 +46,7 @@ of `core/store.h` and `core/page.h`, unchanged (P1-P6 of `core/store.h`). What d
 - `meta->flags & SIFT_COL_META_FLAG` (0x10000) marks a sift_col index; `meta->analyzer_hash` holds the **schema hash** (hash of the
   leaf list: ids, kinds, stores, type OIDs, paths) and a mismatch with the index definition is "REINDEX needed" (a reloption change that
   alters the leaves). `meta->k1 / b / sum_dl` are 0. `meta->ndocs` counts the rows of immutable segments.
-- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4 or 6; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.2 library reads minors 3 to 6 in one index
+- Every `SiftSegEntry` carries `format` = the col segment minor (3, 4, 6, 7, 8, 9 or 10; 4 also for a segment with version vectors, the changelog below; 5 for a schema with wide leaves, section 2.11; 6 for a schema with leaves filled from jsonb paths whose kinds are complete, section 2.2; 7 for a segment whose cubes hold the min and max of their measures, written only for an index with the reloption `cube_minmax` and then also for a schema without jsonb paths or with known kinds; 8 for a segment whose units also hold the rollup of their rows, written only for an index with the reloption `rollup_dims`, under the same conditions on the kinds; 10 for a segment whose units hold the small-set summary of a leaf, written only for an index whose reloption `key_columns` names a leaf that keeps a summary and not a list (section 2.13), under the same conditions; 15 for a segment whose units hold the key list or bitmap of a leaf (section 2.13), written for an index whose `key_columns` keeps one, which the default `auto` does for foreign keys, under the same conditions; 13 for a segment whose units hold the sorted run of a leaf, written only for an index with the reloption `order_columns`, under the same conditions; 14 for a segment with a dictionary of 1,024 strings or more stored in blocks to be read in place, section 2.15, under the same conditions). A reader refuses a minor it does not know with a REINDEX hint (no release wrote minors 0 to 2: section 4); a 3.3 library reads minors 3 to 8 in one index
   as written, and a merge writes minor 6 when every input keeps its kinds and minor 4 when one does not (section 4). `SiftSegEntry.ndocs` is the number of rows, `sum_dl` is 0, `bytes` the size of the stream.
 - `sift.verify`, `sift.segments` and the BM25 maintenance functions refuse a col index (`ERRCODE_WRONG_OBJECT_TYPE`); the `col_*` functions
   refuse a BM25 one. The AM check is `relam`, the metapage flag is the second line of defence.
@@ -223,7 +223,7 @@ bytewise, i.e. the C collation or `text_pattern_ops`), and the inline wrappers `
 3. Per-dictionary caches keyed by `SiftSrcDict.id` (LUTs, group maps) see one new id per inline unit read: bound their size or drop an
    entry when the next unit comes.
 
-The parsed dictionary of a segment is kept by the backend for the next query (`col/dictcache.c`, up to 64 MB per backend, least recently used first), under the relation file, generation, header block, rows and leaf of the segment: a segment never changes, so a scan that reads a leaf of a segment it has read before inflates and indexes nothing (a free text path of 60,000 entries is a few milliseconds of every query otherwise). A scan pins the entries it uses until its memory context goes; a dictionary over a quarter of the cache, or that finds no room among the pinned ones, is parsed into the memory of the scan as before. A rewritten segment (merge, promotion, `REINDEX`) has another generation and its own entries. Test `col_dict_cache` (`sift._test_col_dict_cache`, `sift.test_col_dict_cache`).
+The parsed dictionary of a segment is kept by the backend for the next query (`col/dictcache.c`, up to 64 MB per backend, least recently used first), under the relation file, generation, header block, rows and leaf of the segment: a segment never changes, so a scan that reads a leaf of a segment it has read before inflates and indexes nothing (a free text path of 60,000 entries is a few milliseconds of every query otherwise). A scan pins the entries it uses until its memory context goes; a dictionary over a half of the cache, or that finds no room among the pinned ones, is parsed into the memory of the scan as before. A rewritten segment (merge, promotion, `REINDEX`) has another generation and its own entries. Test `col_dict_cache` (`sift._test_col_dict_cache`, `sift.test_col_dict_cache`).
 
 ### 2.4 Zone map pruning
 
@@ -406,6 +406,298 @@ detoasted varlena image of an array, range, multirange, `inet`, `cidr`, `bit` or
 such a leaf is format minor 5; a `sift_table` stores these types by size and is not affected. SiftAgg reads them through the dictionaries of
 `docs/COL-LEAFTYPES-32.md` 8.
 
+### 2.13 Keys of a leaf in a unit (column format minors 10 and 15, 3.3; on for foreign keys)
+
+For a key spread over every unit the zone (a minimum and a maximum) is the whole range and prunes nothing, and a scan then decodes the key chunk of every unit to
+find the one that holds the key; and `count(DISTINCT k)` of a whole table reads the key chunk of every unit and adds each key to a set, so it costs the rows. The reloption
+`key_columns` (default `auto`) makes every unit written afterwards keep, for the leaves it names, the set of its distinct keys, in the smallest form that fits:
+
+- a **key list or a bitmap** of all its keys, where that takes the share of the unit's bytes that the key lists of all its leaves have left (`SIFT_CSET_PRES_PCT`, 3%, the registry limit `presence_pct`, the first
+  leaves first): the keys of a unit as the offsets from its smallest in 1, 2 or 4 bytes each, or a bit for every integer from the smallest to the largest, whichever is smaller. It serves the equality, IN and range
+  tests (a binary search, a bit test) and the flat `count(DISTINCT k)`. Top-level `int2`, `int4` and `date` leaves only (the keys are the 32-bit values the aggregate adds; a `date` is its day number);
+- else, for a leaf the user named, a **summary**: the keys exactly while there are at most 32 (`SIFT_CSET_LIMIT`), else a bloom filter of 10 bits a key. It serves the equality, IN and range tests only. Plain integer,
+  text and uuid leaves, as `preagg` names them.
+
+Values: `'a, b'` (the user's list: key lists and bitmaps where they fit, summaries where they do not), `off`, and `auto`, the default. With `auto`, `CREATE INDEX` chooses the columns itself, once, and writes them to the option as
+`auto: a, b` (so a `REINDEX` of the same heap keeps them; `ALTER INDEX .. SET (key_columns = 'auto')` and a `REINDEX` choose again). It takes the plain `int2`, `int4` and `date` columns that are a member of a foreign key or are named `*_id`, that are not alone
+unique (a primary key or a unique index: `count(DISTINCT)` of it is its count) and, once built, keeps those that hold a key list or bitmap in half of the units or more and that the cube does not already answer in half of them (a
+column of few values is a dimension of the cube, and its list is the slower way). A leaf the build chose never gets a summary, only a list or a bitmap, so the default stays inside the 3% share. Only when `sift.col_format_minor` allows
+minor 15. The NOTICE of `CREATE INDEX` and `REINDEX` names the columns it kept, the bytes of their lists, the columns it left out with the reason (no list fits 3% of a unit in that share of the units, and what a filter of the column would take at most, or
+the cube holds it) and how to turn it off (`ALTER INDEX .. SET (key_columns = 'off')`, then `REINDEX`). `ALTER INDEX .. SET (key_columns = ..)` applies to the units written afterwards (promotion, merge, REINDEX); the others have none and are scanned. For
+`CREATE INDEX` and `REINDEX` of a list the user wrote, a NOTICE tells when 10% of the units or more hold a filter instead of the keys, or no list where one was asked, or nothing; the same NOTICE names a `cube(..)` dim that has no histogram in that share of the units.
+
+The point lookup of section 2.17 is the other half of the keys of a column: where the structures above skip units, the directory names the rows. It is the part meant to be tuned to replace b-trees, and `key_columns` is where it will join the
+choice (a mode after the name of a column, not a second option); `point_columns` stays as it is until then.
+
+When a unit is served from its list or bitmap for a `count(DISTINCT k)`: the aggregate has no `GROUP BY` key (it may sit beside `count(*)`, `sum` and the other aggregates of the pre-aggregates), the
+unit is exact (every row live and visible to the scan: not a row of a write buffer, no dead row) and every filter holds for the whole unit, that is, the zone (minimum and maximum) of each
+conjunct's leaf lies inside the predicate. A filter that cuts through a unit's zone, a unit with a dead row and a superunit (its members are tried one by one) are scanned as before: the
+list is of all the rows of the unit and is not repaired for a row a filter or a delete removes. The answers are those of the normal plan (`col_key_presence` checks 20 shapes three ways). A unit that keeps no list or bitmap of the leaf (its keys are beyond the 3%) is answered from the histogram of the cube when the leaf is a dim of it too, so a list in some units never makes the others scan (`agg_key_cube_fallback`).
+
+Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 3 in a segment of minor 10 or more and ends with the offset and the bytes of the
+keys. The section is a header `{u32 'COLT', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}` (kinds: bit 0 some unit has an exact set, bit 1 a filter, bit 2 a list or bitmap; a hint that lets a wide range skip a leaf of filters) per leaf (ascending) and per leaf
+a directory of `nsb + 1` u64 offsets and the blobs, laid out like the cubes. The blob of a unit and a leaf, little endian: `u8 kind, u8 aux, u16 0, u32 n, u64 v`, then
+`kind 1` (exact) and `kind 4` (list, the same layout without the 1,024 keys limit of an exact set): `v` is the smallest key, `aux` the bytes (1, 2, 4, 8) of each of the `n` offsets from it, strictly ascending, the first 0; `kind 2` (bloom): `aux` is
+the probes k (1 to 16), `v` the bits (a multiple of 8, 64 or more, below 2^32, at least `n`) and `v / 8` bytes follow; probe `j` of key `x` is bit
+`((u32) (h1 + j * h2) * v) >> 32` with `h = mix(x)` (the 64-bit finalizer of MurmurHash3), `h1` its low and `h2` its high half with the low bit set; `kind 3` (bitmap): `n` (at least 1) is the number of distinct keys, `v` the key of bit 0 (a multiple of 64, below the
+smallest key by less than 64) and 8-byte words follow from the one of the smallest key to the one of the largest, so that the first and the last are not zero and the bits set are `n`. Keys are those of the
+chunk, in the segment's dictionary codes for a text leaf; NULL slots and overflow slots are left out. A unit has no exact set or filter when it has fewer than two distinct keys or when they
+fill the range from the smallest to the largest (the zone says as much), nor when its text is inline or the leaf is not one the option can name.
+
+Readers: `sift_cseg_prune` clears a unit when no key of the test can be in its blob: an equality or a range with a small span in a filter, any range or IN list in a list, a bitmap or an exact set,
+a LUT of text codes through the few codes it matches (or, in an exact set, through the members). The units with overflow values and inline strings are left to their own rule. A
+blob is only ever a superset of the live keys (deletes and updates leave their keys in it until the unit is rewritten), so pruning by it is sound; rows of write buffers have none
+and are always read. The decoder refuses (`ERRCODE_DATA_CORRUPTED`) unknown flag bits, kinds, widths and probe counts, a count that does not fit the blob, an unsorted set, a filter with no bit, a bitmap with a base that is not a multiple of 64, a length that is not whole words, an end word that is zero and a population that is not `n`; `sift.col_verify`
+recomputes the blob from the chunk (a list or an exact set holds exactly its keys, a bitmap exactly its bits, a filter their bits and none else) and checks that the kinds a record lists are those the units hold. A segment is minor 10 when some unit got an exact set or a filter and 15 when some unit got a list or a bitmap, under
+`sift.col_format_minor` 10 and 15 and (as for minor 7) a schema without jsonb paths or one whose kinds are known; promotion, merge and REINDEX write it from the option, every other write
+writes what it wrote before, so a 3.3 library at a lower setting and an index without the option are read by 3.2 and 3.1, and a 3.2 library refuses a segment with the blobs with the REINDEX hint (a default 3.3 index already carries minors 7, 8 and 12, which it refuses). `sift.col_sections` lists the bytes as `sets`, EXPLAIN ANALYZE of
+SiftAgg counts `Units Pruned By Set Summary` (inside `Units Pruned`), `sift.upgrade_commands()` lists an index with the option and older units as a gain from `REINDEX`, and the planner keeps the share of the units that have blobs and their mean distinct keys per leaf
+(`SiftColLeafStats.set_*`): an equality or IN keeps `1 - c + c * (1 - exp(-s * n))` of the units (`c` the cover, `s` the share of the leaf's values the test names, `n` the keys of a unit), and counts for nothing when
+the second term is above 0.85. Code: `col/setsum.[ch]` (`sift_cset_build`, `sift_cset_build_pres`, `sift_cset_open`), `col/keycols.c` (the choice and its NOTICE), `col/seg.c` (`sift_cseg_prune_sets`, `sift_cseg_presence`, `col/scan.c` the begin of a scan), `col/seg_write.c` (`add_sets`),
+`agg/unit_preagg.c` (`preagg_presence`), `agg/dist.c` (`dist_or_words`), `agg/spec_preagg.c` (`cube_agg_ok`). Tests: `col_set_summary` (minors, options, 21 shapes three ways, DML, VACUUM, promotion,
+merge, corrupt summaries, verify), `col_key_presence` (a differential grid of 20 shapes against the normal plan and the option off, coverage, write buffer, DML, VACUUM, promotion, merge, workers, corrupt blobs decoded and in the stream, verify, parallel build, an option added or removed later), `col_key_columns_auto` (the choice, the NOTICE, REINDEX, the share of the unit),
+`col_caps`, and the minor 10 and 15 steps of the TAPs `extension_lifecycle`, `compat_matrix`, `compat_31_column`, `upgrade_check`, `col_crash_matrix` and `pg_upgrade`.
+
+Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of about 13, median of 3 warm runs, `docs/results/col-set-summary.tsv`): 200 000 rows of `(id, kind, parent_id, uq, val, pad)`
+with a 1 500 byte `pad` (157 units), `key_columns = 'kind, parent_id, uq'` (as filters: `kind` and `parent_id` are bigint here) against zones only; `parent_id` is random with 20 rows a key, `kind` has 60 values in runs of 700 rows, `uq` is near-unique.
+
+| Shape | Units read, zones only | with the summary | ms, zones only | ms, with the summary |
+|---|---|---|---|---|
+| `uq = k` | 157 | 1 | 1.07 | 0.23 |
+| `parent_id = k` | 157 | 19 | 0.85 | 0.38 |
+| `parent_id IN (5 keys)` | 157 | 79 | 1.09 | 0.95 |
+| `parent_id IN (50 keys)` | 157 | 157 | 1.16 | 1.00 |
+| `parent_id BETWEEN 100 AND 103` | 157 | 67 | 1.18 | 0.59 |
+| `kind = 7` | 57 | 7 | 0.42 | 0.25 |
+| `kind IN (5 values)` | 148 | 33 | 0.98 | 0.48 |
+
+The index grows from 1 859 584 to 2 359 296 bytes (+26.9%; the `sets` section is 496 496 bytes, 2.5 bytes a row for the three leaves). With a 100 byte `pad` (16 units) the same shapes
+skip 1 to 15 of the 16 units and the index grows by 26.4% of a smaller base; at 25 000 rows (20 units) a key of `parent_id` skips 9 of 20. A list of 50 keys names a key in every unit, so the
+planner counts no gain from it and the summary only costs its bytes. The gain is in units not decoded, so it grows with the number of units and with the width of the rows.
+
+Key lists and bitmaps, measured (2026-10-22, PostgreSQL 18.6, `docs/results/col-key-presence.tsv`; one backend, no parallel workers, medians of 9 interleaved runs under `flock`).
+A table `events(id int, parent_id int, ts date, kind int2, amount int2)` with 6 313 distinct `parent_id`, `key_columns = 'parent_id'`:
+
+| rows (units) | rows a unit | `count(DISTINCT parent_id)`: normal plan, units scanned, bitmaps (ms) | with `count(*)`, `sum` | with a filter that holds for the whole of the units (`ts` window) | section / index (file) |
+|---|---|---|---|---|---|
+| 1 000 000 (123) | 8 130 | 314, 16.1, 1.11 (14.5x) | 563, 16.5, 0.97 (17.1x) | 336, 13.3, 1.42 (9.4x) | 2.5% (+3.43%) |
+| 200 000 (10) | 20 000 | 43.6, 2.55, 0.42 (6.0x) | 85.6, 2.67, 0.28 (9.6x) | 30.4, 2.40, 0.67 (3.6x) | 1.0% (+4.0%) |
+
+The ratio is units scanned over bitmaps. `count(*), sum(amount)` alone is 0.92 ms with the bitmaps and 0.84 ms without: the option costs a query that does not use it nothing measurable. The index
+at 8 130 rows a unit is 3 956 736 bytes against 3 825 664 without the option: the section is 99 648 bytes (2.5% of the index), and the file grows 131 072 bytes (3.43%) because it grows by 8 KB pages;
+at 20 000 rows a unit the section is 8 256 bytes (1.0%) and the file of the 10-unit index grows 32 768 bytes (4.0%), all page rounding. The bitmap of a unit takes `(largest - smallest) / 8` bytes, so
+the share falls as the rows a unit holds grow and as the keys come closer together, and a key range of more than `0.24 * bytes of the unit` integers gets no section. User cycles of the 1 000 000 row query:
+2.9 million with the bitmaps (2.3 million for `count(*), sum` alone), 51.7 million scanning the units. What remains is the work a pre-aggregate answer has to do for every unit (about 10 microseconds), so
+the gain is the cost of a key chunk over that, and it grows with the rows a unit holds.
+
+### 2.14 Sorted run of a leaf in a unit (column format minor 13, 3.3; opt-in)
+
+`ORDER BY col LIMIT n` over a column spread over every unit reads the key chunk of every unit and looks at every row: the zone of a unit says nothing when its
+keys cover the whole range. The reloption `order_columns = 'a, b'` (default none; the names of plain `int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`,
+`timestamptz`, `float4` and `float8` columns; a text, bool, uuid, jsonb-path, lossy or wide leaf is refused at `CREATE INDEX`) makes every unit written afterwards
+keep, for those leaves, the ordinals of its rows in the order of the key, so that a top-N scan reads the first rows of each unit and not all of them. A text
+column has no run: its dictionary codes do not follow the collation, so there is no collation question to answer. `ALTER INDEX .. SET (order_columns = ..)`
+applies to the units written afterwards (promotion, merge, REINDEX); the others have none and are read whole.
+
+Layout: the sidecar header of the ZONES section (docs/COL-PREAGG.md section 2) is version 5 in a segment of minor 13 and ends with the offset and the bytes of the
+runs. The section has the shape of the small-set one: a header `{u32 'COLR', u32 1, u32 nleaves, u32 nsb}`, a record `{u32 leaf, u32 kinds, u64 dir_off, u64 bytes}`
+per leaf (ascending; kinds: bit 0 some unit has an ORD run, bit 1 an IDENT one), and per leaf a directory of `nsb + 1` u64 offsets and the blobs. The blob of a unit
+and a leaf, little endian: `u8 kind, u8 width, u16 0, u32 n, u32 nvals, u32 nnull`, then for `kind 1` (ORD) `n` entries of `width` bytes (1 up to 256 rows, 2 up
+to 65 536, else 4), each the ordinal of a row of the unit: first the `nvals` rows that hold a value, ascending by (key, ordinal), then the `nnull` NULL rows
+ascending, then the rows whose value overflowed the leaf ascending. `kind 2` (IDENT) has no entries: the unit holds no NULL and no overflowed row and its keys
+do not fall from one row to the next, so the run is the rows in order (a column loaded in order, such as an id or a timestamp, costs 16 bytes a unit). The key
+is the chunk's; a float's `-0` and `+0` are one key, as PostgreSQL compares them; ties sort by ordinal, which is the order of the heap TIDs of the unit, so the
+order of a run is the order the executor breaks a tie in. A unit has no blob when it has fewer than two rows.
+
+Reader (`agg/topn.c`, `run_unit`): a top-N scan whose first key is a leaf with a run and whose unit has at least `2 * (limit + 1)` rows passing, walks the run
+from the best end by groups of equal keys, stops when the rank of a group is strictly after
+the bar (the n-th best of the heap, the shared bar of the workers, or the n-th row of the unit itself), tests the NULL group and the overflowed rows one by one,
+and hands the candidates, in row order, to the same heap as before, so the rows and their ties are those of the linear scan. A row is tested against the rows that pass before its key is read, so a filter that leaves few rows (the key
+is then decoded for those rows only) or a start such as `k > $last` is walked the same way: a group is the rows that pass with an equal key. A descending order walks the
+groups backwards and takes the rows of each ascending. On a serial walk the first pass gives each unit at most about `2 * limit / units` rows (never fewer than 2),
+and a unit that stopped before it could prove the bar is read again, resumed at the rank where it stopped, in the order of those ranks and only while the bar can
+still be beaten. A unit of a write buffer, a unit with rows to be tested again by the heap, one read in another numbering (compacted or kept rows) and a wide leaf
+are scanned as before. The decoder refuses unknown kinds, widths, flag bits, counts that do not fit the unit and an ordinal that
+is no row of it; the walk checks the order of the keys, that equal keys have ordinals ascending and that no row is listed twice; `sift.col_verify` recomputes the
+run from the chunk and compares the bytes, and the kinds a record lists with those of its units. Deletes and updates leave the run as it was (a deleted row is
+skipped when the walk meets it), so it is sound until the unit is rewritten; promotion, merge and REINDEX write it from the option.
+
+A segment is minor 13 only when some unit got a run, under `sift.col_format_minor = 13` and (as for minor 7) a schema without jsonb paths or one whose kinds are
+known; every other write writes what it wrote before, so a 3.3 library at a lower setting and an index without the option are read by 3.2 and 3.1, and a 3.3 library
+that knows only minor 12 refuses the new segments with the REINDEX hint. `sift.topn_runs` (on) turns the reading off. `sift.col_sections` lists the bytes as `runs`,
+EXPLAIN ANALYZE of SiftAgg shows `Units Read By Sorted Run`, and `sift.upgrade_commands()` lists an index with the option and older units as a gain from `REINDEX`.
+The planner does not price the runs: the cost of a top-N scan is what it was, and the runs only lower the time it takes. Code: `col/runs.[ch]`, `col/seg.c`
+(`sift_cseg_run`), `col/seg_write.c` (`add_runs`), `col/scan_unit.c` (`sift_col_run_info`), `agg/topn.c` (`run_unit`). Tests: `col_sorted_run` (minors, options, 240
+shapes three ways, 160 more under filters of 2%, 10% and 50% and a start after a value of the key, also after DML and merge, the pass that reads units again, write buffer, DML, VACUUM, promotion, merge, workers, corrupt runs decoded and in the stream, verify, an index that
+takes the option later), the minor 13 steps of the TAPs `extension_lifecycle`, `compat_matrix`, `compat_31_column`, `upgrade_check` and `col_crash_matrix`.
+
+Measured (2026-10-22, PostgreSQL 18.6, 32 CPUs at a load average of 55, so the two runs of each cell differ by up to a factor of three; median of 15 warm runs, `docs/results/col-sorted-run.tsv`):
+1 000 000 rows of `(id, k, val, ts, amount, pad)` with a 400 byte `pad` (230 units), `order_columns` on every column, `SELECT id, k FROM items ORDER BY k LIMIT n` with `k` a random `int4`.
+
+| n | btree | SiftAgg, `sift.topn_runs = off` (ms) | with the runs (ms) |
+|---|---|---|---|
+| 10 | 0.01 | 0.25 to 0.34 | 0.17 to 0.22 |
+| 100 | 0.03 | 1.7 to 1.9 | 0.9 to 1.3 |
+| 1 000 | 0.34 to 0.37 | 6.5 to 8.9 | 1.9 to 4.9 |
+| 10 000 | 2.6 to 5.4 | 29 to 32 | 23 to 27 |
+
+The same on a `numeric(10,2)` column with no btree (the normal plan sorts the table in 115 to 185 ms for n = 1 000): 7.8 to 13.6 ms without the runs, 5.5 to 6.4 with them. So the runs cut a top-N scan by two to four times at n up to a few thousand and leave the scan five to fourteen times slower than a btree at
+n = 1 000: what remains is the unit itself, about 8 to 20 microseconds a unit of the 230 (opening it, its liveness, the first rows of its order) plus the heap fetch of the rows.
+The gap to a btree closes only with a structure that is read in the order of the key across the segment, not unit by unit.
+
+Under a `WHERE` or a start after a value of the key, the walk reads the key of the rows that pass only. Measured (2026-10-22, PostgreSQL 18.6, a host at load 5 to 9, `docs/results/col-sorted-run-filter.tsv`):
+1 000 000 rows as above, `order_columns = 'k, val'`, `SELECT id, k FROM items WHERE .. ORDER BY k LIMIT n`, the library before and after this walk swapped between 4 rounds of 15 warm runs (median of the rounds):
+
+| filter | n | before (ms) | after (ms) | btree (ms) |
+|---|---|---|---|---|
+| none | 1 000 | 0.94 | 0.96 | 0.10 |
+| 50% of the rows | 1 000 | 1.19 | 1.18 | 0.25 |
+| 10% of the rows | 100 | 1.50 | 1.32 | 0.09 |
+| 10% of the rows | 1 000 | 2.53 | 2.16 | 1.16 |
+| 1% of the rows | 1 000 | 1.44 | 1.58 | 114.7 |
+| `k > 500000` (half the rows) | 100 | 5.18 | 1.96 | 0.01 |
+| `k > 500000` (half the rows) | 1 000 | 5.71 | 2.54 | 0.12 |
+| `k > 990000` (1% of the rows) | 1 000 | 1.40 | 1.43 | 0.11 |
+
+A scan with a 10% filter, which read no run before, gains 12 to 15%; a start in the middle of the key range, which read the key of every row below it, takes 2.2 to 2.6 times less. Where nothing was
+skipped (no filter, 50%, a late start) the time is the same within the noise; a filter of 1% of the rows is 0.01 ms slower at n = 100 and 9% slower at n = 1 000 (1.44 to 1.58 ms), which the four rounds do not tell from noise. The scan still decodes the filter's leaf and walks past the rows below a start; it does not search the run for the
+first key of a range, and what is left at n = 1 000 is the heap fetch of the rows. At 200 000 rows and n = 1 000 (8 rounds) the same walk takes 8 to 42% less for no filter, 50%, 10%, 5% and the start.
+
+Index size at 1 000 000 rows: 2 bytes a row for each leaf whose rows do not ascend with the column (`int2`, `int4`, `int8`, `numeric`, `date`, `timestamp`, `float4`, `float8` alike:
+2 001 320 bytes each), 1 320 bytes for a leaf that does (`id`, a timestamp loaded in order). An index of 10 columns, 8 of them unordered, grows from 31 875 072 to 48 070 656 bytes (+50.8%).
+
+### 2.15 Dictionary stored in blocks, read in place (column format minor 14, 3.3)
+
+A dictionary of the compact form (forms 0 and 1 of section 2.3) is parsed whole by the first scan of a backend that needs a string of the leaf or a code of a string: the first fetch of a
+row's text, or the first equality test on a text or uuid column of a million rows, costs tens to hundreds of milliseconds, the parse, not the read or the test, and the parsed dictionary
+(about 2.5 times its stored size) is kept by the backend up to `dict_cache_kb` (64 MB), half of it for one dictionary. At 200,000 unique strings of 110 bytes a `sift_table` row fetch is 47 ms
+in a new backend (the dictionary is 8.9 MB, 23 MB parsed), and 90 to 96 ms for every statement that reads another unit when the cache cannot hold it (measured with a 16 MB cache; a segment
+of 700,000 such rows has a dictionary over the 32 MB one entry may take): a point fetch whose cost follows the size of the segment. So a dictionary of `CDICT_LOOKUP_MIN` (1,024, the
+registry limit `dict_lookup_min`) strings or more may be written, under `sift.col_format_minor = 14`, in one of two forms that are read where they lie in the stream:
+
+```
+form 3 (blocks)      u32 form = 3, u32 n, u32 fixed, u32 nbytes,
+                     u32 boff[blocks + 1]  where each block starts, from the first (blocks = ceil(n / 64)),
+                     blocks               64 strings each in code order (the last fewer): u8 algorithm (0 raw, 2 zstd), u8 0, u16 raw bytes, then
+                                          [u8 length[count]  only when fixed = 0] followed by the strings, compressed as a whole when that is smaller
+form 2 (searched)    form 3, then padding to 4 bytes and u32 code[n], the codes in the byte order of their strings (equal strings do not occur: a dictionary has each once)
+```
+
+`fixed` is the length of every string when they all have one (a uuid: 16, an md5: 32) and then no lengths are stored; `nbytes` is the bytes of all the strings. A string is read by decompressing its
+block (up to 16 kB; the one block the backend keeps for the dictionary): the fetch of a row reads the strings of its codes one by one (`sift_cseg_dict_lazy`, `sift_cseg_dict_get`) and parses nothing, a
+scan that reads many (a `GROUP BY` of the column, a merge) parses it whole as before and a build without zstd writes raw blocks and cannot read compressed ones (the error says so). The blocks are
+compressed with zstd level 1 (the writer makes 3,000 of them for 200,000 strings; the contexts of zstd are reused, `col/compress.c`) unless the compression policy of the index is `none` or the block does not shrink.
+Codes keep their first-seen order, so the units, the zones, the small-set summaries and the sorted runs do not change.
+
+Form 3 is for the strings of a row. Form 2 is for the search of a string: a test of a predicate on a stored segment (`sift_cseg_dict_search`) asks the dictionary for what it needs and nothing else: an
+equality or a member of an `IN` list bisects `code[]`, reading about log2(n) strings one at a time (`seg_read` of the page that holds them, which the segment keeps pinned), and a prefix or range bisects it twice and
+reads the codes between, so the work follows the matches. The lookup table of codes the unit scan tests (a set of at most 256 codes, or a bit per code of the dictionary) is built as before. The backend's cache of
+parsed dictionaries is not asked, and nothing is parsed, unless the dictionary is already there. A dictionary without `code[]` is parsed on the first test, as the compact one. The parser (`sift_cdict_parse`) refuses a length, an
+offset or a code out of range; `sift.col_verify` checks that a segment with the forms is minor 14 and, for form 2, that `code[]` names every code once and that the strings ascend in it.
+
+Which form a dictionary gets. Form 2 costs 4 bytes for each code and is written for the leaves that ask for it: the option `dict_lookup` is `auto` by default (the leaves named in `point_columns`, `key_columns` or
+`return_columns`, whose lookups and returned strings read it), `on` (every leaf) or `off` (none), and a `sift_table` writes it under `sift.table_dict_lookup` (default off). Form 3 is written for every other
+dictionary of that size when it adds at most 3% to the segment (`write_dicts`, `sift_cdict_blocks_extra`), and then the segment is minor 14. The blocks lose to the compact form what the whole dictionary
+saves by repeating words across strings (short titles and names: +20% to +60% of the dictionary, whether the blocks are 32, 64 or 256 strings and with a zstd dictionary trained on them), and
+tie with it for ids, hashes, uuids and long strings, so those get form 3 and titles keep the compact form. The estimate is from 16 blocks and the first megabyte (the estimate is above the real
+extra for what it accepts); a dictionary whose estimate is clear is written once, in the form it got, and only one in between is written in both and the smaller allowed one kept. Measured on the tip
+(2026-10-22, 200,000 rows, one segment; the index is `(id, column)`):
+
+| column | compact dictionary (bytes) | blocks | index growth if blocks were always written | written by default | index growth, form 2 |
+|---|---|---|---|---|---|
+| 20,000 distinct synthetic titles | 319,032 | 485,536 | +21.3% | compact | +31.9% |
+| 100,000 distinct synthetic titles | 1,595,784 | 2,427,304 | +47.2% | compact | +69.9% |
+| 71,049 distinct titles of real text | 809,872 | 1,306,024 | +30.1% | compact | +45.8% |
+| 131,226 distinct names of real text | 913,392 | 1,225,880 | +18.6% | compact | +50.5% |
+| 200,000 unique, 18 bytes | 1,871,968 | 1,941,280 | +3.4% | compact | +44.4% |
+| 200,000 unique, 37 bytes | 3,645,376 | 3,730,688 | +2.2% | blocks | +23.6% |
+| 200,000 unique, 110 bytes | 8,941,560 | 8,773,864 | -1.9% | blocks | +7.0% |
+| 200,000 uuids | 3,200,048 | 3,225,024 | +0.8% | blocks | +25.1% |
+| 1,024 distinct, 12 bytes | 928 | 2,736 | 0% | compact | +10.0% |
+
+The `sift_table` of 200,000 orders with a 110-byte unique text and a 20,000-title column (segment 10.1 MB) grows by 0.7% with the forms it got, and the fetch of a row in a new backend takes 1.0 ms
+for the first statement, 1.2 ms for a page of 50 rows (47.4 and 58.7 ms in the compact form), whether the cache holds 64 or 16 MB (in the compact form every statement that reads a new unit parses again:
+89 to 96 ms at 16 MB), with 8 kB of the backend's memory for the dictionary where the parsed one is 23 MB; warm, a row is 0.04 ms and a page of 50 rows 0.28 ms (0.11 ms parsed: each row decompresses its block). Form 2 keeps the
+benefit it had for a search (the first equality on a new backend: 3.5 ms at 20,000 titles, 12.8 ms at 100,000, 8 to 18 ms unique, 0.4 ms at 1,024 saved) at the sizes of the last column; warm queries
+are the same or slower and the 4-client write mix of a `sift_table` did not move (3,528 tps before the form, 3,186 with it, 3,627 with the in-place row fetch).
+
+A segment is minor 14 when some dictionary has either form; every other write writes what it wrote before, so a 3.3 library at a lower setting, an index whose dictionaries are small or compress across strings
+and `sift.col_format_minor` 13 or less are read by the releases that read their other sections, and a 3.2 library refuses a segment with the forms with the REINDEX hint (minor 14 is above its 6, as
+the minors 7 to 12 that 3.3 writes by default are). An index written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new
+forms where the setting allows it. The merge of segments of the new forms with others makes a new dictionary and gives it a form by the same rule.
+
+### 2.17 Point directory of a leaf in a segment (column format minor 14, 3.3; opt-in)
+
+The zones and the keys of a unit (section 2.13) cut the units that cannot hold a value; the units that can still cost a read and a test of every row of each, which is most of the time of an equality
+on a column of random keys (an id, a uuid, a text of distinct values) against a b-tree. An index with the reloption `point_columns = 'col, col'` (plain integer-like, text and uuid columns of the top level,
+the leaves of `key_columns`) writes, for each of these leaves, a table of its rows by value at the end of the DICT section of the segment: an open addressing table with a slot for each distinct key (the code of a
+dictionary leaf), 8 bytes, at most three quarters full, linear probing: the low 32 bits of a hash of the key over the key's only row (the segment's row number), or over the offset of the list of its rows when it has
+several. A lookup of an equality, an `IN` list of up to 64 keys or a range of up to 64 keys hashes each key, reads the slots from the probe position to the first empty one (a page or two) and has the rows,
+ascending, without reading a chunk: the units that hold none are cut, and in the others only those rows are selected.
+
+This lookup path (the directory and the access-method scan that reads it) is the part of sift that is meant to replace a b-tree for point lookups, and the part that is to be tuned for it: its size, and the gap to a b-tree below, are what that work
+measures. The choice of columns will join that of section 2.13 as a mode of a column in `key_columns` (not a second option); until then `point_columns` is set by hand.
+
+```
+u32 magic 0x4B4C4F43, u32 version 2 (3 with a table of heap addresses, below), u32 nleaves, u32 0
+{u32 leaf, u32 nslots, u32 rows, u32 keys, u32 words, u32 0, u64 offset in the section} x nleaves
+per leaf:
+u64 table[nslots]    (low 32 bits of hash(key)) << 32 | payload, or all ones: empty (nslots a power of two, at least 16, at most 3/4 full of the keys)
+                     payload below 2^31: the only row of the key; 0x80000000 | w: the list at word w
+u32 words[words]     the lists, {u32 count (2 or more), u32 row[count] ascending}, one for each key with more than one row; padded to 8 bytes
+u64 offset of the header, u32 magic, u32 version    the last 16 bytes of the section
+```
+
+The section ends where the last dictionary ends when there is no directory, so the footer is looked for in the last 16 bytes (the magic and the version, then a header at the offset) of a segment of minor 14 or more; a
+footer of another version is no directory (a footer of this version damaged, with a header of this version at its offset, is refused). The dictionaries end at that offset. The frame is read whole and refused when it
+is not as written: the reserved words are 0, the records ascend by leaf, and the tables follow the records one after the other, each padded to 8 bytes, up to the footer. `hash` is the 64-bit mix of `(uint64) key`; the fingerprint is 32 bits, so a row may be listed under another key (about one in 4 billion for
+each other key in the same probe sequence): the table is a filter. The access method (`SIFT_COLO_POINTS`, set by the scans of `sift_col` indexes only, which run when `sift.enable_col_scan` is on) therefore has the heap check
+the condition again (`xs_recheck`, a bitmap scan's recheck), and the aggregate scans, which count the rows themselves, do not use it. A leaf gets no table in a segment when a unit holds an overflow value or an inline
+string for it, or when the segment has 2^30 rows or more (a list offset is 31 bits); a key in very many rows costs a list and nothing else. A lookup that finds more than 65,536 rows is answered by the units instead.
+An index written without the option, or at `sift.col_format_minor` below 14, has no directory and is read as before; `ALTER INDEX .. SET (point_columns)` applies to the segments written afterwards, and `REINDEX` and the
+merges write it.
+
+`sift.col_verify` checks the header and the records, that every slot is a row of the segment or a list that fits the words, that the lists ascend, that the keys, rows and words listed are those of the record, and then,
+for each row of each unit, that probing its key lists the row. The merge of segments makes a new directory from the rows it writes. The cost is the slots, 10.7 to 21.3 bytes for each distinct key (a power of two of
+slots for the keys), and 4 bytes for each row of a key with several. 200,000 rows, one segment, the index of 5 columns is 1.23 MB without the option; a directory on one leaf adds 4.21 MB for a unique key (the
+slots are the cost), 0.97 MB for 9,000 keys (22 rows a key), 0.89 MB for 6,000 text keys (33 rows), 0.81 MB for 600 keys (333 rows) and 0.80 MB for 50 keys (4,000 rows): 4.0 bytes a row once a key repeats. A b-tree
+on the same column is 4.5, 1.6, 1.5 and 1.4 MB for the integer ones.
+
+#### Heap addresses instead of rows (column format minor 16, `point_tid_columns`; opt-in)
+
+A directory of rows still needs the unit: its row numbers become heap addresses only through the keys of the unit, which is one read of a unit (the
+chunk of keys, a few KB) for every unit that holds a row, and a read that grows with the units the rows are in. `point_tid_columns = 'col, col'` (the same
+leaves as `point_columns`; a leaf named in both gets the addresses) writes the table so that its slots hold the address of the row (`block << 16 | offset`, the
+document key of the unit) instead of its number in the segment, and a lookup returns the addresses with no unit read:
+
+```
+frame version 3 (a frame without such a leaf stays version 2, minor 14): record word 5 is the mode of the table, 0 rows (above), 1 heap addresses
+table[nslots]   u16 fingerprint (the low 16 bits of the hash) << 48 | payload (48 bits), or all ones: empty
+                payload: the only address of the key (block << 16 | offset, offset 1 to 511), or 0x8000 | word offset << 16: the list at that word
+u32 words[words]  the lists, {u32 count (2 or more), u32 bytes, bytes}, padded to 4: the first address as a code (block << 9 | offset) in LEB128, then the
+                differences of the codes after it (a key in rows of neighbouring pages costs 1 to 2 bytes a row)
+```
+
+The block of an address says the unit (`block >> 8` is the superblock), so a lookup knows the units of its rows without reading any. The fingerprint is 16 bits,
+so the table is a filter (about 1 in 65,000 for each other key in the probe sequence): the access method returns the addresses with the heap check of the condition
+(`xs_recheck`, a bitmap scan's recheck), as for rows. Three rules keep the answer the heap's. The units whose rows may have died are read instead (a unit with a dead
+row, `sift_cseg_dirty`: VACUUM frees an address to be used again by another row, listed under another key or none), as a segment without the directory would be. A scan that
+wants values (an index-only scan) uses the addresses only to cut the units, which it then reads and filters. And a lookup of more than 65,536 rows, or of more than 64 keys,
+is answered by the units. `sift.col_verify` checks that every address is in a unit of the segment, that each list ascends and has the bytes and rows it says, and that each
+row of each unit is listed under its key.
+
+An index written at `sift.col_format_minor` 14 or below lists the rows (minor 14), whatever the option (the default setting, 15, writes the addresses for a leaf of the option and stamps only that segment minor 16), and one written before the option is read as before: `REINDEX`
+and the merges write the addresses (`sift.upgrade_commands()` lists the `REINDEX` of an index whose segments are older than the option). The size is that of the rows
+within 3%: 8 bytes a slot is most of both for keys that are nearly unique, and a key of many rows costs 1 to 3 bytes a row in a list instead of 4 (1,000,000 rows of the benchmark table, five
+leaves, four of them unique: 91.4 MB against 93.7 MB for rows, about 30 MB without a directory; the six btrees of the benchmark are 170 MB). The build takes 65% longer than the index without a directory (1.32 s against 0.80 s for 1,000,000 rows, the
+sort of the keys of five leaves), a promotion of the write buffer 5% more (92 ms against 53 ms for 100,000 rows after an insert of 558 ms), and the inserts themselves nothing.
+
+A lookup of one row costs 11 to 13 microseconds at 26,700, 100,000 and 1,000,000 rows (6 for a btree), flat in the units, where the directory of rows grows from 15 to 22
+with the units (bench/col_scan.py, kind point_tid); 10 keys cost 22 against 52 and 13 for a btree; a uuid 42 against 78 and 7; a text 126 against 154 and 10 (its string is
+found in the dictionary first). It does not give an order: the table is a hash, so ORDER BY, ranges and `min`/`max` stay with the zones, the sorted runs and the top-N of the
+aggregate scan; what the addresses make cheaper beyond one key is the fan-out of a foreign key (the nested-loop and lateral probes of a mapping table, `IN` lists of up to 64 keys, `EXISTS` and semi-joins on a key:
+lookups of a few rows by value; the single key, the `IN` list and the nested loop are the ones measured).
+
 ## 3. MVCC: when a row may be read from the index
 
 The values in the index are those of the heap tuple at the moment of `aminsert`/`ambuild`. Indexed columns of a tuple never change in place:
@@ -467,7 +759,7 @@ checked by the normal permission check of the query.
 - **Logical replication**: the subscriber builds its own index; nothing is shipped.
 - **pg_upgrade**: the files are copied as they are; the layout depends only on `BLCKSZ` 8192 and the VM layout (already pinned by a test).
 - **Versioning**: metapage major/minor as sift's (the BM25 minor bump rules do not apply: a col index's metapage is written with `SIFT_FORMAT_MINOR`
-  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, `sift.col_format_minor` is 3, 4 or 6 (default 6; 5 is the wide leaves' and is not a setting) and keeps writing the minor it says: segments
+  (1.2) and the per-segment `format` carries the col minor). Any other col minor is refused with a REINDEX hint; layout changes bump it. Minor 3 is the first a release reads, minor 4 (3.1: the type tag of an overflowing value, chunk flag `SIFT_COLC_TAGS` of section 2.2, the element rollups of the sidecar) is written by 3.1 and refused by 3.0.x with the same hint, minor 6 (3.2: complete kinds) is refused by both, minor 7 (3.3: min and max in the cube, opt-in per index) minor 8 (3.3: the month dims of a `sift_table`) minor 9 (3.3: the rollup of the rows, opt-in per index, default) and minor 10 (3.3: small-set summaries, opt-in per index) by all of them, `sift.col_format_minor` is 3, 4, 6, 7, 8, 9 or 10 (default 10; 5 is the wide leaves' and is not a setting; 7 changes no byte of an index without `cube_minmax`, 8 none of a `sift_col` index or a table without a timestamp column, 9 none of an index without `rollup_dims`, and 10 none of an index whose `key_columns` names no summary leaf, so a 3.2 library reads those under the default and every `sift_table` under 7 or less; under 8 or less `rollup_dims` is ignored, under 9 or less the summaries of `key_columns`) and keeps writing the minor it says: segments
   of the pre-release minors 0 (leaf types as PostgreSQL OIDs), 1 (no pre-aggregates) and 2 (plain dictionaries only) are not read.
 
 ## 5. Planner-facing metadata
@@ -584,7 +876,7 @@ selection vector of a bitmap is `bits_to_idx` (its output has `SIFT_COL_IDXPAD` 
 `gather_u32` and `for_i64_sel[SIFT_COLW_64]` with base 0, and the owner of each element of a list column is `expand_parents`. A table
 other than this one keeps an operation only when it is different in kind, and says why at the declaration: the aggregation table
 keeps what is specific to the executor (float8 order comparisons, a byte LUT fused with a bound check, the row mask of array elements,
-group ids, reductions, `count_changes`), the shredder table keeps its histogram, state bitmaps and min / max over *state bytes*
+group ids, reductions), the shredder table keeps its histogram, state bitmaps and min / max over *state bytes*
 (no bit vector, no padded value arrays; the composition `range` + `SiftAggKernels.minmax_*` was measured and is slower for float8
 and at the scalar level).
 
@@ -605,6 +897,28 @@ noise), ns per call over a vector of 4096 elements (a bit vector of 64 words) as
 (`gather_u32` is a masked `VPGATHERDD` at AVX-512, the aggregation executor's kernel, moved here unchanged; the scalar and AVX2 rows are the same loop and show the noise. Against scalar the AVX-512 gather measured 0.8x to 1.7x over six runs, depending on what the sibling thread did.) `sift.simd` level info: `sift.col_index_info`
 returns `simd` (the active level name), and the column scan's EXPLAIN prints `SIMD: avx512` (the level in effect, from
 `sift_simd_level_name(sift_cpu.active)`).
+
+### AArch64 (NEON)
+
+`col/kern_neon.c` is the NEON level (`sift.simd = neon`, the first level of AArch64; `core/neon.h` has the helpers the NEON files share). NEON has no
+movemask: a compare gives all ones or zero per element, the results are narrowed to bytes, ANDed with the weight of their bit in the byte and folded by
+pairwise adds into the 64-bit word. A slot without a NEON kernel is the scalar function in the NEON table of `col/kern.c`: it stays there when the
+compiler's loop (clang vectorizes the plain loops of `bits_and`, `for_i64`, `f8_from_keys`) is as fast as the intrinsics, or when the slot is a gather
+(`lut` over 16 and 32 bits, `gather_u32`, `for_i64_sel`) for which NEON has no instruction. `unpack` is NEON up to 25 bits (a value and its offset in the
+byte fit the four bytes TBL picks) and scalar above.
+
+Measured (Apple M4, one thread, clang, `-O2`, best of 300 batches and the best of five runs, ns per call over a vector of 4096 elements):
+
+| slot | scalar | neon | |
+|---|---|---|---|
+| `range[SIFT_COLW_8]` / `16` / `32` / `64` | 906 / 875 / 875 / 844 | 57 / 98 / 180 / 344 | 16x / 9x / 4.9x / 2.5x |
+| `lut[SIFT_COLW_8]` | 1125 | 113 | 9.9x |
+| `bits_to_idx` 50 % / 0.8 % set | 813 / 29 | 211 / 25 | 3.9x / 1.1x |
+| `zone_range` / `zone_notnull` (1024 units) | 344 / 219 | 117 / 47 | 2.9x / 4.7x |
+| `unpack` 7 / 13 / 20 bits | 1188 | 234 | 5.1x |
+| `bits_to_flags` | 344 | 61 | 5.7x |
+| `bits_count` (73,728 bits; the bitmap module's NEON popcount, `bm25/bitmap_neon.c`) | 297 | 86 | 3.5x |
+| `unpack` 29 bits, `lut` 16 / 32 bits, `bits_and`, `bits_and_count`, `zone_set`, `for_i64`, `f8_from_keys` | | scalar | 1.0x |
 
 ### Measured
 
@@ -654,7 +968,7 @@ heavy unrelated load (load average 13 to 41 on 16 threads)**: treat the figures 
 
 ## 10. Limits
 
-BLCKSZ 8192, heap tables only, PostgreSQL 17/18. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
+BLCKSZ 8192, heap tables only, PostgreSQL 17, 18 and 19. At most 128 leaves, 128 segments, 74,496 rows per unit. Strings up to 1 GB (a segment dictionary holds entries up to 255 bytes and 64 MiB in all: longer or more text is stored inline per unit). Types:
 integers, bool, date, timestamp(tz), numeric of any shape (section 2.11), money, interval, time, enums, uuid, bytea, arrays, ranges, inet, cidr, macaddr, macaddr8, timetz, bit, varbit (section 2.12), float4/8, text-like. A group's elements: any number, one level. Not supported:
 `INCLUDE` columns, unique, ordered scans, `amgettuple`, RLS. Dead rows count in zone sums until a merge rewrites the segment (the zone is
 only used where the scan is entirely visible and clean, see `sift_col_unit_exact`).
@@ -700,6 +1014,10 @@ the nested column model, the dictionaries, the kernels and the write buffer reco
 
 - 2026-10 (col minor 6, complete kinds): `SIFT_COL_FORMAT_MINOR` 6, `SIFT_COL_FORMAT_KINDS`, `sift_col_write_minor` (the minor of a segment from the setting, the schema's `kinds` and `wide`, and whether every input keeps its kinds), `sift_cseg_kinds_exact`, `SiftColLeafStats.nokinds` and `SiftSrcStats.nokinds[]`; `unit_kinds` trusts minor 6 and batches without uncertain kinds only; `sift.col_format_minor` takes 3, 4 or 6; the leaf statistics cache of an index is keyed by its relfilenumber and the format of its segments (REINDEX starts the generations over).
 
+- 2026-10 (col minor 15, key presence): `SIFT_COL_FORMAT_MINOR` 15, `SIFT_COL_FORMAT_PRESENCE`; the `COLT` blob kind `SIFT_CSET_PRES` (3) and the record kinds bit `SETS_PRES`, `SiftCPaggSpec.pres`, `sift_cseg_presence`, `sift_col_unit_presence`, `SiftSrcPresence`/`unit_presence`, `dist_or_words`; no directory version change (the `COLP` directory is version 5 from minor 13).
+- 2026-10 (col minor 14, dictionaries stored in blocks to be read in place): `SIFT_COL_FORMAT_MINOR` 14, `SIFT_COL_FORMAT_DICTIDX`, the dictionary forms `DICT_BLOCKS` (form 3, the strings in blocks of `DICT_BLOCK` codes, written by `write_dicts` where `sift_cdict_blocks_extra` says it adds at most 3% to the segment) and `DICT_LOOKUP` (form 2, the blocks and the order; `sift_cdict_serialize(.., form, ..)`, `parse_blocks`), `sift_cseg_dict_search` and the `SiftCDictLook` find and match that read the stream, `sift_csorted_range` (the bisections of the sorted order, shared by the parsed and the stored dictionary), the reloption `dict_lookup`, the limit `dict_lookup_min`, the check of `sift.col_verify` (`verify_dicts`). Tests `col_dict_stored`, `col_enc`.
+- 2026-10 (col minor 13, sorted runs): `SIFT_COL_FORMAT_MINOR` 13, `SIFT_COL_FORMAT_RUNS`; the `COLP` directory is version 5 (`runs_off`, `runs_bytes` after the superunit entries) in a minor 13 segment: a `COLR` section laid out like the small-set summaries, per unit and leaf a blob of the rows' ordinals in the order of the key (`col/runs.[ch]`; `sift_cseg_run`, `sift_cseg_run_read`, the `run_info` and `run_read` hooks of the column source, `sift_col_run_info`, `sift_col_run_read`); `SiftCPaggSpec.run[]` and the reloption `order_columns`; `sift.topn_runs`; `sift.col_sections` row `runs`; EXPLAIN `Units Read By Sorted Run`. The sorted run is minor 13 because 11 is the write buffer of a table with a wide row and 12 the superunits.
+- 2026-10 (col minor 12, superunits): `SIFT_COL_FORMAT_MINOR` 12 (11 is the format of the write buffer of a table with a wide row, never of a segment), `SIFT_COL_FORMAT_SUPER`; the `COLP` directory is version 4 (`superdir_off`, `super_bytes` after the small-set summaries) in a minor 12 segment: per group of `superunit` units the page masks, the merged sums of the INT leaves and the merged cube (docs/COL-PREAGG.md section 10); reloption `superunit`, `SiftCPaggSpec.super`, `sift_cseg_super_*`, `sift_col_super`/`sift_col_unit_split`, `SiftColUnit.nsu`, `sift.agg_super`.
 - 2026-10 (col minor 6): zone flag `SIFT_COLZ_JNULL`, `SiftColLeafStats.has_jnull`, `SiftSrcStats.jnull`: the planner knows whether a leaf holds a JSON null, whose cast to a number raises before PostgreSQL 18.
 - 2026-10 (col minor 4, element rollups): the `COLP` directory is version 2 in a minor 4 segment (`ecubedir_off`, `ecube_bytes`; the rollup blob of each list follows the cubes of the columns and names its dims and measures), `sift_cpagg_cube(..., StringInfo out, StringInfo eout)`, `sift_cpagg_rollup_decode`, `sift_cseg_rollup`, `sift_cseg_dim_cube`, `SIFT_PAGG_MAX_RDIMS` 6 and `SIFT_PAGG_ROLLUP_TUPLES` 4096; the option `rollup` of `sift_col` and `sift_col_alter_check` (validation at CREATE and ALTER INDEX), `col/rollup.c` (the on-demand refresh: queue, worker, `sift.col_rollup_state`); `sift_aggspec_preagg` accepts the unnest of an array leaf or a map with any subset of the dims as keys; `preagg_rollup` folds the tuples (`PaVal.sumf`, min, max). The writer remembers the minor it began under (`SiftColSegWriter.minor`), so `sift.col_format_minor` is read once per segment.
 - 2026-10 (col minor 4, version vectors): a segment whose owner passes the `xmin` and `cmin` of its rows (`sift_cbatch_add_ver`: a sift_table group written while its transactions run) is written as format 4 with the entry flag `SIFT_SEG_VERS` and `reserved` = the smallest xid, and carries a version section after the superblock directory of the DOCMAP section (`col/ver.[ch]`; header `COLV`, per unit the xid range and the highest cmin, the vectors as a constant or a first value, a smallest step and packed residuals). The engine only stores and returns them (`sift_cseg_vers`, `sift_cseg_ver_sum`, `sift_cseg_ver_unit`, `sift_cseg_ver_range`, `sift_cseg_decode_unit_freeze`); merges keep them (`sift_cbatch_merge`) and the owner clears the flag when the rows are final. The owner begins the writer with a format of at least 4 for such a segment (`sift.col_format_minor` says the format of the others). A group of 3.0.1 that carried one writer (`reserved` = xid, header `sum_dl` = cid, format 3) is read as constant vectors. The metapage minor of a table goes to 3 with the first such segment (core/sift.h `SIFT_FORMAT_MINOR`), so a 3.0.x library refuses the table.

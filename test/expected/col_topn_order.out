@@ -92,6 +92,28 @@ FROM (VALUES ('SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10'), ('SELEC
  SELECT id, k_band FROM ow WHERE g = 2 ORDER BY k_band, id LIMIT 100 | t              | t
 (3 rows)
 
+-- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table)
+CREATE FUNCTION ow_units_zk(q text, zk bool) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE line text; n int;
+BEGIN
+	PERFORM ow_mode(true);
+	PERFORM set_config('sift.topn_zone_keys', zk::text, true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line ~ '^ *Units: ' THEN n := regexp_replace(line, '^ *Units: ', '')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT q, ow_units_zk(q, true) <= 3 AS zone_keys_read_few, ow_units_zk(q, true) < ow_units_zk(q, false) AS fewer_than_without
+FROM (VALUES ('SELECT id, k_mix FROM ow ORDER BY k_mix, id LIMIT 10'), ('SELECT id, k_mix FROM ow ORDER BY k_mix DESC, id DESC LIMIT 10'),
+			 ('SELECT id, k_mix FROM ow ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10'), ('SELECT id, k_mix FROM ow WHERE g = 2 ORDER BY k_mix, id LIMIT 10')) v (q);
+                                   q                                   | zone_keys_read_few | fewer_than_without 
+-----------------------------------------------------------------------+--------------------+--------------------
+ SELECT id, k_mix FROM ow ORDER BY k_mix, id LIMIT 10                  | t                  | t
+ SELECT id, k_mix FROM ow ORDER BY k_mix DESC, id DESC LIMIT 10        | t                  | t
+ SELECT id, k_mix FROM ow ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10 | t                  | t
+ SELECT id, k_mix FROM ow WHERE g = 2 ORDER BY k_mix, id LIMIT 10      | t                  | t
+(4 rows)
+
 -- the planner prices the walk: a key in blocks of values costs less than a random one, and less than the same scan without the walk
 CREATE FUNCTION ow_cost(q text, walk bool) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE j json;
@@ -170,5 +192,5 @@ SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
 
 RESET sift.topn_walk;
 DROP TABLE ow;
-DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool);
+DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;
 DROP EXTENSION pg_sift;

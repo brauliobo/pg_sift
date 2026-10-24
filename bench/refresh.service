@@ -1,0 +1,16 @@
+# User unit: measure the README benchmark numbers again and open a pull request (bench/README.md, "Keeping the numbers fresh").
+# Install: copy refresh.service and refresh.timer to ~/.config/systemd/user, put SIFT_BENCH_HOST_LOCK, BENCH_WORK, BENCH_STORE (and REFRESH_BASE, the branch the
+# pull request is against, default main) in ~/.config/pg_sift-bench.env, clone the repository to ~/.local/share/pg_sift-bench/repo (a clone of its own: the unit
+# switches branches there), then `systemctl --user enable --now refresh.timer`.
+[Unit]
+Description=Measure the pg_sift README benchmark numbers again and open a pull request
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.local/share/pg_sift-bench/repo
+EnvironmentFile=-%h/.config/pg_sift-bench.env
+ExecStart=/bin/bash -c 'git fetch -q origin && git switch -q --detach "origin/${REFRESH_BASE:-main}" && exec bench/bench refresh --calm --pr "${REFRESH_BASE:-main}"'
+# 75: the host was not calm or the lock was held; the next run tries again
+SuccessExitStatus=75
+TimeoutStartSec=3h
+Nice=10

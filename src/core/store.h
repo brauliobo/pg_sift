@@ -181,8 +181,14 @@ extern PGDLLIMPORT int sift_test_space_crash;
 extern PGDLLIMPORT bool sift_test_space_error;
 extern void sift_store_space_test_point(int phase);
 #define SIFT_SPACE_TEST_POINT(phase) sift_store_space_test_point(phase)
+extern PGDLLIMPORT int sift_test_crash_dir;
+extern PGDLLIMPORT bool sift_test_crash_worker;
+extern PGDLLIMPORT int sift_test_dir_updates;
+extern void sift_store_dir_test_point(bool after);
+#define SIFT_DIR_TEST_POINT(after) sift_store_dir_test_point(after)
 #else
 #define SIFT_SPACE_TEST_POINT(phase) ((void) 0)
+#define SIFT_DIR_TEST_POINT(after) ((void) 0)
 #endif
 extern uint64 sift_store_space_written(void);
 
@@ -196,6 +202,7 @@ extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftS
 
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
+extern uint64 sift_store_held_blocks(Relation index);
 
 /*
  * The free-list pages in chain order, each share-locked and validated while visit runs on it (blk is its block);
@@ -302,6 +309,12 @@ extern void sift_wt_throttle(SiftWriteTarget *wt, int delay_ms);
 extern void sift_wt_charge(SiftWriteTarget *wt, uint64 pages);
 
 /*
+ * SHARED targets: the page that would take the WAL this backend wrote since this call past kb_per_sec kilobytes per second waits (interruptibly)
+ * before it is written, so a long merge cannot take the WAL of the foreground; 0 (the default) never waits.
+ */
+extern void sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec);
+
+/*
  * SHARED targets: after an ERROR rolled the writing transaction back, gives every block the target
  * took (written or not, published or not: the caller found nothing published) back to the free list.
  */
@@ -342,7 +355,8 @@ sift_extlist_add(SiftExtentList *l, BlockNumber blk)
 	if (l->n == l->max)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift segment stream needs more than %d extents", l->max)));
+				 errmsg("sift segment stream needs more than %d extents", l->max),
+				 errhint("Run sift.merge() on the index so that the segment is rewritten contiguously, or REINDEX it if this repeats.")));
 	if (l->n == l->cap)
 	{
 		l->cap *= 2;

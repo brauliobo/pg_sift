@@ -1,0 +1,61 @@
+# A SiftAgg plan that reads a path declared float8 as `(doc ->> 'v')::float8` or as the cast of `doc -> 'v'`, kept by a transaction (a prepared
+# statement with a generic plan: the locks it holds keep it), when another session commits a value the leaf cannot store: the scan reads the
+# row again from the heap and answers as the normal plan does, a numeric string converted, a value SQL cannot convert raising its error; a row the
+# statement does not see raises nothing. The same for a condition of the WHERE that casts the path: the row passes it and raises only if the other
+# conditions keep it.
+# requires: build col
+
+setup
+{
+	CREATE TABLE iso_sc (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = off);
+	INSERT INTO iso_sc SELECT i, i % 3, jsonb_build_object('v', i % 10, 'parts', jsonb_build_array(jsonb_build_object('score', i % 7))) FROM generate_series(1, 2000) i;
+	CREATE INDEX iso_sc_col ON iso_sc USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.parts[].score float8');
+	ANALYZE iso_sc;
+}
+
+teardown
+{
+	DROP TABLE iso_sc;
+}
+
+session s1
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET plan_cache_mode = force_generic_plan; }
+step s1prep	{ BEGIN;
+		  PREPARE wh AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 GROUP BY grp ORDER BY grp;
+		  PREPARE whg AS SELECT grp, count(*) AS n FROM iso_sc WHERE (doc ->> 'v')::float8 > 3 AND grp <> 0 GROUP BY grp ORDER BY grp;
+		  PREPARE ga AS SELECT grp, sum((doc ->> 'v')::float8) FILTER (WHERE grp = 1) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE fl AS SELECT grp, count(*) FILTER (WHERE (doc ->> 'v')::float8 > 3) AS n FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE el AS SELECT grp, avg((p ->> 'score')::float8) AS a FROM iso_sc, jsonb_array_elements(doc -> 'parts') p GROUP BY grp ORDER BY grp;
+		  PREPARE io AS SELECT grp, sum((doc ->> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  PREPARE jc AS SELECT grp, sum((doc -> 'v')::float8) AS s FROM iso_sc GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE wh;
+		  EXPLAIN (COSTS OFF) EXECUTE io;
+		  EXPLAIN (COSTS OFF) EXECUTE jc;
+		  EXPLAIN (COSTS OFF) EXECUTE el; }
+step s1wh	{ EXECUTE wh; }
+step s1whg	{ EXECUTE whg; }
+step s1ga	{ EXECUTE ga; }
+step s1fl	{ EXECUTE fl; }
+step s1el	{ EXECUTE el; }
+step s1io	{ EXECUTE io; }
+step s1jc	{ EXECUTE jc; }
+step s1end	{ ROLLBACK; DEALLOCATE ALL; }
+
+session s2
+step s2num	{ INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5', 'parts', jsonb_build_array(jsonb_build_object('score', '7.5')))); }
+step s2text	{ INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x')))); }
+step s2begin	{ BEGIN; }
+step s2abort	{ ROLLBACK; }
+
+# committed after the plan was made, before the statement: the statement sees the row
+permutation s1prep s2num s1io s1wh s1whg s1el s1jc s1end
+permutation s1prep s2text s1io s1end
+# the same for the member of an element of a list (el)
+# the row is dropped by another condition (grp <> 0) before it could raise; the condition alone raises. The same for the FILTER of an aggregate: the cast in
+# the argument of ga runs for the rows of grp 1 only, the FILTER of fl casts every row
+permutation s1prep s2text s1ga s1fl s1end
+permutation s1prep s2text s1el s1end
+permutation s1prep s2num s1ga s1fl s1end
+permutation s1prep s2text s1whg s1wh s1end
+# in flight, then rolled back: the statement does not see it
+permutation s1prep s2begin s2text s1io s1jc s1wh s1el s2abort s1io s1wh s1el s1end

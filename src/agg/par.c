@@ -85,9 +85,39 @@
 #define MORSEL_SBS	2
 
 Size
-shared_size(const SiftAggSpec *s)
+shared_size(const SiftAggSpec *s, uint32 norder)
 {
-	return offsetof(ScanShared, partoff) + (s->nparts + 1) * sizeof(uint32);
+	return offsetof(ScanShared, partoff) + (s->nparts + 1 + norder) * sizeof(uint32);
+}
+
+uint32 *
+shared_order(ScanShared *sh, const SiftAggSpec *s)
+{
+	return sh->partoff + s->nparts + 1;
+}
+
+/*
+ * A top-N takes windows of superblocks in the visit order the leader's probes chose: one superblock each in the walk's order (norder
+ * superblocks, copied), else the superblocks of a match set's chunk (the set is made for a chunk), else one, from the last when the sort
+ * column grows toward it.
+ */
+static void
+topn_shared_init(ScanShared *sh, AggExec *ex)
+{
+	sh->topn_reverse = sift_topn_reverse(ex->topn);
+	sh->topn_walk = ex->nvorder > 0;
+	sh->topn_item = ex->search ? sift_search_chunk_sbs : 1;
+	sh->nitems = sh->topn_walk ? sh->nsb : (sh->nsb + sh->topn_item - 1) / sh->topn_item;
+	sift_topn_bound_init(&sh->topn_bound);
+	if (sh->topn_walk)
+		memcpy(shared_order(sh, ex->spec), ex->vorder, ex->nvorder * sizeof(uint32));
+}
+
+/* a serial scan of a table partitioned by (part of) the group key: an item is a partition, whose groups are final when its units end */
+bool
+part_flush_on(const AggExec *ex)
+{
+	return ex->spec->part_final && ex->spec->nparts > 0 && ex->spec->nworkers == 0;
 }
 
 void
@@ -98,8 +128,84 @@ shared_init(ScanShared *sh, AggExec *ex)
 		sift_aggpart_offsets(ex->src, sh->partoff);
 	sh->ordered = sift_aggspec_ordered(ex->spec);
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
+	if (ex->super_on)
+		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src));
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
+	if (part_flush_on(ex))
+		sh->nitems = ex->spec->nparts;
 	pg_atomic_init_u32(&sh->next, 0);
+	if (ex->topn)
+		topn_shared_init(sh, ex);
+}
+
+/* The superblocks the zones and summaries of the source leave a unit in, for the scan: a range of none costs a few words, not a begin (colsrc.h kept) */
+typedef struct SkipMap
+{
+	bool		ok;
+	uint32		nsb;
+	uint64	   *kept;
+} SkipMap;
+
+static SkipMap *
+skip_map(AggExec *ex)
+{
+	SkipMap    *m = ex->skip;
+
+	if (m == NULL)
+	{
+		uint32		nsb = sift_colsrc_nsb(ex->src);
+
+		m = ex->skip = MemoryContextAllocZero(ex->cxt, sizeof(SkipMap));
+		m->nsb = nsb;
+		m->kept = MemoryContextAllocZero(ex->cxt, (nsb + 63) / 64 * sizeof(uint64));
+		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept);
+	}
+	return m;
+}
+
+/* Is there no superblock of [lo, hi) the zones leave a unit in? */
+static bool
+range_skipped(AggExec *ex, uint32 lo, uint32 hi)
+{
+	SkipMap    *m = skip_map(ex);
+
+	hi = Min(hi, m->nsb);
+	if (!m->ok || lo >= hi)
+		return false;
+	for (uint32 w = lo / 64; w < (hi + 63) / 64; w++)
+	{
+		uint64		mask = ~UINT64CONST(0);
+
+		if (w == lo / 64)
+			mask &= ~UINT64CONST(0) << (lo % 64);
+		if (w == (hi - 1) / 64 && hi % 64)
+			mask &= (UINT64CONST(1) << (hi % 64)) - 1;
+		if (m->kept[w] & mask)
+			return false;
+	}
+	return true;
+}
+
+/* The first superblock from sb, a step apart, that the zones leave a unit in (nsb or more when there is none; sb itself without the map) */
+static uint32
+next_kept(AggExec *ex, uint32 sb, uint32 step)
+{
+	SkipMap    *m = skip_map(ex);
+
+	if (!m->ok)
+		return sb;
+	while (sb < m->nsb)
+	{
+		uint64		rest = m->kept[sb / 64] >> (sb % 64);
+
+		if (rest & 1)
+			return sb;
+		if (rest == 0)			/* nothing is kept to the end of the word: the first superblock of the next word on the same step */
+			sb += ((sb / 64 + 1) * 64 - sb + step - 1) / step * step;
+		else
+			sb += step;
+	}
+	return sb;
 }
 
 void
@@ -107,12 +213,14 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 {
 	lo = Max(lo, ex->tid_sb_lo);
 	hi = Min(hi, ex->tid_sb_hi);
-	if (lo >= hi)
+	if (lo >= hi || range_skipped(ex, lo, hi))
 		return;
 	sift_colsrc_begin(ex->src, lo, hi, ex->prune, ex->nzone);
 	while (sift_colsrc_next(ex->src, &ex->unit))
 	{
 		process_unit(ex);
+		if (ex->spill)
+			spill_check(ex);
 		if (sift_aggbe_stopped(ex->be, ex->be_state))
 			break;				/* the scan is run again without the backend (backend_finish) */
 	}
@@ -154,14 +262,16 @@ scan_item(AggExec *ex, uint32 item)
 {
 	ScanShared *sh = ex->shared;
 
-	if (sh->ordered)
-		for (uint32 sb = item; sb < sh->nsb; sb += SIFT_AGG_LANES)
+	if (part_flush_on(ex))
+		scan_range(ex, sh->partoff[item], sh->partoff[item + 1]);
+	else if (sh->ordered)
+		for (uint32 sb = next_kept(ex, item, SIFT_AGG_LANES); sb < sh->nsb; sb = next_kept(ex, sb + SIFT_AGG_LANES, SIFT_AGG_LANES))
 			scan_range(ex, sb, sb + 1);
 	else
 		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));
 }
 
-static bool
+bool
 take_item(AggExec *ex, uint32 *item)
 {
 	*item = pg_atomic_fetch_add_u32(&ex->shared->next, 1);
@@ -209,6 +319,14 @@ final_checks(AggExec *g, int64 ntuples)
 	for (int i = 0; i < g->spec->naggs; i++)
 		if (g->spec->agg[i].kind == SAA_AVG_F64 && 8.0 * ntuples * g->amax[i] * g->amax[i] >= DBL_MAX)
 			float_overflow_error();
+	for (int k = 0; k < g->spec->narms; k++)
+		for (int i = 0; i < g->spec->arm[k].ninner; i++)
+		{
+			SiftAggKind kind = g->spec->arm[k].inner[i].kind;
+
+			if ((kind == SAA_AVG_F64 || kind == SAA_X_AVG) && 8.0 * ntuples * g->arm[k].amax[i] * g->arm[k].amax[i] >= DBL_MAX)
+				float_overflow_error();
+		}
 }
 
 /*
@@ -233,13 +351,17 @@ typedef struct WorkerDone
 	uint32		pad;
 	int64		n_units;
 	int64		n_pre_units;
+	int64		n_super;
 	int64		n_rollup_miss;
 	int64		n_rollup_queued;
 	int64		n_rollup_cost;
 	int64		n_rows;
 	int64		n_tuples;
 	int64		n_dense;
+	int64		n_combo_trim;
 	int64		n_matches;
+	int64		n_skipped;
+	int64		n_runs;
 	SiftSrcCounters cc;
 } WorkerDone;
 
@@ -247,7 +369,10 @@ static void
 send_blob(shm_mq_handle *mqh, const void *data, Size len)
 {
 	if (shm_mq_send(mqh, len, data, false, true) != SHM_MQ_SUCCESS)
-		ereport(ERROR, (errmsg("sift: the leader of a parallel aggregate went away")));
+		ereport(ERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("sift: the leader of a parallel aggregate went away"),
+				 errhint("More details may be available in the server log.")));
 }
 
 /* the table of the lane just scanned, as a blob: kept in order here, sent by a worker */
@@ -274,14 +399,23 @@ lane_fold(AggExec *ex)
 
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
-		AggAcc	   *a = &ex->acc[i];
+		double	   *pg_restrict dt = ex->acc[i].dt;
+		const double *pg_restrict d = ex->acc[i].d;
+		uint32		g = 0;
 
-		if (a->dt)
-			for (uint32 g = 0; g < n; g++)
-			{
-				a->dt[g] += a->d[g];
-				a->d[g] = 0;
-			}
+		if (dt == NULL)
+			continue;
+		/* the pointers in locals: through the accumulator every store would reload them and keep the loop scalar */
+		for (; g + 4 <= n; g += 4)
+		{
+			dt[g] += d[g];
+			dt[g + 1] += d[g + 1];
+			dt[g + 2] += d[g + 2];
+			dt[g + 3] += d[g + 3];
+		}
+		for (; g < n; g++)
+			dt[g] += d[g];
+		memset(ex->acc[i].d, 0, n * sizeof(double));
 	}
 }
 
@@ -295,6 +429,10 @@ scan_items(AggExec *ex)
 	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_item(ex, &item))
 	{
 		scan_item(ex, item);
+		/* the cells of the last row are groups of the item's table */
+		arms_flush(ex);
+		if (part_flush_on(ex))
+			part_flush(ex);
 		if (ex->lane_serial)
 			lane_fold(ex);
 		else if (ex->shared->ordered)
@@ -327,10 +465,27 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_open(ex, snap, RestoreParamList(&params));
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
+	if (ex->topn)
+	{
+		sift_topn_share(ex->topn, &sh->topn_bound);
+		sift_topn_visit(ex->topn, sh->nsb, sh->topn_reverse);
+	}
 	scan_buffers(ex);
 	table_init(ex);
-	scan_items(ex);
-	if (!sh->ordered)
+	if (ex->topn)
+	{
+		StringInfoData b;
+
+		topn_items(ex);
+		initStringInfo(&b);
+		sift_topn_export(ex->topn, &b);
+		send_blob(ex->mqh, b.data, b.len);
+		done.n_skipped = sift_topn_skipped(ex->topn);
+		done.n_runs = sift_topn_runs_read(ex->topn);
+	}
+	else
+		scan_items(ex);
+	if (!sh->ordered && !ex->topn)
 	{
 		StringInfoData b;
 
@@ -340,12 +495,14 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	done.n_units = ex->n_units;
 	done.n_pre_units = ex->n_pre_units;
+	done.n_super = ex->n_super;
 	done.n_rollup_miss = ex->n_rollup_miss;
 	done.n_rollup_queued = ex->n_rollup_queued;
 	done.n_rollup_cost = ex->n_rollup_cost;
 	done.n_rows = ex->n_rows;
 	done.n_tuples = ex->n_tuples;
 	done.n_dense = ex->n_dense;
+	done.n_combo_trim = ex->n_combo_trim;
 	done.n_matches = ex->search ? sift_search_matches(ex->search) : 0;
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
@@ -359,7 +516,7 @@ void
 par_launch(AggExec *ex)
 {
 	ParallelContext *pcxt;
-	char	   *spec_txt = nodeToString(ex->pack),
+	char	   *spec_txt,
 			   *p;
 	Size		plen = EstimateParamListSpace(ex->params),
 				slen = EstimateSnapshotSpace(ex->snap);
@@ -372,6 +529,7 @@ par_launch(AggExec *ex)
 
 	if (nw <= 0 || IsParallelWorker())
 		return;
+	spec_txt = nodeToString(ex->pack);
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
@@ -390,7 +548,7 @@ par_launch(AggExec *ex)
 		return;
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
-	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec));
+	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec, ex->nvorder));
 	shm_toc_estimate_chunk(&pcxt->estimator, strlen(spec_txt) + 1);
 	shm_toc_estimate_chunk(&pcxt->estimator, plen);
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
@@ -406,7 +564,7 @@ par_launch(AggExec *ex)
 		ExitParallelMode();
 		return;
 	}
-	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec));
+	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
 	shared_init(ps, ex);
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);
 	p = shm_toc_allocate(pcxt->toc, strlen(spec_txt) + 1);
@@ -466,14 +624,20 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 
 		ex->n_units += d->n_units;
 		ex->n_pre_units += d->n_pre_units;
+		ex->n_super += d->n_super;
 		ex->n_rollup_miss += d->n_rollup_miss;
 		ex->n_rollup_queued += d->n_rollup_queued;
 		ex->n_rollup_cost += d->n_rollup_cost;
 		ex->n_rows += d->n_rows;
 		ex->n_tuples += d->n_tuples;
 		ex->n_dense += d->n_dense;
+		ex->n_combo_trim += d->n_combo_trim;
+		if (ex->topn)
+			sift_topn_add_skipped(ex->topn, d->n_skipped, d->n_runs);
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
+		par->cc.units_set_pruned += d->cc.units_set_pruned;
+		par->cc.units_search_pruned += d->cc.units_search_pruned;
 		par->cc.rows_vetted += d->cc.rows_vetted;
 		par->cc.heap_pages += d->cc.heap_pages;
 		par->cc.rechecked += d->cc.rechecked;
@@ -482,12 +646,13 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
 	}
+	else if (ex->topn)
+		sift_topn_import(ex->topn, data, len);
 	else if (ex->shared->ordered)
 	{
 		const BlobHdr *h = (const BlobHdr *) data;
 
-		if (h->magic != BLOB_MAGIC)
-			elog(ERROR, "sift: bad message of a parallel aggregate");
+		SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad message of a parallel aggregate");
 		lanes_put(ex, h->lane, data, len);
 	}
 	else
@@ -511,7 +676,18 @@ par_receive(AggExec *ex)
 			if (r == SHM_MQ_WOULD_BLOCK)
 				break;
 			if (r == SHM_MQ_DETACHED)
-				ereport(ERROR, (errmsg("sift: a worker of a parallel aggregate stopped without its result")));
+			{
+				/* a worker that failed sent its error before it exited, but the signal that makes the interrupt raise it may not have been handled yet: read the error queues now, so that the error of the worker is the one raised */
+#if PG_VERSION_NUM >= 180000
+				ProcessParallelMessages();
+#else
+				HandleParallelMessages();
+#endif
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("sift: a worker of a parallel aggregate stopped without its result"),
+						 errhint("More details may be available in the server log.")));
+			}
 			par_message(ex, w, data, len);
 			any = true;
 		}

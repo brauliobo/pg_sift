@@ -172,7 +172,7 @@ NOTICE:  table "ct_b" does not exist, skipping
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
        | seq_plain=same+topn 10 +
-       | text_key=same 10       +
+       | text_key=same+topn 10  +
        | three_keys=same+topn 25+
        | two_keys=same+topn 25
 (1 row)
@@ -219,7 +219,7 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | seq_asc=same+topn 10   +
                           | seq_desc=same+topn 10  +
                           | seq_plain=same+topn 10 +
-                          | text_key=same 10       +
+                          | text_key=same+topn 10  +
                           | three_keys=same+topn 25+
                           | two_keys=same+topn 25
 (1 row)
@@ -416,7 +416,7 @@ SELECT * FROM ct_stage('insert');
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
         | seq_plain=same+topn 10 +
-        | text_key=same 10       +
+        | text_key=same+topn 10  +
         | three_keys=same+topn 25+
         | two_keys=same+topn 25
 (1 row)
@@ -465,7 +465,7 @@ SELECT * FROM ct_stage('update');
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
         | seq_plain=same+topn 10 +
-        | text_key=same 10       +
+        | text_key=same+topn 10  +
         | three_keys=same+topn 25+
         | two_keys=same+topn 25
 (1 row)
@@ -512,7 +512,7 @@ SELECT * FROM ct_stage('delete');
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
         | seq_plain=same+topn 10 +
-        | text_key=same 10       +
+        | text_key=same+topn 10  +
         | three_keys=same+topn 25+
         | two_keys=same+topn 25
 (1 row)
@@ -563,7 +563,7 @@ SELECT * FROM ct_stage('own');
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
        | seq_plain=same+topn 10 +
-       | text_key=same 10       +
+       | text_key=same+topn 10  +
        | three_keys=same+topn 25+
        | two_keys=same+topn 25
 (1 row)
@@ -610,7 +610,7 @@ SELECT * FROM ct_stage('rollback');
           | seq_asc=same+topn 10   +
           | seq_desc=same+topn 10  +
           | seq_plain=same+topn 10 +
-          | text_key=same 10       +
+          | text_key=same+topn 10  +
           | three_keys=same+topn 25+
           | two_keys=same+topn 25
 (1 row)
@@ -658,7 +658,7 @@ SELECT * FROM ct_stage('vacuum');
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
         | seq_plain=same+topn 10 +
-        | text_key=same 10       +
+        | text_key=same+topn 10  +
         | three_keys=same+topn 25+
         | two_keys=same+topn 25
 (1 row)
@@ -711,7 +711,7 @@ SELECT * FROM ct_stage('promote');
          | seq_asc=same+topn 10   +
          | seq_desc=same+topn 10  +
          | seq_plain=same+topn 10 +
-         | text_key=same 10       +
+         | text_key=same+topn 10  +
          | three_keys=same+topn 25+
          | two_keys=same+topn 25
 (1 row)
@@ -762,7 +762,7 @@ SELECT * FROM ct_stage('workers');
          | seq_asc=same+topn 10   +
          | seq_desc=same+topn 10  +
          | seq_plain=same+topn 10 +
-         | text_key=same 10       +
+         | text_key=same+topn 10  +
          | three_keys=same+topn 25+
          | two_keys=same+topn 25
 (1 row)

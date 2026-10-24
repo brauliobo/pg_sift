@@ -2,7 +2,7 @@
 #
 # `=NAME<TAB>ERE` names a group of job names of scripts/ci.sh (`scripts/ci.sh --plan`). Any other row is `PATH<TAB>JOBS`: PATH is an ERE over a changed file,
 # JOBS an ERE over job names in which {NAME} stands for a group and \N for a group of PATH; `-` means no job (the file is mapped, nothing runs), `.` every job. A file
-# takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb` and `gh:replication` are the
+# takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb`, `gh:replication` and `gh:macos` are the
 # workflow jobs that are not in scripts/ci.sh. `scripts/ci.sh --selftest` fails when a tracked file matches no row or a job is in no group, so a new
 # test or file is never left out silently. The nightly run and the release check run every job: this map only picks what a push runs.
 #
@@ -10,12 +10,12 @@
 # the regression tests of its own area there, not of the whole stack above it; the push to main and the nightly run use the rows below, which run the stack.
 #
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
-=bm25	^(installcheck-(sift_basic|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
-=col	^(installcheck-(col_|segfmt_mixed|facet_counts|colcodec_|shred_)|tap-shell-col_|tap-01[56]_space|soak-col$|difftest-col)
-=agg	^(installcheck-(agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|vacuum_agg|topn_vacuum)|difftest-col)
-=tbl	^(installcheck-(tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
+=bm25	^(installcheck-(roles_|sift_basic|limits_|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|dirty_query|edge_|facets|fields|filter_pushdown|index_build_|insert_backpressure|kernels_|live_stats|maint_|merge_fanin|ops_info|parallel_|phrase_|plan|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12)_|tap-shell-(compat_|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|pg_upgrade|index_|leakcheck_gate|maint_|replication|store_|vacuum_count)|difftest(-nopos|-mutants)?$|soak(-gin)?$)
+=col	^(installcheck-(roles_|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|compat_matrix)|tap-01[56]_space|soak-col$|difftest-col)
+=agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|vacuum_agg|topn_vacuum|leak_path_vets)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
+=tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col)
 =dec	^(fuzz|hardened)$
-=any	^(production-regress|coverage|isa-baseline|isolation(-emulated)?|static)$
+=any	^(production-regress|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
@@ -24,14 +24,20 @@
 # the whole build and every harness: a change here can break anything
 ^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
-^(scripts/(ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas|pg19-build|sha256)\.|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
+^(scripts/((ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas|pg19-build|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
+^test/agg_(helpers|preagg_helpers|preagg_units|check_query|check_pushed|rows_helpers|same_helpers)\.sql$	^installcheck-(agg_|col_|tbl_agg)|{ci}
+^test/sift_plan\.sql$	^installcheck-(count_scan|filter_pushdown|rank_)|{ci}
+^test/roles_helpers\.sql$	^installcheck-roles_|{ci}
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
-^test/col/	^difftest-col|^coverage$|{ci}
+^test/col/	^difftest-col|^plan-gate$|^coverage$|{ci}
+^test/matrix/	^coverage-pct$|{ci}
+^test/plan/	^plan-gate$|{ci}
 ^test/diff/	^difftest|{ci}
-^test/fuzz/	^(fuzz|hardened)$|{ci}
+^test/fuzz/[^d]	^(fuzz|hardened)$|{ci}
+^test/fuzz/diff_fuzz	^difftest-fuzz$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
 ^src/bm25/	fast:{bm25}|{search}|{cheap}
@@ -46,17 +52,21 @@
 ^src/table/	{tbl}|{any}|gh:replication
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
 # the harness of one job
-^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|production-check|isolation|static)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|production-regress|isolation|static)
+^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|production-check|isolation|static|plangate)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|production-regress|isolation|static|plan-gate)
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
 ^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb
+^test/matrix/	^coverage
 # nothing the jobs build or run: release, packaging, benchmarks, documentation, tools, the other workflows
 ^\.coderabbit\.yaml$	-
-^Formula/	-
-^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|LICENSE|NOTICE|\.gitignore)	-
+^Formula/	gh:macos|{perf}
+^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
-^scripts/(check-neutral|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|restructure-src)	-
+^scripts/(check-neutral|check-errors|check-memory|check-bench-fresh|check-bench-cases|bench-cases|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|options-released|limits\.allow|gen-refusals|refusals\.allow)	-
+^(scripts/gen-reference\.sh|docs/reference-notes\.tsv)$	^reference-live$
+^(scripts/gen-options\.sh|scripts/options-released\.tsv|docs/options\.tsv|src/(agg|bm25|col|table)/.*\.[ch])$	^options-live$
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
+^scripts/upgrade[-_]check\.(sh|sql)$	^tap-shell-upgrade_check$
 ^scripts/(static\.baseline|build-bench\.sql)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb

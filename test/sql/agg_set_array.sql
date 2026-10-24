@@ -108,6 +108,35 @@ SELECT * FROM compare_modes('SELECT kind, count(*) AS n FROM ev WHERE entity_id 
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n FROM ev WHERE entity_id <> ALL ($1) GROUP BY kind', '''{}''::int4[]');
 SELECT * FROM compare_modes('SELECT count(*) AS n, count(entity_id) AS nn, min(entity_id) AS lo, max(entity_id) AS hi FROM ev WHERE entity_id = ANY ($1)', '''{-3,-2,40000,2147483640}''::int4[]');
 
+-- a long list over a range wider than a byte table (4 million values) is a bit table (a hash table below sift.test_limits bits_set_values, 1024 members), for int4 and int8
+-- columns, IN and NOT IN, with a NULL element, an empty list and a value far beyond the others
+CREATE FUNCTION wide_set(far int, step int) RETURNS int4[] LANGUAGE sql AS 'SELECT array_agg(x) FROM (SELECT generate_series(1, 40000, step) UNION ALL SELECT far) s(x)';
+CREATE FUNCTION wide_set8(far int8, step int) RETURNS int8[] LANGUAGE sql AS 'SELECT array_agg(5000000000 + x) FROM (SELECT generate_series(1, 40000, step) UNION ALL SELECT far) s(x)';
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', 'wide_set(30000000, 13)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id <> ALL ($1) GROUP BY kind', 'wide_set(30000000, 13)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', 'array_append(wide_set(30000000, 13), NULL)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id <> ALL ($1) GROUP BY kind', 'array_append(wide_set(30000000, 13), NULL)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', 'wide_set(268435455, 7)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', 'wide_set(268435457, 7)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', 'wide_set8(5030000000, 13)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id <> ALL ($1) GROUP BY kind', 'wide_set8(5030000000, 13)');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', 'array_append(wide_set8(5030000000, 13), NULL)');
+-- the production library has no test_limits: the same lists then run against the default limit, with the same answers
+SELECT current_setting('sift.test_limits', true) IS NOT NULL AS limits \gset
+\if :limits
+SET sift.test_limits = 'bits_set_values=4';
+\endif
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', '''{3,17,40000,5000000}''::int4[]');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id <> ALL ($1) GROUP BY kind', '''{3,17,40000,5000000}''::int4[]');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', '''{3,17,NULL,40000,5000000}''::int4[]');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE entity_id = ANY ($1) GROUP BY kind', '''{-2147483648,3,2147483647,17}''::int4[]');
+SELECT * FROM compare_modes('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE big_id = ANY ($1) GROUP BY kind', '''{5000000001,5000000007,5004000000,5000000011}''::int8[]');
+\if :limits
+RESET sift.test_limits;
+\endif
+DROP FUNCTION wide_set(int, int);
+DROP FUNCTION wide_set8(int8, int);
+
 -- custom plans see the array and are as before; a statement in auto mode turns generic after five executions with the same answers
 SET plan_cache_mode = force_custom_plan;
 PREPARE custom_q(int4[]) AS SELECT kind, count(*) AS n FROM ev WHERE entity_id = ANY ($1) GROUP BY kind ORDER BY kind;

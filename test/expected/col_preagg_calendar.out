@@ -1,0 +1,171 @@
+-- The calendar dim of the cube of a sift_table (column format minor 8, docs/COL-PREAGG.md section 2): the cells of its date, timestamp and timestamptz
+-- columns, written under the default sift.col_format_minor and not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back
+-- by the decoder that refuses a damaged cube; checked against the chunks by the verify of the segments; kept by a rewrite.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE cmo (id int, ts timestamp, tz timestamptz, d date, kind int, amt numeric(10, 2), flt float8, pad text) USING sift_table;
+CREATE TABLE cmo_nots (id int, kind int, amt numeric(10, 2), pad text) USING sift_table;
+CREATE TABLE cmo_seven (LIKE cmo) USING sift_table;
+CREATE FUNCTION cmo_fill(tbl regclass, lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format($q$INSERT INTO %s SELECT g, CASE WHEN g %% 41 = 0 THEN NULL ELSE timestamp '2001-02-03 04:05:06' + g * interval '1 hour' END,
+		timestamptz '2001-02-03 04:05:06+00' + g * interval '1 hour', date '2001-02-03' + g / 8, g %% 6, ((g * 91) %% 20000) / 100.0 - 50, (g %% 71) / 7.0 - 3, repeat('p', 60)
+		FROM generate_series(%s, %s) g$q$, tbl, lo, hi);
+END $$;
+SELECT cmo_fill('cmo', 1, 60000);
+ cmo_fill 
+----------
+ 
+(1 row)
+
+INSERT INTO cmo_nots SELECT g, g % 6, g / 7.0, repeat('p', 60) FROM generate_series(1, 60000) g;
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo, cmo_nots;
+SET sift.col_format_minor = 7;
+SELECT cmo_fill('cmo_seven', 1, 60000);
+ cmo_fill 
+----------
+ 
+(1 row)
+
+VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo_seven;
+RESET sift.col_format_minor;
+-- the minor of the segments: 8 with a date or timestamp column, 4 under the setting 7 and without one (the data here spans 14 years: a unit stores months)
+SELECT 'cmo' AS tbl, array_agg(DISTINCT format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns'
+UNION ALL SELECT 'cmo_seven', array_agg(DISTINCT format) FROM sift.table_segments('cmo_seven') WHERE kind = 'columns'
+UNION ALL SELECT 'cmo_nots', array_agg(DISTINCT format) FROM sift.table_segments('cmo_nots') WHERE kind = 'columns' ORDER BY 1;
+    tbl    | minors 
+-----------+--------
+ cmo       | {8}
+ cmo_nots  | {4}
+ cmo_seven | {4}
+(3 rows)
+
+SELECT sift._test_tbl_verify('cmo') > 0 AS cmo_ok, sift._test_tbl_verify('cmo_seven') > 0 AS seven_ok, sift._test_tbl_verify('cmo_nots') > 0 AS nots_ok;
+ cmo_ok | seven_ok | nots_ok 
+--------+----------+---------
+ t      | t        | t
+(1 row)
+
+-- every cube of the table has calendar dims (the timestamptz is cut in UTC days, whatever the zone of the session); a damaged cube is refused, and one that is accepted is still sound
+SELECT days = 0 AS no_days, months > 0 AS months, years = 0 AS no_years, no_cal = 0 AS all_have FROM sift._test_tbl_cal_grains('cmo')
+UNION ALL SELECT days = 0, months = 0, years = 0, no_cal > 0 FROM sift._test_tbl_cal_grains('cmo_seven')
+UNION ALL SELECT days = 0, months = 0, years = 0, no_cal > 0 FROM sift._test_tbl_cal_grains('cmo_nots');
+ no_days | months | no_years | all_have 
+---------+--------+----------+----------
+ t       | t      | t        | t
+ t       | t      | t        | t
+ t       | t      | t        | t
+(3 rows)
+
+SELECT 'cmo' AS tbl, blobs > 0 AS has_cubes, intact = blobs AS intact_decodes, with_calendar = blobs AS all_with_calendar, cut > 0 AS cuts_made,
+       cut_accepted = 0 AS cuts_refused, damaged > 0 AS damages_made, accepted < damaged AS some_refused, unsound = 0 AS accepted_are_sound
+FROM sift._test_tbl_cube_damage('cmo', 3)
+UNION ALL
+SELECT 'cmo_seven', blobs > 0, intact = blobs, with_calendar = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+FROM sift._test_tbl_cube_damage('cmo_seven', 3)
+UNION ALL
+SELECT 'cmo_nots', blobs > 0, intact = blobs, with_calendar = 0, cut > 0, cut_accepted = 0, damaged > 0, accepted < damaged, unsound = 0
+FROM sift._test_tbl_cube_damage('cmo_nots', 3)
+ORDER BY 1;
+    tbl    | has_cubes | intact_decodes | all_with_calendar | cuts_made | cuts_refused | damages_made | some_refused | accepted_are_sound 
+-----------+-----------+----------------+-------------------+-----------+--------------+--------------+--------------+--------------------
+ cmo       | t         | t              | t                 | t         | t            | t            | t            | t
+ cmo_nots  | t         | t              | t                 | t         | t            | t            | t            | t
+ cmo_seven | t         | t              | t                 | t         | t            | t            | t            | t
+(3 rows)
+
+-- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes minor 8
+SET sift.col_format_minor = 7;
+SELECT cmo_fill('cmo', 60001, 90000);
+ cmo_fill 
+----------
+ 
+(1 row)
+
+VACUUM (DISABLE_PAGE_SKIPPING) cmo;
+RESET sift.col_format_minor;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+ minors 
+--------
+ {4,8}
+(1 row)
+
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+SELECT cmo_fill('cmo', 90001, 120000);
+ cmo_fill 
+----------
+ 
+(1 row)
+
+VACUUM (DISABLE_PAGE_SKIPPING) cmo;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+ minors 
+--------
+ {4,8}
+(1 row)
+
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+VACUUM (FULL) cmo;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
+ minors 
+--------
+ {8}
+(1 row)
+
+SELECT blobs > 0 AS has_cubes, with_calendar = blobs AS all_with_calendar FROM sift._test_tbl_cube_damage('cmo', 3);
+ has_cubes | all_with_calendar 
+-----------+-------------------
+ t         | t
+(1 row)
+
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+-- deletes, updates and VACUUM, then a rewrite
+DELETE FROM cmo WHERE id % 3 = 0;
+UPDATE cmo SET ts = ts + interval '400 days' WHERE id % 5 = 1;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) cmo;
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+VACUUM (FULL) cmo;
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+-- a column added later has no calendar dim in the segments written before; the cells of the old columns are still there
+ALTER TABLE cmo ADD COLUMN ts2 timestamp DEFAULT '2020-01-01';
+SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
+ ok 
+----
+ t
+(1 row)
+
+SELECT blobs > 0 AS has_cubes, intact = blobs AS intact_decodes FROM sift._test_tbl_cube_damage('cmo', 3);
+ has_cubes | intact_decodes 
+-----------+----------------
+ t         | t
+(1 row)
+
+DROP TABLE cmo, cmo_nots, cmo_seven;
+DROP FUNCTION cmo_fill(regclass, int, int);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

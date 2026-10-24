@@ -42,6 +42,7 @@ recheck_init(ColSource *src)
 {
 	MemoryContext old = MemoryContextSwitchTo(src->cxt);
 	ColRecheck *k = palloc0(sizeof(ColRecheck));
+	/* check-memory: allow r->shred is read once, before any lock or catalog read */
 	SiftColRel *r = sift_col_rel(src->index);
 
 	k->heap = src->heap;
@@ -62,6 +63,7 @@ col_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	ColSource  *src = impl;
 	ColRecheck *k = src->rck ? src->rck : recheck_init(src);
+	/* check-memory: allow r->shred and r->first are read for the arguments of the calls, r is not used after them */
 	SiftColRel *r = sift_col_rel(src->index);
 	int			att = src->lay->leaf[leaf].attno;
 
@@ -259,6 +261,7 @@ recheck_next(ColSource *src, SiftSrcUnit *unit)
 	src->rck->active = true;
 	unit->sb = src->unit.sb;
 	unit->nrow = src->unit.nrows;
+	unit->nsu = 0;
 	unit->priv = src;
 	return true;
 }

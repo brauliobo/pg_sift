@@ -5,13 +5,15 @@
  *
  * Cube blob of a unit (all integers LEB128 varints unless said): u8 ndims, a directory of ndims x (leaf, bytes of its body) so that one dim is
  * found without reading the others, then the bodies:
- *     u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group), nmeas x measure leaf,
- *     keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
+ *     u8 nmeas, ngroups, u8 flags (bit 0: the last group is the NULL group; bit 1, column format minor 7: min and max of the INT measures),
+ *     nmeas x measure leaf, keys of the groups with a value in ascending order (first: zigzag, then the positive differences),
  *     counts[ngroups],
- *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits)
+ *     per measure: nn[ngroups], then sum[ngroups] (INT measure: zigzag 128-bit; float measure: 8 bytes, the double's bits) and, with the
+ *     flag, for an INT measure the smallest value of each group that has one (nn > 0) and then the largest, as zigzag keys
  *
  * Element blob of a unit (column format minor 4): u8 nlists, nlists x (leaf of the list, bytes of its rollup) as varints, then the rollups in that
- * order. Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
+ * order; the rollup of the rows of the unit (minor 8) is listed as the leaf ncols and has top-level leaves for dims and measures.
+ * Rollup of a list (its rows are the elements): u8 ndims, u8 nmeas, ntuples, ndims x dim leaf, nmeas x measure leaf, then
  *     per dim: u8 anynull, (anynull: a bitmap of the tuples that have a NULL there, bit i of byte i / 8), then for the tuples with a value
  *     the key as the zigzag difference to the previous one (the tuples are in ascending order of their keys, dim 0 first, a NULL after the values),
  *     counts[ntuples] (elements of the tuple),
@@ -98,6 +100,9 @@ typedef struct Scratch
 	GroupKey   *ord;
 	double	   *sf;
 	SiftCI128  *si;
+	int64	   *mn;
+	int64	   *mx;
+	bool		minmax;
 } Scratch;
 
 typedef struct DimBuild
@@ -108,8 +113,11 @@ typedef struct DimBuild
 	int			nm;					/* measures in the blob */
 	Size		cut[SIFT_PAGG_MAX_MEAS + 1];	/* offset in the blob after the first i measure leaves (cut[0]: after the flags) */
 	Size		tail[SIFT_PAGG_MAX_MEAS + 1];	/* offset after the counts (tail[0]) and after each measure's sums */
+	Size		mmb[SIFT_PAGG_MAX_MEAS + 1];	/* bytes of the minima and maxima in the first i measures (cube_minmax): the byte budget does not count them, or the option would cost the dims it makes room for */
 	bool		ok;
 	bool		keep;
+	int			grain;				/* a calendar dim: the grain of its cells (SIFT_CAL_*), else 0 */
+	uint32		ngroups;
 } DimBuild;
 
 static int
@@ -139,13 +147,160 @@ col_usable(const SiftCPaggCol *c, uint32 nrows)
 	return c->ready && c->n == nrows && !has_ovf(c);
 }
 
+#define PAGG_USECS_DAY		INT64CONST(86400000000)
+#define PAGG_EPOCH_DAYS		10957			/* 1970-01-01 to 2000-01-01 */
+#define PAGG_TS_DAYS		106751991		/* the days a timestamp holds, either side of 2000-01-01 (INT64_MAX / USECS_PER_DAY) */
+#define PAGG_DATE_DAYS		INT64CONST(2147483000)	/* and a date, which also has infinities */
+
+/* Days since 1970-01-01 of a civil date and the civil month of a day number: the proleptic Gregorian calendar PostgreSQL's date_trunc uses (H. Hinnant's algorithms) */
+static int64
+civil_days(int64 y, unsigned m)
+{
+	int64		era;
+	unsigned	yoe,
+				doy;
+
+	y -= m <= 2;
+	era = (y >= 0 ? y : y - 399) / 400;
+	yoe = (unsigned) (y - era * 400);
+	doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5;
+	return era * 146097 + (int64) (yoe * 365 + yoe / 4 - yoe / 100 + doy) - 719468;
+}
+
+static void
+civil_month(int64 z, int64 *y, unsigned *m)
+{
+	int64		era;
+	unsigned	doe,
+				yoe,
+				doy,
+				mp;
+
+	z += 719468;
+	era = (z >= 0 ? z : z - 146096) / 146097;
+	doe = (unsigned) (z - era * 146097);
+	yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	mp = (5 * doy + 2) / 153;
+	*m = mp < 10 ? mp + 3 : mp - 9;
+	*y = yoe + era * 400 + (*m <= 2);
+}
+
+static int64
+day_of(int64 us)
+{
+	int64		d = us / PAGG_USECS_DAY;
+
+	return us % PAGG_USECS_DAY < 0 ? d - 1 : d;
+}
+
+/* the first day a cell may start on: 4713 BC, so that the start of the cell of any day a timestamp holds is a timestamp too */
+static int64
+cal_min(void)
+{
+	return civil_days(-4712, 1) - PAGG_EPOCH_DAYS;
+}
+
+int64
+sift_cpagg_cal_cell(int grain, int64 day)
+{
+	int64		y;
+	unsigned	m;
+
+	if (grain == SIFT_CAL_DAY)
+		return day;
+	civil_month(day + PAGG_EPOCH_DAYS, &y, &m);
+	return civil_days(y, grain == SIFT_CAL_MONTH ? m : 1) - PAGG_EPOCH_DAYS;
+}
+
+int64
+sift_cpagg_cal_next(int grain, int64 day)
+{
+	int64		y;
+	unsigned	m;
+
+	if (grain == SIFT_CAL_DAY)
+		return day + 1;
+	civil_month(day + PAGG_EPOCH_DAYS, &y, &m);
+	if (grain == SIFT_CAL_MONTH && m < 12)
+		return civil_days(y, m + 1) - PAGG_EPOCH_DAYS;
+	return civil_days(y + 1, 1) - PAGG_EPOCH_DAYS;
+}
+
+bool
+sift_cpagg_cal_key_ok(int type, int grain, int64 key)
+{
+	int64		lim = type == SIFT_COLT_DATE ? PAGG_DATE_DAYS : PAGG_TS_DAYS;
+
+	return grain >= SIFT_CAL_DAY && grain <= SIFT_CAL_YEAR && key >= cal_min() && key <= lim && sift_cpagg_cal_cell(grain, key) == key;
+}
+
+bool
+sift_cpagg_cal_type(const SiftColSchema *s, int c)
+{
+	const SiftColDef *d = &s->cols[c];
+
+	return (d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ) && d->store == SIFT_COLS_INT && d->parent < 0;
+}
+
+/* The day of each row of a date or timestamp leaf (a timestamptz in UTC); false (the unit has no calendar dim) for an infinity or a day no cell can start on */
+static bool
+cal_days(const SiftCPaggCol *c, bool date, uint32 nrows, int64 *out)
+{
+	int64		lo = cal_min(),
+				hi = date ? PAGG_DATE_DAYS : PAGG_TS_DAYS;
+
+	for (uint32 i = 0; i < nrows; i++)
+	{
+		int64		k = c->key[i],
+					d;
+
+		if (is_null(c->nulls, i))
+		{
+			out[i] = 0;
+			continue;
+		}
+		if (date ? (k == PG_INT32_MIN || k == PG_INT32_MAX) : (k == PG_INT64_MAX || k == PG_INT64_MIN))
+			return false;
+		d = date ? k : day_of(k);
+		if (d < lo || d > hi)
+			return false;
+		out[i] = d;
+	}
+	return true;
+}
+
+/* the cell of a grain of each day of cal_days (the NULLs keep 0) */
+static void
+cal_cells(const SiftCPaggCol *c, uint32 nrows, int grain, const int64 *days, int64 *out)
+{
+	int64		last_day = 0,
+				last_cell = 0;
+	bool		have = false;
+
+	for (uint32 i = 0; i < nrows; i++)
+	{
+		if (is_null(c->nulls, i))
+		{
+			out[i] = 0;
+			continue;
+		}
+		if (!have || days[i] != last_day)
+		{
+			last_cell = sift_cpagg_cal_cell(grain, days[i]);
+			last_day = days[i];
+			have = true;
+		}
+		out[i] = last_cell;
+	}
+}
+
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
-build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, const Scratch *sc,
-		  DimBuild *b)
+build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg,
+		  const Scratch *sc, DimBuild *b)
 {
 	StringInfo	out = &b->blob;
-	const SiftCPaggCol *dc = &cols[sd->leaf];
 	uint32		ng = 0,
 				nullg = UINT32_MAX,
 				hsize = sc->hsize,
@@ -206,9 +361,10 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	for (int i = 0; i < sd->nmeas; i++)
 		if (sd->meas[i] != sd->leaf && col_usable(&cols[sd->meas[i]], nrows))
 			mm[nm++] = sd->meas[i];
+	b->ngroups = ng;
 	appendStringInfoChar(out, (char) nm);
 	put_u(out, ng);
-	appendStringInfoChar(out, nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP);
+	appendStringInfoChar(out, (nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP) | (sc->minmax ? PAGG_MINMAX : 0));
 	b->cut[0] = out->len;
 	for (int i = 0; i < nm; i++)
 	{
@@ -232,12 +388,18 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 	for (uint32 i = 0; i < ng; i++)
 		put_u(out, cnt[ord[i].g]);
 	b->tail[0] = out->len;
+	b->mmb[0] = 0;
 	for (int m = 0; m < nm; m++)
 	{
+		Size		mm_at,
+					mm_bytes = 0;
+
 		const SiftCPaggCol *mc = &cols[mm[m]];
 		bool		fl = s->cols[mm[m]].store == SIFT_COLS_F4 || s->cols[mm[m]].store == SIFT_COLS_F8;
 		double	   *sf = sc->sf;
 		SiftCI128  *si = sc->si;
+		int64	   *mn = sc->mn,
+				   *mx = sc->mx;
 
 		memset(nn, 0, ng * sizeof(uint32));
 		if (fl)
@@ -267,14 +429,30 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			for (uint32 i = 0; i < nrows; i++)
 				if (!is_null(mc->nulls, i))
 				{
-					si[gid[i]] += mc->key[i];
-					nn[gid[i]]++;
+					uint32		g = gid[i];
+					int64		v = mc->key[i];
+
+					si[g] += v;
+					if (nn[g]++ == 0)
+						mn[g] = mx[g] = v;
+					else
+					{
+						mn[g] = Min(mn[g], v);
+						mx[g] = Max(mx[g], v);
+					}
 				}
 			for (uint32 i = 0; i < ng; i++)
 				put_u(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
+			mm_at = out->len;
+			for (int pass = 0; sc->minmax && pass < 2; pass++)
+				for (uint32 i = 0; i < ng; i++)
+					if (nn[ord[i].g] > 0)
+						put_zz(out, pass ? mx[ord[i].g] : mn[ord[i].g]);
+			mm_bytes = out->len - mm_at;
 		}
+		b->mmb[m + 1] = b->mmb[m] + mm_bytes;
 		b->tail[m + 1] = out->len;
 	}
 	return true;
@@ -294,7 +472,7 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 	for (int d = 0; d < nd; d++)
 		if (db[d].keep)
 		{
-			put_u(out, spec->dim[db[d].spec].leaf);
+			put_u(out, spec->dim[db[d].spec].leaf + db[d].grain * SIFT_PAGG_CAL);
 			put_u(out, db[d].blob.len);
 		}
 	for (int d = 0; d < nd; d++)
@@ -302,13 +480,66 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 			appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
 }
 
-/* The histogram of every dim of the spec */
-static void
-build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg, DimBuild *db)
+/* the bytes a dim counts against the byte budget: the blob with the first measures only (all of them without a lean) */
+static Size
+dim_bytes(const SiftCPaggDim *sd, const DimBuild *b)
 {
-	uint32		hsize = 16;
+	int			lean = sd->lean > 0 ? Min(sd->lean, b->nm) : b->nm;
+
+	return (b->ok && lean < b->nm ? b->cut[lean] + b->tail[lean] - b->cut[b->nm] : b->blob.len) - (b->ok ? b->mmb[lean] : 0);
+}
+
+/*
+ * The calendar dim of a date or timestamp leaf: the cells of its finest grain whose groups fit, trying days, months, then years. A grain fits when
+ * the unit has at most SIFT_PAGG_CAL_GROUPS cells of it, each standing for SIFT_PAGG_CAL_ROWS rows or more on average, and their bytes fit what is left
+ * of the budget of the calendar dims (*left; 0: no budget). A unit with an infinity or a day no cell can start on has none.
+ */
+static void
+build_cal(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *cols, uint32 nrows, const Scratch *sc, Size *left, bool budget, DimBuild *b)
+{
+	const SiftCPaggCol *dc = &cols[sd->leaf];
+	SiftCPaggCol mc;
+	int64	   *days,
+			   *cells;
+
+	b->ok = false;
+	if (!col_usable(dc, nrows))
+		return;
+	days = palloc(nrows * sizeof(int64));
+	cells = palloc(nrows * sizeof(int64));
+	if (cal_days(dc, s->cols[sd->leaf].type == SIFT_COLT_DATE, nrows, days))
+		for (int g = sd->grain ? sd->grain : SIFT_CAL_DAY; g <= (sd->grain ? sd->grain : SIFT_CAL_YEAR) && !b->ok; g++)
+		{
+			cal_cells(dc, nrows, g, days, cells);
+			mc = (SiftCPaggCol) {cells, dc->nulls, NULL, nrows, true};
+			resetStringInfo(&b->blob);
+			b->grain = g;
+			b->ok = build_dim(s, sd, &mc, cols, nrows, SIFT_PAGG_CAL_GROUPS, sc, b);
+			b->bytes = dim_bytes(sd, b);
+			if (!sd->grain)
+				b->ok = b->ok && (uint64) b->ngroups * SIFT_PAGG_CAL_ROWS <= nrows && (!budget || b->bytes + 1 <= *left);
+		}
+	if (b->ok)
+	{
+		b->keep = true;
+		*left -= budget ? b->bytes : 0;
+	}
+	pfree(days);
+	pfree(cells);
+}
+
+/* The histogram of every dim of the spec; the calendar dims are chosen here, in spec order, from the budget they share (cal_budget) */
+static void
+build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, uint32 nrows, uint32 cubeg, Size cal_budget, DimBuild *db)
+{
+	uint32		hsize = 16,
+				maxg = cubeg;
+	Size		left = cal_budget;
 	Scratch		sc;
 
+	for (int d = 0; d < spec->ndims; d++)
+		if (spec->dim[d].cal)
+			maxg = Max(maxg, SIFT_PAGG_CAL_GROUPS);
 	while (hsize < 2 * (maxg + 1))
 		hsize *= 2;
 	sc.hsize = hsize;
@@ -321,16 +552,21 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	sc.ord = palloc((maxg + 1) * sizeof(GroupKey));
 	sc.sf = palloc((maxg + 1) * sizeof(double));
 	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
+	sc.mn = palloc((maxg + 1) * sizeof(int64));
+	sc.mx = palloc((maxg + 1) * sizeof(int64));
+	sc.minmax = spec->minmax;
 	for (int d = 0; d < spec->ndims; d++)
 	{
-		int			lean;
-
 		db[d] = (DimBuild) {.spec = d};
 		initStringInfo(&db[d].blob);
-		db[d].ok = build_dim(s, &spec->dim[d], cols, nrows, maxg, &sc, &db[d]);
+		if (spec->dim[d].cal)
+		{
+			build_cal(s, &spec->dim[d], cols, nrows, &sc, &left, cal_budget > 0, &db[d]);
+			continue;
+		}
+		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]);
 		/* the dims are chosen by the size they have with the first measures: the others come with a dim that is kept, as the planner expects */
-		lean = spec->dim[d].lean > 0 ? Min(spec->dim[d].lean, db[d].nm) : db[d].nm;
-		db[d].bytes = db[d].ok && lean < db[d].nm ? db[d].cut[lean] + db[d].tail[lean] - db[d].cut[db[d].nm] : db[d].blob.len;
+		db[d].bytes = dim_bytes(&spec->dim[d], &db[d]);
 	}
 	pfree(sc.gid);
 	pfree(sc.hk);
@@ -341,6 +577,8 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	pfree(sc.ord);
 	pfree(sc.sf);
 	pfree(sc.si);
+	pfree(sc.mn);
+	pfree(sc.mx);
 }
 
 typedef struct RuBuild
@@ -629,7 +867,8 @@ cmp_i16(const void *a, const void *b)
 }
 
 /*
- * Builds the rollup of one list over the unit. fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
+ * Builds the rollup of one list over the unit (of the rows of the unit when ru->list is -1: the dims are top-level leaves and the cap is a 10th of
+ * the rows, at most SIFT_PAGG_ROWS_CELLS). fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
  * the check of a stored one); else the dims go from the most distinct values down until the tuples are at most a 32nd of the elements, and
  * the blob fits room (limited: the budget of the list). false when no rollup fits or the list cannot be used.
  */
@@ -646,16 +885,17 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 				mhs = 16;
 	int64	   *hk;
 	uint8	   *hu;
-	bool		done = false;
+	bool		done = false,
+				rows = ru->list < 0;
 	StringInfoData tmp;
 
-	if (!col_usable(&cols[ru->list], nrows) || (limited && room == 0))
+	if ((!rows && !col_usable(&cols[ru->list], nrows)) || (limited && room == 0))
 		return false;
 	for (int j = 0; j < ru->ndims; j++)
 	{
 		const SiftCPaggCol *c = &cols[ru->dim[j]];
 
-		if (!c->ready || has_ovf(c) || (nc > 0 && c->n != n))
+		if (!c->ready || has_ovf(c) || (nc > 0 && c->n != n) || (rows && c->n != nrows))
 			continue;
 		n = c->n;
 		cand[nc++] = j;
@@ -663,7 +903,7 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 	if (n == 0 || nc == 0)
 		return false;
 	b.n = n;
-	b.cap = fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
+	b.cap = rows ? Min((uint32) SIFT_PAGG_ROWS_CELLS, Max((uint32) SIFT_PAGG_ROLLUP_MIN, nrows / SIFT_PAGG_ROWS_RATIO)) : fixed ? SIFT_PAGG_ROLLUP_TUPLES : Min((uint32) SIFT_PAGG_ROLLUP_TUPLES, Max((uint32) SIFT_PAGG_ROLLUP_MIN, n / 32));
 	while (mhs < 2 * (b.cap + 2))
 		mhs *= 2;
 	hk = palloc(mhs * sizeof(int64));
@@ -765,11 +1005,11 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 
 	for (int i = 0; i < spec->nrollups; i++)
 	{
+		bool		rows = spec->rollup[i].list < 0;
+
 		initStringInfo(&body[nl]);
-		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed, limited, room, &body[nl]))
-		{
+		if (build_rollup(s, &spec->rollup[i], cols, nrows, spec->rfixed || rows, limited && !rows, room, &body[nl]))
 			list[nl++] = spec->rollup[i].list;
-		}
 		else
 			pfree(body[nl].data);
 	}
@@ -778,7 +1018,7 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 	appendStringInfoChar(out, (char) nl);
 	for (int i = 0; i < nl; i++)
 	{
-		put_u(out, list[i]);
+		put_u(out, list[i] < 0 ? s->ncols : list[i]);	/* the rows of the unit: the number of leaves, which no list is */
 		put_u(out, body[i].len);
 	}
 	for (int i = 0; i < nl; i++)
@@ -794,15 +1034,19 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 {
 	DimBuild	db[SIFT_PAGG_MAX_DIMS];
 	Size		budget = 0,
+				cal_budget = 0,		/* the calendar dims have a larger budget of their own: a cell is a few dozen bytes, for the question most asked of a time column */
 				used = 0;
 
 	if (spec->off || nrows == 0 || (spec->ndims == 0 && (eout == NULL || spec->nrollups == 0)))
 		return;
 	if (spec->permille > 0)
+	{
 		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
+		cal_budget = Max((Size) SIFT_PAGG_MIN_BUDGET * 2, unit_bytes / 1000 * SIFT_PAGG_CAL_PERMILLE);
+	}
 	if (spec->ndims > 0)
 	{
-		build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), db);
+		build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), cal_budget, db);
 		/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
 		for (int round = 0; round < spec->ndims; round++)
 		{
@@ -811,8 +1055,13 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 			for (int d = 0; d < spec->ndims; d++)
 				if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
 					best = d;
-			if (best < 0 || (budget > 0 && used + db[best].bytes + 1 > budget))
+			if (best < 0)
 				break;
+			if (budget > 0 && used + db[best].bytes + 1 > budget)
+			{
+				db[best].ok = false;
+				continue;
+			}
 			db[best].keep = true;
 			used += db[best].bytes;
 		}

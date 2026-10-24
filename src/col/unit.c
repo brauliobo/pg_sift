@@ -161,8 +161,7 @@ sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c)
 static uint32
 unit_page(const SiftCUnitView *v, uint32 p)
 {
-	if (p >= v->npages)
-		elog(ERROR, "sift_col: page index %u is outside the unit", p);
+	SIFT_INVARIANT(p < v->npages, "sift_col: page index %u is outside the unit", p);
 	return v->page[p];
 }
 

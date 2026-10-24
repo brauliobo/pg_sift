@@ -1,0 +1,163 @@
+-- A group key that holds a hashed sub-select (CASE WHEN kind IN (SELECT id FROM kinds) THEN .. END) is one every arm of the two-level scan groups by: each arm plans
+-- a sub-plan of its own for it, the same test of the same column, so the scan compiles the key once and asks the sub-select once. Every query runs as the two-level
+-- scan, as the arms alone (sift.agg_two_level off) and as the normal plan; the answers must be the same: NULL kinds, kinds the lookup lacks, ids the lookup holds
+-- twice, a table whose visibility map is empty. Arms whose sub-selects differ, or are correlated, keep the plain refusal.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE kinds (id text, label text);
+INSERT INTO kinds SELECT 'k' || i, 'label ' || i FROM generate_series(0, 3) i;
+INSERT INTO kinds VALUES ('k1', 'again'), ('k2', 'again');		-- an id the lookup holds twice; k4 is not in it
+ANALYZE kinds;
+CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO events
+SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || i % 5 END,
+       CASE WHEN i % 13 = 0 THEN NULL
+            ELSE jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10))
+                                              FROM generate_series(1, 1 + i % 4) j)) END
+FROM generate_series(1, 12000) i;
+-- the same rows in a table that is never vacuumed: its visibility map is empty
+CREATE TABLE events_nv (LIKE events INCLUDING ALL) WITH (autovacuum_enabled = false);
+INSERT INTO events_nv SELECT * FROM events;
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
+NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+CREATE INDEX events_nv_col ON events_nv USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
+NOTICE:  sift_col index events_nv_col keeps the keys of parent_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+HINT:  ALTER INDEX events_nv_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE events_nv;
+-- the arms per row and category, and per row; dim1 and dim2 are the key of each arm, tail is the GROUP BY and what follows
+CREATE FUNCTION report(tbl text, dim1 text, dim2 text, tail text DEFAULT 'category, dimension', cols text DEFAULT 'category, dimension') RETURNS text LANGUAGE sql AS $$
+	SELECT format($q$SELECT %s, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, count(DISTINCT id) AS ids, count(DISTINCT parent_id) AS parents
+	  FROM (SELECT e.id, e.parent_id, %s AS dimension, o.cat AS category, avg(o.score) AS score, count(*) AS n
+	        FROM %I e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, 3, o.cat
+	        UNION ALL
+	        SELECT e.id, e.parent_id, %s, NULL::text, avg(o.score), count(*)
+	        FROM %I e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, 3) t
+	  GROUP BY %s ORDER BY 1, 2$q$, cols, dim1, tbl, dim2, tbl, tail)
+$$;
+CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN scan := true; END IF;
+		IF l ~ '(SiftAggRows|GroupAggregate|HashAggregate)' THEN RETURN false; END IF;
+	END LOOP;
+	RETURN scan;
+END $$;
+-- whether the scan answered and the rows it differs by from the normal plan and from the arms alone
+CREATE FUNCTION check_same(q text) RETURNS TABLE (pushed bool, rows bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint;
+BEGIN
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.agg_two_level = off;
+	EXECUTE format('CREATE TEMP TABLE r_arms AS %s', q);
+	RESET sift.agg_two_level;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) d;
+	SELECT count(*) INTO b FROM ((TABLE r_arms EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_arms)) d;
+	SELECT count(*) INTO rows FROM r_off;
+	DROP TABLE r_on, r_arms, r_off;
+	pushed := pushed(q);
+	differences := a + b;
+	RETURN NEXT;
+END $$;
+CREATE FUNCTION why(q text) RETURNS TABLE (arm text, used bool, slug text) LANGUAGE sql AS $$
+	SELECT arm, used, slug FROM sift.explain_why(q) ORDER BY arm
+$$;
+\set dim 'CASE WHEN e.kind IN (SELECT id FROM kinds) THEN jsonb_build_object(''id'', e.kind, ''type'', ''kind'') ELSE NULL END'
+-- the dimension and the category; NULL kinds, k4 (not in the lookup) and the ids it holds twice are groups like the others
+SELECT * FROM check_same(report('events', :'dim', :'dim'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   35 |           0
+(1 row)
+
+-- only the dimension, grouping sets over it, and HAVING on it
+SELECT * FROM check_same(report('events', :'dim', :'dim', 'dimension', 'dimension'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    5 |           0
+(1 row)
+
+SELECT * FROM check_same(report('events', :'dim', :'dim', 'ROLLUP (category, dimension)'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   43 |           0
+(1 row)
+
+SELECT * FROM check_same(report('events', :'dim', :'dim', 'category, dimension HAVING count(DISTINCT id) > 1500'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |    5 |           0
+(1 row)
+
+-- NOT IN: a NULL kind passes neither test
+SELECT * FROM check_same(report('events', 'CASE WHEN e.kind NOT IN (SELECT id FROM kinds) THEN e.kind ELSE ''known'' END', 'CASE WHEN e.kind NOT IN (SELECT id FROM kinds) THEN e.kind ELSE ''known'' END'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   14 |           0
+(1 row)
+
+-- the empty map
+SELECT * FROM check_same(report('events_nv', :'dim', :'dim'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   35 |           0
+(1 row)
+
+SELECT * FROM check_same(report('events_nv', :'dim', :'dim', 'ROLLUP (category, dimension)'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   43 |           0
+(1 row)
+
+-- a lookup that changes between the statements is read when the scan starts: the answer follows the table
+DELETE FROM kinds WHERE id = 'k3';
+INSERT INTO kinds VALUES ('k4', 'new');
+SELECT * FROM check_same(report('events', :'dim', :'dim'));
+ pushed | rows | differences 
+--------+------+-------------
+ t      |   35 |           0
+(1 row)
+
+-- keep the plain refusal: the arms test different sub-selects, a sub-select that reads a column of the row
+SELECT * FROM check_same(report('events', :'dim', 'CASE WHEN e.kind IN (SELECT id FROM kinds WHERE label <> ''again'') THEN jsonb_build_object(''id'', e.kind, ''type'', ''kind'') ELSE NULL END'));
+ pushed | rows | differences 
+--------+------+-------------
+ f      |   35 |           0
+(1 row)
+
+SELECT * FROM check_same(report('events', 'CASE WHEN EXISTS (SELECT 1 FROM kinds k WHERE k.id = e.kind AND k.label <> e.kind) THEN e.kind END',
+                                          'CASE WHEN EXISTS (SELECT 1 FROM kinds k WHERE k.id = e.kind AND k.label <> e.kind) THEN e.kind END'));
+ pushed | rows | differences 
+--------+------+-------------
+ f      |   35 |           0
+(1 row)
+
+SELECT * FROM why(report('events', :'dim', 'CASE WHEN e.kind IN (SELECT id FROM kinds WHERE label <> ''again'') THEN jsonb_build_object(''id'', e.kind, ''type'', ''kind'') ELSE NULL END'));
+    arm    | used |   slug   
+-----------+------+----------
+ L2:single | t    | 
+ L2:single | t    | 
+ two_level | f    | two_keys
+(3 rows)
+
+SELECT * FROM why(report('events', 'CASE WHEN EXISTS (SELECT 1 FROM kinds k WHERE k.id = e.kind AND k.label <> e.kind) THEN e.kind END',
+                                   'CASE WHEN EXISTS (SELECT 1 FROM kinds k WHERE k.id = e.kind AND k.label <> e.kind) THEN e.kind END'));
+    arm    | used |   slug    
+-----------+------+-----------
+ L2:single | f    | group_key
+ L2:single | f    | group_key
+ two_level | f    | two_keys
+(3 rows)
+
+DROP TABLE events, events_nv, kinds;
+DROP FUNCTION report(text, text, text, text, text), pushed(text), check_same(text), why(text);
+DROP EXTENSION pg_sift;

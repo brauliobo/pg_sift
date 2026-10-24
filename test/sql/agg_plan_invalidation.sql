@@ -80,7 +80,8 @@ SELECT * FROM chk('write buffer');
 VACUUM events;
 SELECT * FROM chk('vacuum');
 
--- without the index the plans are the normal ones, with an index that lacks a column too
+-- without the index the plans are the normal ones, with an index that lacks a column too (the shared CTE takes the scan for the aggregates the index covers when
+-- they cost 1.15 times less than the work they replace and the plan with the ordinary reader of the rest totals at most 1.1 times the shared one)
 DROP INDEX events_col;
 SELECT * FROM chk('drop index');
 CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind);
@@ -92,7 +93,7 @@ SELECT * FROM chk('new index');
 -- the table is rewritten with another type of an indexed column (no column the queries return) and the index is built again
 ALTER TABLE events ALTER COLUMN kind TYPE varchar(20);
 SELECT * FROM chk('table rewrite');
--- the rewrite left no page all-visible: the pushdown of the shared CTE, whose inline plan has to cost half of the other, waits for VACUUM
+-- the rewrite left no page all-visible: the scans check the rows of their pages in the heap, and are still the cheaper plan of the shared CTE
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM chk('vacuum after rewrite');
 

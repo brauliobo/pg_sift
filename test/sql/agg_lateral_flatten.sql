@@ -17,22 +17,7 @@ CREATE INDEX entries_col ON entries USING sift_col (id, src_id, day, scores) WIT
 VACUUM (FREEZE, ANALYZE) entries;
 ANALYZE sources; ANALYZE labels;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
-CREATE FUNCTION outcome(q text, enabled bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE result text;
-BEGIN
-  PERFORM set_config('sift.enable_agg', enabled::text, true);
-  PERFORM set_config(s, (NOT enabled)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  EXECUTE 'SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text, ''no rows'') FROM (' || q || ') t' INTO result;
-  RETURN result;
-EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE || ' ' || SQLERRM;
-END $$;
-CREATE FUNCTION runs_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE line text; found bool := false;
-BEGIN
-  PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
-  RETURN found;
-END $$;
+\ir test/agg_helpers.sql
 CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
   RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
@@ -119,6 +104,6 @@ SELECT * FROM check_query('cast out of range', $q$
                        FROM jsonb_each(e.scores) r LEFT JOIN labels l ON l.src_id = e.src_id AND l.source_key = r.key) s ON true)
  SELECT d.day, p.category, count(*) AS n, sum(p.score) AS total FROM (SELECT DISTINCT day FROM entries) d LEFT JOIN parsed p ON p.day = d.day GROUP BY 1, 2
 $q$);
-DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE entries, labels, sources;
 DROP EXTENSION pg_sift;

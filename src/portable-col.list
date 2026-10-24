@@ -6,6 +6,7 @@
 col/kern.c
 col/kern_avx2.c
 col/kern_avx512.c
+col/kern_neon.c
 col/enc.c
 col/schema.c
 col/dict.c
@@ -21,6 +22,7 @@ col/codec_blob.c
 col/codec_kern.c
 col/codec_avx2.c
 col/codec_avx512.c
+col/codec_neon.c
 col/compress.c
 col/seg.c
 col/seg_write.c
@@ -29,15 +31,21 @@ col/ver.c
 col/preagg.c
 col/preagg_opt.c
 col/preagg_read.c
+col/preagg_super.c
+col/point.c
+col/runs.c
+col/setsum.c
 col/wide.c
 col/shred.c
 col/shred_spec.c
 col/shred_kern.c
 col/shred_kern_avx2.c
 col/shred_kern_avx512.c
+col/shred_kern_neon.c
 agg/kern.c
 agg/kern_avx2.c
 agg/kern_avx512.c
+agg/kern_neon.c
 # headers
 col/shred.h
 col/shred_int.h
@@ -48,6 +56,9 @@ col/enc.h
 col/enc_int.h
 col/seg.h
 col/seg_int.h
+col/point.h
+col/runs.h
+col/setsum.h
 col/ver.h
 col/preagg.h
 col/preagg_int.h

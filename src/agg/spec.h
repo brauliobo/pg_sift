@@ -24,15 +24,15 @@
 #define SIFT_AGG_MAX_VX		16		/* operations of a float8 aggregate argument */
 #define SIFT_AGG_MAX_CLEAVES	8	/* leaves one combo reads */
 #define SIFT_AGG_MAX_JKEYS	3		/* equality columns of a lookup join */
-#define SIFT_AGG_MAX_JCOLS	6		/* columns of the joined table that expressions read */
+#define SIFT_AGG_MAX_JCOLS	16		/* columns of the joined table that expressions read */
 #define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */
 #define SIFT_AGG_NULL_INPUT	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_NULL_INPUT_LOC (-0x51F7)
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_NULL_INPUT + 1)
 #define SIFT_AGG_INIT_PARAM	(1 << 24)	/* added to the id of an ARRAY sub-select's output Param in a lookup table expression (Param 0 is the leaf's value) */
-#define SIFT_AGG_MAX_COMBOS	16
-#define SIFT_AGG_MAX_JOINS	8
-#define SIFT_AGG_MAX_VLEAVES	8
+#define SIFT_AGG_MAX_COMBOS	128
+#define SIFT_AGG_MAX_JOINS	32
+#define SIFT_AGG_MAX_VLEAVES	16
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
 /* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */
@@ -127,13 +127,17 @@ typedef struct SiftAggPred
 	double		sel;			/* planner only, not packed: the selectivity of a SAP_CMP, for the cost of the scan */
 } SiftAggPred;
 
+/* bit and varbit have no hash operator class, but equal values have the same image (the padding bits are zero): a key of one is grouped by image */
+#define SIFT_EQ_BY_IMAGE(opcode) ((opcode) == F_BITEQ || (opcode) == F_VARBITEQ)
+
 typedef enum SiftAggKeyKind
 {
 	SAK_LEAF,					/* the leaf's value */
 	SAK_LUT,					/* expr(leaf value), evaluated once per distinct value */
 	SAK_COMBO,					/* key slot (slot) of a combo (leaf) */
 	SAK_SET,					/* the number of the grouping set of a row: the last key of a query with grouping sets */
-	SAK_NUM						/* a numeric expression (a numeric or int8 column included): the key is its scaled value */
+	SAK_NUM,					/* a numeric expression (a numeric or int8 column included): the key is its scaled value */
+	SAK_SPINE					/* a column of the spine of a two level aggregate: no arm computes it, the spine rows give its ids */
 } SiftAggKeyKind;
 
 typedef struct SiftAggKey
@@ -268,6 +272,7 @@ typedef struct SiftAggAgg
 	SiftAggNum	num;			/* a numeric argument (SUM_NUM, AVG_NUM, and MIN, MAX, COUNT, COUNT_DISTINCT of a numeric): the argument is this program, leaf is -1 */
 	bool		distinct;		/* SUM_NUM, AVG_NUM: of the distinct values */
 	SiftAggPred *filter;		/* NULL: none */
+	Bitmapset  *reads;			/* planner only, not packed: the leaves its arguments read */
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
 	Oid			collid;			/* input collation: count(DISTINCT) of dictionary values */
@@ -326,6 +331,34 @@ typedef struct SiftAggArm
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
 
+#define SIFT_AGG_MAX_ARMS	16
+
+/*
+ * The spine of a two level aggregate: the rows of a small plan (a VALUES list, a series, a table of buckets) that the arms are joined to
+ * by equality of their keys. A cell is repeated for each spine row its join keys equal; the spine columns the outer query groups by are
+ * keys of the scan (SAK_SPINE) that the spine rows give. A row of a preserved spine that no cell joins is a row of NULL arm columns.
+ */
+typedef struct SiftAggSpine
+{
+	bool		left;			/* the spine is the preserved side of a LEFT JOIN: a row no cell joined is a group of its own */
+	int			child;			/* the plan of the rows: custom_plans[child] */
+	int			ncol;			/* its output columns */
+	int			npair;			/* the equalities of the join */
+	struct SiftAggSpinePair
+	{
+		int			col;		/* the spine column; -1: a constant */
+		Node	   *konst;
+		bool		nullsafe;	/* NULL equals NULL */
+		Oid			typid;
+		Oid			collid;
+		Oid			eqop;
+		int			key[SIFT_AGG_MAX_ARMS];	/* per arm: the key of the scan its side is; -1: NULL in the arm */
+	}			pair[SIFT_AGG_MAX_JKEYS];
+	int			nout;			/* the spine columns that are keys of the scan */
+	int			outcol[SIFT_AGG_MAX_KEYS];
+	int			outkey[SIFT_AGG_MAX_KEYS];
+} SiftAggSpine;
+
 /*
  * A table joined by equality to leaves of the scan or to expressions of them (INNER, LEFT, SEMI or ANTI): a tuple's join key is read
  * from the leaves, the table's rows with that key that pass the rest of the ON clause are its matches (any number: the join is exact
@@ -351,6 +384,7 @@ sift_aggjoin_preserves(SiftJoinKind kind)
 	return kind == SJ_RIGHT || kind == SJ_FULL;
 }
 
+#define SIFT_AGG_MAX_FORD	8		/* ORDER BY columns of a first-row child */
 #define SIFT_AGG_MAX_FOUT	16		/* output columns of a first-row child that can be mapped to the table's */
 
 /*
@@ -368,6 +402,12 @@ typedef struct SiftAggFirst
 	int			keyarg[SIFT_AGG_MAX_JKEYS];	/* position of the parameter, in the join's params and args */
 	int			ncol;			/* output columns of the child */
 	int			col[SIFT_AGG_MAX_FOUT];		/* the column of the table each is, 0 when it is not one */
+	int			nord;			/* the ORDER BY columns of the child: its row is the key's best by them (a unique index holds the key and these) */
+	int			ordatt[SIFT_AGG_MAX_FORD];	/* column of the table */
+	Oid			ordtype[SIFT_AGG_MAX_FORD];
+	bool		orddesc[SIFT_AGG_MAX_FORD];
+	bool		ordnullsfirst[SIFT_AGG_MAX_FORD];
+	List	   *qual;			/* what else the child tests of its row (comparisons of columns with constants, null tests), over the table's Vars: the lookup table holds the rows that pass */
 	List	   *params;			/* executor only: the child's parameters once the join is a lookup table (EXPLAIN names them) */
 } SiftAggFirst;
 
@@ -384,7 +424,9 @@ typedef struct SiftAggJoin
 	int			keyatt[SIFT_AGG_MAX_JKEYS];		/* column of the joined table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];
 	int			keypos[SIFT_AGG_MAX_JKEYS];		/* position of the leaf in the combo; -1: the key is keyexpr */
+	Node	   *tkey[SIFT_AGG_MAX_JKEYS];		/* the key is this expression of the joined table's columns (a cast, keyatt 0) evaluated for each row loaded; NULL: the column keyatt */
 	Node	   *keyexpr[SIFT_AGG_MAX_JKEYS];	/* an expression of the combo's leaves (Params), evaluated per distinct tuple of their values */
+	bool		keynull[SIFT_AGG_MAX_JKEYS];	/* NULL equals NULL (an element of a jsonb array): a NULL key finds the rows whose key is NULL */
 	bool		scoped;			/* resolved for the elements of an array by a SAP_ELEM_EXISTS, not by a stage of the tuples; always a correlated child (params) */
 	int			fslot;			/* slot of the combo that is the rest of the ON clause (leaves and columns of the row), -1 none: a row matches if it holds */
 	int			nidx;			/* conjuncts of the rest of the ON clause `column = value` or `column = ANY (array)` (a constant, parameter or stable expression): a btree index can load the rows */
@@ -447,9 +489,12 @@ typedef struct SiftAggSpec
 	Oid		   *partindex;
 	List	   *partprune;		/* the conditions on the partition key that a parameter or a stable function decides: the scan drops the partitions they refute when it starts */
 	int			group;			/* leaf id of the array/object leaf the query unnests, -1: row level */
+	bool		part_final;		/* the group key holds the partition key of the table: a serial scan finishes the groups of a partition when its units end (they get no row from another) and starts the table again */
+	bool		left_lateral;	/* LEFT JOIN LATERAL ON true: a row none of whose elements passes the lateral's own conditions is one tuple with NULL element columns */
 	int			nleaves;		/* the leaves the spec reads, ascending */
 	int		   *leaves;
 	uint8	   *recheck;		/* per entry of leaves: how the query reads the leaf when the source holds a value it cannot store (SiftSrcRecheck, SRK_NONE: such a value is an error) */
+	uint64	   *gate;			/* per entry of leaves: the aggregates (bit j: agg[j]) that read the leaf, all of them with a FILTER; a row of a value the leaf cannot store raises only if the FILTER of one holds (0: it raises for every row) */
 	int			npred;			/* conjuncts, ANDed */
 	SiftAggPred **pred;
 	int			nkeys;
@@ -470,11 +515,13 @@ typedef struct SiftAggSpec
 	SiftAggVLeaf vleaf[SIFT_AGG_MAX_VLEAVES];
 	int			narms;			/* > 0: the two level form (SiftAggArm) */
 	SiftAggArm *arm;
+	SiftAggSpine *spine;		/* the arms are joined to a spine; NULL: they are not */
 	int			nsets;			/* > 0: grouping sets, as PostgreSQL expanded them; the last key is the number of the set */
 	int			nhidden;		/* keys after the outer ones (and before the set's): group expressions of the arms that are no outer key. A cell is an inner group, so these are part of its identity; no group has them */
 	uint32	   *setmask;		/* per set: the keys it groups by (bit j), and the bit of the set key */
 	int			npreds_total;	/* number of SiftAggPred nodes (ids 0..n-1) */
 	double		est_groups;
+	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
@@ -495,12 +542,19 @@ extern sift_i128 sift_pow10(int e);
 
 /*
  * The specs whose group tables can leave a process (dumped and merged by value) and be reset: plain keys (a column, or an
- * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column). The others
- * (combos, joins, ordered sets, two level arms, grouping sets, numeric and float keys, numeric states, mapped aggregates) keep
- * their state in the leader: the plan asks for no workers and the scan has no lanes. A join to a child plan (a sub-select, VALUES list or
- * function) is run by the leader only: no workers either.
+ * expression of one) and plain aggregates (count, sum, avg, min, max, count(DISTINCT) of an integer or text column, the outer aggregates of
+ * two level arms). The others (ordered sets, numeric and float keys, numeric states, mapped aggregates) keep their state in the leader: the
+ * plan asks for no workers and the scan has no lanes. A join to a child plan (a sub-select, VALUES list or function) is read by the leader,
+ * who shares it with the workers; a child plan run per combination of leaves is the leader's alone: no workers either.
  */
 extern bool sift_aggspec_parallel_ok(const SiftAggSpec *s);
+extern const char *sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg);
+
+/* the specs whose group table can also go to partitions on disk past hash memory (agg/spill.c): count, sum, avg, min and max over one pass */
+extern bool sift_aggspec_spillable(const SiftAggSpec *s);
+
+/* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist.c), -1: none */
+extern int sift_aggspec_dstream(const SiftAggSpec *s);
 
 static inline bool
 sift_aggspec_ordered(const SiftAggSpec *s)
@@ -508,7 +562,7 @@ sift_aggspec_ordered(const SiftAggSpec *s)
 	if (!sift_aggspec_parallel_ok(s))
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64)
+		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64)
 			return true;
 	return false;
 }
@@ -533,13 +587,20 @@ extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi)
 typedef struct SiftAggPaShape
 {
 	int			dim;
+	bool		cal;				/* dim >= 0: the cube's calendar dim of that date or timestamp leaf (the cells of a unit), not the leaf's own dim */
+	uint8		calmask;			/* cal: the grains (1 << SIFT_CAL_*) of the cells that hold one value of the key and the tests; a unit with other cells scans */
+	bool		hcal;				/* hdim is the calendar dim of the leaf */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
+	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
 	int			rdim[SIFT_SRC_MAX_RDIMS];
 	int			nmeas;				/* ... and as measures */
 	int			rmeas[SIFT_SRC_MAX_MEAS];
 } SiftAggPaShape;
+
+/* the shape is answered from a rollup (of a list's elements or of the rows), not from histograms or sums */
+#define PA_ROLLUP(pa) ((pa).list >= 0 || (pa).rows)
 
 /*
  * Can a unit be answered from its pre-aggregates (docs/COL-PREAGG.md, agg/colsrc.h SiftSrcUnitAgg)? A scan of one source without joins, combos
@@ -550,7 +611,18 @@ typedef struct SiftAggPaShape
  * Over the elements of a list (an array of objects or scalars, a map): any number of group keys, conjuncts and count(leaf) over the dims of its
  * rollup (low-cardinality scalars of the elements), and count, sum, avg (integer, numeric and float8), min and max of its measures; the conjuncts
  * of the rows must be zone comparisons. The unit answers when its rollup holds these dims and measures, else it is scanned.
+ * Over the rows, when that fails (two or more keys, a key and a conjunct on another column) and the index has the rollup of its rows (reloption
+ * rollup_dims): the same, with the columns of the rollup as dims, the conjuncts all on dims and the aggregates of integer and numeric measures.
  */
+/*
+ * Calendar expressions (plan_expr.c): sift_aggexpr_cal classifies a key or a test of a date, timestamp or timestamptz leaf (Param 0) and gives in mask the
+ * grains of calendar cells (bit 1 << SIFT_CAL_*) that hold one value of it; SAC_NOT: it is no calendar expression, SAC_ZONE: it depends on the session time
+ * zone, SAC_FINE: it changes within a day (hour, minute, the timestamp itself). sift_aggkey_cal does so for a SAK_LUT key that is evaluated for each day
+ * of its rows.
+ */
+enum {SAC_NOT, SAC_OK, SAC_ZONE, SAC_FINE};
+extern int	sift_aggexpr_cal(Node *e, uint8 *mask);
+extern int	sift_aggkey_cal(const SiftAggKey *k, uint8 *mask);
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
 /* Why a spec is not answered from the pre-aggregates, in the order the checks run */
@@ -585,11 +657,15 @@ typedef enum SiftPaWhy
 	SPW_ROW_PRED,				/* rows: a conjunct the histogram cannot test */
 	SPW_ROW_NO_HIST,			/* rows: the index writes no histogram of the key */
 	SPW_ROW_NO_SUMS,			/* rows: no sums at all */
-	SPW_ZONE					/* a comparison of the rows with NULL, or an IN list with gaps, decides no unit */
+	SPW_ZONE,					/* a comparison of the rows with NULL, or an IN list with gaps, decides no unit */
+	SPW_ROW_CAL_ZONE,			/* rows: the calendar key uses the session time zone (a timestamptz or a timestamp cast to one) */
+	SPW_ROW_CAL_FINE			/* rows: the calendar key changes within a day (hour, minute, the timestamp itself) */
 } SiftPaWhy;
 
 extern SiftPaWhy sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 extern const char *sift_pawhy_name(SiftPaWhy why);
+extern const char *sift_pawhy_slug(SiftPaWhy why);
+extern bool sift_pawhy_fixable(SiftPaWhy why);
 
 /*
  * What the two ways to answer a unit cost, in user instructions measured on the rollup benchmark (docs/COL-PREAGG.md section 6): *elem for an element of the
@@ -598,6 +674,7 @@ extern const char *sift_pawhy_name(SiftPaWhy why);
  */
 extern void sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *elem, double *tuple);
 extern double sift_agg_rollup_cost;
+extern PGDLLIMPORT bool sift_agg_preagg_distinct;	/* sift.agg_preagg_distinct */
 #define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
@@ -609,6 +686,8 @@ extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
+/* the bytes the scan allocates and clears to test an IN list of nv values over a range of span values (agg/pred_in.c; 0: a hash table), for the cost */
+extern double sift_agg_in_table_bytes(uint64 span, int nv);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 

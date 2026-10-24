@@ -12,26 +12,21 @@
 
 extern const SiftAggKernels sift_aggkern_avx2;
 extern const SiftAggKernels sift_aggkern_avx512;
+extern const SiftAggKernels sift_aggkern_neon;
 
 #define AGK_NW(n)		(((n) + 63) >> 6)
 
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
-	X(cmp_f64) X(between_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
-	X(sum_i32) X(sum_f64) X(absmax_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
-	X(count_gid) X(sum_gid_i32) X(sum_gid_f64) X(count_changes)
+	X(cmp_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
+	X(sum_i32) X(absmax_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
+	X(count_gid) X(sum_gid_i32) X(sum_gid_f64)
 
 /* The scalar function of every slot (agg/kern.c): a level that does not implement a slot uses it */
 #define AGK_DECLARE(s)	extern __typeof__(*((SiftAggKernels *) 0)->s) agk_##s##_scalar;
 AGK_SLOTS(AGK_DECLARE)
 
 /* A NaN result is always this one (the payload of an operand would depend on the instruction used), a zero result is +0 */
-static inline double
-agk_canon_nan(double x)
-{
-	return x != x ? __builtin_nan("") : x;
-}
-
 static inline double
 agk_canon_minmax(double x)
 {

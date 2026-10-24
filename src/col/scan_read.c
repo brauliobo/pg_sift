@@ -114,21 +114,25 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 		case SIFT_COLS_STR:
 			{
 				uint32	   *codes = MemoryContextAlloc(arena, (m + 1) * sizeof(uint32));
-				SiftColDict *d = MemoryContextAlloc(arena, sizeof(SiftColDict));
 
 				for (uint32 k = 0; k < m; k++)
 					codes[k] = (uint32) keys[k];
-				sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
-				sift_ccodes_below(codes, m, d->n + 1);
 				vec->codes = codes;
-				vec->dict = d;
+				if (!cu->codes_only)
+				{
+					SiftColDict *d = MemoryContextAlloc(arena, sizeof(SiftColDict));
+
+					sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
+					sift_ccodes_below(codes, m, d->n + 1);
+					vec->dict = d;
+				}
 				break;
 			}
 		case SIFT_COLS_VAR:
 			read_strs(arena, present ? &c : NULL, idx, m, vec);
 			break;
 		default:
-			elog(ERROR, "sift_col: storage class %d cannot be read yet", def->store);
+			SIFT_INVARIANT(false, "sift_col: storage class %d cannot be read yet", def->store);
 	}
 }
 
@@ -240,6 +244,74 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 	sift_col_read_idx(unit, col, idx, m, vec);
 }
 
+void
+sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
+{
+	ColUnit    *cu = unit->priv;
+	uint32		m = sel ? sel->count : cu->v.nrows;
+	bool		lazy = cu->seg != NULL && !unit_inline(cu, col) && sift_cseg_dict_lazy(cu->seg, col, m);
+	SiftColVec	c;
+	uint64	   *vo = MemoryContextAllocZero(cu->src->arena, ((Size) m + 1) * sizeof(uint64));
+	StringInfoData sb;
+	MemoryContext old;
+	char		buf[SIFT_COL_DICT_MAX_ENTRY];
+
+	cu->codes_only = lazy;
+	sift_col_read(unit, col, sel, &c);
+	cu->codes_only = false;
+	old = MemoryContextSwitchTo(cu->src->arena);
+	initStringInfo(&sb);
+	for (uint32 k = 0; k < m; k++)
+	{
+		const char *s = "";
+		uint32		len = 0;
+
+		if (!(c.nulls && (c.nulls[k >> 6] >> (k & 63) & 1)))
+		{
+			if (lazy)
+				s = sift_cseg_dict_get(cu->seg, col, c.codes[k], &len, buf);
+			else
+			{
+				s = SIFT_COL_DICT_STR(c.dict, c.codes[k]);
+				len = SIFT_COL_DICT_LEN(c.dict, c.codes[k]);
+			}
+		}
+		appendBinaryStringInfo(&sb, s, len);
+		vo[k + 1] = sb.len;
+	}
+	MemoryContextSwitchTo(old);
+	*vec = c;
+	vec->store = SIFT_COLS_VAR;
+	vec->codes = NULL;
+	vec->dict = NULL;
+	vec->voff = vo;
+	vec->vbytes = sb.data;
+}
+
+bool
+sift_col_read_codes(const SiftColUnit *unit, int col, SiftColVec *vec)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftColDef *def = &cu->src->schema->cols[col];
+
+	if (cu->seg == NULL || def->store != SIFT_COLS_STR || def->parent >= 0 || unit_inline(cu, col) || !sift_cseg_dict_lazy(cu->seg, col, 1))
+		return false;
+	cu->codes_only = true;
+	sift_col_read(unit, col, NULL, vec);
+	cu->codes_only = false;
+	return true;
+}
+
+const char *
+sift_col_code_str(const SiftColUnit *unit, int col, uint32 code, uint32 *len, char *buf)
+{
+	ColUnit    *cu = unit->priv;
+
+	if (sift_cseg_dict_lazy(cu->seg, col, 1))
+		return sift_cseg_dict_get(cu->seg, col, code, len, buf);
+	return sift_cdict_str(sift_cseg_dict(cu->seg, col), code, len);
+}
+
 uint32
 sift_col_jnull_bits(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, uint64 *bits, bool *known)
 {
@@ -337,8 +409,8 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 
 	memset(info, 0, sizeof(*info));
 	info->n = n;
-	if (def->kind == SIFT_COLK_GROUP ? lane != SIFT_COLL_I32 : !lane_fits(def->store, lane))
-		elog(ERROR, "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
+	SIFT_INVARIANT(def->kind == SIFT_COLK_GROUP ? lane == SIFT_COLL_I32 : lane_fits(def->store, lane),
+				   "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
 	if (lane == SIFT_COLL_CODE)
 	{
 		SiftCDict  *dict = unit_dict(cu, col);	/* first: an inline chunk's dictionary and its id exist once the chunk is read */
@@ -406,9 +478,21 @@ sift_col_unit_ref(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 void
 sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids)
 {
-	const SiftKey *keys = unit_keys(unit->priv);
+	ColUnit    *cu = unit->priv;
+	const SiftKey *keys;
 	uint32		k = 0;
 
+	/* a point lookup selects a row or two of thousands: only the pages that hold them are decoded */
+	if (cu->keys == NULL && sel->count <= sel->n / 64)
+	{
+		uint32	   *ords = palloc(Max(sel->count, 1) * sizeof(uint32));
+
+		FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { ords[k++] = r; });
+		sift_col_row_tids(unit, ords, k, tids);
+		pfree(ords);
+		return;
+	}
+	keys = unit_keys(cu);
 	FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { sift_key_to_tid(keys[r], &tids[k++]); });
 }
 

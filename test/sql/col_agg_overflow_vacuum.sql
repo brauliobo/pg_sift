@@ -17,14 +17,7 @@ FROM generate_series(1, 30000) i;
 CREATE INDEX v_t_col ON v_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8}');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
 
-CREATE FUNCTION pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
-	END LOOP;
-	RETURN false;
-END $$;
+\ir test/agg_helpers.sql
 
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a bigint; n bigint;

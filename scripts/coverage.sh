@@ -4,6 +4,10 @@
 #
 #   scripts/coverage.sh [--check] [--rows REGEX] [--keep] [-v]                      run the proofs of the rows (--check also proves the proofs)
 #   scripts/coverage.sh --gen                                                       write docs/COVERAGE.md and the coverage block of README.md
+#   scripts/coverage.sh --docs                                                      the checks that need no cluster: the table, the results file, the generated docs
+#   scripts/coverage.sh --pct [--tier quick|full] [--baseline REF]                  run the variant matrices (test/matrix/matrix.py) on this build and on the
+#                                                                                   build of REF (default: the newest release tag), write docs/results/coverage-pct.tsv
+#   scripts/coverage.sh --pct --verify                                              recompute this build's counts and fail when they differ from the file (nightly)
 #
 # Each row of docs/coverage.tsv that has a sample query runs with EXPLAIN on a private fixture database (test/col/fixture.sql,
 # test/col/coverage_data.sql): the plan must have the node it claims (Custom Scan (SiftAgg), SiftScan, SiftCount, a bitmap scan on the
@@ -35,13 +39,15 @@ export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 TSV=${COVERAGE_TSV:-$REPO/docs/coverage.tsv}
 OUT=$SIFT_TMP/coverage
 DB=sift_coverage
-CHECK= GEN= ROWS= KEEP= VERBOSE= FIXROWS=${COVERAGE_ROWS:-2000}
+PCT=${COVERAGE_PCT:-$REPO/docs/results/coverage-pct.tsv}
+CHECK= GEN= DOCS= DOPCT= VERIFY= TIER=full BASELINE= ROWS= KEEP= VERBOSE= FIXROWS=${COVERAGE_ROWS:-2000}
 
 while (( $# )); do
 	case $1 in
-		--check) CHECK=1 ;; --gen) GEN=1 ;; --keep) KEEP=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--check) CHECK=1 ;; --gen) GEN=1 ;; --docs) DOCS=1 ;; --pct) DOPCT=1 ;; --verify) VERIFY=1 ;; --keep) KEEP=1 ;; -v|--verbose) VERBOSE=1 ;;
+		--tier) TIER=$2; shift ;; --baseline) BASELINE=$2; shift ;;
 		--rows) ROWS=$2; shift ;;
-		*) sed -n '2,30p' "$0"; exit 1 ;;
+		*) sed -n '2,34p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -70,7 +76,7 @@ validate() {
 			if ($1 in seen) bad("duplicate id"); seen[$1] = 1
 			if ($4 !~ /^(Yes|Partly|No|Error)$/) bad("status must be Yes, Partly, No or Error")
 			if ($2 == "" || $3 == "" || $6 == "" || $7 == "") bad("area, feature, engine and example are required")
-			if ($4 == "Yes" && $9 == "") bad("a Yes row names its proof (fixture or test)")
+			if ($9 == "") bad("a row names its proof (fixture:, test:, script: or scenario:)")
 			if ($4 != "Yes" && $5 == "") bad("a Partly, No or Error row says why (condition, reason, or the setting to avoid)")
 			if ($10 !~ /^((agg|plain|scan|count|bitmap|noscan|ok)( !?~ .+)?|true|error:[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]|external:[a-z-]+)$/) bad("unknown check " $10)
 			if ($11 == "-" || $11 == "") bad("every row has a proof query")
@@ -112,6 +118,40 @@ STATUS_AWK='
 	}
 '
 
+# the variant matrices (docs/results/coverage-pct.tsv, written by --pct): the share of each family the pushdown answers, before and now
+gen_pct() {
+	[[ -s $PCT ]] || return 0
+	awk -F'\t' -v tsv="$TSV" "$STATUS_AWK"'
+		BEGIN { while ((getline l < tsv) > 0) { split(l, c, "\t"); if (c[14] ~ /^[0-9][0-9]:/) nm[substr(c[14], 1, 2)] = substr(c[14], 4) } }
+		$1 == "family" || /^#/ { next }
+		{
+			k = $1 SUBSEP $2
+			if ($8 ~ /^v[0-9]/) { bp[k] = $7; bb = $8; next }
+			ap[k] = $7; ab = $8; dt = $9; v[k] = $3; d[k] = $5; test[$1] = $10; key[++n] = k; fam[n] = $1; sub_[n] = $2
+		}
+		END {
+			print "## Variant matrices\n"
+			print "A percentage is the share of a generated matrix of query variants (`test/matrix/matrix.py`) that the pushdown answers with the rows of the normal plan:"
+			print "covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,"
+			print "functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal"
+			print "slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes"
+			print "them (the nightly job `coverage-pct` verifies the file), measured on " ab " (" dt ") against " bb ".\n"
+			for (i = 1; i <= n; i++) {
+				if (!(fam[i] in done)) {
+					done[fam[i]] = 1
+					printf "### %s\n\nTests: %s.\n\n| Sub-family | Variants | By design | Covered at %s | Covered at %s |\n|---|---|---|---|---|\n", nm[fam[i]], proofs(test[fam[i]]), bb, ab
+					for (j = 1; j <= n; j++) if (fam[j] == fam[i] && sub_[j] !~ /^refused:/)
+						printf "| %s | %s | %s | %s%% | %s%% |\n", (sub_[j] == "*" ? "**all**" : md(sub_[j])), v[key[j]], d[key[j]], bp[key[j]], ap[key[j]]
+					g = ""
+					for (j = 1; j <= n; j++) if (fam[j] == fam[i] && sub_[j] ~ /^refused:/)
+						g = g (g == "" ? "" : ", ") "`" substr(sub_[j], 9) "` " v[key[j]] (d[key[j]] > 0 ? " (by design)" : "")
+					if (g != "") printf "\nVariants that keep the normal plan, by refusal slug: %s.\n", g
+					print ""
+				}
+			}
+		}' "$PCT"
+}
+
 gen_full() {
 	cat <<'EOF'
 # What sift covers
@@ -140,6 +180,7 @@ To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
 EOF
+	gen_pct
 	awk -F'\t' -v P="$(pending_features)" "$STATUS_AWK"'
 		/^#/ || $1 == "id" { next }
 		{ n[$4]++; total++; if (pend($12)) npend++; if ($10 ~ /^external:/) ext++; row[++r] = $0 }
@@ -158,7 +199,8 @@ EOF
 # the coverage block of README.md: the counts and one row per README family (column 14) of docs/coverage.tsv
 gen_block() {
 	echo '<!-- coverage:start (generated by `scripts/coverage.sh --gen` from docs/coverage.tsv; do not edit by hand) -->'
-	awk -F'\t' '
+	awk -F'\t' -v pct="$PCT" '
+		BEGIN { while ((getline l < pct) > 0) { split(l, c, "\t"); if (c[2] == "*" && c[8] !~ /^v[0-9]/) now[c[1]] = c[7] "%" } }
 		/^#/ || $1 == "id" { next }
 		{ n[$4]++; total++ }
 		$14 != "" {
@@ -167,10 +209,10 @@ gen_block() {
 			if (!(k in eng)) { eng[k] = $6; sub(/[ ,+].*/, "", eng[k]) }
 		}
 		END {
-			printf "[docs/COVERAGE.md](docs/COVERAGE.md) lists %d query shapes with a sample each (%d Yes, %d Partly, %d No, %d Error), checked on a test cluster by `scripts/coverage.sh --check`. The analytics shapes by family:\n\n", total, n["Yes"], n["Partly"], n["No"], n["Error"]
+			printf "[docs/COVERAGE.md](docs/COVERAGE.md) lists %d query shapes with a sample each (%d Yes, %d Partly, %d No, %d Error), checked on a test cluster by `scripts/coverage.sh --check`. The analytics shapes by family (a percentage is the share of a generated matrix of query variants the pushdown answers with the rows of the normal plan, see [variant matrices](docs/COVERAGE.md#variant-matrices)):\n\n", total, n["Yes"], n["Partly"], n["No"], n["Error"]
 			print "| query shape | covered | engine |"
 			print "|---|---|---|"
-			for (k = 1; k <= max; k++) if (k in name) printf "| %s | %s | %s |\n", name[k], (kinds[k] > 1 ? "Partly" : st[k]), eng[k]
+			for (k = 1; k <= max; k++) if (k in name) printf "| %s | %s | %s |\n", name[k], (sprintf("%02d", k) in now ? now[sprintf("%02d", k)] : kinds[k] > 1 ? "Partly" : st[k]), eng[k]
 		}' "$TSV"
 	echo; echo '<!-- coverage:end -->'
 }
@@ -229,19 +271,19 @@ side_conf() {
 		>>"$SIFT_TMP/side-$n/data/postgresql.conf"
 }
 
-# L10: a published sift_table under wal_level = logical raises 0A000 on the first change without pg_sift in shared_preload_libraries
+# L10: publishing a sift_table under wal_level = logical raises 0A000 at CREATE PUBLICATION without pg_sift in shared_preload_libraries
 ext_logical_run() {
 	local out
 	side logical new-data "$SIFT_TMP/side-logical/data" || return 1
 	side_conf logical "wal_level = logical" || return 1
 	side logical start || return 1
-	side logical psql -qAt -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE cv_pub (id int PRIMARY KEY, v int) USING sift_table" -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" >/dev/null || return 1
-	out=$(side logical psql -v VERBOSITY=sqlstate -qAt -c "INSERT INTO cv_pub VALUES (1, 1)" 2>&1 || true)
-	[[ $out == *0A000* ]] || { echo "the first INSERT into a published sift_table raised: ${out:-nothing}"; return 1; }
+	side logical psql -qAt -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE cv_pub (id int PRIMARY KEY, v int) USING sift_table" >/dev/null || return 1
+	out=$(side logical psql -v VERBOSITY=sqlstate -qAt -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" 2>&1 || true)
+	[[ $out == *0A000* ]] || { echo "CREATE PUBLICATION of a sift_table raised: ${out:-nothing}"; return 1; }
 	side logical stop || return 1
 	echo "shared_preload_libraries = 'pg_sift'" >>"$SIFT_TMP/side-logical/data/postgresql.conf"
 	side logical start || return 1
-	side logical psql -qAt -c "INSERT INTO cv_pub VALUES (1, 1)" >/dev/null || { echo "the INSERT still fails with pg_sift in shared_preload_libraries"; return 1; }
+	side logical psql -qAt -c "CREATE PUBLICATION cv_p FOR TABLE cv_pub" -c "INSERT INTO cv_pub VALUES (1, 1)" >/dev/null || { echo "the publication or the INSERT still fails with pg_sift in shared_preload_libraries"; return 1; }
 }
 
 # D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
@@ -331,8 +373,80 @@ selftest() {
 	log "selftest: the 5 wrong claims failed as they should"
 }
 
+# ---------- the percentages ----------
+# validate_pct: the results file names tests that exist, and no variant the pushdown answers differs from the normal plan
+validate_pct() {
+	[[ -s $PCT ]] || return 0
+	awk -F'\t' -v root="$REPO" '
+		function bad(m) { printf "%s:%d: %s\n", FILENAME, NR, m; n++ }
+		$1 == "family" || /^#/ { next }
+		NF != 10 { bad("expected 10 tab separated fields, found " NF); next }
+		$6 != 0 { bad($1 " " $2 ": " $6 " variants answer differently than the normal plan") }
+		{
+			np = split($10, pf, ",")
+			for (i = 1; i <= np; i++) {
+				k = index(pf[i], ":"); kind = substr(pf[i], 1, k - 1); name = substr(pf[i], k + 1)
+				if (kind == "test" && system("test -f \"" root "/test/sql/" name ".sql\" || ls \"" root "/test/t/" name ".\"* >/dev/null 2>&1") != 0) bad("no test " name)
+				else if (kind == "script" && system("test -f \"" root "/scripts/" name ".sh\"") != 0) bad("no script " name)
+				else if (kind !~ /^(test|script)$/) bad("tests are test:NAME or script:NAME, not " pf[i])
+			}
+		}
+		END { exit n > 0 }' "$PCT"
+}
+
+# pct: the matrices on this build and, unless --verify, on the last release; the file is written by the full tier only
+pct() {
+	local out=$OUT/pct tip base root port=$((${SIFT_PORT:-56100} + 10)) m="$REPO/test/matrix/matrix.py" rows=$OUT/pct/rows.tsv
+	mkdir -p "$out"
+	# the file is measured on PostgreSQL 18; the plans of another major differ in places the matrices see
+	[[ -z $VERIFY ]] || (( $(SQLDB=postgres sql -c "SHOW server_version_num") / 10000 == 18 )) || { log "docs/results/coverage-pct.tsv is measured on PostgreSQL 18: not verified here"; return 0; }
+	tip=$(git -C "$REPO" rev-parse --short HEAD)
+	log "variant matrices on $tip, tier $TIER"
+	"$REPO/scripts/coldiff.sh" --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff.log" 2>&1 || true
+	"$m" run --tier "$TIER" --out "$out/tip.tsv" --save "$out/matrix.json" --fixtures sift_coldiff_fix || return 1
+	: >"$rows"
+	"$m" tsv "$out/tip.tsv" --build "$tip" >"$out/tip.rows"
+	if [[ -z $VERIFY && $TIER == full ]]; then
+		base=${BASELINE:-$(git -C "$REPO" tag -l 'v[0-9]*' --sort=-v:refname | head -1)}
+		# the last release does not change: its rows stay while the matrix is the same (the variants of each family) unless --baseline names another ref
+		if [[ -z $BASELINE ]] && [[ $(awk -F'\t' -v b="$base" '$8 == b && $2 == "*" { print $1, $3 }' "$PCT" 2>/dev/null) == "$(awk -F'\t' '$2 == "*" { print $1, $3 }' "$out/tip.rows")" ]]; then
+			awk -F'\t' -v b="$base" '$8 == b' "$PCT" >"$rows"
+		else
+			root=$(SIFT_OLD_REF=$base "$REPO/scripts/old-lib-check.sh" build | tail -1)
+			log "variant matrices on $base"
+			SIFT_TMP=$out/base SIFT_ROOT=$root SIFT_PORT=$port "$REPO/scripts/pgtest.sh" start >/dev/null
+			SIFT_TMP=$out/base SIFT_PORT=$port "$REPO/scripts/coldiff.sh" --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff-base.log" 2>&1 || true
+			SIFT_TMP=$out/base SIFT_PORT=$port "$m" run --out "$out/base.tsv" --from "$out/matrix.json" --by-design "$out/tip.tsv" --fixtures sift_coldiff_fix || true
+			SIFT_TMP=$out/base SIFT_ROOT=$root SIFT_PORT=$port "$REPO/scripts/pgtest.sh" destroy >/dev/null || true
+			"$m" tsv "$out/base.tsv" --build "$base" >"$rows"
+		fi
+	fi
+	cat "$out/tip.rows" >>"$rows"
+	if [[ -n $VERIFY ]]; then
+		if diff <(awk -F'\t' 'NR > 1 && $8 !~ /^v[0-9]/ { print $1, $2, $3, $4, $5, $6 }' "$PCT") <(awk -F'\t' '{ print $1, $2, $3, $4, $5, $6 }' "$rows"); then
+			log "docs/results/coverage-pct.tsv matches this build"
+		else echo "coverage: docs/results/coverage-pct.tsv is not what this build measures (lines above: committed -, measured +): run scripts/coverage.sh --pct, then --gen" >&2; return 1; fi
+	elif [[ $TIER == full ]]; then
+		{ printf 'family\tsub-family\tvariants\tpushed\tby design\twrong\tpercent\tbuild\tdate\ttests\n'; cat "$rows"; } >"$PCT"
+		log "wrote ${PCT#"$REPO"/}"
+	else column -t -s "$(printf '\t')" "$rows"; fi
+	! awk -F'\t' '$6 != 0 { bad = 1 } END { exit !bad }' "$rows" || { echo "coverage: a pushed variant returns other rows than the normal plan" >&2; return 1; }
+}
+
+# docs_agree: the docs are what docs/coverage.tsv and the results file generate
+docs_agree() {
+	local tmp status=0
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/sift-coverage.XXXXXX")
+	generate "$tmp"
+	cmp -s "$tmp/COVERAGE.md" "$REPO/docs/COVERAGE.md" || { echo "coverage: docs/COVERAGE.md is not what docs/coverage.tsv and the results file generate: run scripts/coverage.sh --gen" >&2; status=1; }
+	cmp -s "$tmp/README.md" "$REPO/README.md" || { echo "coverage: the coverage block of README.md is not what docs/coverage.tsv and the results file generate: run scripts/coverage.sh --gen" >&2; status=1; }
+	rm -rf "$tmp"
+	return $status
+}
+
 # ---------- main ----------
 validate || { echo "coverage: docs/coverage.tsv is malformed" >&2; exit 1; }
+validate_pct || { echo "coverage: $PCT is malformed" >&2; exit 1; }
 if [[ -n $GEN ]]; then
 	grep -q '^<!-- coverage:start' "$REPO/README.md" || { echo "coverage: README.md has no <!-- coverage:start --> ... <!-- coverage:end --> block" >&2; exit 1; }
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/sift-coverage.XXXXXX")
@@ -343,14 +457,15 @@ if [[ -n $GEN ]]; then
 	log "wrote docs/COVERAGE.md and the coverage block of README.md ($(grep -c -v -E '^(#|id	)' "$TSV") rows)"
 	exit 0
 fi
+[[ -z $DOCS ]] || { docs_agree; exit; }
 status=0
-if [[ -n $CHECK ]]; then
-	tmp=$(mktemp -d "${TMPDIR:-/tmp}/sift-coverage.XXXXXX")
-	generate "$tmp"
-	cmp -s "$tmp/COVERAGE.md" "$REPO/docs/COVERAGE.md" || { echo "coverage: docs/COVERAGE.md is not what docs/coverage.tsv generates: run scripts/coverage.sh --gen" >&2; status=1; }
-	cmp -s "$tmp/README.md" "$REPO/README.md" || { echo "coverage: the coverage block of README.md is not what docs/coverage.tsv generates: run scripts/coverage.sh --gen" >&2; status=1; }
-	rm -rf "$tmp"
+if [[ -n $DOPCT ]]; then
+	trap 'rm -rf "$OUT"' EXIT
+	mkdir -p "$OUT"
+	pct || status=1
+	exit $status
 fi
+[[ -z $CHECK ]] || docs_agree || status=1
 trap cleanup EXIT
 mkdir -p "$OUT"
 log "database: $FIXROWS orders"

@@ -1,0 +1,892 @@
+-- The point directory of a leaf in a segment (column format minor 14, docs/COL.md 2.17, the option point_columns): the rows of an equality or a
+-- short IN list of the access method found with a probe, the heap checking the condition again. The answers are the heap's, over NULLs, duplicates,
+-- negative and large keys, text and uuid, DML, the write buffer, promotion and a merge; a leaf that cannot be listed (a key in very many rows, an
+-- inline string) gets no table, and an index written without the option is read as before.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+CREATE TABLE pd (id int, k int, s text, u uuid, v bigint, pad text DEFAULT repeat('x', 400));
+ALTER TABLE pd ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pd (id, k, s, u, v)
+SELECT i,
+	   CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7919) % 9000 END,
+	   CASE WHEN i % 47 = 0 THEN NULL WHEN i % 41 = 0 THEN '' ELSE 's' || (i * 31) % 6000 END,
+	   CASE WHEN i % 59 = 0 THEN NULL ELSE md5((i % 5000)::text)::uuid END,
+	   (i::bigint * 1000003) % 500000 - 250000
+FROM generate_series(1, 30000) i;
+-- the rows the source gives with the directory: the heap's
+CREATE FUNCTION pd_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds, 8);
+	EXECUTE format('SELECT count(*) FROM pd WHERE %s', heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L, 8) EXCEPT SELECT ctid FROM pd WHERE %s) z', idx, preds, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM pd WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L, 8)) z', heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+-- the answer of the access method by an index scan, by a bitmap scan, and of the heap
+CREATE FUNCTION pd_idx(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM pd WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION pd_bmp(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_indexscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM pd WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION pd_seq(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM pd WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION pd_plan(w text) RETURNS text LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM pd WHERE %s', w) LOOP
+		IF l ~ 'Scan using' THEN RETURN regexp_replace(trim(l), ' on pd.*', ''); END IF;
+	END LOOP;
+	RETURN 'no index scan';
+END $$;
+-- leaves of the index pd_all: 0 is k, 1 is s, 2 is u, 3 is v, 4 is id
+CREATE TABLE pd_q (n serial, preds text, heapwhere text);
+INSERT INTO pd_q (preds, heapwhere) VALUES
+ ('0:eq:4321', 'k = 4321'),
+ ('0:eq:0', 'k = 0'),
+ ('0:eq:99999', 'k = 99999'),
+ ('0:eq:-1', 'k = -1'),
+ ('0:in:1|2|3|4000|8999', 'k IN (1, 2, 3, 4000, 8999)'),
+ ('0:in:5|5|5', 'k IN (5, 5, 5)'),
+ ('0:ge:100;0:le:103', 'k BETWEEN 100 AND 103'),
+ ('0:ge:100;0:le:300', 'k BETWEEN 100 AND 300'),
+ ('0:lt:5', 'k < 5'),
+ ('0:null:', 'k IS NULL'),
+ ('0:notnull:', 'k IS NOT NULL'),
+ ('0:ne:4321', 'k <> 4321'),
+ ('0:eq:4321;3:eq:' || ((4321::bigint * 1000003) % 500000 - 250000), 'k = 4321 AND v = ' || ((4321::bigint * 1000003) % 500000 - 250000)),
+ ('0:eq:4321;3:eq:7', 'k = 4321 AND v = 7'),
+ ('1:eq:s77', 's = ''s77'''),
+ ('1:eq:', 's = '''''),
+ ('1:eq:nothing', 's = ''nothing'''),
+ ('1:in:s1|s2|s3|none', 's IN (''s1'', ''s2'', ''s3'', ''none'')'),
+ ('1:prefix:s5999', 'starts_with(s, ''s5999'')'),
+ ('1:prefix:s59', 'starts_with(s, ''s59'')'),
+ ('1:prefix:s5', 'starts_with(s, ''s5'')'),
+ ('2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 'u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b'''),
+ ('2:in:c4ca4238-a0b9-2382-0dcc-509a6f75849b|c81e728d-9d4c-2f63-6f06-7f89cc14862c', 'u IN (''c4ca4238-a0b9-2382-0dcc-509a6f75849b'', ''c81e728d-9d4c-2f63-6f06-7f89cc14862c'')'),
+ ('2:eq:00000000-0000-0000-0000-000000000001', 'u = ''00000000-0000-0000-0000-000000000001'''),
+ ('3:eq:-250000', 'v = -250000'),
+ ('3:eq:249999', 'v = 249999'),
+ ('3:in:-250000|0|249999', 'v IN (-250000, 0, 249999)'),
+ ('4:eq:777', 'id = 777'),
+ ('1:eq:s77;2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 's = ''s77'' AND u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b''');
+-- the same over the index pd_k: leaf 0 is k, 1 is v, 2 is id
+CREATE TABLE pd_qk (n serial, preds text, heapwhere text);
+INSERT INTO pd_qk (preds, heapwhere) VALUES
+ ('0:eq:4321', 'k = 4321'),
+ ('0:eq:99999', 'k = 99999'),
+ ('0:in:1|2|3|4000|8999', 'k IN (1, 2, 3, 4000, 8999)'),
+ ('0:ge:100;0:le:103', 'k BETWEEN 100 AND 103'),
+ ('0:ge:100;0:le:300', 'k BETWEEN 100 AND 300'),
+ ('0:lt:5', 'k < 5'),
+ ('0:null:', 'k IS NULL'),
+ ('0:ne:4321', 'k <> 4321'),
+ ('0:eq:4321;1:eq:' || ((4321::bigint * 1000003) % 500000 - 250000), 'k = 4321 AND v = ' || ((4321::bigint * 1000003) % 500000 - 250000)),
+ ('0:eq:4321;1:eq:7', 'k = 4321 AND v = 7'),
+ ('1:eq:-250000', 'v = -250000'),
+ ('1:in:-250000|0|249999', 'v IN (-250000, 0, 249999)'),
+ ('2:eq:777', 'id = 777');
+-- the directory: the segment is minor 14 because of it (no dictionary of 1,024 strings is in the index), verify lists every row under its key, and a
+-- point query reads the units that hold its rows only
+CREATE INDEX pd_k ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 'k, v');
+CREATE INDEX pd_n ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256);
+VACUUM (ANALYZE) pd;
+SELECT sift.col_verify('pd_k', true), sift.col_verify('pd_n', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SELECT index, count(*) AS segments, min(format) AS format, sum(units) > 2 AS units
+FROM (SELECT 'pd_k' AS index, * FROM sift.col_segments('pd_k') UNION ALL SELECT 'pd_n', * FROM sift.col_segments('pd_n')) x
+WHERE kind = 'immutable' GROUP BY index ORDER BY index;
+ index | segments | format | units 
+-------+----------+--------+-------
+ pd_k  |        2 |     14 | t
+ pd_n  |        2 |     12 | t
+(2 rows)
+
+SELECT p.units < f.units AS fewer_units, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_k', '0:eq:4321', 8) p, sift._test_col_counters('pd_k', '0:eq:4321', 0) f;
+ fewer_units | same_rows 
+-------------+-----------
+ t           | t
+(1 row)
+
+SELECT p.units < f.units AS fewer_units, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_k', '0:in:4321|99999', 8) p, sift._test_col_counters('pd_k', '0:in:4321|99999', 0) f;
+ fewer_units | same_rows 
+-------------+-----------
+ t           | t
+(1 row)
+
+SELECT p.units = f.units AS the_same_units_for_a_range, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_k', '0:ge:100;0:le:300', 8) p, sift._test_col_counters('pd_k', '0:ge:100;0:le:300', 0) f;
+ the_same_units_for_a_range | same_rows 
+----------------------------+-----------
+ t                          | t
+(1 row)
+
+SELECT p.units = f.units AS the_same_units_for_a_leaf_without, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_k', '2:eq:777', 8) p, sift._test_col_counters('pd_k', '2:eq:777', 0) f;
+ the_same_units_for_a_leaf_without | same_rows 
+-----------------------------------+-----------
+ t                                 | t
+(1 row)
+
+SELECT n, pd_cmp('pd_k', preds, heapwhere), pd_cmp('pd_n', preds, heapwhere) FROM pd_qk ORDER BY n;
+ n  | pd_cmp | pd_cmp 
+----+--------+--------
+  1 | ok     | ok
+  2 | ok     | ok
+  3 | ok     | ok
+  4 | ok     | ok
+  5 | ok     | ok
+  6 | ok     | ok
+  7 | ok     | ok
+  8 | ok     | ok
+  9 | ok     | ok
+ 10 | ok     | ok
+ 11 | ok     | ok
+ 12 | ok     | ok
+ 13 | ok     | ok
+(13 rows)
+
+DROP INDEX pd_n;
+-- text and uuid leaves: the directory lists their codes, and a dictionary of many strings is stored for a lookup (minor 14 as well). The parallel build splits the rows
+-- into segments by how its workers take the heap blocks, so the units of a lookup are bounded by the superblocks of the rows and by the rows (every unit read holds one);
+-- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
+CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
+	WITH (write_buffer_limit = 256, point_columns = 'k, s, u, v');
+SELECT sift.col_verify('pd_all', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT min(format) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
+ format 
+--------
+     14
+(1 row)
+
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+SELECT p.units BETWEEN sb.n AND p.rows AS units_hold_the_rows_text, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_all', '1:eq:s77', 8) p, sift._test_col_counters('pd_all', '1:eq:s77', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = 's77') sb;
+ units_hold_the_rows_text | same_rows 
+--------------------------+-----------
+ t                        | t
+(1 row)
+
+SELECT p.units BETWEEN sb.n AND p.rows AS units_hold_the_rows_uuid, p.rows = f.rows AS same_rows
+FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 8) p, sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE u = md5('1')::uuid) sb;
+ units_hold_the_rows_uuid | same_rows 
+--------------------------+-----------
+ t                        | t
+(1 row)
+
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 's, u, k');
+RESET max_parallel_maintenance_workers;
+SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
+ col_verify | segments 
+------------+----------
+            |        1
+(1 row)
+
+SELECT p.units = sb.n AS exact_units_text, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '0:eq:s77', 8) p, sift._test_col_counters('pd_one', '0:eq:s77', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = 's77') sb;
+ exact_units_text | same_rows | rows | units 
+------------------+-----------+------+-------
+ t                | t         |    5 |     5
+(1 row)
+
+SELECT p.units = sb.n AS exact_units_uuid, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 8) p, sift._test_col_counters('pd_one', '1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE u = md5('1')::uuid) sb;
+ exact_units_uuid | same_rows | rows | units 
+------------------+-----------+------+-------
+ t                | t         |    5 |     5
+(1 row)
+
+SELECT p.units = sb.n AS exact_units_empty_string, p.rows = f.rows AS same_rows, p.rows, p.units
+FROM sift._test_col_counters('pd_one', '0:eq:', 8) p, sift._test_col_counters('pd_one', '0:eq:', 0) f,
+	 (SELECT count(DISTINCT (ctid::text::point)[0]::int / 256) AS n FROM pd WHERE s = '') sb;
+ exact_units_empty_string | same_rows | rows | units 
+--------------------------+-----------+------+-------
+ t                        | t         |  716 |     7
+(1 row)
+
+-- the point directories (the header, the records of the leaves and the footer, then the tables of slots and the lists) read as themselves with a bit flipped,
+-- one damage at a time, through a fresh open and the check of the segment: never outside the section (meaningful under SANITIZE=1). With a stride past
+-- the section only the header, the records and the footer are damaged, and every damage is refused when the segment is opened (the frame is checked whole: reserved
+-- words, order of the leaves, tables one after the other up to the footer); with a stride of 997 a byte in 997 of the tables and lists too (sift.col_verify compares those with the heap)
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pd_one', 1000000000);
+ has_sections | many | all_refused | unnoticed 
+--------------+------+-------------+-----------
+ t            | t    | t           |         0
+(1 row)
+
+SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pd_one', 997);
+ has_sections | many | some_refused 
+--------------+------+--------------
+ t            | t    | t
+(1 row)
+
+DROP INDEX pd_one;
+-- the access method: the plans, and the rows of an index scan and a bitmap scan are the heap's
+CREATE TABLE pd_w (n serial, w text);
+INSERT INTO pd_w (w) VALUES
+ ('k = 4321'), ('k = 99999'), ('k IN (1, 2, 3, 4000, 8999)'), ('k IS NULL'), ('k = 4321 AND v > -100000'), ('k BETWEEN 100 AND 103'), ('k BETWEEN 100 AND 300'),
+ ('s = ''s77'''), ('s IN (''s1'', ''s2'', ''none'')'), ('s = '''''), ('starts_with(s, ''s5999'')'),
+ ('u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b'''), ('u IN (''c4ca4238-a0b9-2382-0dcc-509a6f75849b'', ''c81e728d-9d4c-2f63-6f06-7f89cc14862c'')'),
+ ('v = -250000'), ('v IN (-250000, 0, 249999)'), ('k = 4321 AND s = ''s77'''), ('k = 4321 OR s = ''s77''');
+SELECT n, w, pd_plan(w) FROM pd_w WHERE n IN (1, 3, 8, 12) ORDER BY n;
+ n  |                     w                      |          pd_plan           
+----+--------------------------------------------+----------------------------
+  1 | k = 4321                                   | Index Only Scan using pd_k
+  3 | k IN (1, 2, 3, 4000, 8999)                 | Index Only Scan using pd_k
+  8 | s = 's77'                                  | Index Scan using pd_all
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b' | Index Scan using pd_all
+(4 rows)
+
+SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan, cardinality(pd_seq(w)) AS matches FROM pd_w ORDER BY n;
+ n  |                                           w                                           | index_scan | bitmap_scan | matches 
+----+---------------------------------------------------------------------------------------+------------+-------------+---------
+  1 | k = 4321                                                                              | t          | t           |       3
+  2 | k = 99999                                                                             | t          | t           |       0
+  3 | k IN (1, 2, 3, 4000, 8999)                                                            | t          | t           |      16
+  4 | k IS NULL                                                                             | t          | t           |     566
+  5 | k = 4321 AND v > -100000                                                              | t          | t           |       0
+  6 | k BETWEEN 100 AND 103                                                                 | t          | t           |      13
+  7 | k BETWEEN 100 AND 300                                                                 | t          | t           |     658
+  8 | s = 's77'                                                                             | t          | t           |       5
+  9 | s IN ('s1', 's2', 'none')                                                             | t          | t           |       9
+ 10 | s = ''                                                                                | t          | t           |     716
+ 11 | starts_with(s, 's5999')                                                               | t          | t           |       5
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b'                                            | t          | t           |       5
+ 13 | u IN ('c4ca4238-a0b9-2382-0dcc-509a6f75849b', 'c81e728d-9d4c-2f63-6f06-7f89cc14862c') | t          | t           |      11
+ 14 | v = -250000                                                                           | t          | t           |       0
+ 15 | v IN (-250000, 0, 249999)                                                             | t          | t           |       0
+ 16 | k = 4321 AND s = 's77'                                                                | t          | t           |       0
+ 17 | k = 4321 OR s = 's77'                                                                 | t          | t           |       8
+(17 rows)
+
+-- the cost of the scan follows the directory: a parameter prices a lookup as its constant does (the generic plan is the index scan, at the cost of the custom one, not of
+-- reading every unit), and an index the directory covers is cheaper to look up in than a sequential scan of the table, text and uuid included
+CREATE FUNCTION pd_total(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_col_scan = on SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE j json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+PREPARE pd_gs(text) AS SELECT id FROM pd WHERE s = $1;
+PREPARE pd_gk(int) AS SELECT id FROM pd WHERE k = ANY (ARRAY[$1, $1 + 1, $1 + 2]);
+CREATE TABLE pd_cost (q text, generic float8, custom float8);
+SET plan_cache_mode = force_generic_plan;
+INSERT INTO pd_cost (q, generic) VALUES ('s', pd_total('EXECUTE pd_gs(''s77'')')), ('k', pd_total('EXECUTE pd_gk(4321)'));
+SET plan_cache_mode = force_custom_plan;
+UPDATE pd_cost SET custom = pd_total(CASE q WHEN 's' THEN 'EXECUTE pd_gs(''s77'')' ELSE 'EXECUTE pd_gk(4321)' END);
+RESET plan_cache_mode;
+SELECT q, abs(generic - custom) < 0.05 * custom AS generic_prices_as_custom, custom < 0.5 * pd_total('SELECT id FROM pd WHERE s ~ ''s7$'' OR true') AS far_below_a_scan FROM pd_cost ORDER BY q;
+ q | generic_prices_as_custom | far_below_a_scan 
+---+--------------------------+------------------
+ k | t                        | t
+ s | t                        | t
+(2 rows)
+
+DROP TABLE pd_cost;
+DEALLOCATE pd_gs;
+DEALLOCATE pd_gk;
+DROP FUNCTION pd_total(text);
+-- DML, the write buffer, promotion and a merge of segments with and without a directory
+UPDATE pd SET k = 4321, s = 's77', v = 7 WHERE id % 1999 = 0;
+DELETE FROM pd WHERE id % 89 = 0;
+INSERT INTO pd (id, k, s, u, v) SELECT i, 4321, 's77', 'c4ca4238-a0b9-2382-0dcc-509a6f75849b', 7 FROM generate_series(30001, 30050) i;
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q WHERE n IN (1, 5, 13, 14, 15, 22) ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  5 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 22 | ok
+(6 rows)
+
+SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w WHERE n IN (1, 3, 8, 12, 16) ORDER BY n;
+ n  |                     w                      | index_scan | bitmap_scan 
+----+--------------------------------------------+------------+-------------
+  1 | k = 4321                                   | t          | t
+  3 | k IN (1, 2, 3, 4000, 8999)                 | t          | t
+  8 | s = 's77'                                  | t          | t
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b' | t          | t
+ 16 | k = 4321 AND s = 's77'                     | t          | t
+(5 rows)
+
+VACUUM pd;
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
+ n  |                                           w                                           | index_scan | bitmap_scan 
+----+---------------------------------------------------------------------------------------+------------+-------------
+  1 | k = 4321                                                                              | t          | t
+  2 | k = 99999                                                                             | t          | t
+  3 | k IN (1, 2, 3, 4000, 8999)                                                            | t          | t
+  4 | k IS NULL                                                                             | t          | t
+  5 | k = 4321 AND v > -100000                                                              | t          | t
+  6 | k BETWEEN 100 AND 103                                                                 | t          | t
+  7 | k BETWEEN 100 AND 300                                                                 | t          | t
+  8 | s = 's77'                                                                             | t          | t
+  9 | s IN ('s1', 's2', 'none')                                                             | t          | t
+ 10 | s = ''                                                                                | t          | t
+ 11 | starts_with(s, 's5999')                                                               | t          | t
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b'                                            | t          | t
+ 13 | u IN ('c4ca4238-a0b9-2382-0dcc-509a6f75849b', 'c81e728d-9d4c-2f63-6f06-7f89cc14862c') | t          | t
+ 14 | v = -250000                                                                           | t          | t
+ 15 | v IN (-250000, 0, 249999)                                                             | t          | t
+ 16 | k = 4321 AND s = 's77'                                                                | t          | t
+ 17 | k = 4321 OR s = 's77'                                                                 | t          | t
+(17 rows)
+
+SET sift.col_format_minor = 13;
+INSERT INTO pd (id, k, s, u, v) SELECT i, i % 9000, 'old' || i % 500, md5(i::text)::uuid, i FROM generate_series(30101, 31100) i;
+SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+RESET sift.col_format_minor;
+SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY kind, format ORDER BY kind, format;
+   kind    | format | segments 
+-----------+--------+----------
+ buffer    |        |        1
+ immutable |     12 |        1
+ immutable |     14 |        2
+(3 rows)
+
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
+ n  |                                           w                                           | index_scan | bitmap_scan 
+----+---------------------------------------------------------------------------------------+------------+-------------
+  1 | k = 4321                                                                              | t          | t
+  2 | k = 99999                                                                             | t          | t
+  3 | k IN (1, 2, 3, 4000, 8999)                                                            | t          | t
+  4 | k IS NULL                                                                             | t          | t
+  5 | k = 4321 AND v > -100000                                                              | t          | t
+  6 | k BETWEEN 100 AND 103                                                                 | t          | t
+  7 | k BETWEEN 100 AND 300                                                                 | t          | t
+  8 | s = 's77'                                                                             | t          | t
+  9 | s IN ('s1', 's2', 'none')                                                             | t          | t
+ 10 | s = ''                                                                                | t          | t
+ 11 | starts_with(s, 's5999')                                                               | t          | t
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b'                                            | t          | t
+ 13 | u IN ('c4ca4238-a0b9-2382-0dcc-509a6f75849b', 'c81e728d-9d4c-2f63-6f06-7f89cc14862c') | t          | t
+ 14 | v = -250000                                                                           | t          | t
+ 15 | v IN (-250000, 0, 249999)                                                             | t          | t
+ 16 | k = 4321 AND s = 's77'                                                                | t          | t
+ 17 | k = 4321 OR s = 's77'                                                                 | t          | t
+(17 rows)
+
+SELECT sift.col_merge('pd_all'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY kind, format ORDER BY kind, format;
+   kind    | format | segments 
+-----------+--------+----------
+ buffer    |        |        1
+ immutable |     14 |        1
+(2 rows)
+
+SELECT sift.col_verify('pd_all', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
+ n  |                                           w                                           | index_scan | bitmap_scan 
+----+---------------------------------------------------------------------------------------+------------+-------------
+  1 | k = 4321                                                                              | t          | t
+  2 | k = 99999                                                                             | t          | t
+  3 | k IN (1, 2, 3, 4000, 8999)                                                            | t          | t
+  4 | k IS NULL                                                                             | t          | t
+  5 | k = 4321 AND v > -100000                                                              | t          | t
+  6 | k BETWEEN 100 AND 103                                                                 | t          | t
+  7 | k BETWEEN 100 AND 300                                                                 | t          | t
+  8 | s = 's77'                                                                             | t          | t
+  9 | s IN ('s1', 's2', 'none')                                                             | t          | t
+ 10 | s = ''                                                                                | t          | t
+ 11 | starts_with(s, 's5999')                                                               | t          | t
+ 12 | u = 'c4ca4238-a0b9-2382-0dcc-509a6f75849b'                                            | t          | t
+ 13 | u IN ('c4ca4238-a0b9-2382-0dcc-509a6f75849b', 'c81e728d-9d4c-2f63-6f06-7f89cc14862c') | t          | t
+ 14 | v = -250000                                                                           | t          | t
+ 15 | v IN (-250000, 0, 249999)                                                             | t          | t
+ 16 | k = 4321 AND s = 's77'                                                                | t          | t
+ 17 | k = 4321 OR s = 's77'                                                                 | t          | t
+(17 rows)
+
+-- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
+SET sift.col_format_minor = 13;
+CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_columns = 'k, v');
+RESET sift.col_format_minor;
+SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
+ no_directory 
+--------------
+ t
+(1 row)
+
+SELECT n, pd_cmp('pd_13', preds, heapwhere) FROM pd_qk ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+(13 rows)
+
+SELECT sift.col_verify('pd_13', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP INDEX pd_13, pd_k;
+ALTER INDEX pd_all SET (point_columns = 'k');
+REINDEX INDEX pd_all;
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+SELECT sift.col_verify('pd_all', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+ALTER INDEX pd_all RESET (point_columns);
+REINDEX INDEX pd_all;
+SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
+ n  | pd_cmp 
+----+--------
+  1 | ok
+  2 | ok
+  3 | ok
+  4 | ok
+  5 | ok
+  6 | ok
+  7 | ok
+  8 | ok
+  9 | ok
+ 10 | ok
+ 11 | ok
+ 12 | ok
+ 13 | ok
+ 14 | ok
+ 15 | ok
+ 16 | ok
+ 17 | ok
+ 18 | ok
+ 19 | ok
+ 20 | ok
+ 21 | ok
+ 22 | ok
+ 23 | ok
+ 24 | ok
+ 25 | ok
+ 26 | ok
+ 27 | ok
+ 28 | ok
+ 29 | ok
+(29 rows)
+
+-- a string kept inline cannot be listed: the leaf gets no table; a key in very many rows does not take the table of the other keys with it
+CREATE TABLE ph (id int, k int, s text, pad text DEFAULT repeat('x', 100));
+INSERT INTO ph SELECT i, CASE WHEN i % 10 = 0 THEN i ELSE 1 END, CASE WHEN i = 2500 THEN repeat('long', 3000) ELSE 's' || i % 700 END FROM generate_series(1, 9000) i;
+CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's');
+SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') >= 14 AS hot_key_has_a_directory,
+	   (SELECT min(format) FROM sift.col_segments('ph_s') WHERE kind = 'immutable') < 14 AS inline_string_has_no_directory;
+ hot_key_has_a_directory | inline_string_has_no_directory 
+-------------------------+--------------------------------
+ t                       | t
+(1 row)
+
+SELECT sift.col_verify('ph_k', true), sift.col_verify('ph_s', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SELECT (SELECT count(*) FROM sift._test_col_tids('ph_k', '0:eq:1', 8)) AS hot_key, (SELECT count(*) FROM ph WHERE k = 1) AS heap_hot_key,
+	   (SELECT count(*) FROM sift._test_col_tids('ph_k', '0:eq:30', 8)) AS cold_key, (SELECT count(*) FROM ph WHERE k = 30) AS heap_cold_key,
+	   (SELECT count(*) FROM sift._test_col_tids('ph_s', '0:eq:s7', 8)) AS text, (SELECT count(*) FROM ph WHERE s = 's7') AS heap_text;
+ hot_key | heap_hot_key | cold_key | heap_cold_key | text | heap_text 
+---------+--------------+----------+---------------+------+-----------
+    8100 |         8100 |        1 |             1 |   13 |        13
+(1 row)
+
+DROP TABLE ph;
+-- a key in more rows than a lookup takes (65,536) is answered by the units, and the other keys of the leaf are still answered by the directory, one unit for one row
+CREATE TABLE phb (id int, k int, pad text DEFAULT repeat('x', 20));
+INSERT INTO phb SELECT i, CASE WHEN i % 100 = 0 THEN i ELSE 1 END FROM generate_series(1, 70000) i;
+CREATE INDEX phb_k ON phb USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+SELECT sift.col_verify('phb_k', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT p.units = f.units AS hot_key_read_by_the_units, p.rows = f.rows AS same_rows, p.rows AS rows
+FROM sift._test_col_counters('phb_k', '0:eq:1', 8) p, sift._test_col_counters('phb_k', '0:eq:1', 0) f;
+ hot_key_read_by_the_units | same_rows | rows  
+---------------------------+-----------+-------
+ t                         | t         | 69300
+(1 row)
+
+SELECT p.units = 1 AS cold_key_one_unit, p.rows = f.rows AS same_rows, p.rows AS rows
+FROM sift._test_col_counters('phb_k', '0:eq:3000', 8) p, sift._test_col_counters('phb_k', '0:eq:3000', 0) f;
+ cold_key_one_unit | same_rows | rows 
+-------------------+-----------+------
+ t                 | t         |    1
+(1 row)
+
+DROP TABLE phb;
+-- keys at the ends of the int8 range (infinity and -infinity of a timestamp are those of an int8): a range up to the largest key lists its keys without running past it
+CREATE TABLE px AS
+SELECT i AS id, CASE i % 5 WHEN 0 THEN 9223372036854775807 WHEN 1 THEN -9223372036854775807 - 1 ELSE i END AS v,
+	   CASE i % 7 WHEN 0 THEN 'infinity'::timestamp WHEN 1 THEN '-infinity' ELSE timestamp '2024-01-01' + i * interval '1 minute' END AS ts
+FROM generate_series(1, 3000) i;
+CREATE INDEX px_i ON px USING sift_col (id sift.col_int4_ops, v sift.col_int8_ops, ts sift.col_timestamp_ops) WITH (point_columns = 'v, ts');
+SELECT sift.col_verify('px_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT (SELECT count(*) FROM sift._test_col_tids('px_i', '1:eq:9223372036854775807', 8)) AS v_max, (SELECT count(*) FROM px WHERE v = 9223372036854775807) AS heap_v_max,
+	   (SELECT count(*) FROM sift._test_col_tids('px_i', '1:eq:-9223372036854775808', 8)) AS v_min, (SELECT count(*) FROM px WHERE v = -9223372036854775807 - 1) AS heap_v_min,
+	   (SELECT count(*) FROM sift._test_col_tids('px_i', '1:ge:9223372036854775800;1:le:9223372036854775807', 8)) AS v_top_range, (SELECT count(*) FROM px WHERE v >= 9223372036854775800) AS heap_v_top_range,
+	   (SELECT count(*) FROM sift._test_col_tids('px_i', '2:eq:9223372036854775807', 8)) AS infinity, (SELECT count(*) FROM px WHERE ts = 'infinity') AS heap_infinity,
+	   (SELECT count(*) FROM sift._test_col_tids('px_i', '2:eq:-9223372036854775808', 8)) AS minus_infinity, (SELECT count(*) FROM px WHERE ts = '-infinity') AS heap_minus_infinity;
+ v_max | heap_v_max | v_min | heap_v_min | v_top_range | heap_v_top_range | infinity | heap_infinity | minus_infinity | heap_minus_infinity 
+-------+------------+-------+------------+-------------+------------------+----------+---------------+----------------+---------------------
+   600 |        600 |   600 |        600 |         600 |              600 |      428 |           428 |            429 |                 429
+(1 row)
+
+DROP TABLE px;
+-- the units a lookup reads, over a segment of 65 units (a second word of the keep bitmap holds the last unit): the units pruned are skipped a word at a time, so a key in
+-- the first, the last of a word, the first of the next word, in two adjacent ones across the words, in a middle one and in none reads exactly those units, with the
+-- directory, with the zones alone, and the rows are the heap's. A page holds one row, so unit n holds the rows 256 * n .. 256 * n + 255
+CREATE TABLE pw (id int, k int, pad text) WITH (fillfactor = 10);
+INSERT INTO pw SELECT i, CASE i / 256 WHEN 0 THEN 1 WHEN 63 THEN 2 WHEN 64 THEN 3 ELSE 100 + i / 256 END, repeat('x', 600) FROM generate_series(0, 65 * 256 - 1) i;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX pw_k ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
+CREATE INDEX pw_n ON pw USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops);
+RESET max_parallel_maintenance_workers;
+SELECT units FROM sift.col_segments('pw_k') WHERE kind = 'immutable';
+ units 
+-------
+    65
+(1 row)
+
+SELECT w.preds, d.units AS dir_units, d.units_pruned AS dir_pruned, z.units AS zone_units, z.units_pruned AS zone_pruned, d.rows = h.n AS dir_rows_ok, z.rows = h.n AS zone_rows_ok
+FROM (VALUES ('0:eq:1', ARRAY[1]), ('0:eq:2', ARRAY[2]), ('0:eq:3', ARRAY[3]), ('0:in:1|3', ARRAY[1, 3]), ('0:in:2|3', ARRAY[2, 3]), ('0:in:1|2|3', ARRAY[1, 2, 3]),
+			 ('0:eq:117', ARRAY[117]), ('0:in:101|162', ARRAY[101, 162]), ('0:eq:5', ARRAY[5]), ('0:in:5|6', ARRAY[5, 6])) w (preds, keys),
+	 LATERAL sift._test_col_counters('pw_k', w.preds, 8) d,
+	 LATERAL sift._test_col_counters('pw_n', w.preds, 0) z,
+	 LATERAL (SELECT count(*) AS n FROM pw WHERE k = ANY (w.keys)) h
+ORDER BY w.preds;
+    preds     | dir_units | dir_pruned | zone_units | zone_pruned | dir_rows_ok | zone_rows_ok 
+--------------+-----------+------------+------------+-------------+-------------+--------------
+ 0:eq:1       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:117     |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:2       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:3       |         1 |         64 |          1 |          64 | t           | t
+ 0:eq:5       |         0 |         65 |          0 |          65 | t           | t
+ 0:in:101|162 |         2 |         63 |          2 |          63 | t           | t
+ 0:in:1|2|3   |         3 |         62 |          3 |          62 | t           | t
+ 0:in:1|3     |         2 |         63 |          2 |          63 | t           | t
+ 0:in:2|3     |         2 |         63 |          2 |          63 | t           | t
+ 0:in:5|6     |         0 |         65 |          0 |          65 | t           | t
+(10 rows)
+
+DROP TABLE pw;
+-- the other integer leaves: int2, date, timestamp, timestamptz, numeric(p <= 18, s) and bool take a directory like an int4 does (a float or a wide numeric does not): the
+-- rows of an equality, an IN list, NULLs and absent values are the heap's through the index scan, and the lookup is an index scan
+CREATE TABLE pt (id int, i2 int2, d date, t timestamp, tz timestamptz, n numeric(12, 2), b bool, pad text DEFAULT repeat('x', 200));
+INSERT INTO pt (id, i2, d, t, tz, n, b)
+SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 997 END, CASE WHEN g % 37 = 0 THEN NULL ELSE date '2024-01-01' + g % 600 END,
+	   CASE WHEN g % 41 = 0 THEN NULL WHEN g % 43 = 0 THEN 'infinity' ELSE timestamp '2024-01-01' + (g % 5000) * interval '7 minutes' END,
+	   CASE WHEN g % 47 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (g % 3000) * interval '11 minutes' END,
+	   CASE WHEN g % 53 = 0 THEN NULL ELSE (g % 2500) / 100.0 END, CASE WHEN g % 59 = 0 THEN NULL ELSE g % 7 = 0 END
+FROM generate_series(1, 20000) g;
+CREATE INDEX pt_i ON pt USING sift_col (i2 sift.col_int2_ops, d sift.col_date_ops, t sift.col_timestamp_ops, tz sift.col_timestamptz_ops, n sift.col_numeric_ops, b sift.col_bool_ops, id sift.col_int4_ops)
+	WITH (point_columns = 'i2, d, t, tz, n, b', write_buffer_limit = 256);
+SELECT sift.col_verify('pt_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE FUNCTION pt_arr(w text, idx bool) RETURNS bigint[] LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', CASE WHEN idx THEN 'on' ELSE 'off' END, true);
+	PERFORM set_config('enable_seqscan', CASE WHEN idx THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM pt WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION pt_plan(w text) RETURNS text LANGUAGE plpgsql SET sift.enable_col_scan = on SET enable_seqscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM pt WHERE %s', w) LOOP
+		IF l ~ 'pt_i' THEN RETURN regexp_replace(trim(l), '^-> *| on pt$', '', 'g'); END IF;
+	END LOOP;
+	RETURN 'no index scan';
+END $$;
+SELECT w, pt_arr(w, true) = pt_arr(w, false) AS same_rows, cardinality(pt_arr(w, false)) AS matches, pt_plan(w) AS plan
+FROM (VALUES ('i2 = 5'), ('i2 = 996'), ('i2 = 1500'), ('i2 IN (3, 7, 996, 2000)'), ('i2 IS NULL'),
+			 ('d = date ''2024-03-01'''), ('d = date ''2030-01-01'''), ('d IN (date ''2024-01-01'', date ''2025-08-22'')'),
+			 ('t = timestamp ''2024-01-01 00:07:00'''), ('t = ''infinity''::timestamp'), ('t IN (timestamp ''2024-01-01'', timestamp ''2024-01-02 03:00:00'')'), ('t = timestamp ''1999-01-01'''),
+			 ('tz = timestamptz ''2024-01-01 00:11:00+00'''), ('tz IN (timestamptz ''2024-01-01 00:00:00+00'', timestamptz ''2024-01-02 00:00:00+00'')'),
+			 ('n = 12.34'), ('n = 0.00'), ('n IN (1.5, 24.99, 99)'), ('n = 12.345'),
+			 ('b = true'), ('b = false'), ('b IS NULL')) AS q (w)
+ORDER BY w;
+                                         w                                          | same_rows | matches |            plan            
+------------------------------------------------------------------------------------+-----------+---------+----------------------------
+ b = false                                                                          | t         |   16853 | Index Only Scan using pt_i
+ b = true                                                                           | t         |    2809 | Index Only Scan using pt_i
+ b IS NULL                                                                          | t         |     338 | Index Only Scan using pt_i
+ d = date '2024-03-01'                                                              | t         |      33 | Index Only Scan using pt_i
+ d = date '2030-01-01'                                                              | t         |       0 | Index Only Scan using pt_i
+ d IN (date '2024-01-01', date '2025-08-22')                                        | t         |      65 | Index Only Scan using pt_i
+ i2 = 1500                                                                          | t         |       0 | Index Only Scan using pt_i
+ i2 = 5                                                                             | t         |      21 | Index Only Scan using pt_i
+ i2 = 996                                                                           | t         |      20 | Index Only Scan using pt_i
+ i2 IN (3, 7, 996, 2000)                                                            | t         |      60 | Index Only Scan using pt_i
+ i2 IS NULL                                                                         | t         |     645 | Index Only Scan using pt_i
+ n = 0.00                                                                           | t         |       8 | Index Only Scan using pt_i
+ n = 12.34                                                                          | t         |       8 | Index Only Scan using pt_i
+ n = 12.345                                                                         | t         |       0 | Index Only Scan using pt_i
+ n IN (1.5, 24.99, 99)                                                              | t         |      14 | Index Only Scan using pt_i
+ t = 'infinity'::timestamp                                                          | t         |     454 | Index Only Scan using pt_i
+ t = timestamp '1999-01-01'                                                         | t         |       0 | Index Only Scan using pt_i
+ t = timestamp '2024-01-01 00:07:00'                                                | t         |       4 | Index Only Scan using pt_i
+ t IN (timestamp '2024-01-01', timestamp '2024-01-02 03:00:00')                     | t         |       4 | Index Only Scan using pt_i
+ tz = timestamptz '2024-01-01 00:11:00+00'                                          | t         |       6 | Index Only Scan using pt_i
+ tz IN (timestamptz '2024-01-01 00:00:00+00', timestamptz '2024-01-02 00:00:00+00') | t         |       6 | Index Only Scan using pt_i
+(21 rows)
+
+DROP TABLE pt;
+DROP FUNCTION pt_arr(text, bool), pt_plan(text);
+-- the option names plain integer, text and uuid columns of the top level (a date is an integer leaf)
+CREATE TABLE pe (id int, f float8, j jsonb, d date);
+CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_columns = 'f');
+ERROR:  invalid point_columns option: not a plain integer, text or uuid column of the top level
+CREATE INDEX pe_x ON pe USING sift_col (id sift.col_int4_ops) WITH (point_columns = 'nope');
+ERROR:  invalid point_columns option: unknown column
+CREATE INDEX pe_s ON pe USING sift_col (id sift.col_int4_ops, d sift.col_date_ops) WITH (point_columns = 'id, d');
+DROP TABLE pe;
+ALTER INDEX pd_all SET (point_columns = 'k,');
+ERROR:  invalid point_columns option "k,": empty column name
+DROP TABLE pd CASCADE;
+DROP FUNCTION pd_cmp(regclass, text, text), pd_idx(text), pd_bmp(text), pd_seq(text), pd_plan(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP TABLE pd_q, pd_qk, pd_w;

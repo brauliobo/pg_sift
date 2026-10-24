@@ -10,9 +10,11 @@ bm25/topk.c
 bm25/bitmap_scalar.c
 bm25/bitmap_avx2.c
 bm25/bitmap_avx512.c
+bm25/bitmap_neon.c
 bm25/kernels.c
 bm25/kernels_avx2.c
 bm25/kernels_avx512.c
+bm25/kernels_neon.c
 bm25/analyze.c
 bm25/analyze_config.c
 bm25/analyze_stem.c
@@ -53,6 +55,7 @@ bm25/bitmap.h
 bm25/bitmap_int.h
 bm25/bitmap_kern.h
 core/cmp.h
+core/limits.h
 core/cpu.h
 bm25/dict.h
 bm25/eval.h
@@ -63,6 +66,7 @@ bm25/kernels_int.h
 bm25/wbuf.h
 core/page.h
 bm25/parallel.h
+core/neon.h
 core/popcount.h
 bm25/posting.h
 bm25/posting_int.h

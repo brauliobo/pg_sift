@@ -89,6 +89,7 @@ typedef struct ColMap
 {
 	int			nleaves;
 	const int  *col;
+	List	   *subparams;		/* the output Params of the sub-plans around the expression: the planner's ids, not columns */
 } ColMap;
 
 /* the Params of a slot that read a column of the joined table, numbered over the columns of the pass */
@@ -97,7 +98,21 @@ col_mutator(Node *n, ColMap *m)
 {
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= m->nleaves)
+	if (IsA(n, SubPlan))
+	{
+		SubPlan    *sp = (SubPlan *) n;
+		List	   *outer = m->subparams;
+		SubPlan    *r = makeNode(SubPlan);
+
+		*r = *sp;
+		r->args = (List *) col_mutator((Node *) sp->args, m);
+		m->subparams = list_concat_copy(outer, sp->paramIds);
+		r->testexpr = col_mutator(sp->testexpr, m);
+		m->subparams = outer;
+		return (Node *) r;
+	}
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= m->nleaves &&
+		!list_member_int(m->subparams, ((Param *) n)->paramid))
 	{
 		Param	   *p = copyObject((Param *) n);
 
@@ -125,7 +140,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 		}
 	if (u == NULL)
 	{
-		if (f->u.njoin == SIFT_AGG_MAX_JOINS)
+		if (f->u.njoin == sift_limit(joins, SIFT_AGG_MAX_JOINS))
 			return false;
 		arm->join[j] = f->u.njoin;
 		u = &f->u.join[f->u.njoin++];
@@ -145,7 +160,7 @@ fuse_join(Fuse *f, FuseArm *arm, int j)
 			at++;
 		if (at == u->ncol)
 		{
-			if (u->ncol == SIFT_AGG_MAX_JCOLS)
+			if (u->ncol == sift_limit(join_cols, SIFT_AGG_MAX_JCOLS))
 				return false;
 			u->colatt[at] = mj->colatt[c];
 			u->coltype[at] = mj->coltype[c];
@@ -212,7 +227,7 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 	SiftAggCombo x = *mc;
 	SiftAggCombo *u;
 	int			at = 0;
-	ColMap		cm = {mc->nleaves, mc->join >= 0 ? arm->col[mc->join] : NULL};
+	ColMap		cm = {mc->nleaves, mc->join >= 0 ? arm->col[mc->join] : NULL, NIL};
 
 	x.join = mc->join >= 0 ? arm->join[mc->join] : -1;
 	for (int p = 0; p < x.nleaves; p++)
@@ -227,7 +242,7 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 		at++;
 	if (at == f->u.ncombo)
 	{
-		if (at == SIFT_AGG_MAX_COMBOS)
+		if (at == sift_limit(combos, SIFT_AGG_MAX_COMBOS))
 			return false;
 		f->u.combo[f->u.ncombo++] = x;
 		f->u.combo[at].nslots = 0;
@@ -526,6 +541,7 @@ fuse_adapt(Fuse *f, FuseArm *arm)
 	a->nleaves = f->u.nleaves;
 	a->leaves = f->u.leaves;
 	a->recheck = f->u.recheck;
+	a->gate = f->u.gate;
 	a->key = palloc(Max(s->nkeys, 1) * sizeof(SiftAggKey));
 	memcpy(a->key, s->key, s->nkeys * sizeof(SiftAggKey));
 	for (int j = 0; j < s->nkeys; j++)
@@ -702,11 +718,18 @@ fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 		total += m[i]->nleaves;
 	leaves = palloc(Max(total, 1) * sizeof(int));
 	recheck = palloc0(Max(total, 1));
+	out->gate = palloc0(Max(total, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < m[i]->nleaves; j++)
 		{
 			int			at = 0;
 
+			/* the error is raised for the rows the common conjuncts keep, which an arm's own conjuncts would drop before it in the scan of the arm */
+			if (n > 1 && m[i]->recheck[j] == SRK_CAST_TESTED)
+				return false;
+			/* the bits of a gate are the arm's aggregates */
+			if (m[i]->gate[j] != 0)
+				return false;
 			while (at < k && leaves[at] < m[i]->leaves[j])
 				at++;
 			if (at < k && leaves[at] == m[i]->leaves[j])
@@ -772,12 +795,20 @@ fuse_joined(const Fuse *f)
 static bool
 fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 {
+	int			nj = 0,
+				nc = 0;
+
 	f->n = n;
 	f->owners = NIL;
 	f->arm = palloc0(n * sizeof(FuseArm));
 	memset(&f->u, 0, sizeof(f->u));
-	f->u.join = palloc0(SIFT_AGG_MAX_JOINS * sizeof(SiftAggJoin));
-	f->u.combo = palloc0(SIFT_AGG_MAX_COMBOS * sizeof(SiftAggCombo));
+	for (int i = 0; i < n; i++)
+	{
+		nj += m[i]->njoin;
+		nc += m[i]->ncombo;
+	}
+	f->u.join = palloc0(Max(Min(nj, sift_limit(joins, SIFT_AGG_MAX_JOINS)), 1) * sizeof(SiftAggJoin));
+	f->u.combo = palloc0(Max(Min(nc, sift_limit(combos, SIFT_AGG_MAX_COMBOS)), 1) * sizeof(SiftAggCombo));
 	if (!fuse_leaves(m, n, &f->u))
 		return false;
 	for (int i = 0; i < n; i++)
@@ -912,6 +943,7 @@ fuse_shape(const SiftAggSpec *a)
 	t.key = NULL;
 	t.nworkers = 0;
 	t.est_groups = 0;
+	t.est_rows = 0;
 	/* the FILTERs are the same by what they test: not by their numbers (one more conjunct over the joined rows in an arm moves them) or their text; the conjuncts over the rows are split (fuse_split) */
 	t.npreds_total = 0;
 	t.desc_quals = NULL;
@@ -963,8 +995,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	List	   *keys;
 	int			nk;
 
-	if (!fuse_build(m, n, &f))
-		elog(ERROR, "sift: arms that cannot share a pass");
+	SIFT_INVARIANT(fuse_build(m, n, &f), "sift: arms that cannot share a pass");
 	keys = fused_keys(&f, keymap);
 	nk = list_length(keys);
 	fuse_key_slots(&f, keys);
@@ -974,6 +1005,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	spec->setmask = palloc0(n * sizeof(uint32));
 	spec->nsets = n;
 	spec->est_groups = 0;
+	spec->est_rows = 0;
 	spec->nworkers = 0;
 	for (int k = 0; k < nk; k++)
 		spec->key[k] = *(SiftAggKey *) list_nth(keys, k);
@@ -984,6 +1016,7 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 		spec->setmask[i] |= (uint32) 1 << nk;
 		spec->nworkers = Max(spec->nworkers, m[i]->nworkers);
 		spec->est_groups += m[i]->est_groups;
+		spec->est_rows += m[i]->est_rows;
 	}
 	spec->npost = f.npost;
 	spec->naggs = f.nagg;
@@ -997,5 +1030,8 @@ sift_aggspec_fuse(SiftAggSpec *const *m, int n, int **keymap, int ***aggmap)
 	spec->postsets = f.postsets;
 	spec->key[nk] = (SiftAggKey) {.kind = SAK_SET, .leaf = -1, .typid = INT4OID, .typmod = -1, .eqop = Int4EqualOperator, .desc = "grouping set"};
 	spec->nkeys = nk + 1;
+	/* the arms were planned with workers one by one: the aggregates of another arm (a count of the lookup's column) may be ones the leader cannot merge */
+	if (!sift_aggspec_parallel_ok(spec))
+		spec->nworkers = 0;
 	return spec;
 }

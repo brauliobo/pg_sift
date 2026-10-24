@@ -281,7 +281,8 @@ extend(Relation index, Buffer metabuf, uint32 n)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("sift index \"%s\" cannot grow past %u blocks",
-						RelationGetRelationName(index), MaxBlockNumber)));
+						RelationGetRelationName(index), MaxBlockNumber),
+				 errhint("A relation holds at most 32 TB with 8 kB blocks: partition the table so that each index stays below it.")));
 	buf = ExtendBufferedRelTo(BMR_REL(index), MAIN_FORKNUM, NULL, 0, first + n, RBM_ZERO_AND_LOCK);
 	state = GenericXLogStart(index);
 	META(GenericXLogRegisterBuffer(state, metabuf, 0))->high_water = first + n;
@@ -347,8 +348,8 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 	FreePick	p = {index, want, min, InvalidBlockNumber, -1, 0, 0, InvalidFullTransactionId, InvalidFullTransactionId};
 
 	sift_freelist_walk(index, metabuf, pick_free, &p);
-	if (space_exclusive && BlockNumberIsValid(space_limit) && p.idx < 0)
-		elog(ERROR, "sift: relocation reservation no longer fits below its planned end");
+	SIFT_INVARIANT(!(space_exclusive && BlockNumberIsValid(space_limit) && p.idx < 0),
+				   "sift: relocation reservation no longer fits below its planned end");
 	*got = p.idx >= 0 ? Min(want, p.nblocks) : want;
 	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid) && !space_exclusive)
 		log_reuse(index, p.blk, p.safexid);
@@ -379,8 +380,7 @@ sift_alloc_extent(Relation index, uint32 nblocks, SiftPageType type, uint64 gen,
 	BlockNumber first;
 	uint32		got;
 
-	if (nblocks == 0 || (bufs && nblocks > SIFT_ALLOC_MAX_LOCKED))
-		elog(ERROR, "sift: cannot allocate %u locked blocks", nblocks);
+	SIFT_INVARIANT(nblocks != 0 && !(bufs && nblocks > SIFT_ALLOC_MAX_LOCKED), "sift: cannot allocate %u locked blocks", nblocks);
 	metabuf = lock_meta(index, BUFFER_LOCK_EXCLUSIVE);
 	first = alloc_blocks(index, metabuf, nblocks, nblocks, &got);
 	if (bufs)
@@ -713,6 +713,22 @@ sift_recycle(Relation index)
 		rewrite_chain(index, metabuf, &c, false);
 	UnlockReleaseBuffer(metabuf);
 	return c.cleared;
+}
+
+/* The blocks released that a snapshot may still read, so that they cannot be reused: what the rewrites since the horizon last moved left behind */
+uint64
+sift_store_held_blocks(Relation index)
+{
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+	FreeChain	c;
+	uint64		held = 0;
+
+	read_chain(index, metabuf, &c, InvalidFullTransactionId);
+	for (int i = 0; i < c.n; i++)
+		if (FullTransactionIdIsValid(c.ext[i].safexid))
+			held += c.ext[i].nblocks;
+	UnlockReleaseBuffer(metabuf);
+	return held;
 }
 
 BlockNumber

@@ -24,3 +24,4 @@ SELECT plan_of('SELECT status, sum(amount) FROM pl WHERE country = ''DE'' GROUP 
 SELECT country, count(*) FROM pl GROUP BY country ORDER BY country;
 DROP TABLE pl;
 DROP EXTENSION pg_sift;
+DROP FUNCTION plan_of(text);

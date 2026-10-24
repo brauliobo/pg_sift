@@ -74,7 +74,10 @@
 #include "agg/topn.h"
 #include "core/visibility.h"
 #include "core/popcount.h"
+#include "core/limits.h"
 #include "agg/agg_int.h"
+
+#define COMBO_MAX_ENTRIES	16777216	/* entries of one combo cache before the caches start again (combo_trim) */
 
 /* the id (1..) of a value among the distinct values of a dictionary leaf; the bytes are copied when new */
 static uint32
@@ -242,6 +245,77 @@ leaf64_datum(const Id64 *m, const SiftSrcLeaf *lf, uint32 id)
 	return NumericGetDatum(lf->scale > 0 ? int64_div_fast_to_numeric(v, lf->scale) : int64_to_numeric(v));
 }
 
+/* the id of the value of column refcol[p] in output row `out` of the earlier lookup, made on its first sight; the row is kept to bind it */
+static uint32
+prior_vid_new(AggExec *ex, int ci, int p, uint32 out)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	ComboSt    *cs = &ex->cs[ci];
+	const ComboSt *prior = &ex->cs[cb->refcombo[p]];
+	PriorVal   *pv = &cs->pv[p];
+	uint32		row,
+				id = 0;
+
+	if (out == COMBO_NONE)
+		return 0;
+	if (out >= pv->nmemo)
+	{
+		uint32		cap = Max(Max(pv->nmemo * 2, out + 1), 256);
+
+		pv->memo = pv->memo ? repalloc(pv->memo, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		memset(pv->memo + pv->nmemo, 0xFF, (cap - pv->nmemo) * sizeof(uint32));
+		pv->nmemo = cap;
+	}
+	row = prior->maprow[out];
+	if (row != UINT32_MAX)
+	{
+		const MapCol *mc = &prior->map->mcol[cb->refcol[p]];
+		bool		isnull;
+		Datum		d = map_col(prior->map, row, cb->refcol[p], &isnull);
+
+		if (!isnull)
+		{
+			if (!mc->byval)
+				id = mc->id[row];
+			else
+			{
+				MemoryContext old = MemoryContextSwitchTo(cs->cxt);
+
+				if (cs->id64[p].tab == NULL)
+					id64_init(&cs->id64[p]);
+				MemoryContextSwitchTo(old);
+				id = id64_id(&cs->id64[p], (int64) d);
+			}
+		}
+	}
+	if (id > pv->nrep)
+	{
+		uint32		cap = Max(Max(pv->nrep * 2, id), 64);
+
+		pv->rep = pv->rep ? repalloc(pv->rep, cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, cap * sizeof(uint32));
+		memset(pv->rep + pv->nrep, 0xFF, (cap - pv->nrep) * sizeof(uint32));
+		pv->nrep = cap;
+	}
+	if (id > 0 && pv->rep[id - 1] == UINT32_MAX)
+		pv->rep[id - 1] = out;
+	pv->memo[out] = id;
+	return id;
+}
+
+/*
+ * The id (0 NULL) of the value of a column of an earlier lookup at its output row `out`, which stands for the leaf in the entries of the combo:
+ * the rows of that table with the same value share one entry (a few hundred types, not the thousands of entities that hold them).
+ */
+uint64
+combo_prior_vid(AggExec *ex, int ci, int p, uint32 out)
+{
+	const PriorVal *pv = &ex->cs[ci].pv[p];
+
+	if (out < pv->nmemo && pv->memo[out] != COMBO_UNEVAL)
+		return pv->memo[out];
+	return prior_vid_new(ex, ci, p, out);
+}
+
 /* the leaf values of an entry (v: ids) as the Params of the combo's expressions */
 void
 combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
@@ -258,12 +332,11 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 		if (cb->leaf[p] < 0)
 		{
 			ComboSt    *prior = &ex->cs[cb->refcombo[p]];
-			uint32		row = prior->maprow[v[p] - 1];
 
-			if (row == UINT32_MAX)
+			if (v[p] == 0)
 				bind_param(ex, p, (Datum) 0, true);
 			else
-				map_bind(ex, p, prior->map, row, cb->refcol[p]);
+				map_bind(ex, p, prior->map, prior->maprow[cs->pv[p].rep[v[p] - 1]], cb->refcol[p]);
 			continue;
 		}
 		lf = &ex->lay->leaf[cb->leaf[p]];
@@ -324,9 +397,12 @@ combo_child_rows(AggExec *ex, int ci, uint32 **rows)
 	return n;
 }
 
-/* the key of the entry (v: the ids of its leaves, NULL when every key is an expression); false when a key is NULL: no row matches */
+/*
+ * The key of the entry (v: the ids of its leaves, NULL when every key is an expression); false when a key is NULL: no row matches. A NULL
+ * key that equals NULL (keynull) is not that: nul[k] says so, and the rows to find are those whose key is NULL too.
+ */
 static bool
-combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, int64 *iv)
+combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, int64 *iv, bool *nul)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -340,7 +416,12 @@ combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, 
 			Datum		d = ExecEvalExprSwitchContext(cs->kx[k], ex->lutcx, &isnull);
 
 			if (isnull)
-				return false;
+			{
+				if (!j->keynull[k])
+					return false;
+				nul[k] = true;
+				continue;
+			}
 			if (cs->map->ktext[k])
 			{
 				struct varlena *t = PG_DETOAST_DATUM_PACKED(d);
@@ -353,7 +434,12 @@ combo_keys(AggExec *ex, int ci, const uint64 *v, const char **ptr, uint32 *len, 
 			continue;
 		}
 		if (v[j->keypos[k]] == 0)
-			return false;
+		{
+			if (!j->keynull[k])
+				return false;
+			nul[k] = true;
+			continue;
+		}
 		if (cs->map->ktext[k])
 		{
 			ptr[k] = cs->in[j->keypos[k]].ptr[v[j->keypos[k]] - 1];
@@ -396,7 +482,7 @@ combo_key_id(AggExec *ex, int ci, int k, const uint64 *v, const char *ptr, uint3
 
 /* the rows of the table whose key is the entry's */
 static int
-combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows)
+combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 *len, const int64 *iv, const bool *nul, uint32 **rows)
 {
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 	MapTab	   *m = ex->cs[ci].map;
@@ -406,8 +492,11 @@ combo_find(AggExec *ex, int ci, const uint64 *v, const char **ptr, const uint32 
 	if (m->nrow == 0)
 		return 0;
 	for (int k = 0; k < j->nkey; k++)
-		if ((kid[k] = combo_key_id(ex, ci, k, v, ptr[k], len[k], iv[k])) == 0)
+	{
+		kid[k] = nul[k] ? 0 : combo_key_id(ex, ci, k, v, ptr[k], len[k], iv[k]);
+		if (kid[k] == 0 && !nul[k])
 			return 0;
+	}
 	return map_find_ids(m, kid, rows);
 }
 
@@ -420,11 +509,12 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
 	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
 	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+	bool		nul[SIFT_AGG_MAX_JKEYS] = {0};
 
 	if (j->params != NIL)
 		return combo_child_rows(ex, ci, rows);
 	*rows = NULL;
-	return combo_keys(ex, ci, v, ptr, len, iv) ? combo_find(ex, ci, v, ptr, len, iv, rows) : 0;
+	return combo_keys(ex, ci, v, ptr, len, iv, nul) ? combo_find(ex, ci, v, ptr, len, iv, nul, rows) : 0;
 }
 
 typedef struct PriorKeyed
@@ -467,7 +557,7 @@ combo_prior_keyed(AggExec *ex, int ci, int prior)
 	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nkey == 0 || (j->fslot >= 0 && slot_reads_leaf(cb, j->fslot)))
 		return false;
 	for (int k = 0; k < j->nkey && w.ok; k++)
-		if (j->keyexpr[k])
+		if (j->keyexpr[k] && !j->keynull[k])
 			reads_prior_only(j->keyexpr[k], &w);
 		else
 			w.ok = false;
@@ -485,6 +575,7 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 	const char *ptr[SIFT_AGG_MAX_JKEYS] = {0};
 	uint32		len[SIFT_AGG_MAX_JKEYS] = {0};
 	int64		iv[SIFT_AGG_MAX_JKEYS] = {0};
+	bool		nul[SIFT_AGG_MAX_JKEYS] = {0};
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	uint32	   *rows;
 	int			nm;
@@ -492,7 +583,7 @@ combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row)
 	for (int p = 0; p < cb->nleaves; p++)
 		if (cb->leaf[p] < 0 && cb->refcombo[p] == prior)
 			map_bind(ex, p, pm, row, cb->refcol[p]);
-	if (!combo_keys(ex, ci, NULL, ptr, len, iv))
+	if (!combo_keys(ex, ci, NULL, ptr, len, iv, nul))
 		return false;
 	nm = map_find(ex->cs[ci].map, ptr, len, iv, &rows);
 	return j->fslot >= 0 && !ex->cs[ci].map->filtered && nm > 0 ? combo_filter_rows(ex, ci, rows, nm) > 0 : nm > 0;
@@ -795,7 +886,7 @@ combo_unmatched(AggExec *ex, int ci, const uint32 *prior)
 			rows[nm++] = r;
 	for (int p = 0; p < cb->nleaves; p++)
 		if (cb->leaf[p] < 0)
-			v[p] = (uint64) prior[cb->refcombo[p]] + 1;
+			v[p] = combo_prior_vid(ex, ci, p, prior[cb->refcombo[p]]);
 	combo_bind_leaves(ex, ci, v);
 	combo_emit(ex, ci, &ent, rows, nm, nm);
 	MemoryContextSwitchTo(old);
@@ -816,6 +907,16 @@ combo_hash(const uint64 *v, int ninputs, bool null_input)
 	}
 	h *= UINT64CONST(0x9E3779B97F4A7C15);
 	return (uint32) (h >> 32) ^ (null_input ? 0x85EBCA6BU : 0);
+}
+
+/* the few inputs of an entry compared inline: a memcmp call per probe costs more than the loop */
+static inline bool
+combo_same(const uint64 *a, const uint64 *b, int n)
+{
+	for (int p = 0; p < n; p++)
+		if (a[p] != b[p])
+			return false;
+	return true;
 }
 
 /* room for one more entry */
@@ -839,11 +940,6 @@ combo_ent_by_id(AggExec *ex, int ci, uint32 id)
 {
 	ComboSt    *cs = &ex->cs[ci];
 
-	if (id >= (uint32) 1 << 24)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
-				 errhint("Set sift.enable_agg to off for this query.")));
 	while (cs->nent <= id)
 	{
 		uint64	   *v;
@@ -894,15 +990,9 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	h = combo_hash(v, cs->ninputs, ex->null_input) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
 		if (cs->null_input[e - 1] == ex->null_input &&
-			(cs->ninputs == 1 ? cs->vid[e - 1] == v[0] :
-			 memcmp(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs * sizeof(uint64)) == 0))
+			combo_same(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs))
 			return e - 1;
 	combo_grow_ent(cs);
-	if (cs->nent >= (uint32) 1 << 24)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: too many distinct value combinations for the aggregate scan"),
-				 errhint("Set sift.enable_agg to off for this query.")));
 	memcpy(&cs->vid[(size_t) cs->nent * cs->ninputs], v, cs->ninputs * sizeof(uint64));
 	cs->null_input[cs->nent] = ex->null_input;
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
@@ -950,9 +1040,36 @@ combo_reset(AggExec *ex, int ci)
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)
-		if (cb->leaf[p] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
+		if (cb->leaf[p] < 0)
+		{
+			/* the output rows of the earlier lookup start again with it (combo_trim): so do the ids of its values */
+			memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+			memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
+		}
+		else if (leaf_wide(&ex->lay->leaf[cb->leaf[p]]))
 			id64_init(&cs->id64[p]);
 	MemoryContextSwitchTo(old);
+}
+
+/*
+ * The caches are a memo, not a table the answer needs: once one holds COMBO_MAX_ENTRIES entries, all of them start again before the next chunk.
+ * A chunk runs through its joins to the aggregates before the next begins, so no output row of a combo outlives it, and the entries of a combo
+ * keyed by the output rows of another go with it. A cache that was reset costs the evaluations it held, never an error.
+ */
+void
+combo_trim(AggExec *ex)
+{
+	int64		max = sift_limit(combo_entries, COMBO_MAX_ENTRIES);
+	bool		full = false;
+
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		full |= ex->cs[ci].nent >= max;
+	if (!full)
+		return;
+	ex->n_combo_trim++;
+	memset(ex->cfree_ok, 0, ex->spec->ncombo * sizeof(bool));
+	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+		combo_reset(ex, ci);
 }
 
 /* the id (1..) of the value of a 64-bit leaf at index i of the vector, 0 for NULL; a NaN of a numeric leaf is a value */
@@ -984,20 +1101,15 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
-	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
+	for (int p = 0; p < cb->nleaves; p++)
 	{
 		uint64	   *vid = ex->cvid[p];
 
-		if (p >= cb->nleaves)
-		{
-			memset(vid, 0, n * sizeof(uint64));
-			continue;
-		}
-		else if (cb->leaf[p] < 0)
+		if (cb->leaf[p] < 0)
 		{
 			Assert(tuples != NULL);
 			for (int i = 0; i < n; i++)
-				vid[i] = (uint64) tuples->cout[cb->refcombo[p]][i] + 1;
+				vid[i] = alive && !sift_colsrc_bit(alive, i) ? 0 : combo_prior_vid(ex, ci, p, tuples->cout[cb->refcombo[p]][i]);
 		}
 		else
 		{
@@ -1028,12 +1140,18 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 	}
 	for (int i = 0; i < n; i++)
 	{
-		uint64		v[SIFT_AGG_MAX_CLEAVES] = {0};
+		uint64		v[SIFT_AGG_MAX_CLEAVES];
 
-		for (int p = 0; p < cb->nleaves; p++)
+		if (alive && !sift_colsrc_bit(alive, i))
+		{
+			eid[i] = COMBO_NONE;
+			continue;
+		}
+		/* combo_ent reads ninputs values: one even for a combo without leaves, whose value is 0 */
+		v[0] = cb->nleaves > 0 ? ex->cvid[0][i] : 0;
+		for (int p = 1; p < cb->nleaves; p++)
 			v[p] = ex->cvid[p][i];
-
-		eid[i] = alive && !sift_colsrc_bit(alive, i) ? COMBO_NONE : combo_ent(ex, ci, v);
+		eid[i] = combo_ent(ex, ci, v);
 	}
 }
 
