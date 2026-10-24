@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bench_charts  # noqa: E402  (steps/bench_charts.py: the scale points and slopes)
 import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
+import budget  # noqa: E402  (steps/budget.py: the time budget of the release pass)
 import compare  # noqa: E402  (steps/compare.py: the comparison blocks)
 import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
@@ -116,7 +117,7 @@ def plain(bullets):
 
 
 def cases_summary(results):
-    """one sentence on the cases of bench/results/cases.tsv (bench/results/cases-wm4g.tsv at the release work_mem): how many are faster than PostgreSQL on the same rows, by how much, and the ones that are not"""
+    """one sentence on the cases of bench/results/cases.tsv (bench/results/cases-wm4g.tsv at a large work_mem): how many are faster than PostgreSQL on the same rows, by how much, and the ones that are not"""
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
         return ''
@@ -133,7 +134,7 @@ def cases_summary(results):
         m4, r4 = extras.read(p4)
         f4 = [f for f in cases_render.collect(r4, cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
         w4 = [f for f in f4 if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
-        out += f' At the release setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
+        out += f' At the large-memory setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
     return out
 
 
@@ -210,6 +211,7 @@ def main():
     b = block(a.results)
     readme.replace_block(a.readme, 'intro', b)
     compare.render(a.results, a.readme)
+    budget.render(a.results, os.path.join(os.path.dirname(a.results), 'BENCHMARKS.md'))
     print('\n'.join(b))
 
 
