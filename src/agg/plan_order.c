@@ -705,7 +705,8 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 				nsb = Max(c->stats.nunits, 1.0);
 
 	/* the zones are of integers: the strings of a unit are not bounded, the scan reads them all; those of an enum are OIDs, not in the order of its values */
-	if (!IsA(x, Var) || leaf_of(c, leaf)->vtype == SCV_CODE || type_is_enum(leaf_of(c, leaf)->typid))
+	/* leaf -1: a key PostgreSQL evaluates (a coalesce of a float): the Var inside it is not a leaf of the scan */
+	if (leaf < 0 || !IsA(x, Var) || leaf_of(c, leaf)->vtype == SCV_CODE || type_is_enum(leaf_of(c, leaf)->typid))
 		return 1.0;
 	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(c->heapoid), Int16GetDatum(((Var *) x)->varattno), BoolGetDatum(false));
 	if (!HeapTupleIsValid(tp))
