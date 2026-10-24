@@ -3,11 +3,13 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--lane stock|tuned] [--warn-time] [--update] [--keep]
 #
 #   --rows N      events (default 30000, the size the expectations are recorded at; they hold from 20000 to 50000), --seed N the generator seed (default 1)
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
+#   --lane tuned   the planner settings of a tuned server (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
+#                 lose still fails, but the plan and the cost band are those of the stock lane, so a different plan there is read, not failed
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
 #   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff
 #   --keep        keeps the database sift_plangate
@@ -17,14 +19,14 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP=
+ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
 	case $1 in
 		--warn-time) WARN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;;
-		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;;
-		*) sed -n '2,17p' "$0"; exit 1 ;;
+		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --lane) LANE=$2; shift ;;
+		*) sed -n '2,19p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -36,6 +38,11 @@ log() { printf '[plangate %s] %s\n' "$(date +%T)" "$*" >&2; }
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
 # serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
 settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
+case $LANE in
+	stock) ;;
+	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
+	*) log "unknown lane $LANE (stock or tuned)"; exit 1 ;;
+esac
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
 sql -qAt -c "CREATE EXTENSION pg_sift" >/dev/null
 log "tables: $ROWS events, seed $SEED"
@@ -60,6 +67,7 @@ fi
 # the expected plans and cost bands are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
 hard=true
 (( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
+[[ $LANE == stock ]] || hard="p !~ '^(plan|ratio):'"
 sql -q -P footer=off <<-SQL
 	SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
 		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict,

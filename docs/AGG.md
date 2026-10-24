@@ -442,5 +442,7 @@ ratio and its band, the time of native and of scan (median of `--runs`, default 
 it is not chosen but would win by as much, else `tie`. A wrong result, an unexpected plan or a ratio out of its band fails; so does a `lose`, unless `--warn-time` (the full tier runs at 50000 rows with it: hosted runners
 are noisy). The quick tier runs it without timings (`--runs 0`). The expectations hold from 20000 to 50000 rows; a shape whose plan changes inside that range expects `either`.
 
+`--lane tuned` runs the same shapes with the planner settings of a tuned server (`seq_page_cost` 100, `random_page_cost` 4, `max_parallel_workers_per_gather` 8, `hash_mem_multiplier` 2, `work_mem` 4GB, `jit` off). The results must agree and a lose still fails, but the plan and the cost band are those of the stock lane, so a shape that takes the other plan there is read in the table and the drift of a band is a warning (the quick and the full tier run both lanes). `seq_page_cost` above `random_page_cost` is the setting that moves the picks: it priced the heap check of a scan at the sequential price and refused the scan where the normal plan is many times slower.
+
 To add a shape, append three lines to `test/plan/shapes.sql`: `-- name: x`, `-- expect: new` and the query (a total `ORDER BY` when it has a `LIMIT`); run `scripts/plangate.sh --update` and read the diff:
 it writes the plan chosen and the band of a factor of 2 around the measured ratio (and refreshes the bands of every shape; a plan stays as it is except `new`).
