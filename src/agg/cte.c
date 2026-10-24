@@ -305,7 +305,41 @@ typedef struct SharedWork
 	Bitmapset  *seen;
 	List	   *arms;
 	double		cost;
+	double		read_rows;		/* the rows of elements the scans of the inline plan read: what the aggregates of the shared plan have to unnest */
+	double		charged;		/* what the aggregates are charged for the rows their estimate lost (not in cost) */
+	int			unnesting;		/* the aggregates charged */
 } SharedWork;
+
+/* does a plan below this node unnest an array of the row (a lateral function)? */
+static bool
+unnests(PlannedStmt *stmt, Plan *plan)
+{
+	if (plan == NULL)
+		return false;
+	if (IsA(plan, FunctionScan) && rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable)->lateral)
+		return true;
+	foreach_ptr(Plan, p, child_plans(plan))
+		if (unnests(stmt, p))
+			return true;
+	return unnests(stmt, plan->lefttree) || unnests(stmt, plan->righttree);
+}
+
+/*
+ * The aggregate of the shared plan that unnests the rows of a CTE is priced for the rows PostgreSQL expects of it, which fall to a default (a
+ * row, the 100 rows of a function) where the scans of the inline plan read tens of thousands: the plan that keeps the CTE has to produce them.
+ * The square root of the excess is charged, as input_rows_ratio charges the arm a scan compares with (agg/plan_cost.c). An aggregate that
+ * does not unnest keeps its estimate, which the statistics of its tables count.
+ */
+static double
+arm_rows_charge(SharedWork *w, Plan *agg)
+{
+	double		f;
+
+	if (w->read_rows <= 0 || agg->lefttree == NULL || !unnests(w->stmt, agg->lefttree))
+		return 0;
+	f = sqrt(w->read_rows / Max(agg->lefttree->plan_rows, 1.0));
+	return f > 1.0 ? agg->total_cost * (f - 1.0) : 0;
+}
 
 static void
 shared_work(SharedWork *w, Plan *plan, Plan *agg)
@@ -329,8 +363,12 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
 				w->cost += plan->total_cost;
 			else if (!list_member_ptr(w->arms, agg))
 			{
+				double		extra = arm_rows_charge(w, agg);
+
 				w->arms = lappend(w->arms, agg);
 				w->cost += agg->total_cost;
+				w->charged += extra;
+				w->unnesting += extra > 0;
 			}
 		}
 		if (!bms_is_member(id, w->seen))
@@ -347,13 +385,18 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
 	shared_work(w, plan->righttree, agg);
 }
 
+/*
+ * The charge stands when the scans replace most of the aggregates that unnest the CTE. The rest stays an ordinary plan in the inline plan, as
+ * underpriced there as in the shared one, and the copies of the CTE body it reads in the inline plan decide the comparison.
+ */
 static double
-shared_work_cost(PlannedStmt *stmt, List *names)
+shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, int nscans, double *charged)
 {
-	SharedWork	w = {stmt, names, NULL, NIL, 0};
+	SharedWork	w = {stmt, names, NULL, NIL, 0, read_rows, 0, 0};
 
 	shared_work(&w, stmt->planTree, NULL);
-	return w.cost;
+	*charged = 2 * nscans > w.unnesting ? w.charged : 0;
+	return w.cost + *charged;
 }
 
 /* does the plan read a table that has a column index other than through a SiftAgg node? */
@@ -446,16 +489,22 @@ static void
 plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants *v)
 {
 	const char *outer_variant;
+	double		read_rows,
+				charged;
 
 	memset(v, 0, sizeof(*v));
 	v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
 	outer_variant = agg_variant_push("inline");
+	agg_read_rows = 0;
 	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
+	read_rows = agg_read_rows;
 	agg_variant = outer_variant;
 	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	sift_agg_arms(v->inlined->planTree, &v->scans);
 	sift_agg_arms_list(v->inlined->subplans, &v->scans);
-	v->work = shared_work_cost(v->plain, names);
+	v->work = shared_work_cost(v->plain, names, read_rows, v->scans.n, &charged);
+	/* the shared plan really costs what its aggregates were charged: the totals are compared with it */
+	v->plain_cost += charged;
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
 		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n);
 }
