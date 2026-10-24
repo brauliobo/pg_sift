@@ -6,7 +6,7 @@
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 11
+plan 16
 node_init af 27 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start af || bail "start failed"
@@ -56,6 +56,18 @@ boundoff=$({ echo "SET sift.enable_agg = off;"; printf '%s \\bind %s \\g\n' "$QP
 check "its rows are those of the normal plan" test "$(grep -v '^scans|' <<<"$bound" | "$REPO/scripts/sha256.sh")" == "$("$REPO/scripts/sha256.sh" <<<"$boundoff")"
 prep=$(session "PREPARE pq(date) AS $QP" "EXECUTE pq('2026-01-05')" "EXECUTE pq('2026-01-05')" "EXECUTE pq('2026-01-05')")
 check "a prepared statement with a parameter runs in the scan from its first execution" test "$(scans "$prep")" -ge 3
+# the plan EXPLAIN shows is the one the statement gets, whether it runs or not; CREATE TABLE AS plans its query like a SELECT
+exp=$(session "EXPLAIN (COSTS OFF) $Q")
+check "EXPLAIN as the first statement of a session shows the scan" test "$(grep -c SiftAgg <<<"$exp")" -ge 1
+expa=$(session "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $Q")
+check "EXPLAIN ANALYZE as the first statement of a session shows the scan and runs it" test "$(grep -c SiftAgg <<<"$expa")" -ge 1 -a "$(scans "$expa")" -ge 1
+ctas=$(session "CREATE TEMP TABLE first_ctas AS $Q" "SELECT count(*) FROM first_ctas")
+check "CREATE TABLE AS as the first statement of a session runs its query in the scan" test "$(scans "$ctas")" -ge 1
+ctasoff=$(session "SET sift.enable_agg = off" "CREATE TEMP TABLE first_ctas AS $Q" "SELECT count(*) FROM first_ctas")
+check "and creates the rows of the normal plan" test "$(grep -v '^scans|' <<<"$ctas")" == "$(grep -v '^scans|' <<<"$ctasoff")"
+# a first statement that reads no indexed table does not hand its text to the EXPLAIN after it
+expm=$({ echo "SELECT 1 \\; EXPLAIN (COSTS OFF) $Q;"; } | sql af)
+check "EXPLAIN after another statement of the same query string shows its own plan" test "$(grep -c -E 'Sort|SiftAgg' <<<"$expm")" -ge 1
 check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir af)/postgres.log")" == 0
 
 finish
