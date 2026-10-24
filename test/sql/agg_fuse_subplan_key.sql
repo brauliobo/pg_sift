@@ -1,0 +1,51 @@
+-- The arms of a UNION ALL that run in one pass keep the output of a sub-select in a group key (x IN (SELECT ..)) while the key also reads a
+-- column of the lookup join: the columns of the join are renumbered over the pass, the sub-select's own parameter (numbered after those of the
+-- sub-selects in front of it) is not one of them.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE zones (id int PRIMARY KEY, name text, tier int);
+INSERT INTO zones SELECT i, 'z' || i % 7, i % 3 FROM generate_series(0, 49) i;
+CREATE TABLE kinds (kind text);
+INSERT INTO kinds VALUES ('a'), ('b');
+CREATE TABLE ev (id int PRIMARY KEY, zone_id int, day date, kind text, price float8) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 13) + 0.5 FROM generate_series(1, 6000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, price);
+VACUUM (FREEZE, ANALYZE) ev;
+ANALYZE zones, kinds;
+
+CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Arms In One Pass: ' THEN n := greatest(n, substr(l, strpos(l, ': ') + 2)::int); END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	SELECT count(*) INTO n FROM r_on;
+	DROP TABLE r_on, r_off;
+	RETURN d = 0 AND n > 0;
+END $$;
+
+\set arms 'SELECT CASE WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q1'') THEN ''q1'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q2'') THEN ''q2'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q3'') THEN ''q3'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q4'') THEN ''q4'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q5'') THEN ''q5'' WHEN e.kind IN (SELECT kind FROM kinds) THEN z.name END AS a, NULL::text AS b, count(*) AS n, sum(e.price) AS s FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1 UNION ALL SELECT CASE WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q1'') THEN ''q1'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q2'') THEN ''q2'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q3'') THEN ''q3'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q4'') THEN ''q4'' WHEN e.kind IN (SELECT kind FROM kinds WHERE kind = ''q5'') THEN ''q5'' WHEN e.kind IN (SELECT kind FROM kinds) THEN z.name END, e.kind, count(*), sum(e.price) FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1, 2'
+SELECT arms_shared(:'arms') AS arms_shared, same(:'arms') AS arms_same;
+
+-- the shared database of a plain installcheck goes on with the next test
+SET client_min_messages = warning;
+DROP SCHEMA public CASCADE;
+CREATE SCHEMA public;
+GRANT USAGE ON SCHEMA public TO PUBLIC;
+RESET client_min_messages;
+DROP EXTENSION pg_sift;

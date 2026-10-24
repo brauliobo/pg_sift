@@ -89,6 +89,7 @@ typedef struct ColMap
 {
 	int			nleaves;
 	const int  *col;
+	List	   *subparams;		/* the output Params of the sub-plans around the expression: the planner's ids, not columns */
 } ColMap;
 
 /* the Params of a slot that read a column of the joined table, numbered over the columns of the pass */
@@ -97,7 +98,21 @@ col_mutator(Node *n, ColMap *m)
 {
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= m->nleaves)
+	if (IsA(n, SubPlan))
+	{
+		SubPlan    *sp = (SubPlan *) n;
+		List	   *outer = m->subparams;
+		SubPlan    *r = makeNode(SubPlan);
+
+		*r = *sp;
+		r->args = (List *) col_mutator((Node *) sp->args, m);
+		m->subparams = list_concat_copy(outer, sp->paramIds);
+		r->testexpr = col_mutator(sp->testexpr, m);
+		m->subparams = outer;
+		return (Node *) r;
+	}
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->paramid >= m->nleaves &&
+		!list_member_int(m->subparams, ((Param *) n)->paramid))
 	{
 		Param	   *p = copyObject((Param *) n);
 
@@ -212,7 +227,7 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 	SiftAggCombo x = *mc;
 	SiftAggCombo *u;
 	int			at = 0;
-	ColMap		cm = {mc->nleaves, mc->join >= 0 ? arm->col[mc->join] : NULL};
+	ColMap		cm = {mc->nleaves, mc->join >= 0 ? arm->col[mc->join] : NULL, NIL};
 
 	x.join = mc->join >= 0 ? arm->join[mc->join] : -1;
 	for (int p = 0; p < x.nleaves; p++)
