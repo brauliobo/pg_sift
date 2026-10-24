@@ -448,30 +448,15 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	if (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
 	{
 		/*
-		 * An index with an order key: every live row of the inputs is sorted by the key and cut again into units of a key range, so the
+		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
 		 * overlays of promotions and of the churn since the last merge fold back into the range they belong to. One segment, written through the
-		 * throttled target of the maintenance worker like any merge.
+		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/order.c), not held.
 		 */
-		SiftColBatch **all = palloc(Max(live_units + n, 1) * sizeof(SiftColBatch *));
-		int			nall = 0;
 		uint64		rows = 0;
 
 		for (int i = 0; i < n; i++)
 			rows += sift_cseg_live_rows(seg[i]);
-		if (rows * sift_colk_row_bytes(schema) > (uint64) maintenance_work_mem * 1024)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col merge of an index with key_cut holds the rows to cut in memory and needs more than maintenance_work_mem"),
-							errhint("Raise maintenance_work_mem, or RESET (key_cut) and REINDEX.")));
-
-		for (int i = 0; i < n; i++)
-			for (uint32 u = 0; u < seg[i]->nsb; u++)
-			{
-				SiftColBatch *b = sift_cbatch_create(cx, schema);
-
-				sift_cseg_decode_unit_freeze(seg[i], u, b, freeze, freeze_arg);
-				if (b->nrows > 0)
-					all[nall++] = b;
-			}
-		if (nall > 0)
+		if (rows > 0)
 		{
 			pcx = AllocSetContextCreate(cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
@@ -481,7 +466,8 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
 			sift_colw_set_keyed(w);
-			sift_colk_write(w, all, nall, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index), pcx);
+			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index),
+							maintenance_work_mem, pcx);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;

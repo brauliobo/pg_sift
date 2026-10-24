@@ -113,6 +113,8 @@ extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 extern bool sift_col_index_keyed(Oid indexoid);
 extern uint32 sift_colk_unit_rows(Relation index);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
+extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
+							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with

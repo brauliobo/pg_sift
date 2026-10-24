@@ -85,10 +85,34 @@ RESET sift.col_format_minor;
 REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 
--- a build that must hold the rows of the index to cut them stops when they pass the memory it may use
+-- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan
+DROP INDEX kc_idx;
 SET sift.test_col_segment_kb = 64;
-CREATE INDEX kc_small ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust');
+CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
 RESET sift.test_col_segment_kb;
+SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+SELECT * FROM kchk('runs');
+SET maintenance_work_mem = '1MB';
+SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
+RESET maintenance_work_mem;
+SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+SELECT * FROM kchk('runs merged');
+SELECT sift.col_verify('kc_idx', true);
+
+-- an index that gets the option later has segments cut by superblock: a merge loads and sorts them, and the rows written since are in key-cut segments
+CREATE TABLE kl (LIKE kc);
+INSERT INTO kl SELECT * FROM kc WHERE id <= 60000;
+CREATE INDEX kl_idx ON kl USING sift_col (id, cust, d, amount);
+ALTER INDEX kl_idx SET (key_cut = 'cust, d');
+INSERT INTO kl SELECT * FROM kc WHERE id > 60000;
+SELECT sift.col_promote('kl_idx');
+SELECT string_agg(DISTINCT format::text, ',' ORDER BY format::text) AS formats FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
+SELECT sift.col_merge('kl_idx', true) >= 0 AS merged;
+SELECT string_agg(DISTINCT format::text, ',') AS formats, count(*) AS segments FROM sift.col_segments('kl_idx') WHERE kind = 'immutable';
+SELECT sift.col_verify('kl_idx', true);
+SELECT (SELECT count(*) || ' ' || sum(amount) FROM kl WHERE cust = 42) = (SELECT count(*) || ' ' || sum(amount) FROM kc WHERE cust = 42) AS same_rows;
+SELECT sift.col_verify('kc_idx', true);
+DROP TABLE kl;
 
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;

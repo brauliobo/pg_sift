@@ -38,6 +38,7 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 	b->sb = sb;
 	b->nrows = 0;
 	b->keyed = false;
+	b->unsorted = false;
 	b->hasver = false;
 	for (int i = 0; i < b->schema->ncols; i++)
 	{
@@ -146,7 +147,7 @@ batch_row_begin(SiftColBatch *b, SiftKey key)
 				   (uint32) (key & 0xFFFF), b->sb);
 	SIFT_INVARIANT((key & 0xFFFF) >= 1 && (key & 0xFFFF) <= MaxHeapTuplesPerPage, "sift_col: row offset %u is not a heap offset",
 				   (uint32) (key & 0xFFFF));
-	SIFT_INVARIANT(b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
+	SIFT_INVARIANT(b->unsorted || b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
 	if (b->nrows == b->rowcap)
 	{
 		b->rowcap *= 2;
