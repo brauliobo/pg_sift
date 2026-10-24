@@ -51,8 +51,19 @@
 ^src/agg/	{col}|{tbl}|{ci}
 ^src/table/	{tbl}|{any}|gh:replication
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
-# the harness of one job
-^scripts/(difftest|coldiff|colsoak|soak|fuzz|coverage|hardened|isa_check|release-library-check|isolation|static|plangate)\.sh$	^(difftest|soak|fuzz|coverage|hardened|isa-baseline|release-library-regress|isolation|static|plan-gate)
+# the harness of one job selects the jobs that run it (`scripts/ci.sh --selftest` fails when it misses one)
+^scripts/difftest\.sh$	^difftest(-mutants|-nopos)?$
+^scripts/coldiff\.sh$	^(difftest-col|coverage)
+^scripts/colsoak\.sh$	^soak-col$
+^scripts/soak\.sh$	^soak(-gin)?$
+^scripts/fuzz\.sh$	^fuzz$
+^scripts/coverage\.sh$	^(coverage|difftest-col)
+^scripts/hardened\.sh$	^hardened$
+^scripts/isa_check\.sh$	^isa-baseline$
+^scripts/release-library-check\.sh$	^release-library-regress$
+^scripts/isolation\.sh$	^isolation
+^scripts/static\.sh$	^static$
+^scripts/plangate\.sh$	^plan-gate
 ^scripts/(replication|check-portable)\.sh$	gh:replication|gh:sqlite|gh:mariadb
 ^(sqlite/|packaging/sqlite/|scripts/package-sqlite\.sh)	gh:sqlite
 ^(mariadb/|packaging/mariadb/|scripts/package-mariadb\.sh)	gh:mariadb

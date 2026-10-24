@@ -212,6 +212,18 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
+	# a script of scripts/ selects every job that runs it, and a change of documentation, benchmarks or release notes selects none
+	for m in quick full; do
+		while read -r id _ _ cmd; do
+			eval "args=($cmd)"
+			for a in "${args[@]}"; do
+				[[ $a == "$REPO"/scripts/* ]] || continue
+				rx=$(areas_regex "${a#"$REPO"/}")
+				[[ -n $rx && $id =~ $rx ]] || { echo "FAIL: areas: ${a#"$REPO"/} runs the $m job $id and a change of it does not select the job"; bad=1; }
+			done
+		done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan $m)
+	done
+	[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
 	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
 	# tests that execute a function, the tests of the area for a hot function or a change outside functions
 	focus_rows=$(cut -f1 "$REPO/scripts/focus.tsv" | grep -v '^[#=]' | sort)
