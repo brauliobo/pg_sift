@@ -47,7 +47,7 @@ INSERT INTO cp_q VALUES
 CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m, id, h1, h2) WITH (key_columns = 'off');
 NOTICE:  sift_col index cp_col: the cube holds 16 dimensions and left out the histograms of 7 columns: "d1", "d2", "d3", "m", "id", "h1", "h2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
-HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).
+HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
 SELECT cp_held('cp_col');
                                  cp_held                                  
 --------------------------------------------------------------------------
@@ -68,7 +68,7 @@ SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u
 REINDEX INDEX cp_col;
 NOTICE:  sift_col index cp_col: the cube holds 16 dimensions and left out the histograms of 7 columns: "d1", "d2", "d3", "m", "id", "h1", "h2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
-HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).
+HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
 SELECT cp_held('cp_col');
                                  cp_held                                  
 --------------------------------------------------------------------------
@@ -80,7 +80,7 @@ DROP INDEX cp_col;
 CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
 NOTICE:  sift_col index cp_fit: the cube holds 16 dimensions and left out the histograms of 1 column: "d3"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
-HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).
+HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
 SELECT cp_held('cp_fit');
                         cp_held                        
 -------------------------------------------------------

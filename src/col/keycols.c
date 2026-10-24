@@ -2,14 +2,18 @@
  * col/keycols.c - the default of the option key_columns (docs/COL.md 2.13): an index created without it, or with key_columns = 'auto', keeps the keys of its
  * foreign key columns and of its columns named *_id, as far as they are int2, int4 or date, not unique, and not held by the cube. CREATE INDEX is the only
  * place it is decided: the columns are written to the option as 'auto: a, b', so that a rebuild keeps them, and the build keeps those that hold a key list or
- * a bitmap in half of the units or more.
+ * a bitmap in half of the units or more. The same file decides the other defaults that read the columns' data before a build: the jsonb paths and the plain
+ * columns that take the dimensions of the cube when there are more than it holds.
  */
 #include "postgres.h"
 
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/hash.h"
+#include "access/heapam.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
@@ -19,11 +23,14 @@
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "col/am.h"
 #include "col/pagg.h"
+#include "col/preagg.h"
 #include "col/seg.h"
 #include "col/setsum.h"
 
@@ -354,4 +361,172 @@ sift_col_auto_paths(Relation heap, Relation index)
 								   SIFT_COL_AUTO_PATHS_SAMPLE),
 						 errhint("Write paths = '...' to fix them by hand.")));
 	}
+}
+
+/*
+ * Which plain columns take the dimensions of the cube. It holds SIFT_PAGG_MAX_DIMS of them (the calendar cells of the dates among them) and the default gives
+ * the slots to the columns in their order; a column with more than SIFT_PAGG_DEF_GROUPS values in a unit has no histogram in it, so a slot given to such a column
+ * holds nothing. An index with more columns than slots and preagg = 'auto' has them ranked here, once: CUBE_STRETCHES stretches of CUBE_STRETCH_BLOCKS blocks
+ * (about a unit), evenly spaced over the table, are read, the columns that fit the groups in most of them come first, then the others, each in the order of the
+ * schema, and the list is written to the option as 'auto: a, b' so that a rebuild keeps it (the cube takes the first of it, the calendar cells their room). A
+ * NOTICE says so when the ranking changed which columns hold a slot. The columns of jsonb paths are not looked at: the index keeps the order of the schema.
+ * It is not the default: the histograms it gives the columns that fit grow the index by more than the 3% a default may (docs/perf/COLUMN-DEFAULTS.md).
+ */
+#define CUBE_STRETCHES		8
+#define CUBE_STRETCH_BLOCKS	256
+#define CUBE_SET_SLOTS		1024	/* a power of two over twice the groups of a histogram */
+
+typedef struct CubeCand
+{
+	int			leaf;
+	AttrNumber	hatt;
+	int			rank;			/* its place in the schema */
+	uint32		fit;			/* the sampled stretches in which it has at most SIFT_PAGG_DEF_GROUPS values, NULL as one */
+	uint32		seen;			/* values met in the stretch being read; over SIFT_PAGG_DEF_GROUPS it is out */
+} CubeCand;
+
+static int
+cmp_cube_cand(const void *a, const void *b)
+{
+	const CubeCand *x = a,
+			   *y = b;
+
+	return x->fit != y->fit ? (x->fit > y->fit ? -1 : 1) : x->rank - y->rank;
+}
+
+/* the key of a value in the set of its stretch (0 marks a free slot) */
+static uint64
+cube_key(Datum d, bool isnull, const Form_pg_attribute att)
+{
+	uint64		k;
+
+	if (isnull)
+		return 1;
+	if (att->attbyval)
+		k = (uint64) DatumGetInt64(d) * UINT64CONST(0x9E3779B97F4A7C15);
+	else if (att->attlen == -1)
+	{
+		struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+		k = DatumGetUInt64(hash_any_extended((unsigned char *) VARDATA_ANY(v), VARSIZE_ANY_EXHDR(v), 0));
+	}
+	else
+		k = DatumGetUInt64(hash_any_extended((unsigned char *) DatumGetPointer(d), att->attlen, 0));
+	return k | 2;
+}
+
+/* the stretch [start, start + len) of heap: cand[].seen counts the values of each column up to SIFT_PAGG_DEF_GROUPS + 1; fit[] of those within it grows */
+static void
+cube_stretch(Relation heap, BlockNumber start, BlockNumber len, CubeCand *cand, int n, uint64 *sets, MemoryContext row_cx)
+{
+	TableScanDesc scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+	memset(sets, 0, (size_t) n * CUBE_SET_SLOTS * sizeof(uint64));
+	for (int i = 0; i < n; i++)
+		cand[i].seen = 0;
+	heap_setscanlimits(scan, start, len);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		MemoryContext old = MemoryContextSwitchTo(row_cx);
+
+		CHECK_FOR_INTERRUPTS();
+		for (int i = 0; i < n; i++)
+		{
+			uint64	   *set = sets + (size_t) i * CUBE_SET_SLOTS;
+			bool		isnull;
+			Datum		d;
+			uint64		k;
+
+			if (cand[i].seen > SIFT_PAGG_DEF_GROUPS)
+				continue;
+			d = slot_getattr(slot, cand[i].hatt, &isnull);
+			k = cube_key(d, isnull, TupleDescAttr(RelationGetDescr(heap), cand[i].hatt - 1));
+			for (uint32 at = (uint32) (k >> 40) & (CUBE_SET_SLOTS - 1);; at = (at + 1) & (CUBE_SET_SLOTS - 1))
+			{
+				if (set[at] == 0)
+				{
+					set[at] = k;
+					cand[i].seen++;
+					break;
+				}
+				if (set[at] == k)
+					break;
+			}
+		}
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(row_cx);
+	}
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+	for (int i = 0; i < n; i++)
+		cand[i].fit += cand[i].seen <= SIFT_PAGG_DEF_GROUPS;
+}
+
+void
+sift_col_auto_cube(Relation heap, Relation index)
+{
+	const char *opt = sift_col_options_preagg(index);
+	const SiftColRel *rel;
+	CubeCand	cand[SIFT_COL_MAX_COLS];
+	int			n = 0,
+				slots,
+				nst;
+	BlockNumber nblocks;
+	uint64	   *sets;
+	MemoryContext row_cx;
+	StringInfoData list,
+				first,
+				v;
+	bool		moved = false;
+
+	/* the default order, off, cube(...) and the list an earlier build chose stay: only preagg = 'auto' asks for the ranking */
+	if (pg_strcasecmp(opt, "auto") != 0)
+		return;
+	rel = sift_col_rel_private(index, CurrentMemoryContext);
+	if (rel->schema->kinds)
+		return;
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		const char *name = leaf_name(index, d);
+
+		if (d->parent >= 0 || !sift_cpagg_dim_ok(rel->schema, d))
+			continue;
+		/* the option is a list split at commas, and its names are not quoted */
+		if (heap_attno(index, d) == 0 || name[0] == '\0' || strpbrk(name, ",:;)") != NULL)
+			return;
+		cand[n] = (CubeCand) {.leaf = c, .hatt = heap_attno(index, d), .rank = n};
+		n++;
+	}
+	slots = SIFT_PAGG_MAX_DIMS - sift_cpagg_cal_count(rel->schema);
+	nblocks = RelationGetNumberOfBlocks(heap);
+	if (n <= slots || slots <= 0 || nblocks == 0)
+		return;
+	nst = (int) Min(CUBE_STRETCHES, (nblocks + CUBE_STRETCH_BLOCKS - 1) / CUBE_STRETCH_BLOCKS);
+	sets = palloc((size_t) n * CUBE_SET_SLOTS * sizeof(uint64));
+	row_cx = AllocSetContextCreate(CurrentMemoryContext, "sift cube ranking row", ALLOCSET_SMALL_SIZES);
+	for (int st = 0; st < nst; st++)
+		cube_stretch(heap, (BlockNumber) ((uint64) st * nblocks / nst), Min(CUBE_STRETCH_BLOCKS, nblocks / nst), cand, n, sets, row_cx);
+	MemoryContextDelete(row_cx);
+	pfree(sets);
+	qsort(cand, n, sizeof(CubeCand), cmp_cube_cand);
+
+	initStringInfo(&list);
+	initStringInfo(&first);
+	for (int i = 0; i < n && i < SIFT_PAGG_MAX_DIMS; i++)
+	{
+		append_name(&list, leaf_name(index, &rel->schema->cols[cand[i].leaf]));
+		if (i < slots && cand[i].fit * 2 > (uint32) nst)
+			append_name(&first, leaf_name(index, &rel->schema->cols[cand[i].leaf]));
+		moved |= i < slots && cand[i].fit * 2 > (uint32) nst && cand[i].rank >= slots;
+	}
+	initStringInfo(&v);
+	appendStringInfo(&v, "auto: %s", list.data);
+	sift_col_set_option(index, "preagg", v.data);
+	if (moved)
+		ereport(NOTICE, (errmsg("sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s", quote_identifier(RelationGetRelationName(index)), first.data),
+						 errdetail("The cube holds at most %d dimensions, the calendar cells of the dates among them. A column with more than %d distinct values in a unit has no histogram there, so a dimension given to it holds nothing. Stretches of about a unit (%d of them, spread over the table) were read, and the columns that fit most of them come first.",
+								   SIFT_PAGG_MAX_DIMS, SIFT_PAGG_DEF_GROUPS, nst),
+						 errhint("ALTER INDEX %s SET (preagg = 'default'), then REINDEX, gives them in the order of the columns; preagg = 'cube(...)' names them.", quote_identifier(RelationGetRelationName(index)))));
 }
