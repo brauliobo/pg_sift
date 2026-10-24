@@ -66,6 +66,12 @@ struct SiftColSegWriter
 	StringInfoData cube;		/* the cube blobs of all units */
 	uint64	   *ecubeoff;		/* the same for the element blobs (minor 4) */
 	StringInfoData ecube;
+	uint64	   *xcubeoff;		/* the same for the exception cubes and element blobs (minor 19): a unit with none has an empty blob */
+	StringInfoData xcube;
+	uint64	   *xecubeoff;
+	StringInfoData xecube;
+	bool		excepts;		/* the units may get exceptions: a sift_col index, written under a setting that allows them */
+	bool		anyexc;			/* some unit has exceptions: the segment is column format minor 19 */
 	uint64	   *pmask;			/* [unit * SIFT_PAGEMASK_WORDS]: the pages of its superblock that hold the rows of the unit (superunits) */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
@@ -144,6 +150,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->xcubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->xecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
 	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
@@ -159,6 +167,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	}
 	initStringInfo(&w->cube);
 	initStringInfo(&w->ecube);
+	initStringInfo(&w->xcube);
+	initStringInfo(&w->xecube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
 	initStringInfo(&w->buf);
 	MemoryContextSwitchTo(old);
@@ -205,6 +215,7 @@ void
 sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 {
 	w->pagg = *spec;
+	w->excepts = w->setting >= SIFT_COL_FORMAT_PRESENCE;
 	/* the cube asks for min and max: the segment is minor 7, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
 	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
 	if (w->pagg.minmax)
@@ -394,6 +405,31 @@ add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
 }
 
 /*
+ * The exceptions of the unit (docs/COL-PREAGG.md 11): when one INT leaf is NULL in nearly every row (a soft-delete stamp), the cube and the element rollups of the few
+ * rows where it is not, with the dims and measures of the unit's own blobs (cube bytes from cubeat, element bytes from ecubeat). `leaf IS NULL` over the unit is then
+ * its aggregates minus these. The blob starts with the leaf; a unit with none has an empty one (sift_cpagg_excepts).
+ */
+static void
+add_excepts(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols, Size cubeat, Size ecubeat)
+{
+	int			ncols = w->schema->ncols;
+	const uint32 **eoff = palloc0(ncols * sizeof(uint32 *));
+
+	w->xcubeoff[w->nsb] = w->xcube.len;
+	w->xecubeoff[w->nsb] = w->xecube.len;
+	for (int c = 0; c < ncols; c++)
+		if (w->schema->cols[c].parent >= 0)
+			eoff[c] = b->col[w->schema->cols[c].parent].eoff;
+	if (w->excepts &&
+		sift_cpagg_excepts(w->schema, &w->pagg, cols, eoff, b->nrows, (const uint8 *) w->cube.data + cubeat, w->cube.len - cubeat,
+						   (const uint8 *) w->ecube.data + ecubeat, w->ecube.len - ecubeat, &w->xcube, &w->xecube))
+		w->anyexc = true;
+	w->xcubeoff[w->nsb + 1] = w->xcube.len;
+	w->xecubeoff[w->nsb + 1] = w->xecube.len;
+	pfree(eoff);
+}
+
+/*
  * The pre-aggregates of the unit just encoded (docs/COL-PREAGG.md): the exact sums of its INT leaves and the cube blob, from the batch's
  * columns with the dictionary leaves in the segment's codes (what a reader of the unit sees).
  */
@@ -405,6 +441,8 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	bool	   *dim = palloc0(ncols * sizeof(bool));
 	int64	  **tk = palloc0(ncols * sizeof(int64 *));
 	SiftCLeafAgg *la = w->lagg + (Size) w->nsb * ncols;
+	Size		cubeat,
+				ecubeat;
 
 	for (int d = 0; d < w->pagg.ndims; d++)
 		dim[w->pagg.dim[d].leaf] = true;
@@ -427,12 +465,13 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		if (def->store == SIFT_COLS_INT)
 			sift_cpagg_leaf(&cols[c], &la[c]);
 	}
-	w->cubeoff[w->nsb] = w->cube.len;
-	w->ecubeoff[w->nsb] = w->ecube.len;
+	w->cubeoff[w->nsb] = cubeat = w->cube.len;
+	w->ecubeoff[w->nsb] = ecubeat = w->ecube.len;
 	/* a key-cut unit holds fewer rows than a superblock: its cube may take what the cube of the unit of that many rows would. With less, the dims that fit differ from unit to unit and the groups of units (superunits) keep none */
 	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, w->keyed && b->nrows < w->aim_rows ? (Size) ((uint64) unit_bytes * w->aim_rows / b->nrows) : unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
+	add_excepts(w, b, cols, cubeat, ecubeat);
 	add_sets(w, cols, unit_bytes);
 	add_runs(w, cols, b->keys);
 	add_points(w, cols, b->keys);
@@ -511,6 +550,8 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->ecubeoff = repalloc_huge(w->ecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->xcubeoff = repalloc_huge(w->xcubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->xecubeoff = repalloc_huge(w->xecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		for (int c = 0; c < ncols; c++)
 		{
 			if (w->set && w->set[c].off)
@@ -564,7 +605,7 @@ sift_colw_bytes(const SiftColSegWriter *w)
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
-	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + 2 * sizeof(uint64)) + w->cube.len + w->ecube.len;
+	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + 2 * sizeof(uint64)) + w->cube.len + w->ecube.len + w->xcube.len + w->xecube.len;
 
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
@@ -960,6 +1001,19 @@ write_pagg(SiftColSegWriter *w)
 		runs = layout_blobs(w, w->run, at, &start, &bytes, &nruns);
 		PAGG_RUNS(h) = start;
 		PAGG_RUNS_BYTES(h) = bytes;
+		at = start + bytes;
+	}
+	if (ver > 5 && w->anyexc)
+	{
+		at = ALIGN8(at);
+		PAGG_XCUBEDIR(h) = at;
+		PAGG_XCUBE_BYTES(h) = w->xcube.len;
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xcube.len);
+		if (w->xecube.len > 0)
+		{
+			PAGG_XECUBEDIR(h) = at;
+			PAGG_XECUBE_BYTES(h) = w->xecube.len;
+		}
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -1013,6 +1067,18 @@ write_pagg(SiftColSegWriter *w)
 	pfree(super.data);
 	if (runs)
 		write_blobs(w, w->run, RUNS_MAGIC, runs, nruns);
+	if (ver > 5 && w->anyexc)
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, w->xcubeoff, (Size) (nsb + 1) * sizeof(uint64));
+		sift_sw_write(w->sw, w->xcube.data, w->xcube.len);
+		if (w->xecube.len > 0)
+		{
+			sw_pad8(w->sw);
+			sift_sw_write(w->sw, w->xecubeoff, (Size) (nsb + 1) * sizeof(uint64));
+			sift_sw_write(w->sw, w->xecube.data, w->xecube.len);
+		}
+	}
 	pfree(h);
 }
 
@@ -1105,6 +1171,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->anypres ? SIFT_COL_FORMAT_PRESENCE : SIFT_COL_FORMAT_SETS);
 	if (w->anyruns)
 		w->format = Max(w->format, w->anyheads ? SIFT_COL_FORMAT_HEADS : SIFT_COL_FORMAT_RUNS);
+	if (w->anyexc)
+		w->format = Max(w->format, SIFT_COL_FORMAT_EXCEPT);
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);

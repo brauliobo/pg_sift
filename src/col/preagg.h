@@ -46,6 +46,8 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
+#define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
+#define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
 #define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
 #define SIFT_PAGG_CAL_PERMILLE	50			/* the calendar dims of a unit together may take this much of its bytes (at least twice the minimum budget) */
 
@@ -187,6 +189,19 @@ typedef struct SiftCPaggCol
 	uint32		n;
 	bool		ready;					/* key is usable: false for a STR leaf stored inline and for a leaf that was not decoded */
 } SiftCPaggCol;
+
+/*
+ * The spec that builds, over other rows of a unit, the dims and rollups the unit's cube blob and element blob hold (same leaves, measures and calendar grains, no
+ * byte budget, no minimum and maximum): the exceptions of a unit (docs/COL-PREAGG.md 11). false when a blob does not decode.
+ */
+extern bool sift_cpagg_mirror(const SiftColSchema *s, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, SiftCPaggSpec *out);
+
+/*
+ * The exceptions of a unit (docs/COL-PREAGG.md 11): the cube and element rollups of the rows where its one NULL-heavy INT leaf is not NULL, with the dims of the unit's
+ * own blobs; appended (leaf first) to xcube and xecube. eoff[c]: the element offsets of a leaf of a list, NULL for the others. false: the unit has none.
+ */
+extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+							   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube);
 
 /* The exact sums of one INT leaf's values */
 extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
@@ -351,6 +366,8 @@ typedef struct SiftCPaggCensus
 extern void sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
 							  SiftCPaggCensus *c);
 /* The leaves a stored cube and element blob read (lists, dims and measures), marked true in need[ncols]; false when they do not decode */
+extern bool sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, const uint8 *blob, uint32 len,
+									 const uint8 *eblob, uint32 elen, int format, const uint8 *xblob, uint32 xlen, const uint8 *xeblob, uint32 xelen);
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
 
 #endif							/* SIFT_COL_PREAGG_H */

@@ -721,6 +721,12 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 }
 
 static bool
+col_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_col_unit_except(&((ColSource *) impl)->unit, leaf);
+}
+
+static bool
 col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
 	ColSource  *src = impl;
@@ -907,6 +913,7 @@ static const SiftSrcProvider col_provider = {
 	.filter_wide = col_filter_wide,
 	.preagg = col_preagg,
 	.unit_exact = col_unit_exact,
+	.unit_except = col_unit_except,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
 	.unit_presence = col_unit_presence,

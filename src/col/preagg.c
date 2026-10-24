@@ -1072,3 +1072,123 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 	if (eout && spec->nrollups > 0)
 		emit_rollups(s, spec, cols, nrows, !spec->rfixed, Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * SIFT_PAGG_DEF_PERMILLE), eout);
 }
+
+/*
+ * The exceptions of a unit: when exactly one INT leaf of the top level has at most 1 row in SIFT_PAGG_EXC_DIV not NULL (the fewest, the first of equals), the cube and the
+ * element rollups of those rows, built with the dims, measures and calendar grains of the unit's own blobs and appended to xcube (after the leaf, as a varint) and xcube's
+ * element blob xecube. eoff[c] is the element offset of each row for a leaf c of a list, NULL for the others. Nothing is appended, and false returned, when no leaf
+ * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own. Deterministic: the verifier calls it again and compares the bytes.
+ */
+bool
+sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+				   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube)
+{
+	int			ncols = s->ncols,
+				xleaf = -1;
+	uint32		limit = Max(1, nrows / SIFT_PAGG_EXC_DIV),
+				nx = 0,
+				best = UINT32_MAX,
+			   *xrow;
+	SiftCPaggSpec mirror;
+	SiftCPaggCol *xc;
+	StringInfoData xb,
+				xe;
+	int64	  **tk;
+	uint64	  **tn,
+			  **to;
+	bool		made = false;
+
+	bool	   *need = palloc0(ncols * sizeof(bool));
+
+	if (clen + elen == 0 || !sift_cpagg_leaves(s, cube, clen, ecube, elen, need))
+	{
+		pfree(need);
+		return false;
+	}
+	for (int c = 0; c < ncols; c++)
+	{
+		uint32		k = 0;
+
+		if (s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !cols[c].ready || cols[c].n != nrows || cols[c].nulls == NULL || cols[c].ovf != NULL)
+			continue;
+		for (uint32 i = 0; i < nrows; i++)
+			k += !((cols[c].nulls[i / 64] >> (i % 64)) & 1);
+		if (k > 0 && k <= limit && k < best)
+		{
+			best = k;
+			xleaf = c;
+		}
+	}
+	if (xleaf < 0 || !sift_cpagg_mirror(s, spec, cube, clen, ecube, elen, &mirror))
+	{
+		pfree(need);
+		return false;
+	}
+	xrow = palloc(best * sizeof(uint32));
+	for (uint32 i = 0; i < nrows; i++)
+		if (!((cols[xleaf].nulls[i / 64] >> (i % 64)) & 1))
+			xrow[nx++] = i;
+	xc = palloc(ncols * sizeof(SiftCPaggCol));
+	tk = palloc0(ncols * sizeof(int64 *));
+	tn = palloc0(ncols * sizeof(uint64 *));
+	to = palloc0(ncols * sizeof(uint64 *));
+	for (int c = 0; c < ncols; c++)
+	{
+		const SiftCPaggCol *src = &cols[c];
+		const uint32 *off = eoff[c];
+		uint32		n = 0;
+
+		xc[c] = (SiftCPaggCol) {NULL, NULL, NULL, 0, false};
+		if (!need[c] || !src->ready || src->key == NULL || (s->cols[c].parent >= 0 && off == NULL))
+			continue;
+		for (uint32 j = 0; j < nx; j++)
+			n += off ? off[xrow[j] + 1] - off[xrow[j]] : 1;
+		tk[c] = palloc(Max(n, 1) * sizeof(int64));
+		tn[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+		if (src->ovf)
+			to[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+		n = 0;
+		for (uint32 j = 0; j < nx; j++)
+			for (uint32 e = off ? off[xrow[j]] : xrow[j], end = off ? off[xrow[j] + 1] : xrow[j] + 1; e < end; e++, n++)
+			{
+				tk[c][n] = src->key[e];
+				if (src->nulls && ((src->nulls[e / 64] >> (e % 64)) & 1))
+					tn[c][n / 64] |= UINT64CONST(1) << (n % 64);
+				if (src->ovf && ((src->ovf[e / 64] >> (e % 64)) & 1))
+					to[c][n / 64] |= UINT64CONST(1) << (n % 64);
+			}
+		xc[c] = (SiftCPaggCol) {tk[c], src->nulls ? tn[c] : NULL, src->ovf ? to[c] : NULL, n, true};
+	}
+	initStringInfo(&xb);
+	initStringInfo(&xe);
+	sift_cpagg_cube(s, &mirror, xc, nx, 0, &xb, &xe);
+	if (xb.len + xe.len > 0 && xb.len + xe.len <= (clen + elen) / SIFT_PAGG_EXC_SHARE)
+	{
+		uint32		v = xleaf;
+
+		for (; v >= 0x80; v >>= 7)
+			appendStringInfoChar(xcube, (char) (v | 0x80));
+		appendStringInfoChar(xcube, (char) v);
+		appendBinaryStringInfo(xcube, xb.data, xb.len);
+		appendBinaryStringInfo(xecube, xe.data, xe.len);
+		made = true;
+	}
+	for (int c = 0; c < ncols; c++)
+	{
+		if (tk[c])
+			pfree(tk[c]);
+		if (tn[c])
+			pfree(tn[c]);
+		if (to[c])
+			pfree(to[c]);
+	}
+	pfree(tk);
+	pfree(tn);
+	pfree(to);
+	pfree(xb.data);
+	pfree(xe.data);
+	pfree(xc);
+	pfree(xrow);
+	pfree(need);
+	return made;
+}
