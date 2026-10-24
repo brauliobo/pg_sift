@@ -44,11 +44,12 @@ CHECK=("CREATE TEMP TABLE r AS SELECT * FROM sift._test_col_wbuf_rows('t_idx', 7
 		(SELECT count(*) FROM r WHERE deleted AND id % 7 <> 0),
 		(SELECT count(*) FROM (SELECT id FROM r WHERE NOT deleted EXCEPT SELECT id FROM b) x) +
 		(SELECT count(*) FROM (SELECT id FROM b EXCEPT SELECT id FROM r WHERE NOT deleted) x),
-		(SELECT sum(live) FROM sift._test_col_wbuf_segments('t_idx')) = (SELECT count(*) FROM r WHERE NOT deleted),
+		(SELECT coalesce(sum(live), 0) FROM sift._test_col_wbuf_segments('t_idx')) = (SELECT count(*) FROM r WHERE NOT deleted),
 		sift._test_check('t_idx') >= 0,
 		(SELECT count(*) FROM r), (SELECT count(*) FROM done), (SELECT count(*) FROM sift._test_col_wbuf_segments('t_idx')),
-		(SELECT sum(nrows) FROM sift._test_col_wbuf_segments('t_idx')) - (SELECT count(*) FROM r)")
+		(SELECT coalesce(sum(nrows), 0) FROM sift._test_col_wbuf_segments('t_idx')) - (SELECT count(*) FROM r)")
 
+# A crash before the first call committed leaves no row and no segment: sum() of nothing is NULL, which is not a failure (nothing was lost).
 # healthy: missing | duplicated | wrongly flagged | records and batches differ | live agree | store check | records | calls | segments | torn rows
 healthy() {
 	local out
