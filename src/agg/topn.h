@@ -110,17 +110,14 @@ extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
 extern void sift_topn_skip(SiftTopN *t);
 
 /*
- * The walk, for a first sort column that does not follow the table: the zone of every superblock is added (sift_topn_walk_add, its number of
- * units), the superblocks are sorted by the best row they can hold, and sift_topn_walk_next gives them in that order until the next
+ * The walk, for a first sort column that does not follow the table: the zone of every superblock is read (sift_topn_walk_setup) and the superblocks are sorted by the best row they can hold, and sift_topn_walk_next gives them in that order until the next
  * cannot beat the n-th best so far; the units of the rest count as skipped.
  */
 extern bool sift_topn_follows(const SiftTopN *t);
 extern PGDLLIMPORT bool sift_topn_zone_keys;	/* sift.topn_zone_keys */
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
-extern void sift_topn_walk_begin(SiftTopN *t, uint32 nsb);
+extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
-extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);	/* z: one zone for each of those keys */
-extern void sift_topn_walk_sort(SiftTopN *t);
 extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
@@ -142,7 +139,7 @@ extern bool sift_topn_parallel_ok(const SiftTopN *t);
 extern void sift_topn_bound_init(pg_atomic_uint64 *bound);
 extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
 extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
-extern const uint32 *sift_topn_walk_order(const SiftTopN *t);
+extern const uint32 *sift_topn_walk_order(SiftTopN *t);
 extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
 extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */

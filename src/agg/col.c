@@ -615,6 +615,27 @@ col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 	return n;
 }
 
+static uint32
+col_zone_range_segs(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	SiftColZone cz;
+	uint32		n = sift_col_zone_range_segs(((ColSource *) impl)->cs, leaf, lo, hi, &cz);
+
+	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
+	return n;
+}
+
+static bool
+col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	SiftColWalkStamp cs;
+
+	if (!sift_col_walk_stamp(((ColSource *) impl)->cs, &cs, mem, cap, nmem))
+		return false;
+	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version};
+	return true;
+}
+
 /* the stored numbering: not a unit of a match set, of rows read again from the heap, or narrowed to a few rows */
 static bool
 col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
@@ -822,6 +843,8 @@ static const SiftSrcProvider col_provider = {
 	.tids = col_tids,
 	.zone = col_zone,
 	.zone_range = col_zone_range,
+	.zone_range_segs = col_zone_range_segs,
+	.walk_stamp = col_walk_stamp,
 	.overflow = col_overflow,
 	.run_info = col_run_info,
 	.run_read = col_run_read,

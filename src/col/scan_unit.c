@@ -18,6 +18,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "core/cmp.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -243,8 +244,8 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 	zone->has_ovf = (z.flags & SIFT_COLZ_OVERFLOW) != 0;
 }
 
-uint32
-sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+static uint32
+zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone, bool wbuf)
 {
 	uint32		units = 0;
 
@@ -270,6 +271,8 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 			zone->max = Max(zone->max, z.flags & SIFT_COLZ_INLINE ? PG_INT64_MAX : z.max);
 		}
 	}
+	if (!wbuf)
+		return units;
 	/* the units of the write buffers are encoded when read, and not loaded before a begin: they are read */
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		zone->has_ovf = true;
@@ -280,6 +283,55 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 			units++;
 		}
 	return units;
+}
+
+uint32
+sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	return zone_range(src, col, sb_lo, sb_hi, zone, true);
+}
+
+/* The same over the segments alone, the units of the write buffers left out (sift_col_walk_stamp lists their superblocks) */
+uint32
+sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	return zone_range(src, col, sb_lo, sb_hi, zone, false);
+}
+
+static int
+sb_cmp(const void *a, const void *b)
+{
+	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/*
+ * What the zones of the segments of an index source depend on: its file and the version of the directory it read. The superblocks that hold rows of the
+ * write buffers are listed in mem (ascending, nmem of them); false when the source is not that of an index, its buffers are not loaded, or more than cap
+ * superblocks hold such rows.
+ */
+bool
+sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	int			n = 0;
+
+	if ((src->flags & COLO_TABLE) || !src->mem_loaded)
+		return false;
+	for (int i = 0; i < src->nmem; i++)
+		if (src->mem[i].b->nrows > 0)
+		{
+			if (n == cap)
+				return false;
+			mem[n++] = src->mem[i].b->sb;
+		}
+	qsort(mem, n, sizeof(uint32), sb_cmp);
+	*nmem = 0;
+	for (int i = 0; i < n; i++)
+		if (i == 0 || mem[i] != mem[i - 1])
+			mem[(*nmem)++] = mem[i];
+	st->index = RelationGetRelid(src->index);
+	st->file = src->index->rd_locator.relNumber;
+	st->version = src->dir.version;
+	return true;
 }
 
 bool

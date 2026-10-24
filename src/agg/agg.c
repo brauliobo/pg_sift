@@ -718,15 +718,7 @@ topn_run(AggExec *ex)
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
 	{
 		/* the match set of a search restarts when it is asked for superblocks it has passed: only the scans without one are walked */
-		sift_topn_walk_begin(t, nsb);
-		for (uint32 sb = 0; sb < nsb; sb++)
-		{
-			SiftSrcZone zs[SIFT_TOPN_MAX_KEYS];
-			uint32		units = topn_walk_zones(ex, sb, zs);
-
-			sift_topn_walk_add(t, sb, units, zs);
-		}
-		sift_topn_walk_sort(t);
+		sift_topn_walk_setup(t);
 		if (parallel)
 		{
 			ex->vorder = (uint32 *) sift_topn_walk_order(t);
