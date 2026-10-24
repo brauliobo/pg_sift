@@ -22,6 +22,8 @@
 #define SIFT_CPOINT_MAX_KEYS	65536		/* an IN list of more keys is answered by the units (a lookup that finds more rows is too, below) */
 #define SIFT_CPOINT_MIN_KEYS	64			/* up to this many keys a lookup is made whatever the segment's rows */
 #define SIFT_CPOINT_MAX_RANGE	64			/* so is a range of more keys: the zones cut a range of values by their order */
+#define SIFT_CPOINT_DENSE_ROWS	4096		/* a list that expects more rows than this and a 64th of the segment's rows reads them for nothing: the units hold them as well */
+#define SIFT_CPOINT_DENSE_SHARE	64
 #define SIFT_CPOINT_MAX_ROWS	65536		/* a lookup that finds more rows is not a point lookup: the units answer it */
 #define SIFT_CPOINT_SEG_ROWS	(UINT32_C(1) << 30)	/* a segment of this many rows or more has no tables: a slot keeps a list offset in 31 bits */
 #define SIFT_CPOINT_LIST		(UINT32_C(1) << 31)	/* in a slot, the low 32 bits are this flag and the word offset of a list of rows, not the only row of the key */

@@ -2258,6 +2258,15 @@ sift_cseg_point_count(SiftColSegment *seg, int col)
 	return pl ? pl[col].count : 0;
 }
 
+/* the distinct keys of the leaf's directory */
+uint32
+sift_cseg_point_nkeys(SiftColSegment *seg, int col)
+{
+	const PointLeaf *pl = points_read(seg);
+
+	return pl ? pl[col].nkeys : 0;
+}
+
 void
 sift_cseg_verify_points(SiftColSegment *seg)
 {

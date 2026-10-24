@@ -649,7 +649,7 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
 	if (cover <= 0 || nd <= 0 || keys > SIFT_CPOINT_MAX_KEYS || (keys > SIFT_CPOINT_MIN_KEYS && keys > c->stats.nrows / 16))
 		return 1.0;
 	rows = keys * Max(c->stats.nrows, 1.0) / nd;
-	if (rows > SIFT_CPOINT_MAX_ROWS)
+	if (rows > SIFT_CPOINT_MAX_ROWS || rows > Max((double) SIFT_CPOINT_DENSE_ROWS, c->stats.nrows / SIFT_CPOINT_DENSE_SHARE))
 		return 1.0;
 	return 1.0 - cover + cover * -expm1(-rows / units);
 }
