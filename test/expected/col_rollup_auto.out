@@ -1,0 +1,136 @@
+-- rollup_dims = 'auto' writes the rollup of the rows of a unit by the columns whose combinations fit the cells a unit may keep, read from a sample of the
+-- table at CREATE INDEX: the columns that fit the cube's histograms, the fewest values first, as the largest nested set that fits in most of the sampled stretches,
+-- recorded as 'auto: a, b' (a REINDEX keeps it, ALTER INDEX SET (rollup_dims = 'auto') decides again). Not a default. The answers are the plain plan's.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = notice;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET cpu_tuple_cost = 0.5;
+\ir test/agg_preagg_units.sql
+\set ECHO none
+-- a, b, c have 5, 7 and 11 values (385 combinations in a unit of about 6,000 rows, 600 cells), e has 97 (too many with them), h one per row
+CREATE TABLE ra (id int, v bigint, a int, b int, c int, e int, h int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE ra ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ra SELECT i, i % 100, i % 5, i % 7, i % 11, (i * 37) % 97, i, repeat('x', 200) FROM generate_series(1, 30000) i;
+VACUUM (FREEZE, ANALYZE) ra;
+CREATE FUNCTION ra_option(i text) RETURNS text LANGUAGE sql AS
+$$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'rollup_dims=%'), 'not set') $$;
+CREATE FUNCTION ra_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE ra_q (n int, q text);
+INSERT INTO ra_q VALUES
+	(1, 'SELECT a, b, count(*), sum(v) FROM ra GROUP BY 1, 2'),
+	(2, 'SELECT count(*), sum(v) FROM ra WHERE a = 2 AND b = 3'),
+	(3, 'SELECT b, c, sum(v) FROM ra GROUP BY 1, 2');
+CREATE FUNCTION ra_check() RETURNS TABLE (n int, same bool, from_cells bool) LANGUAGE plpgsql AS $$
+DECLARE r record;
+BEGIN
+	FOR r IN SELECT * FROM ra_q ORDER BY ra_q.n LOOP
+		n := r.n;
+		from_cells := (SELECT coalesce(u.pre, 0) > 0 FROM pa_units(r.q) u);
+		same := ra_rows(r.q, true) = ra_rows(r.q, false);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- no option: the cube holds one column at a time, so a GROUP BY of two scans the units
+CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h);
+SELECT ra_option('ra_none');
+ ra_option 
+-----------
+ not set
+(1 row)
+
+SELECT * FROM ra_check();
+ n | same | from_cells 
+---+------+------------
+ 1 | t    | f
+ 2 | t    | f
+ 3 | t    | f
+(3 rows)
+
+DROP INDEX ra_none;
+CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'auto');
+NOTICE:  sift_col index ra_auto writes a rollup of the rows by a, b
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 35 of them a unit; the cells add to the index and to its build (docs/perf/COLUMN-DEFAULTS.md).
+HINT:  ALTER INDEX ra_auto SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+SELECT ra_option('ra_auto');
+       ra_option        
+------------------------
+ rollup_dims=auto: a, b
+(1 row)
+
+SELECT sift.col_verify('ra_auto', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM ra_check();
+ n | same | from_cells 
+---+------+------------
+ 1 | t    | t
+ 2 | t    | t
+ 3 | t    | f
+(3 rows)
+
+-- a rebuild keeps the columns, whatever the table holds now (a has 400 values in a unit now); ALTER ... 'auto' decides again, on the columns that fit
+UPDATE ra SET a = id % 400;
+VACUUM (FREEZE, ANALYZE) ra;
+REINDEX INDEX ra_auto;
+NOTICE:  sift_col index ra_auto: rollup_dims wrote no rollup of "a, b" in 100% of 5 units, which hold more combinations of them than a unit may keep
+DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+HINT:  Name fewer columns, or columns with fewer values per unit.
+SELECT ra_option('ra_auto');
+       ra_option        
+------------------------
+ rollup_dims=auto: a, b
+(1 row)
+
+ALTER INDEX ra_auto SET (rollup_dims = 'auto');
+REINDEX INDEX ra_auto;
+NOTICE:  sift_col index ra_auto writes a rollup of the rows by b, c
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 38 of them a unit; the cells add to the index and to its build (docs/perf/COLUMN-DEFAULTS.md).
+HINT:  ALTER INDEX ra_auto SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index ra_auto: rollup_dims wrote no rollup of "b, c" in 20% of 5 units, which hold more combinations of them than a unit may keep
+DETAIL:  A unit keeps at most a tenth of its rows as cells, and at most 4096; a query that groups by those columns scans the others.
+HINT:  Name fewer columns, or columns with fewer values per unit.
+SELECT ra_option('ra_auto');
+       ra_option        
+------------------------
+ rollup_dims=auto: b, c
+(1 row)
+
+SELECT sift.col_verify('ra_auto', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM ra_check();
+ n | same | from_cells 
+---+------+------------
+ 1 | t    | f
+ 2 | t    | f
+ 3 | t    | t
+(3 rows)
+
+-- columns whose combinations never fit write nothing
+CREATE TABLE ra_few (id int, x int, y int) WITH (autovacuum_enabled = off);
+INSERT INTO ra_few SELECT i, i, i % 3 FROM generate_series(1, 2000) i;
+CREATE INDEX ra_few_col ON ra_few USING sift_col (id, x, y) WITH (rollup_dims = 'auto');
+SELECT ra_option('ra_few_col');
+    ra_option     
+------------------
+ rollup_dims=auto
+(1 row)
+
+DROP TABLE ra, ra_q, ra_few;
+DROP FUNCTION ra_option(text), ra_rows(text, bool), ra_check(), pa_units(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
