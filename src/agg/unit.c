@@ -399,7 +399,7 @@ unit_begin(AggExec *ex)
 }
 
 /*
- * The source's filters left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
+ * The source's filters, or the rows a point directory lists, left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
  * as those rows alone, so that the rest of the work (the leaves, the offsets and owners of the elements of a list) costs what they do, not
  * what the unit does. rmask becomes all of them, nrow their number.
  */
@@ -656,7 +656,7 @@ process_unit(AggExec *ex)
 		ex->row_base += nrow;
 		return;
 	}
-	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_narrow(ex->src) &&
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0 || ex->spec->npred > 0) && sift_colsrc_can_narrow(ex->src) &&
 		sift_colk->bits_count(rmask, (nrow + 63) / 64) * NARROW_RATIO < nrow)
 		unit_narrow(ex, &rmask, &nrow);
 	unit_conjuncts(ex, rmask, cand, nrow);
