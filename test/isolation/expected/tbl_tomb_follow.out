@@ -1,0 +1,91 @@
+Parsed test spec with 4 sessions
+
+starting permutation: wd mlock rseq vac munlock mcount
+busy
+----
+f   
+(1 row)
+
+step wd: DELETE FROM iso_e WHERE id % 20 = 1;
+step mlock: SELECT pg_advisory_lock(1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step rseq: SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off;
+		  UPDATE iso_e SET v = CASE WHEN id <> 1500 THEN 'u' WHEN pg_advisory_lock(1)::text <> '' OR NOT pg_advisory_unlock(1) THEN 'x' ELSE 'u' END WHERE id BETWEEN 1 AND 3000; <waiting ...>
+step vac: VACUUM iso_e;
+step munlock: SELECT pg_advisory_unlock(1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step rseq: <... completed>
+step mcount: SELECT count(*) AS live, count(*) FILTER (WHERE v = 'u') AS updated FROM iso_e;
+live|updated
+----+-------
+2850|   2850
+(1 row)
+
+
+starting permutation: wd mlock rbmp vac munlock mcount
+busy
+----
+f   
+(1 row)
+
+step wd: DELETE FROM iso_e WHERE id % 20 = 1;
+step mlock: SELECT pg_advisory_lock(1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step rbmp: SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = on; SET LOCAL enable_indexscan = off;
+		  UPDATE iso_e SET v = CASE WHEN id <> 1500 THEN 'u' WHEN pg_advisory_lock(1)::text <> '' OR NOT pg_advisory_unlock(1) THEN 'x' ELSE 'u' END WHERE id BETWEEN 1 AND 3000; <waiting ...>
+step vac: VACUUM iso_e;
+step munlock: SELECT pg_advisory_unlock(1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step rbmp: <... completed>
+step mcount: SELECT count(*) AS live, count(*) FILTER (WHERE v = 'u') AS updated FROM iso_e;
+live|updated
+----+-------
+2850|   2850
+(1 row)
+
+
+starting permutation: wd mlock ridx vac munlock mcount
+busy
+----
+f   
+(1 row)
+
+step wd: DELETE FROM iso_e WHERE id % 20 = 1;
+step mlock: SELECT pg_advisory_lock(1);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step ridx: SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = on;
+		  UPDATE iso_e SET v = CASE WHEN id <> 1500 THEN 'u' WHEN pg_advisory_lock(1)::text <> '' OR NOT pg_advisory_unlock(1) THEN 'x' ELSE 'u' END WHERE id BETWEEN 1 AND 3000; <waiting ...>
+step vac: VACUUM iso_e;
+step munlock: SELECT pg_advisory_unlock(1);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step ridx: <... completed>
+step mcount: SELECT count(*) AS live, count(*) FILTER (WHERE v = 'u') AS updated FROM iso_e;
+live|updated
+----+-------
+2850|   2850
+(1 row)
+
