@@ -8,7 +8,48 @@ or a `sift_table` answers counts, sums, distinct counts, group-bys and top-N fro
 
 [^pg19]: PostgreSQL 19 is tested on its release candidate (a server built from `REL_19_STABLE`, the same jobs as for 17 and 18); see [docs/SUPPORT.md](docs/SUPPORT.md#postgresql-versions).
 
-[At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
+[In five minutes](#in-five-minutes) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · Benchmarks · [Compared with](#compared-with) · What is covered · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
+
+## In five minutes
+
+Install from source (PostgreSQL 17, 18 or 19 with server headers and a C compiler; packages and Docker are under [Install](#install)):
+
+```sh
+make USE_PGXS=1 && sudo make USE_PGXS=1 install
+psql -d mydb -c 'CREATE EXTENSION pg_sift'      # as a superuser
+```
+
+Then, in `psql -d mydb`, a generated table of 1,000,000 orders, nothing to download:
+
+```sql
+CREATE TABLE orders AS
+SELECT g AS id,
+       1 + (random() * 50000)::int AS customer_id,
+       (ARRAY['US','DE','BR','JP','IN','FR'])[1 + (random() * 5)::int] AS country,
+       (ARRAY['books','toys','garden','music'])[1 + (random() * 3)::int] AS category,
+       round((random() * 300)::numeric, 2)::numeric(10,2) AS amount,
+       timestamp '2025-01-01' + random() * interval '365 days' AS created_at
+FROM generate_series(1, 1000000) g;
+ALTER TABLE orders ADD PRIMARY KEY (id);
+CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, amount, created_at);
+VACUUM ANALYZE orders;
+
+EXPLAIN (COSTS OFF) SELECT category, count(*), sum(amount), avg(amount) FROM orders GROUP BY 1;   -- Custom Scan (SiftAgg) on orders_col
+SET sift.enable_agg = off;                                                                           -- the plan PostgreSQL has without pg_sift
+```
+
+Medians of six runs, warm, PostgreSQL 18.6, the same table and answers with `sift.enable_agg` on and off:
+
+| query | pg_sift | PostgreSQL |
+|---|---:|---:|
+| `SELECT category, count(*), sum(amount), avg(amount) FROM orders GROUP BY 1` | 0.14 ms | 54 ms |
+| `SELECT count(DISTINCT customer_id) FROM orders WHERE country = 'DE'` | 2.5 ms | 68 ms |
+| `SELECT customer_id, sum(amount) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 5` | 12 ms | 177 ms |
+| `SELECT country, category, count(*), sum(amount) FROM orders WHERE created_at >= '2025-06-01' AND created_at < '2025-07-01' GROUP BY 1, 2` | 20 ms | 30 ms |
+
+The last row is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the planner kept PostgreSQL's plan on this table, because the scan costs more than a parallel sequential scan. Full-text search is [below](#try-it-full-text-search).
+
+**Use it** when the data stays in PostgreSQL and you want dashboards, reports or ranked search from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
 
 ## At a glance
 
