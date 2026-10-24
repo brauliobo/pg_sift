@@ -431,4 +431,22 @@ extern void agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo 
 extern bool compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out);
 extern void add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist);
 
+/* agg/verdict.c: the choice between a shared CTE and its inline plan, kept for the statements of a backend */
+#define VERDICT_RELS 16
+
+typedef struct CteVerdict
+{
+	uint64		key;
+	bool		cacheable,		/* the statement has a key */
+				known,			/* the cache has the verdict (won, and the totals of the plan it was made from) */
+				won;
+	double		scans,
+				shared;
+	int			nrels;
+	Oid			rels[VERDICT_RELS];
+}			CteVerdict;
+
+extern void verdict_lookup(Query *q, CteVerdict *vd);
+extern void verdict_remember(const CteVerdict *vd, bool won, double scans, double shared);
+
 #endif							/* SIFT_AGG_PLAN_INT_H */
