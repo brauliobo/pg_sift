@@ -1045,6 +1045,8 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
 		cc->recheck_units += c->par->cc.recheck_units;
+		cc->point_units += c->par->cc.point_units;
+		cc->point_rows += c->par->cc.point_rows;
 	}
 }
 
@@ -1339,6 +1341,11 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
 	if (cc->units_set_pruned > 0)
 		ExplainPropertyInteger("Units Pruned By Set Summary", NULL, cc->units_set_pruned, es);
+	if (cc->point_units > 0)
+	{
+		ExplainPropertyInteger("Units From Point Directory", NULL, cc->point_units, es);
+		ExplainPropertyInteger("Rows From Point Directory", NULL, cc->point_rows, es);
+	}
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);

@@ -25,7 +25,7 @@ INSERT INTO ad SELECT date '2024-01-01' + i, date '2024-01-01' + i, date '2024-0
                       date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i FROM generate_series(1, 100) i;
 CREATE INDEX ad_dates ON ad USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17) WITH (calendar_columns = 'off');
 
--- an index with paths: calendar cells need a schema without them
+-- an index with paths takes calendar cells too (3.4; 3.3 refused them)
 \c
 ALTER INDEX ao_paths SET (calendar_columns = 'd');
 \c
