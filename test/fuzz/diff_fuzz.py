@@ -841,13 +841,70 @@ def gen_nullzone(r, ctx):
     return dict(table='nzf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
 
 
+# ---------- exceptions: IS NULL on a stamp that is set in a few rows of a unit, answered as the unit net of them (float sums within the tolerance of the others) ----------
+EX_WHERE = ['e.stamp IS NULL'] * 6 + ['e.stamp IS NOT NULL', 'e.stamp IS NULL AND e.org < {k}', 'e.stamp IS NULL AND e.id < {n}', 'e.stamp IS NULL AND e.id > {n}',
+                                       "e.stamp IS NULL AND e.kind = 'k{k4}'", 'e.stamp IS NULL AND e.amount >= {k}00', '(e.stamp IS NULL OR e.org = {k})']
+EX_KEYS = ['e.org', 'e.kind', 'e.org % 3', '(e.id / 256)']
+EX_AGGS = ['count(*)', 'count(e.val)', 'sum(e.amount)', 'avg(e.amount)', 'sum(e.val)', 'avg(e.val)', 'sum(e.dec)', 'avg(e.dec)', 'min(e.val)', 'max(e.dec)', 'count(e.stamp)',
+           'sum(e.val) FILTER (WHERE e.org = {k})', 'count(DISTINCT e.kind)']
+EX_ELEM_KEYS = ['r.key', "r.key || e.kind", 'e.org']
+EX_ELEM_AGGS = ['count(*)', "sum((r.value #>> '{{}}')::float8)", "avg((r.value #>> '{{}}')::float8)", "min((r.value #>> '{{}}')::float8)", "sum((r.value #>> '{{}}')::float8) FILTER (WHERE e.org = {k})"]
+EX_LIST_KEYS = ['p.cat', 'p.cat || e.kind', 'e.org']
+EX_LIST_AGGS = ['count(*)', 'sum(p.score)', 'avg(p.score)', 'max(p.score)', 'count(p.score)']
+
+
+def gen_exceptions(r, ctx):
+    form = r.choice(['rows', 'rows', 'map', 'map', 'list'])
+    fill = lambda t: t.format(k=r.randrange(1, 6), k4=r.randrange(5), n=r.randrange(100, max(ctx['rows'], 101)))
+    where_ = [fill(r.choice(EX_WHERE))]
+    if form == 'rows':
+        ks = list(dict.fromkeys(r.sample(EX_KEYS, r.choice([0, 1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a) for a in r.sample(EX_AGGS, r.randrange(1, 5))))
+        frm = 'exf e'
+    elif form == 'map':
+        ks = list(dict.fromkeys(r.sample(EX_ELEM_KEYS, r.choice([1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a).replace('{{}}', '{}') for a in r.sample(EX_ELEM_AGGS, r.randrange(1, 4))))
+        frm = 'exf e, jsonb_each(e.scores) r'
+    else:
+        ks = list(dict.fromkeys(r.sample(EX_LIST_KEYS, r.choice([1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a) for a in r.sample(EX_LIST_AGGS, r.randrange(1, 4))))
+        frm = "exf e, jsonb_to_recordset(e.parts) p(cat text, score float8)"
+    return dict(table='exf', frm=frm, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
+def render_exceptions(p):
+    return grouped(p, p['frm']), bool(p['keys'])
+
+
+def dml_exceptions(r, ctx):
+    """Stamps and restores (a stamped row makes its unit dirty: scanned until VACUUM and a merge write its exceptions again), inserts, deletes, VACUUM and merges on exf."""
+    m = r.choice([13, 40, 97, 211, 509])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 3:
+        return f"UPDATE exf SET stamp = timestamptz '2025-09-01' WHERE {ids}"
+    if e == 3:
+        return f'UPDATE exf SET stamp = NULL WHERE {ids}'
+    if e == 4:
+        return f'UPDATE exf SET val = val * 3 + 1 WHERE {ids}'
+    if e == 5:
+        return f'DELETE FROM exf WHERE {ids}'
+    if e in (6, 7):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_ex']; ctx['next_ex'] += n
+        return f'INSERT INTO exf SELECT * FROM fz.gen_exf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 8:
+        return r.choice(['VACUUM exf', 'VACUUM (FREEZE) exf'])
+    return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
-    'distinctrows': (gen_distinctrows, render_distinctrows, 3),
+    'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1029,11 +1086,14 @@ def episodes(seed, nq, ctx, only, dmls=4):
     r = random.Random(seed * 7919 + 1)
     rk = random.Random(seed * 104729 + 3)
     rn = random.Random(seed * 1299709 + 5)
+    rx = random.Random(seed * 15485863 + 7)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
         if not only or 'nullzone' in only:
             st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
+        if not only or 'exceptions' in only:
+            st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
         if not only or 'keycut' in only:
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         qs = []
@@ -1213,7 +1273,7 @@ def main():
         tag = f'{seed}'
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000}
+        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

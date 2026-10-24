@@ -167,17 +167,29 @@ preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v)
 static bool
 preagg_zones(AggExec *ex)
 {
+	ex->pa_xleaf = -1;
 	for (int k = 0; k < ex->nprune; k++)
 	{
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
-		/* a test of the NULLs holds for all the rows of the unit when its zone counts none (IS NOT NULL) or only NULLs (IS NULL), and no NaN stands in for one */
+		/*
+		 * a test of the NULLs holds for all the rows of the unit when its zone counts none (IS NOT NULL) or only NULLs (IS NULL), and no NaN stands in for one. A
+		 * unit with some rows that are not NULL answers IS NULL as its histograms minus the exceptions it kept for them (one leaf: pa_xleaf, see hist_net)
+		 */
 		if (z->nulltest)
 		{
-			if (ex->pa.nullz &&
-				(!sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) || a.has_nan || (z->nulltest == SSN_NOTNULL ? a.nnull > 0 : a.nnull < a.nvals)))
-				return false;
+			if (ex->pa.nullz)
+			{
+				bool		known = sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a);
+
+				if (!known || a.has_nan || (z->nulltest == SSN_NOTNULL ? a.nnull > 0 : a.nnull < a.nvals))
+				{
+					if (!known || a.has_nan || z->nulltest != SSN_ISNULL || (ex->pa_xleaf >= 0 && ex->pa_xleaf != z->leaf) || a.nnull == a.nvals)
+						return false;
+					ex->pa_xleaf = z->leaf;
+				}
+			}
 			continue;
 		}
 
@@ -218,6 +230,9 @@ preagg_sums(AggExec *ex)
 	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, Max(ex->spec->naggs, 1) * sizeof(PaVal));
 	int			nrow = ex->unit.nrow;
 
+	/* the sums of the leaves are of all the rows of the unit; the exceptions keep histograms and rollups only */
+	if (ex->pa_xleaf >= 0)
+		return false;
 	for (int ai = 0; ai < ex->spec->naggs; ai++)
 	{
 		const SiftAggAgg *a = &ex->spec->agg[ai];
@@ -514,6 +529,37 @@ preagg_floats(AggExec *ex, int leaf, bool bounded)
 		(!bounded || a.nnull == a.nvals || (a.has_minmax && fabs(a.min_f) <= PA_FLOAT_MAX && fabs(a.max_f) <= PA_FLOAT_MAX));
 }
 
+/*
+ * The unit's histogram of dim, and its rollup of a list, as the rows the conjuncts of the scan keep: with an IS NULL that the zone could not decide
+ * (pa_xleaf), net of the rows the unit kept the exceptions of. False for a unit that has none of that leaf, lacks the dim or whose float sums would cancel: it is
+ * scanned (counted in exc_scan).
+ */
+static bool
+hist_net(AggExec *ex, int dim, SiftSrcHist *h)
+{
+	bool		ok;
+
+	if (ex->pa_xleaf >= 0 && !sift_colsrc_unit_except(ex->src, &ex->unit, ex->pa_xleaf))
+		return false;
+	ok = sift_colsrc_unit_hist(ex->src, &ex->unit, dim, h);
+	if (ex->pa_xleaf >= 0)
+		sift_colsrc_unit_except(ex->src, &ex->unit, -1);
+	return ok;
+}
+
+static bool
+rollup_net(AggExec *ex, SiftSrcRollup *r)
+{
+	bool		ok;
+
+	if (ex->pa_xleaf >= 0 && !sift_colsrc_unit_except(ex->src, &ex->unit, ex->pa_xleaf))
+		return false;
+	ok = sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &ex->pa_need, r);
+	if (ex->pa_xleaf >= 0)
+		sift_colsrc_unit_except(ex->src, &ex->unit, -1);
+	return ok;
+}
+
 /* the groups of the unit's histogram of the key's column, or of the column the conjuncts test (no key: one group) */
 static bool
 preagg_hist(AggExec *ex)
@@ -529,7 +575,7 @@ preagg_hist(AggExec *ex)
 			  **fkeep = MemoryContextAllocZero(ex->ucxt, Max(s->naggs, 1) * sizeof(uint64 *));
 	int			nkept = 0;
 
-	if (!sift_colsrc_unit_hist(ex->src, &ex->unit, ex->pa.dim + (ex->pa.cal ? SIFT_SRC_CAL : 0), &h))
+	if (!hist_net(ex, ex->pa.dim + (ex->pa.cal ? SIFT_SRC_CAL : 0), &h))
 		return false;
 	/* the cells of a grain the key or the tests are not constant over, or no cells (the unit had too many, or an infinity): the unit is scanned */
 	if (ex->pa.cal && (h.grain <= 0 || !(ex->pa.calmask >> h.grain & 1)))
@@ -572,7 +618,7 @@ preagg_hist(AggExec *ex)
 			if (m == -3)
 			{
 				/* the group is one value: a NULL group adds none, any other adds its id (the value for a 32-bit leaf, the id over all dictionaries for text) */
-				if (kept[j] < h.ngroups - h.has_null)
+				if (kept[j] < h.ngroups - h.has_null && h.count[kept[j]] > 0)
 				{
 					uint32		id = h.dict ? dict_amap(ex, dict_slot(ex, h.dict), h.dict, ai)[(uint32) h.key[kept[j]]] : (uint32) h.key[kept[j]];
 
@@ -822,7 +868,7 @@ preagg_rollup(AggExec *ex)
 		ex->n_rollup_cost++;
 		return false;
 	}
-	if (!sift_colsrc_unit_rollup(ex->src, &ex->unit, ex->pa.list, &ex->pa_need, &r))
+	if (!rollup_net(ex, &r))
 		return false;
 	for (int d = 0; d < ex->pa.ndims; d++)
 		if (rollup_dim(&r, ex->pa.rdim[d]) < 0)
@@ -849,6 +895,12 @@ preagg_rollup(AggExec *ex)
 		if (m == r.nmeas)
 			return false;
 		if (ex->lay->leaf[leaf].vtype == SCV_F64 && a->kind != SAA_COUNT && !preagg_floats(ex, leaf, !mm))
+		{
+			ex->pa_miss = false;
+			return false;
+		}
+		/* a unit net of its exceptions has no minimum or maximum: they are not the remaining rows' */
+		if (mm && (ex->lay->leaf[leaf].vtype == SCV_F64 ? r.minf[m] == NULL : r.min[m] == NULL))
 		{
 			ex->pa_miss = false;
 			return false;
@@ -955,9 +1007,10 @@ preagg_hist_hdim(AggExec *ex)
 	return ok;
 }
 
-bool
-preagg_unit(AggExec *ex)
+static bool
+preagg_unit_try(AggExec *ex)
 {
+	ex->pa_xleaf = -1;
 	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
 		return false;
 	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_arith(ex))
@@ -1002,6 +1055,23 @@ preagg_unit(AggExec *ex)
 		ex->n_rollup_queued += sift_colsrc_unit_rollup_miss(ex->src, &ex->unit);
 	}
 	return false;
+}
+
+/* the unit from its pre-aggregates, or false for a scan; a unit that needed its exceptions (an IS NULL the zone could not decide) counts as net of them or scanned */
+bool
+preagg_unit(AggExec *ex)
+{
+	bool		ok = preagg_unit_try(ex);
+
+	if (ex->pa_xleaf >= 0 && ex->unit.nsu == 0)
+	{
+		if (ok)
+			ex->n_exc_units++;
+		else
+			ex->n_exc_scan++;
+	}
+	ex->pa_xleaf = -1;
+	return ok;
 }
 
 void

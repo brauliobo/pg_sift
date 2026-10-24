@@ -1321,6 +1321,11 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	if (!c->pa_on)
 		return;
 	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
+	if (c->n_exc_units > 0 || c->n_exc_scan > 0)
+	{
+		ExplainPropertyInteger("Units Net Of Exceptions", NULL, c->n_exc_units, es);
+		ExplainPropertyInteger("Units With Exceptions Scanned", NULL, c->n_exc_scan, es);
+	}
 	if (c->super_on)
 		ExplainPropertyInteger("Superunits", NULL, c->n_super, es);
 	if (!PA_ROLLUP(ex->pa))

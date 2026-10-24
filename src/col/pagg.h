@@ -27,6 +27,14 @@ extern bool sift_col_unit_preagg_ok(const SiftColUnit *unit);
  */
 extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
 
+/*
+ * Exceptions (docs/COL-PREAGG.md 11): a stored exact unit may hold the cube and rollups of its rows where one leaf is not NULL. With leaf >= 0 and the unit
+ * holding them for that leaf, this returns true and the next sift_col_unit_hist / sift_col_unit_rollup on the unit give the groups and tuples of the rows where
+ * the leaf IS NULL: counts and sums net of the exceptions, no minimum or maximum, false when a float sum would lose more than 6 bits to the subtraction or the
+ * unit lacks the dim; sift_col_unit_agg and sift_col_unit_presence refuse the unit. Leaf -1 (and true) returns it to its own rows. unit->except holds the leaf.
+ */
+extern bool sift_col_unit_except(SiftColUnit *unit, int leaf);
+
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
 

@@ -259,6 +259,9 @@ typedef struct AggExec
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
 	SiftPaWhy	pa_why;			/* why not, when pa_on is false */
+	int			pa_xleaf;		/* the conjunct IS NULL on this leaf is answered as the unit net of its exceptions (-1: none; hist_net) */
+	int64		n_exc_units;	/* units answered net of their exceptions, and the units with some that were scanned (a missing dim, a float sum that cancels) */
+	int64		n_exc_scan;
 	bool		pa_miss;		/* the last preagg_rollup failed for lack of a rollup, a dim or a measure (not for the values in the unit) */
 	SiftSrcRollupNeed pa_need;	/* the columns of a unit's rollup the query reads (pa.list >= 0) */
 	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */

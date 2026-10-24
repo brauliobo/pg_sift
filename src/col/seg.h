@@ -180,6 +180,9 @@ extern void sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs);
 extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
+/* the exception cube and element blob of unit u (column format minor 19; NULL: the unit has none): same formats, over the unit's exception rows; the first varint of each is the exception leaf */
+extern const uint8 *sift_cseg_xcube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_xecube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
 /*
  * Superunits (docs/COL-PREAGG.md section 10): the units in groups of fan consecutive ones, group k = units [k * fan, min((k + 1) * fan, nsb)), with the page
