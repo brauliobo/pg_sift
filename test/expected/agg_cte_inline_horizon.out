@@ -1,7 +1,11 @@
 -- sift.agg_scale_horizon: where the scans of an inline shared CTE cost less than the work they replace but not by the margin, the statement is planned again at
--- the square root of the horizon times the rows and at the horizon times the rows (sift.plan_scale), and the inline plan is kept if it wins at both. Here the
--- scans win by 1.46 at the size of the table and are refused for their cost from three times the rows up (the group table of their per-row arms outgrows
--- work_mem): the choice at the size it is does not depend on the setting, and a size at which the scans lose is never promoted by it.
+-- the square root of the horizon times the rows and at the horizon times the rows (sift.plan_scale), and the inline plan is kept if it wins at both.
+-- This statement is not that close call: the work of the shared plan is priced at 395 times the scans at the size of the table (the unnesting aggregates of
+-- the three branches are charged; the scans really run 3.9 times faster), at 430 times at three times the rows and at 440 at ten, so the scans win at every
+-- size and the setting changes nothing. The test keeps the guard that the plans at the larger sizes never take a clear win away, and that the row of the choice holds
+-- the totals of both plans at each size.
+-- No test reaches the horizon pair with a real close call: a shared CTE of plain aggregates (no unnesting) read twice puts the work of the shared plan at 0.6 to 7
+-- times the scans, depending on how many aggregates read a document, and never between 1.15 and 1.6; the 156 and 237 statements of the load replay lie above 2.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the node under test: the two-level scan (agg_two_level_arm_where) takes the same shape in one node, with no rows to group
