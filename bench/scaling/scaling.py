@@ -125,6 +125,8 @@ def run_case(name, c, args, rows, sizes_override):
                     failed = True
                 print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
                 rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
+                if q.units and g('Units'):
+                    rows.setdefault((name, q.name + '[units]', eng, None if q.units == 'info' else q.units), []).append((size, int(g('Units'))))
     if not args.keep:
         drop_schema(name)
     return failed
@@ -137,7 +139,7 @@ def summary(rows, failed):
         slope, last, v = verdict(pts, target)
         v = 'NOSIFT' if eng == 'sift' and (name, qn) in nosift else v
         extra = pts[-1][1] * (64 ** max(last, 0))
-        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}ms', flush=True)
+        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}{"units" if qn.endswith("[units]") else "ms"}', flush=True)
         failed |= eng == 'sift' and v == 'FAIL'
     sys.exit(1 if failed else 0)
 
