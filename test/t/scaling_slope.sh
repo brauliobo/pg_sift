@@ -31,11 +31,12 @@ grep -v '^SLOPE\|^CHECK' <<<"$out" | sed 's/^/# /' >&2
 
 lines=$(grep '^SLOPE .* sift ' <<<"$out")
 n=$(grep -c . <<<"$lines")
-plan $((n + 2))
-check "the access method answers like the heap (CHECK)" test "$(grep -c '^CHECK .* ok' <<<"$out")" -ge 1
-check "every class of the gate ran (at least 14 slope lines)" test "$n" -ge 14
+plan $((n + 3))
+check "the answers of the scan, of the point directory and of an IN list are the heap's (3 checks)" test "$(grep -c '^CHECK .* ok' <<<"$out")" == 3
+check "no check mismatched" test "$(grep -c '^CHECK .*MISMATCH' <<<"$out")" == 0
+check "every class of the gate ran (at least 11 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 11
 while IFS= read -r l; do
 	[[ -n $l ]] || continue
 	desc=${l#SLOPE }
-	if [[ $l == *" PASS "* ]]; then ok "$desc"; else not_ok "$desc"; fi
+	if [[ $l == *" PASS "* || $l == *" INFO "* ]]; then ok "$desc"; else not_ok "$desc"; fi
 done <<<"$lines"

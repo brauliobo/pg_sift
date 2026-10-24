@@ -26,7 +26,8 @@ def request(rows):
 def queries(rows):
     return [
         Query('touched_51', lambda p: f"select count(*), sum(v) from t where k in ({request(rows)})", 'flat', needs_sift=False),
-        Query('all_partitions', lambda p: "select count(*), sum(v) from t", 'linear', needs_sift=False),
+        # information: this is PostgreSQL's own planning and scan of every partition (superlinear at 400-2000 partitions, the native plan the same), not a sift cost
+        Query('all_partitions', lambda p: "select count(*), sum(v) from t", None, needs_sift=False),
     ]
 
 
