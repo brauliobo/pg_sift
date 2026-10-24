@@ -697,8 +697,6 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 
 	if (is_word(opt, "off"))
 		return NULL;
-	if (s && s->kinds)
-		return "needs a schema without paths or kinds";
 	if (all)
 	{
 		if (s)
@@ -739,7 +737,8 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 {
 	if (opt == NULL || rest_blank(opt))
 	{
-		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (minor 8 has no kinds) */
+		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (their cells
+		 * grew the index of a wide API table by 12%: calendar_columns names them) */
 		if (!spec->off && !spec->fixed && !s->kinds)
 		{
 			sift_cpagg_spec_calendar(s, spec);

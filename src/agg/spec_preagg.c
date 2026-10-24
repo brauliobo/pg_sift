@@ -527,8 +527,8 @@ cal_pred(const SiftAggPred *p, uint8 *mask)
 }
 
 /*
- * Can the cells of the calendar dim of leaf test the conjuncts on it? Its zone comparisons are decided by the span of each cell (a unit with a cell that
- * one cuts is scanned); the others must be tests of calendar expressions of the leaf or of its NULLs, which a cell answers when its grain is in *mask.
+ * Can the cells of the calendar dim of leaf test the conjuncts on it? Its zone comparisons, and the ANDs and ORs of them, are decided by the span of each cell
+ * (a unit with a cell that one cuts is scanned); the others must be tests of calendar expressions of the leaf or of its NULLs, which a cell answers when its grain is in *mask.
  */
 static bool
 cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, uint8 *mask)
@@ -536,9 +536,35 @@ cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, u
 	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 
 	for (int i = 0; i < s->npred; i++)
-		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !cal_pred(s->pred[i], mask))
+		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !sift_aggspec_span_pred(s->pred[i], lay, nbase) &&
+			!cal_pred(s->pred[i], mask))
 			return false;
 	return *mask != 0;
+}
+
+/*
+ * Does the calendar dim of the date leaf dim answer a unit that has no histogram of the leaf (more days than a histogram holds): no key, and every test of the
+ * leaf a comparison tree whose truth a cell's span decides, which the aggregates can all be read from the cells of
+ */
+static bool
+cal_alt(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int dim)
+{
+	int			cd = pa_cal(pa, dim);
+	bool		any = false;
+
+	if (cd < 0 || s->nkeys != 0)
+		return false;
+	for (int i = 0; i < s->npred; i++)
+		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == dim)
+		{
+			if (!sift_aggspec_span_pred(s->pred[i], lay, nbase))
+				return false;
+			any = true;
+		}
+	for (int i = 0; any && i < s->naggs; i++)
+		if (s->agg[i].filter || distinct_leaf(&s->agg[i], lay) || cube_agg_ok(&s->agg[i], lay, nbase, pa, cd) != SPW_OK)
+			return false;
+	return any;
 }
 
 /* the sums and histograms of the rows' leaves answer a scan of the rows: at most one key, a column of a histogram */
@@ -552,7 +578,9 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 				fdim,
 				zdim;
 	uint8		cmask = 0;
-	bool		hcal = false;
+	bool		hcal = false,
+				hcalalt = false,
+				calalt = false;
 	SiftPaWhy	why = SPW_OK;
 
 	if (s->nkeys > 1)
@@ -639,7 +667,17 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 		if (zwhy == SPW_OK)
 		{
 			if (why == SPW_OK)
+			{
+				int			cd = pa_cal(pa, zdim);
+
 				hdim = zdim;
+				/* a date whose unit has too many days for a histogram of its own still has its cells */
+				hcalalt = cd >= 0;
+				for (int i = 0; hcalalt && i < s->naggs; i++)
+					hcalalt = cube_agg_ok(&s->agg[i], lay, nbase, pa, cd) == SPW_OK;
+				if (hcalalt)
+					cmask = 0x0E;
+			}
 			else
 				dim = zdim;
 			why = SPW_OK;
@@ -680,7 +718,12 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	}
 	if (why != SPW_OK)
 		return why;
-	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hdim = hdim, .list = -1, .nullz = nullz};
+	if (cleaf < 0 && dim >= 0 && hdim < 0 && fdim < 0 && cal_alt(s, lay, nbase, pa, dim))
+	{
+		calalt = true;
+		cmask = 0x0E;
+	}
+	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
 	return SPW_OK;
 }
 

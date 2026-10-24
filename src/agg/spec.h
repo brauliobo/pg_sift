@@ -575,6 +575,8 @@ extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *l
 
 /* ... and whether one predicate is such a comparison; the zone tests of an OR are those of its disjuncts */
 extern bool sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+/* a test built of AND, OR and zone comparisons: the span of a calendar cell decides it (every row passes, none does, or the cell is cut) */
+extern bool sift_aggspec_span_pred(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
 extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
 
 /*
@@ -591,6 +593,8 @@ typedef struct SiftAggPaShape
 	bool		cal;				/* dim >= 0: the cube's calendar dim of that date or timestamp leaf (the cells of a unit), not the leaf's own dim */
 	uint8		calmask;			/* cal: the grains (1 << SIFT_CAL_*) of the cells that hold one value of the key and the tests; a unit with other cells scans */
 	bool		hcal;				/* hdim is the calendar dim of the leaf */
+	bool		hcalalt;			/* hdim is the leaf's own dim, and a unit with no histogram of it (too many days) answers from the calendar dim of the leaf, with calmask */
+	bool		calalt;				/* dim is the leaf's own dim, tested by comparisons the span of a cell decides: a unit with no histogram of it answers from the calendar dim of the leaf, with calmask */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
