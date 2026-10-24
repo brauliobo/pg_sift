@@ -1088,6 +1088,21 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
+/*
+ * The rows of an unnest PostgreSQL expects of the aggregate fall to a default when a join is on a range or the rows come from a function (a row,
+ * or the 100 rows of a jsonb_each), though the table's own filters keep far more: the normal plan is priced for a few rows where the data has
+ * thousands, and the scan, which reads the table's rows whatever the join keeps, loses a comparison it wins. The paths of the grouping stage that
+ * are not the scan are charged the square root of the excess, as the normal plan of an unnest is on the other side of the same estimate (agg_cost).
+ * Rows without an unnest keep PostgreSQL's estimate: the statistics of the joined tables are the ones it counts them by.
+ */
+double
+input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	if (s->group < 0 || rel_has_param_qual(c->rel))
+		return 1.0;
+	return Max(sqrt(Max(c->rel->rows, 1.0) * elems_of(c, s->group) / Max(input_rel->rows, 1.0)), 1.0);
+}
+
 /* does a btree index of the joined table start with columns that the table's `column = value` conditions give (map_load picks the same) */
 static bool
 join_index_usable(RelOptInfo *rel, const SiftAggJoin *j)
