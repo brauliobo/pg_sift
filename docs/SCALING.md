@@ -21,8 +21,17 @@ It uses the cluster of `PGHOST`/`PGPORT`/`PGDATABASE` (pg_sift installed). Each 
 | groups | 1k / 10k / 100k / 1M groups | `GROUP BY` count and sum, `count(DISTINCT)` per group, top 10 groups |
 | partitions | 16 .. 4096 partitions | query pruned to one partition, query over all of them |
 | requests | 32 / 500 / 5k / 50k values in `IN (...)` | count and sum, by group |
-| properties | 10k / 31.6k / 100k keys, 100 rows each | a 51-key request, the same with a date window, its count; clustered layout (asserted flat) and arrival order (information) |
+| keys | 10k / 31.6k / 100k keys, 100 rows each | a 51-key request, the same with a date window, its count; clustered layout (asserted flat) and arrival order (information) |
 
-A sift_col unit is 256 heap pages (about 2 MB of heap whatever the row width), so a table of one row per page has 256 rows a unit: 1k units are 2 GB and 64k units would be 134 GB. The units case therefore builds one padded heap and a partial index (`id <= size * 256`) for each size. The properties case pads rows to 170 bytes so that the table holds more units than the 51 a request can read; with narrower rows a request reads every unit until the table passes 51 units and the slope measures that saturation.
+A sift_col unit is 256 heap pages (about 2 MB of heap whatever the row width), so a table of one row per page has 256 rows a unit: 1k units are 2 GB and 64k units would be 134 GB. The units case therefore builds one padded heap and a partial index (`id <= size * 256`) for each size. The keys case pads rows to 170 bytes so that the table holds more units than the 51 a request can read; with narrower rows a request reads every unit until the table passes 51 units and the slope measures that saturation.
 
 A case is a `Case(name, sizes, setup, at, queries, per_size, native, quick)` in `bench/scaling/cases/<dimension>.py` (module attribute `CASES`); a `Query(name, sql(size), target)` has `target` `flat`, `linear` or `None`.
+
+## The CI gate
+
+`test/t/scaling_slope.sh` (job `tap-shell-scaling_slope`, run by `scripts/ci.sh` when `bench/scaling`, `src/col`, `src/agg` or `src/core` change) runs `scaling.py run --gate` on a flavour
+of this tree built with `make SIFT_TESTING=1 SIFT_SB_SHIFT=3` (`scripts/scaling-gate.sh build`, cached): column units of 8 heap pages instead of 256, so 16k units are 1 GB of tmpfs and the whole gate
+takes minutes cold and seconds warm. That geometry is not the shipped one and must never be installed (the Makefile refuses `SIFT_SB_SHIFT` without `SIFT_TESTING`). It asserts, per class, the slope of
+time against size: units pruned (every unit tested, none read), `count(*)`, `sum` and a query over all partitions at most 1.15 (linear); one unit read, `ORDER BY .. LIMIT`, a point and a 51-value IN
+list through the point directory (the test function of the access method), and a request of 51 keys over 400-2000 partitions at most 0.5 (flat). A query whose plan stops using sift fails with `NOSIFT`.
+The projection of these slopes to 100k, 1M and 10M keys is in [perf/SCALING-PROJECTION.md](perf/SCALING-PROJECTION.md).
