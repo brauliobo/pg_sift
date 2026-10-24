@@ -8,7 +8,7 @@
 #   --rows N      events (default 30000, the size the expectations are recorded at; they hold from 20000 to 50000), --seed N the generator seed (default 1)
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
-#   --lane tuned   the planner settings of a tuned server (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
+#   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the stock lane, so a different plan there is read, not failed
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
 #   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff
