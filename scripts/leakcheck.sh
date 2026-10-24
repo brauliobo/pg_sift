@@ -25,9 +25,11 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 LEAK_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# leak_quarantine_mb: what an ASan server holds in its quarantine of freed memory (the ASan default, 256 MB) before it is a leak: a checkpointer
-# that unlinks files all day grows by it, a few hundred kB for each checkpoint, then stays
-leak_quarantine_mb() { echo "${LEAK_QUARANTINE_MB:-$([[ $(cat "${SIFT_ROOT:-/nonexistent}/.flavor" 2>/dev/null) == asan* ]] && echo 256 || echo 0)}"; }
+# leak_quarantine_mb: what an ASan server holds for the memory it freed (the quarantine, 256 MB of the bytes asked for by default) before it is a
+# leak: a checkpointer that unlinks files all day grows by it, a few hundred kB for each checkpoint, then stays. Its redzones and chunk headers
+# make it resident at about 1.2 times that (the walreceiver of the standby of store_replica, which moves several MB of WAL a second: 10 MB + 1.16 times
+# the quarantine on runs of 15 to 60 s of churn, 47 MB at a quarantine of 32 MB and 290 to 325 MB at 256 MB, flat from then on), so the allowance is 1.5 times
+leak_quarantine_mb() { echo "${LEAK_QUARANTINE_MB:-$([[ $(cat "${SIFT_ROOT:-/nonexistent}/.flavor" 2>/dev/null) == asan* ]] && echo 384 || echo 0)}"; }
 
 # regex <TAB> a sample log line it must match: one row per kind of leak. The selftest feeds every sample to the scanner.
 LEAK_RULES=(
@@ -181,7 +183,7 @@ leak_watch_stop() {
 
 # leak_growth FILE: per process, least squares over the samples after the first third (the warmup of caches): a process
 # that grows by LEAK_GROWTH_MB or more over that window along a straight line (R2 >= LEAK_GROWTH_R2) is leaking. An ASan
-# server first fills its quarantine of freed memory (LEAK_QUARANTINE_MB, 256, the ASan default), which is no leak either.
+# server first fills its quarantine of freed memory (LEAK_QUARANTINE_MB, 384 resident), which is no leak either.
 leak_growth() {
 	local slack=$(leak_quarantine_mb)
 	sort -k2,2n -k1,1n "$1" | awk -v mb="$(( ${LEAK_GROWTH_MB:-8} + slack ))" -v r2min="${LEAK_GROWTH_R2:-0.8}" '
