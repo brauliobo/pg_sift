@@ -19,7 +19,8 @@ import json, os, random, statistics, subprocess, sys
 
 ENV = dict(os.environ, LC_ALL="C")
 NAMES = {"btree": "btree", "classes": "sift_col classes", "set": "sift_col classes + key_columns", "point": "sift_col classes + point_columns",
-         "point_tid": "sift_col classes + point_tid_columns", "keycut": "sift_col classes + point_tid_columns + key_cut"}
+         "point_tid": "sift_col classes + point_tid_columns", "keycut": "sift_col classes + point_tid_columns + key_cut",
+         "ord": "sift_col classes + point_tid_columns + order_columns"}
 OPS = ("id sift.col_int4_ops, rnd sift.col_int4_ops, grp sift.col_int4_ops, ts sift.col_timestamptz_ops, "
        "s_short sift.col_text_ops, u sift.col_uuid_ops, amount sift.col_numeric_ops")
 SET_COLUMNS = os.environ.get("SET_COLUMNS", "id, rnd, s_short, u")
@@ -31,14 +32,15 @@ INDEXES = {
     "set": [f"CREATE INDEX c_set ON T USING sift_col ({OPS}) WITH (key_columns = '{SET_COLUMNS}')"],
     "point": [f"CREATE INDEX c_point ON T USING sift_col ({OPS}) WITH (point_columns = '{POINT_COLUMNS}')"],
     "point_tid": [f"CREATE INDEX c_point_tid ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}')"],
+    "ord": [f"CREATE INDEX c_ord ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}', order_columns = 'id, rnd, ts')"],
     "keycut": [f"CREATE INDEX c_keycut ON T USING sift_col ({OPS}) WITH (point_tid_columns = '{POINT_COLUMNS}', key_cut = 'rnd')"],
 }
-DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point", "c_point_tid", "c_keycut")
+DROP = ("b_id", "b_rnd", "b_grp_ts", "b_s", "b_u", "b_amount", "c_scan", "c_set", "c_point", "c_point_tid", "c_keycut", "c_ord")
 SIFT = ["SET sift.enable_col_scan = on"]
 PLANS = {
     "btree": [("planner", []), ("forced index scan", ["SET enable_seqscan = off", "SET enable_bitmapscan = off"]),
               ("forced bitmap scan", ["SET enable_seqscan = off", "SET enable_indexscan = off", "SET enable_indexonlyscan = off"])],
-    "sift": [("scan off (sift.enable_col_scan=off)", []), ("planner", SIFT),
+    "sift": [("scan off (sift.enable_col_scan=off)", []), ("planner", SIFT), ("sorted runs off", SIFT + ["SET sift.topn_runs = off"]),
              ("forced bitmap scan", SIFT + ["SET sift.enable_agg = off", "SET enable_seqscan = off", "SET enable_indexscan = off", "SET enable_indexonlyscan = off"]),
              ("forced index scan", SIFT + ["SET sift.enable_agg = off", "SET enable_seqscan = off", "SET enable_bitmapscan = off"])],
 }

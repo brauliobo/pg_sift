@@ -281,7 +281,7 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 		const SiftAggPred *p = ai < 0 ? s->pred[i] : s->agg[ai].filter;
 
 		/* the comparisons on the leaf of a calendar dim are decided by the span of each cell, not by its first day (cal_keep) */
-		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim || (ex->pa.cal && sift_aggspec_zone_cmp(p, ex->lay, ex->nbase)))
+		if (p == NULL || sift_aggspec_pred_leaf(p, ex->lay, ex->nbase, s->group) != ex->pa.dim || (ex->pa.cal && sift_aggspec_span_pred(p, ex->lay, ex->nbase)))
 			continue;
 		if (!bound)
 		{
@@ -315,10 +315,45 @@ preagg_keep(AggExec *ex, const SiftSrcHist *h, uint64 **fkeep)
 	return keep;
 }
 
+/* what the span [first, last] of a cell does to the test z of the cell's leaf: 0 no row passes, 1 every row does, 2 some may (a bound cuts the cell) */
+static int
+span_test(const SiftSrcPrune *z, int leaf, int64 first, int64 last, bool top)
+{
+	if (z->nkids > 0)
+	{
+		int			res = z->any ? 0 : 1;
+
+		for (int i = 0; i < z->nkids; i++)
+		{
+			int			r = span_test(&z->kids[i], leaf, first, last, false);
+
+			if (r == (z->any ? 1 : 0))
+				return r;
+			if (r == 2)
+				res = 2;
+		}
+		return res;
+	}
+	/* the NULL tests and the tests of another leaf say nothing of this one: a conjunct of its own is decided elsewhere, a disjunct of it leaves the cell open */
+	if (z->nulltest || z->leaf != leaf)
+		return top ? 1 : 2;
+	if (last < z->lo || first > z->hi)
+		return 0;
+	if (z->nvals > 0)
+	{
+		bool		in = false;
+
+		for (int i = 0; !in && i < z->nvals; i++)
+			in = z->vals[i] >= first && z->vals[i] <= last;
+		return !in ? 0 : first == last ? 1 : 2;
+	}
+	return first >= z->lo && last <= z->hi ? 1 : 2;
+}
+
 /*
  * The cells of the histogram of a calendar dim that the comparisons on its leaf keep, ANDed into *keep (NULL: all pass so far). A cell is decided by its
- * whole span, first to last instant: inside the interval it passes, outside it does not, and the NULL group never does. False: an interval cuts a cell, the
- * cell's rows differ, and the unit is scanned.
+ * whole span, first to last instant: inside the tests (comparisons, and the ANDs and ORs of them) it passes, outside it does not, and the NULL group never
+ * does. False: a bound cuts a cell, the cell's rows differ, and the unit is scanned.
  */
 static bool
 cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
@@ -327,11 +362,12 @@ cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
 	int			ng = h->ngroups,
 				nk = ng - h->has_null;
 
-	for (int z = 0; z < ex->nprune; z++)
+	/* the entries of the leaves the conjuncts compare, then those of the ORs (prune_init) */
+	for (int z = 0; z < ex->nzone; z++)
 	{
 		const SiftSrcPrune *pz = &ex->prune[z];
 
-		if (pz->leaf != ex->pa.dim || pz->nulltest)
+		if (pz->nulltest || (pz->nkids == 0 && pz->leaf != ex->pa.dim))
 			continue;
 		if (*keep == NULL)
 		{
@@ -343,6 +379,7 @@ cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
 			int64		first = h->key[g],
 						next = sift_cpagg_cal_next(h->grain, first),
 						last;
+			int			r;
 
 			if (g >= nk)
 			{
@@ -356,9 +393,10 @@ cal_keep(AggExec *ex, const SiftSrcHist *h, uint64 **keep)
 				first *= USECS_PER_DAY;
 				last = next > PG_INT64_MAX / USECS_PER_DAY ? PG_INT64_MAX : next * USECS_PER_DAY - 1;
 			}
-			if (last < pz->lo || first > pz->hi)
+			r = span_test(pz, ex->pa.dim, first, last, true);
+			if (r == 0)
 				(*keep)[g / 64] &= ~(UINT64CONST(1) << (g % 64));
-			else if (first < pz->lo || last > pz->hi)
+			else if (r == 2)
 				return false;
 		}
 	}
@@ -906,6 +944,12 @@ preagg_hist_hdim(AggExec *ex)
 	ex->pa.dim = ex->pa.hdim;
 	ex->pa.cal = ex->pa.hcal;
 	ok = preagg_zones(ex) && preagg_hist(ex);
+	/* no histogram of the date in this unit (it has too many days): its calendar cells, which a comparison that cuts one leaves to a scan */
+	if (!ok && ex->pa.hcalalt)
+	{
+		ex->pa.cal = true;
+		ok = preagg_zones(ex) && preagg_hist(ex);
+	}
 	ex->pa.dim = -1;
 	ex->pa.cal = false;
 	return ok;
@@ -934,7 +978,18 @@ preagg_unit(AggExec *ex)
 	if (ex->pa.list < 0)
 	{
 		if (ex->pa.dim >= 0)
-			return preagg_hist(ex);
+		{
+			bool		ok = preagg_hist(ex);
+
+			/* no histogram of the date in this unit (it has too many days): its calendar cells, which a bound that cuts one leaves to a scan */
+			if (!ok && ex->pa.calalt)
+			{
+				ex->pa.cal = true;
+				ok = preagg_hist(ex);
+				ex->pa.cal = false;
+			}
+			return ok;
+		}
 		/* the sums lack something the unit does not keep (the key list of a leaf of key_columns): its histogram of hdim may hold it */
 		return preagg_sums(ex) || (ex->pa.hdim >= 0 && preagg_hist_hdim(ex));
 	}

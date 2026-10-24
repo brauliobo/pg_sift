@@ -36,7 +36,8 @@
 #define SIFT_COL_FORMAT_PRESENCE	15		/* 3.3: the segment has the key list or bitmap (every distinct key) of some leaf in some unit; written only for an index whose key_columns keep a key list or bitmap, and then for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_POINTTID	16		/* 3.3: the segment has a point directory whose slots list the heap addresses of the rows, not their numbers in the segment; written only for an index with the reloption point_tid_columns, for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_KEYED	17			/* 3.4: the segment's units are cut by the range of the declared key (the reloption key_cut), not by superblock, and list their TIDs (docs/COL.md 2.16); written only for an index with the reloption key_cut and sift.col_format_minor 15 or more */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_KEYED	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_HEADS	18			/* 3.4: the sorted runs of the segment also hold their heads, the first and last keys with the heap addresses of their rows (docs/COL.md 2.14); written for an index with the reloption order_columns whose segment is not key-cut, under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_HEADS	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -750,6 +751,15 @@ extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint3
  * rows ascending, the rest those of the rows whose value overflowed the leaf, ascending. sift_col_run_read gives the entries [pos, pos + cnt), each a row of the unit.
  * *id names the unit among those of the scan (the generation of its segment and its place in it), so that a scan can come back to it.
  */
+/* One entry of the head of a sorted run (col/runs.h): the key of a row and its heap address (block << 16 | offset) */
+typedef struct SiftCHeadEnt
+{
+	int64		key;
+	uint64		addr;
+} SiftCHeadEnt;
+/* The head of the run found by sift_col_run_info: its H (0: the run has none), then nlo entries from the low end and nhi from the high end into out (2 H entries) */
+extern bool sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
+extern int	sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
 extern bool sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
 extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords);
 

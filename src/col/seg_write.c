@@ -82,6 +82,7 @@ struct SiftColSegWriter
 	bool		anypres;		/* some unit keeps a key list or bitmap of a leaf (minor 15) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
+	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anytids;		/* ... and one of them lists heap addresses (column format minor 16) */
@@ -373,7 +374,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 
 /* The sorted run of each leaf that asks for one, from the keys of the unit just encoded */
 static void
-add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols)
+add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
 {
 	for (int c = 0; w->run && c < w->schema->ncols; c++)
 	{
@@ -382,9 +383,10 @@ add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols)
 		if (a->blobs.data == NULL)
 			continue;
 		a->off[w->nsb] = a->blobs.len;
-		if (sift_crun_build(&w->schema->cols[c], &cols[c], &a->blobs))
+		if (sift_crun_build(&w->schema->cols[c], &cols[c], addr, !w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &a->blobs))
 		{
 			a->any = w->anyruns = true;
+			w->anyheads |= a->blobs.data[a->off[w->nsb] + 2] != 0;
 			a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
 		}
 		a->off[w->nsb + 1] = a->blobs.len;
@@ -432,7 +434,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_sets(w, cols, unit_bytes);
-	add_runs(w, cols);
+	add_runs(w, cols, b->keys);
 	add_points(w, cols, b->keys);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
@@ -492,11 +494,11 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	if (!sift_cbatch_kinds_exact(b))
 	{
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9, 10 and 12 promise complete kinds */
-		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set || w->run),
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && !(w->format == SIFT_COL_FORMAT_CALENDAR && !w->schema->kinds)) || w->set || w->run),
 					   "sift_col: a unit without its kinds in a segment of column format %d", w->run ? SIFT_COL_FORMAT_RUNS : w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		w->inexact = true;
-		/* a schema with a calendar dim has no leaf with kinds to lose: the minor stays */
-		if (w->format != SIFT_COL_FORMAT_CALENDAR)
+		/* a schema without shredded leaves has no kinds to lose: the minor stays */
+		if (w->format != SIFT_COL_FORMAT_CALENDAR || w->schema->kinds)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
@@ -1102,7 +1104,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->anysets)
 		w->format = Max(w->format, w->anypres ? SIFT_COL_FORMAT_PRESENCE : SIFT_COL_FORMAT_SETS);
 	if (w->anyruns)
-		w->format = Max(w->format, SIFT_COL_FORMAT_RUNS);
+		w->format = Max(w->format, w->anyheads ? SIFT_COL_FORMAT_HEADS : SIFT_COL_FORMAT_RUNS);
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);

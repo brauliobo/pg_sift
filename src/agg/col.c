@@ -35,6 +35,7 @@
 #include "col/am.h"
 #include "col/enc.h"
 #include "col/pg.h"
+#include "col/runs.h"
 #include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
@@ -658,6 +659,31 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint3
 	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
 }
 
+static bool
+col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	ColSource  *src = impl;
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || !sift_col_sb_heads(src->cs, sb, leaf, e, nlo, nhi))
+		return false;
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return true;
+}
+
+static int
+col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+	int			h = sift_col_run_heads(&((ColSource *) impl)->unit, leaf, e, nlo, nhi);
+
+	StaticAssertStmt(sizeof(SiftSrcHead) == sizeof(SiftCHeadEnt) && SIFT_SRC_HEAD_MAX == SIFT_CRUN_HEAD_MAX, "the run head entries of the engine and the source differ");
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return h;
+}
+
 static void
 col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
 {
@@ -857,6 +883,8 @@ static const SiftSrcProvider col_provider = {
 	.walk_stamp = col_walk_stamp,
 	.overflow = col_overflow,
 	.run_info = col_run_info,
+	.run_heads = col_run_heads,
+	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,

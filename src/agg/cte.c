@@ -22,6 +22,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
+#include "optimizer/cost.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
 #include "tcop/pquery.h"
@@ -496,10 +497,21 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 				outer_lift = agg_cte_lift,
 				charged;
 	int			unnesting;
+	bool		outer_memoize = enable_memoize;
 
 	memset(v, 0, sizeof(*v));
 	agg_cte_lift = 1.0;
-	v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
+	/* Memoize over a lookup of a CTE's rows is priced on hits a near-unique key (a jsonb document) does not give, so the shared plan would look cheaper than it is */
+	PG_TRY();
+	{
+		enable_memoize = false;
+		v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
+	}
+	PG_FINALLY();
+	{
+		enable_memoize = outer_memoize;
+	}
+	PG_END_TRY();
 	lift = agg_cte_lift;
 	agg_cte_lift = outer_lift;
 	outer_variant = agg_variant_push("inline");

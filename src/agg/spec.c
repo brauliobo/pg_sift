@@ -102,6 +102,17 @@ sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 	return lf->parent < 0 && !lf->lossy && (num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid)));
 }
 
+bool
+sift_aggspec_span_pred(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	if (p->kind != SAP_AND && p->kind != SAP_OR)
+		return sift_aggspec_zone_cmp(p, lay, nbase);
+	for (int i = 0; i < p->nchild; i++)
+		if (!sift_aggspec_span_pred(p->child[i], lay, nbase))
+			return false;
+	return true;
+}
+
 /* x IS [NOT] NULL on a scalar leaf of the rows: the NULL count of a unit's zone refuses the unit (no NULL, or only NULLs) or holds the test for all its rows */
 bool
 sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
