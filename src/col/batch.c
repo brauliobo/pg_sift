@@ -37,6 +37,7 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 {
 	b->sb = sb;
 	b->nrows = 0;
+	b->keyed = false;
 	b->hasver = false;
 	for (int i = 0; i < b->schema->ncols; i++)
 	{
@@ -141,7 +142,7 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 static void
 batch_row_begin(SiftColBatch *b, SiftKey key)
 {
-	SIFT_INVARIANT(sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
+	SIFT_INVARIANT(b->keyed || sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
 				   (uint32) (key & 0xFFFF), b->sb);
 	SIFT_INVARIANT((key & 0xFFFF) >= 1 && (key & 0xFFFF) <= MaxHeapTuplesPerPage, "sift_col: row offset %u is not a heap offset",
 				   (uint32) (key & 0xFFFF));

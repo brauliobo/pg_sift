@@ -12,6 +12,8 @@
 
 #include "core/sift.h"
 
+#define SIFT_VIS_DIRTY_MAX	8192
+
 typedef struct SiftVis
 {
 	Relation	heap;
@@ -25,6 +27,10 @@ typedef struct SiftVis
 	BlockNumber vm_nblocks;
 	BlockNumber heap_nblocks;
 	struct IndexFetchTableData *fetch;
+	int32		ndirty;			/* pages of the table that are not all-visible, listed in dirty (ascending); -1: not counted yet (0 after sift_vis_dirty_begin), -2: more than SIFT_VIS_DIRTY_MAX or no map */
+	BlockNumber *dirty;
+	MemoryContext mcxt;
+	struct HTAB *pagevis;		/* block -> visibility of its rows, for pages visited twice (sift_vis_filter_page) */
 	int64		heap_checks;	/* EXPLAIN counters */
 	int64		heap_pages;
 } SiftVis;
@@ -49,6 +55,9 @@ extern void sift_vis_unpin(SiftVis *v);
  * changed since the scan read it, no page is all-visible, so the heap decides every candidate.
  */
 extern void sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask);
+/* Is every page in [lo, hi] all-visible? From the list of the pages that are not (made once from the map bytes); false when that list is too long. Same directory rule as sift_vis_sb_mask */
+extern bool sift_vis_range_allvisible(SiftVis *v, BlockNumber lo, BlockNumber hi);
+extern void sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, uint32 n, uint64 *bits);
 
 #ifdef SIFT_TESTING
 /* sift.test_vis_pause = N: the Nth mask of a scan waits for advisory lock (0x51F7, 1) before it reads the map; sift.test_vis_jitter_us sleeps up to that long */

@@ -6,6 +6,7 @@ COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
 LOOKCACHE_MAX_BLOCKS	derived from the lookup cache budget (sift.agg_lookup_cache_kb)
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
+ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of key_cut_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
 PROBE_MAX_ENTRIES	size of the table of one planner probe: an internal bound with no visible effect

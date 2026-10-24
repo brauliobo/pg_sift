@@ -53,6 +53,8 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
  * `preagg`). Set before the first sift_colw_add.
  */
 extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
+/* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
+extern void sift_colw_set_keyed(SiftColSegWriter *w);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);

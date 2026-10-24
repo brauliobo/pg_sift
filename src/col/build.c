@@ -45,6 +45,8 @@ struct ColBuild
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
 	SiftColBatch *batch;		/* the rows of the current superblock, flushed at the next one */
+	uint64		heldrows;		/* the rows in held */
+	List	   *held;			/* an index with the option key_cut: the batches of every superblock, written sorted by the key at the end (col/order.c) */
 	SiftColSegWriter *w;
 	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
@@ -100,6 +102,16 @@ flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	if (sift_col_key_cut(b->r))
+	{
+		b->heldrows += b->batch->nrows;
+		if (b->heldrows * sift_colk_row_bytes(b->r->schema) > b->budget * 2)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build with key_cut holds the rows of the index in memory and needs more than maintenance_work_mem"),
+							errhint("Raise maintenance_work_mem, or CREATE INDEX without key_cut.")));
+		b->held = lappend(b->held, b->batch);
+		b->batch = sift_cbatch_create(b->cxt, b->r->schema);
+		return;
+	}
 	if (b->w == NULL)
 	{
 		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
@@ -286,6 +298,21 @@ sift_colb_end(ColBuild *b)
 {
 	flush_page(b);
 	flush_batch(b);
+	if (b->held != NULL)
+	{
+		SiftColBatch **in = palloc_array(SiftColBatch *, list_length(b->held));
+		int			n = 0;
+		ListCell   *lc;
+
+		foreach(lc, b->held)
+			in[n++] = lfirst(lc);
+		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+		sift_colw_set_preagg(b->w, &b->r->pagg);
+		sift_colw_set_keyed(b->w);
+		sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->index), b->cxt);
+		b->held = NIL;
+	}
 	end_segment(b);
 	report_rows(b);
 	return b->nsegs;
@@ -454,7 +481,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #endif
 	sift_col_auto_paths(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
-	if (info->ii_ParallelWorkers > 0)
+	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);

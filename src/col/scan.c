@@ -155,6 +155,10 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	SIFT_COL_JITTER();
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
+	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
+	for (int i = 0; i < src->nseg; i++)
+		if (src->seg[i].seg->entry.format >= SIFT_COL_FORMAT_KEYED)
+			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].sb + 1);
 	src->cnt.segments = src->nseg;
 	MemoryContextSwitchTo(old);
 	return src;

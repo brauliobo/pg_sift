@@ -29,6 +29,7 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 		dicts[c] = sift_cseg_dict(seg, c);
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->sb);
+	dst->keyed = v.keyed;
 	sift_cunit_decode(&v, r->sb, dicts, dirty ? live : NULL, dst);
 	pfree(dicts);
 	if (sift_cseg_vers(seg))
@@ -331,7 +332,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->sb);
 	sift_cunit_keys(&v, r->sb, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
-		if (sift_block_sb(sift_key_block(keys[i])) != r->sb || (i > 0 && keys[i] <= keys[i - 1]) ||
+		if ((!v.keyed && sift_block_sb(sift_key_block(keys[i])) != r->sb) || (i > 0 && keys[i] <= keys[i - 1]) ||
 			(keys[i] & 0xFFFF) == 0)
 			corrupt(seg, "Row %u of the unit of SB %u has key %llx out of order or outside the SB.", i, r->sb, ULL(keys[i]));
 	for (int c = 0; c < sc->ncols; c++)
