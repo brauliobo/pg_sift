@@ -1090,6 +1090,45 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
 }
 
 /*
+ * combo_resolve of a combo of one leaf of the scan, the common case: a loop per kind of leaf (`kind` is a constant where it is inlined), the
+ * directory of the entries probed inline, and the value of a position read once for the tuples that share it (a row seen from each of its
+ * elements). The values and the entries come in the order of the tuples, as in the general loop, so the ids are the same.
+ */
+static pg_attribute_always_inline void
+resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const uint64 *alive, const SiftSrcLeaf *lf, const SiftSrcVec *v,
+			const SiftSrcVecType kind)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	uint32	   *map = kind == SCV_CODE ? dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, 0) : NULL;
+	uint32		last = UINT32_MAX;
+	uint64		x = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		uint32		d;
+
+		if (alive && !sift_colsrc_bit(alive, i))
+		{
+			eid[i] = COMBO_NONE;
+			continue;
+		}
+		if (idx[i] != last)
+		{
+			last = idx[i];
+			if (kind == SCV_I64)
+				x = wide_vid(cs, 0, lf, v, last);
+			else if (v->isnull && v->isnull[last])
+				x = 0;
+			else if (kind == SCV_CODE)
+				x = cmap_id(ex, map, v->dict, ci, 0, ((const uint32 *) v->data)[last]);
+			else
+				x = (uint64) (uint32) ((const int32 *) v->data)[last] + 1;
+		}
+		eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
+	}
+}
+
+/*
  * eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx. A tuple that is not
  * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
  */
@@ -1101,6 +1140,20 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
+	if (cb->nleaves == 1 && cb->leaf[0] >= 0 && !cs->by_id && !ex->null_input)
+	{
+		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[0]];
+		const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);
+		const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
+
+		if (leaf_wide(lf))
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_I64);
+		else if (lf->vtype == SCV_CODE)
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_CODE);
+		else
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_I32);
+		return;
+	}
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		uint64	   *vid = ex->cvid[p];
