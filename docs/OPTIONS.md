@@ -167,3 +167,30 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | `mutable_limit` | all | 4096 | 1.0 | - | - | - |  |  | Old spelling of write_buffer_limit, still accepted (the new name wins when both are set). Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it. |
 | `sift.agg_lookup_max_rows` | sift_col, sift_table | -1 | 3.2 | - | as `sift.agg_lookup_pushdown` | as `sift.agg_lookup_pushdown` | - |  | Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width. |
 <!-- sift-cases:end -->
+
+## Upgrading from 3.3
+
+`ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
+
+<!-- sift-upgrade:start -->
+No default changed since 3.3; new: `sift.agg_force`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift.vis_page_cache`.
+
+| Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
+|---|---|---|---|---|
+| `sift_col(paths)` | '' | '' |  | The paths that CREATE INDEX takes from sift.suggest_paths changed (a wildcard for a map of more than 4 keys of one type, no long text keys): an index created after the update can choose other paths than one created by 3.3; an existing index keeps its own. |
+| `sift_col(preagg)` | '' | '' |  | The value auto is new; the default rule is unchanged, so an existing index keeps its cube. To rank the columns by data, ALTER INDEX .. SET (preagg = 'auto') and REINDEX; sift.index_advice names it when more dimensions are asked for than the cube's 16. |
+| `sift_col(rollup_dims)` | '' | '' | minor 9 | The value auto is new; an existing index keeps its option as it is. ALTER INDEX .. SET (rollup_dims = 'auto') and REINDEX pick the pair from a sample; column format minor 9 as before. |
+| `sift_col(calendar_columns)` | '' | '' | minor 8 | The value all, or a list, now also works beside jsonb paths (3.3 refused it). ALTER INDEX .. SET (calendar_columns = 'all') and REINDEX; it costs +9.3% to +12.1% of an index with three date columns, so it is not the default. |
+| `sift_col(key_columns)` | '' | '' | minor 15 | No format change: a merge of every segment of an index with key_columns auto now decides the key lists again from the segments it rewrites, so a key-shaped column that the cube holds in under 40% of the units gets its key list at the merge. An explicit list is unchanged. Nothing to do. |
+| `sift_col(point_columns)` | '' | '' | minor 14 | No format change: the aggregate scan of an existing index now reads through the point directory for a short IN list, an equality, a short range and the keys of a lookup join. Nothing to do. |
+| `sift_col(point_tid_columns)` | '' | '' | minor 16 | No format change (minor 16 is the 3.3 one): the aggregate scan of an existing index now reads through the directory too, and the access-method scan merges the address lists by runs. Nothing to do. |
+| `sift_col(key_cut)` | new | '' | minor 17, unreadable by 3.3 | New, unset: nothing changes for an existing index. CREATE INDEX with it cuts the units by the key; on an existing index ALTER INDEX .. SET (key_cut) applies to the units written afterwards and a REINDEX cuts the older ones (sift.upgrade_commands() lists it). Column format minor 17: a 3.3 library cannot read it; ALTER INDEX .. RESET (key_cut) and a REINDEX roll it back. |
+| `sift_col(key_cut_rows)` | new | 0 | minor 17, unreadable by 3.3 | New, 0: read only with key_cut, and applies to the units written afterwards. No REINDEX of an index without key_cut. |
+| `sift_col(order_columns)` | '' | '' | minor 18, unreadable by 3.3 | Run heads need no setting: every build, promotion and merge after the update writes them for an index with order_columns (column format minor 18, +0.6% to +2.4% of the index); the units already written keep minor 13 until a merge or REINDEX rewrites them, and both live in one index. A 3.3 library cannot read minor 18; sift.col_format_minor 14 or less writes the runs without heads. |
+| `sift.maintenance_cost_delay` | 0 | 0 |  | The worker that rewrites a sift_col index by partitions now waits as long as the delay asks (it used to sleep less). Nothing to do. |
+| `sift.vis_page_cache` | new | on |  | New, on: it only affects a scan of an index with key_cut. Nothing to do. |
+| `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
+| `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
+| `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
+| `sift.agg_force` | new | off |  | New, off: a diagnostic that nothing sets after the update. Nothing to do. |
+<!-- sift-upgrade:end -->
