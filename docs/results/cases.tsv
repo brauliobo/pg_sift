@@ -2,12 +2,12 @@
 # orders: 1000000
 # postgresql: 18.6
 # pg_sift: 3.3
-# build: b52fb55ba7b3
+# build: 3ddb6f6cbbfb
 # date: 2026-10-24
 # cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
 # method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
-# host_load_before: load 1.59 2.00 2.35 cpu_psi 0.06%
-# host_load_after: load 1.59 1.95 2.32 cpu_psi 0.64%
+# host_load_before: load 16.28 10.49 8.89 cpu_psi 0.74%
+# host_load_after: load 15.86 10.50 8.90 cpu_psi 5.40%
 # work_mem: 64MB
 version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_page_totals	sift	ms	4.374	3.715	6.074	15	11.19	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
@@ -179,3 +179,5 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	bigdict_point_probes	native	ms	3006.533	2970.820	3081.832	15	4.88	Seq Scan on orders
 3.3	topn_run_probes	sift	ms	26.168	25.753	29.531	15	1.54	Top-N: customer_id (limit 10); Top-N: customer_id (limit 11); Top-N: customer_id (limit 12); Top-N: customer_id (limit 13); Top-N: customer_
 3.3	topn_run_probes	native	ms	1258.119	1209.040	1375.632	15	1.54	Seq Scan on orders
+3.3	point_key_range	sift	ms	0.608	0.480	0.919	15	15.86	Bitmap Heap Scan on orders NOISY
+3.3	point_key_range	native	ms	37.319	36.357	39.592	15	15.86	Seq Scan on orders NOISY
