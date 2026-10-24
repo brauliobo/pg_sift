@@ -20,7 +20,8 @@
 #   - a reloption is registered without an entry of the relopt_parse_elt table of its access method, or the reverse,
 #   - a default that is not a literal cannot be evaluated (add the PostgreSQL constant to CONST),
 #   - README.md or docs/USAGE.md is not what is generated.
-# `new in <version>` and `was <default>` in the tables come from scripts/options-released.tsv, the defaults of the last release.
+# `new in <version>` and `was <default>` in the tables come from scripts/options-released.tsv, the defaults of the last release; `new in` is the default_version of
+# pg_sift.control unless the optional last column of the row (`since`) names the release that really has the option.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -262,6 +263,8 @@ def read_tsv(text, cols, name, errors):
         if not line.strip() or line.startswith('#'):
             continue
         f = line.split('\t')
+        if cols[-1] == 'since' and len(f) == len(cols) - 1:
+            f.append('')
         if len(f) != len(cols):
             errors.append('%s:%d: %d columns, not %d (%s)' % (name, n, len(f), len(cols), ', '.join(cols)))
             continue
@@ -272,7 +275,7 @@ def read_tsv(text, cols, name, errors):
     return rows
 
 
-NOTE_COLS = ['key', 'applies', 'group', 'values', 'minor', 'buys', 'cost', 'link']
+NOTE_COLS = ['key', 'applies', 'group', 'values', 'minor', 'buys', 'cost', 'link', 'since']
 
 
 def anchors(path, cache={}):
@@ -363,7 +366,7 @@ def generate(opts, notes, released, version, old_version):
     def default(o):
         d = fmt(o, o['default'])
         if o['key'] not in released:
-            return '%s (new in %s)' % (d, version)
+            return '%s (new in %s)' % (d, notes[o['key']]['since'] or version)
         return d if released[o['key']] == d else '%s (was %s in %s)' % (d, released[o['key']], old_version)
 
     def cost(r):
