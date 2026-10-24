@@ -210,7 +210,8 @@ dir_current(SiftVis *v)
 void
 sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 {
-	uint8		bytes[VM_BYTES_PER_SB] pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	/* the kernels read 16 bytes for each mask word, which a superblock of fewer than 64 pages (the 8-page test flavour) does not have: zeros */
+	uint8		bytes[SIFT_PAGEMASK_WORDS * 16] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint64		first = (uint64) sb * VM_BYTES_PER_SB;
 	uint32		off = first % VM_MAPSIZE,
 				head = Min(VM_BYTES_PER_SB, VM_MAPSIZE - off);
@@ -221,6 +222,7 @@ sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 		return;
 	}
 	TEST_PAUSE();
+	memset(bytes + VM_BYTES_PER_SB, 0, sizeof(bytes) - VM_BYTES_PER_SB);
 	vm_read(v, first / VM_MAPSIZE, off, head, bytes);
 	if (head < VM_BYTES_PER_SB)
 		vm_read(v, first / VM_MAPSIZE + 1, 0, VM_BYTES_PER_SB - head, bytes + head);
