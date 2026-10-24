@@ -185,6 +185,8 @@ typedef struct SiftTblRel
 	uint64		tomb_synced;
 	BlockNumber tomb_last;
 	uint32		tomb_lastcnt;
+	uint32		tomb_seqbase;	/* the entries of the logs read before the current one, which only follows them (tomb_follow) */
+	bool		tomb_followed;
 	SiftTblTomb *ents;			/* sorted by (key, seq): the bulk of the log */
 	uint32		nents;
 	uint32		capents;
