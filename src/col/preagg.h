@@ -142,6 +142,8 @@ extern int64 sift_cpagg_cal_next(int grain, int64 day);
 extern bool sift_cpagg_cal_key_ok(int type, int grain, int64 key);
 /* Is leaf c a date, timestamp or timestamptz leaf of the top level that has calendar cells? */
 extern bool sift_cpagg_cal_type(const SiftColSchema *s, int c);
+/* the date, timestamp and timestamptz columns that get calendar cells (a plain dimension gives way for each of them in a default cube of more than 16 columns) */
+extern int	sift_cpagg_cal_count(const SiftColSchema *s);
 /* The date, timestamp and timestamptz leaves of the top level with no calendar dim in spec, in leaf order, at most max of them in out; returns how many there are */
 extern int	sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max);
 
