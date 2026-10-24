@@ -397,6 +397,14 @@ osa_pick(const SiftAggAgg *a, int64 n, OsaPick *p)
 	int64		lo,
 				hi;
 
+	if (osa_is_mode(a))
+	{
+		/* no rank: the walk of the runs (osa_finish) or the pass over the slots (osa_finish_select) finds the value */
+		p->pos[0] = p->pos[1] = -1;
+		p->key[0] = p->key[1] = 0;
+		p->prop = 0;
+		return;
+	}
 	if (a->kind == SAA_PCT_DISC)
 	{
 		lo = hi = Max((int64) ceil(a->frac * n), 1) - 1;
@@ -571,13 +579,24 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
 			{
 				osa_pick(&s->agg[ai], nrows[sid], &pick[ai]);
+				if (osa_is_mode(&s->agg[ai]))
+				{
+					/* the most frequent value; on a tie the first in the sort order: the smallest key, the largest for DESC */
+					int64		best = 0;
+
+					for (int64 i = 1; i < m; i++)
+						if (sl[i].cnt > sl[best].cnt || (sl[i].cnt == sl[best].cnt && (s->agg[ai].desc_order ? sl[i].key > sl[best].key : sl[i].key < sl[best].key)))
+							best = i;
+					pick[ai].key[0] = pick[ai].key[1] = sl[best].key;
+					continue;
+				}
 				pos[nt++] = (uint64) pick[ai].pos[0];
 				pos[nt++] = (uint64) pick[ai].pos[1];
 			}
 		qsort(pos, nt, sizeof(uint64), osa_cmp_pos);
 		osa_select(sl, 0, m, 0, pos, key, nt);
 		for (int ai = 0; ai < s->naggs; ai++)
-			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner && !osa_is_mode(&s->agg[ai]))
 				for (int k = 0; k < 2; k++)
 				{
 					int			at = 0;
@@ -597,6 +616,25 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 	pfree(pick);
 }
 
+/* the walk of the sorted values of a mode(): the run of one value just ended, and the best so far (the longest, a run as long wins for DESC as the sort puts the largest first) */
+typedef struct OsaModeRun
+{
+	uint64		key;
+	uint64		cnt;
+	uint64		best;
+} OsaModeRun;
+
+static void
+mode_end_run(const SiftAggAgg *a, OsaModeRun *m, OsaPick *p)
+{
+	if (m->cnt > m->best || (m->cnt > 0 && m->cnt == m->best && a->desc_order))
+	{
+		m->best = m->cnt;
+		p->key[0] = p->key[1] = m->key;
+	}
+	m->cnt = 0;
+}
+
 /* walks the sorted values of the aggregate that owns them once, taking the values of every aggregate on them */
 static void
 osa_finish(AggExec *ex, int owner)
@@ -610,6 +648,7 @@ osa_finish(AggExec *ex, int owner)
 	OsaPick    *pick = palloc0(s->naggs * sizeof(OsaPick));
 	OsaRun		r;
 	int64		pos = 0;
+	OsaModeRun *mr = palloc0(s->naggs * sizeof(OsaModeRun));
 
 	for (uint32 g = 0; g < ngr; g++)
 		if (own->i[g])
@@ -629,7 +668,11 @@ osa_finish(AggExec *ex, int owner)
 		{
 			for (int ai = 0; cur != UINT32_MAX && ai < s->naggs; ai++)
 				if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+				{
+					if (osa_is_mode(&s->agg[ai]))
+						mode_end_run(&s->agg[ai], &mr[ai], &pick[ai]);
 					ex->oval[ai][cur] = osa_result(&s->agg[ai], &pick[ai]);
+				}
 			SIFT_INVARIANT(cur == UINT32_MAX || pos == nrows[cur], "sift: ordered-set values of a group are %lld, expected %lld", (long long) pos,
 						   (long long) (cur == UINT32_MAX ? 0 : nrows[cur]));
 			if (!more)
@@ -638,10 +681,24 @@ osa_finish(AggExec *ex, int owner)
 			pos = 0;
 			for (int ai = 0; ai < s->naggs; ai++)
 				if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+				{
 					osa_pick(&s->agg[ai], nrows[cur], &pick[ai]);
+					memset(&mr[ai], 0, sizeof(OsaModeRun));
+				}
 		}
 		for (int ai = 0; ai < s->naggs; ai++)
-			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
+			if (osa_is_mode(&s->agg[ai]) && s->agg[ai].share == owner)
+			{
+				if (mr[ai].cnt > 0 && mr[ai].key == r.key)
+					mr[ai].cnt += r.cnt;
+				else
+				{
+					mode_end_run(&s->agg[ai], &mr[ai], &pick[ai]);
+					mr[ai].key = r.key;
+					mr[ai].cnt = r.cnt;
+				}
+			}
+			else if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner)
 				for (int k = 0; k < 2; k++)
 					if (pick[ai].pos[k] >= pos && pick[ai].pos[k] < pos + (int64) r.cnt)
 						pick[ai].key[k] = r.key;
