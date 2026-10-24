@@ -65,7 +65,7 @@ static bool late_checked;
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
 
-static bool
+bool
 has_column_index(Oid relid)
 {
 	Relation	rel = relation_open(relid, AccessShareLock);

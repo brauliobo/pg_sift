@@ -391,6 +391,8 @@ extern double agg_read_rows;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
 extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double filter_rows_ratio(AggCtx *c);
+extern void derived_rel_rows(PlannerInfo *root, RelOptInfo *rel);
+extern bool has_column_index(Oid relid);
 extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);

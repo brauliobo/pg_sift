@@ -723,17 +723,82 @@ lookup_counted(AggCtx *c, JoinCtx *jc)
 }
 
 /*
- * How many times more rows than PostgreSQL expects the table's own filters keep, for the groups the path reports: a filter without statistics
- * (a jsonb path, an expression) keeps a default guess of the rows, a few hundred of a large table, and the groups of that many rows are
- * fewer than the keys have. The rows are taken as the geometric mean of the guess and the table's rows, as child_rows does.
+ * How many times more rows than PostgreSQL expects the filters of a rel keep, when one of them has no statistics (a jsonb path, an expression,
+ * a column of a sub-select's output): its guess is a default, a few hundred of a large table, and the groups of that many rows are fewer
+ * than the keys have. The rows are taken as the geometric mean of the guess and the rel's rows, as child_rows does. A test for NULL keeps
+ * its default only on a rel that is not a table: a table's column has statistics once it is analyzed, so a table's plan is as it was.
  */
+static double
+rel_filter_ratio(PlannerInfo *root, RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	{
+		bool		known = filter_has_stats(root, ri);
+
+		if (known && rel->rtekind != RTE_RELATION && IsA(ri->clause, NullTest))
+		{
+			VariableStatData vardata;
+
+			examine_variable(root, (Node *) ((NullTest *) ri->clause)->arg, 0, &vardata);
+			known = HeapTupleIsValid(vardata.statsTuple);
+			ReleaseVariableStats(vardata);
+		}
+		if (!known)
+			return sqrt(Max(rel->tuples / Max(rel->rows, 1.0), 1.0));
+	}
+	return 1.0;
+}
+
 double
 filter_rows_ratio(AggCtx *c)
 {
-	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
-		if (!filter_has_stats(c->root, ri))
-			return sqrt(Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
-	return 1.0;
+	return rel_filter_ratio(c->root, c->rel);
+}
+
+static bool
+reads_column_index(Node *node, void *context)
+{
+	bool		found = false;
+
+	if (node != NULL && IsA(node, RangeTblEntry))
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) node;
+
+		found = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid);
+	}
+	else if (node != NULL && IsA(node, Query))
+		found = query_tree_walker((Query *) node, reads_column_index, context, QTW_EXAMINE_RTES_BEFORE);
+	else if (node != NULL)
+		found = expression_tree_walker(node, reads_column_index, context);
+	return found;
+}
+
+/*
+ * The rows of a sub-select or CTE scan whose filters PostgreSQL has no statistics for (a column of a window, an aggregate or a grouping
+ * sets output) are its default guesses multiplied: two of them keep a thousandth of the rows, and every join above reads that as one row and
+ * rescans an aggregate for each of the rows that come. In a statement that reads a table with a column index the rows are lifted to the geometric
+ * mean of the guess and the rows (rel_filter_ratio), never below PostgreSQL's own. This is a floor, not an estimate: a count carried through
+ * the levels from the column index would be one.
+ */
+void
+derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
+{
+	double		rows;
+	PlannerInfo *top = root;
+
+	if (rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
+		return;
+	rows = clamp_row_est(rel->rows * rel_filter_ratio(root, rel));
+	if (rows <= rel->rows)
+		return;
+	while (top->parent_root)
+		top = top->parent_root;
+	if (!reads_column_index((Node *) top->parse, NULL))
+		return;
+	elog(DEBUG1, "sift: rows of a scan whose filters have no statistics %.0f, not %.0f (of %.0f)", rows, rel->rows, rel->tuples);
+	rel->rows = rows;
+	foreach_node(Path, p, rel->pathlist)
+		p->rows = rows;
 }
 
 /*
