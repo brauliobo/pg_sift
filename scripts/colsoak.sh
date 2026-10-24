@@ -80,7 +80,7 @@ leak_watch_start "$OUT/memory.tsv" soak_backends
 trap 'kill $LEAK_WATCH 2>/dev/null || true' EXIT
 pgbench -n -T "$DURATION" -c "$CLIENTS" -j 4 -f "$OUT/check.sql@6" -f "$OUT/write.sql@6" -f "$OUT/vacuum.sql@3" -f "$OUT/maint.sql@3" >"$OUT/pgbench.txt" 2>&1 || true
 trap - EXIT
-leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { log "MEMORY GROWTH (see memory.txt)"; bad=1; }
+leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { log "MEMORY GROWTH"; grep GROWING "$OUT/memory.txt" | while read -r l; do log "$l"; done; bad=1; }
 
 bad=${bad:-0}
 failed=$(awk '/^number of failed transactions/ { print $5; exit }' "$OUT/pgbench.txt")

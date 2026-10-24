@@ -123,7 +123,7 @@ while (( SECONDS < end )); do
 done
 wait $writers $readers || bad=$((bad + 1))
 trap restore EXIT
-leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { bad=$((bad + 1)); log "MEMORY GROWTH"; }
+leak_watch_stop "$OUT/memory.tsv" >"$OUT/memory.txt" || { bad=$((bad + 1)); log "MEMORY GROWTH"; grep GROWING "$OUT/memory.txt" | while read -r l; do log "$l"; done; }
 log "backend memory: $(grep -c . "$OUT/memory.txt") backends sampled, $(grep -c GROWING "$OUT/memory.txt" || true) growing (see memory.txt)"
 
 failed=$(awk '/^number of failed transactions/ { s += $5; n++ } END { print n ? s : "?" }' "$OUT/writers.txt" "$OUT/readers.txt")
