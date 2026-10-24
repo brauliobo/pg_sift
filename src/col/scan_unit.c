@@ -417,7 +417,7 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		if (!sift_col_bit_test(c->keep, c->cur + i))
 			return false;
 	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
-	if (seg->entry.format == SIFT_COL_FORMAT_KEYED)
+	if (sift_cseg_keyed(&seg->entry))
 	{
 		/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
 		for (uint32 i = 0; i < n; i++)
