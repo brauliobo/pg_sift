@@ -619,7 +619,8 @@ keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones
 		SiftColValue *v = MemoryContextAlloc(src->sigcx, Max(preds[i].nvals, 1) * sizeof(SiftColValue));
 		bool		str = pred_bytes(src, preds[i].col);
 
-		memcpy(v, preds[i].vals, preds[i].nvals * sizeof(SiftColValue));
+		if (preds[i].nvals > 0)
+			memcpy(v, preds[i].vals, preds[i].nvals * sizeof(SiftColValue));
 		for (int j = 0; j < preds[i].nvals && str; j++)
 			if (v[j].len > 0)
 			{
