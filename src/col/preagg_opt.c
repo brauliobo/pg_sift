@@ -598,8 +598,11 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 	SiftCPaggRollup ru = {.list = -1};
 	int			nrows = 0;
 
-	if (is_word(opt, "off"))
+	if (is_word(opt, "off") || is_word(opt, "auto"))
 		return NULL;
+	skip_ws(c);
+	if (has_prefix(c->p, "auto:"))
+		c->p += 5;
 	do
 	{
 		char	   *dn = take_name(c);
