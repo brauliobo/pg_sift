@@ -425,7 +425,8 @@ def render_latest(p):
 
 def gen_decor(r, ctx):
     tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
-    return dict(form=r.choice(['lateral', 'left', 'comma', 'select', 'where']), tie=tie, aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
+    return dict(form=r.choice(['lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma', 'select', 'where']), tie=tie,
+                groups=r.sample(['f.kind', 'f.grp', 'f.flag', 'f.ts', 'f.a % 10', 'f.parent_id', 'f.grp % 4'], r.randrange(0, 3)), having=r.choice(['', '', 'count(*) > 1', 'min(f.amount) < 50']), aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
                                                                                       'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
                                                                                       'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
                 inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12),
@@ -443,11 +444,14 @@ def render_decor(p):
     wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
     sub = lambda i: f"SELECT {p['aggs'][i]} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}"
     n = len(p['aggs'])
-    if p['form'] in ('lateral', 'left', 'comma'):
-        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ','}[p['form']]
-        cols = ', '.join(f"{p['aggs'][i]} AS v{i}" for i in range(n))
-        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}) x" + ('' if p['form'] == 'comma' else ' ON true')
-        outs = [f'x.v{i}' for i in range(n)]
+    if p['form'] in ('lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma'):
+        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ',', 'glateral': 'JOIN', 'gleft': 'LEFT JOIN', 'gcomma': ','}[p['form']]
+        grouped = p['form'][0] == 'g' and p['groups']
+        gcols = [f"{g} AS g{j}" for j, g in enumerate(p['groups'] if grouped else [])]
+        cols = ', '.join(gcols + [f"{p['aggs'][i]} AS v{i}" for i in range(n)])
+        tail = ' GROUP BY ' + ', '.join(p['groups']) + (' HAVING ' + p['having'] if p['having'] else '') if grouped else ''
+        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}{tail}) x" + ('' if join == ',' else ' ON true')
+        outs = [f'x.v{i}' for i in range(n)] + [f'x.g{j}' for j in range(len(gcols))]
     else:
         frm = 'events e'
         outs = [f'({sub(i)})' for i in range(n)]
