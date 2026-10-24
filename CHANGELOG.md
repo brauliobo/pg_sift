@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.3.0 - 2026-10-24
 
 - Fixed: pg_sift: `UNION ALL` arms that share one pass over the index (`Arms In One Pass`) and include an aggregate of a lookup's column (`count(d.label)` over a joined table) failed with `sift: aggregate kind 14 has no partial table` whenever a parallel worker took a share of the scan; the shared pass now runs in the leader alone when its aggregates are not ones the leader can merge. It showed on a small table only when the workers happened to get a morsel (an arm64 runner); `agg_fuse_aggs` now runs with `parallel_leader_participation = off` so that the workers always scan.
 - Fixed: pg_sift: a UNION ALL whose arms run in one pass could stop the backend (SIGSEGV) when a group key held a hashed sub-select (`CASE WHEN kind IN (SELECT id FROM kinds) THEN lookup.name END`) next to a column of a lookup join and other sub-selects of the statement came before it: the pass renumbered the sub-select's own output parameter as a column of the join and read past the end of the join's columns; the parameter keeps its number.
