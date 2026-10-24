@@ -675,6 +675,7 @@ typedef struct Decor
 	List	   *conds;			/* the equalities: the table's column and the outer query's */
 	List	   *rest;			/* the other conditions of the sub-select */
 	Bitmapset  *outer;			/* the range table entries of the outer query it reads */
+	List	   *groups;			/* the expressions it groups by (a LATERAL one, which gives a row for each group, not one row) */
 } Decor;
 
 /* the aggregates whose value over no rows is NULL, or 0 (count) */
@@ -689,17 +690,20 @@ decor_aggregate(Aggref *a)
 		!contain_vars_of_level((Node *) a, 1);
 }
 
-/* the expressions of the select list: aggregates, constants and functions of them, no column outside an aggregate */
+/* the expressions of the select list: aggregates, the expressions it groups by, constants and functions of them, no column outside an aggregate */
 static bool
-decor_output_bad(Node *n, void *context)
+decor_output_bad(Node *n, Decor *d)
 {
 	if (n == NULL)
 		return false;
+	foreach_ptr(Node, g, d->groups)
+		if (equal(n, g))
+			return false;
 	if (IsA(n, Var))
 		return true;
 	if (IsA(n, Aggref))
 		return !decor_aggregate((Aggref *) n);
-	return expression_tree_walker(n, decor_output_bad, context);
+	return expression_tree_walker(n, decor_output_bad, d);
 }
 
 /* `table.column = outer column` of the same type, by the equality that groups the type */
@@ -728,13 +732,56 @@ decor_equality(Node *c, Decor *d)
 	return true;
 }
 
+#if PG_VERSION_NUM >= 180000
+typedef struct Ungroup
+{
+	Index		rti;
+	List	   *exprs;
+} Ungroup;
+
+/* a column of the entry that stands for the grouping is the expression it groups by */
+static Node *
+ungroup_column(Node *n, Ungroup *u)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varno == u->rti)
+		return copyObject(list_nth(u->exprs, ((Var *) n)->varattno - 1));
+	return expression_tree_mutator(n, ungroup_column, u);
+}
+#endif
+
+/* the sub-select as PostgreSQL 17 parses it: no range table entry for its grouping (PostgreSQL 18 adds one for any GROUP BY) */
+static Query *
+ungrouped(Query *sub)
+{
+#if PG_VERSION_NUM >= 180000
+	Query	   *q;
+	Ungroup		u;
+
+	if (!sub->hasGroupRTE)
+		return sub;
+	q = copyObject(sub);
+	u.rti = list_length(q->rtable);
+	u.exprs = llast_node(RangeTblEntry, q->rtable)->groupexprs;
+	q->targetList = (List *) ungroup_column((Node *) q->targetList, &u);
+	q->havingQual = ungroup_column(q->havingQual, &u);
+	q->rtable = list_delete_last(q->rtable);
+	q->hasGroupRTE = false;
+	return q;
+#else
+	return sub;
+#endif
+}
+
 static bool
 decor_analyze(Query *sub, Decor *d)
 {
 	RangeTblEntry *t;
 
-	if (sub->commandType != CMD_SELECT || !sub->hasAggs || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
-		sub->setOperations != NULL || sub->groupClause != NIL || sub->groupingSets != NIL || sub->havingQual != NULL || sub->sortClause != NIL ||
+	sub = ungrouped(sub);
+	if (sub->commandType != CMD_SELECT || !(sub->hasAggs || sub->groupClause != NIL) || sub->hasSubLinks || sub->hasWindowFuncs || sub->hasTargetSRFs || sub->hasForUpdate ||
+		sub->setOperations != NULL || sub->groupingSets != NIL || sub->groupDistinct || (sub->groupClause == NIL && sub->havingQual != NULL) || sub->sortClause != NIL ||
 		sub->distinctClause != NIL || sub->limitOffset != NULL || sub->limitCount != NULL || sub->cteList != NIL || sub->rowMarks != NIL ||
 		sub->jointree == NULL || list_length(sub->jointree->fromlist) != 1 || !IsA(linitial(sub->jointree->fromlist), RangeTblRef) ||
 		list_length(sub->rtable) != 1 || contain_volatile_functions((Node *) sub) || contain_vars_of_level((Node *) sub, 2))
@@ -743,6 +790,16 @@ decor_analyze(Query *sub, Decor *d)
 	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || !has_column_index(t->relid))
 		return false;
 	d->sub = sub;
+	if (contain_vars_of_level(sub->havingQual, 1))
+		return false;
+	foreach_ptr(SortGroupClause, sgc, sub->groupClause)
+	{
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, sub->targetList);
+
+		if (contain_vars_of_level(e, 1))
+			return false;
+		d->groups = lappend(d->groups, e);
+	}
 	foreach_ptr(Node, c, make_ands_implicit((Expr *) sub->jointree->quals))
 	{
 		if (!contain_vars_of_level(c, 1))
@@ -753,7 +810,7 @@ decor_analyze(Query *sub, Decor *d)
 			return false;
 	}
 	foreach_node(TargetEntry, te, sub->targetList)
-		if (te->resjunk || decor_output_bad((Node *) te->expr, NULL))
+		if ((te->resjunk && te->ressortgroupref == 0) || decor_output_bad((Node *) te->expr, d))
 			return false;
 	return d->conds != NIL;
 }
@@ -805,7 +862,7 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 
 	g->jointree->quals = d->rest == NIL ? NULL : (Node *) make_ands_explicit(d->rest);
 	g->targetList = NIL;
-	g->hasAggs = true;
+	g->groupClause = NIL;
 	foreach_ptr(OpExpr, c, d->conds)
 	{
 		bool		first = castNode(Var, linitial(c->args))->varlevelsup == 0;
@@ -830,8 +887,39 @@ decor_group(Decor *d, Index grti, Bitmapset *nulled, List **exprs, List **join)
 		lfirst(list_nth_cell(e->args, first ? 0 : 1)) = makeVar(grti, at, in->vartype, in->vartypmod, in->varcollid, 0);
 		*join = lappend(*join, e);
 	}
+	/* then the groups of the sub-select (the grouped column of a tie is that key); the HAVING stays in the grouped query */
+	foreach_ptr(SortGroupClause, sgc, d->sub->groupClause)
+	{
+		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, d->sub->targetList);
+		bool		grouped_already = false;
+
+		foreach_node(TargetEntry, te, g->targetList)
+			grouped_already |= equal(te->expr, e);
+		if (!grouped_already)
+		{
+			TargetEntry *te = makeTargetEntry((Expr *) copyObject(e), list_length(g->targetList) + 1, psprintf("g%d", list_length(g->targetList) + 1), false);
+			SortGroupClause *c = copyObject(sgc);
+
+			g->targetList = lappend(g->targetList, te);
+			te->ressortgroupref = list_length(g->groupClause) + 1;
+			c->tleSortGroupRef = te->ressortgroupref;
+			g->groupClause = lappend(g->groupClause, c);
+		}
+	}
 	foreach_node(TargetEntry, te, d->sub->targetList)
-		*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
+	{
+		if (te->resjunk)
+			continue;
+		if (d->groups == NIL)
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) decor_column((Node *) te->expr, &o), te->resno, te->resname, false));
+		else
+		{
+			/* a missing group is a row of NULLs: its columns are the sub-select's own, not expressions of the aggregates evaluated above the join */
+			g->targetList = lappend(g->targetList, makeTargetEntry((Expr *) copyObject(te->expr), list_length(g->targetList) + 1, psprintf("o%d", te->resno), false));
+			*exprs = lappend(*exprs, makeTargetEntry((Expr *) makeVar(grti, list_length(g->targetList), exprType((Node *) te->expr), exprTypmod((Node *) te->expr),
+																	   exprCollation((Node *) te->expr), 0), te->resno, te->resname, false));
+		}
+	}
 	return g;
 }
 
@@ -968,10 +1056,12 @@ decor_apply(Query *q, DecorJoin *r)
 	RangeTblEntry *rte;
 	JoinExpr   *j;
 	DecorRead	read;
+	bool		grouped = r->d.groups != NIL;
 
 	j = join_of((Node *) q->jointree, r->lrti);
+	/* one row for every outer row, so a join that did not null the columns now does; the groups of the sub-select keep an inner join an inner join */
 	read.exprs = exprs;
-	read.nulled = bms_make_singleton(j->rtindex);
+	read.nulled = grouped && j->jointype == JOIN_INNER ? NULL : bms_make_singleton(j->rtindex);
 	*q = *(Query *) replace_rte_variables((Node *) q, r->lrti, 0, decor_read, &read, NULL);
 	rte = rt_fetch(r->lrti, q->rtable);
 	rte->subquery = g;
@@ -980,8 +1070,11 @@ decor_apply(Query *q, DecorJoin *r)
 		names = lappend(names, makeString(te->resname));
 	rte->eref = makeAlias(rte->eref->aliasname, names);
 	j = join_of((Node *) q->jointree, r->lrti);
-	j->jointype = JOIN_LEFT;
-	rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_LEFT;
+	if (!grouped)
+	{
+		j->jointype = JOIN_LEFT;
+		rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_LEFT;
+	}
 	j->quals = (Node *) make_ands_explicit(join);
 	sift_agg_by_cost = true;
 }
@@ -1078,7 +1171,7 @@ decor_sublink(Node *n, SublinkDecor *c)
 	if (!IsA(n, SubLink))
 		return expression_tree_mutator(n, decor_sublink, c);
 	s = (SubLink *) n;
-	if (s->subLinkType != EXPR_SUBLINK || !decor_analyze(castNode(Query, s->subselect), &d))
+	if (s->subLinkType != EXPR_SUBLINK || !decor_analyze(castNode(Query, s->subselect), &d) || d.groups != NIL)
 		return n;
 	foreach(item, q->jointree->fromlist)
 		if (bms_is_subset(d.outer, tree_rtis(lfirst(item))))
