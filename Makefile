@@ -54,6 +54,12 @@ TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow
 TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure
+ifdef SIFT_SB_SHIFT
+ifndef SIFT_TESTING
+$(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
+endif
+PG_CPPFLAGS += -DSIFT_SB_SHIFT=$(SIFT_SB_SHIFT)
+endif
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql

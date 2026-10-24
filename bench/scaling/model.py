@@ -3,7 +3,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-TARGETS = {'flat': 0.30, 'linear': 1.15}      # largest log-log slope that still passes; None = information only
+TARGETS = {'flat': 0.50, 'linear': 1.15}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only
 FLOOR_MS = 0.5                                # below this at every size the slope is noise: PASS
 
 

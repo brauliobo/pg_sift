@@ -39,14 +39,17 @@
 #define SIFT_WRITE_SEGFMT		SIFT_SEGFMT_PACKED
 #endif
 
-/* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages */
+/* Heap geometry: superblock (SB) = 256 pages, scoring block = 16 pages. make SIFT_TESTING=1 SIFT_SB_SHIFT=3 builds a test flavour with 8-page superblocks (and
+ * column units): thousands of units on a few MB of heap for the scaling gate (scripts/scaling-gate.sh). Its on-disk geometry differs: never install it. */
+#ifndef SIFT_SB_SHIFT
 #define SIFT_SB_SHIFT			8
+#endif
 #define SIFT_SB_PAGES			(1 << SIFT_SB_SHIFT)
-#define SIFT_BLK_SHIFT			4
+#define SIFT_BLK_SHIFT			(SIFT_SB_SHIFT < 4 ? SIFT_SB_SHIFT : 4)
 #define SIFT_BLK_PAGES			(1 << SIFT_BLK_SHIFT)
 #define SIFT_BLKS_PER_SB		(SIFT_SB_PAGES / SIFT_BLK_PAGES)
 #define SIFT_MAX_OFFSET			MaxHeapTuplesPerPage
-#define SIFT_PAGEMASK_WORDS		(SIFT_SB_PAGES / 64)
+#define SIFT_PAGEMASK_WORDS		((SIFT_SB_PAGES + 63) / 64)
 #define SIFT_OFFMASK_WORDS		8
 #define SIFT_SIMD_ALIGN			64
 
