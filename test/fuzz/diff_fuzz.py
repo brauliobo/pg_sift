@@ -308,6 +308,7 @@ def render_placeholder(p):
            f"('z', date '2030-01-01', date '2030-12-31')), parsed AS (SELECT e.id, e.kind, e.grp, e.ts{rk}, {p['expr']} AS v FROM events e{fn}{w}) "
            f"SELECT p.period, {key} AS k, {', '.join(f'{a} AS a{i}' for i, a in enumerate(p['aggs']))} FROM periods p LEFT JOIN parsed x ON x.ts BETWEEN p.lo AND p.hi GROUP BY {grp}")
     return sql, False
+ONELEAF = {'kind': 'ok_kind', 'big': 'ok_big', 'val': 'ok_val', 'grp': 'ok_grp', 'ts': 'ok_ts'}
 
 def gen_dirty(r, ctx):
     form = r.randrange(5)
@@ -898,6 +899,7 @@ FAMILIES = {
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
+    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -916,7 +918,7 @@ def variants(r, fam):
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
-    if fam in ('twolevel', 'union', 'lookup'):
+    if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
         ('par', 'sift.enable_agg=on;' + PAR % (r.choice([1, 2, 3, 4]), r.choice(LEADER))),

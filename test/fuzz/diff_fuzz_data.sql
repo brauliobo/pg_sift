@@ -157,4 +157,17 @@ CREATE FUNCTION fz.gen_nzf(lo bigint, hi bigint, salt int) RETURNS SETOF nzf LAN
 INSERT INTO nzf SELECT * FROM fz.gen_nzf(1, @ROWS@, 0);
 CREATE INDEX nzf_col ON nzf USING sift_col (id, org, amount, val, kind, deleted_at, seen_at, tag, score);
 
-VACUUM (FREEZE, ANALYZE) items, events, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, kcut_a, kcut_b, kcut_c;
+-- tables joined on one column of events of each kind of leaf (dictionary code, int8, float8 with NaN, int, date), NULL keys and repeated keys included
+CREATE TABLE ok_kind (k text, tag text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO ok_kind VALUES ('k0', 'a', 1), ('k1', 'b', 2), ('k1', 'c', 3), ('k3', 'd', 4), ('k9', 'e', 5), (NULL, 'f', 6);
+CREATE TABLE ok_big (k int8, tag text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO ok_big SELECT big, 't' || id % 3, id % 11 FROM events WHERE id % 5 = 0 AND big IS NOT NULL;
+INSERT INTO ok_big VALUES (NULL, 'n', 0);
+CREATE TABLE ok_val (k float8, tag text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO ok_val SELECT DISTINCT ON (val) val, 't' || id % 4, id % 13 FROM events WHERE id % 4 = 0 ORDER BY val, id;
+CREATE TABLE ok_grp (k int, tag text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO ok_grp SELECT g, 't' || g % 3, g FROM generate_series(0, 14) g WHERE g % 4 <> 1 UNION ALL VALUES (2, 'x', 20), (NULL, 'n', 0);
+CREATE TABLE ok_ts (k date, tag text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO ok_ts SELECT date '2025-01-01' + d, 't' || d % 5, d % 17 FROM generate_series(0, 420, 3) d;
+
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, kcut_a, kcut_b, kcut_c;

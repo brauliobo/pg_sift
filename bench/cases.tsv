@@ -88,3 +88,4 @@ point_keys_agg	asks the point directory (`point_columns`, `point_tid_columns`) f
 percentile_select	finds the percentiles of a group by a quickselect over its histogram	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 distinct_rows_sets	distinct rows of a grouping set over a preserved join	orders	default	Pushed Aggregates: count, count, count, count\(DISTINCT (o\.)?customer_id\)	native	-	ms	faster33	no
 placeholder_leaf_args	the cast of a map value is the float leaf	orders	default	Pushed Aggregates: count\(\*\), count\(\*\), count\(\*\), avg\(metrics_a\.\*\.value\)	native	-	ms	faster33	no
+sets_lookup_keys	resolves its rows in a loop of the column's kind	orders	default	Group Keys: category: l\.label, country: r\.region.*grouping set	native	-	ms	faster33	no

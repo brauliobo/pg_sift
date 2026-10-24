@@ -256,6 +256,7 @@ typedef struct AggExec
 	uint64	   *tmpm;
 	uint64	   *tmpm2;
 	uint32	   *tmpu32;
+	uint32	   *setkid;			/* grouping sets in hash mode: the key ids of the chunk's tuples, shared by the sets that read them (compute_set_gids) */
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
 	SiftPaWhy	pa_why;			/* why not, when pa_on is false */

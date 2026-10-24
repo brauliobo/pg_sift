@@ -734,6 +734,7 @@ void
 agg_tuples(AggExec *ex, Tup *t)
 {
 	SiftAggSpec *s = ex->spec;
+	bool		shared;
 
 	ex->cur = t;
 	ex->sel = t->sel;
@@ -754,6 +755,7 @@ agg_tuples(AggExec *ex, Tup *t)
 		return;
 	}
 	ex->n_tuples += t->n;
+	shared = false;
 	for (int set = 0; set < Max(s->nsets, 1); set++)
 	{
 		Tup		   *st = s->nsets && set_has_post(s, set) ? set_tuples(ex, t, set) : t;
@@ -769,7 +771,19 @@ agg_tuples(AggExec *ex, Tup *t)
 		ex->ridx = st->ridx;
 		ex->curset = set;
 		ex->arm_mask = s->nsets ? s->setmask[set] : ~(uint32) 0;
-		compute_gids(ex, st->n);
+		if (s->nsets > 1 && ex->hash && st == t)
+		{
+			if (!shared)
+			{
+				ex->arm_mask = ~(uint32) 0;
+				compute_kids(ex, t->n, ex->setkid);
+				ex->arm_mask = s->setmask[set];
+				shared = true;
+			}
+			compute_set_gids(ex, st->n, ex->setkid);
+		}
+		else
+			compute_gids(ex, st->n);
 		ex->ncnt[0] = ex->seen;
 		ex->nncnt = 1;
 		for (int i = 0; i < s->naggs; i++)
