@@ -115,6 +115,19 @@ if [[ $MODE == affected ]]; then
 	exit 0
 fi
 COL_SLICES=4   # slices of the column differential jobs of the full tier (below)
+declare -A JOB_WEIGHT=(
+	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
+	[difftest-col-4]=849 [difftest-col-tbl-2]=800 [difftest-col-2]=789 [difftest-col-tbl-3]=675 [tap-shell-compat_matrix]=578 [fuzz]=558
+	[tap-001_crash]=504 [installcheck-col_key_presence]=450 [tap-shell-store_crash]=341 [tap-shell-col_index_crash]=283
+	[installcheck-col_topn_parallel]=252 [installcheck-agg_group_spill_fuzz]=248 [installcheck-tbl_writepath]=246 [difftest-nopos]=236 [difftest-fuzz]=204
+	[tap-shell-index_build_crash]=197 [soak]=195 [tap-shell-col_auto_merge_partition]=194 [installcheck-col_sorted_run]=186 [tap-014_tbl_writepath]=181
+	[tap-006_truncate]=178 [tap-shell-index_random_crash]=165 [installcheck-agg_preagg_rollup]=158 [installcheck-tbl_preagg_calendar]=154 [hardened]=152
+	[coverage-pct]=126 [installcheck-col_scan]=124 [soak-col]=123 [tap-003_wal_minimal]=117 [installcheck-tbl_preagg]=115 [isolation]=113
+	[tap-shell-maint_fanin]=112 [tap-shell-col_crash_matrix]=111 [installcheck-agg_set_array]=111 [installcheck-build_large_docs]=107
+	[tap-017_tbl_autodefrag]=102 [installcheck-agg_preagg_filter]=102 [tap-shell-col_wbuf_crash]=101 [tap-shell-compat_31_column]=99
+	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
+)
+JOB_WEIGHT_DEFAULT=10
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
@@ -195,6 +208,21 @@ if [[ $MODE == --selftest ]]; then
 			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
 			(( n == (deep ? COL_SLICES : COL_SLICES / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
 		done
+	done
+	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
+	for pg in 17 18; do
+		ns=3; (( pg == 17 )) && ns=5
+		all=$(env -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
+		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
+		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg are not the plan, each job once"; bad=1; }
+		lo='' hi=0
+		for (( k = 1; k <= ns - (pg < 18 ? 1 : 0); k++ )); do
+			l=0
+			while read -r j _; do l=$(( l + ${JOB_WEIGHT[$j]:-$JOB_WEIGHT_DEFAULT} )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			(( l > hi )) && hi=$l
+			[[ -z $lo ]] || (( l < lo )) && lo=$l
+		done
+		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
 	done
 	grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
@@ -414,12 +442,31 @@ fi
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
 # SIFT_CI_SHARD=K/N: every Nth job of the queue from the Kth, so that N runners share the pool and each keeps the longest-first order; shard 1 runs
 # the checks of the harness. Before PostgreSQL 18 the jobs that run after the pool (flavor installs, serial) are all the last shard's
+# The full tier cuts the queue by weight instead (JOB_WEIGHT: seconds of a lane, the jobs of 90 s and more measured on PostgreSQL 18 in the lean run 40097165396 of
+# 2026-10-24, 13:12 UTC; the others weigh 10): the heaviest job goes to the shard with the least load so far, which put the three shards of PostgreSQL 18 at 98, 118 and
+# 164 lane-minutes by position and balances them to within a few percent (--selftest checks it, and that the shards are the plan exactly once). The deep sizes are
+# about 1.5 to 2.5 times the lean ones on the same jobs, the same order.
+# shard_loads N POOL: SHARD_OF[job] (0-based shard of the pool) and LOAD[k] for the jobs of the pool, heaviest first, ties in queue order
+declare -A SHARD_OF
+shard_loads() {
+	local pool=$1 line id k i
+	SHARD_OF=() LOAD=()
+	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
+	while read -r line; do
+		id=${line#* }; k=0
+		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
+		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || echo "${JOB_WEIGHT[$id]:-$JOB_WEIGHT_DEFAULT} $id"; done | sort -s -k1,1nr)
+}
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
+	POOL=$(( NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0) ))
+	[[ $MODE == full && $NSHARDS -gt 1 ]] && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue
-		else (( n++ % (NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0)) == SHARD - 1 )) || continue; fi
+		elif [[ $MODE == full && $NSHARDS -gt 1 ]]; then (( SHARD_OF[$id] == SHARD - 1 )) || continue
+		else (( n++ % POOL == SHARD - 1 )) || continue; fi
 		KEEP_IDS+=("$id")
 		[[ " ${SUITES[*]-} " == *" ${J_SUITE[$id]} "* ]] || SUITES+=("${J_SUITE[$id]}")
 	done
