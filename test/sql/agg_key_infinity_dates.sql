@@ -1,0 +1,41 @@
+-- A group key computed from a date column (a lookup key: extract, date_trunc, date + 1) is cached by value in a table over the range of the values it has seen, up to 4
+-- million values; a column that holds both infinities (-infinity and infinity are the ends of the 32-bit range) spans 2^32 and made the scan ask for a 16 GB table
+-- ("invalid memory alloc request size 17179869248"). Such a key keeps its ids in a hash table, like a key of an integer column, and the rows are those of the normal plan.
+-- (the rows of the two infinities must fall in a unit of their own: the test needs more than one unit, 200,000 rows)
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE dinf (id int, d date, v int);
+INSERT INTO dinf SELECT i, date '2020-01-01' + i % 400, i FROM generate_series(1, 200000) i;
+INSERT INTO dinf VALUES (200001, 'infinity', 1), (200002, '-infinity', 2), (200003, NULL, 3);
+CREATE INDEX dinf_col ON dinf USING sift_col (id, d, v);
+VACUUM (FREEZE, ANALYZE) dinf;
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN 'normal';
+END $$;
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN d;
+END $$;
+
+-- the scan is forced (the table is small): every key must be answered by it, with the rows of the normal plan
+SET cpu_tuple_cost = 100;
+SELECT k, plan_of(format('SELECT %s, sum(v) FROM dinf GROUP BY 1', k)) AS plan, differences(format('SELECT %s, sum(v) FROM dinf GROUP BY 1', k)) AS differences
+FROM (VALUES ('extract(dow FROM d)'), ('d + 1'), ('date_trunc(''month'', d)'), ('d::text'), ('d')) v(k) ORDER BY k;
+RESET cpu_tuple_cost;
+
+DROP FUNCTION plan_of(text), differences(text);
+DROP TABLE dinf;
+DROP EXTENSION pg_sift;

@@ -293,6 +293,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Fixed: pg_sift: an average or sum over a `numeric` column of a precision past 18 digits (`numeric(30, 16)`) whose units hold many distinct values was planned as the scan, which is slower than the normal plan there (each unit builds an entry for each new value); the planner now prices an entry as measured and keeps the normal plan for such a column, and the scan for the column of few values. The answers are the same in both.
 - Fixed: `sift_table`: an `UPDATE` or `DELETE` that scans a table while a `VACUUM` (or the background defrag) replaces its tombstone log failed with `failed to fetch tuple being updated`; the statement now keeps the tombstones it already holds
 - Fixed: `sift_table`: a bitmap-scan `UPDATE` or `DELETE` that a `VACUUM` interrupted by promoting the write buffer silently skipped the rows of the promoted blocks (1530 of 3000 rows updated, no error); the scan now reads the write buffers it began with (the bug is also in 3.2.3)
+- Fixed: pg_sift: a `GROUP BY` of an expression of a `date` column (`extract(dow FROM d)`, `d + 1`, `date_trunc('month', d)`) failed with `invalid memory alloc request size 17179869248` when the column held both `infinity` and `-infinity`, which are the two ends of the 32-bit range: the scan asked for a lookup table over all of it. Such a key now keeps its ids in a hash table, as a key of an integer column does, and the rows are those of the normal plan.
 
 ## 3.2.3 - 2026-10-23
 
