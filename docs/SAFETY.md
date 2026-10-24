@@ -66,6 +66,7 @@ CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SI
 the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`): `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh: 13 regression tests and
 2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11) and `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh: 4 tests under memcheck with the
 server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has no debug symbols runs it in a pinned Debian bookworm container, see the header of the script; skips when neither works). Weekly, non-blocking on GitHub: .github/workflows/assert.yml.
+The quick tier of `ci.yml` has one entry on this server ("PostgreSQL 18 (assertions)", the 30 `installcheck-agg_*` regress tests of the planner paths: cte, cost, scope, lateral, subplan, placeholder; the whole `installcheck-agg*` set takes 61 minutes on this server): the planner asserts (a `foreach_node` cast of the wrong node type, found on PostgreSQL 19 first) exist only in a `--enable-cassert` build, which the distribution packages of 17 and 18 lack.
 
 ## Tools on this host (gcc 16.2, clang 23.1)
 
