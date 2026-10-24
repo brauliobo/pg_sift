@@ -539,7 +539,7 @@ A `sift_col` index chooses these from the table at `CREATE INDEX` and says each 
 |---|---|---|---|
 | Key lists of the foreign keys (`key_columns`) | `int2`, `int4` and `date` foreign keys and `*_id` columns that are not unique and that the cube does not already hold; kept where a key list or bitmap fits 3% of a unit in at least half of the units | the columns kept, their bytes, the columns left out and why | `key_columns = 'off'` or `'a, b'` |
 | Cube dimensions and calendar cells | the cube holds 16 dimensions: the calendar cells of the dates first, then the columns in their order (the dates' own histograms and the last columns give way) | the plain columns left without a histogram | `preagg = 'cube(...)'`, `calendar_columns`; `preagg = 'auto'` ranks the columns by data (below) |
-| Paths of a `jsonb` column (`paths`) | the keys that are a scalar of one type in most of 2,000 sampled documents; a wildcard for a map of more than 32 keys, a group for an array of objects; written to the option as `auto: spec` | the spec read | `paths = '...'` by hand |
+| Paths of a `jsonb` column (`paths`) | the keys that are a scalar of one type in most of 2,000 sampled documents; a wildcard for a map of more than 4 keys of one type, a group for an array of objects, free text left out; written to the option as `auto: spec` | the spec read | `paths = '...'` by hand |
 
 `preagg = 'auto'` is not a default: an index of more plain columns than the cube holds dimensions reads 8 stretches of 256 blocks at `CREATE INDEX`, puts the columns that have at most 256 values in a unit in most of them first, and records the list as `preagg = 'auto: a, b'`; it adds the histograms of the columns that fit, which grew the index by 6% to 9% in the case measured in [docs/perf/COLUMN-DEFAULTS.md](perf/COLUMN-DEFAULTS.md), more than the 3% a default may add (`col_cube_rank`).
 
@@ -664,6 +664,19 @@ A normal plan that keeps a nested loop over a CTE the planner expects to hold on
 shows `CTE Scan ... rows=1` with thousands of rows actual) is slow with or without the scan, and the scan cannot reprice it. Without `sift`, a reproducer of a grouping-sets chain filtered by two columns without
 statistics ran in 9.7 s at 128 keys and in 268 ms with `SET LOCAL enable_nestloop = off` (32,887 ms and 732 ms at 256 keys; the slope of the time against the keys goes from 1.9 to 1.0). The setting changes every join of the
 statement, so test the statement with it before keeping it.
+
+A normal plan that reads an unclustered key through an index (correlation near 0) is priced as if its heap pages were cached: with `random_page_cost` at 1.1 and `effective_cache_size` above the table, PostgreSQL charges
+a heap fetch about as much as a sequential page. When the table does not fit `shared_buffers` the fetches miss it and the normal plan runs slower than its price says, so the refusal of a scan that would have been faster
+is the planner's optimistic estimate, not the scan's price (a top-3-per-group statement over 1.5 million rows, a 213 MB table, `work_mem` 4GB, `random_page_cost` 1.1, no workers; the price of the scan, 284,288, against
+114,152 for the normal plan, is refused in both rows):
+
+| `shared_buffers` | normal plan | scan forced | cost units for each ms of the normal plan |
+|---|---|---|---|
+| 64 MB (the table does not fit) | 4.0 to 4.5 s | 2.3 s | 28 to 32 |
+| 1 GB (the table is cached) | 1.35 to 1.45 s | 1.9 s | about 90 |
+
+The normal plan is the faster one when the table is cached, so no change of the price is right for both cases; for a role that reads tables larger than `shared_buffers`, `sift.agg_force` (above), `sift.enable_agg`
+per role, or a `random_page_cost` that reflects the storage are the supported overrides.
 
 The first statement of a session that has not preloaded the library (`session_preload_libraries = 'pg_sift'` does it at the start) is planned again through the hook when it is a `SELECT`, an `EXPLAIN` or a
 `CREATE TABLE AS` (see Install above); a diagnosis that starts with `EXPLAIN (ANALYZE)` in a fresh session therefore shows the plan the next statement gets.

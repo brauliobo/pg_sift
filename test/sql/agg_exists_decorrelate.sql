@@ -1,0 +1,93 @@
+-- EXISTS and NOT EXISTS of a table tied to the outer query by equalities, where PostgreSQL leaves a sub-plan for each outer row (the select list, an OR, a CASE), are
+-- the table grouped by those columns, left joined to the outer query: EXISTS is "a group is there". The answers are the normal plan's, bit for bit: a NULL key has no
+-- group (EXISTS is false, NOT EXISTS true), nor has a key of an empty table, a key that repeats in the outer query gets its answer each time. An EXISTS that the WHERE ANDs
+-- stays a semi join (a NOT EXISTS an anti join), which the scan has arms for. A few outer rows keep the lookups.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE owners (id int PRIMARY KEY, grp int, k int, k2 int, tx text, dd date, k8 bigint) WITH (autovacuum_enabled = false);
+-- k repeats (duplicate outer rows), is NULL for some; ids above 1500 own nothing; k2, tx, dd and k8 are NULL for some
+INSERT INTO owners SELECT i, i % 7, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 1500 END, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 5 END,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE 't' || i % 60 END, CASE WHEN i % 19 = 0 THEN NULL ELSE date '2024-01-01' + i % 400 END, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 900 END
+FROM generate_series(1, 2000) i;
+CREATE TABLE items (id int PRIMARY KEY, owner_id int, owner_k2 int, cat int, amt int, txt text, d date, k8 bigint) WITH (autovacuum_enabled = false);
+INSERT INTO items SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 1200 END, CASE WHEN i % 19 = 0 THEN NULL ELSE i % 5 END, i % 9, CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 7) % 100 END,
+       CASE WHEN i % 29 = 0 THEN NULL ELSE 't' || i % 40 END, date '2024-01-01' + i % 300, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 700 END
+FROM generate_series(1, 30000) i;
+CREATE INDEX items_col ON items USING sift_col (id, owner_id, owner_k2, cat, amt, txt, d, k8);
+CREATE INDEX items_owner ON items (owner_id);
+CREATE TABLE nothing (id int, owner_id int, amt int);
+CREATE INDEX nothing_col ON nothing USING sift_col (id, owner_id, amt);
+VACUUM (FREEZE, ANALYZE) owners;
+VACUUM (FREEZE, ANALYZE) items;
+
+\ir test/agg_helpers.sql
+-- in_scan: the plan has a scan (planned with the table scans of the normal plan off); same: the normal plan's rows
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, in_scan bool, same bool, rows bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), (SELECT count(*) FROM jsonb_array_elements(outcome(q, true)::jsonb));
+END $$;
+-- the plan the planner chooses, with its own costs: does it read items by the index (the lookups), does it run in the scan, does it keep a semi or anti join?
+CREATE FUNCTION chosen(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'other';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN RETURN 'scan'; END IF;
+		IF l LIKE '%Semi Join%' OR l LIKE '%Anti Join%' THEN r := 'semi/anti'; END IF;
+		IF r = 'other' AND (l LIKE '%on items_owner%' OR l LIKE '%using items_owner%') THEN r := 'lookups'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+-- the select list
+SELECT * FROM check_query('EXISTS in the select list', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS has FROM owners o $q$);
+SELECT * FROM check_query('NOT EXISTS in the select list', $q$ SELECT o.id, NOT EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS none FROM owners o $q$);
+SELECT * FROM check_query('both, a condition of the table', $q$
+ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) AS big, NOT EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.d >= date '2024-09-01' AND i.txt IS NOT NULL) AS none
+ FROM owners o $q$);
+-- where the WHERE cannot make a join of it
+SELECT * FROM check_query('under an OR', $q$ SELECT o.id FROM owners o WHERE o.grp = 1 OR EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 95) $q$);
+SELECT * FROM check_query('NOT EXISTS under an OR', $q$ SELECT o.id FROM owners o WHERE o.grp = 1 OR NOT EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 50) $q$);
+SELECT * FROM check_query('in a CASE', $q$ SELECT o.id, CASE WHEN EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) THEN 'a' WHEN o.grp > 3 THEN 'b' ELSE 'c' END AS c FROM owners o $q$);
+SELECT * FROM check_query('NOT (a AND EXISTS)', $q$ SELECT o.id FROM owners o WHERE NOT (o.grp < 5 AND EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt < 5)) $q$);
+SELECT * FROM check_query('with the other conjuncts of a WHERE that has an OR', $q$
+ SELECT o.id FROM owners o WHERE o.id > 100 AND (EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.cat = 3) OR o.k2 = 2) AND NOT EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt = 7) $q$);
+-- keys: NULL, repeated, of several types, two columns, an empty table, a table whose rows the condition drops
+SELECT * FROM check_query('a NULL key has no group', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS has FROM owners o WHERE o.k IS NULL $q$);
+SELECT * FROM check_query('text key', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.txt = o.tx) AS has FROM owners o $q$);
+SELECT * FROM check_query('date key', $q$ SELECT o.id, NOT EXISTS (SELECT 1 FROM items i WHERE i.d = o.dd AND i.cat = 4) AS none FROM owners o $q$);
+SELECT * FROM check_query('bigint key', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.k8 = o.k8) AS has FROM owners o $q$);
+SELECT * FROM check_query('two columns', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.owner_k2 = o.k2) AS has FROM owners o $q$);
+SELECT * FROM check_query('the same sub-select twice, a different condition', $q$
+ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt < 3) AS lo, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 97) AS hi FROM owners o $q$);
+SELECT * FROM check_query('an empty table', $q$ SELECT o.id, EXISTS (SELECT 1 FROM nothing n WHERE n.owner_id = o.k) AS has, NOT EXISTS (SELECT 1 FROM nothing n WHERE n.owner_id = o.k) AS none FROM owners o $q$);
+SELECT * FROM check_query('a condition that no row meets', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 1000) AS has FROM owners o $q$);
+SELECT * FROM check_query('an outer join in the FROM list', $q$
+ SELECT o.id, p.id AS pid, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = p.k) AS has FROM owners o LEFT JOIN owners p ON p.id = o.id + 1500 $q$);
+SELECT * FROM check_query('a join of the outer tables', $q$
+ SELECT o.id, p.tx, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = p.k AND i.cat = 2) AS has FROM owners o JOIN owners p ON p.id = o.id + 1 $q$);
+-- a few outer rows: the lookups; many: the scan; a WHERE that makes a join of it stays one
+SELECT chosen($q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS has FROM owners o WHERE o.id < 3 $q$) AS few, chosen($q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS has FROM owners o $q$) AS many;
+SELECT chosen($q$ SELECT o.id FROM owners o WHERE EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) $q$) AS exists_in_where,
+       chosen($q$ SELECT o.id FROM owners o WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) $q$) AS not_exists_in_where;
+
+-- as written: the outer query groups, no equality, an equality with an expression, an outer column beside the equality, a LIMIT, a table that groups or joins, a sub-select inside it, IN and NOT IN (their NULLs differ)
+SELECT * FROM check_query('the outer query groups', $q$
+ SELECT o.grp, count(*) AS n, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 80)) AS big FROM owners o GROUP BY o.grp $q$);
+SELECT * FROM check_query('an inequality', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id < o.k AND i.owner_id > o.k - 3) AS has FROM owners o WHERE o.id < 500 $q$);
+SELECT * FROM check_query('an expression of the outer column', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k + 1) AS has FROM owners o $q$);
+SELECT * FROM check_query('a second equality, of two columns of the same types', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.cat = o.grp) AS has FROM owners o $q$);
+SELECT * FROM check_query('a LIMIT 0', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k LIMIT 0) AS has FROM owners o $q$);
+SELECT * FROM check_query('a join inside', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i JOIN items j ON j.id = i.id + 1 WHERE i.owner_id = o.k) AS has FROM owners o $q$);
+SELECT * FROM check_query('a sub-select inside (uncorrelated: the scan runs it on its own)', $q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > (SELECT avg(amt) FROM items)) AS has FROM owners o $q$);
+SELECT * FROM check_query('IN', $q$ SELECT o.id, o.k IN (SELECT i.owner_id FROM items i WHERE i.amt > 90) AS has FROM owners o $q$);
+SELECT * FROM check_query('NOT IN (a NULL among the keys)', $q$ SELECT o.id, o.k NOT IN (SELECT i.owner_id FROM items i WHERE i.amt > 90) AS none FROM owners o $q$);
+SELECT * FROM check_query('a table without a column index', $q$ SELECT o.id, EXISTS (SELECT 1 FROM owners p WHERE p.k = o.k AND p.id <> o.id) AS has FROM owners o $q$);
+-- the rewrite shows in explain_why as the arm that is used, and not where it was refused
+SELECT bool_or(used) AS rewritten FROM sift.explain_why($q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k) AS has FROM owners o $q$);
+SELECT bool_or(used) AS inequality FROM sift.explain_why($q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.owner_id < o.k AND i.owner_id > o.k - 3) AS has FROM owners o $q$);
+
+DROP TABLE owners, items, nothing;
+DROP FUNCTION check_query(text,text), chosen(text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
+DROP EXTENSION pg_sift;

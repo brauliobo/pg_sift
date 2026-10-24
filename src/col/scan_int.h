@@ -34,9 +34,10 @@ typedef struct ColCursor
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
-	uint32		pat;			/* the first of them not yet handed to a unit */
 	int			ppred;
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
+	SiftKey    *ptidv;			/* ... and, for a source that narrows its units (SIFT_COLO_POINT_ROWS), the addresses of the segment, ascending */
+	uint32		nptidv;
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -104,6 +105,8 @@ typedef struct ColUnit
 	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
 	uint32		nprow;
 	int			ppred;
+	const SiftKey *ptid;		/* the addresses of ptidv that lie in this unit's superblock, when the cursor has some (nptid may be 0 only for a unit the directory lists nothing in) */
+	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;

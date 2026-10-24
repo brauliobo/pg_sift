@@ -533,17 +533,11 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 	return (Datum) 0;
 }
 
-/* The zone of the first sort leaf in the unit of superblock sb; false when it has none */
+/* The zone of the first sort leaf over the units of superblock sb, from the segment headers (the unit is not read); false when it has none */
 static bool
 topn_zone(AggExec *ex, uint32 sb, SiftSrcZone *z)
 {
-	if (ex->search)
-		sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
-	sift_colsrc_begin(ex->src, sb, sb + 1, NULL, 0);
-	if (!sift_colsrc_next(ex->src, &ex->unit))
-		return false;
-	sift_colsrc_zone(ex->src, &ex->unit, sift_topn_leaf(ex->topn, 0), z);
-	return true;
+	return sift_colsrc_zone_range(ex->src, sb, sb + 1, sift_topn_leaf(ex->topn, 0), z) > 0;
 }
 
 /*
@@ -700,6 +694,24 @@ topn_parallel(AggExec *ex)
 	sift_topn_finish(ex->topn);
 }
 
+/* a scan with no condition, join or aggregate: every row of a clean unit passes, and the head of its sorted run names the n best of them */
+static bool
+topn_heads_ok(AggExec *ex)
+{
+	return ex->spec->npred == 0 && ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
+		ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->nzone == 0 && ex->nfilter == 0 && ex->ntype == 0 &&
+		ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
+}
+
+/* the vectors of a scan are allocated when the first unit is read: a walk that the heads of the runs answer reads none */
+static void
+topn_buffers(AggExec *ex, bool *done)
+{
+	if (!*done)
+		scan_buffers(ex);
+	*done = true;
+}
+
 static void
 topn_run(AggExec *ex)
 {
@@ -711,21 +723,33 @@ topn_run(AggExec *ex)
 	SiftSrcZone z;
 	TopnChunk	ch = {0, 0, NULL};
 	bool		parallel,
-				heads;
+				heads,
+				bufs = false;
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
 	agg_test_wait();
-	scan_buffers(ex);
+	if (!sift_topn_heads || !sift_topn_walk || ex->spec->naggs > 0 || ex->search != NULL || !topn_heads_ok(ex))
+		topn_buffers(ex, &bufs);
 	table_init(ex);
 	t = ex->topn;
 	if (sift_topn_empty(t))
 		return;
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
+	{
+		/* the begin loads the write buffers, which the zones of the walk and the head bypass need to know are empty (sift_col_walk_stamp) */
+		if (ex->search)
+			sift_colsrc_select(ex->src, NULL);	/* the units as they are, not those of the last match set */
+		sift_colsrc_begin(ex->src, 0, 1, NULL, 0);
 		for (int i = 0; i < sift_topn_nprobes(); i++)
-			if (topn_zone(ex, sift_topn_probe_sb(t, i, nsb), &z))
-				sift_topn_probe(t, ex->unit.sb, &z);
+		{
+			uint32		sb = sift_topn_probe_sb(t, i, nsb);
+
+			if (topn_zone(ex, sb, &z))
+				sift_topn_probe(t, sb, &z);
+		}
+	}
 	sift_topn_start(t, nsb);
 	parallel = ex->spec->nworkers > 0 && sift_topn_parallel_ok(t);
 	if (sift_topn_walk && ex->search == NULL && sift_topn_wants_zones(t) && !sift_topn_follows(t) && nsb >= 2 * sift_topn_nprobes())
@@ -734,6 +758,7 @@ topn_run(AggExec *ex)
 		sift_topn_walk_setup(t);
 		if (parallel)
 		{
+			topn_buffers(ex, &bufs);
 			ex->vorder = (uint32 *) sift_topn_walk_order(t);
 			ex->nvorder = nsb;
 			topn_parallel(ex);
@@ -741,17 +766,22 @@ topn_run(AggExec *ex)
 		}
 		sift_topn_run_budget(t, nsb);
 		/* a scan with no condition, join or aggregate: every row of a clean unit passes, and the head of its sorted run names the n best of them */
-		heads = ex->spec->npred == 0 && ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
-			ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->nzone == 0 && ex->nfilter == 0 && ex->ntype == 0 &&
-			ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
+		heads = topn_heads_ok(ex);
 		while (sift_topn_walk_next(t, &lo))
 			if (!heads || !sift_topn_sb_head(t, ex->src, lo))
+			{
+				topn_buffers(ex, &bufs);
 				scan_units(ex, lo, lo + 1);
+			}
 		while (sift_topn_revisit_next(t, &lo))
+		{
+			topn_buffers(ex, &bufs);
 			scan_units(ex, lo, lo + 1);
+		}
 		sift_topn_finish(t);
 		return;
 	}
+	topn_buffers(ex, &bufs);
 	if (parallel)
 	{
 		topn_parallel(ex);
@@ -1044,6 +1074,8 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->heap_pages += c->par->cc.heap_pages;
 		cc->rechecked += c->par->cc.rechecked;
 		cc->recheck_units += c->par->cc.recheck_units;
+		cc->point_units += c->par->cc.point_units;
+		cc->point_rows += c->par->cc.point_rows;
 	}
 }
 
@@ -1338,6 +1370,11 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
 	if (cc->units_set_pruned > 0)
 		ExplainPropertyInteger("Units Pruned By Set Summary", NULL, cc->units_set_pruned, es);
+	if (cc->point_units > 0)
+	{
+		ExplainPropertyInteger("Units From Point Directory", NULL, cc->point_units, es);
+		ExplainPropertyInteger("Rows From Point Directory", NULL, cc->point_rows, es);
+	}
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
