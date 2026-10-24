@@ -76,3 +76,17 @@ So none of the structures a budget could rank answers a unit of this workload, a
 - A `event_date` range: 7,349 distinct days over 24 years, more than the 256 groups of a histogram, and the calendar cells of the dates are not written for an index with `jsonb` paths (`calendar_columns` needs a schema without paths); a path-free copy, which does write them, answers 0 of 13 units of a month range too.
 
 Dropping `cube_minmax` and `superunit` would save 5.2% of this index, but they answer the filterless shapes of the indexes that have them (the 171 of 171 above), and nothing in a workload of statements always filtered by a soft-delete column and a date range shows which columns will want them, so no budget was set. What this workload needs is not a structure to rank but an answer for a filter that most rows pass: the cube of a unit minus the few rows `deleted_at IS NULL` rejects, and the date range from cells that also exist beside `jsonb` paths. Those change the executor and the format, not a default.
+
+## Calendar cells beside `jsonb` paths (`calendar_columns`)
+
+The same index and statements as above, with `calendar_columns = 'all'` (the 3 date and timestamp columns), against the index without cells: the index grows from 8,806,400 to 9,625,600 bytes (+9.3%; 9,871,360, +12.1%, in an earlier build of it), so the cells are named, not the default, beside paths. What they answer on the date shapes of the statements (units of the index answered from the pre-aggregates, `EXPLAIN (ANALYZE)`; before, none):
+
+| Shape | Units | From cells | Rows scanned |
+|---|---:|---:|---:|
+| `count(*)`, range aligned to months | 123 | 123 | 0 (253,491 before) |
+| `count(*)`, range with day bounds | 122 | 57 | 133,689 (251,433) |
+| `count(*)`, OR of two ranges | 148 | 57 | 187,790 (305,272) |
+| `GROUP BY date_trunc('month', d)`, a range | 122 | 15 | 220,323 (220,323) |
+| the same `AND deleted_at IS NULL` | 122 | 0 | 251,433 |
+
+The 156 statements: 0 of 7,646 units from the pre-aggregates before, 0 after. Each of them also filters `deleted_at IS NULL`, which no cell answers (the next change), and groups by paths and lookup outputs. The total of the 156 did not move beyond the noise of a host at load 40 (28.8 to 29.4 s before, 26.9 to 29.8 s after): a unit of this index holds about 2,000 rows, as cheap to scan as its cells are to read. A range with day bounds is cut by the month cell of every unit that has a row in the boundary month, so only the units written when the table was young are answered whole; ranges aligned to months are answered everywhere.
