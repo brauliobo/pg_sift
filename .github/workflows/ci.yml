@@ -133,6 +133,7 @@ jobs:
       - run: scripts/coverage.sh --docs
       - run: scripts/gen-docs.py --check
       - run: scripts/ci.sh --selftest
+      - run: test/fuzz/diff_fuzz.py --selftest
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 

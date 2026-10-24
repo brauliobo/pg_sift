@@ -11,6 +11,7 @@ the pre-aggregates, the arms alone, parallel workers, ...); the results are comp
   test/fuzz/diff_fuzz.py --seeds 1-3 --queries 40 --rows 3000        the quick tier (scripts/ci.sh, job difftest-fuzz)
   test/fuzz/diff_fuzz.py --seeds 100-199 --queries 300 --out DIR     a long search: a reproducer per divergence in DIR (shrunk)
   test/fuzz/diff_fuzz.py --replay FILE                               runs a reproducer written by --out again
+  test/fuzz/diff_fuzz.py --selftest                                  no server: every family generates and renders (the lint job)
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT) installed and started. Exit 1 on a divergence or a query the generator got wrong.
 """
@@ -309,6 +310,44 @@ def render_placeholder(p):
            f"SELECT p.period, {key} AS k, {', '.join(f'{a} AS a{i}' for i, a in enumerate(p['aggs']))} FROM periods p LEFT JOIN parsed x ON x.ts BETWEEN p.lo AND p.hi GROUP BY {grp}")
     return sql, False
 ONELEAF = {'kind': 'ok_kind', 'big': 'ok_big', 'val': 'ok_val', 'grp': 'ok_grp', 'ts': 'ok_ts'}
+
+def gen_oneleaf(r, ctx):
+    col = r.choice(sorted(ONELEAF))
+    return dict(col=col, jointype=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']), lateral=r.random() < 0.3,
+                keys=r.sample(['d.tag', 'e.grp', 'e.kind', 'd.w % 3', f'e.{col}'], r.choice([0, 1, 1, 2])),
+                aggs=['count(*)'] + r.sample(['count(d.tag)', 'max(d.w)', 'sum(d.w)', 'sum(e.amount)', 'count(DISTINCT d.tag)',
+                                              'count(*) FILTER (WHERE d.w > 4)', 'avg(e.val) FILTER (WHERE d.tag IS NOT NULL)'], r.randrange(1, 4)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True)
+
+
+def oneleaf_from(p):
+    t, c = ONELEAF[p['col']], p['col']
+    if p['lateral']:
+        return f"events e {p['jointype']} LATERAL (SELECT x.tag, x.w FROM {t} x WHERE x.k = e.{c} ORDER BY x.w, x.tag LIMIT 1) d ON true"
+    return f"events e {p['jointype']} {t} d ON d.k = e.{c}"
+
+
+def render_oneleaf(p):
+    return grouped(p, oneleaf_from(p)), bool(p['keys'])
+
+
+# grouping sets over keys of many values (the group table is a hash table) and a lookup's column: the sets that read the same tuples share their key ids
+SETKEYS = ['e.kind', 'e.grp', 'e.a', 'e.b', 'd.tag', 'e.ts', 'e.a % 7']
+
+
+def gen_setkeys(r, ctx):
+    p = gen_oneleaf(r, ctx)
+    ks = r.sample(SETKEYS, r.randrange(3, 6))
+    sets = [r.sample(ks, r.randrange(0, len(ks) + 1)) for _ in range(r.randrange(2, 5))]
+    ks = [k for k in ks if any(k in st for st in sets)]
+    return dict(p, keys=ks, sets=sets, aggs=['count(*)'] + r.sample(['sum(e.amount)', 'count(d.tag)', 'avg(e.val)', 'max(d.w)', 'count(DISTINCT e.id)',
+                                                                     'count(*) FILTER (WHERE e.amount > 500)'], r.randrange(1, 4)))
+
+
+def render_setkeys(p):
+    sets = ', '.join('(' + ', '.join(sorted(st, key=p['keys'].index)) + ')' for st in p['sets'])
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    return f"SELECT {select_list(p)} FROM {oneleaf_from(p)}{w} GROUP BY GROUPING SETS ({sets})", False
 
 def gen_dirty(r, ctx):
     form = r.randrange(5)
@@ -1309,7 +1348,17 @@ def main():
     ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
     ap.add_argument('--show', action='store_true', help='print every query')
+    ap.add_argument('--selftest', action='store_true', help='no server: every family generates and renders queries for seeds 0-19 (the lint job)')
     a = ap.parse_args()
+    if a.selftest:
+        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
+        for fam, (gen, render, _) in FAMILIES.items():
+            for seed in range(20):
+                sql, _ = render(gen(random.Random(seed), dict(ctx)))
+                if not sql.strip():
+                    sys.exit(f'diff_fuzz selftest: family {fam} rendered no query for seed {seed}')
+        print(f'diff_fuzz selftest: {len(FAMILIES)} families, 20 queries each')
+        return 0
     seeds = []
     for part in a.seeds.split(','):
         lo, _, hi = part.partition('-')
