@@ -317,9 +317,9 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3 and minor 12 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols_col') WHERE kind = 'immutable') x")" == 3,12
 	check "the index with minor 3 and minor 12 segments verifies and answers as the heap, with and without the summaries" test "$(q life upg "SELECT sift.col_verify('cols_col', true)" \
 		"SET sift.enable_agg = on" "$SUQ" | tail -n 1)$(q life upg "SET sift.agg_super = off" "SET sift.enable_agg = on" "$SUQ" | tail -n 1)" == "$SUOFF$SUOFF"
-	# minor 13 segments (the sorted run of a leaf; opt-in) join an index of minor 3 segments: the units written before are read whole, the others by their run, the results are the heap's; REINDEX gives every unit its run
+	# minor 13 segments (the sorted run of a leaf, written under sift.col_format_minor 14: from 15 it also holds its head, minor 18, col_run_heads) join an index of minor 3 segments: the units written before are read whole, the others by their run, the results are the heap's; REINDEX gives every unit its run
 	q life upg "CREATE TABLE cols13 (id int, grp int, v numeric(10,2))" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
-		"SET sift.col_format_minor = 3" "CREATE INDEX cols13_col ON cols13 USING sift_col (id, grp, v)" "RESET sift.col_format_minor" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX cols13_col ON cols13 USING sift_col (id, grp, v)" "SET sift.col_format_minor = 14" \
 		"ALTER INDEX cols13_col SET (order_columns = 'grp, v')" "INSERT INTO cols13 SELECT g, g * 7919 % 50000, g % 1000 / 8.0 FROM generate_series(20001, 40000) g" \
 		"SELECT sift.col_promote('cols13_col')" >/dev/null
 	S13Q="SELECT string_agg(id || ':' || grp, ',' ORDER BY grp DESC, id) FROM (SELECT id, grp FROM cols13 ORDER BY grp DESC, id LIMIT 300) x"
@@ -327,7 +327,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "an index with minor 3 and minor 13 segments" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")" == 3,13
 	check "the index with minor 3 and minor 13 segments verifies and answers an ORDER BY .. LIMIT as the heap" test "$(q life upg "SELECT sift.col_verify('cols13_col', true)" \
 		"SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "$S13OFF"
-	q life upg "REINDEX INDEX cols13_col" >/dev/null
+	q life upg "SET sift.col_format_minor = 14" "REINDEX INDEX cols13_col" >/dev/null
 	check "after REINDEX every segment of the index is minor 13 and the answer is the same" test "$(q life upg "SELECT string_agg(f::text, ',' ORDER BY f) FROM (SELECT DISTINCT format f FROM sift.col_segments('cols13_col') WHERE kind = 'immutable') x")/$(q life upg \
 		"SELECT sift.col_verify('cols13_col', true)" "SET sift.enable_agg = on" "$S13Q" | tail -n 1)" == "13/$S13OFF"
 	# minor 15 segments (the key list or bitmap of an int leaf; opt-in) join an index of minor 3 segments: the units written before are scanned, the others answer count(DISTINCT) from their bitmap, the result is the heap's; REINDEX gives every unit its bitmap
