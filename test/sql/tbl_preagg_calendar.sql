@@ -166,10 +166,15 @@ CREATE TABLE tci (LIKE tcd) USING sift_table;
 SELECT pm_fill('tci', '2015-03-10', 60, 1, 40000);
 INSERT INTO tci VALUES (500001, 'infinity', 'infinity', 'infinity', 1, 1.5, 1, 1), (500002, '-infinity', '-infinity', '-infinity', 2, 2.5, 2, 2),
 	(500003, '4713-01-01 BC', '4713-01-01 BC', '4713-01-01 BC', 3, 3.5, 3, 3), (500004, '294276-12-31', '294276-12-31', '294276-12-31', 4, 4.5, 4, 4);
+-- the planner keeps a lookup table off a date key when the statistics of the column span more than 4 million days, and the statistics are a sample of the table
+-- (40,004 rows against 30,000 sampled): the sample leaves out the three rows that make the span in 4 analyses of 100, and the shapes then use the cells of the
+-- unit without them. The whole table is the sample.
+SET default_statistics_target = 1000;
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) tci;
 SELECT * FROM pm_check('tci', 1, 100, '{6}');
 DELETE FROM tci WHERE id > 500000;
 VACUUM (FULL, ANALYZE) tci;
+RESET default_statistics_target;
 SELECT * FROM pm_check('tci');
 
 -- 9. the time zone of the session changes the date a timestamptz and a date are cut at, not the cells (UTC days) nor the result of a key that reads UTC

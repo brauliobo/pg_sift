@@ -299,6 +299,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 - Fixed: `sift_table`: an `UPDATE` or `DELETE` that scans a table while a `VACUUM` (or the background defrag) replaces its tombstone log failed with `failed to fetch tuple being updated`; the statement now keeps the tombstones it already holds (the bug is also in 3.2.3)
 - Fixed: `sift_table`: a bitmap-scan `UPDATE` or `DELETE` that a `VACUUM` interrupted by promoting the write buffer silently skipped the rows of the promoted blocks (1530 of 3000 rows updated, no error); the scan now reads the write buffers it began with (the bug is also in 3.2.3)
 - Fixed: pg_sift: a `GROUP BY` of an expression of a `date` column (`extract(dow FROM d)`, `d + 1`, `date_trunc('month', d)`) failed with `invalid memory alloc request size 17179869248` when the column held both `infinity` and `-infinity`, which are the two ends of the 32-bit range: the scan asked for a lookup table over all of it. Such a key now keeps its ids in a hash table, as a key of an integer column does, and the rows are those of the normal plan; the bug is also in 3.2.3, where the error reads `a column range of 4294967296 values is too wide for the aggregate scan`.
+- Fixed: pg_sift: a `GROUP BY` on a `date` column whose selected rows were all `infinity` (or all `-infinity`) stopped the backend: the range table of the group keys stepped over the end of the 32-bit range and wrote far outside the table (also in 3.2.3 and earlier; found while fixing the line above).
 
 ## 3.2.3 - 2026-10-23
 
