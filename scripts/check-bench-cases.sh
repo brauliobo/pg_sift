@@ -5,7 +5,7 @@
 #                                            bench/cases.tsv names it (the `changelog` column: a phrase of the line) and scripts/bench-cases.allow does not waive it; when a case's
 #                                            phrase is in no line of CHANGELOG.md, its SQL file or its README/BENCHMARKS block (<!-- bench:BLOCK:begin -->) is missing, or docs/results/cases.tsv
 #                                            has no sift and native row of it; when an allow line matches no claim or has no reason. "Adds": the lines of CHANGELOG.md that differ from the merge base
-#                                            with origin/integration/3.3-batch-1 (BENCH_CASES_BASE=REF overrides it, origin/main is the fallback; its tip when there is no merge base); without a base only the registry is checked.
+#                                            with the base of the pull request (origin/$GITHUB_BASE_REF in a workflow; locally the origin/integration/* branch this one is nearest to; BENCH_CASES_BASE=REF overrides it, origin/main is the fallback; its tip when there is no merge base); without a base only the registry is checked.
 #   scripts/check-bench-cases.sh --strict    every claim of Unreleased, not just the new ones: the release gate (docs/RELEASE.md)
 #   scripts/check-bench-cases.sh --selftest  proves the gate fails on each kind of gap and passes on a covered tree
 # Fix: add bench/cases/ID.sql and a row to bench/cases.tsv, run `bench/bench cases --cases ID --docs`; or a line `phrase<TAB>reason` to scripts/bench-cases.allow for a claim no query measures.
@@ -56,7 +56,14 @@ if [[ -n $STRICT ]]; then
 else
 	base=${BENCH_CASES_BASE:-}
 	if [[ -z $base ]]; then
-		for ref in origin/integration/3.3-batch-1 origin/main; do   # a shallow clone has no merge base: the tip of the branch will do, only the lines this change adds count
+		refs=(); [[ -z ${GITHUB_BASE_REF:-} ]] || refs+=("origin/$GITHUB_BASE_REF")
+		best=''; bestn=999999   # the integration branch this one is nearest to: the fewest commits between their merge base and HEAD
+		for ref in $(git -C "$R" for-each-ref --format='%(refname:short)' 'refs/remotes/origin/integration/*' 2>/dev/null); do
+			mb=$(git -C "$R" merge-base HEAD "$ref" 2>/dev/null) || continue
+			n=$(git -C "$R" rev-list --count "$mb..HEAD"); (( n < bestn )) && { best=$ref; bestn=$n; }
+		done
+		[[ -z $best ]] || refs+=("$best")
+		for ref in "${refs[@]}" origin/main; do   # a shallow clone has no merge base: the tip of the branch will do, only the lines this change adds count
 			if git -C "$R" rev-parse -q --verify "$ref" >/dev/null 2>&1; then base=$(git -C "$R" merge-base HEAD "$ref" 2>/dev/null || echo "$ref"); break; fi
 		done
 	fi
