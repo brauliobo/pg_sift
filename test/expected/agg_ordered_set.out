@@ -18,9 +18,10 @@ SELECT i, CASE WHEN i % 11 = 0 THEN 0 WHEN i < 50 THEN i ELSE 1 + i % 37 END, i 
 	   CASE WHEN i % 977 = 0 THEN NULL ELSE timestamptz '2020-06-01 00:00:00+00' + (i * 31 % 5003) * interval '1 hour' END,
 	   CASE WHEN i % 971 = 0 THEN NULL WHEN i % 967 = 0 THEN 'NaN' WHEN i % 5 = 0 THEN (i % 13) ELSE ((i * 7919) % 1000003 - 500000) / 7.0 END
 FROM generate_series(1, 20000) i;
--- groups of one and of two values
+-- groups of one and of two values, and one of -0 only
 INSERT INTO os (id, g, small, f, f4, d, n, i8, ts, tz, nm) VALUES (100001, 9001, 1, 5.5, 1.5, '2024-01-01', 3, 7, '2024-01-01', '2024-01-01+00', 1.5), (100002, 9002, 1, 1.5, 2.5, '2024-01-02', 1, -9223372036854775807 - 1, '2024-01-02', '2024-01-02+00', -2.25),
-	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5);
+	(100003, 9002, 2, 2.5, 3.5, '2024-01-03', 2, 9223372036854775807, '2024-01-03', '2024-01-03+00', 2.5),
+	(100004, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0), (100005, 9003, 3, '-0', 0.5, '2024-01-04', 0, 0, '2024-01-04', '2024-01-04+00', 0);
 CREATE INDEX os_col ON os USING sift_col (g, small, f, f4, d, n, i8, ts, tz, nm);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) os;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -34,9 +35,11 @@ END $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	plan := plan_of(q);
-	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT t::text AS j FROM (%s) t', q);
+	-- -0 and 0 are one value to float8: which of them a percentile returns among rows that tie is the sort's pick (the normal plan gives another with the order of the rows,
+	-- a parallel scan changes it from run to run), and the scan keeps one zero: the sign of a zero is not compared
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT regexp_replace(t::text, ''(?<=[(,])-0(?=[,)])'', ''0'', ''g'') AS j FROM (%s) t', q);
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT t::text AS j FROM (%s) t', q);
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS SELECT regexp_replace(t::text, ''(?<=[(,])-0(?=[,)])'', ''0'', ''g'') AS j FROM (%s) t', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT count(*) FROM r_on);
 	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
@@ -69,19 +72,19 @@ END $$;
 SELECT * FROM all_same();
  n  |  plan   | result_rows | vs_normal_plan 
 ----+---------+-------------+----------------
-  1 | SiftAgg |          51 |              0
-  2 | SiftAgg |          51 |              0
+  1 | SiftAgg |          52 |              0
+  2 | SiftAgg |          52 |              0
   3 | SiftAgg |           7 |              0
-  4 | SiftAgg |          51 |              0
+  4 | SiftAgg |          52 |              0
   5 | SiftAgg |           1 |              0
-  6 | SiftAgg |          51 |              0
+  6 | SiftAgg |          52 |              0
   7 | SiftAgg |           7 |              0
   8 | SiftAgg |          49 |              0
   9 | SiftAgg |           3 |              0
- 10 | SiftAgg |          51 |              0
- 11 | SiftAgg |          51 |              0
+ 10 | SiftAgg |          52 |              0
+ 11 | SiftAgg |          52 |              0
  12 | SiftAgg |           7 |              0
- 13 | SiftAgg |          51 |              0
+ 13 | SiftAgg |          52 |              0
  14 | SiftAgg |           7 |              0
  15 | SiftAgg |           1 |              0
  16 | SiftAgg |           3 |              0
@@ -92,19 +95,19 @@ SET work_mem = '64kB';
 SELECT * FROM all_same();
  n  |  plan   | result_rows | vs_normal_plan 
 ----+---------+-------------+----------------
-  1 | SiftAgg |          51 |              0
-  2 | SiftAgg |          51 |              0
+  1 | SiftAgg |          52 |              0
+  2 | SiftAgg |          52 |              0
   3 | SiftAgg |           7 |              0
-  4 | SiftAgg |          51 |              0
+  4 | SiftAgg |          52 |              0
   5 | SiftAgg |           1 |              0
-  6 | SiftAgg |          51 |              0
+  6 | SiftAgg |          52 |              0
   7 | SiftAgg |           7 |              0
   8 | SiftAgg |          49 |              0
   9 | SiftAgg |           3 |              0
- 10 | SiftAgg |          51 |              0
- 11 | SiftAgg |          51 |              0
+ 10 | SiftAgg |          52 |              0
+ 11 | SiftAgg |          52 |              0
  12 | SiftAgg |           7 |              0
- 13 | SiftAgg |          51 |              0
+ 13 | SiftAgg |          52 |              0
  14 | SiftAgg |           7 |              0
  15 | SiftAgg |           1 |              0
  16 | SiftAgg |           3 |              0
@@ -116,19 +119,19 @@ SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table
 SELECT * FROM all_same();
  n  |  plan   | result_rows | vs_normal_plan 
 ----+---------+-------------+----------------
-  1 | SiftAgg |          51 |              0
-  2 | SiftAgg |          51 |              0
+  1 | SiftAgg |          52 |              0
+  2 | SiftAgg |          52 |              0
   3 | SiftAgg |           7 |              0
-  4 | SiftAgg |          51 |              0
+  4 | SiftAgg |          52 |              0
   5 | SiftAgg |           1 |              0
-  6 | SiftAgg |          51 |              0
+  6 | SiftAgg |          52 |              0
   7 | SiftAgg |           7 |              0
   8 | SiftAgg |          49 |              0
   9 | SiftAgg |           3 |              0
- 10 | SiftAgg |          51 |              0
- 11 | SiftAgg |          51 |              0
+ 10 | SiftAgg |          52 |              0
+ 11 | SiftAgg |          52 |              0
  12 | SiftAgg |           7 |              0
- 13 | SiftAgg |          51 |              0
+ 13 | SiftAgg |          52 |              0
  14 | SiftAgg |           7 |              0
  15 | SiftAgg |           1 |              0
  16 | SiftAgg |           3 |              0
