@@ -93,3 +93,31 @@ request of 51 keys, `sum` of a column that is not a dimension of the cube. Units
 - **A bloom filter** (more than 32 keys a unit, 10 bits a key) keeps the false positives of 51 probes, 1 - 0.99^51 = 40% of the units: 85% -> 47% of the units here, on its way to 40% and linear from there.
 - So keys^0.65 is the transition between reading everything and the floor of the pruning, not a power law, and no exponent below 1 holds beyond it. The 35% of the units read at 10x in arrival order is the size of the bloom
   floor; whether the real index holds blooms or key lists there (the share of `presence_pct` of a wide unit) was not checked on the 10x data. Remedies: clustered or partitioned by key (above), or exact key lists in every unit.
+
+## Measured: where the planner starts to choose the scan (10x data, 27 statements)
+
+The two families of nested-list statements of the replay (13 two-level scans over nested lists, 14 json documents with nested lists), every statement of them that the replay keeps, one client, `work_mem = 4GB`, warm, execution time summed in
+seconds, a statement that reaches the 60 s timeout counts 60 s (a lower bound). The request is 32 to 500 keys spread over the table; the build is the 3.4 tip with the cost fixes up to the unnest charge of the normal plan. Natural = the
+planner's own choice; `sift.agg_force = on` = the scan wherever one is possible, whatever the plans cost (the diagnostic switch); the number in brackets is the statements on SiftAgg.
+
+| keys | plain | natural | `sift.agg_force` | natural / plain | `agg_force` / plain |
+|---|---|---|---|---|---|
+| 32 | 136.8 | 117.4 (3 of 27) | **6.3** (27) | 1.2x | 22x |
+| 64 | 216.9 | 206.4 (3) | **13.5** (27) | 1.1x | 16x |
+| 128 | 429.6 | 331.7 (7) | **36.3** (27) | 1.3x | 12x |
+| 250 | 776.2 (2 timeouts) | 452.7 (14, 1 timeout) | **98.7** (26, 1 timeout) | 1.7x | 7.9x |
+| 500 | 1,333 (14 timeouts) | **127.8** (26, 1 timeout) | 128.0 (26, 1 timeout) | 10x | 10x |
+
+- **The scan is the right plan at every size; the planner takes it late.** With the switch the 27 statements run 8 to 22 times faster than plain from 32 keys; the planner's own choice equals plain up to 64 keys,
+  starts to win at 128 keys (7 statements on the scan) and takes nearly all of them at 500 keys, where it is the forced plan. The gap is the cost model's refusal of the inline plan of a shared CTE (`cte_cost`,
+  26 of 27 statements at 32 and 64 keys, 20 of 21 still plain at 128, 12 of 14 at 250).
+- **Why: the cost of the shared plan does not follow the request.** The `cte_inline` arm compares the plain cost of the shared CTE with the cost of the scans (`DEBUG1` line `sift: shared CTE plain cost ..., inline cost ...`). For a
+  typical statement the shared cost is 2,842 at 32 keys and 2,845 at 64 keys while the time of the 27 statements goes from 137 s to 217 s; the scans cost 29,000 to 144,000, so the ratio (10x to 54x, the margin is 1.15) refuses.
+  At 128 and 250 keys the shared cost has grown with the request and the arms flip one by one. The arms themselves are accepted at every size (`scan_cost` 12k against a `normal_cost` of 87M after the unnest charge).
+- **The shared-work floor (3.4 tip 18180613) flips one statement at 32 keys** (a top-N, 1.1 s -> 0.05 s); the other 25 refusals are unchanged (the floor does not reach them): sums at 32 keys plain 136.8 -> 113.4 (plain does not
+  use the index: the drift is the noise of a warm single run, up to 17%), natural 117.4 -> 105.4, `agg_force` 6.3 -> 6.3. No statement is slower beyond that noise. One top-N statement keeps a partial plan (1 of 4 scans taken, 9.0 s against 0.5 s forced):
+  the plan above its scans is estimated at 28 million (another statement: 1.3 billion), over 20 times the shared plan.
+- **Where the scan itself stops scaling**: one statement that expands the competitor sets is superlinear on the scan (1.5 s, 5.0 s, 19.9 s at 32, 64, 128 keys, then the timeout), plain is 2.2x per doubling (7.9, 17, 43 s); at 128 keys the scan is still 2x faster.
+  Another is linear in the keys (0.34, 0.63, 1.24, 2.47, 5.05 s at 32 to 500) and the top-N one above stays at 9-10 s from 250 keys.
+- **A measurement trap fixed on the way**: the first statement of a fresh backend is planned before the library has loaded and gets no SiftAgg (6.0 s instead of 0.34 s for the statement that sorts first); the replay now plans
+  the index once before its first statement. The rows above carry the corrected value for that statement.
