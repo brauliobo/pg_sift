@@ -1012,6 +1012,23 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	return kept;
 }
 
+
+/* A LIKE or ^@ whose pattern starts with a literal prefix (like_pred): the dictionary names the keys with it, and the point directory can look them up */
+static bool
+prefix_clause(const OpExpr *op, int strategy)
+{
+	const Const *c = list_length(op->args) == 2 && IsA(lsecond(op->args), Const) ? (const Const *) lsecond(op->args) : NULL;
+	const char *s;
+	int			len;
+
+	if ((strategy != COL_STRAT_LIKE && strategy != COL_STRAT_STARTS_WITH) || c == NULL || c->constisnull || c->consttype != TEXTOID)
+		return false;
+	s = VARDATA_ANY(DatumGetTextPP(c->constvalue));
+	len = VARSIZE_ANY_EXHDR(DatumGetTextPP(c->constvalue));
+	if (strategy == COL_STRAT_STARTS_WITH)
+		return len > 0;
+	return len > 0 && s[0] != '%' && s[0] != '_' && s[0] != '\\';
+}
 /*
  * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
  * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS, and past SIFT_CPOINT_MIN_KEYS a sixteenth of the rows), the rows of the keys the selectivity of the clause (misses and the keys with many rows
@@ -1037,18 +1054,22 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 		{
 			Oid			opno = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->opno :
 				IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->opno : InvalidOid;
+			int			strategy = OidIsValid(opno) ? get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) : 0;
 			double		nkeys = 1.0,
 						cover = Min(l->point_units / l->nunits, 1.0),
 						rows,
 						share;
 
-			if (!OidIsValid(opno) || get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) != BTEqualStrategyNumber)
+			if (strategy != BTEqualStrategyNumber && !(IsA(ri->clause, OpExpr) && prefix_clause((OpExpr *) ri->clause, strategy)))
 				continue;
 			if (IsA(ri->clause, ScalarArrayOpExpr))
 				nkeys = estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
+			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
+			/* a prefix names the keys of the dictionary that start with it: the directory probes one key each (the rows the directory lists per key say how many) */
+			if (strategy != BTEqualStrategyNumber)
+				nkeys = Max(1.0, ceil(rows * (l->point_rows > 0 ? l->point_keys / l->point_rows : 1.0)));
 			if (nkeys > SIFT_CPOINT_MAX_KEYS || (nkeys > SIFT_CPOINT_MIN_KEYS && nkeys > index->rel->tuples / 16))
 				continue;
-			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
 			share = 1.0 - exp(-rows / units);
 			if (1.0 - cover + cover * share < kept)
 			{

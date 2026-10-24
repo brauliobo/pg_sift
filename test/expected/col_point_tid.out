@@ -361,6 +361,34 @@ SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_
  21 | id IN (17,34,51,68,85,102,119,136,153,170,187,204,221,238,25 | t          | t
 (21 rows)
 
+-- a LIKE or ^@ with a literal prefix: the dictionary names the keys with the prefix and the directory lists their rows; the planner prices it as the probes of those keys, so a count of them is the access method's
+SELECT w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan, cardinality(pt_seq(w)) AS matches
+FROM (VALUES ('s LIKE ''s12%'''), ('s ^@ ''s12'''), ('s LIKE ''s1%'''), ('s LIKE ''s4321'''), ('s LIKE ''%12'''), ('s LIKE ''s\_1%''')) v(w);
+       w        | index_scan | bitmap_scan | matches 
+----------------+------------+-------------+---------
+ s LIKE 's12%'  | t          | t           |     529
+ s ^@ 's12'     | t          | t           |     529
+ s LIKE 's1%'   | t          | t           |    5295
+ s LIKE 's4321' | t          | t           |       3
+ s LIKE '%12'   | t          | t           |     286
+ s LIKE 's\_1%' | t          | t           |       0
+(6 rows)
+
+CREATE FUNCTION pt_plan(q text) RETURNS text LANGUAGE plpgsql SET sift.enable_col_scan = on SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '^\s*(->\s*)?(Aggregate|Custom Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Bitmap Index Scan|Seq Scan)' THEN r := r || ' ' || trim(regexp_replace(l, '^\s*->\s*', '')); END IF;
+	END LOOP;
+	RETURN trim(r);
+END $$;
+SELECT pt_plan('SELECT count(*) FROM pt WHERE s LIKE ''s5999%''') AS prefix_count, pt_plan('SELECT count(*) FROM pt WHERE s ^@ ''s4321''') AS starts_with_count;
+             prefix_count              |           starts_with_count           
+---------------------------------------+---------------------------------------
+ Aggregate Index Scan using pt_t on pt | Aggregate Index Scan using pt_t on pt
+(1 row)
+
+DROP FUNCTION pt_plan(text);
 -- one damage at a time in the directories, through a fresh open and the check of the segment (meaningful under SANITIZE=1)
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all_refused, unnoticed FROM sift._test_col_point_file_damage('pt_t', 1000000000);
  has_sections | many | all_refused | unnoticed 

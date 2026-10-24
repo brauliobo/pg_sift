@@ -82,3 +82,4 @@ point_in_1000	an `IN` list of up to 65,536 keys is looked up in the point direct
 bigdict_point_probes	dictionary the cache cannot hold is no longer parsed again for every test	orders	default	orders_col	native	-	ms	faster33	no
 topn_run_probes	reads the sort key of a unit's rows only for the rows it keeps	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native	-	ms	faster33	no
 point_key_range	tests the zones and summaries of the other predicates before it asks the point directory	orders	default WITH (point_tid_columns = 'country')	Bitmap Heap Scan on orders|Index Scan using orders_col	native	-	ms	faster33	no
+point_prefix_count	priced by the planner as the lookups of the keys the dictionary names	orders	default	^Aggregate	native	-	ms	faster33	no
