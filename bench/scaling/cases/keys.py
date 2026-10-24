@@ -1,4 +1,4 @@
-"""Attributes: 100 rows per key; a request of 51 keys must stay flat while the keys grow 10k -> 31.6k -> 100k (the table must hold more than 51 units, else the request reads them all; rows carry 150 bytes of padding for that: 10k keys are 83 units). Two layouts of the same rows:
+"""Keys: 100 rows per key; a request of 51 keys must stay flat while the keys grow 10k -> 31.6k -> 100k (the table must hold more than 51 units, else the request reads them all; rows carry 150 bytes of padding for that: 10k keys are 83 units). Two layouts of the same rows:
 clustered (key, date order, asserted) and arrival (date order, keys interleaved: reported, the cost of the layout and not of sift)."""
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,5 +31,5 @@ def qs(tab, target):
     ]
 
 
-CASES = [Case('attributes', [10000, 31600, 100000], setup=setup, unit='attributes', quick=2, per_size=True,
+CASES = [Case('keys', [10000, 31600, 100000], setup=setup, unit='keys', quick=2, per_size=True,
               queries=qs('clu', 'flat') + qs('arr', None))]
