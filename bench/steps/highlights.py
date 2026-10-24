@@ -19,6 +19,7 @@ import bench_charts  # noqa: E402  (steps/bench_charts.py: the scale points and 
 import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
 import budget  # noqa: E402  (steps/budget.py: the time budget of the release pass)
 import compare  # noqa: E402  (steps/compare.py: the comparison blocks)
+import limits  # noqa: E402  (steps/limits.py: the limitations and trade-offs)
 import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
@@ -211,6 +212,7 @@ def main():
     b = block(a.results)
     readme.replace_block(a.readme, 'intro', b)
     compare.render(a.results, a.readme)
+    limits.render(a.results, a.readme)
     budget.render(a.results, os.path.join(os.path.dirname(a.results), 'BENCHMARKS.md'))
     print('\n'.join(b))
 
