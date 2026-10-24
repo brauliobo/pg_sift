@@ -467,6 +467,25 @@ def render_decor(p):
     return f"SELECT {sel} FROM {frm} WHERE {wh}{cond}", False
 
 
+def gen_exists(r, ctx):
+    ties = ['f.parent_id = e.parent_id', 'f.grp = e.grp', 'f.kind = e.kind', 'f.ts = e.ts', 'f.flag = e.flag', 'f.big = e.big']
+    inner = lambda: preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)) + (['f.id < 0'] if r.random() < 0.05 else [])
+    return dict(form=r.choice(['select', 'not', 'or', 'ornot', 'case', 'two', 'top', 'topnot']), tie=r.sample(ties, r.choice([1, 1, 2])), tie2=r.sample(ties, 1), inner=inner(), inner2=inner(),
+                outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)) + (['e.id < 0'] if r.random() < 0.03 else []), pick=r.randrange(3, 10), total=r.random() < 0.3)
+
+
+def render_exists(p):
+    ex = lambda tie, inner: f"EXISTS (SELECT 1 FROM events f WHERE {' AND '.join(tie + inner)})"
+    a, b = ex(p['tie'], p['inner']), ex(p['tie2'], p['inner2'])
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    sel = {'select': f'e.id, {a} AS v0', 'not': f'e.id, NOT {a} AS v0', 'case': f"e.id, CASE WHEN {a} THEN 1 WHEN e.grp > 5 THEN 2 ELSE 3 END AS v0",
+           'two': f'e.id, {a} AS v0, NOT {b} AS v1'}.get(p['form'], 'e.id')
+    cond = {'or': f' AND (e.grp < 4 OR {a})', 'ornot': f' AND (e.grp < 4 OR NOT {a})', 'top': f' AND {a}', 'topnot': f' AND NOT {a}'}.get(p['form'], '')
+    if p['total']:
+        sel = 'count(*) AS n' + (f', count(*) FILTER (WHERE {a}) AS hits' if p['form'] in ('select', 'not', 'case', 'two') else '')
+    return f'SELECT {sel} FROM events e WHERE {wh}{cond}', False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -846,7 +865,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
