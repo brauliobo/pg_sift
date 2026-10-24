@@ -338,6 +338,15 @@ DECLARE
 	missing text;
 	vm_note text;
 	fq text;
+	lj jsonb;
+	cand text[];
+	keyc text[];
+	kb record;
+	klost float8;
+	klost_paths text;
+	kcut text;
+	has_kc bool;
+	note text;
 BEGIN
 	IF key IS NOT NULL THEN
 		kl := ARRAY(SELECT btrim(k) FROM unnest(string_to_array(key, ',')) k);
@@ -382,10 +391,9 @@ BEGIN
 			END IF;
 		END IF;
 
-		-- the best leaf: most units saved when the table is sorted by it. An equality leaf (several rows a value, from the statistics of the column)
-		-- is read at the units of its value; any other by a window of 1% of its span. A leaf that is ordered now (clustered, partial) is what a
-		-- sort by another, scattered leaf would give up.
-		WITH leafs AS (
+		-- the leaves with what a sort by each would do: units read now and after, rows a value. An equality leaf (several rows a value, from the statistics
+		-- of the column) is read at the units of its value; any other by a window of 1% of its span.
+		SELECT jsonb_agg(to_jsonb(x)) INTO lj FROM (
 			SELECT l.path, l.verdict AS lv, l.units AS total, s.rpv,
 				   CASE WHEN s.rpv >= 2 THEN l.point_units ELSE l.range_units END AS now_u,
 				   CASE WHEN s.rpv >= 2 THEN 1 + (s.rpv - 1) / rpu ELSE l.range_ideal END AS after_u
@@ -399,8 +407,11 @@ BEGIN
 			SELECT l.path, l.verdict, l.units, NULL, l.range_units, l.range_ideal
 			FROM sift.col_clustering(ix.idx, 1) l
 			WHERE l.point_units IS NOT NULL
-				AND NOT EXISTS (SELECT 1 FROM pg_stats st WHERE st.schemaname = ix.nspname AND st.tablename = ix.relname AND st.attname = l.path)
-		), best AS (SELECT * FROM leafs WHERE kl IS NULL OR path = kl[1] ORDER BY now_u - after_u DESC, path LIMIT 1)
+				AND NOT EXISTS (SELECT 1 FROM pg_stats st WHERE st.schemaname = ix.nspname AND st.tablename = ix.relname AND st.attname = l.path)) x;
+		-- the best leaf: most units saved when the table is sorted by it. A leaf that is ordered now (clustered, partial) is what a
+		-- sort by another, scattered leaf would give up.
+		WITH leafs AS (SELECT * FROM jsonb_to_recordset(lj) AS l(path text, lv text, total int8, rpv float8, now_u float8, after_u float8)),
+		best AS (SELECT * FROM leafs WHERE kl IS NULL OR path = kl[1] ORDER BY now_u - after_u DESC, path LIMIT 1)
 		SELECT best.path, best.lv, best.now_u, best.after_u, best.rpv,
 			   coalesce(sum((o.total - o.now_u) * rpu), 0) AS lost, string_agg(o.path, ', ' ORDER BY o.path) AS lost_paths
 		INTO b
@@ -448,6 +459,39 @@ BEGIN
 			IF b.lost > 0 THEN reason := reason || format('; it scatters %s, which saves about %s rows', b.lost_paths, round(b.lost)); END IF;
 			IF command IS NULL THEN reason := reason || '; pg_repack needs a unique index (CLUSTER takes an exclusive lock)'; END IF;
 			reason := reason || '; run VACUUM (ANALYZE) after the rewrite, which leaves the visibility map empty';
+		END IF;
+		-- the key a workload looks rows up by: a leaf of point_columns, point_tid_columns or key_columns that is not unique (or the first of key =>). key_cut keeps
+		-- its units ordered through writes and merges, with no rewrite of the heap; it is only free when no leaf is ordered now (it would widen the zones of those).
+		has_kc := EXISTS (SELECT 1 FROM unnest(ix.reloptions) o WHERE o ~ '^key_cut=.');
+		IF NOT has_kc AND units >= 16 THEN
+			cand := ARRAY(SELECT DISTINCT btrim(k) FROM unnest(ix.reloptions) o,
+				LATERAL unnest(string_to_array(regexp_replace(split_part(o, '=', 2), '^auto:', ''), ',')) k
+				WHERE o ~ '^(point_columns|point_tid_columns|key_columns)=' AND btrim(k) NOT IN ('', 'off', 'auto'));
+			keyc := ARRAY(SELECT btrim(k) FROM unnest(ix.reloptions) o,
+				LATERAL unnest(string_to_array(regexp_replace(split_part(o, '=', 2), '^auto:', ''), ',')) k WHERE o ~ '^key_columns=');
+			SELECT l.path, l.now_u, l.after_u, l.rpv INTO kb
+			FROM jsonb_to_recordset(lj) AS l(path text, lv text, total int8, rpv float8, now_u float8, after_u float8)
+			WHERE l.path = ANY(CASE WHEN kl IS NOT NULL THEN kl[1:1] ELSE cand END) AND (l.rpv IS NULL OR l.rpv >= 2)
+			ORDER BY l.now_u - l.after_u DESC, l.path LIMIT 1;
+			note := NULL;
+			IF kb.path IS NOT NULL AND (kb.now_u - kb.after_u) * rpu >= min_rows AND kb.now_u > kb.after_u * 1.5 + 0.5 THEN
+				SELECT coalesce(sum((o.total - o.now_u) * rpu), 0), string_agg(o.path, ', ' ORDER BY o.path) INTO klost, klost_paths
+				FROM jsonb_to_recordset(lj) AS o(path text, lv text, total int8, rpv float8, now_u float8, after_u float8)
+				WHERE o.path <> kb.path AND (kl IS NULL OR o.path <> ALL (kl)) AND o.lv IN ('clustered', 'partial');
+				kcut := coalesce(array_to_string(kl, ', '), kb.path);
+				IF klost = 0 THEN
+					note := format('key_cut = %L cuts the units by %s: %s reads about %s units, not %s, and keeps that through writes and merges without a rewrite of the table, and no leaf that is ordered now is widened (ALTER INDEX %s SET (key_cut = %L), then REINDEX INDEX %s; the index grows by the unit address lists)',
+								   kcut, kcut, kb.path, round(kb.after_u::numeric, 1), round(kb.now_u::numeric, 1), ix.idx, kcut, ix.idx);
+					IF kb.rpv IS NOT NULL AND kb.path <> ALL (keyc) AND n_rows / kb.rpv > 256 THEN
+						note := note || format('; key_columns = %L keeps the keys of each unit, which lets a lookup skip the units that a few foreign rows widen', kb.path);
+					END IF;
+				ELSIF verdict = 'recommended' THEN
+					note := format('key_cut = %L would widen %s, which are ordered now', kcut, klost_paths);
+				END IF;
+			ELSIF kb.path IS NULL AND b.lost = 0 AND (b.now_u - b.after_u) * rpu >= min_rows AND b.now_u > b.after_u * 1.5 + 0.5 THEN
+				note := 'to keep a key ordered through writes without a rewrite, set key_cut to the column the queries look rows up by (up to four, most significant first; a column of point_columns or key_columns that is not unique is found by this function), and check it with key => ''col''';
+			END IF;
+			IF note IS NOT NULL THEN reason := reason || '; ' || note; END IF;
 		END IF;
 		reason := reason || vm_note;
 		IF verdict <> 'recommended' THEN command := NULL; END IF;
