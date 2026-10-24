@@ -17,6 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bench_charts  # noqa: E402  (steps/bench_charts.py: the scale points and slopes)
 import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
+import compare  # noqa: E402  (steps/compare.py: the comparison blocks)
 import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
@@ -208,6 +209,7 @@ def main():
     a = ap.parse_args()
     b = block(a.results)
     readme.replace_block(a.readme, 'intro', b)
+    compare.render(a.results, a.readme)
     print('\n'.join(b))
 
 

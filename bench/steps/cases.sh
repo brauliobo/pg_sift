@@ -2,12 +2,12 @@
 # Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
 #        bench/bench cases --list | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
-# The benchmark cases of the 3.3 optimizations (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
+# The benchmark cases (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
 # EXPLAIN), on PostgreSQL with sift.enable_agg = off (the same table and statement), on the sift variants of its row and, with --engines pg_duckdb, on a pg_duckdb container that holds a
 # plain copy of the rows; every answer is compared with PostgreSQL's. A private cluster (scripts/pgtest.sh, release build) under a CPU quota of --cpus (default 1: one backend, no
 # parallel workers, how the CHANGELOG numbers were taken; 3 is the budget of the store benchmark, where a parallel normal plan can beat the scan on the planner's cost) and a memory cap; the timed part holds the
 # perf lock. Small by default (--rows 200000); the published size is `bench/bench cases --docs --rows 1000000`.
-#   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "What got faster in 3.3, by size"
+#   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "Benchmark cases, by size"
 #               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
 #   --docs      write bench/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and docs/BENCHMARKS.md
 #   --no-wait   do not wait for a quiet host (the rows say NOISY when it was busy)       --keep   leave the cluster and the container up
