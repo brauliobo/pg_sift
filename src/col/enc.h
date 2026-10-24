@@ -150,7 +150,8 @@ typedef struct SiftColBatch
 	uint32		sb;
 	uint32		nrows;
 	uint32		rowcap;
-	SiftKey    *keys;			/* ascending, all in superblock sb */
+	SiftKey    *keys;			/* ascending, all in superblock sb (a keyed batch: any blocks, sb is the sequence number of the unit) */
+	bool		keyed;			/* a key-cut unit: the rows are those of a range of the declared order key, whatever their pages */
 	bool		hasver;			/* xmin and cmin are set for every row (0 = frozen); false: every row is frozen and the arrays mean nothing */
 	uint32	   *xmin;			/* [rowcap]: the transaction that inserted the row of a sift_table group (docs/COL-TAM.md section 7) */
 	uint32	   *cmin;
@@ -352,6 +353,13 @@ typedef struct SiftCUnitView
 	uint32		npages;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
 	uint8		page[SIFT_SB_PAGES];	/* page within the superblock of the p-th page of the unit: the set bits of pagemask, in order */
+	bool		keyed;			/* explicit TIDs: blocks[p] is the heap block of the p-th page, koff[r] the offset of row r (pagemask, page, maxoff, sparse unused) */
+	const BlockNumber *blocks;	/* [npages] ascending; NULL until sift_cunit_keyed_load (a scan that needs no TID never decodes the directory) */
+	const uint16 *koff;			/* [nrows] */
+	const uint8 *kdir;			/* the packed directory (keyed) */
+	uint32		kwidths;		/* bit widths of the block distances, the rows of a page and the offsets */
+	uint32		kblk0;			/* the first block */
+	uint32		kblk1;			/* the last block */
 	const uint32 *rowstart;		/* npages + 1 (unaligned access is avoided by the parser copying when needed) */
 	const uint16 *maxoff;
 	const uint8 *sparse;
@@ -363,6 +371,8 @@ _Static_assert(SIFT_SB_PAGES <= 256, "SiftCUnitView.page holds page numbers in a
 
 /* false when inconsistent (the caller raises ERRCODE_INDEX_CORRUPTED); rec must stay valid and be 8-byte aligned */
 extern bool sift_cunit_parse(const uint8 *rec, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);
+/* Decodes the TID directory of a key-cut unit parsed by sift_cunit_parse_head (errors on a damaged one); a no-op when it is decoded or the unit is not keyed */
+extern void sift_cunit_keyed_load(const SiftCUnitView *v);
 
 /*
  * The same for a unit whose record is read lazily: only its first avail bytes (the row directory and the chunk table, which a bound of

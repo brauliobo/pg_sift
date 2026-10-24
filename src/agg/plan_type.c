@@ -33,6 +33,9 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paramassign.h"
 #include "optimizer/paths.h"
+#if __has_include("col/col.h")
+#include "col/am.h"
+#endif
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
 #include "optimizer/tlist.h"
@@ -366,6 +369,11 @@ compile_tid(AggCtx *c, Node *n)
 	SiftAggPred *p;
 
 	n = strip_relabel(n);
+#if __has_include("col/col.h")
+	/* the units of a key-cut index are not heap superblocks: a range of them is not a range of the heap */
+	if (OidIsValid(c->indexoid) && sift_col_index_keyed(c->indexoid))
+		return NULL;
+#endif
 	if (!IsA(n, OpExpr) || c->nparts > 0 || list_length(((OpExpr *) n)->args) != 2 || (op = tid_cmp(func_of(n))) < 0 ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
 		return NULL;
