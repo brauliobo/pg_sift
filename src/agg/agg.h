@@ -37,6 +37,7 @@ extern void sift_agg_init(void);
 extern void sift_aggcte_init(void);
 extern MemoryContext sift_agg_memo_begin(void);
 extern void sift_agg_memo_end(MemoryContext cx);
+extern void sift_agg_preinline(Query *q);
 extern bool sift_agg_has_flattenable_laterals(Query *q);
 extern bool sift_agg_flatten_laterals(Query *q);
 extern bool sift_agg_by_cost;			/* the flattening made a rewrite whose plan is chosen by cost, not taken for running in the scan */
