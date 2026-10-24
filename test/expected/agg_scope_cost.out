@@ -13,7 +13,11 @@ CREATE TABLE sc_dims (id int PRIMARY KEY, settings jsonb NOT NULL);
 INSERT INTO sc_dims SELECT p, jsonb_build_object('tier', CASE WHEN p <= 2 THEN 'tier_a' WHEN p <= 30 THEN 'tier_b' ELSE 'tier_c' END, 'slot', p % 3) FROM generate_series(1, 60) p;
 CREATE TABLE sc_kinds (kind text PRIMARY KEY, label text);
 INSERT INTO sc_kinds SELECT 'cat_' || chr(97 + i), 'label ' || i FROM generate_series(0, 3) i;
+-- every row is sampled: with the default sample, ANALYZE moved the price of the normal plan between 1.003 and 1.27 times the scan's on PostgreSQL 17 (1.29 to 1.67 on 18),
+-- and in 2 of 60 samplings the scan lost the comparison these statements are about
+SET default_statistics_target = 10000;
 VACUUM (FREEZE, ANALYZE) sc_facts, sc_dims, sc_kinds;
+RESET default_statistics_target;
 CREATE FUNCTION plan_of(q text, OUT plan text, OUT cost numeric) LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
