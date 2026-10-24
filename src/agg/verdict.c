@@ -197,6 +197,7 @@ void
 verdict_lookup(Query *q, CteVerdict *vd)
 {
 	uint64		queryid = q->queryId;
+	int			compute;
 	TableSizes	sizes = {0};
 	VerdictEntry *e;
 
@@ -205,7 +206,11 @@ verdict_lookup(Query *q, CteVerdict *vd)
 	sizes_walker((Node *) q, &sizes);
 	if (sizes.overflow)
 		return;
+	/* PostgreSQL 19 asserts that the query id is enabled; compute_query_id = auto without a module that wants it is not */
+	compute = compute_query_id;
+	compute_query_id = COMPUTE_QUERY_ID_ON;
 	JumbleQuery(q);
+	compute_query_id = compute;
 	vd->key = hash_combine64(hash_combine64(q->queryId, settings_hash()), sizes.h);
 	q->queryId = queryid;
 	vd->nrels = sizes.n;
