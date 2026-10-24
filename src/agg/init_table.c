@@ -382,6 +382,7 @@ table_reset(AggExec *ex)
 				cs->dir[cs->vid[x]] = 0;
 		cs->nent = cs->nout = 0;
 		memset(cs->ht, 0, cs->nht * sizeof(uint32));
+		combo_forget_priors(ex, ci);
 	}
 	table_init(ex);
 }

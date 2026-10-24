@@ -1015,6 +1015,31 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	return cs->nent - 1;
 }
 
+/* the output rows of the earlier lookups start again (table_reset): so do the ids of their values, which name those rows */
+void
+combo_forget_priors(AggExec *ex, int ci)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+
+	for (int p = 0; p < cb->nleaves; p++)
+	{
+		if (cb->leaf[p] >= 0)
+			continue;
+		if (cs->pv[p].memo)
+			pfree(cs->pv[p].memo);
+		if (cs->pv[p].rep)
+			pfree(cs->pv[p].rep);
+		if (cs->id64[p].tab)
+		{
+			pfree(cs->id64[p].tab);
+			pfree(cs->id64[p].val);
+		}
+		memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+		memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
+	}
+}
+
 /* the cache starts again: the entries, the outputs of the slots, the values and the ids of the leaves (nothing else holds them) */
 void
 combo_reset(AggExec *ex, int ci)
