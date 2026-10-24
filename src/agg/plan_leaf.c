@@ -822,6 +822,20 @@ placeholder_nulling(AggCtx *c, PlaceHolderVar *ph)
 	return own;
 }
 
+/*
+ * The expression a placeholder stands for when the scan reproduces the placeholder's NULLs: nulled by the scan's own outer joins only (the
+ * rows of the preserved side nothing matched are the scan's null input, where the expression is NULL too), or never nulled. NULL otherwise.
+ */
+Node *
+placeholder_expr(AggCtx *c, PlaceHolderVar *ph)
+{
+	Relids		nulling = placeholder_nulling(c, ph);
+
+	if (ph->phlevelsup != 0 || !bms_is_subset(nulling, c->nulling) || reads_full_lookup(c, (Node *) ph->phexpr))
+		return NULL;
+	return (Node *) ph->phexpr;
+}
+
 /* A placeholder computed inside the nullable input becomes NULL when that whole input is absent. */
 static Node *
 nullable_expr_mutator(Node *n, AggCtx *c)

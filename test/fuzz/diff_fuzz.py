@@ -584,6 +584,27 @@ def render_twolevel(p):
     return sql, True
 
 
+# ---------- the distinct rows of a group: count(DISTINCT id) over the elements of a list, FILTERs, grouping sets, a spine joined from the left ----------
+def gen_distinctrows(r, ctx):
+    return dict(spans=r.sample(SPANS, r.randrange(1, 4)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), join=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']),
+                sets=r.random() < 0.6, src=r.choice(['parts', 'parts', 'metrics']), filt=r.randrange(10), parents=r.random() < 0.5, key=r.choice(['x.cat', 'x.cat', 'left(x.cat, 4)']))
+
+
+def render_distinctrows(p):
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    if p['src'] == 'parts':
+        inner = f"SELECT e.id, e.parent_id, e.ts, o.cat, o.score FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, dir_a text, score float8){w}"
+        flt = f"x.score >= {p['filt']}"
+    else:
+        inner = f"SELECT e.id, e.parent_id, e.ts, m.key AS cat, NULL::float8 AS score FROM events e CROSS JOIN LATERAL jsonb_each(e.metrics) m{w}"
+        flt = f"x.cat = 'm{p['filt'] % 4}'"
+    g = f"GROUP BY GROUPING SETS ((p.span, {p['key']}), (p.span), ())" if p['sets'] else f"GROUP BY p.span, {p['key']}"
+    sql = (f"WITH p(span, range) AS (VALUES {', '.join(p['spans'])}) "
+           f"SELECT p.span, {p['key']} AS cat, count(DISTINCT x.id) AS ids, count(DISTINCT x.id) FILTER (WHERE {flt}) AS ids_f, count(x.id) AS n, count(*) AS all_rows"
+           f"{', count(DISTINCT x.parent_id) AS parents' if p['parents'] else ''} FROM p {p['join']} ({inner}) x ON x.ts <@ p.range {g} ORDER BY 1, 2, 3, 4, 5, 6")
+    return sql, True
+
+
 # ---------- lookups of one table: several, with different conditions, in every join kind (the planner can merge them) ----------
 FORMS = ['exists', 'exists', 'notexists', 'in', 'notin', 'inner', 'inner', 'left', 'scalar', 'uncorr', 'intree', 'existstree', 'notexiststree', 'lefttree']
 
@@ -806,6 +827,7 @@ FAMILIES = {
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
