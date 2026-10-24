@@ -274,6 +274,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `lanes.sh` | the lanes (a cluster per engine, the compressed cache of built lanes) |
 | `footprint.sh` | `du`, `clean`, the peak footprint of a session and the pruning of the cache of lanes |
 | `readme.py` | the generated blocks of README.md and docs/BENCHMARKS.md (`readme`) |
+| `compare.py` | the README's comparison with the other systems (run by `highlights.py`, so by `scripts/gen-docs.py`): the matrix of workload classes against PostgreSQL, ClickHouse, Elasticsearch, Citus columnar and pg_duckdb (on how many questions pg_sift is faster, by how much, the losses in bold, `not measured` where no result file holds a figure), the conditions of every number, the search and port tables, and the warm milliseconds of every question at 1M and 10M orders. It reads `docs/results` and the two port READMEs; a competitor figure is never typed, extrapolated or rerun |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |
@@ -298,7 +299,7 @@ Run the gate with the same checkout under two labels to see the noise floor: at 
 | `store.sh`, `store.py` | the online-store benchmark against Citus (columnar), Elasticsearch and ClickHouse (`store`): docker containers, seeded data, load, warm and cold runs, updates, the Markdown tables of README.md and docs/BENCHMARKS.md |
 | `duckdb.sh`, `duckdb.py` | pg_duckdb against pg_sift and PostgreSQL on the store questions (`duckdb`): two docker containers, the heap and a Parquet file as pg_duckdb's data, warm and cold; rows to `docs/results/duckdb.tsv`, rendered by `extras.py` |
 | `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared; `cases.py check` is `scripts/check-bench-cases.sh` |
-| `cases_render.py`, `cases_discover.py` | the generated block "What got faster in 3.3" (the README's chart and table of the application-shaped cases, the case table of docs/BENCHMARKS.md), from `docs/results/cases.tsv` and `cases-scale.tsv`; the candidate cases of a corpus (`cases --discover`) |
+| `cases_render.py`, `cases_discover.py` | the generated block "Benchmark cases" (the README's chart and table of the application-shaped cases, the case table of docs/BENCHMARKS.md), from `docs/results/cases.tsv` and `cases-scale.tsv`; the candidate cases of a corpus (`cases --discover`) |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
@@ -486,14 +487,14 @@ the `orders` table of the store benchmark with two derived columns (`segment_id`
 bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
 bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
 bench/bench cases --docs --rows 1000000    # the published size: docs/results/cases.tsv and the generated blocks (steps/cases.sh)
-bench/bench cases --scales 1,10,100 --docs # the curve: every case at 1x, 10x and 100x of --rows (20 million orders at 100x of 200,000), the planner's plan at each size, docs/results/cases-scale.tsv and the block "What got faster in 3.3, by size" with the crossover of each case; a host with the memory and the hours: `bench/bench refresh --stages scale --budget 0`
+bench/bench cases --scales 1,10,100 --docs # the curve: every case at 1x, 10x and 100x of --rows (20 million orders at 100x of 200,000), the planner's plan at each size, docs/results/cases-scale.tsv and the block "Benchmark cases, by size" with the crossover of each case; a host with the memory and the hours: `bench/bench refresh --stages scale --budget 0`
 bench/bench cases --list                   # the registry;   bench/bench cases --check [--strict]   # the coverage gate (scripts/check-bench-cases.sh), no measurement
 ```
 
 Lanes: `sift` is the planner's own choice and its EXPLAIN must match the `plan` of the row (a case that falls back to the normal plan fails, and so does a wrong answer: every lane is compared with `native`,
 the same table and statement with `sift.enable_agg = off`); variants are further sift lanes with settings (`scan`: `sift.agg_preagg = off`, the units scanned; `bulk_off`: the write buffers); `pg_duckdb` is
 a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
-store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block: `--docs` writes `docs/results/cases.tsv`, and `bench/bench readme` (`steps/cases_render.py`) renders the table "What got faster in 3.3" in README.md and docs/BENCHMARKS.md, and the headline cases (the `headline` column of the registry) in Performance highlights.
+store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check. Losses are printed the way the other tables print them and kept in the block: `--docs` writes `docs/results/cases.tsv`, and `bench/bench readme` (`steps/cases_render.py`) renders the table "Benchmark cases" in README.md and docs/BENCHMARKS.md, and the headline cases (the `headline` column of the registry) in Performance highlights.
 
 **Writing a case.** `created_at` of the generator is random per row, so a range on it prunes no unit: a case that needs zones to cut takes its range on `id`, which follows the heap. A `sift_col` index created without explicit operator classes (`id sift.col_int4_ops`, ...) has no indexable clause, and the plan check fails with the plan lost.
 

@@ -562,6 +562,51 @@ def shapes_speedup(results, theme):
     return c.render(end + 8, 'Speed-up on the real query shapes', 'Speed-up over the PostgreSQL heap for 8 whole-table shapes and 7 store-filtered shapes at three filter sizes.')
 
 
+def shapes_latency(results, theme):
+    """the application shapes in milliseconds on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse: the whole-table shapes and the store-filtered ones at the smallest and the largest filter"""
+    import aggregates_page
+    found = aggregates_page.shape_cases(results)
+    if not found:
+        return None
+    meta, cases = found
+    cases = [(q, v, t) for q, v, t in cases if v in ('-', 'K10', 'K4000') and t['col']]
+    es = [e for e in ('heap', 'col', 'flat', 'ch') if any(t[e] for _, _, t in cases)]
+    sid = {'heap': 'pg', 'col': 'sift', 'flat': 'flat', 'ch': 'ch'}
+    c = Wide(theme)
+    c.head(f'Real query shapes on {meta.get("tier", "?")} orders: time per shape',
+           'Median wall milliseconds of one backend on a logarithmic axis, left is faster. G1-G8 read the whole table; S1-S7 are reports of a set of stores, shown with the smallest (10) and the largest (4,000) filter. '
+           'On the right pg_sift against the fastest other system.')
+    y = c.legend(20, 96 + 18 * (c.sub_lines - 2), [sid[e] for e in es], {'pg': 'PostgreSQL (heap)', 'sift': 'pg_sift sift_col'})
+    left, right, rowh = 150, 250, 27
+    top = y + 40
+    pw = W - left - right
+    lo, hi = 0.5, 3000
+    X = lambda v: left + (math.log10(min(max(v, lo), hi)) - math.log10(lo)) / (math.log10(hi) - math.log10(lo)) * pw
+    for g in (1, 10, 100, 1000):
+        c.line(X(g), top - 10, X(g), top + rowh * len(cases))
+        c.text(X(g), top - 16, f'{g:,g} ms', 12, 'middle', c.t['muted'])
+    c.text(W - 20, top - 16, 'pg_sift against the fastest other', 11, 'end', c.t['muted'])
+    off = {e: (i - (len(es) - 1) / 2) * 4.5 for i, e in enumerate(es)}
+    for i, (q, v, t) in enumerate(cases):
+        cy = top + rowh * i + rowh / 2
+        if i % 2 == 0:
+            c.rect(14, cy - rowh / 2, W - 28, rowh, c.t['neutral'], 4)
+        label = q if v == '-' else f'{q}, {v.replace("K", "")} stores'
+        c.text(22, cy + 4, label, 13, weight='bold' if v == '-' else None)
+        for e in es:
+            if t[e]:
+                c.marker(X(t[e]), cy + off[e], sid[e], f'{label}: {SYSTEMS[sid[e]][0]} {ms_text(t[e])} ms', r=3.8)
+        rivals = {e: t[e] for e in es if e != 'col' and t[e]}
+        best = min(rivals, key=rivals.get)
+        ratio = rivals[best] / t['col']
+        name = {'heap': 'PostgreSQL', 'flat': 'flat tables', 'ch': 'ClickHouse'}[best]
+        word = f'{factor_text(ratio)} faster than {name}' if ratio >= 1.05 else f'tie with {name}' if ratio > 0.95 else f'{factor_text(1 / ratio)} slower than {name}'
+        c.text(W - 20, cy + 4, word, 12, 'end', c.t['ink'] if ratio >= 0.95 else c.t['down'], 'bold' if ratio < 0.95 else None)
+    end = c.foot(top + rowh * len(cases) + 22, [f'Data: docs/results/analytics.json, {meta.get("date", "?")[:10]}, median of {meta.get("runs", "?")} runs, one backend with no parallel workers, ClickHouse on one thread; the filter of 400 stores is in docs/perf/AGGREGATES.md. '
+                                                'Flat tables are the best conventional layout (denormalized copies) of the same data. S6 has no ClickHouse query.'])
+    return c.render(end + 8, 'Time per application shape', 'Median time of each application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse.')
+
+
 # ---- scale of the cases, work_mem, cost ------------------------------------------------------------------------------------------------
 
 def scale_series(results):
@@ -728,4 +773,5 @@ def make(results):
             add('cases-workmem', cases_workmem(results, theme))
         if have_shapes:
             add('shapes-speedup', shapes_speedup(results, theme))
+            add('shapes-latency', shapes_latency(results, theme))
     return out

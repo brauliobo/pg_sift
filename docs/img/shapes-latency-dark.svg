@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="811" viewBox="0 0 1000 811" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<title id="t">Time per application shape</title>
+<desc id="d">Median time of each application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse.</desc>
+<rect x="0.5" y="0.5" width="999" height="810" rx="6" fill="#0d1117" stroke="#30363d"/>
+<text x="20" y="32" font-size="18" text-anchor="start" fill="#e6edf3" font-weight="bold">Real query shapes on 1.2M orders: time per shape</text>
+<text x="20" y="54" font-size="13" text-anchor="start" fill="#9198a1">Median wall milliseconds of one backend on a logarithmic axis, left is faster. G1-G8 read the whole table; S1-S7 are reports of a</text>
+<text x="20" y="72" font-size="13" text-anchor="start" fill="#9198a1">set of stores, shown with the smallest (10) and the largest (4,000) filter. On the right pg_sift against the fastest other system.</text>
+<rect x="20.5" y="87.5" width="9" height="9" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"></rect>
+<text x="36" y="96" font-size="13" text-anchor="start" fill="#e6edf3">PostgreSQL (heap)</text>
+<circle cx="182.8" cy="92" r="4.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"></circle>
+<text x="193.8" y="96" font-size="13" text-anchor="start" fill="#e6edf3">pg_sift sift_col</text>
+<polygon points="333.2,86.2 339.1,92 333.2,97.8 327.4,92" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="344.2" y="96" font-size="13" text-anchor="start" fill="#e6edf3">PostgreSQL flat tables</text>
+<polygon points="527.4,97.4 532.8,87.5 522,87.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"></polygon>
+<text x="538.4" y="96" font-size="13" text-anchor="start" fill="#e6edf3">ClickHouse</text>
+<line x1="197.8" y1="126" x2="197.8" y2="730" stroke="#262c34" stroke-width="1"/>
+<text x="197.8" y="120" font-size="12" text-anchor="middle" fill="#9198a1">1 ms</text>
+<line x1="356.6" y1="126" x2="356.6" y2="730" stroke="#262c34" stroke-width="1"/>
+<text x="356.6" y="120" font-size="12" text-anchor="middle" fill="#9198a1">10 ms</text>
+<line x1="515.4" y1="126" x2="515.4" y2="730" stroke="#262c34" stroke-width="1"/>
+<text x="515.4" y="120" font-size="12" text-anchor="middle" fill="#9198a1">100 ms</text>
+<line x1="674.2" y1="126" x2="674.2" y2="730" stroke="#262c34" stroke-width="1"/>
+<text x="674.2" y="120" font-size="12" text-anchor="middle" fill="#9198a1">1,000 ms</text>
+<text x="980" y="120" font-size="11" text-anchor="end" fill="#9198a1">pg_sift against the fastest other</text>
+<rect x="14" y="136" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="153.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G1</text>
+<rect x="699.6" y="138.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G1: PostgreSQL 1,527 ms</title></rect>
+<circle cx="315.6" cy="147.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G1: pg_sift sift_col 5.52 ms</title></circle>
+<polygon points="562.3,146.8 567.3,151.8 562.3,156.7 557.4,151.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G1: PostgreSQL flat tables 197 ms</title></polygon>
+<polygon points="447.1,160.8 451.6,152.4 442.5,152.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G1: ClickHouse 37.1 ms</title></polygon>
+<text x="980" y="153.5" font-size="12" text-anchor="end" fill="#e6edf3">6.7× faster than ClickHouse</text>
+<text x="22" y="180.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G2</text>
+<rect x="632.3" y="165.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G2: PostgreSQL 575 ms</title></rect>
+<circle cx="365.5" cy="174.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G2: pg_sift sift_col 11.4 ms</title></circle>
+<polygon points="565.5,173.8 570.5,178.8 565.5,183.7 560.6,178.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G2: PostgreSQL flat tables 207 ms</title></polygon>
+<polygon points="464.7,187.8 469.2,179.4 460.1,179.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G2: ClickHouse 47.9 ms</title></polygon>
+<text x="980" y="180.5" font-size="12" text-anchor="end" fill="#e6edf3">4.2× faster than ClickHouse</text>
+<rect x="14" y="190" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="207.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G3</text>
+<rect x="709" y="192.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G3: PostgreSQL 1,749 ms</title></rect>
+<circle cx="385.5" cy="201.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G3: pg_sift sift_col 15.2 ms</title></circle>
+<polygon points="622.4,200.8 627.4,205.8 622.4,210.7 617.5,205.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G3: PostgreSQL flat tables 472 ms</title></polygon>
+<polygon points="531.3,214.8 535.9,206.4 526.8,206.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G3: ClickHouse 126 ms</title></polygon>
+<text x="980" y="207.5" font-size="12" text-anchor="end" fill="#e6edf3">8.3× faster than ClickHouse</text>
+<text x="22" y="234.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G4</text>
+<rect x="661.4" y="219.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G4: PostgreSQL 877 ms</title></rect>
+<circle cx="396.8" cy="228.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G4: pg_sift sift_col 17.9 ms</title></circle>
+<polygon points="614.9,227.8 619.8,232.8 614.9,237.7 610,232.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G4: PostgreSQL flat tables 423 ms</title></polygon>
+<polygon points="498.7,241.8 503.2,233.4 494.1,233.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G4: ClickHouse 78.4 ms</title></polygon>
+<text x="980" y="234.5" font-size="12" text-anchor="end" fill="#e6edf3">4.4× faster than ClickHouse</text>
+<rect x="14" y="244" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="261.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G5</text>
+<rect x="669.3" y="246.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G5: PostgreSQL 983 ms</title></rect>
+<circle cx="383.4" cy="255.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G5: pg_sift sift_col 14.8 ms</title></circle>
+<polygon points="577,254.8 581.9,259.8 577,264.7 572,259.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G5: PostgreSQL flat tables 244 ms</title></polygon>
+<polygon points="453.9,268.8 458.5,260.4 449.4,260.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G5: ClickHouse 41 ms</title></polygon>
+<text x="980" y="261.5" font-size="12" text-anchor="end" fill="#e6edf3">2.8× faster than ClickHouse</text>
+<text x="22" y="288.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G6</text>
+<rect x="704.6" y="273.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G6: PostgreSQL 1,642 ms</title></rect>
+<circle cx="410.6" cy="282.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G6: pg_sift sift_col 21.9 ms</title></circle>
+<polygon points="654.6,281.8 659.5,286.8 654.6,291.7 649.6,286.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G6: PostgreSQL flat tables 752 ms</title></polygon>
+<polygon points="499.7,295.8 504.3,287.4 495.2,287.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G6: ClickHouse 79.6 ms</title></polygon>
+<text x="980" y="288.5" font-size="12" text-anchor="end" fill="#e6edf3">3.6× faster than ClickHouse</text>
+<rect x="14" y="298" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="315.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G7</text>
+<rect x="726.2" y="300.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G7: PostgreSQL 2,246 ms</title></rect>
+<circle cx="522.9" cy="309.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G7: pg_sift sift_col 111 ms</title></circle>
+<polygon points="686.3,308.8 691.3,313.8 686.3,318.7 681.4,313.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G7: PostgreSQL flat tables 1,192 ms</title></polygon>
+<polygon points="499.4,322.8 504,314.4 494.9,314.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G7: ClickHouse 79.3 ms</title></polygon>
+<text x="980" y="315.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.4× slower than ClickHouse</text>
+<text x="22" y="342.5" font-size="13" text-anchor="start" fill="#e6edf3" font-weight="bold">G8</text>
+<rect x="670" y="327.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G8: PostgreSQL 994 ms</title></rect>
+<circle cx="512.9" cy="336.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G8: pg_sift sift_col 96.4 ms</title></circle>
+<polygon points="623.9,335.8 628.8,340.8 623.9,345.7 619,340.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G8: PostgreSQL flat tables 482 ms</title></polygon>
+<polygon points="494.3,349.8 498.9,341.4 489.8,341.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>G8: ClickHouse 73.7 ms</title></polygon>
+<text x="980" y="342.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.3× slower than ClickHouse</text>
+<rect x="14" y="352" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="369.5" font-size="13" text-anchor="start" fill="#e6edf3">S1, 10 stores</text>
+<rect x="256.5" y="354.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 10 stores: PostgreSQL 2.48 ms</title></rect>
+<circle cx="264.1" cy="363.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 10 stores: pg_sift sift_col 2.62 ms</title></circle>
+<polygon points="251.7,362.8 256.6,367.8 251.7,372.7 246.8,367.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 10 stores: PostgreSQL flat tables 2.18 ms</title></polygon>
+<polygon points="455.3,376.8 459.9,368.4 450.7,368.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 10 stores: ClickHouse 41.8 ms</title></polygon>
+<text x="980" y="369.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.2× slower than flat tables</text>
+<text x="22" y="396.5" font-size="13" text-anchor="start" fill="#e6edf3">S1, 4000 stores</text>
+<rect x="641.9" y="381.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 4000 stores: PostgreSQL 661 ms</title></rect>
+<circle cx="481" cy="390.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 4000 stores: pg_sift sift_col 60.7 ms</title></circle>
+<polygon points="616.5,389.8 621.5,394.8 616.5,399.7 611.6,394.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 4000 stores: PostgreSQL flat tables 433 ms</title></polygon>
+<polygon points="539.7,403.8 544.2,395.4 535.1,395.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S1, 4000 stores: ClickHouse 142 ms</title></polygon>
+<text x="980" y="396.5" font-size="12" text-anchor="end" fill="#e6edf3">2.3× faster than ClickHouse</text>
+<rect x="14" y="406" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="423.5" font-size="13" text-anchor="start" fill="#e6edf3">S2, 10 stores</text>
+<rect x="290.6" y="408.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 10 stores: PostgreSQL 4.06 ms</title></rect>
+<circle cx="311.8" cy="417.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 10 stores: pg_sift sift_col 5.22 ms</title></circle>
+<polygon points="279.3,416.8 284.2,421.8 279.3,426.7 274.3,421.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 10 stores: PostgreSQL flat tables 3.26 ms</title></polygon>
+<polygon points="487,430.8 491.5,422.4 482.4,422.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 10 stores: ClickHouse 66.2 ms</title></polygon>
+<text x="980" y="423.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.6× slower than flat tables</text>
+<text x="22" y="450.5" font-size="13" text-anchor="start" fill="#e6edf3">S2, 4000 stores</text>
+<rect x="695.4" y="435.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 4000 stores: PostgreSQL 1,436 ms</title></rect>
+<circle cx="508.3" cy="444.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 4000 stores: pg_sift sift_col 90.1 ms</title></circle>
+<polygon points="688.9,443.8 693.8,448.8 688.9,453.7 683.9,448.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 4000 stores: PostgreSQL flat tables 1,237 ms</title></polygon>
+<polygon points="613.7,457.8 618.3,449.4 609.2,449.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S2, 4000 stores: ClickHouse 416 ms</title></polygon>
+<text x="980" y="450.5" font-size="12" text-anchor="end" fill="#e6edf3">4.6× faster than ClickHouse</text>
+<rect x="14" y="460" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="477.5" font-size="13" text-anchor="start" fill="#e6edf3">S3, 10 stores</text>
+<rect x="246" y="462.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 10 stores: PostgreSQL 2.13 ms</title></rect>
+<circle cx="295" cy="471.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 10 stores: pg_sift sift_col 4.09 ms</title></circle>
+<polygon points="231.3,470.8 236.3,475.8 231.3,480.7 226.4,475.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 10 stores: PostgreSQL flat tables 1.63 ms</title></polygon>
+<polygon points="464.5,484.8 469.1,476.4 460,476.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 10 stores: ClickHouse 47.8 ms</title></polygon>
+<text x="980" y="477.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">2.5× slower than flat tables</text>
+<text x="22" y="504.5" font-size="13" text-anchor="start" fill="#e6edf3">S3, 4000 stores</text>
+<rect x="632.2" y="489.9" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 4000 stores: PostgreSQL 575 ms</title></rect>
+<circle cx="490.8" cy="498.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 4000 stores: pg_sift sift_col 69.9 ms</title></circle>
+<polygon points="599.2,497.8 604.2,502.8 599.2,507.7 594.3,502.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 4000 stores: PostgreSQL flat tables 337 ms</title></polygon>
+<polygon points="525.8,511.8 530.3,503.4 521.2,503.4" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S3, 4000 stores: ClickHouse 116 ms</title></polygon>
+<text x="980" y="504.5" font-size="12" text-anchor="end" fill="#e6edf3">1.7× faster than ClickHouse</text>
+<rect x="14" y="514" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="531.5" font-size="13" text-anchor="start" fill="#e6edf3">S4, 10 stores</text>
+<rect x="254.7" y="517" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 10 stores: PostgreSQL 2.41 ms</title></rect>
+<circle cx="274.7" cy="525.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 10 stores: pg_sift sift_col 3.05 ms</title></circle>
+<polygon points="250.1,524.8 255.1,529.8 250.1,534.7 245.2,529.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 10 stores: PostgreSQL flat tables 2.14 ms</title></polygon>
+<polygon points="471.1,538.8 475.7,530.5 466.6,530.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 10 stores: ClickHouse 52.6 ms</title></polygon>
+<text x="980" y="531.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.4× slower than flat tables</text>
+<text x="22" y="558.5" font-size="13" text-anchor="start" fill="#e6edf3">S4, 4000 stores</text>
+<rect x="633.2" y="544" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 4000 stores: PostgreSQL 583 ms</title></rect>
+<circle cx="507.4" cy="552.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 4000 stores: pg_sift sift_col 89 ms</title></circle>
+<polygon points="624.1,551.8 629.1,556.8 624.1,561.7 619.2,556.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 4000 stores: PostgreSQL flat tables 484 ms</title></polygon>
+<polygon points="578.2,565.8 582.7,557.5 573.6,557.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S4, 4000 stores: ClickHouse 248 ms</title></polygon>
+<text x="980" y="558.5" font-size="12" text-anchor="end" fill="#e6edf3">2.8× faster than ClickHouse</text>
+<rect x="14" y="568" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="585.5" font-size="13" text-anchor="start" fill="#e6edf3">S5, 10 stores</text>
+<rect x="236.3" y="571" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 10 stores: PostgreSQL 1.85 ms</title></rect>
+<circle cx="245" cy="579.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 10 stores: pg_sift sift_col 1.98 ms</title></circle>
+<polygon points="222.5,578.8 227.5,583.8 222.5,588.7 217.6,583.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 10 stores: PostgreSQL flat tables 1.43 ms</title></polygon>
+<polygon points="452.7,592.8 457.2,584.5 448.1,584.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 10 stores: ClickHouse 40.3 ms</title></polygon>
+<text x="980" y="585.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.4× slower than flat tables</text>
+<text x="22" y="612.5" font-size="13" text-anchor="start" fill="#e6edf3">S5, 4000 stores</text>
+<rect x="597.7" y="598" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 4000 stores: PostgreSQL 348 ms</title></rect>
+<circle cx="602.3" cy="606.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 4000 stores: pg_sift sift_col 353 ms</title></circle>
+<polygon points="573.6,605.8 578.5,610.8 573.6,615.7 568.6,610.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 4000 stores: PostgreSQL flat tables 232 ms</title></polygon>
+<polygon points="531.2,619.8 535.8,611.5 526.6,611.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S5, 4000 stores: ClickHouse 126 ms</title></polygon>
+<text x="980" y="612.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">2.8× slower than ClickHouse</text>
+<rect x="14" y="622" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="639.5" font-size="13" text-anchor="start" fill="#e6edf3">S6, 10 stores</text>
+<rect x="210.1" y="625" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 10 stores: PostgreSQL 1.26 ms</title></rect>
+<circle cx="216.1" cy="633.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 10 stores: pg_sift sift_col 1.3 ms</title></circle>
+<polygon points="242.2,632.8 247.1,637.8 242.2,642.7 237.3,637.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 10 stores: PostgreSQL flat tables 1.9 ms</title></polygon>
+<text x="980" y="639.5" font-size="12" text-anchor="end" fill="#e6edf3">tie with PostgreSQL</text>
+<text x="22" y="666.5" font-size="13" text-anchor="start" fill="#e6edf3">S6, 4000 stores</text>
+<rect x="525.3" y="652" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 4000 stores: PostgreSQL 122 ms</title></rect>
+<circle cx="530.4" cy="660.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 4000 stores: pg_sift sift_col 124 ms</title></circle>
+<polygon points="577.8,659.8 582.8,664.8 577.8,669.7 572.9,664.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S6, 4000 stores: PostgreSQL flat tables 247 ms</title></polygon>
+<text x="980" y="666.5" font-size="12" text-anchor="end" fill="#e6edf3">tie with PostgreSQL</text>
+<rect x="14" y="676" width="972" height="27" fill="#21262d" rx="4"/>
+<text x="22" y="693.5" font-size="13" text-anchor="start" fill="#e6edf3">S7, 10 stores</text>
+<rect x="203.6" y="679" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 10 stores: PostgreSQL 1.15 ms</title></rect>
+<circle cx="216.9" cy="687.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 10 stores: pg_sift sift_col 1.32 ms</title></circle>
+<polygon points="187.4,686.8 192.4,691.8 187.4,696.7 182.5,691.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 10 stores: PostgreSQL flat tables 0.86 ms</title></polygon>
+<polygon points="447.9,700.8 452.5,692.5 443.4,692.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 10 stores: ClickHouse 37.6 ms</title></polygon>
+<text x="980" y="693.5" font-size="12" text-anchor="end" fill="#d95926" font-weight="bold">1.5× slower than flat tables</text>
+<text x="22" y="720.5" font-size="13" text-anchor="start" fill="#e6edf3">S7, 4000 stores</text>
+<rect x="551.8" y="706" width="7.6" height="7.6" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 4000 stores: PostgreSQL 179 ms</title></rect>
+<circle cx="441.7" cy="714.2" r="3.8" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 4000 stores: pg_sift sift_col 34.3 ms</title></circle>
+<polygon points="489.5,713.8 494.4,718.8 489.5,723.7 484.5,718.8" fill="#d4a373" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 4000 stores: PostgreSQL flat tables 68.6 ms</title></polygon>
+<polygon points="495,727.8 499.6,719.5 490.5,719.5" fill="#c98500" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>S7, 4000 stores: ClickHouse 74.4 ms</title></polygon>
+<text x="980" y="720.5" font-size="12" text-anchor="end" fill="#e6edf3">2.0× faster than flat tables</text>
+<text x="20" y="752" font-size="12" text-anchor="start" fill="#9198a1">Data: docs/results/analytics.json, 2026-10-22, median of 5 runs, one backend with no parallel workers, ClickHouse on one thread; the filter of</text>
+<text x="20" y="769" font-size="12" text-anchor="start" fill="#9198a1">400 stores is in docs/perf/AGGREGATES.md. Flat tables are the best conventional layout (denormalized copies) of the same data. S6 has no</text>
+<text x="20" y="786" font-size="12" text-anchor="start" fill="#9198a1">ClickHouse query.</text>
+</svg>
