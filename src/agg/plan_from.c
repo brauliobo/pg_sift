@@ -813,7 +813,7 @@ part_source(AggCtx *c)
 		if (!part_has_index(c, leaf))
 			return agg_refuse_on(PARTITION_SOURCE, "a partition has no column index the plan can use, or the partitions do not share a layout");
 	/* opening the partitions alone can cost more than the normal plan: nothing of them is read to find that out */
-	if (agg_open_cost(n) > agg_stage_normal)
+	if (agg_open_cost(n) > agg_stage_normal && !sift_agg_force)
 		return agg_refuse_f(COST, "opening %d partitions costs the scan %.2f, the normal plan %.2f", n, agg_open_cost(n), agg_stage_normal);
 	if (!part_prune_clauses(c))
 		return agg_refuse_on(PARTITION_SOURCE, "a condition on the partition key cannot be evaluated when the scan starts");
