@@ -288,6 +288,15 @@ need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk
   PostgreSQL rule that the oldest snapshot decides what a VACUUM may call all-visible, so look for the oldest `xact_start` or `backend_xmin` in
   `pg_stat_activity` and for replication slots when grouped aggregates still read rows after a VACUUM. With
   `synchronous_commit = off` the commits not yet flushed do the same (see `sift.col_auto_merge`).
+- A `sift_col` index under steady churn settles at about twice its live size and VACUUM does not give the rest back. Measured on 1M rows with 0.87% of them
+  changed per cycle (21% in 24 cycles), the file reached 2.2 times the live bytes (54 to 55% of the blocks free) after 60 cycles, on 3.3.0 and on 3.4 alike, and
+  stayed there; with no further changes nothing moved either. The VACUUM space step copies only the segments at the end of the file, and only up to
+  `sift.vacuum_rewrite_limit`, so a segment larger than the limit, or a limit under a sixteenth of the file, never moves. To get the space back in a
+  maintenance window, either raise the limit for one VACUUM, `SET sift.vacuum_rewrite_limit = 4096; VACUUM t;` (the MB to move: `sift.col_segments` lists the
+  segments, the ones at the end first matter; the copy holds the index under an exclusive lock and writes as much WAL as the bytes it moves: 20.2 to 13.4 MB of
+  file for 7.7 MB of WAL in 26 ms, 9.3 MB live), or rebuild with `REINDEX INDEX CONCURRENTLY` (20.2 to 10.4 MB of file, 10.4 MB of WAL, 0.9 s per million rows
+  with the heap cached; the old file stays until the swap, so the disk holds both). For a table of over a hundred million rows whose index file holds twice its live bytes that is about as much as the live index
+  of WAL and a new file the size of the live index beside the old one, for a time that is the read of the heap of a large table plus about two minutes of CPU: extrapolated, not measured at that size.
 
 <!-- sift-settings:start -->
 | Setting | Applies to | Default | Class | Values | Context | Description | Cost |
