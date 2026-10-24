@@ -106,6 +106,27 @@ SELECT * FROM check_query('a sublink over a join that repeats the keys', $q$
  ORDER BY docs.id
 $q$, 'Function Scan');
 
+-- the plans at larger sizes (sift.plan_scale, sift.agg_scale_horizon) decide nothing where the lateral is flattened and the flat plan reads docs in no node but
+-- the scan: its plan is the same whatever the sizes say, and it is the scan's
+CREATE FUNCTION flat_at(scale float8, horizon float8) RETURNS TABLE (scan_only bool, same_plan bool) LANGUAGE plpgsql AS $$
+DECLARE q text := $q$
+ WITH c AS (SELECT grp, count(*) AS n, sum(dim_id) AS dsum FROM docs GROUP BY grp),
+      r AS (SELECT d.id, d.grp, s.sv FROM docs d
+            LEFT JOIN LATERAL (SELECT avg(o.score) AS sv FROM jsonb_to_recordset(d.doc['parts']) o(score float8) WHERE o.score IS NOT NULL) s ON true)
+ SELECT a.grp, count(*) AS n, round(avg(a.sv)::numeric, 6) AS sv, (SELECT n FROM c WHERE c.grp = a.grp) AS cn, (SELECT dsum FROM c WHERE c.grp = a.grp) AS cs
+ FROM r a GROUP BY a.grp
+$q$;
+		l text; plan text := ''; base text := '';
+BEGIN
+	PERFORM set_config('sift.plan_scale', '1', true), set_config('sift.agg_scale_horizon', '1', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP base := base || l || E'\n'; END LOOP;
+	PERFORM set_config('sift.plan_scale', scale::text, true), set_config('sift.agg_scale_horizon', horizon::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
+	RETURN QUERY SELECT plan !~ '(Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan) on docs' AND plan LIKE '%SiftAgg%', plan = base;
+END $$;
+SELECT scale, horizon, (flat_at(scale, horizon)).* FROM unnest(ARRAY[1, 1000]) scale, unnest(ARRAY[1, 10, 100]) horizon ORDER BY 1, 2;
+DROP FUNCTION flat_at(float8, float8);
+
 DROP TABLE docs, dims, tags;
 DROP FUNCTION reads_plan(text,text), check_query(text,text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
 DROP EXTENSION pg_sift;
