@@ -393,7 +393,7 @@ ERROR:  invalid preagg option: cube dimension "f8" must be a scalar integer, dat
 CREATE INDEX pa_bad3 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(i2: s)');
 ERROR:  invalid preagg option: cube measure "s" must be a smallint, integer, bigint, numeric, real or double precision column
 CREATE INDEX pa_bad4 ON pa USING sift_col (i2, s) WITH (preagg = 'sometimes');
-ERROR:  invalid preagg option "sometimes": expected default, off, cube(...) or rollup(...), got "sometimes"
+ERROR:  invalid preagg option "sometimes": expected default, auto, off, cube(...) or rollup(...), got "sometimes"
 CREATE INDEX pa_bad5 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(i2: ');
 ERROR:  invalid preagg option "cube(i2: ": a measure name is missing
 SELECT * FROM sift.col_unit_agg('pa_col', 'nosuch');
