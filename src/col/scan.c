@@ -431,6 +431,8 @@ point_keys(const SiftCTest *t, int *nkeys)
  * source, and those units are done. A unit with a dead row is read instead, as if no directory were there (the address of a dead row may be used again), and
  * so is every unit when the caller wants the values (an index-only scan): the directory only cuts the units, whose rows the predicate then selects.
  */
+#define SIFT_CTID_FILTER 64
+
 static bool
 prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
@@ -478,20 +480,26 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 	/* the addresses ascend, so a unit repeats, and the run of a segment follows the runs of the segments before it unless their blocks interleave */
 	if (n > 0 && src->nptid > 0 && tids[0] < src->ptid[src->nptid - 1])
 		src->ptid_unsorted = true;
-	for (uint32 k = 0; k < n; k++)
+	for (uint32 k = 0, e; k < n; k = e)
 	{
 		uint32		sb = (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT,
 					u = last != PG_UINT32_MAX && sb == seg->sbdir[last].sb ? last : sift_cseg_find_unit(seg, sb);
 
+		for (e = k + 1; e < n && ((uint32) (tids[e] >> 16) >> SIFT_SB_SHIFT) == sb; e++)
+			;
 		sift_col_bit_set(has, u);
-		if (u != last)
-			clean = emit && sift_col_bit_test(keep, u) && !sift_cseg_dirty(seg, u);
 		last = u;
+		/* past SIFT_CTID_FILTER addresses, the heap fetches cost more than reading the unit and testing the other predicates on its rows */
+		clean = emit && sift_col_bit_test(keep, u) && !sift_cseg_dirty(seg, u) && !(c->others && e - k > SIFT_CTID_FILTER);
 		if (!clean)
 			continue;
-		if (src->nptid == src->capptid)
-			src->ptid = src->ptid ? repalloc_huge(src->ptid, (src->capptid *= 2) * sizeof(SiftKey)) : palloc((src->capptid = 64) * sizeof(SiftKey));
-		src->ptid[src->nptid++] = tids[k];
+		if (src->nptid + (e - k) > src->capptid)
+		{
+			src->capptid = Max(64, Max(src->capptid * 2, src->nptid + (e - k)));
+			src->ptid = src->ptid ? repalloc_huge(src->ptid, src->capptid * sizeof(SiftKey)) : palloc(src->capptid * sizeof(SiftKey));
+		}
+		memcpy(src->ptid + src->nptid, tids + k, (e - k) * sizeof(SiftKey));
+		src->nptid += e - k;
 		sift_col_bit_set(done, u);
 	}
 	for (uint32 w = 0; w < nw; w++)
@@ -560,6 +568,9 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 	int64	   *lo = palloc(Max(npreds, 1) * 2 * sizeof(int64)),
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
+
+	if (pr->top != NULL)
+		pr->top->others = npreds > 1;
 
 	/*
 	 * The predicates of leaves without a point directory first (their zones and summaries), those of leaves with one after them: a directory of heap
