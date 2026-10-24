@@ -288,6 +288,7 @@ extern uint32 sift_tbl_ovf_piece(Page page, uint64 gen);
 extern HeapTuple sift_tbl_rec_tuple(Relation rel, const SiftTblRec *rec, uint64 gen, uint64 key);
 extern BlockNumber sift_tbl_wbuf_page(Relation rel, SiftTblSeg *seg, uint32 idx);
 extern void sift_tbl_seg_load(Relation rel, SiftTblSeg *seg);
+extern bool sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, BlockNumber vblock, Page copy, uint64 *gen, bool *held);
 extern bool sift_tbl_load_vblock(Relation rel, SiftTblRel *st, BlockNumber vblock, Page copy, uint64 *gen);
 /* The version header of a write buffer record at tid; sift_tbl_rowver_tuple then materializes its row (t_self, t_tableOid set) */
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
