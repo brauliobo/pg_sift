@@ -507,7 +507,18 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		atts[f->nkey + k] = f->ordatt[k];
 	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts, NULL))
 	{
-		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false, 0, 0);
+		if (sift_explain_refusals)
+		{
+			StringInfoData cols;
+
+			initStringInfo(&cols);
+			for (int k = 0; k < f->nkey + f->nord; k++)
+				appendStringInfo(&cols, "%s%s", k ? ", " : "", get_attname(rte->relid, atts[k], false));
+			agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT,
+					   psprintf("no unique index on %s: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE col IS NOT NULL for a "
+								"sub-select with that condition (an index on an expression of them does not count); CLUSTER on it and VACUUM keep the lookups on adjacent pages", cols.data),
+					   false, 0, 0);
+		}
 		return;
 	}
 	foreach_node(TargetEntry, te, q->targetList)
