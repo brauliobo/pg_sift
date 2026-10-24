@@ -448,7 +448,9 @@ def gen_twolevel(r, ctx):
                 # a group key that holds a sub-select: each arm plans one of its own
                 dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]),
                 # the total arm counts the rows the lookup has none for: its join is an outer one next to the inner joins of the arms with the NOT NULL test
-                unmatched=r.random() < 0.4)
+                unmatched=r.random() < 0.4,
+                # the lookup behind a lateral sub-select of its own, over the parts with a score: its WHERE sits at the inner join of the arms with the NOT NULL test
+                wrapped=r.random() < 0.4)
 
 
 def render_twolevel(p):
@@ -459,6 +461,13 @@ def render_twolevel(p):
               f"ON e.ts <@ p.range {p['parent']}{w}), ")
 
     def arm(cat):
+        if p['lookup'] and p['wrapped']:
+            c = 'mo.category' if cat else 'NULL::text'
+            g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (', s.dim' if dim else '') + (f', {c}' if cat else '')
+            return (f"SELECT s.id, s.parent_id, s.kind, s.span, {'s.dim, ' if dim else ''}{c} AS category, avg(mo.score) AS score, count(s.id) AS n FROM scoped s "
+                    f"INNER JOIN LATERAL (SELECT rm.derived_cat AS category, o.score FROM LATERAL (SELECT cat, dir_a, score FROM jsonb_to_recordset(s.doc -> 'parts') q(cat text, dir_a text, score float8) "
+                    f"WHERE q.score IS NOT NULL) o LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true) mo ON true "
+                    + ("" if p['unmatched'] and not cat else "WHERE mo.category IS NOT NULL ") + g)
         if p['lookup']:
             lk = (f"LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true "
                   + ("" if p['unmatched'] and not cat else "WHERE rm.derived_cat IS NOT NULL"))
