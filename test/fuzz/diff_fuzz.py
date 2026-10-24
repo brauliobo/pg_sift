@@ -425,7 +425,7 @@ def render_latest(p):
 
 def gen_decor(r, ctx):
     tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
-    return dict(form=r.choice(['lateral', 'left', 'select', 'where']), tie=tie, aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
+    return dict(form=r.choice(['lateral', 'left', 'comma', 'select', 'where']), tie=tie, aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
                                                                                       'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
                                                                                       'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
                 inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12),
@@ -443,10 +443,10 @@ def render_decor(p):
     wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
     sub = lambda i: f"SELECT {p['aggs'][i]} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}"
     n = len(p['aggs'])
-    if p['form'] in ('lateral', 'left'):
-        join = 'JOIN' if p['form'] == 'lateral' else 'LEFT JOIN'
+    if p['form'] in ('lateral', 'left', 'comma'):
+        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ','}[p['form']]
         cols = ', '.join(f"{p['aggs'][i]} AS v{i}" for i in range(n))
-        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}) x ON true"
+        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}) x" + ('' if p['form'] == 'comma' else ' ON true')
         outs = [f'x.v{i}' for i in range(n)]
     else:
         frm = 'events e'
