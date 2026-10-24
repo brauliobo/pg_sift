@@ -1,15 +1,15 @@
 # Benchmark cases (bench/cases.tsv) at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS): pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.
 # orders: 100000
 # postgresql: 18.6
-# pg_sift: 3.3
-# build: 70a1ba967e90
-# date: 2026-10-23
+# pg_sift: 3.4
+# build: fb2cf52c8d5c
+# date: 2026-10-24
 # cpu: AMD Ryzen 9 5900XT 16-Core Processor, 32 threads, 62 GB RAM
 # method: client-side milliseconds of one psql session per lane, interleaved: 3 rounds of 1 untimed and 5 timed runs, median of all; the sift lane is the planner's own choice, native is sift.enable_agg = off on the same table; 0 parallel workers; every answer compared with native
-# host_load_before: load 5.90 6.85 8.94 cpu_psi 6.14%
-# host_load_after: load 4.84 4.55 6.63 cpu_psi 4.68%
+# host_load_before: load 23.50 22.47 24.59 cpu_psi 0.36%
+# host_load_after: load 23.79 22.73 24.59 cpu_psi 4.32%
 # work_mem: 64MB
-# scales: 1,3,10,20
+# scales: 1,3,10
 version	case	arm	metric	value	min	max	n	load	note
 3.3	topn_page_totals@100000	sift	ms	1.185	0.776	3.417	15	5.90	Top-N: created_at DESC (limit 30); Pushed Aggregates: count(*), sum(orders.amount)
 3.3	topn_page_totals@100000	native	ms	8.756	6.529	17.337	15	5.90	Bitmap Heap Scan on orders
@@ -235,3 +235,24 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	point_agg_id@2000000	forced	ms	0.205	0.187	0.328	15	5.08	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*) NOISY
 3.3	jsonb_each_member@2000000	sift	ms	18.622	17.886	23.139	15	5.08	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a) NOISY
 3.3	jsonb_each_member@2000000	native	ms	750.099	728.459	784.263	15	5.08	Seq Scan on events NOISY
+3.4	keycut_customer_agg@100000	sift	ms	0.154	0.129	0.483	15	22.90	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	keycut_customer_agg@100000	native	ms	4.413	4.177	5.527	15	22.90	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@100000	sift	ms	0.210	0.149	0.832	15	22.90	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	softdel_live_groupby@100000	native	ms	18.053	15.721	20.332	15	22.90	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@100000	scan	ms	1.293	1.024	1.902	15	22.90	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	point_in_100@100000	sift	ms	0.306	0.236	0.753	15	22.90	Bitmap Heap Scan on orders NOISY
+3.4	point_in_100@100000	native	ms	8.528	7.491	11.376	15	22.90	Seq Scan on orders NOISY
+3.4	keycut_customer_agg@300000	sift	ms	0.237	0.190	0.699	15	23.63	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	keycut_customer_agg@300000	native	ms	17.094	14.989	23.916	15	23.63	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@300000	sift	ms	0.245	0.163	0.527	15	23.63	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	softdel_live_groupby@300000	native	ms	58.605	49.970	76.612	15	23.63	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@300000	scan	ms	3.787	3.155	4.734	15	23.63	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	point_in_100@300000	sift	ms	0.351	0.222	0.692	15	24.94	Bitmap Heap Scan on orders NOISY
+3.4	point_in_100@300000	native	ms	20.895	18.181	30.206	15	24.94	Seq Scan on orders NOISY
+3.4	keycut_customer_agg@1000000	sift	ms	0.419	0.335	1.143	15	25.00	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	keycut_customer_agg@1000000	native	ms	58.700	49.518	82.420	15	25.00	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@1000000	sift	ms	0.998	0.652	1.555	15	24.12	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	softdel_live_groupby@1000000	native	ms	171.411	157.953	201.410	15	24.12	Seq Scan on orders NOISY
+3.4	softdel_live_groupby@1000000	scan	ms	10.849	8.124	12.925	15	24.12	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	point_in_100@1000000	sift	ms	0.341	0.247	0.787	15	23.79	Index Scan using orders_col on orders NOISY
+3.4	point_in_100@1000000	native	ms	55.050	50.808	66.331	15	23.79	Seq Scan on orders NOISY

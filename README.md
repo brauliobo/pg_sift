@@ -163,7 +163,7 @@ On 7 aggregate questions over 1,000,000 orders (a point lookup, counts and sums 
 
 Search on 50,000 Wikipedia articles, 8 clients: 2.2x to 6.6x the queries per second of pg_search on every query class; ahead of Elasticsearch on 5 of 7 classes (0.5x to 2.2x across all); the index is 30 MiB with phrase support (1.4x smaller than pg_search). The column index adds 19.8 bytes a row to the table (PostgreSQL's btrees and GIN: 36.3), loads in 1.4 s against PostgreSQL's 2.2 s, and 10% of the rows update at 157,905 rows/s (88,281 on PostgreSQL).
 
-Across 77 query shapes on 1,000,000 rows (reports with grouping sets and window functions, top-N, semi and anti joins, keyset pages, JSON arrays, lookups by key) pg_sift is faster than PostgreSQL on the same table on 61 (median 20x, up to 1109x); the planner kept PostgreSQL's plan on 13, and pg_sift is slower on 7 (topn_sorted_runs_btree 1.2x, filter_few_rows 1.9x, count_distinct_spill 1.4x, keyset_page 1.3x, point_agg_id 1.8x, keycut_customer_btree 1.3x, tbl_update_keys 4.6x). At the production setting (`work_mem` = 4GB) 18 of the 21 application-shaped cases measured there are faster (median 22x).
+Across 77 query shapes on 1,000,000 rows (reports with grouping sets and window functions, top-N, semi and anti joins, keyset pages, JSON arrays, lookups by key) pg_sift is faster than PostgreSQL on the same table on 61 (median 20x, up to 1109x); the planner kept PostgreSQL's plan on 13, and pg_sift is slower on 7 (topn_sorted_runs_btree 1.2x, filter_few_rows 1.9x, count_distinct_spill 1.4x, keyset_page 1.3x, point_agg_id 1.8x, keycut_customer_btree 1.3x, tbl_update_keys 4.6x). At the production setting (`work_mem` = 4GB) 21 of the 24 application-shaped cases measured there are faster (median 23x).
 
 Where it does not win: cold (caches emptied) it is not the fastest on 3 of 7 questions: point lookup by PostgreSQL, 1.4x faster; average shipped order by ClickHouse, 1.3x faster; big recent orders by ClickHouse, 2.2x faster. ClickHouse loads faster (0.8 s) and stores the table in less space (38 MiB against 143 MiB for sift_col, whose heap stays). A btree still wins a lookup by key where the planner keeps it: 0.06 ms for the primary key of 1,000,000 rows, 0.10 ms with pg_sift (0.20 ms when the scan is forced).
 
@@ -248,12 +248,12 @@ The cases that read like an application's query, with the SQL in `bench/cases/` 
 | [`keyset_page`](bench/cases/keyset_page.sql) | `WHERE (created_at, id) < (bar) ORDER BY created_at DESC, id DESC LIMIT 50` | 0.14 | 0.18 | same plan (1.3x slower) | -0.06 / 0.02 |
 | [`point_agg_fk`](bench/cases/point_agg_fk.sql) | `count(*), sum(amount) WHERE customer_id = <one customer>`, no btree on `customer_id`, `point_tid_columns = 'customer_id'` | 33.6 | 1.20 | **28x** | 1.09 / 0.72 |
 | [`point_agg_id`](bench/cases/point_agg_id.sql) | `sum(amount) WHERE id = <one id>`, the primary key btree against `point_tid_columns = 'id'` | 0.06 | 0.10 | same plan (1.8x slower) | 0.06 / 0.00 |
-| [`keycut_customer_agg`](bench/cases/keycut_customer_agg.sql) | `count(*), sum(amount) WHERE customer_id = <one customer>`, `key_cut = 'customer_id'`, no btree on the column | 33.4 | 0.30 | **113x** | - / - |
+| [`keycut_customer_agg`](bench/cases/keycut_customer_agg.sql) | `count(*), sum(amount) WHERE customer_id = <one customer>`, `key_cut = 'customer_id'`, no btree on the column | 33.4 | 0.30 | **113x** | 1.12 / 0.44 |
 | [`jsonb_each_member`](bench/cases/jsonb_each_member.sql) | `LEFT JOIN LATERAL jsonb_each(doc -> 'metrics') r ON r.key = 'm_a'`, `count`, `avg(CAST(r.value AS float))` by `kind` | 338 | 9.49 | **36x** | 1.00 / 0.85 |
-| [`softdel_live_groupby`](bench/cases/softdel_live_groupby.sql) | `count(*), sum(amount) WHERE deleted_at IS NULL GROUP BY country`, 1% of the orders soft-deleted in one batch | 161 | 0.58 | **277x** | - / - |
-| [`point_in_100`](bench/cases/point_in_100.sql) | `SELECT id, amount, title WHERE id IN (<100 ids>)`, no btree on `id`, `point_tid_columns = 'id'` | 45.7 | 0.25 | **180x** | - / - |
+| [`softdel_live_groupby`](bench/cases/softdel_live_groupby.sql) | `count(*), sum(amount) WHERE deleted_at IS NULL GROUP BY country`, 1% of the orders soft-deleted in one batch | 161 | 0.58 | **277x** | 0.98 / 0.68 |
+| [`point_in_100`](bench/cases/point_in_100.sql) | `SELECT id, amount, title WHERE id IN (<100 ids>)`, no btree on `id`, `point_tid_columns = 'id'` | 45.7 | 0.25 | **180x** | 0.81 / 0.05 |
 
-Between 100k and 2M rows the planner changed its plan on 1 of the 21 cases measured at scale: `cte_series_arms`.
+Between 100k and 2M rows the planner changed its plan on 1 of the 24 cases measured at scale: `cte_series_arms`.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>
 
@@ -273,7 +273,7 @@ Against ClickHouse (one thread, a throwaway server) pg_sift is faster on 23 of 2
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/shapes-latency-dark.svg"><img alt="Time per application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse" src="docs/img/shapes-latency-light.svg"></picture>
 
-The application-shaped cases of the table above again at the `work_mem` the production servers run (4GB, the benchmark cluster runs 64MB): the median speed-up of the 19 cases that run on the scan is 19.7x at 64MB and 21.6x at 4GB.
+The application-shaped cases of the table above again at the `work_mem` the production servers run (4GB, the benchmark cluster runs 64MB): the median speed-up of the 22 cases that run on the scan is 23.1x at 64MB and 22.8x at 4GB.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-workmem-dark.svg"><img alt="Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB" src="docs/img/cases-workmem-light.svg"></picture>
 
