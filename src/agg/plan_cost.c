@@ -1826,13 +1826,16 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 				buffered = Min(NBuffers / pages, 1.0),
 				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
 				touched,
+				seq,
 				disk,
 				op = AGG_SCAN_SPEED * cpu_operator_cost;
 
 	if (vet_pages <= 0)
 		return 0;
 	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
-	disk = seq_page_cost + (random_page_cost - seq_page_cost) * (1.0 - touched / vet_pages);
+	/* the pages are read in order and skip the all-visible ones: never dearer than the random fetch of the same pages, where a configuration prices a sequential page above a random one */
+	seq = Min(seq_page_cost, random_page_cost);
+	disk = seq + (random_page_cost - seq) * (1.0 - touched / vet_pages);
 	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
 }
 

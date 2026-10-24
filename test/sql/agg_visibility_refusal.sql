@@ -26,6 +26,22 @@ CREATE TABLE costs AS
 SELECT k_below, (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))) AS empty_cost
 FROM unnest(ARRAY[20, 300]) k_below;
 
+-- a configuration that prices a sequential page above a random one (seq_page_cost 100, random_page_cost 4) prices the check of those pages as the random fetch
+-- of them, not at the sequential price: the scan of a table too large to be cached costs the same at 100 as at 4, and more than at 1
+CREATE TABLE page_costs (seq float8, cost float8);
+SET sift.plan_scale = 1000;
+DO $$ DECLARE s float8; BEGIN
+	FOREACH s IN ARRAY ARRAY[1, 4, 100]::float8[] LOOP
+		PERFORM set_config('seq_page_cost', s::text, false);
+		INSERT INTO page_costs SELECT s, scan_cost FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 300 GROUP BY v');
+	END LOOP;
+END $$;
+RESET seq_page_cost;
+RESET sift.plan_scale;
+SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_costs WHERE seq = 4) AS capped_at_random,
+	(SELECT cost FROM page_costs WHERE seq = 1) < (SELECT cost FROM page_costs WHERE seq = 4) AS cheaper_when_sequential_is;
+DROP TABLE page_costs;
+
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
 SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
 -- the share of the pages is the table's, not the query's
