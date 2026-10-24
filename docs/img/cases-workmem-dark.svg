@@ -1,147 +1,163 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="817" viewBox="0 0 1000 817" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="907" viewBox="0 0 1000 907" role="img" aria-labelledby="t d" font-family="Helvetica, Arial, sans-serif">
 <title id="t">Speed-up at the default and at the production work_mem</title>
 <desc id="d">Speed-up of pg_sift over PostgreSQL for the API-shaped cases at two work_mem settings.</desc>
-<rect x="0.5" y="0.5" width="999" height="816" rx="6" fill="#0d1117" stroke="#30363d"/>
+<rect x="0.5" y="0.5" width="999" height="906" rx="6" fill="#0d1117" stroke="#30363d"/>
 <text x="20" y="32" font-size="18" text-anchor="start" fill="#e6edf3" font-weight="bold">The same cases at work_mem = 4GB, the production setting</text>
 <text x="20" y="54" font-size="13" text-anchor="start" fill="#9198a1">Speed-up of pg_sift over PostgreSQL at the 64MB of the benchmark cluster (gray square) and at 4GB (blue dot). Logarithmic axis; the</text>
 <text x="20" y="72" font-size="13" text-anchor="start" fill="#9198a1">plans of both engines can change with work_mem.</text>
-<line x1="272.3" y1="102" x2="272.3" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="272.3" y1="102" x2="272.3" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="272.3" y="96" font-size="11" text-anchor="middle" fill="#9198a1">0.5×</text>
-<line x1="341.5" y1="102" x2="341.5" y2="742" stroke="#9198a1" stroke-width="1.5"/>
+<line x1="341.5" y1="102" x2="341.5" y2="832" stroke="#9198a1" stroke-width="1.5"/>
 <text x="341.5" y="96" font-size="11" text-anchor="middle" fill="#9198a1">1×</text>
-<line x1="410.8" y1="102" x2="410.8" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="410.8" y1="102" x2="410.8" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="410.8" y="96" font-size="11" text-anchor="middle" fill="#9198a1">2×</text>
-<line x1="502.3" y1="102" x2="502.3" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="502.3" y1="102" x2="502.3" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="502.3" y="96" font-size="11" text-anchor="middle" fill="#9198a1">5×</text>
-<line x1="571.5" y1="102" x2="571.5" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="571.5" y1="102" x2="571.5" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="571.5" y="96" font-size="11" text-anchor="middle" fill="#9198a1">10×</text>
-<line x1="640.8" y1="102" x2="640.8" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="640.8" y1="102" x2="640.8" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="640.8" y="96" font-size="11" text-anchor="middle" fill="#9198a1">20×</text>
-<line x1="732.3" y1="102" x2="732.3" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="732.3" y1="102" x2="732.3" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="732.3" y="96" font-size="11" text-anchor="middle" fill="#9198a1">50×</text>
-<line x1="801.5" y1="102" x2="801.5" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="801.5" y1="102" x2="801.5" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="801.5" y="96" font-size="11" text-anchor="middle" fill="#9198a1">100×</text>
-<line x1="870.8" y1="102" x2="870.8" y2="742" stroke="#262c34" stroke-width="1"/>
+<line x1="870.8" y1="102" x2="870.8" y2="832" stroke="#262c34" stroke-width="1"/>
 <text x="870.8" y="96" font-size="11" text-anchor="middle" fill="#9198a1">200×</text>
 <rect x="14" y="112" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="132" font-size="13" text-anchor="start" fill="#e6edf3">key_presence_distinct</text>
-<line x1="905.2" y1="127" x2="888.6" y2="127" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="900.2" y="122" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>key_presence_distinct at 64MB: 282×</title></rect>
-<circle cx="888.6" cy="127" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>key_presence_distinct at 4GB: 239× (PostgreSQL 111 ms, pg_sift 0.463 ms)</title></circle>
-<text x="917.2" y="132" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">239×</text>
-<text x="22" y="162" font-size="13" text-anchor="start" fill="#e6edf3">count_distinct_unique</text>
-<line x1="888.9" y1="157" x2="871.1" y2="157" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="883.9" y="152" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>count_distinct_unique at 64MB: 240×</title></rect>
-<circle cx="871.1" cy="157" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>count_distinct_unique at 4GB: 201× (PostgreSQL 783 ms, pg_sift 3.9 ms)</title></circle>
-<text x="900.9" y="162" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">201×</text>
+<text x="22" y="132" font-size="13" text-anchor="start" fill="#e6edf3">softdel_live_groupby</text>
+<line x1="903.2" y1="127" x2="902.6" y2="127" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="898.2" y="122" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>softdel_live_groupby at 64MB: 277×</title></rect>
+<circle cx="902.6" cy="127" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>softdel_live_groupby at 4GB: 275× (PostgreSQL 181 ms, pg_sift 0.66 ms)</title></circle>
+<text x="915.2" y="132" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">275×</text>
+<text x="22" y="162" font-size="13" text-anchor="start" fill="#e6edf3">key_presence_distinct</text>
+<line x1="905.2" y1="157" x2="888.6" y2="157" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="900.2" y="152" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>key_presence_distinct at 64MB: 282×</title></rect>
+<circle cx="888.6" cy="157" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>key_presence_distinct at 4GB: 239× (PostgreSQL 111 ms, pg_sift 0.463 ms)</title></circle>
+<text x="917.2" y="162" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">239×</text>
 <rect x="14" y="172" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="192" font-size="13" text-anchor="start" fill="#e6edf3">topn_coalesce</text>
-<line x1="771.9" y1="187" x2="763.3" y2="187" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="766.9" y="182" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_coalesce at 64MB: 74×</title></rect>
-<circle cx="763.3" cy="187" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_coalesce at 4GB: 68× (PostgreSQL 70.1 ms, pg_sift 1.03 ms)</title></circle>
-<text x="783.9" y="192" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">68×</text>
-<text x="22" y="222" font-size="13" text-anchor="start" fill="#e6edf3">point_agg_fk</text>
-<line x1="674.9" y1="217" x2="716.2" y2="217" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="669.9" y="212" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_fk at 64MB: 28×</title></rect>
-<circle cx="716.2" cy="217" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_fk at 4GB: 43× (PostgreSQL 32.1 ms, pg_sift 0.755 ms)</title></circle>
-<text x="728.2" y="222" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">43×</text>
+<text x="22" y="192" font-size="13" text-anchor="start" fill="#e6edf3">keycut_customer_agg</text>
+<line x1="813.5" y1="187" x2="873.7" y2="187" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="808.5" y="182" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keycut_customer_agg at 64MB: 113×</title></rect>
+<circle cx="873.7" cy="187" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keycut_customer_agg at 4GB: 206× (PostgreSQL 73.6 ms, pg_sift 0.357 ms)</title></circle>
+<text x="885.7" y="192" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">206×</text>
+<text x="22" y="222" font-size="13" text-anchor="start" fill="#e6edf3">count_distinct_unique</text>
+<line x1="888.9" y1="217" x2="871.1" y2="217" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="883.9" y="212" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>count_distinct_unique at 64MB: 240×</title></rect>
+<circle cx="871.1" cy="217" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>count_distinct_unique at 4GB: 201× (PostgreSQL 783 ms, pg_sift 3.9 ms)</title></circle>
+<text x="900.9" y="222" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">201×</text>
 <rect x="14" y="232" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="252" font-size="13" text-anchor="start" fill="#e6edf3">list_elements</text>
-<line x1="703.3" y1="247" x2="700.7" y2="247" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="698.3" y="242" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>list_elements at 64MB: 37×</title></rect>
-<circle cx="700.7" cy="247" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>list_elements at 4GB: 36× (PostgreSQL 279 ms, pg_sift 7.66 ms)</title></circle>
-<text x="715.3" y="252" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">36×</text>
-<text x="22" y="282" font-size="13" text-anchor="start" fill="#e6edf3">jsonb_each_member</text>
-<line x1="698.4" y1="277" x2="696.9" y2="277" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="693.4" y="272" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>jsonb_each_member at 64MB: 36×</title></rect>
-<circle cx="696.9" cy="277" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>jsonb_each_member at 4GB: 35× (PostgreSQL 352 ms, pg_sift 10 ms)</title></circle>
-<text x="710.4" y="282" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">35×</text>
+<text x="22" y="252" font-size="13" text-anchor="start" fill="#e6edf3">point_in_100</text>
+<line x1="860.3" y1="247" x2="855.9" y2="247" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="855.3" y="242" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_in_100 at 64MB: 180×</title></rect>
+<circle cx="855.9" cy="247" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_in_100 at 4GB: 172× (PostgreSQL 114 ms, pg_sift 0.661 ms)</title></circle>
+<text x="872.3" y="252" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">172×</text>
+<text x="22" y="282" font-size="13" text-anchor="start" fill="#e6edf3">topn_coalesce</text>
+<line x1="771.9" y1="277" x2="763.3" y2="277" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="766.9" y="272" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_coalesce at 64MB: 74×</title></rect>
+<circle cx="763.3" cy="277" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_coalesce at 4GB: 68× (PostgreSQL 70.1 ms, pg_sift 1.03 ms)</title></circle>
+<text x="783.9" y="282" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">68×</text>
 <rect x="14" y="292" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="312" font-size="13" text-anchor="start" fill="#e6edf3">topn_sorted_runs</text>
-<line x1="670.6" y1="307" x2="671.9" y2="307" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="665.6" y="302" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs at 64MB: 27×</title></rect>
-<circle cx="671.9" cy="307" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs at 4GB: 27× (PostgreSQL 40.4 ms, pg_sift 1.48 ms)</title></circle>
-<text x="683.9" y="312" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">27×</text>
-<text x="22" y="342" font-size="13" text-anchor="start" fill="#e6edf3">cte_two_readers</text>
-<line x1="663.8" y1="337" x2="656.7" y2="337" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="658.8" y="332" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_two_readers at 64MB: 25×</title></rect>
-<circle cx="656.7" cy="337" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_two_readers at 4GB: 23× (PostgreSQL 219 ms, pg_sift 9.33 ms)</title></circle>
-<text x="675.8" y="342" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">23×</text>
+<text x="22" y="312" font-size="13" text-anchor="start" fill="#e6edf3">point_agg_fk</text>
+<line x1="674.9" y1="307" x2="716.2" y2="307" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="669.9" y="302" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_fk at 64MB: 28×</title></rect>
+<circle cx="716.2" cy="307" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_fk at 4GB: 43× (PostgreSQL 32.1 ms, pg_sift 0.755 ms)</title></circle>
+<text x="728.2" y="312" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">43×</text>
+<text x="22" y="342" font-size="13" text-anchor="start" fill="#e6edf3">list_elements</text>
+<line x1="703.3" y1="337" x2="700.7" y2="337" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="698.3" y="332" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>list_elements at 64MB: 37×</title></rect>
+<circle cx="700.7" cy="337" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>list_elements at 4GB: 36× (PostgreSQL 279 ms, pg_sift 7.66 ms)</title></circle>
+<text x="715.3" y="342" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">36×</text>
 <rect x="14" y="352" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="372" font-size="13" text-anchor="start" fill="#e6edf3">ranked_top_per_group</text>
-<line x1="645.7" y1="367" x2="651.2" y2="367" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="640.7" y="362" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group at 64MB: 21×</title></rect>
-<circle cx="651.2" cy="367" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group at 4GB: 22× (PostgreSQL 161 ms, pg_sift 7.24 ms)</title></circle>
-<text x="663.2" y="372" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">22×</text>
-<text x="22" y="402" font-size="13" text-anchor="start" fill="#e6edf3">topn_page_totals</text>
-<line x1="638" y1="397" x2="648.5" y2="397" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="633" y="392" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_page_totals at 64MB: 19×</title></rect>
-<circle cx="648.5" cy="397" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_page_totals at 4GB: 22× (PostgreSQL 77.2 ms, pg_sift 3.57 ms)</title></circle>
-<text x="660.5" y="402" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">22×</text>
+<text x="22" y="372" font-size="13" text-anchor="start" fill="#e6edf3">jsonb_each_member</text>
+<line x1="698.4" y1="367" x2="696.9" y2="367" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="693.4" y="362" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>jsonb_each_member at 64MB: 36×</title></rect>
+<circle cx="696.9" cy="367" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>jsonb_each_member at 4GB: 35× (PostgreSQL 352 ms, pg_sift 10 ms)</title></circle>
+<text x="710.4" y="372" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">35×</text>
+<text x="22" y="402" font-size="13" text-anchor="start" fill="#e6edf3">topn_sorted_runs</text>
+<line x1="670.6" y1="397" x2="671.9" y2="397" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="665.6" y="392" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs at 64MB: 27×</title></rect>
+<circle cx="671.9" cy="397" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_sorted_runs at 4GB: 27× (PostgreSQL 40.4 ms, pg_sift 1.48 ms)</title></circle>
+<text x="683.9" y="402" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">27×</text>
 <rect x="14" y="412" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="432" font-size="13" text-anchor="start" fill="#e6edf3">window_json_report</text>
-<line x1="639.2" y1="427" x2="633.1" y2="427" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="634.2" y="422" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>window_json_report at 64MB: 20×</title></rect>
-<circle cx="633.1" cy="427" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>window_json_report at 4GB: 19× (PostgreSQL 190 ms, pg_sift 10.3 ms)</title></circle>
-<text x="651.2" y="432" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">19×</text>
-<text x="22" y="462" font-size="13" text-anchor="start" fill="#e6edf3">lateral_first_row</text>
-<line x1="606.3" y1="457" x2="598.2" y2="457" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="601.3" y="452" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>lateral_first_row at 64MB: 14×</title></rect>
-<circle cx="598.2" cy="457" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>lateral_first_row at 4GB: 13× (PostgreSQL 275 ms, pg_sift 21.1 ms)</title></circle>
-<text x="618.3" y="462" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">13×</text>
+<text x="22" y="432" font-size="13" text-anchor="start" fill="#e6edf3">cte_two_readers</text>
+<line x1="663.8" y1="427" x2="656.7" y2="427" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="658.8" y="422" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_two_readers at 64MB: 25×</title></rect>
+<circle cx="656.7" cy="427" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_two_readers at 4GB: 23× (PostgreSQL 219 ms, pg_sift 9.33 ms)</title></circle>
+<text x="675.8" y="432" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">23×</text>
+<text x="22" y="462" font-size="13" text-anchor="start" fill="#e6edf3">ranked_top_per_group</text>
+<line x1="645.7" y1="457" x2="651.2" y2="457" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="640.7" y="452" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group at 64MB: 21×</title></rect>
+<circle cx="651.2" cy="457" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>ranked_top_per_group at 4GB: 22× (PostgreSQL 161 ms, pg_sift 7.24 ms)</title></circle>
+<text x="663.2" y="462" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">22×</text>
 <rect x="14" y="472" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="492" font-size="13" text-anchor="start" fill="#e6edf3">semi_exists_self</text>
-<line x1="581.5" y1="487" x2="591.3" y2="487" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="576.5" y="482" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>semi_exists_self at 64MB: 11×</title></rect>
-<circle cx="591.3" cy="487" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>semi_exists_self at 4GB: 12× (PostgreSQL 121 ms, pg_sift 9.92 ms)</title></circle>
-<text x="603.3" y="492" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">12×</text>
-<text x="22" y="522" font-size="13" text-anchor="start" fill="#e6edf3">grouping_sets_report</text>
-<line x1="534.6" y1="517" x2="532.3" y2="517" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="529.6" y="512" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>grouping_sets_report at 64MB: 6.9×</title></rect>
-<circle cx="532.3" cy="517" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>grouping_sets_report at 4GB: 6.8× (PostgreSQL 190 ms, pg_sift 28.2 ms)</title></circle>
-<text x="546.6" y="522" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">6.8×</text>
+<text x="22" y="492" font-size="13" text-anchor="start" fill="#e6edf3">topn_page_totals</text>
+<line x1="638" y1="487" x2="648.5" y2="487" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="633" y="482" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_page_totals at 64MB: 19×</title></rect>
+<circle cx="648.5" cy="487" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>topn_page_totals at 4GB: 22× (PostgreSQL 77.2 ms, pg_sift 3.57 ms)</title></circle>
+<text x="660.5" y="492" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">22×</text>
+<text x="22" y="522" font-size="13" text-anchor="start" fill="#e6edf3">window_json_report</text>
+<line x1="639.2" y1="517" x2="633.1" y2="517" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="634.2" y="512" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>window_json_report at 64MB: 20×</title></rect>
+<circle cx="633.1" cy="517" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>window_json_report at 4GB: 19× (PostgreSQL 190 ms, pg_sift 10.3 ms)</title></circle>
+<text x="651.2" y="522" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">19×</text>
 <rect x="14" y="532" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="552" font-size="13" text-anchor="start" fill="#e6edf3">two_level_spend</text>
-<line x1="497.2" y1="547" x2="493.1" y2="547" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="492.2" y="542" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>two_level_spend at 64MB: 4.8×</title></rect>
-<circle cx="493.1" cy="547" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>two_level_spend at 4GB: 4.6× (PostgreSQL 403 ms, pg_sift 88.4 ms)</title></circle>
-<text x="509.2" y="552" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">4.6×</text>
-<text x="22" y="582" font-size="13" text-anchor="start" fill="#e6edf3">anti_not_in_self</text>
-<line x1="469.4" y1="577" x2="474" y2="577" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="464.4" y="572" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>anti_not_in_self at 64MB: 3.6×</title></rect>
-<circle cx="474" cy="577" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>anti_not_in_self at 4GB: 3.8× (PostgreSQL 134 ms, pg_sift 35.5 ms)</title></circle>
-<text x="486" y="582" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">3.8×</text>
+<text x="22" y="552" font-size="13" text-anchor="start" fill="#e6edf3">lateral_first_row</text>
+<line x1="606.3" y1="547" x2="598.2" y2="547" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="601.3" y="542" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>lateral_first_row at 64MB: 14×</title></rect>
+<circle cx="598.2" cy="547" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>lateral_first_row at 4GB: 13× (PostgreSQL 275 ms, pg_sift 21.1 ms)</title></circle>
+<text x="618.3" y="552" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">13×</text>
+<text x="22" y="582" font-size="13" text-anchor="start" fill="#e6edf3">semi_exists_self</text>
+<line x1="581.5" y1="577" x2="591.3" y2="577" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="576.5" y="572" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>semi_exists_self at 64MB: 11×</title></rect>
+<circle cx="591.3" cy="577" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>semi_exists_self at 4GB: 12× (PostgreSQL 121 ms, pg_sift 9.92 ms)</title></circle>
+<text x="603.3" y="582" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">12×</text>
 <rect x="14" y="592" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="612" font-size="13" text-anchor="start" fill="#e6edf3">cte_series_arms</text>
-<line x1="439.9" y1="607" x2="451.2" y2="607" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="434.9" y="602" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_series_arms at 64MB: 2.7×</title></rect>
-<circle cx="451.2" cy="607" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_series_arms at 4GB: 3.0× (PostgreSQL 226 ms, pg_sift 75.3 ms)</title></circle>
-<text x="463.2" y="612" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">3.0×</text>
-<text x="22" y="642" font-size="13" text-anchor="start" fill="#e6edf3">group_by_id_top</text>
-<line x1="425.2" y1="637" x2="414.3" y2="637" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="420.2" y="632" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>group_by_id_top at 64MB: 2.3×</title></rect>
-<circle cx="414.3" cy="637" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>group_by_id_top at 4GB: 2.1× (PostgreSQL 403 ms, pg_sift 195 ms)</title></circle>
-<text x="437.2" y="642" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">2.1×</text>
+<text x="22" y="612" font-size="13" text-anchor="start" fill="#e6edf3">grouping_sets_report</text>
+<line x1="534.6" y1="607" x2="532.3" y2="607" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="529.6" y="602" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>grouping_sets_report at 64MB: 6.9×</title></rect>
+<circle cx="532.3" cy="607" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>grouping_sets_report at 4GB: 6.8× (PostgreSQL 190 ms, pg_sift 28.2 ms)</title></circle>
+<text x="546.6" y="612" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">6.8×</text>
+<text x="22" y="642" font-size="13" text-anchor="start" fill="#e6edf3">two_level_spend</text>
+<line x1="497.2" y1="637" x2="493.1" y2="637" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="492.2" y="632" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>two_level_spend at 64MB: 4.8×</title></rect>
+<circle cx="493.1" cy="637" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>two_level_spend at 4GB: 4.6× (PostgreSQL 403 ms, pg_sift 88.4 ms)</title></circle>
+<text x="509.2" y="642" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">4.6×</text>
 <rect x="14" y="652" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="672" font-size="13" text-anchor="start" fill="#e6edf3">keyset_page</text>
-<line x1="315" y1="667" x2="300" y2="667" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="310" y="662" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keyset_page at 64MB: 0.77×</title></rect>
-<circle cx="300" cy="667" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keyset_page at 4GB: 0.66× (PostgreSQL 0.13 ms, pg_sift 0.197 ms)</title></circle>
-<text x="327" y="672" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.66×</text>
-<text x="22" y="702" font-size="13" text-anchor="start" fill="#e6edf3">point_agg_id</text>
-<line x1="283.4" y1="697" x2="295" y2="697" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="278.4" y="692" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_id at 64MB: 0.56×</title></rect>
-<circle cx="295" cy="697" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_id at 4GB: 0.63× (PostgreSQL 0.059 ms, pg_sift 0.094 ms)</title></circle>
-<text x="307" y="702" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.63×</text>
+<text x="22" y="672" font-size="13" text-anchor="start" fill="#e6edf3">anti_not_in_self</text>
+<line x1="469.4" y1="667" x2="474" y2="667" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="464.4" y="662" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>anti_not_in_self at 64MB: 3.6×</title></rect>
+<circle cx="474" cy="667" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>anti_not_in_self at 4GB: 3.8× (PostgreSQL 134 ms, pg_sift 35.5 ms)</title></circle>
+<text x="486" y="672" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">3.8×</text>
+<text x="22" y="702" font-size="13" text-anchor="start" fill="#e6edf3">cte_series_arms</text>
+<line x1="439.9" y1="697" x2="451.2" y2="697" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="434.9" y="692" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_series_arms at 64MB: 2.7×</title></rect>
+<circle cx="451.2" cy="697" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>cte_series_arms at 4GB: 3.0× (PostgreSQL 226 ms, pg_sift 75.3 ms)</title></circle>
+<text x="463.2" y="702" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">3.0×</text>
 <rect x="14" y="712" width="972" height="30" fill="#21262d" rx="4"/>
-<text x="22" y="732" font-size="13" text-anchor="start" fill="#e6edf3">bulk_copy_wal</text>
-<line x1="284.8" y1="727" x2="273.6" y2="727" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
-<rect x="279.8" y="722" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal at 64MB: 0.57×</title></rect>
-<circle cx="273.6" cy="727" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal at 4GB: 0.51× (PostgreSQL 853 ms, pg_sift 1,685 ms)</title></circle>
-<text x="296.8" y="732" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.51×</text>
-<rect x="19.5" y="757.5" width="9" height="9" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"></rect>
-<text x="36" y="766" font-size="12" text-anchor="start" fill="#e6edf3">work_mem 64MB</text>
-<circle cx="180" cy="762" r="4.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"></circle>
-<text x="192" y="766" font-size="12" text-anchor="start" fill="#e6edf3">work_mem 4GB</text>
-<text x="20" y="792" font-size="12" text-anchor="start" fill="#9198a1">Data: docs/results/cases.tsv and cases-wm4g.tsv, 2026-10-23, AMD Ryzen 9 5900XT 16-Core Processor; 1,000,000 orders, one backend.</text>
+<text x="22" y="732" font-size="13" text-anchor="start" fill="#e6edf3">group_by_id_top</text>
+<line x1="425.2" y1="727" x2="414.3" y2="727" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="420.2" y="722" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>group_by_id_top at 64MB: 2.3×</title></rect>
+<circle cx="414.3" cy="727" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>group_by_id_top at 4GB: 2.1× (PostgreSQL 403 ms, pg_sift 195 ms)</title></circle>
+<text x="437.2" y="732" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">2.1×</text>
+<text x="22" y="762" font-size="13" text-anchor="start" fill="#e6edf3">keyset_page</text>
+<line x1="315" y1="757" x2="300" y2="757" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="310" y="752" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keyset_page at 64MB: 0.77×</title></rect>
+<circle cx="300" cy="757" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>keyset_page at 4GB: 0.66× (PostgreSQL 0.13 ms, pg_sift 0.197 ms)</title></circle>
+<text x="327" y="762" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.66×</text>
+<rect x="14" y="772" width="972" height="30" fill="#21262d" rx="4"/>
+<text x="22" y="792" font-size="13" text-anchor="start" fill="#e6edf3">point_agg_id</text>
+<line x1="283.4" y1="787" x2="295" y2="787" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="278.4" y="782" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_id at 64MB: 0.56×</title></rect>
+<circle cx="295" cy="787" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>point_agg_id at 4GB: 0.63× (PostgreSQL 0.059 ms, pg_sift 0.094 ms)</title></circle>
+<text x="307" y="792" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.63×</text>
+<text x="22" y="822" font-size="13" text-anchor="start" fill="#e6edf3">bulk_copy_wal</text>
+<line x1="284.8" y1="817" x2="273.6" y2="817" stroke="#9198a1" stroke-width="2" stroke-opacity="0.5"/>
+<rect x="279.8" y="812" width="10" height="10" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal at 64MB: 0.57×</title></rect>
+<circle cx="273.6" cy="817" r="5.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"><title>bulk_copy_wal at 4GB: 0.51× (PostgreSQL 853 ms, pg_sift 1,685 ms)</title></circle>
+<text x="296.8" y="822" font-size="12" text-anchor="start" fill="#e6edf3" font-weight="bold">0.51×</text>
+<rect x="19.5" y="847.5" width="9" height="9" fill="#8b949e" stroke="#0d1117" stroke-width="2" paint-order="stroke"></rect>
+<text x="36" y="856" font-size="12" text-anchor="start" fill="#e6edf3">work_mem 64MB</text>
+<circle cx="180" cy="852" r="4.5" fill="#3987e5" stroke="#0d1117" stroke-width="2" paint-order="stroke"></circle>
+<text x="192" y="856" font-size="12" text-anchor="start" fill="#e6edf3">work_mem 4GB</text>
+<text x="20" y="882" font-size="12" text-anchor="start" fill="#9198a1">Data: docs/results/cases.tsv and cases-wm4g.tsv, 2026-10-23, AMD Ryzen 9 5900XT 16-Core Processor; 1,000,000 orders, one backend.</text>
 </svg>
