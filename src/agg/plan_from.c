@@ -251,6 +251,14 @@ scan_from(Node *n, FromScan *f)
 		lj->kind = j->jointype == JOIN_SEMI ? SJ_SEMI : j->jointype == JOIN_ANTI ? SJ_ANTI : SJ_LEFT;
 		lj->rti = r->rtindex;
 		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+		/* an inner join the scan joins outer: what it says of the other tables only is the WHERE of the scan, not the ON of the outer join */
+		if (j->jointype == JOIN_INNER)
+			foreach_ptr(Node, q, list_copy(lj->quals))
+				if (!bms_is_member(r->rtindex, pull_varnos(NULL, q)))
+				{
+					lj->quals = list_delete_ptr(lj->quals, q);
+					f->quals = lappend(f->quals, q);
+				}
 		/* the WHERE of a pulled up sub-select that is the right side filters the table's rows before the join: more of the ON clause */
 		if (IsA(j->rarg, FromExpr) && ((FromExpr *) j->rarg)->quals)
 			lj->quals = list_concat(lj->quals, list_copy((List *) ((FromExpr *) j->rarg)->quals));
