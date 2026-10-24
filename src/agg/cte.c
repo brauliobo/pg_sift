@@ -390,12 +390,13 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
  * underpriced there as in the shared one, and the copies of the CTE body it reads in the inline plan decide the comparison.
  */
 static double
-shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, int nscans, double *charged)
+shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, int nscans, double *charged, int *unnesting)
 {
 	SharedWork	w = {stmt, names, NULL, NIL, 0, read_rows, 0, 0};
 
 	shared_work(&w, stmt->planTree, NULL);
 	*charged = 2 * nscans > w.unnesting ? w.charged : 0;
+	*unnesting = w.unnesting;
 	return w.cost + *charged;
 }
 
@@ -491,6 +492,7 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	const char *outer_variant;
 	double		read_rows,
 				charged;
+	int			unnesting;
 
 	memset(v, 0, sizeof(*v));
 	v->plain = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &v->plain_cx);
@@ -502,11 +504,11 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	sift_agg_arms(v->inlined->planTree, &v->scans);
 	sift_agg_arms_list(v->inlined->subplans, &v->scans);
-	v->work = shared_work_cost(v->plain, names, read_rows, v->scans.n, &charged);
+	v->work = shared_work_cost(v->plain, names, read_rows, v->scans.n, &charged, &unnesting);
 	/* the shared plan really costs what its aggregates were charged: the totals are compared with it */
 	v->plain_cost += charged;
-	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans",
-		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n);
+	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans, %.0f rows read, %d unnesting aggregates, charged %.2f",
+		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n, read_rows, unnesting, charged);
 }
 
 /*
