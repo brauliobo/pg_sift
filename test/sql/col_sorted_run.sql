@@ -179,7 +179,9 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
-SELECT * FROM sr_small('sr');
+-- every query starts workers, which a sanitizer build takes a second each to start: two keys and one limit
+SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs, array_agg(shape) FILTER (WHERE NOT same) AS different
+FROM sr_check('sr', ARRAY['k', 'sk'], ARRAY[300]);
 RESET max_parallel_workers_per_gather;
 
 -- the runs are decoded with checks: a cut run, a flag bit, an unknown kind, a row count that is not the unit's, counts that do not fit, a width that is not
