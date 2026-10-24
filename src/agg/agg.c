@@ -1097,6 +1097,7 @@ run_counters(AggExec *c, SiftSrcCounters *cc)
 		cc->recheck_units += c->par->cc.recheck_units;
 		cc->point_units += c->par->cc.point_units;
 		cc->point_rows += c->par->cc.point_rows;
+		cc->run_windows += c->par->cc.run_windows;
 	}
 }
 
@@ -1408,6 +1409,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 		ExplainPropertyInteger("Units From Point Directory", NULL, cc->point_units, es);
 		ExplainPropertyInteger("Rows From Point Directory", NULL, cc->point_rows, es);
 	}
+	if (cc->run_windows > 0)
+		ExplainPropertyInteger("Units Filtered By Sorted Run", NULL, cc->run_windows, es);
 	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
 	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
 	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);

@@ -897,6 +897,45 @@ def render_keycut(p):
     return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
 
 
+# ---------- a range on a leaf with a sorted run (order_columns): a unit takes the rows of the range from the run, not from a test of every row ----------
+WINDOW_COLS = ['ki', 'kd', 'kt', 'kn']
+
+
+def window_pred(r, e):
+    c = r.choice(WINDOW_COLS + WINDOW_COLS + ['kf', 'amount'])
+    if c == 'amount':
+        return f'{e}.amount {r.choice([">", "<", ">=", "<="])} {r.randrange(1000)}'
+    lit = KCUT_LITERALS[c]
+    form = r.randrange(8)
+    if form < 3:
+        return f'{e}.{c} >= {lit(r)} AND {e}.{c} < {lit(r)}'
+    if form == 3:
+        return f'{e}.{c} BETWEEN {lit(r)} AND {lit(r)}'
+    if form == 4:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)} AND {e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)} AND {e}.{c} <> {lit(r)}'
+    if form == 5:
+        return f'{e}.{c} = {lit(r)}'
+    if form == 6:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)}'
+    return f'{e}.{c} >= {lit(r)} AND {e}.{c} <= {lit(r)} AND {e}.ki IS NOT NULL'
+
+
+def gen_window(r, ctx):
+    form = r.choice(['agg', 'agg', 'agg', 'rows'])
+    where_ = [window_pred(r, 'e') for _ in range(r.choice([1, 1, 1, 2]))]
+    if form == 'agg':
+        ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(KCUT_KEY_EXPRS, r.choice([0, 0, 1, 2]))))
+        ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 5))))
+        return dict(table='kcut_w', form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    return dict(table='kcut_w', form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order='e.id', limit=r.choice([1, 5, 20, 100, 400]), offset=0)
+
+
+def render_window(p):
+    if p['form'] == 'agg':
+        return grouped(p, f"{p['table']} e"), True
+    return f"SELECT e.id, e.ki, e.kd, e.kt, e.kn, e.amount FROM {p['table']} e {where(p)} ORDER BY e.id", True
+
+
 # ---------- IS [NOT] NULL as a test of the NULL count of a unit's zone: units cut by it, answered from pre-aggregates, across soft deletes and restores ----------
 NZ_NULLABLE = ['deleted_at', 'seen_at', 'tag', 'score', 'kind', 'amount', 'val']
 
@@ -995,7 +1034,7 @@ FAMILIES = {
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
-    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3),
+    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1012,6 +1051,8 @@ def variants(r, fam):
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
+    if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
+        v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
@@ -1112,6 +1153,29 @@ def dml_kcut(r, ctx):
     return [f'ANALYZE {t}']
 
 
+def dml_window(r, ctx):
+    """Statements on kcut_w, whose units keep a sorted run of the range leaves: updates that move rows in and out of a range, deletes, inserts and every way the units are written again."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 4:
+        c = r.choice(WINDOW_COLS)
+        return [f'UPDATE kcut_w SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e in (4, 5):
+        return [f'DELETE FROM kcut_w WHERE {ids}']
+    if e in (6, 7):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO kcut_w SELECT * FROM fz.gen_kcut({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 8:
+        return ['VACUUM kcut_w']
+    if e == 9:
+        return ["SELECT sift.col_promote('kcut_w_idx')"]
+    if e == 10:
+        return [r.choice(["SELECT sift.col_merge('kcut_w_idx', true)", 'REINDEX INDEX kcut_w_idx'])]
+    return ['ANALYZE kcut_w']
+
+
 def dml_nullzone(r, ctx):
     """Soft deletes and restores, NULLing and filling of the columns the family tests, inserts, deletes and VACUUM on nzf: units whose NULL count changes under the zones."""
     m = r.choice([13, 40, 97, 211])
@@ -1178,6 +1242,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rk = random.Random(seed * 104729 + 3)
     rn = random.Random(seed * 1299709 + 5)
     rx = random.Random(seed * 15485863 + 7)
+    rw = random.Random(seed * 32452843 + 11)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -1187,6 +1252,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
         if not only or 'keycut' in only:
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
+        if not only or 'window' in only:
+            st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)

@@ -393,6 +393,13 @@ typedef struct SiftColPred
 	const SiftColValue *vals;
 } SiftColPred;
 
+/* A bound of a range: the two of one leaf are tested together (a range found in a sorted run, scan_filter.c) */
+static inline bool
+sift_col_pred_is_bound(const SiftColPred *p)
+{
+	return p->op == SIFT_COLOP_LT || p->op == SIFT_COLOP_LE || p->op == SIFT_COLOP_GT || p->op == SIFT_COLOP_GE;
+}
+
 /* Same-element predicates: a row is selected when some element of the group satisfies every predicate (preds are on children of group); negate: when none does */
 typedef struct SiftColGroupPred
 {
@@ -475,6 +482,7 @@ typedef struct SiftColCounters
 	int64		rows_scanned;	/* rows of the units visited */
 	int64		point_units;	/* units narrowed to the rows a point directory lists (SIFT_COLO_POINT_ROWS) */
 	int64		point_rows;		/* and the rows they were narrowed to */
+	int64		run_windows;	/* units whose range on a leaf with a sorted run was answered by the run (sift_col_filter) */
 	int64		rows_vetted;	/* rows checked against the heap (page not all-visible) */
 	int64		heap_pages;
 	int64		bytes_decoded;

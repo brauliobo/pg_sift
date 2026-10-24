@@ -235,34 +235,55 @@ clear_nan_rows(ColSource *src, const SiftColPred *p, SiftColSel *sel)
 	sift_col_sel_count(sel);
 }
 
-/* the filters of the source on the unit as stored, the most selective first */
+/*
+ * The filters of the source on the unit as stored, the most selective first. The two bounds of a range on one leaf are one filter, as selective as the
+ * rows between them, and go to sift_col_filter together: a unit with a sorted run for the leaf takes the range from the run.
+ */
 static void
 filter_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 {
 	ColSource  *src = arg;
+	SiftColPred	pair[SIFT_COLSRC_MAX_FILTERS][2];
+	int			np[SIFT_COLSRC_MAX_FILTERS];
 	double		share[SIFT_COLSRC_MAX_FILTERS];
 	int			order[SIFT_COLSRC_MAX_FILTERS];
+	bool		used[SIFT_COLSRC_MAX_FILTERS] = {false};
+	int			nf = 0;
 
 	for (int i = 0; i < src->nflt; i++)
 	{
-		int			j = i;
+		int			j;
 
-		share[i] = filter_share(src, &src->fpred[i]);
-		for (; j > 0 && share[order[j - 1]] > share[i]; j--)
+		if (used[i])
+			continue;
+		pair[nf][0] = src->fpred[i];
+		np[nf] = 1;
+		share[nf] = filter_share(src, &src->fpred[i]);
+		if (sift_col_pred_is_bound(&src->fpred[i]))
+			for (j = i + 1; j < src->nflt; j++)
+				if (!used[j] && src->fpred[j].col == src->fpred[i].col && sift_col_pred_is_bound(&src->fpred[j]))
+				{
+					pair[nf][np[nf]++] = src->fpred[j];
+					share[nf] = Max(0.0, share[nf] + filter_share(src, &src->fpred[j]) - 1.0);
+					used[j] = true;
+					break;
+				}
+		for (j = nf; j > 0 && share[order[j - 1]] > share[nf]; j--)
 			order[j] = order[j - 1];
-		order[j] = i;
+		order[j] = nf++;
 	}
-	for (int i = 0; i < src->nflt; i++)
+	for (int i = 0; i < nf; i++)
 	{
-		const SiftColPred *p = &src->fpred[order[i]];
+		const SiftColPred *p = pair[order[i]];
 		SiftColZone z;
 
 		sift_col_zone(cu, p->col, &z);
 		z.has_ovf &= !src->tol[p->col];
-		if (!sift_col_filter(cu, p, 1, sel))
+		if (!sift_col_filter(cu, p, np[order[i]], sel))
 			break;
 		if (z.has_ovf && sift_colsrc_nan_leaf(&src->lay->leaf[p->col]))
-			clear_nan_rows(src, p, sel);
+			for (int k = 0; k < np[order[i]]; k++)
+				clear_nan_rows(src, &p[k], sel);
 	}
 }
 
@@ -345,6 +366,7 @@ col_counters(const void *impl, SiftSrcCounters *c)
 	c->recheck_units = ((const ColSource *) impl)->rck ? ((const ColSource *) impl)->rck->nunits : 0;
 	c->point_units = cc->point_units;
 	c->point_rows = cc->point_rows;
+	c->run_windows = cc->run_windows;
 }
 
 #endif							/* __has_include("col/col.h") */

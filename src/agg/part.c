@@ -1052,6 +1052,7 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->recheck_units += pc.recheck_units;
 		c->point_units += pc.point_units;
 		c->point_rows += pc.point_rows;
+		c->run_windows += pc.run_windows;
 	}
 }
 

@@ -259,6 +259,7 @@ extern uint32 sift_cseg_set_kinds(SiftColSegment *seg, int col);
  * [pos, pos + cnt) of it as the ordinals of rows (sift_cseg_run_read), each checked to be a row of the unit.
  */
 extern bool sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at);
+extern void sift_cseg_run_bytes_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint8 *dst);
 extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out);
 /* The head of the run (r->heads > 0): sift_crun_head_counts entries, the low end first, then the high end from the last of the run */
 extern void sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHeadEnt *out);

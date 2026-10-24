@@ -35,9 +35,141 @@ range_any(const uint64 *bits, uint32 lo, uint32 hi)
 	return false;
 }
 
-/* Narrows sel (one bit per value of the chunk: rows, or the elements of a group) by the predicate; rows that overflowed stay, accumulated into *ovf when given */
+/*
+ * A range on a leaf with a sorted run in the unit: the run lists the rows by key, so the rows with a key in the range are
+ * one stretch of it, found by two binary searches, and the chunk is decoded at a few dozen rows and not tested at every row. Worth it when the stretch is
+ * short (an eighth of the rows at most, RUN_WINDOW_SHARE) and the unit big enough for the search to cost less than the test; the search of the second
+ * bound stops as soon as the stretch is known to be longer.
+ */
+#define RUN_WINDOW_MIN_ROWS		1024
+#define RUN_WINDOW_SHARE			8			/* the window is at most 1 / 8 of the rows of the unit */
+#define RUN_WINDOW_MIN_SELECTED	64			/* a selection of fewer rows is tested row by row: the decode of that many rows costs about what the search does */
+#define RUN_WINDOW_ZONE_SHARE	4			/* a range that covers more than 1 / 4 of the span of the unit's zone, if the keys were even, has no short window: the search is not tried */
+
+typedef struct RunProbe
+{
+	const SiftCChunk *c;
+	SiftCc	   *cc;				/* the codec of an encoded chunk, opened once for the probes */
+	const uint8 *ents;			/* the entries of the run, width bytes each; NULL when the keys ascend with the ordinals (SIFT_CRUN_IDENT) */
+	uint8		width;
+	uint32		nvals;			/* the rows with a value: the first entries of the run */
+} RunProbe;
+
+static int64
+run_key(const RunProbe *rp, uint32 pos)
+{
+	uint32		ord = pos;
+	int64		k;
+
+	if (rp->ents != NULL)
+	{
+		ord = 0;
+		for (uint32 b = 0; b < rp->width; b++)
+			ord |= (uint32) rp->ents[(uint64) pos * rp->width + b] << (8 * b);
+		if (ord >= rp->c->n)
+			corrupt("The sorted run holds a row past the end of its unit.");
+	}
+	if (rp->cc != NULL)
+		return sift_cc_get(rp->cc, ord);
+	sift_cchunk_decode_sel(rp->c, &ord, 1, &k);
+	return k;
+}
+
+/* The first position of the run from `from` whose key is above key (upper) or not below it */
+static uint32
+run_bound(const RunProbe *rp, uint32 from, int64 key, bool upper)
+{
+	uint32		lo = from,
+				hi = rp->nvals;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+		int64		k = run_key(rp, mid);
+
+		if (upper ? k <= key : k < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/*
+ * Narrows sel to the rows of the run with a key in [t->lo, t->hi]. False, with sel untouched, when the unit has no run for the leaf, the chunk has
+ * rows that overflowed (they stay selected for the recheck, and the run does not list them), or the stretch is longer than the limit.
+ */
 static bool
-chunk_filter(ColUnit *cu, const SiftColPred *p, SiftColSel *sel, uint64 *ovf)
+run_window(ColUnit *cu, int col, const SiftCTest *t, const SiftCChunk *c, SiftColSel *sel)
+{
+	RunProbe	rp = {c, NULL, NULL, 0, 0};
+	uint32		first,
+				last,
+			   *ords;
+	uint64	   *keep;
+	uint8	   *buf = NULL;
+	bool		ok = false;
+	SiftCZone	z;
+
+	if (cu->seg == NULL || t->kind != SIFT_CT_RANGE || cu->src->schema->cols[col].store != SIFT_COLS_INT || c->ovf != NULL || c->n < RUN_WINDOW_MIN_ROWS ||
+		sift_col_sel_count(sel) < RUN_WINDOW_MIN_SELECTED)
+		return false;
+	sift_cseg_zone(cu->seg, col, cu->u, &z);
+	if (!(z.flags & SIFT_COLZ_INLINE) && z.max > z.min &&
+		((double) Min(t->hi, z.max) - (double) Max(t->lo, z.min)) * RUN_WINDOW_ZONE_SHARE > (double) z.max - (double) z.min)
+		return false;
+	if (!cu->run.known || cu->run.col != col)
+	{
+		cu->run.col = col;
+		cu->run.known = true;
+		cu->run.found = sift_cseg_run(cu->seg, col, cu->u, &cu->run.r, &cu->run.at);
+	}
+	if (!cu->run.found || cu->run.r.n != c->n)
+		return false;
+	rp.nvals = cu->run.r.nvals;
+	rp.width = cu->run.r.width;
+	if (cu->run.r.kind == SIFT_CRUN_ORD)
+	{
+		buf = palloc((Size) rp.nvals * rp.width + 1);
+		sift_cseg_run_bytes_read(cu->seg, cu->run.at, &cu->run.r, 0, rp.nvals, buf);
+		rp.ents = buf;
+	}
+	if (c->enc == SIFT_COLENC_CC)
+		rp.cc = sift_cc_open_rows(CurrentMemoryContext, c->payload, c->paylen, false, c->n);
+	first = run_bound(&rp, 0, t->lo, false);
+	if (first + c->n / RUN_WINDOW_SHARE >= rp.nvals || run_key(&rp, first + c->n / RUN_WINDOW_SHARE) > t->hi)
+		last = run_bound(&rp, first, t->hi, true);
+	else
+		last = rp.nvals;			/* more rows than the limit: no need to know how many */
+	if (rp.cc != NULL)
+		sift_cc_close(rp.cc);
+	if (last - first <= c->n / RUN_WINDOW_SHARE)
+	{
+		keep = palloc0(sel->nwords * sizeof(uint64));
+		ords = palloc(Max(last - first, 1) * sizeof(uint32));
+		if (!sift_crun_entries(&cu->run.r, buf ? buf + (uint64) first * rp.width : NULL, first, last - first, ords))
+			corrupt("The sorted run entries are not rows of their unit.");
+		for (uint32 k = 0; k < last - first; k++)
+			if (sift_col_bit_test(sel->bits, ords[k]))
+				sift_col_bit_set(keep, ords[k]);
+		memcpy(sel->bits, keep, sel->nwords * sizeof(uint64));
+		pfree(ords);
+		pfree(keep);
+		cu->src->cnt.run_windows++;
+		ok = true;
+	}
+	if (buf)
+		pfree(buf);
+	return ok;
+}
+
+/*
+ * Narrows sel (one bit per value of the chunk: rows, or the elements of a group) by the predicate; rows that overflowed stay, accumulated into *ovf when given.
+ * p2 is the other bound of a range on the leaf, when the caller has it: a unit with a sorted run takes the rows of the range from the run (run_window), and
+ * *merged says p2 was applied with p.
+ */
+static bool
+chunk_filter(ColUnit *cu, const SiftColPred *p, const SiftColPred *p2, SiftColSel *sel, uint64 *ovf, bool *merged)
 {
 	const SiftColDef *def = &cu->src->schema->cols[p->col];
 	SiftCTest	t;
@@ -69,7 +201,29 @@ chunk_filter(ColUnit *cu, const SiftColPred *p, SiftColSel *sel, uint64 *ovf)
 			save = palloc(sel->nwords * sizeof(uint64));
 			memcpy(save, sel->bits, sel->nwords * sizeof(uint64));
 		}
-		sift_ctest_run(&t, &c, sel->bits);
+		SiftCTest	m = t;
+		bool		window = false;
+
+		if (t.kind == SIFT_CT_RANGE && cu->seg != NULL && !c.ovf)
+		{
+			if (p2 != NULL && !inl)
+			{
+				SiftCTest	t2;
+
+				make_test(cu->src, def, unit_dict(cu, p2->col), p2, &t2);
+				if (t2.kind == SIFT_CT_RANGE)
+				{
+					m.lo = Max(t.lo, t2.lo);
+					m.hi = Min(t.hi, t2.hi);
+					window = run_window(cu, p->col, &m, &c, sel);
+					*merged = window;
+				}
+			}
+			else if (p->op == SIFT_COLOP_EQ)
+				window = run_window(cu, p->col, &m, &c, sel);
+		}
+		if (!window)
+			sift_ctest_run(&t, &c, sel->bits);
 		if (c.ovf)
 			for (uint32 w = 0; w < (sel->n + 63) / 64; w++)
 			{
@@ -87,13 +241,35 @@ bool
 sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel)
 {
 	ColUnit    *cu = unit->priv;
+	uint64		taken = 0;			/* the predicates applied with the other bound of their range */
 
 	for (int i = 0; i < npreds; i++)
 	{
+		const SiftColPred *other = NULL;
+		bool		merged = false;
+		int			j = i + 1;
+
+		if (i < 64 && (taken >> i & 1))
+			continue;
 		SIFT_INVARIANT(cu->src->schema->cols[preds[i].col].parent < 0, "sift_col: leaf %d is an element column, use the group filters",
 					   preds[i].col);
-		if (!(sift_colw_is_wide_int(&cu->src->schema->cols[preds[i].col]) ? sift_colw_filter(unit, &preds[i], sel) : chunk_filter(cu, &preds[i], sel, NULL)))
+		if (sift_colw_is_wide_int(&cu->src->schema->cols[preds[i].col]))
+		{
+			if (!sift_colw_filter(unit, &preds[i], sel))
+				return false;
+			continue;
+		}
+		if (sift_col_pred_is_bound(&preds[i]))
+			for (; j < Min(npreds, 64); j++)
+				if (preds[j].col == preds[i].col && sift_col_pred_is_bound(&preds[j]))
+				{
+					other = &preds[j];
+					break;
+				}
+		if (!chunk_filter(cu, &preds[i], other, sel, NULL, &merged))
 			return false;
+		if (merged)
+			taken |= UINT64_C(1) << j;
 	}
 	return sel->count > 0;
 }
@@ -118,7 +294,7 @@ sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int np
 bool
 sift_col_filter_lane(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 {
-	return chunk_filter(unit->priv, p, sel, NULL);
+	return chunk_filter(unit->priv, p, NULL, sel, NULL, &(bool) {false});
 }
 
 /*
@@ -270,7 +446,7 @@ group_elems_sel(ColUnit *cu, const SiftColGroupPred *gp, SiftColSel *el, uint64 
 	{
 		SIFT_INVARIANT(cu->src->schema->cols[gp->preds[i].col].parent == gp->group, "sift_col: leaf %d is not an element of group %d",
 					   gp->preds[i].col, gp->group);
-		if (!chunk_filter(cu, &gp->preds[i], el, *unknown))
+		if (!chunk_filter(cu, &gp->preds[i], NULL, el, *unknown, &(bool) {false}))
 			break;
 	}
 }

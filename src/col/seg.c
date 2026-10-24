@@ -1750,6 +1750,13 @@ sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHead
 	seg_read(seg, at + sift_crun_bytes(r->kind, r->n), (nlo + nhi) * sizeof(SiftCHeadEnt), out);
 }
 
+/* The raw entry bytes [pos, pos + cnt) of an ORD run (width bytes each), for the caller's own search */
+void
+sift_cseg_run_bytes_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint8 *dst)
+{
+	seg_read(seg, at + SIFT_CRUN_HDR + (uint64) pos * r->width, (Size) cnt * r->width, dst);
+}
+
 void
 sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out)
 {

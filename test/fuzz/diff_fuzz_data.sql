@@ -138,6 +138,11 @@ CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount
 CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn', key_cut_rows = 64);
 CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki', key_cut_rows = 64);
 
+-- units with a sorted run of the range leaves (order_columns): a range is answered from the run when it is short; a unit is 256 pages, so the rows of a few thousand fill one unit of more than 1,024 rows
+CREATE TABLE kcut_w (LIKE kcut_a) WITH (autovacuum_enabled = false);
+INSERT INTO kcut_w SELECT * FROM fz.gen_kcut(1, @ROWS@, 60);
+CREATE INDEX kcut_w_idx ON kcut_w USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (order_columns = 'ki, kd, kt, kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+
 -- NULL-heavy columns in runs of units (a unit is 256 pages, a row of 600 bytes a page): soft deletes (deleted_at is NULL in most rows and set in some runs and rows),
 -- a date that is NULL for the first rows, a text and a numeric (NaN, NULLs) that are NULL in whole units and in single rows
 CREATE TABLE nzf (id int, org int, amount int, val float8, kind text, deleted_at timestamptz, seen_at date, tag text, score numeric(10,2), pad text) WITH (autovacuum_enabled = false, fillfactor = 10);

@@ -689,6 +689,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->cc.recheck_units += d->cc.recheck_units;
 		par->cc.point_units += d->cc.point_units;
 		par->cc.point_rows += d->cc.point_rows;
+		par->cc.run_windows += d->cc.run_windows;
 		par->done[w] = true;
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
