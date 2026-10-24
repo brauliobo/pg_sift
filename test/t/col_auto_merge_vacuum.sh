@@ -22,6 +22,9 @@ vacuumed() { sql av "SELECT coalesce(extract(epoch FROM last_vacuum)::text, '-')
 # the scan the churn slows down; the rows it checked in the heap
 SCAN="SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind"
 vetted() { sql av "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.*Rows Vetted By Heap: //p'; }
+# until a scan checks few rows: a VACUUM leaves a page not all-visible when it could not take its cleanup lock or the commit of its rows was not flushed yet
+# (the hint bits wait for it), and the scan that finds them asks for the next, a few naptimes later
+cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 10000 ]] && return 0; sleep 0.2; done; return 1; }
 groups() { sql av "SET sift.enable_agg = $1" "SET max_parallel_workers_per_gather = 0" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM ($SCAN) x" | tail -1; }
 # until the table is vacuumed after $1 (what vacuumed printed then), asking with a scan every so often
 await_vacuum() {
@@ -48,7 +51,7 @@ check "off: and the table is not vacuumed" stays "$T0"
 # 2. on
 sql av "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
 check "on: the table is vacuumed after a scan that checked its rows" await_vacuum "$T0"
-check "on: the next scan checks few rows" test "$(vetted)" -lt 10000
+check "on: the next scan checks few rows" cheap
 check "on: and answers as the heap does" test "$(groups on)" == "$(groups off)"
 
 # 3. a few rows changed: fewer than the 50 under which a table is clean
@@ -67,7 +70,6 @@ check "CREATE INDEX on a table with autovacuum_enabled = false: a notice" test "
 	"CREATE INDEX facts_off_idx ON facts_off USING sift_col (id)" 2>&1 | grep -c 'does not vacuum')" == 1
 # 5. CLUSTER and VACUUM FULL write a new heap (an empty visibility map) and rebuild the index: the scan checks every row in the heap until the worker, which that
 # scan asked, has vacuumed the table. No VACUUM by hand.
-cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 10000 ]] && return 0; sleep 0.2; done; return 1; }
 repaired() { cheap && [[ $(groups on) == "$(groups off)" ]]; }
 sql av "CREATE INDEX facts_key ON facts (key)" >/dev/null
 for rebuild in "CLUSTER facts USING facts_key" "VACUUM FULL facts"; do
