@@ -22,6 +22,10 @@ on:
         description: Also run the full tier (make check-full)
         type: boolean
         default: false
+      deep:
+        description: The full tier at its long sizes (the nightly run has them); without it a job of the full tier fits 45 minutes and the run 75
+        type: boolean
+        default: false
       versions:
         description: 'The PostgreSQL majors of the quick tier, e.g. 18 for a branch with a large diff'
         default: '17 18 19'
@@ -134,7 +138,7 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && 350 || 90 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 350 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -218,6 +222,7 @@ jobs:
           SIFT_CI_JOBS: ${{ matrix.only }}
           SIFT_CI_NO_HARNESS: ${{ matrix.tier == 'fast' && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+          SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
 
       - name: Keep the older releases
         if: ${{ !cancelled() && steps.oldlib-cache.outcome == 'success' && steps.oldlib-cache.outputs.cache-hit != 'true' }}
