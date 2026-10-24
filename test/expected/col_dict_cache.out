@@ -213,6 +213,32 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
 
 RESET sift.test_limits;
 DROP TABLE dc;
+-- a dictionary of thousands of strings is searched in the stream, and parsed and kept once the backend has tested it often; when the cache cannot hold it that
+-- parse is not repeated for every test (it costs thousands of tests of the stream), and the answers do not change
+CREATE TABLE dl (id int, s text);
+INSERT INTO dl SELECT g, 'key ' || g FROM generate_series(1, 20000) g;
+CREATE INDEX dl_idx ON dl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's');
+SET sift.test_limits = 'dict_cache_kb=1';
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+ reset 
+-------
+ t
+(1 row)
+
+SELECT sum(rows) AS rows, count(*) AS tests FROM generate_series(1, 100) l, LATERAL sift._test_col_counters('dl_idx', '1:eq:key ' || l * 7);
+ rows | tests 
+------+-------
+  100 |   100
+(1 row)
+
+SELECT loads <= 2 AS parsed_at_most_twice, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
+ parsed_at_most_twice | none_found 
+----------------------+------------
+ t                    | t
+(1 row)
+
+RESET sift.test_limits;
+DROP TABLE dl;
 -- the lengths of the lists of a unit are decoded once as well (integer elements: no dictionary is involved): the second scan finds them, the answers are the same
 CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO lc SELECT g, 1 + g % 50, jsonb_build_array(jsonb_build_object('qty', g % 7, 'price', g % 11), jsonb_build_object('qty', (g + 1) % 7, 'price', (g + 3) % 11)) FROM generate_series(1, 20000) g;
