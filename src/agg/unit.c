@@ -168,9 +168,7 @@ topn_leaf_vec(void *ex, int leaf)
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	int			leaf = sift_topn_leaf(ex->topn, 0);
-
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, leaf >= 0 ? get_vec(ex, leaf) : NULL, rmask, nrow, topn_leaf_vec, ex);
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, NULL, rmask, nrow, topn_leaf_vec, ex);
 }
 
 /* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */
