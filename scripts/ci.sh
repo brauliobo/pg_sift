@@ -172,8 +172,8 @@ if [[ $MODE == --selftest ]]; then
 				if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
 			done
 			[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
-			[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --scenario-slices "* && " ${mine[*]} " != *" --corpus "* ]] ||
-				{ echo "FAIL: $id runs a subset of the variants, scenarios or queries"; bad=1; }
+			[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
+				{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
 			[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
 			rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
 			[[ ${BASH_REMATCH[2]} == "$COL_SLICES" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $COL_SLICES"; bad=1; }
@@ -188,6 +188,13 @@ if [[ $MODE == --selftest ]]; then
 			[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
 			[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
 		fi
+	done
+	# the lean full tier before PostgreSQL 18 runs half of the slices (the first and second of 4), the deep one all of them
+	for pg in 16 17; do
+		for deep in '' 1; do
+			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
+			(( n == (deep ? COL_SLICES : COL_SLICES / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
+		done
 	done
 	grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
@@ -309,19 +316,27 @@ SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
 # shellcheck disable=SC2046,SC2086  # the names are words
 if [[ $MODE == full ]]; then
-	job soak soak 1 "$S/soak.sh" --duration 600 --check-every 30
-	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration 120 --rows 20000 --clients 2 --check-every 20
-	job soak-col soak-col 1 "$S/colsoak.sh" --duration 300
-	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 8000 --queries 40 --rounds 2 --minimize 1
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 5000 --queries 150 --rounds 4
-	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
+	# The full tier has two sizes. The lean one (every dispatch and the run that is the evidence of a release) fits a job in 45 minutes and the run in 75 on the hosted
+	# runners: the same jobs, the same checks, shorter loops, a smaller corpus, fixed seeds. The deep one (SIFT_CI_DEEP=1: the nightly run, or a dispatch with deep) has the
+	# sizes of before: lean_or_deep LEAN DEEP
+	lean_or_deep() { [[ -n ${SIFT_CI_DEEP:-} ]] && echo "$2" || echo "$1"; }
+	job soak soak 1 "$S/soak.sh" --duration "$(lean_or_deep 180 600)" --check-every 30
+	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
+	job soak-col soak-col 1 "$S/colsoak.sh" --duration "$(lean_or_deep 120 300)"
+	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs "$(lean_or_deep 4000 8000)" --queries 40 --rounds "$(lean_or_deep 1 2)" --minimize 1
+	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 4000 5000)" --queries "$(lean_or_deep 100 150)" --rounds "$(lean_or_deep 3 4)"
+	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 2500 3000)" --queries "$(lean_or_deep 40 60)" --rounds "$(lean_or_deep 1 2)"
 	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
 	# the two differential tests of the column index take 160 minutes of one lane each on PostgreSQL 18, and more on 17, longer than the rest of the tier together
 	# in four lanes: they are cut into COL_SLICES disjoint slices of the corpus (coldiff.sh --slice K/N) that the lanes and the shards take like any other job. Every
 	# slice runs every variant and scenario on its share of the queries (--selftest proves the slices are the whole corpus, each query once)
+	# Lean: each scenario runs a third of the scenario queries (the slice moves from one heap state to the next, so every query meets several states and every state
+	# meets queries of every kind), and before PostgreSQL 18 half the corpus (slices 1 and 2 of 4, every other query in name order: the corpus is the same on every major,
+	# the other half runs on 18)
 	for (( k = 1; k <= COL_SLICES; k++ )); do
-		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500
-		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500
+		(( PG_MAJOR >= 18 || k <= COL_SLICES / 2 )) || [[ -n ${SIFT_CI_DEEP:-} ]] || continue
+		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --suite analytics --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
@@ -329,13 +344,13 @@ if [[ $MODE == full ]]; then
 	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
-	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-12 --queries 150 --rows 6000 --leader-on
+	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"
 	# the share of the variant matrices the pushdown answers (docs/results/coverage-pct.tsv): the full tier recomputes the committed counts, the quick tier is a smoke of a third of the variants
 	job coverage-pct coverage-pct 1 "$S/coverage.sh" --pct --verify
-	job fuzz fuzz 1 "$S/fuzz.sh"
+	job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
 	flavor_job hardened hardened "$S/hardened.sh"
 	job static static 0 "$S/static.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
