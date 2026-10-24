@@ -759,6 +759,14 @@ extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint
 extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
 /* The zone of leaf col over every unit of the superblocks [sb_lo, sb_hi) as stored (a write buffer unit in the range makes it unbounded), from the segment headers: no unit is opened. Returns the units counted */
 extern uint32 sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+extern uint32 sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+typedef struct SiftColWalkStamp
+{
+	Oid			index;
+	uint32		file;
+	uint32		version;
+} SiftColWalkStamp;
+extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 /* Is every page of the unit all-visible: sift_col_vet has nothing to check */
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);
