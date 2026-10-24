@@ -499,7 +499,8 @@ sift_cseg_verify_super(SiftColSegment *seg)
 			const uint8 *rec = sift_cseg_unit(seg, k * fan + i, &ulen);
 			const uint8 *cube;
 
-			if (!sift_cunit_parse(rec, ulen, sc, &v) || memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0)
+			if (!sift_cunit_parse(rec, ulen, sc, &v) ||
+				(v.keyed ? (pm[i * SIFT_PAGEMASK_WORDS] != ((uint64) v.kblk1 << 32 | v.kblk0)) : memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0))
 				corrupt(seg, "The page mask of unit %u in superunit %u is not the unit's.", k * fan + i, k);
 			cube = sift_cseg_cube(seg, k * fan + i, &len[i]);
 			blob[i] = len[i] ? memcpy(palloc(len[i]), cube, len[i]) : NULL;

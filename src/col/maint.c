@@ -135,7 +135,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		if (sift_col_key_cut(sift_col_rel(index)))
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
-			sift_colw_set_keyed(w);
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
 			sift_colk_write(w, batches, nb, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index), cx);
 		}
 		else
@@ -465,7 +465,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			w = sift_colw_begin(wt, sift_store_new_gen(index), schema, policy, format, pcx);
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
-			sift_colw_set_keyed(w);
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
 			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index),
 							maintenance_work_mem, pcx);
 		}

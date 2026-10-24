@@ -372,6 +372,8 @@ _Static_assert(SIFT_SB_PAGES <= 256, "SiftCUnitView.page holds page numbers in a
 
 /* false when inconsistent (the caller raises ERRCODE_INDEX_CORRUPTED); rec must stay valid and be 8-byte aligned */
 extern bool sift_cunit_parse(const uint8 *rec, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);
+extern uint32 sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols);
+
 /* Decodes the TID directory of a key-cut unit parsed by sift_cunit_parse_head (errors on a damaged one); a no-op when it is decoded or the unit is not keyed */
 extern void sift_cunit_keyed_load(const SiftCUnitView *v);
 
