@@ -38,5 +38,6 @@ def queries():
 
 
 SIZES = [1562, 3125, 6250, 12500, 25000]
+GATE_SIZES = [1562, 2210, 3125, 4419, 6250]                 # the largest build of the gate: 100k rows of 5 kB (three tables), where 12,500 keys take 1 GB of heap and as much WAL
 CASES = [Case('arrival', SIZES, setup=setup, unit='keys', quick=2, per_size=True, native=False, queries=queries())]
-GATE = CASES
+GATE = [Case('arrival', GATE_SIZES, setup=setup, unit='keys', per_size=True, native=False, queries=queries())]

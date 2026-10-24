@@ -18,7 +18,7 @@ max_wal_senders = 0
 autovacuum = off
 shared_buffers = 128MB
 max_locks_per_transaction = 512
-max_wal_size = 1GB
+max_wal_size = 256MB
 sift.col_auto_merge = off
 extension_control_path = '$root$(pg_config --sharedir):\$system'
 dynamic_library_path = '$root$(pg_config --pkglibdir):\$libdir'"
@@ -29,6 +29,7 @@ out=$(PGHOST=$(dir sg)/sock PGPORT=$(port sg) PGUSER=postgres PGDATABASE=postgre
 	python3 "$REPO/bench/scaling/scaling.py" run --gate --reps 5 2>"$(dir sg)/scaling.err")
 echo "# $(grep -c '^SLOPE' <<<"$out") slope lines; the points are in $(dir sg)/scaling.err and the CSV below" >&2
 grep -v '^SLOPE\|^CHECK' <<<"$out" | sed 's/^/# /' >&2
+grep ': psql:' "$(dir sg)/scaling.err" | cut -c1-300 | sed 's/^/# /' >&2	# a case that failed says why in the log of the test
 
 lines=$(grep '^SLOPE .* sift ' <<<"$out")
 n=$(grep -c . <<<"$lines")
