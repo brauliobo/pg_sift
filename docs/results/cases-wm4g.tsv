@@ -66,3 +66,10 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	point_agg_id	forced	ms	0.199	0.184	0.298	15	6.07	Custom Scan (SiftAgg); Pushed Aggregates: sum(orders.amount), count(*)
 3.3	jsonb_each_member	sift	ms	10.027	9.058	13.549	15	6.07	Group Keys: kind; Pushed Aggregates: count(*), count(doc.metrics.m_a), avg(doc.metrics.m_a)
 3.3	jsonb_each_member	native	ms	351.711	332.026	372.703	15	6.07	Seq Scan on events
+3.4	keycut_customer_agg	sift	ms	0.357	0.301	0.709	15	31.93	Custom Scan (SiftAgg); Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	keycut_customer_agg	native	ms	73.559	46.690	85.148	15	31.93	Seq Scan on orders NOISY
+3.4	softdel_live_groupby	sift	ms	0.660	0.502	0.890	15	31.11	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	softdel_live_groupby	native	ms	181.499	172.105	199.265	15	31.11	Seq Scan on orders NOISY
+3.4	softdel_live_groupby	scan	ms	8.935	8.197	14.598	15	31.11	Group Keys: country; Pushed Aggregates: count(*), sum(orders.amount) NOISY
+3.4	point_in_100	sift	ms	0.661	0.377	2.392	15	30.52	Index Scan using orders_col on orders NOISY
+3.4	point_in_100	native	ms	113.919	97.765	142.595	15	30.52	Seq Scan on orders NOISY
