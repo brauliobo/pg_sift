@@ -42,6 +42,29 @@ FROM (VALUES ('extract(dow FROM d)'), ('d + 1'), ('date_trunc(''month'', d)'), (
 (5 rows)
 
 RESET cpu_tuple_cost;
+-- a unit whose dates are all one infinity covers the range [2^31 - 1, 2^31 - 1] (or [-2^31, -2^31]): the loop that fills the new end of the range table stepped over it
+-- (int32 overflow in the bound) and wrote to memory far outside the table, in a parallel worker that began with such a unit
+CREATE TABLE dedge (id int, d date, v int);
+INSERT INTO dedge SELECT i, 'infinity', i FROM generate_series(1, 3000) i;
+INSERT INTO dedge SELECT i, '-infinity', i FROM generate_series(3001, 6000) i;
+CREATE INDEX dedge_col ON dedge USING sift_col (id, d, v);
+VACUUM (FREEZE, ANALYZE) dedge;
+SET cpu_tuple_cost = 100;
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SET parallel_leader_participation = off;
+SELECT q, plan_of(q) AS plan, differences(q) AS differences
+FROM (VALUES ('SELECT d, count(*), sum(v) FROM dedge GROUP BY d'), ('SELECT d, count(*) FROM dedge WHERE id <= 3000 GROUP BY d'), ('SELECT d, count(*) FROM dedge WHERE id > 3000 GROUP BY d'),
+             ('SELECT d, sum(v) FROM dedge WHERE id % 1000 = 1 GROUP BY d')) v(q) ORDER BY q;
+                             q                              |  plan   | differences 
+------------------------------------------------------------+---------+-------------
+ SELECT d, count(*) FROM dedge WHERE id <= 3000 GROUP BY d  | SiftAgg |           0
+ SELECT d, count(*) FROM dedge WHERE id > 3000 GROUP BY d   | SiftAgg |           0
+ SELECT d, count(*), sum(v) FROM dedge GROUP BY d           | SiftAgg |           0
+ SELECT d, sum(v) FROM dedge WHERE id % 1000 = 1 GROUP BY d | SiftAgg |           0
+(4 rows)
+
+RESET cpu_tuple_cost;
+DROP TABLE dedge;
 DROP FUNCTION plan_of(text), differences(text);
 DROP TABLE dinf;
 DROP EXTENSION pg_sift;
