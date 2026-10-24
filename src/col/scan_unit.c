@@ -117,9 +117,39 @@ segments_current(SiftColSource *src)
 	return src->dir_current;
 }
 
+/* A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible) */
+static const uint64 *
+unit_allvisible_keyed(ColUnit *cu)
+{
+	if (!cu->av_ready)
+	{
+		uint32		nw;
+
+		/* no page between the first and the last of the unit is unclean (the list of those pages is made once per scan): the directory is not needed */
+		if (!cu->lane && sift_vis_range_allvisible(&cu->src->vis, cu->v.kblk0, cu->v.kblk1) &&
+			!(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src)))
+		{
+			cu->avk = NULL;
+			cu->av_ready = true;
+			return NULL;
+		}
+		sift_cunit_keyed_load(&cu->v);
+		nw = (cu->v.npages + 63) / 64;
+		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
+		if (!cu->lane && cu->src->vis.heap != NULL)
+			sift_vis_blocks_allvisible(&cu->src->vis, cu->v.blocks, cu->v.npages, cu->avk);
+		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+			memset(cu->avk, 0, Max(nw, 1) * sizeof(uint64));
+		cu->av_ready = true;
+	}
+	return cu->avk;
+}
+
 const uint64 *
 unit_allvisible(ColUnit *cu)
 {
+	if (cu->v.keyed)
+		return unit_allvisible_keyed(cu);
 	if (!cu->av_ready)
 	{
 		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
@@ -342,6 +372,15 @@ sift_col_unit_allvisible(const SiftColUnit *unit)
 
 	if (!unit_clean(cu))
 		return false;
+	if (cu->v.keyed)
+	{
+		if (av == NULL)			/* every page of the table is all-visible */
+			return true;
+		for (uint32 p = 0; p < cu->v.npages; p++)
+			if (!sift_col_bit_test(av, p))
+				return false;
+		return true;
+	}
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (cu->v.pagemask[w] & ~av[w])
 			return false;

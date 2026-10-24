@@ -114,6 +114,8 @@ typedef struct SiftColOptions
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string (the leaves whose keys every unit keeps, docs/COL.md 2.13), 0 = not set */
+	int			key_cut;		/* offset of the "key_cut" string (the leaves, most significant first, whose range cuts the units, docs/COL.md 2.16), 0 = none */
+	int			key_cut_rows;	/* rows a key-cut unit aims at, 0 = as many as an average superblock holds */
 	int			order_columns;	/* offset of the "order_columns" string (the leaves that get a sorted run in every unit, docs/COL.md 2.14), 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string (the leaves that get a point directory in every segment, docs/COL.md 2.17), 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string (the leaves whose point directory lists heap addresses, docs/COL.md 2.17; column format minor 16), 0 = none */
@@ -138,6 +140,7 @@ extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 

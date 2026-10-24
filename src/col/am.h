@@ -15,6 +15,8 @@
 #include "col/wbuf.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
+#define SIFT_COL_CUT_MAX 4
+
 typedef struct SiftColRel
 {
 	SiftColSchema *schema;
@@ -29,8 +31,18 @@ typedef struct SiftColRel
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
 	SiftCWbufHint hint;
+	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first (docs/COL.md 2.16); ncut 0: units are cut by superblock */
+	int			ncut;
+	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
+
+/* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
+static inline bool
+sift_col_key_cut(const SiftColRel *r)
+{
+	return r->ncut > 0 && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE;
+}
 
 /*
  * The on-demand refresh of the rollups (col/rollup.c): a scan asks for the segment gen of index to be rewritten with the rollups the index writes now.
@@ -97,6 +109,11 @@ extern SiftColRel *sift_col_rel(Relation index);
  */
 extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 
+/* Key-cut units (col/order.c, docs/COL.md 2.16) */
+extern bool sift_col_index_keyed(Oid indexoid);
+extern uint32 sift_colk_unit_rows(Relation index);
+extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
+
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with
  * sift_col_numeric_key: NEAREST for an equality that the constant has at most s digits for, DOWN for the lower bound of a > or <= and UP for
@@ -146,6 +163,8 @@ extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, ui
 extern bool sift_enable_col_scan;
 extern double sift_plan_scale;
 extern void sift_col_scan_init(void);
+/* The bytes a row takes while the rows of a key-cut build, promotion or merge are held to be sorted (an estimate: a reference and a value of every leaf) */
+extern uint64 sift_colk_row_bytes(const SiftColSchema *schema);
 extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
 extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
 extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);

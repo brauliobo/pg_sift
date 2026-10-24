@@ -111,6 +111,7 @@ typedef struct ColUnit
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
+	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
 	ColGroup   *grp;
 	ColSelCache selc;
 	struct

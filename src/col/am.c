@@ -365,6 +365,12 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "key_columns",
 						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4 and date foreign key columns and the columns named *_id that are not unique and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, and 15 for a key list or bitmap (default auto)",
 						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_cut",
+						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17; default none: a unit is a superblock)",
+						 "", NULL, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "key_cut_rows",
+					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
+					  0, 0, 6144, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
@@ -402,6 +408,8 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
+	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
@@ -509,6 +517,14 @@ sift_col_options_point_tid_columns(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
+}
+
+const char *
+sift_col_options_key_cut(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->key_cut ? (const char *) o + o->key_cut : "";
 }
 
 const char *
@@ -658,12 +674,40 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
 				r->pagg.lookup[r->first[a]] = true;
+		{
+			char	   *list = pstrdup(sift_col_options_key_cut(index)),
+					   *save = NULL;
+
+			for (char *tok = strtok_r(list, ", ", &save); tok != NULL; tok = strtok_r(NULL, ", ", &save))
+			{
+				int			id = -1;
+
+				for (int i = 0; i < n && id < 0; i++)
+					if (strcmp(names[i], tok) == 0)
+						id = i;
+				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !sift_crun_leaf_ok(r->schema, &r->schema->cols[id]))
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
+				r->cut[r->ncut++] = id;
+			}
+			r->cut_rows = sift_col_options(index)->key_cut_rows;
+		}
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(old);
 	return r;
+}
+
+/* Are the units of the sift_col index cut by the order key? (the planner keeps a ctid range, which selects units by heap superblock, on the normal plan for such an index) */
+bool
+sift_col_index_keyed(Oid indexoid)
+{
+	Relation	index = index_open(indexoid, NoLock);
+	bool		keyed = sift_col_is_index(index) && sift_col_rel(index)->ncut > 0;
+
+	index_close(index, NoLock);
+	return keyed;
 }
 
 SiftColRel *

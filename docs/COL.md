@@ -626,6 +626,27 @@ and `sift.col_format_minor` 13 or less are read by the releases that read their 
 the minors 7 to 12 that 3.3 writes by default are). An index written before keeps its dictionaries and is read as before (the first query of a backend parses them); `REINDEX` and the merges write the new
 forms where the setting allows it. The merge of segments of the new forms with others makes a new dictionary and gives it a form by the same rule.
 
+### 2.16 Units cut by a declared key (column format minor 17, 3.4; opt-in)
+
+A unit is a superblock, 256 consecutive heap pages, so the rows of one tenant or one account are in the units of every part of the heap that was written while it was active, and a b-tree on that key
+reads fewer pages than the zones of the units can cut once the table has churned or has been repacked. An index with the reloption `key_cut = 'col, col'` (up to 4 integer, date, timestamp, numeric or
+float columns of the index, most significant first) sorts the rows of a build, a promotion or a merge by the key and cuts the units by its range, whatever their heap pages: the zones of the key in a unit are
+then tight, and a lookup or a range of the key reads the units of its range only (the units of an index without the option: every part of the heap; in the test, 1 of 100 units for one key value against 8 of
+8 for the same rows by superblock). A NULL key sorts last. The rows of a unit are in TID order, and the unit lists its TIDs (a lazy TID directory, read with the head of the record, which is why a unit is at
+most 6,144 rows) because its rows are no longer those of a block range: a scan, a top-N and a point lookup of the index read the addresses from it, and the dirty-page list of a unit (the heap pages that
+changed since it was written) is kept as for a superblock.
+
+`key_cut_rows` (64 to 6,144) is the rows a unit aims at; the default is the rows of an average superblock of the table (`reltuples / relpages * 256` from `pg_class`, 1,024 when the table was not analyzed), so
+the number of units, and the per-unit costs the planner uses, stay what the superblock cut gave. A unit is cut where the first key changes when that is within a quarter of the aim, so one key value is in as few
+units as it can be. The segments are column format minor 17, written only for an index with the option and `sift.col_format_minor` 15 or more; the setting stays 15. Cost, 200,000 rows to 1,000,000 rows: the
+index 16% to 28% larger for narrow rows (the TIDs) and 6% to 13% smaller for wide ones (tighter units compress better), the build CPU 1.4 to 6 times (the sort).
+
+The option applies to the units written afterwards: the build, `REINDEX`, a promotion of the write buffer (its rows are cut into units of their own segment), and a merge, which decodes every live row of its
+inputs and cuts them again by the key, so the overlays of the churn fold back into the range they belong to. A build and a merge hold the rows they cut in memory (about 32 bytes and 16 for each column of
+the index, per row), and stop with an error that says so when that passes `maintenance_work_mem` (the build: twice the budget of a segment), so a very large table takes the option after a streaming merge
+is written; until then raise the setting, or leave the option out. `sift.col_refresh`, `VACUUM` and `REINDEX` keep the option. An index with older units reads them as before until a `REINDEX`
+(`sift.upgrade_commands()` says so). 3.2, 3.1 and 3.0 refuse a minor 17 segment, as they do 16 (docs/UPGRADING.md section 4).
+
 ### 2.17 Point directory of a leaf in a segment (column format minor 14, 3.3; opt-in)
 
 The zones and the keys of a unit (section 2.13) cut the units that cannot hold a value; the units that can still cost a read and a test of every row of each, which is most of the time of an equality
