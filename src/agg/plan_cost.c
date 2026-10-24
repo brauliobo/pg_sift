@@ -1522,7 +1522,8 @@ join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
 		*row_cost = AGG_IDX_ROW;
 		return Min(Max(jrel->rows, 1.0), tuples);
 	}
-	*row_cost = AGG_JOIN_ROW;
+	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
+	*row_cost = AGG_JOIN_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	return tuples;
 }
 
