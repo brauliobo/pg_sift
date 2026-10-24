@@ -11,7 +11,7 @@ SHIFT=3
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 (( PG_MAJOR >= 18 )) || { echo "SKIP the 8-page flavour needs PostgreSQL 18 (extension_control_path)" >&2; exit 77; }
 
-paths=(Makefile 'pg_sift*.control' sql src tools)
+paths=(Makefile 'pg_sift*.control' sql src tools scripts/harden.mk)
 key=$({ git -C "$REPO" ls-files -s -- "${paths[@]}"; git -C "$REPO" diff HEAD -- "${paths[@]}"; echo "shift=$SHIFT $(pg_config --version)"; } | "$REPO/scripts/sha256.sh" | cut -c1-16)
 DIR=${SIFT_SB_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/sb-flavour/$key}
 
