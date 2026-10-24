@@ -423,7 +423,7 @@ pct() {
 	fi
 	cat "$out/tip.rows" >>"$rows"
 	if [[ -n $VERIFY ]]; then
-		if diff <(awk -F'\t' '$8 !~ /^v[0-9]/ { print $1, $2, $3, $4, $5, $6 }' "$PCT") <(awk -F'\t' '{ print $1, $2, $3, $4, $5, $6 }' "$rows"); then
+		if diff <(awk -F'\t' 'NR > 1 && $8 !~ /^v[0-9]/ { print $1, $2, $3, $4, $5, $6 }' "$PCT") <(awk -F'\t' '{ print $1, $2, $3, $4, $5, $6 }' "$rows"); then
 			log "docs/results/coverage-pct.tsv matches this build"
 		else echo "coverage: docs/results/coverage-pct.tsv is not what this build measures (lines above: committed -, measured +): run scripts/coverage.sh --pct, then --gen" >&2; return 1; fi
 	elif [[ $TIER == full ]]; then

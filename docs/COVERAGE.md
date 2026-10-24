@@ -29,43 +29,44 @@ A percentage is the share of a generated matrix of query variants (`test/matrix/
 covered / (variants - by design). The variants come from the server and the source (key types from `pg_type`, aggregates from `pg_aggregate`,
 functions from `pg_proc`, sizes from `src/agg/topn.h`, join kinds from the grammar); a variant that keeps the normal plan is named by its refusal
 slug (`SET sift.explain_refusals = on`), and the registry of `src/agg/refuse.h` says which slugs are by design. `scripts/coverage.sh --pct` recomputes
-them (the nightly job `coverage-pct` verifies the file), measured on a9ad9d3a (2026-10-22) against v3.2.2.
+them (the nightly job `coverage-pct` verifies the file), measured on c8544892 (2026-10-24) against v3.2.3.
 
 ### `WHERE ... ORDER BY x LIMIT n` of rows
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.2 | Covered at a9ad9d3a |
+| Sub-family | Variants | By design | Covered at v3.2.3 | Covered at c8544892 |
 |---|---|---|---|---|
-| **all** | 324 | 4 | 51.6% | 83.1% |
+| **all** | 466 | 4 | 39.4% | 88.7% |
 | LIMIT and OFFSET | 15 | 0 | 73.3% | 93.3% |
 | NULLS | 16 | 0 | 75.0% | 100.0% |
 | composition | 15 | 3 | 25.0% | 33.3% |
 | filter | 98 | 1 | 93.8% | 95.9% |
-| fixtures: topn | 74 | 0 | 10.8% | 83.8% |
+| fixtures: topn | 188 | 0 | 4.3% | 92.0% |
+| fixtures: topn_param | 28 | 0 | 60.7% | 78.6% |
 | key count | 12 | 0 | 0.0% | 100.0% |
-| key type | 44 | 0 | 36.4% | 68.2% |
+| key type | 44 | 0 | 36.4% | 77.3% |
 | select list | 8 | 0 | 100.0% | 100.0% |
-| sort expression | 14 | 0 | 0.0% | 7.1% |
+| sort expression | 14 | 0 | 0.0% | 57.1% |
 | table kind | 21 | 0 | 47.6% | 90.5% |
 | tie-break | 7 | 0 | 85.7% | 100.0% |
 
-Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 35, `volatile` 1 (by design), `where` 7.
+Variants that keep the normal plan, by refusal slug: `query_kind` 2 (by design), `table_kind` 1 (by design), `topn_shape` 24, `volatile` 1 (by design), `where` 7.
 
 ### `RIGHT JOIN`, `SELECT DISTINCT`, volatile functions
 
 Tests: script `coverage`.
 
-| Sub-family | Variants | By design | Covered at v3.2.2 | Covered at a9ad9d3a |
+| Sub-family | Variants | By design | Covered at v3.2.3 | Covered at c8544892 |
 |---|---|---|---|---|
-| **all** | 516 | 34 | 87.3% | 95.2% |
+| **all** | 518 | 34 | 87.0% | 95.2% |
 | DISTINCT | 32 | 0 | 90.6% | 96.9% |
 | DISTINCT ON | 16 | 6 | 100.0% | 100.0% |
 | DISTINCT over grouped, windowed or nested | 14 | 0 | 85.7% | 85.7% |
 | aggregate DISTINCT | 34 | 0 | 100.0% | 100.0% |
 | fixtures: distinct_on | 17 | 0 | 100.0% | 100.0% |
 | fixtures: flat | 81 | 0 | 96.3% | 97.5% |
-| fixtures: join | 83 | 0 | 86.7% | 97.6% |
+| fixtures: join | 85 | 0 | 84.7% | 97.6% |
 | fixtures: part | 32 | 0 | 81.2% | 93.8% |
 | fixtures: trap | 11 | 0 | 9.1% | 18.2% |
 | join child | 33 | 0 | 78.8% | 97.0% |
