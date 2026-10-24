@@ -662,7 +662,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 		rtype = lf->typid;
 	/* a varchar column sorts by the operators of text */
 	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID) && !(opcintype == ANYENUMOID && type_is_enum(rtype))) ||
-		opfamily != get_opclass_family(GetDefaultOpClass(opcintype, BTREE_AM_OID)))
+		opfamily != lookup_type_cache(opcintype, TYPECACHE_BTREE_OPFAMILY)->btree_opf)
 		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, nor an expression of the leaves, or its operator is not the default btree operator of its type");
 	*cmp = *collid = InvalidOid;
 	if (lf ? lf->vtype == SCV_CODE : !topn_num_type(rtype) || rtype == NUMERICOID)
