@@ -458,6 +458,7 @@ typedef struct SiftColZone
 #define SIFT_COLO_NOCHECKS		0x0002	/* skip the privilege / RLS checks (internal callers that did them) */
 #define SIFT_COLO_NOACL		0x0008	/* skip the table privilege check only (the RLS check stays): the executor of the query checked the privileges of the role, or of the view owner, on the columns it reads */
 #define SIFT_COLO_POINT_TIDS	0x0020	/* ... and the heap addresses of a directory that lists them are returned as they are, without reading a unit (sift_col_point_tids): the caller wants no values of the rows, only the addresses, and has the heap check the condition again */
+#define SIFT_COLO_POINT_ROWS	0x0040	/* ... and a unit comes narrowed to the rows the directory lists (sift_col_point_narrow): the caller tests every predicate again on them, as it does on the rows of a unit */
 #define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment, whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
@@ -470,6 +471,8 @@ typedef struct SiftColCounters
 	int64		units_pruned;	/* skipped by their zone maps or small-set summaries */
 	int64		units_set;		/* of those, the ones only a small-set summary could skip */
 	int64		rows_scanned;	/* rows of the units visited */
+	int64		point_units;	/* units narrowed to the rows a point directory lists (SIFT_COLO_POINT_ROWS) */
+	int64		point_rows;		/* and the rows they were narrowed to */
 	int64		rows_vetted;	/* rows checked against the heap (page not all-visible) */
 	int64		heap_pages;
 	int64		bytes_decoded;
@@ -596,6 +599,7 @@ extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap
  * check the condition again. A unit without such rows (a write buffer, a segment without a directory) is filtered by every predicate, *used false.
  */
+extern void sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel);
 extern bool sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used);
 
 /*

@@ -33,9 +33,9 @@ grep ': psql:' "$(dir sg)/scaling.err" | cut -c1-300 | sed 's/^/# /' >&2	# a cas
 lines=$(grep '^SLOPE .* sift ' <<<"$out")
 n=$(grep -c . <<<"$lines")
 plan $((n + 3))
-check "the answers of the scan, of the point directory and of an IN list are the heap's (3 checks)" test "$(grep -c '^CHECK .* ok' <<<"$out")" == 3
+check "the answers of the scan, of the point directory, of an IN list and of the point keys of an aggregate are the heap's (4 checks)" test "$(grep -c "^CHECK .* ok" <<<"$out")" == 4
 check "no check mismatched" test "$(grep -c '^CHECK .*MISMATCH' <<<"$out")" == 0
-check "every class of the gate ran (at least 15 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 15
+check "every class of the gate ran (at least 17 asserted slope lines)" test "$(grep -c " target=[a-z]* \(PASS\|FAIL\|NOSIFT\)" <<<"$lines")" -ge 17
 while IFS= read -r l; do
 	[[ -n $l ]] || continue
 	desc=${l#SLOPE }

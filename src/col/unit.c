@@ -436,6 +436,47 @@ sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys)
 	}
 }
 
+/*
+ * The rows of a unit that are in the superblock sb (a unit that is not key-cut) at the keys (ascending, those of the superblock): the number of the
+ * row of each key the unit holds is put in rows, in order. The pages of the unit are bisected, not decoded.
+ */
+uint32
+sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows)
+{
+	uint32		p = 0,
+				soff = 0,
+				found = 0;
+
+	Assert(!v->keyed);
+	for (uint32 k = 0; k < n && p < v->npages; k++)
+	{
+		uint32		pg = (uint32) (keys[k] >> 16) - sb * SIFT_SB_PAGES,
+					off = (uint32) (keys[k] & 0xFFFF);
+
+		while (p < v->npages && unit_page(v, p) < pg)
+			soff += page_sparse_len(v, p++);
+		if (p == v->npages)
+			break;
+		if (unit_page(v, p) != pg || off < 1 || off > v->maxoff[p])
+			continue;
+		if (page_sparse_len(v, p) == 0)
+			rows[found++] = v->rowstart[p] + off - 1;
+		else
+		{
+			const uint8 *bm = v->sparse + soff;
+			uint32		below = 0;
+
+			if (!((bm[(off - 1) / 8] >> ((off - 1) % 8)) & 1))
+				continue;
+			for (uint32 i = 0; i < (off - 1) / 8; i++)
+				below += sift_pc64(bm[i]);
+			below += sift_pc64(bm[(off - 1) / 8] & ((1U << ((off - 1) % 8)) - 1));
+			rows[found++] = v->rowstart[p] + below;
+		}
+	}
+	return found;
+}
+
 /* The keys of the rows ords (ascending) only: the pages that hold them are decoded, the others skipped */
 void
 sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out)

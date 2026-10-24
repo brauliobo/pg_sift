@@ -60,6 +60,7 @@
 #include "agg/part.h"
 #include "agg/topn.h"
 #include "agg/spec.h"
+#include "col/point.h"
 #include "agg/colsrc.h"
 #include "agg/dist_int.h"
 #include "agg/search.h"
@@ -632,6 +633,27 @@ zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
 }
 
 /*
+ * The share of the units the point directory of a leaf leaves for a list of `keys` of its nd distinct values: the rows it lists (keys x the rows of a key)
+ * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/scan.c), and one without is not. A list the directory does not
+ * answer (col/point.h: too many keys or rows) or a leaf without one keeps every unit. SiftColSource asks the directory of each segment; the units of one
+ * that has none stay, as the share of the units that have one says (point_cover).
+ */
+static double
+point_kept(AggCtx *c, int leaf, double keys, double nd)
+{
+	double		cover = c->stats.point_cover[leaf],
+				rows,
+				units = Max(c->stats.nunits, 1.0);
+
+	if (cover <= 0 || nd <= 0 || keys > SIFT_CPOINT_MAX_KEYS || (keys > SIFT_CPOINT_MIN_KEYS && keys > c->stats.nrows / 16))
+		return 1.0;
+	rows = keys * Max(c->stats.nrows, 1.0) / nd;
+	if (rows > SIFT_CPOINT_MAX_ROWS)
+		return 1.0;
+	return 1.0 - cover + cover * -expm1(-rows / units);
+}
+
+/*
  * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
@@ -667,7 +689,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
 			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
-			kept = Min(kept, zone_keys_kept(c, leaf, nkeys, nd));
+			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
 			(*n)++;
 		}
 	}
@@ -1046,7 +1068,11 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 			c->stats.ndistinct[p->leaf] > 0)
 			share = st.nvals / c->stats.ndistinct[p->leaf];
 		else if ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0))
+		{
 			share = Min(Max(p->sel, 0.0), 1.0);
+			if (c->stats.ndistinct[p->leaf] > 0)
+				kept = Min(kept, point_kept(c, p->leaf, share * c->stats.ndistinct[p->leaf], c->stats.ndistinct[p->leaf]));
+		}
 		else
 			continue;
 		if (c->stats.set_cover[p->leaf] > 0)

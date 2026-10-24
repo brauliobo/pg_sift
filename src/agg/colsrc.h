@@ -109,6 +109,7 @@ typedef struct SiftSrcStats
 	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
+	double		point_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose segment keeps a point directory of the leaf, which lists the rows of a short list of keys (0: none does) */
 	double		set_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units that hold a small-set summary of the leaf (0: none do) */
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
@@ -471,6 +472,8 @@ typedef struct SiftSrcCounters
 	int64		heap_pages;		/* heap pages read for them */
 	int64		rechecked;		/* rows of units read again from the heap (SiftSrcProvider.set_recheck) */
 	int64		recheck_units;	/* the units that had such rows */
+	int64		point_units;	/* units narrowed to the rows a point directory lists */
+	int64		point_rows;		/* and the rows they were narrowed to */
 } SiftSrcCounters;
 
 /*

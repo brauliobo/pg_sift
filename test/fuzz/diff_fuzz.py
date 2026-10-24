@@ -725,6 +725,22 @@ def render_point(p):
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
+def gen_pointagg(r, ctx):
+    """The same lists as gen_point, aggregated by Custom Scan (SiftAgg), which asks the directory too (and narrows each unit to the rows it lists): as a list, as the keys of a semi lookup
+    join to a few rows of the table, and with another conjunct; the reference is the normal plan, across the DML of the run."""
+    p = gen_point(r, ctx)
+    n = ctx['rows'] // 2
+    if r.randrange(3) == 0:
+        a = r.randrange(1, n)
+        col = r.choice(['parent_id', 'id'])
+        p['where'] = [f"e.{col} IN (SELECT m.{col} FROM ev_part m WHERE m.id BETWEEN {a} AND {a + r.randrange(0, 30)})"]
+    return p
+
+
+def render_pointagg(p):
+    return f"SELECT e.kind, count(*), sum(e.amount) FROM ev_part e WHERE {p['where'][0]} GROUP BY 1 ORDER BY 1", True
+
+
 # ---------- key_cut: units cut by a key, the rows of the normal plan after every kind of churn and every kind of merge ----------
 KCUT_LITERALS = {
     'ki': lambda r: str(r.randrange(-6, 36)),
@@ -825,7 +841,7 @@ FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3),
 }
