@@ -57,6 +57,19 @@ SELECT * FROM check_query('read by an aggregate of the outer query', $q$
 SELECT * FROM check_query('inner lateral, count = 0', $q$ SELECT o.id, x.c FROM owners o JOIN LATERAL (SELECT count(i.amt) c FROM items i WHERE i.owner_id = o.k) x ON true WHERE x.c = 0 $q$);
 SELECT * FROM check_query('inner lateral, sum IS NULL', $q$ SELECT o.id FROM owners o JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON true WHERE x.s IS NULL $q$);
 SELECT * FROM check_query('the whole row of the lateral', $q$ SELECT o.id, x FROM owners o LEFT JOIN LATERAL (SELECT count(*) c, max(i.amt) m FROM items i WHERE i.owner_id = o.k) x ON true WHERE o.id < 400 $q$);
+-- the comma form: an inner join of the sub-select to the item of the FROM list that holds the columns it reads
+SELECT * FROM check_query('comma lateral', $q$ SELECT o.id, x.s, x.c FROM owners o, LATERAL (SELECT sum(i.amt) s, count(*) c FROM items i WHERE i.owner_id = o.k) x $q$);
+SELECT * FROM check_query('comma lateral under a WHERE on its count', $q$ SELECT o.id, x.c FROM owners o, LATERAL (SELECT count(i.amt) c FROM items i WHERE i.owner_id = o.k) x WHERE x.c = 0 $q$);
+SELECT * FROM check_query('comma lateral after other items', $q$
+ SELECT o.id, p.name, x.s FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k AND i.cat < 5) x WHERE p.id = o.id + 1 $q$);
+SELECT * FROM check_query('comma lateral of the second item, read by a later lateral', $q$
+ SELECT o.id, p.id pid, x.s, y.m FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = p.k) x, LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y
+ WHERE p.id = o.id + 1 $q$);
+SELECT * FROM check_query('comma lateral beside a join lateral: the first is in a join, not in the list', $q$
+ SELECT o.id, x.s, y.c FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.owner_id = o.k2) y ON true $q$);
+
+SELECT * FROM check_query('a lateral that reads the columns of another lateral', $q$
+ SELECT o.id, x.s, y.m FROM owners o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON true LEFT JOIN LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y ON true $q$);
 -- scalar sub-selects, in the select list and the WHERE
 SELECT * FROM check_query('scalar in the select list', $q$ SELECT o.id, (SELECT sum(i.amt) FROM items i WHERE i.owner_id = o.k) s, (SELECT count(*) FROM items i WHERE i.owner_id = o.k) c FROM owners o $q$);
 SELECT * FROM check_query('scalar in the WHERE', $q$ SELECT o.id FROM owners o WHERE (SELECT count(*) FROM items i WHERE i.owner_id = o.k) = 0 $q$);
@@ -77,6 +90,7 @@ SELECT * FROM check_query('a limit', $q$ SELECT o.id, x.s FROM owners o LEFT JOI
 SELECT * FROM check_query('a join condition of its own', $q$ SELECT o.id, x.s FROM owners o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON x.s > 100 $q$);
 SELECT * FROM check_query('the outer query groups', $q$ SELECT o.grp, sum((SELECT sum(i.amt) FROM items i WHERE i.owner_id = o.k)) s FROM owners o GROUP BY o.grp $q$);
 SELECT * FROM check_query('an aggregate with a value over no rows', $q$ SELECT o.id, (SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY i.amt) FROM items i WHERE i.owner_id = o.k) m FROM owners o $q$);
+SELECT * FROM check_query('comma lateral with a condition the lateral cannot move',$q$ SELECT o.id, x.s FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id < o.k AND i.owner_id > o.k - 3) x WHERE o.id < 500 $q$);
 SELECT * FROM check_query('EXISTS', $q$ SELECT o.id FROM owners o WHERE EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) $q$);
 
 DROP TABLE owners, items;

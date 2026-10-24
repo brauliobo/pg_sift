@@ -262,7 +262,7 @@ verify_set(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 
 /* The sorted run of leaf c in unit u, when it has one, is what its chunk gives, entry for entry */
 static void
-verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys)
 {
 	SiftCRun	r;
 	uint64		at;
@@ -272,9 +272,9 @@ verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 		return;
 	if (!col->ready)
 		corrupt(seg, "Leaf %d has a sorted run in unit %u, whose chunk has no keys.", c, u);
-	blob = palloc(sift_crun_bytes(r.kind, r.n));
+	blob = palloc(sift_crun_total(&r));
 	sift_cseg_run_blob(seg, at, &r, blob);
-	if (!sift_crun_matches(&seg->schema->cols[c], col, blob, sift_crun_bytes(r.kind, r.n)))
+	if (!sift_crun_matches(&seg->schema->cols[c], col, keys, blob, sift_crun_total(&r)))
 		corrupt(seg, "The sorted run of leaf %d in unit %u differs from its chunk.", c, u);
 	pfree(blob);
 }
@@ -373,7 +373,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
 		}
 		verify_set(seg, c, u, &pcol[c]);
-		verify_run(seg, c, u, &pcol[c]);
+		verify_run(seg, c, u, &pcol[c], keys);
 		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{

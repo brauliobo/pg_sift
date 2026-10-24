@@ -1572,11 +1572,12 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 			SiftCChunk	ch;
 			SiftCPaggCol col;
 			int64	   *keys;
+			SiftKey    *addr;
 
 			if (!sift_cseg_run(seg, c, u, &r, &at))
 				continue;
 			blobs++;
-			len = sift_crun_bytes(r.kind, r.n);
+			len = sift_crun_total(&r);
 			orig = palloc(len);
 			copy = palloc(len);
 			ords = palloc(r.n * sizeof(uint32) + 1);
@@ -1586,12 +1587,14 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 			keys = palloc((Size) ch.n * sizeof(int64) + SIFT_COL_PAD);
 			sift_cchunk_decode(&ch, keys);
 			col = (SiftCPaggCol) {keys, ch.nulls, ch.ovf, ch.n, true};
+			addr = palloc((Size) ch.n * sizeof(SiftKey));
+			sift_cunit_keys(&uv, seg->sbdir[u].sb, addr);
 			ord += r.kind == SIFT_CRUN_ORD;
 			ident += r.kind == SIFT_CRUN_IDENT;
 			if (sift_crun_head(orig, len, r.n, &r2))
 			{
 				intact++;
-				matching += sift_crun_matches(&sc->cols[c], &col, orig, len);
+				matching += sift_crun_matches(&sc->cols[c], &col, addr, orig, len);
 			}
 			for (uint32 l = 0; l < len; l++)
 			{
@@ -1609,7 +1612,7 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 					if (sift_crun_head(copy, len, r.n, &r2) && sift_crun_entries(&r2, copy + SIFT_CRUN_HDR, 0, r2.n, ords))
 					{
 						accepted++;
-						missed += sift_crun_matches(&sc->cols[c], &col, copy, len);
+						missed += sift_crun_matches(&sc->cols[c], &col, addr, copy, len);
 					}
 				}
 			/* the named damages of the header: flag bits, kind, the row count, counts that do not fit, the width */

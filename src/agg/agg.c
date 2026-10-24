@@ -220,6 +220,12 @@ sift_agg_init(void)
 							 "Lets the walk of a top-N bound the units by the zones of the sort keys after the first too: a first key that ties between units is decided by the next.",
 							 NULL, &sift_topn_zone_keys, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomBoolVariable("sift.test_topn_heads",
+							 "Testing: a top-N scan answers a unit of which every row passes from the head of the sorted run of its first sort column (column format minor 18) instead of reading it.",
+							 NULL, &sift_topn_heads, true,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+#endif
 	DefineCustomBoolVariable("sift.topn_runs",
 							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
 							 NULL, &sift_topn_runs, true,
@@ -704,7 +710,8 @@ topn_run(AggExec *ex)
 				best;
 	SiftSrcZone z;
 	TopnChunk	ch = {0, 0, NULL};
-	bool		parallel;
+	bool		parallel,
+				heads;
 
 	ex->started = true;
 	engine_open(ex, ex->snap, ex->params);
@@ -733,8 +740,13 @@ topn_run(AggExec *ex)
 			return;
 		}
 		sift_topn_run_budget(t, nsb);
+		/* a scan with no condition, join or aggregate: every row of a clean unit passes, and the head of its sorted run names the n best of them */
+		heads = ex->spec->npred == 0 && ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
+			ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->nzone == 0 && ex->nfilter == 0 && ex->ntype == 0 &&
+			ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
 		while (sift_topn_walk_next(t, &lo))
-			scan_units(ex, lo, lo + 1);
+			if (!heads || !sift_topn_sb_head(t, ex->src, lo))
+				scan_units(ex, lo, lo + 1);
 		while (sift_topn_revisit_next(t, &lo))
 			scan_units(ex, lo, lo + 1);
 		sift_topn_finish(t);
@@ -1378,6 +1390,8 @@ explain_run(AggExec *ex, ExplainState *es)
 		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
 		if (sift_topn_runs_read(ex->topn) > 0)
 			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
+		if (sift_topn_heads_used(ex->topn) > 0)
+			ExplainPropertyInteger("Units Answered By Run Head", NULL, sift_topn_heads_used(ex->topn), es);
 		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
 			ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(ex->topn, 0), sift_topn_ord_units(ex->topn, 1), sift_topn_ord_units(ex->topn, 2)), es);
 		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);

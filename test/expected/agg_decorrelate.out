@@ -113,6 +113,48 @@ SELECT * FROM check_query('the whole row of the lateral', $q$ SELECT o.id, x FRO
  the whole row of the lateral | t       | t    |  399
 (1 row)
 
+-- the comma form: an inner join of the sub-select to the item of the FROM list that holds the columns it reads
+SELECT * FROM check_query('comma lateral', $q$ SELECT o.id, x.s, x.c FROM owners o, LATERAL (SELECT sum(i.amt) s, count(*) c FROM items i WHERE i.owner_id = o.k) x $q$);
+     label     | in_scan | same | rows 
+---------------+---------+------+------
+ comma lateral | t       | t    | 2000
+(1 row)
+
+SELECT * FROM check_query('comma lateral under a WHERE on its count', $q$ SELECT o.id, x.c FROM owners o, LATERAL (SELECT count(i.amt) c FROM items i WHERE i.owner_id = o.k) x WHERE x.c = 0 $q$);
+                  label                   | in_scan | same | rows 
+------------------------------------------+---------+------+------
+ comma lateral under a WHERE on its count | t       | t    |  430
+(1 row)
+
+SELECT * FROM check_query('comma lateral after other items', $q$
+ SELECT o.id, p.name, x.s FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k AND i.cat < 5) x WHERE p.id = o.id + 1 $q$);
+              label              | in_scan | same | rows 
+---------------------------------+---------+------+------
+ comma lateral after other items | t       | t    | 1999
+(1 row)
+
+SELECT * FROM check_query('comma lateral of the second item, read by a later lateral', $q$
+ SELECT o.id, p.id pid, x.s, y.m FROM owners o, owners p, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = p.k) x, LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y
+ WHERE p.id = o.id + 1 $q$);
+                           label                           | in_scan | same | rows 
+-----------------------------------------------------------+---------+------+------
+ comma lateral of the second item, read by a later lateral | f       | t    | 1999
+(1 row)
+
+SELECT * FROM check_query('comma lateral beside a join lateral: the first is in a join, not in the list', $q$
+ SELECT o.id, x.s, y.c FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x LEFT JOIN LATERAL (SELECT count(*) c FROM items i WHERE i.owner_id = o.k2) y ON true $q$);
+                                    label                                     | in_scan | same | rows 
+------------------------------------------------------------------------------+---------+------+------
+ comma lateral beside a join lateral: the first is in a join, not in the list | f       | t    | 2000
+(1 row)
+
+SELECT * FROM check_query('a lateral that reads the columns of another lateral', $q$
+ SELECT o.id, x.s, y.m FROM owners o LEFT JOIN LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id = o.k) x ON true LEFT JOIN LATERAL (SELECT max(i.amt) m FROM items i WHERE i.owner_id = x.s) y ON true $q$);
+                        label                        | in_scan | same | rows 
+-----------------------------------------------------+---------+------+------
+ a lateral that reads the columns of another lateral | f       | t    | 2000
+(1 row)
+
 -- scalar sub-selects, in the select list and the WHERE
 SELECT * FROM check_query('scalar in the select list', $q$ SELECT o.id, (SELECT sum(i.amt) FROM items i WHERE i.owner_id = o.k) s, (SELECT count(*) FROM items i WHERE i.owner_id = o.k) c FROM owners o $q$);
            label           | in_scan | same | rows 
@@ -195,6 +237,12 @@ SELECT * FROM check_query('an aggregate with a value over no rows', $q$ SELECT o
                  label                  | in_scan | same | rows 
 ----------------------------------------+---------+------+------
  an aggregate with a value over no rows | f       | t    | 2000
+(1 row)
+
+SELECT * FROM check_query('comma lateral with a condition the lateral cannot move',$q$ SELECT o.id, x.s FROM owners o, LATERAL (SELECT sum(i.amt) s FROM items i WHERE i.owner_id < o.k AND i.owner_id > o.k - 3) x WHERE o.id < 500 $q$);
+                         label                          | in_scan | same | rows 
+--------------------------------------------------------+---------+------+------
+ comma lateral with a condition the lateral cannot move | f       | t    |  499
 (1 row)
 
 SELECT * FROM check_query('EXISTS', $q$ SELECT o.id FROM owners o WHERE EXISTS (SELECT 1 FROM items i WHERE i.owner_id = o.k AND i.amt > 90) $q$);

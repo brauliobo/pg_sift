@@ -295,8 +295,8 @@ def check(opts, notes, errors):
     docs = [o for o in opts if not o['testing']]
     keys = {o['key'] for o in docs}
     minor_now = next((o['default'] for o in docs if o['key'] == 'sift.col_format_minor'), 0)
-    # an option may stamp the one minor above the default (point_tid_columns: 16, key_cut: 17), which the library reads (SIFT_COL_FORMAT_MAX_READ)
-    m = re.search(r'#define SIFT_COL_FORMAT_KEYED\s+(\d+)', open('src/col/col.h').read())
+    # an option may stamp a minor above the default (point_tid_columns: 16, key_cut: 17, order_columns: 18), which the library reads (SIFT_COL_FORMAT_MAX_READ)
+    m = re.search(r'#define SIFT_COL_FORMAT_HEADS\s+(\d+)', open('src/col/col.h').read())
     minor_max = max(int(minor_now), int(m.group(1))) if m else int(minor_now)
     for o in docs:
         if o['key'] not in notes:

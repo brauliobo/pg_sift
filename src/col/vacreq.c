@@ -16,6 +16,7 @@
 #include "postgres.h"
 #include "access/relation.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/pg_am_d.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
@@ -228,6 +229,12 @@ vacuum_heap(Oid heapoid)
 	params.log_min_duration = -1;
 #endif
 	params.nworkers = -1;
+	/*
+	 * With synchronous_commit off the commit records of the churn are not on disk yet, and PostgreSQL sets no hint bit for a transaction whose commit
+	 * record is not flushed: the pages that hold only its new row versions stay out of the visibility map, and the index checks their rows in the heap
+	 * until the next VACUUM (a fifth of the pages after 3% of the rows changed). The flush costs the WAL writer's next one.
+	 */
+	XLogFlush(GetXLogInsertRecPtr());
 	vacuum(rels, &params, strategy, cx, true);
 	FreeAccessStrategy(strategy);
 	MemoryContextDelete(cx);

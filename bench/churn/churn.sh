@@ -58,7 +58,13 @@ maint() {
 	local a=$1 c=$2 ix=ev_${1}_col
 	case $a in
 		none) ;;
-		bgw) sleep 0.3; for _ in $(seq 300); do [[ $(q -c "select count(*) from pg_stat_activity where backend_type = 'sift maintenance'") == 0 ]] && break; sleep 0.1; done ;;
+		bgw)
+			# the worker the VACUUM asked for: its seconds and WAL are the maintain step of the arm
+			local l0 l1 t0 t1
+			l0=$(q -c "select pg_current_wal_lsn()"); t0=$(date +%s.%N)
+			sleep 0.3; for _ in $(seq 300); do [[ $(q -c "select count(*) from pg_stat_activity where backend_type = 'sift maintenance'") == 0 ]] && break; sleep 0.1; done
+			t1=$(date +%s.%N); l1=$(q -c "select pg_current_wal_lsn()")
+			q -c "insert into churn.log values ('$SCN','$a',$c,'maintain',$(echo "$t1 - $t0" | bc -l),(select pg_wal_lsn_diff('$l1','$l0')::int8),0,$(cut -d' ' -f1 /proc/loadavg),null,null)" ;;
 		force) step "$a" "$c" promote "select sift.col_promote('$ix')"; step "$a" "$c" merge "select sift.col_merge('$ix', true)" ;;
 		reindex) step "$a" "$c" reindex "reindex index $ix" ;;
 		*) step "$a" "$c" maintain "select case when sift.col_maintenance_due('$ix', true) is not null then sift.col_maintain('$ix') end" ;;
