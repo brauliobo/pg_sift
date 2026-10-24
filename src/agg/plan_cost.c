@@ -1653,7 +1653,10 @@ agg_open_cost(int nparts)
 	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
 }
 
-/* the most rows of elements a scan of the plan being made reads: what a plan that keeps the shared CTE has to produce (cte.c) */
+/*
+ * the most rows of elements a scan of the plan being made reads: what a plan that keeps the shared CTE has to produce (cte.c). A filter without
+ * statistics keeps a default guess of the table's rows: the rows are the geometric mean of the guess and the table's, as filter_rows_ratio has them.
+ */
 double		agg_read_rows;
 
 void
@@ -1675,7 +1678,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
 	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
-	agg_read_rows = Max(agg_read_rows, k.sel_rows * k.elems);
+	agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
 	k.rows_out = rows_out;
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
