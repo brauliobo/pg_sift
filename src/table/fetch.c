@@ -235,16 +235,31 @@ sift_tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot s
 	return ok;
 }
 
-/* TIDs no snapshot will see any more: rows that are gone, or whose deleter is removable now */
+static int
+deltid_cmp(const void *a, const void *b)
+{
+	return ItemPointerCompare((ItemPointer) &((const TM_IndexDelete *) a)->tid, (ItemPointer) &((const TM_IndexDelete *) b)->tid);
+}
+
+/*
+ * TIDs no snapshot will see any more: those whose deleter is removable now, by the tombstone log (a TID is never reused, so the log of its
+ * key is the row's whole history), and in a simple deletion those whose row is gone, which VACUUM removed with its tombstone. A row is read
+ * for the second only: a bottom-up pass, which the index runs before it splits a page of versions that UPDATEs left behind, is answered by
+ * the log alone, where it read every row of the page (several hundred, each from another superblock of the column groups). The rows of a
+ * simple deletion are read in TID order, so that those of one superblock meet the fetch scan that caches it.
+ */
 TransactionId
 sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TransactionId horizon = InvalidTransactionId;
-	int			final = 0;
+	int			final = 0,
+				freed = 0;
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
+	if (!delstate->bottomup)
+		qsort(delstate->deltids, delstate->ndeltids, sizeof(TM_IndexDelete), deltid_cmp);
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
 		TM_IndexDelete *d = &delstate->deltids[i];
@@ -252,22 +267,27 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 		SiftTblRowVer rv;
 		SiftTblDel del;
 
-		if (!sift_tbl_fetch_lazy(rel, st, &d->tid, &rv))
-			status->knowndeletable = true;
-		else
+		if (delstate->bottomup && freed >= delstate->bottomupfreespace)
+			break;
+		sift_tbl_del_state(st, sift_key_from_tid(&d->tid), &del);
+		if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && GlobalVisCheckRemovableXid(rel, del.xid))
 		{
-			sift_tbl_free_row(&rv);
-			sift_tbl_del_state(st, rv.key, &del);
-			if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) &&
-				GlobalVisCheckRemovableXid(rel, del.xid))
-			{
+			status->knowndeletable = true;
+			if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
+				horizon = del.xid;
+		}
+		else if (!delstate->bottomup && del.state == SIFT_TBL_DEL_NONE)
+		{
+			if (!sift_tbl_fetch_lazy(rel, st, &d->tid, &rv))
 				status->knowndeletable = true;
-				if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
-					horizon = del.xid;
-			}
+			else
+				sift_tbl_free_row(&rv);
 		}
 		if (status->knowndeletable)
+		{
 			final = i + 1;
+			freed += status->freespace;
+		}
 	}
 	/* the array ends at its last deletable entry (none left: a bottom-up pass found nothing) */
 	delstate->ndeltids = final;
