@@ -1,0 +1,34 @@
+-- A filter on a column of a sub-select's output (here a window over an aggregate) has no statistics, and its default guess compounds with the next
+-- level's: two of them keep a thousandth of the rows, and the join above reads one row. On a statement that reads a table with a column index the
+-- rows of the scan are lifted to the geometric mean of the guess and the rows, as the scan of a table with such a filter is read; never below
+-- PostgreSQL's own, and the same statement over a table without a column index keeps its plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.enable_agg = off;
+CREATE TABLE facts (id int, grp int, period text, score float8);
+INSERT INTO facts SELECT i, i % 500, CASE WHEN i % 2 = 0 THEN 'cur' ELSE 'prev' END, i % 10 FROM generate_series(1, 40000) i;
+CREATE TABLE plain_facts AS SELECT * FROM facts;
+CREATE INDEX facts_col ON facts USING sift_col (id, grp, period, score);
+ANALYZE facts; ANALYZE plain_facts;
+
+-- the rows PostgreSQL expects of the node with an alias
+CREATE FUNCTION node_rows(q text, alias text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (jsonb_path_query_first(j, '$.** ? (@.Alias == $a)', jsonb_build_object('a', alias)) ->> 'Plan Rows')::float8;
+END $$;
+
+CREATE FUNCTION levels(t text, filters text) RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$SELECT * FROM (SELECT w.*, count(*) OVER (PARTITION BY w.period) AS n FROM
+	  (SELECT g.*, lag(g.total) OVER (PARTITION BY g.grp ORDER BY g.period DESC) AS prev FROM
+	    (SELECT grp, period, sum(score) AS total FROM %s GROUP BY grp, period) g) w) x %s$q$, t, filters) $f$;
+
+-- the scans of the levels that carry the filters: w (the one on the period) and x (the test for NULL on a window's output)
+SELECT t, f, node_rows(levels(t, f), 'w') AS w_rows, node_rows(levels(t, f), 'x') AS x_rows
+FROM (VALUES ('facts'), ('plain_facts')) v(t), (VALUES ('WHERE x.period = ''cur'''), ('WHERE x.period = ''cur'' AND x.prev IS NULL')) w(f)
+ORDER BY f, t;
+DROP FUNCTION levels(text, text);
+DROP FUNCTION node_rows(text, text);
+DROP TABLE facts, plain_facts;
+DROP EXTENSION pg_sift;

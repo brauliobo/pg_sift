@@ -36,6 +36,7 @@
 #include "utils/spccache.h"
 
 #include "agg/agg.h"
+#include "agg/plan_int.h"
 #include "core/compat.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
@@ -423,6 +424,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
+	if (rte->rtekind == RTE_SUBQUERY || rte->rtekind == RTE_CTE)
+		derived_rel_rows(root, rel);
 	if (!scannable(root, rel, rte))
 		return;
 	scores = score_exprs(root, rel);
