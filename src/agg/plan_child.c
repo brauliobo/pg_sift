@@ -505,7 +505,7 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		atts[k] = f->keyatt[k];
 	for (int k = 0; k < f->nord; k++)
 		atts[f->nkey + k] = f->ordatt[k];
-	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
+	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts, NULL))
 	{
 		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false, 0, 0);
 		return;
