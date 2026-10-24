@@ -51,6 +51,8 @@ INSERT INTO shapes (name, q) VALUES
 	('chained lookups',   'SELECT l.tag, count(*), sum(f.qty::float8), avg(f.qty::float8) FROM laned f JOIN dims m ON m.id = f.qty % 7 JOIN links l ON l.id = m.nxt GROUP BY l.tag'),
 	-- the preserved side is keyed by a column of an earlier lookup, and the link no row reaches is added by the leader
 	('chained preserved', 'SELECT l.tag, count(f.id), sum(f.qty::float8) FROM links l LEFT JOIN (laned f JOIN dims m ON m.id = f.qty % 7) ON l.id = m.nxt GROUP BY l.tag'),
+	-- the rows of a CTE are the leader's: it shares them as a lookup table
+	('cte lookup',        'WITH ps AS MATERIALIZED (SELECT id, nxt FROM dims WHERE id < 6) SELECT l.tag, count(*), sum(f.qty::float8), avg(f.qty::float8) FROM laned f JOIN ps ON ps.id = f.qty % 7 JOIN links l ON l.id = ps.nxt GROUP BY l.tag'),
 	('distinct filter',   'SELECT f.grp % 3, count(DISTINCT m.name) FILTER (WHERE f.qty > 100), count(DISTINCT m.w) FROM facts f LEFT JOIN dims m ON m.id = f.grp - 1 GROUP BY 1');
 
 CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$

@@ -1,6 +1,7 @@
 -- The rows of a joined table, VALUES list, sub-select or function are loaded once, by the leader, and the workers of a scan read them from the
 -- shared memory: a query with such a join plans workers, and its rows are those of the scan without workers and of the normal plan. A child plan
--- that runs per combination of leaves, and a query with a function that is unsafe in a worker, keep one process.
+-- that runs per combination of leaves (unless the leader reads it as a table of the first row of a unique key), and a query with a function that is
+-- unsafe or restricted in a worker, keep one process.
 CREATE EXTENSION pg_sift;
 
 SET parallel_setup_cost = 0;
@@ -25,6 +26,7 @@ ANALYZE zones;
 ANALYZE labels;
 
 CREATE FUNCTION unsafe_id(int) RETURNS int LANGUAGE sql PARALLEL UNSAFE AS 'SELECT $1';
+CREATE FUNCTION restricted_imm(int) RETURNS int LANGUAGE plpgsql IMMUTABLE PARALLEL RESTRICTED AS 'BEGIN RETURN $1; END';
 
 CREATE FUNCTION p_rows(q text, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -89,9 +91,10 @@ INSERT INTO p_q (q, par) VALUES
 	('SELECT e.kind, sum(e.qty), sum(z.w) FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1', false),
 	('SELECT e.kind, count(z.w), min(z.tag), max(z.tier) FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1', false),
 	('SELECT count(*) FROM ev e WHERE e.qty NOT IN (SELECT i FROM (VALUES (1), (2), (7)) v(i))', false),
-	-- a sum over a column of the joined table, a hashed sub-plan, a child plan that runs per combination of leaves, a function that is unsafe in a worker: one process
-	('SELECT s.name, count(*) FROM ev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1', false),
-	('SELECT v.n, unsafe_id(count(*)::int) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty GROUP BY 1', false);
+	-- a sum over a column of the joined table, a hashed sub-plan, a function that is unsafe or restricted in a worker: one process; a child plan the leader reads as a table of one row by unique key: workers
+	('SELECT s.name, count(*) FROM ev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1', true),
+	('SELECT v.n, unsafe_id(count(*)::int) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty GROUP BY 1', false),
+	('SELECT v.n, count(*) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty WHERE restricted_imm(e.qty) < 5 GROUP BY 1', false);
 
 CREATE FUNCTION p_compare(OUT n int, OUT mode text, OUT par_same bool, OUT off_same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE q text; x bool; want text;
@@ -151,5 +154,5 @@ SELECT z.id, (SELECT count(*) FROM ev e JOIN (VALUES (1), (2)) v(i) ON v.i = e.q
 FROM zones z WHERE z.id < 5 ORDER BY z.id;
 
 DROP TABLE ev, zones, labels, p_q;
-DROP FUNCTION p_rows(text, bool, int), p_mode(text), p_shared(text), p_compare(), unsafe_id(int);
+DROP FUNCTION p_rows(text, bool, int), p_mode(text), p_shared(text), p_compare(), unsafe_id(int), restricted_imm(int);
 DROP EXTENSION pg_sift;

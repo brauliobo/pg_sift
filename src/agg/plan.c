@@ -575,17 +575,31 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 	return n;
 }
 
+static bool
+fn_unsafe(Oid funcid, void *context)
+{
+	return func_parallel(funcid) != PROPARALLEL_SAFE;
+}
+
+/* does a function of the packed spec (its expressions are Nodes among Integers and Strings) run only in the leader? */
+static bool
+unsafe_in_worker(Node *n, void *context)
+{
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList) || IsA(n, Query))
+		return false;
+	return check_functions_in_node(n, fn_unsafe, NULL) || expression_tree_walker(n, unsafe_in_worker, context);
+}
+
 /*
- * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the whole
- * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
- * (sift_aggspec_parallel_ok).
+ * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
+ * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
+ * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables.
  */
 int
-parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
+parallel_workers(AggCtx *c, SiftAggSpec *s)
 {
-	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
-	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
-		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
+	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
+		max_parallel_workers_per_gather <= 0 || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
 		return 0;
 	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
@@ -905,7 +919,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
-	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
 	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
 		nworkers = 0;

@@ -1086,7 +1086,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
-		nworkers = c->joins == NIL && s->naggs == 0 && !c->topn_xserial ? parallel_workers(c, s, input_rel, output_rel) : 0;
+		nworkers = c->joins == NIL && s->naggs == 0 && !c->topn_xserial && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers);
 		if (rows <= TOPN_SORT_ROWS)
