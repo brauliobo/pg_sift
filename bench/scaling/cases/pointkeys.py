@@ -29,7 +29,7 @@ def q(name, body):
     return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", 'flat')
 
 
-SIZES = [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 2048, 4096, 8192, 16384]
+SIZES = [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 1536, 2048, 4096, 8192]
 QUERIES = [
     q('in51', f"count(*), sum(v) from t where k in ({KEYS}) and id <= {{bound}}"),
     q('join51', "count(*), sum(t.v) from t join d on d.k = t.k where t.id <= {bound}"),

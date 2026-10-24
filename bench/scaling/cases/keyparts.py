@@ -34,4 +34,4 @@ def qs(tab, target):
 
 SIZES = [6250, 12500, 25000, 50000, 100000]
 CASES = [Case('keyparts', SIZES, setup=setup, unit='keys', quick=2, per_size=True, queries=qs('par', 'flat') + qs('one', None))]
-GATE = CASES
+GATE = [Case('keyparts', [3125, 6250, 12500, 25000, 50000], setup=setup, unit='keys', per_size=True, queries=qs('par', 'flat') + qs('one', None))]   # the gate stops at 50k keys: the 100k point is 1.2 GB of scratch

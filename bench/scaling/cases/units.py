@@ -39,7 +39,7 @@ CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 1
 ])]
 
 
-# The CI gate (scripts/scaling-gate.sh): 8-page units (a SIFT_TESTING=1 SIFT_SB_SHIFT=3 build), 1k-16k units = 1 GB of tmpfs. The point and IN queries read the
+# The CI gate (scripts/scaling-gate.sh): 8-page units (a SIFT_TESTING=1 SIFT_SB_SHIFT=3 build), 0.5k-8k units = 0.7 GB of tmpfs (the CI scratch cap is 2.4 GB for all the jobs of a lane). The point and IN queries read the
 # point directory through the test function of the access method (a release plan does not reach it), flat in the units.
 def point(keys):
     return lambda size: f"select count(*) from sift._test_col_tids('ix'::regclass, '0:in:{'|'.join(map(str, keys))}', 0)"
@@ -51,7 +51,7 @@ def tids_match(keys):
                          f"from sift._test_col_tids('ix'::regclass, '0:in:{'|'.join(map(str, keys))}', 0)"]
 
 
-GATE = [Case('units', [1024, 2048, 4096, 8192, 16384], setup=setup, at=at, native=False, unit='units',
+GATE = [Case('units', [512, 1024, 2048, 4096, 8192], setup=setup, at=at, native=False, unit='units',
              check=lambda size: [f"select count(*), sum(v) from t where id <= {size * ROWS}"] + tids_match([777])(size) + tids_match([1000 + 37 * i for i in range(51)])(size), queries=[
     q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g"),
     q('pruned', "count(*), sum(v) from t where id <= {bound} and v > 100000", 'linear'),
