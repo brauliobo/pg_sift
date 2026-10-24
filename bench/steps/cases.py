@@ -281,7 +281,7 @@ def cpu_ns(pid):
 
 
 def measure_load(case, csv, rounds, rows):
-    """a load case: per lane and round one fresh table, the statement of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms"""
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
@@ -293,8 +293,10 @@ def measure_load(case, csv, rounds, rows):
             s = server_session(600)
             for st in ['SET search_path = c_%s, public' % case.id] + sets:
                 s.run(st)
-            prep = case.sec['prepare'].replace('{am}', am)
-            s.run(prep)
+            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv)):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
+                err = s.run(stmt)[2]
+                if err:
+                    die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
             pid = s.run('SELECT pg_backend_pid()')[1][0]
             s.run('CHECKPOINT')
             lsn, cpu = wal_lsn(s), cpu_ns(pid)
