@@ -9,8 +9,15 @@ CREATE TABLE cw (id serial, v int, t text) WITH (autovacuum_enabled = off);
 CREATE INDEX cw_idx ON cw USING sift_col (v, t) WITH (write_buffer_limit = 64);
 SELECT failures, error_code, last_error FROM sift.workers WHERE index = 'cw_idx'::regclass;
 
--- the rows seal write buffers and ask for a worker, whose promotion fails
+-- the rows go in and settle in this session, the setting being the database's and this session older than it: a step of this session that
+-- ends after the worker has failed would count as the next successful step and clear what the worker keeps
+SET sift.async_maintenance = off;
 INSERT INTO cw (v, t) SELECT g, md5(g::text) FROM generate_series(1, 30000) g;
+SELECT sift.col_promote('cw_idx') >= 0 AS settled;
+RESET sift.async_maintenance;
+
+-- a few rows seal a write buffer and ask for a worker, whose promotion fails; nothing of this session runs a step meanwhile
+INSERT INTO cw (v, t) SELECT g, md5(g::text) FROM generate_series(30001, 31500) g;
 DO $$
 BEGIN
 	FOR i IN 1..300 LOOP
