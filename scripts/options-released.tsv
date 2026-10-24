@@ -1,4 +1,4 @@
-# released: 3.2, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
+# released: 3.3, the defaults of the last release (a release replaces this file with scripts/gen-options.sh --snapshot)
 sift(accent_folding)	true
 sift(analyzer)	text
 sift(b)	0.75
@@ -17,33 +17,48 @@ sift(vacuum_truncate)	true
 sift(write_buffer_limit)	4096
 sift.agg_combo_cache	1048576
 sift.agg_dense	on
+sift.agg_dist_stream	on
 sift.agg_fuse	on
 sift.agg_join_filter	on
 sift.agg_key_skew	on
+sift.agg_left_lateral	on
 sift.agg_lookup_cache_kb	262144 kB
-sift.agg_lookup_max_rows	1000000
+sift.agg_lookup_max_kb	262144 kB
+sift.agg_lookup_max_rows	-1
 sift.agg_lookup_pushdown	on
+sift.agg_lookup_shared_kb	-1
 sift.agg_param_set_size	1000
 sift.agg_preagg	on
+sift.agg_preagg_distinct	on
 sift.agg_rollup_cost	1
 sift.agg_rows	on
+sift.agg_scale_horizon	100
 sift.agg_semi_lut	on
 sift.agg_semi_lut_size	4096 kB
 sift.agg_share_lookups	on
+sift.agg_super	on
 sift.agg_two_level	on
 sift.async_maintenance	on
-sift.col_auto_merge	off
+sift.cluster_advice	on
+sift.col_auto_merge	on
 sift.col_auto_merge_buffer_pct	1
 sift.col_auto_merge_dirty_pct	30
 sift.col_auto_merge_fragmentation	2
-sift.col_format_minor	6
+sift.col_auto_merge_max_active	0
+sift.col_auto_merge_max_workers	0
+sift.col_auto_merge_partition_kb	0
+sift.col_auto_merge_wal_pct	5
+sift.col_format_minor	15
 sift.col_rollup_on_demand	on
 sift.col_rollup_worker	on
+sift.count_refusals	off
 sift.enable_agg	on
 sift.enable_col	on
+sift.enable_col_scan	off
 sift.enable_count	on
 sift.enable_scan	on
 sift.enable_topn	on
+sift.explain_refusals	off
 sift.filter_pushdown	on
 sift.gpu	off
 sift.gpu_cache_mb	256 MB
@@ -52,27 +67,53 @@ sift.gpu_min_rows	5000000
 sift.log_min_duration	1000 ms
 sift.maintenance_cost_delay	0
 sift.maintenance_naptime	2000 ms
+sift.maintenance_wal_rate	0
 sift.max_expansions	512
 sift.parallel_scan	off
+sift.plan_scale	1
 sift.prefetch	on
 sift.prefix_cache_size	8192 kB
+sift.rls_scores	off
 sift.simd	avx512
-sift.standby_conflicts	off
-sift.table_auto_defrag	off
+sift.standby_conflicts	on
+sift.table_async_promote	off
+sift.table_auto_defrag	on
+sift.table_auto_defrag_budget	128 MB
+sift.table_auto_defrag_coalesce	on
+sift.table_auto_defrag_dead_pct	5
 sift.table_auto_defrag_delay	10 ms
 sift.table_auto_defrag_free_pct	25
 sift.table_auto_defrag_indexes	on
+sift.table_auto_defrag_max_active	0
+sift.table_auto_defrag_wal_rate	0
+sift.table_backpressure	0
+sift.table_bulk_groups	on
 sift.table_compression	''
 sift.table_dead_rewrite_pct	30
+sift.table_dict_lookup	off
 sift.table_inline_promote	on
+sift.table_wide_rows	on
 sift.table_write_buffer_limit	4096 kB
+sift.topn_runs	on
 sift.topn_walk	on
+sift.topn_zone_keys	on
 sift.vacuum_rewrite_limit	128 MB
+sift_col(calendar_columns)	''
+sift_col(cluster_advice)	true
 sift_col(compression)	''
+sift_col(cube_minmax)	true
 sift_col(dead_rewrite_pct)	10
+sift_col(dict_lookup)	auto
+sift_col(key_columns)	''
+sift_col(order_columns)	''
 sift_col(paths)	''
+sift_col(point_columns)	''
+sift_col(point_tid_columns)	''
 sift_col(preagg)	''
+sift_col(return_columns)	''
 sift_col(rollup)	''
+sift_col(rollup_dims)	''
 sift_col(rollup_on_demand)	true
+sift_col(superunit)	16
 sift_col(vacuum_truncate)	true
 sift_col(write_buffer_limit)	4096

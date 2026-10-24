@@ -1,6 +1,6 @@
 # One row per option: what the C sources cannot say. scripts/gen-options.sh reads this file and the sources; it fails when an option has no row.
 # key: a setting (sift.name) or a reloption (kind(name)). applies: all, BM25, sift_col, sift_table (a list), or - for an alias that is not listed (the reason in buys).
-# since: optional last column, the release that added the option when it is not the default_version of pg_sift.control (the 3.4 line keeps 3.3 there until the bump).
+# since: optional last column, the release that added the option when it is not the default_version of pg_sift.control.
 # group: settings of one family share a README row and take buys and cost of the first row of the group when their own are empty.
 # values: the grammar of a string option. minor: the column format minor the option writes (checked against SIFT_COL_FORMAT_MINOR). link: file#heading of docs/.
 # Numbers are measurements of the cited document (200,000 rows unless said otherwise).
