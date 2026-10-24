@@ -836,6 +836,34 @@ placeholder_expr(AggCtx *c, PlaceHolderVar *ph)
 	return (Node *) ph->phexpr;
 }
 
+/*
+ * A placeholder that stands for a strict expression of the scanned table's columns (or of its unnested function's) is that expression: where the
+ * scan's outer join nulls the placeholder, those columns are NULL and so is the expression. A constant, a non-strict expression (coalesce, CASE)
+ * or a volatile one keeps the placeholder.
+ */
+static Node *
+strict_placeholders_mutator(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, PlaceHolderVar))
+	{
+		Node	   *e = placeholder_expr(c, (PlaceHolderVar *) n);
+		Relids		rels = e ? pull_varnos(c->root, e) : NULL;
+
+		if (e != NULL && (bms_is_member(c->relid, rels) || (c->func_rti && bms_is_member(c->func_rti, rels))) &&
+			!contain_nonstrict_functions(e) && !contain_volatile_functions(e))
+			return strict_placeholders_mutator(e, c);
+	}
+	return expression_tree_mutator(n, strict_placeholders_mutator, c);
+}
+
+Node *
+strict_placeholders(AggCtx *c, Node *n)
+{
+	return strict_placeholders_mutator(n, c);
+}
+
 /* A placeholder computed inside the nullable input becomes NULL when that whole input is absent. */
 static Node *
 nullable_expr_mutator(Node *n, AggCtx *c)

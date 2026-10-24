@@ -191,3 +191,5 @@ version	case	arm	metric	value	min	max	n	load	note
 3.3	tbl_update_keys	native	wal_bytes	53.201	53.201	53.201	3	17.27	heap
 3.3	tbl_update_keys	native	ms	668.524	666.819	758.182	3	17.27	heap
 3.3	tbl_update_keys	native	cpu_ms	662.885	660.064	745.306	3	17.27	heap
+3.3	placeholder_leaf_args	sift	ms	715.396	614.296	1000.189	15	24.27	Group Keys: created_at: "*VALUES*".column1, scores.*.key: split_part(r.key, '_'::text, 1), scores.*.key: NULLIF(split_part(r.key, '_'::text, NOISY
+3.3	placeholder_leaf_args	native	ms	3055.674	2787.515	4253.684	15	24.27	Seq Scan on orders NOISY
