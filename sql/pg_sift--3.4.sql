@@ -229,7 +229,7 @@ COMMENT ON FUNCTION sift.index_advice(regclass) IS 'The profile of the columns o
 -- one type a wildcard, an array of objects a group; a rare key or one without a single shape is left out. NULL when no key qualifies. Nothing is changed.
 CREATE FUNCTION sift.suggest_paths(rel regclass, column_name text, sample int4 DEFAULT 2000) RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_col_suggest_paths' LANGUAGE C VOLATILE;
-COMMENT ON FUNCTION sift.suggest_paths(regclass, text, int4) IS 'The paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks, the same answer for the same table): typed paths for the scalar keys, a wildcard for a map of more than 32 keys of one type, a group for an array of objects; advice only, NULL when no key qualifies.';
+COMMENT ON FUNCTION sift.suggest_paths(regclass, text, int4) IS 'The paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks, the same answer for the same table): typed paths for the scalar keys, a wildcard for a map of more than 4 keys of one type, a group for an array of objects, free text (values of more than 64 bytes on average) left out; advice only, NULL when no key qualifies.';
 
 -- The sift_table table access method (docs/COL-TAM.md): CREATE TABLE ... USING sift_table.
 CREATE FUNCTION sift.table_handler(internal) RETURNS table_am_handler

@@ -1,6 +1,6 @@
 -- sift.suggest_paths(rel, column, sample): the paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks: the same
 -- answer for the same table). Typed paths for scalar keys (int4, int8 beyond 32 bits, float8 with fractions, text, bool, astext for a mix), a wildcard for a map of
--- more than 32 keys of one type, a group for an array of objects; a rare key or one without a single shape is left out. The answer is a spec the option accepts,
+-- more than 4 keys of one type, a group for an array of objects; a rare key, one without a single shape and free text (values over 64 bytes on average) are left out. The answer is a spec the option accepts,
 -- an index built with it verifies, and what it pushes answers as the plain plan does.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
@@ -16,6 +16,8 @@ INSERT INTO sp SELECT i, jsonb_build_object(
 	'tags', jsonb_build_array('a' || i % 3, 'b'),
 	'parts', jsonb_build_array(jsonb_build_object('cat', 'c' || i % 4, 'score', i % 10), jsonb_build_object('cat', 'd', 'score', 2.5)),
 	'weird key', 1,
+	'note', repeat('free text ', 10) || i,
+	'metrics_a', jsonb_build_object('a', i % 5 + 0.5, 'b', i % 6 + 0.5, 'c', 1.5, 'd', 2.5, 'e', i % 7 + 0.5),
 	'metrics', (SELECT jsonb_object_agg('m' || g, g % 7) FROM generate_series(1, 40) g),
 	'shape', CASE WHEN i % 2 = 0 THEN '[1]'::jsonb ELSE '{"a":1}'::jsonb END), NULL FROM generate_series(1, 3000) i;
 VACUUM (FREEZE, ANALYZE) sp;
@@ -55,6 +57,16 @@ SELECT n, sp_rows(q, true) = sp_rows(q, false) AS same, sp_pushed(q) AS pushed F
 	(4, 'SELECT doc->>''mixed'', count(*) FROM sp WHERE doc->>''mixed'' LIKE ''s1%'' GROUP BY 1'),
 	(5, 'SELECT sum((doc->>''big'')::bigint), count(*) FROM sp WHERE (doc->''ok'')::bool')) AS t(n, q) ORDER BY n;
 
+-- documents that are arrays: a group of the column's own path, without the arrays inside its elements (sift_col holds one level of them); a list of scalars
+CREATE TABLE sp_arr (id int, doc jsonb, nums jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO sp_arr SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE jsonb_build_array(jsonb_build_object('type', 't' || i % 4, 'comment', 'c' || i, 'tags', jsonb_build_array('a', 'b'))) END,
+	jsonb_build_array(i % 5, i % 7) FROM generate_series(1, 3000) i;
+SELECT sift.suggest_paths('sp_arr', 'doc');
+SELECT sift.suggest_paths('sp_arr', 'nums');
+CREATE INDEX sp_arr_col ON sp_arr USING sift_col (id, doc, nums);
+SELECT sp_rows('SELECT e->>''type'', count(*) FROM sp_arr, jsonb_array_elements(doc) e GROUP BY 1', true) = sp_rows('SELECT e->>''type'', count(*) FROM sp_arr, jsonb_array_elements(doc) e GROUP BY 1', false) AS same_group;
+SELECT sift.col_verify('sp_arr_col', true);
+
 -- errors
 SELECT sift.suggest_paths('sp', 'id');
 SELECT sift.suggest_paths('sp', 'nope');
@@ -71,7 +83,7 @@ SET ROLE sp_user;
 SELECT sift.suggest_paths('sp', 'doc');
 RESET ROLE;
 
-DROP TABLE sp;
+DROP TABLE sp, sp_arr;
 DROP FUNCTION sp_rows(text, bool), sp_pushed(text);
 DROP ROLE sp_user;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

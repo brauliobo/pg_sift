@@ -31,7 +31,8 @@
 
 #define SAMPLE_CHUNKS	16		/* stretches of blocks read, evenly spaced */
 #define CHUNK_BLOCKS	32		/* the most blocks of a stretch */
-#define WILD_KEYS		32		/* a map with more keys of one scalar type is a wildcard */
+#define WILD_KEYS		4		/* a map with more keys of one scalar type is a wildcard: it serves jsonb_each and every named key */
+#define TEXT_AVG		64		/* a text key whose values average more bytes is free text, not a filter or group key */
 #define SHAPE_PCT		90		/* the share of a key's values that decides its shape */
 #define RARE_PERMILLE	10		/* a key in fewer documents than this share is left out */
 #define MAX_COLS		256		/* limits of the spec (docs/COL-SHRED.md) */
@@ -48,6 +49,7 @@ typedef struct SNode
 				ntext,
 				nobj,
 				narr;
+	uint64		textbytes;		/* the bytes of the text values */
 	bool		big;			/* an integer beyond 32 bits */
 	struct SNode **kid;			/* object members */
 	int			nkids,
@@ -151,6 +153,7 @@ value(Ctx *cx, SNode *n, JsonbIterator **it, JsonbIteratorToken tok, JsonbValue 
 			break;
 		case jbvString:
 			n->ntext++;
+			n->textbytes += v->val.string.len;
 			break;
 		case jbvNumeric:
 			{
@@ -267,11 +270,40 @@ add_item(StringInfo out, const char *item)
 	appendStringInfo(out, "%s%s", out->len ? ", " : "", item);
 }
 
-static void emit(Ctx *cx, SNode *n, const char *prefix, StringInfo out);
+static void emit(Ctx *cx, SNode *n, const char *prefix, bool group, StringInfo out);
 
-/* the keys of object n below prefix: scalars as typed paths, objects flat below their path, arrays as lists or groups */
+/* the elements of the arrays at path: scalars as a list, objects as a group (whose keys are not arrays: sift_col holds one level of them) */
 static void
-emit(Ctx *cx, SNode *n, const char *prefix, StringInfo out)
+emit_array(Ctx *cx, SNode *k, const char *path, StringInfo out)
+{
+	Shape		es = k->elem != NULL ? shape_of(k->elem) : SH_NONE;
+
+	if (es == SH_SCALAR && cx->ncols < MAX_COLS)
+	{
+		add_item(out, psprintf("%s[] %s", path, scalar_type(k->elem)));
+		cx->ncols++;
+	}
+	else if (es == SH_OBJECT && cx->ngroups < MAX_GROUPS)
+	{
+		StringInfoData inner;
+		int			cols = cx->ncols;
+
+		initStringInfo(&inner);
+		cx->ngroups++;
+		emit(cx, k->elem, "", true, &inner);
+		if (inner.len > 0)
+			add_item(out, psprintf("%s[]{%s}", path, inner.data));
+		else
+		{
+			cx->ngroups--;
+			cx->ncols = cols;
+		}
+	}
+}
+
+/* the keys of object n below prefix: scalars as typed paths, objects flat below their path, arrays as lists or groups (not inside a group) */
+static void
+emit(Ctx *cx, SNode *n, const char *prefix, bool group, StringInfo out)
 {
 	bool		wild = n->nkids > WILD_KEYS && prefix[0] != '\0';
 	const char *wtype = NULL;
@@ -300,7 +332,8 @@ emit(Ctx *cx, SNode *n, const char *prefix, StringInfo out)
 		StringInfoData path;
 		Shape		sh = shape_of(k);
 
-		if (sh == SH_NONE || (uint64) (k->seen - k->nnull) * 1000 < (uint64) n->seen * RARE_PERMILLE)
+		if (sh == SH_NONE || (uint64) (k->seen - k->nnull) * 1000 < (uint64) n->seen * RARE_PERMILLE ||
+			(sh == SH_SCALAR && k->ntext > 0 && k->textbytes > (uint64) k->ntext * TEXT_AVG))
 			continue;
 		initStringInfo(&path);
 		if (prefix[0] != '\0')
@@ -312,33 +345,9 @@ emit(Ctx *cx, SNode *n, const char *prefix, StringInfo out)
 			cx->ncols++;
 		}
 		else if (sh == SH_OBJECT)
-			emit(cx, k, path.data, out);
-		else if (sh == SH_ARRAY && k->elem != NULL)
-		{
-			Shape		es = shape_of(k->elem);
-
-			if (es == SH_SCALAR && cx->ncols < MAX_COLS)
-			{
-				add_item(out, psprintf("%s[] %s", path.data, scalar_type(k->elem)));
-				cx->ncols++;
-			}
-			else if (es == SH_OBJECT && cx->ngroups < MAX_GROUPS)
-			{
-				StringInfoData inner;
-				int			cols = cx->ncols;
-
-				initStringInfo(&inner);
-				cx->ngroups++;
-				emit(cx, k->elem, "", &inner);
-				if (inner.len > 0)
-					add_item(out, psprintf("%s[]{%s}", path.data, inner.data));
-				else
-				{
-					cx->ngroups--;
-					cx->ncols = cols;
-				}
-			}
-		}
+			emit(cx, k, path.data, group, out);
+		else if (sh == SH_ARRAY && !group)
+			emit_array(cx, k, path.data, out);
 	}
 }
 
@@ -381,6 +390,7 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 			Jsonb	   *jb;
 			JsonbIterator *it;
 			JsonbValue	v;
+			JsonbIteratorToken tok;
 
 			CHECK_FOR_INTERRUPTS();
 			if (isnull)
@@ -388,11 +398,13 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 			old = MemoryContextSwitchTo(doc_cx);
 			jb = DatumGetJsonbP(d);
 			it = JsonbIteratorInit(&jb->root);
-			if (JsonbIteratorNext(&it, &v, false) == WJB_BEGIN_OBJECT)
+			tok = JsonbIteratorNext(&it, &v, false);
+			if (tok == WJB_BEGIN_OBJECT || tok == WJB_BEGIN_ARRAY)
 			{
 				root->seen++;
-				root->nobj++;
-				container(&cx, root, &it, true);
+				root->nobj += tok == WJB_BEGIN_OBJECT;
+				root->narr += tok == WJB_BEGIN_ARRAY;
+				container(&cx, root, &it, tok == WJB_BEGIN_OBJECT);
 				cx.docs++;
 				got++;
 			}
@@ -403,7 +415,11 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 	}
 	ExecDropSingleTupleTableSlot(slot);
 	initStringInfo(&out);
-	emit(&cx, root, col, &out);
+	/* a document that is an array of objects or scalars is a list or a group at the column's own path */
+	if (shape_of(root) == SH_ARRAY)
+		emit_array(&cx, root, col, &out);
+	else
+		emit(&cx, root, col, false, &out);
 	result = out.data;
 	if (result[0] != '\0')
 	{
