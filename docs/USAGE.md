@@ -635,6 +635,33 @@ A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stor
 
 The chunk codec (encodings plus LZ4 or zstd, [docs/COL-CODEC.md](COL-CODEC.md)) compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
+### When the cost model keeps the normal plan and the scan is faster
+
+A `cte_cost` refusal (`sift.explain_why`: the `cte_inline` row, `scan_cost` against `normal_cost`) compares the scans of the inline plan with the normal plan of the shared CTE, which PostgreSQL prices from row counts it guesses:
+a join on a range (`date <@ daterange`) and a top-N cut leave a CTE it expects to hold one row where the scans read hundreds of thousands, and everything above it, nested loops that rescan an aggregate included, is priced for that row.
+On 10x data (31.7 million rows, 32 keys spread over the table, `work_mem` 4GB, 27 statements of the nested-list families) the planner's own choice took the scan for 3 statements and 25 were refused with a ratio of the
+costs between 10 and 54: 107.2 s in all against 114.5 s for the normal plans, and 6.3 s with the scan forced (8 to 22 times faster for each statement). The model's price of the normal plan was a median of 180 times lower than its
+measured time (57 to 554 times for 80% of the statements) at 32 keys and 240 to 380 times at 64 to 250 keys; the price of the scan was within 0.2 to 2 times of its time at 32 keys. No setting of the cost model corrects a
+miss of that size, and a plan whose join order and strategy come from the guessed rows cannot be priced from the rows alone.
+
+For a role or a database whose workload is analytical (requests that read thousands of rows or more), `sift.agg_force = on` takes the scan wherever one is possible:
+
+```sql
+ALTER ROLE reporting SET sift.agg_force = on;   -- new sessions of that role; SET LOCAL sift.agg_force = on for one statement
+```
+
+It is a diagnostic first and a setting second: it does not make the scan cheaper, it stops comparing. A statement whose normal plan takes 15 to 120 ms is slower with it, because the scan is planned (the CTE decision plans
+the statement several times) and opened for nothing: on 0.1x data (353,000 rows) two minimum-per-bucket statements went from 25 and 119 ms to 106 and 270 ms, and two empty-bucket statements from 18 and 31 ms to 47 and 45 ms,
+while the statements with a normal plan of 130 ms to 5 s ran 1.4 to 3 times faster. Do not set it for a role that also runs small requests; `SET LOCAL` it in the statements known to be large.
+
+A normal plan that keeps a nested loop over a CTE the planner expects to hold one row (the `Nested Loop` reruns a `HashAggregate` or a `GroupAggregate` once for each real row of the outer side, and the plan
+shows `CTE Scan ... rows=1` with thousands of rows actual) is slow with or without the scan, and the scan cannot reprice it. Without `sift`, a reproducer of a grouping-sets chain filtered by two columns without
+statistics ran in 9.7 s at 128 keys and in 268 ms with `SET LOCAL enable_nestloop = off` (32,887 ms and 732 ms at 256 keys; the slope of the time against the keys goes from 1.9 to 1.0). The setting changes every join of the
+statement, so test the statement with it before keeping it.
+
+The first statement of a session that has not preloaded the library (`session_preload_libraries = 'pg_sift'` does it at the start) is planned again through the hook when it is a `SELECT`, an `EXPLAIN` or a
+`CREATE TABLE AS` (see Install above); a diagnosis that starts with `EXPLAIN (ANALYZE)` in a fresh session therefore shows the plan the next statement gets.
+
 ### Set filters
 
 A filter on a set of ids (the members of a group, the entities that have an attribute) runs in `Custom Scan (SiftAgg)` as an array parameter, a literal `IN` list, or a
