@@ -13,11 +13,19 @@ INSERT INTO facts
 SELECT i, '2026-01-01'::date + (i % 23), i % 7, CASE WHEN i % 29 = 0 THEN NULL ELSE ((hashint4(i) & 2147483647) % 3000)::float8 / 10 END, (hashint4(i + 2) & 2147483647) % 400
 FROM generate_series(1, 30000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, grp, amount, qty);
-CREATE TABLE dims (id int PRIMARY KEY, name text, w float8);
-INSERT INTO dims SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' || (i % 4) END, i FROM generate_series(0, 6) i;
+-- many superblocks: each worker scans several lanes (the float sums of the scan are added by lane)
+CREATE TABLE laned (id int PRIMARY KEY, qty int) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO laned SELECT i, (hashint4(i + 2) & 2147483647) % 400 FROM generate_series(1, 30000) i;
+CREATE INDEX laned_col ON laned USING sift_col (id, qty);
+CREATE TABLE dims (id int PRIMARY KEY, name text, w float8, nxt int);
+INSERT INTO dims SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE 'n' || (i % 4) END, i, (i * 3) % 8 FROM generate_series(0, 6) i;
+CREATE TABLE links (id int PRIMARY KEY, tag text);
+INSERT INTO links SELECT i, 't' || (i % 3) FROM generate_series(0, 6) i;
 VACUUM ANALYZE facts;
+VACUUM ANALYZE laned;
 ANALYZE dates;
 ANALYZE dims;
+ANALYZE links;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -39,6 +47,10 @@ INSERT INTO shapes (name, q) VALUES
 	('distinct lookup',   'SELECT d.day, count(DISTINCT m.name), count(m.name) FROM dates d LEFT JOIN (facts f JOIN dims m ON m.id = f.grp) ON f.day = d.day GROUP BY d.day'),
 	('distinct left',     'SELECT f.qty / 100, count(DISTINCT m.name), count(m.name) FROM facts f LEFT JOIN dims m ON m.id = f.grp GROUP BY 1'),
 	('distinct global',   'SELECT count(DISTINCT m.name), count(m.name), count(*) FROM facts f LEFT JOIN dims m ON m.id = f.grp'),
+	-- a lookup keyed by a column of an earlier one: a worker that scans a second lane starts again with the memo of that column's values
+	('chained lookups',   'SELECT l.tag, count(*), sum(f.qty::float8), avg(f.qty::float8) FROM laned f JOIN dims m ON m.id = f.qty % 7 JOIN links l ON l.id = m.nxt GROUP BY l.tag'),
+	-- the preserved side is keyed by a column of an earlier lookup, and the link no row reaches is added by the leader
+	('chained preserved', 'SELECT l.tag, count(f.id), sum(f.qty::float8) FROM links l LEFT JOIN (laned f JOIN dims m ON m.id = f.qty % 7) ON l.id = m.nxt GROUP BY l.tag'),
 	('distinct filter',   'SELECT f.grp % 3, count(DISTINCT m.name) FILTER (WHERE f.qty > 100), count(DISTINCT m.w) FROM facts f LEFT JOIN dims m ON m.id = f.grp - 1 GROUP BY 1');
 
 CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
@@ -83,6 +95,6 @@ SELECT s.name, rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS dirty_w0, rows_
        rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS dirty_w4
 FROM shapes s ORDER BY s.n;
 
-DROP TABLE facts, dates, dims, shapes;
+DROP TABLE facts, laned, dates, dims, links, shapes;
 DROP EXTENSION pg_sift;
 DROP FUNCTION mode_of, rows_of;
