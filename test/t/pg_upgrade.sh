@@ -90,7 +90,7 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
-"$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
+LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
 
 # a tablespace needs two catalog versions (pg_upgrade refuses the same one)
 TSDDL=; TSC=
@@ -173,11 +173,11 @@ else skip 1 "pg_upgrade to the same major cannot carry a tablespace"; fi
 
 # pg_upgrade --check changes nothing, the upgrade follows
 UPG=("$NEWB/pg_upgrade" -b "$OLDB" -B "$NEWB" -d "$(dir old)/data" -D "$(dir new)/data" -U postgres -p "$(port old)" -P "$(port new)" -s "$(dir new)/sock")
-(cd "$(dir new)" && "${UPG[@]}" --check >"$(dir new)/pg_upgrade_check.log" 2>&1)
+(cd "$(dir new)" && LD_PRELOAD=${SIFT_PRELOAD:-} "${UPG[@]}" --check >"$(dir new)/pg_upgrade_check.log" 2>&1)
 checked=$?
 check "pg_upgrade --check passes" test $checked -eq 0
 [[ $checked -eq 0 ]] || diag "$(tail -n 20 "$(dir new)/pg_upgrade_check.log"; cat "$(dir new)"/data/pg_upgrade_output.d/*/loadable_libraries.txt 2>/dev/null)"
-(cd "$(dir new)" && "${UPG[@]}" >"$(dir new)/pg_upgrade.log" 2>&1)
+(cd "$(dir new)" && LD_PRELOAD=${SIFT_PRELOAD:-} "${UPG[@]}" >"$(dir new)/pg_upgrade.log" 2>&1)
 upgraded=$?
 check "pg_upgrade succeeds" test $upgraded -eq 0
 if [[ $upgraded -ne 0 ]]; then
