@@ -101,6 +101,31 @@ keyed_dir_bytes(uint32 nrows, uint32 np, const uint32 *bw)
 	return 24 + ((uint64) (np > 0 ? np - 1 : 0) * bw[0] + 7) / 8 + ((uint64) np * bw[1] + 7) / 8 + ((uint64) nrows * bw[2] + 7) / 8;
 }
 
+/*
+ * The bytes of a record from its start to the end of its chunk table, when it is a key-cut unit whose directory is longer than the bytes read (the 24-byte head
+ * is enough to know it); 0 for any other record or when avail covers it.
+ */
+uint32
+sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols)
+{
+	uint32		head[6];
+	uint32		bw[3];
+	uint64		need;
+
+	if (avail < 24 || ((uintptr_t) rec & 7) != 0)
+		return 0;
+	memcpy(head, rec, sizeof(head));
+	if (head[0] != COLK_MAGIC)
+		return 0;
+	bw[0] = head[3] & 0xFF;
+	bw[1] = (head[3] >> 8) & 0xFF;
+	bw[2] = (head[3] >> 16) & 0xFF;
+	if (head[1] > SIFT_COL_UNIT_MAX_ROWS || head[2] > head[1] || bw[0] > 32 || bw[1] > 32 || bw[2] > 16)
+		return 0;
+	need = ((keyed_dir_bytes(head[1], head[2], bw) + 3) & ~UINT64CONST(3)) + 8 * (uint64) ncols;
+	return need > avail && need <= len ? (uint32) need : 0;
+}
+
 /* Decodes the directory into the arrays of v; false when it is damaged */
 static bool
 keyed_decode(SiftCUnitView *v, uint32 avail)

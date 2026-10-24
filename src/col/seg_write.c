@@ -73,7 +73,8 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
-	bool		keyed;			/* the units are key-cut (docs/COL.md 2.16): no superunit summaries, the segment is column format minor 17 */
+	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
+	bool		keyed;			/* the units are key-cut (docs/COL.md 2.16): the segment is column format minor 17 */
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
 	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
@@ -263,11 +264,11 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 }
 
 void
-sift_colw_set_keyed(SiftColSegWriter *w)
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
 {
 	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
 	w->keyed = true;
-	w->pagg.super = 0;
+	w->aim_rows = aim_rows;
 }
 
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
@@ -419,7 +420,8 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	}
 	w->cubeoff[w->nsb] = w->cube.len;
 	w->ecubeoff[w->nsb] = w->ecube.len;
-	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
+	/* a key-cut unit holds fewer rows than a superblock: its cube may take what the cube of the unit of that many rows would. With less, the dims that fit differ from unit to unit and the groups of units (superunits) keep none */
+	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, w->keyed && b->nrows < w->aim_rows ? (Size) ((uint64) unit_bytes * w->aim_rows / b->nrows) : unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_sets(w, cols, unit_bytes);
@@ -519,7 +521,11 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
 	if (b->keyed)
+	{
+		/* a key-cut unit has no page mask: its slot holds the first and last block of the unit (its head), which a group of units tests against the visibility map at once */
 		memset(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
+		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), 2 * sizeof(uint32));
+	}
 	else
 		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
 	add_vers(w, b);
