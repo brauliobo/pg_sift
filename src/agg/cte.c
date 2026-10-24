@@ -650,7 +650,19 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	return v.plain;
 }
 
-/* does the query, or one it holds, read a table that has a column index? */
+static bool reads_column_index(Query *q);
+
+static bool
+sublink_reads_index(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+		return reads_column_index((Query *) n);
+	return expression_tree_walker(n, sublink_reads_index, context);
+}
+
+/* does the query, or one it holds (a sub-select, a CTE, a sublink), read a table that has a column index? */
 static bool
 reads_column_index(Query *q)
 {
@@ -661,7 +673,7 @@ reads_column_index(Query *q)
 	foreach_node(CommonTableExpr, cte, q->cteList)
 		if (reads_column_index(castNode(Query, cte->ctequery)))
 			return true;
-	return false;
+	return query_tree_walker(q, sublink_reads_index, NULL, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
 }
 
 /*
@@ -676,17 +688,21 @@ plan_flat(SIFT_PLANNER_PARAMS)
 			   *flatplan = NULL;
 	MemoryContext plain_cx,
 				flat_cx;
-	bool		flat_inlined = false;
+	bool		flat_inlined = false,
+				by_cost = false;
 
 	first_plan.set = planning_second = false;
 	if (sift_enable_agg && parse->commandType == CMD_SELECT && sift_agg_has_flattenable_laterals(parse) && reads_column_index(parse))
 	{
 		flat = copyObject(parse);
-		sift_agg_flatten_laterals(flat);
+		by_cost = sift_agg_flatten_laterals(flat);
 		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 		flat_inlined = inline_won;
-		/* a flat plan that reads every table that has a column index in a scan is the plan: the first one would only be set against it */
-		if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
+		/*
+		 * A flat plan that reads every table that has a column index in a scan is the plan: the first one would only be set against it. Not a
+		 * table grouped in place of an index lookup for each row of the outer query: the lookups cost less for a few rows.
+		 */
+		if (!by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
 			return flatplan;
 		planning_second = true;
 	}
