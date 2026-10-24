@@ -82,7 +82,7 @@ extern void agg_arm_path(Path *p);
 extern double agg_vet_of(double total_cost, double *pct);
 extern void agg_vet_forget(void);
 extern void agg_arm_end(void);
-extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used);
+extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used, double scan, double normal);
 extern const char *agg_variant_push(const char *v);
 extern bool agg_quiet_reports(bool quiet);
 
