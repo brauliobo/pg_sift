@@ -171,6 +171,7 @@ struct SiftColSource
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
 	SiftKey    *ptid;			/* the heap addresses the point directories answered since the last begin, in sift_col_begin's memory (SIFT_COLO_POINT_TIDS) */
+	bool		ptid_unsorted;	/* a segment's run of addresses started below the last address of the segments before it: sorted at the end of the begin */
 	uint32		nptid;
 	uint32		capptid;
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
