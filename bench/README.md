@@ -506,10 +506,11 @@ bench/bench final --size standard --dry-run                      # every precond
 ```sh
 export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=16G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only
 bench/bench final --size standard --docs --remeasure-all                                      # 84 min: the nine stages; `bench resume` continues an interrupted run
-bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none                        # 2 min
+bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-small                      # 2 min
+bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-big   # 6 min
 ```
 
-A step that fails is recorded and the pass goes on; `bench final` prints the stage log at its end.
+It was rehearsed on the benchmark host with 5,000 to 20,000 orders (all nine lanes of the store, one run of 5,000 and 10,000 orders in 181 s with the image build, one of 20,000 in 115 s; the merged file holds the six sizes and the containers are gone). The pg_duckdb time at 10M is an estimate; if either big run takes more than twice its minutes, stop and look (`bench/bench store clean` removes the containers of a stopped run).
 
 ## Remote host
 

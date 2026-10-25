@@ -560,6 +560,7 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
 
 cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
   local sub=${rest[0]:-all}
+  [[ $sub != scaling ]] || exec "$STEPS/store_scaling.sh" "${rest[@]:1}"   # the results of other sizes into one file: steps/store_scaling.sh
   case $sub in all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
     engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
