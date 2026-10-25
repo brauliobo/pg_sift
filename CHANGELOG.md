@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.4.0 - 2026-10-25
 
 - Changed: pg_sift: the byte budget of the cube of a `sift_col` unit counts what the cube holds (every measure of a kept dimension, with its minimum and maximum) and is 40% of the unit's encoded bytes, at least 8 kB, where it was 2% of the first three measures, so an index of sixteen columns whose dimensions have 50 to 200 values keeps the dimensions in every unit and answers a `GROUP BY` of any of them from the pre-aggregates: the last of eight dimensions of 50 values over 500,000 rows goes from 2.3 ms to 0.28 ms (the normal plan takes 63 ms), the index grows by 8.9% for the cube instead of 6.7% at 1,000,000 rows (at most 41% for 32 columns of 200 values) and the index of the store table is the same file. Dimensions of alike size keep the order of the columns, so units do not keep other ones each, the calendar cells of the dates share 10% as built, and a column the cube holds in every unit no longer keeps a key list (`key_columns`). Segments written afterwards; `REINDEX` or `sift.col_refresh(index)` rewrite the older ones. No format change.
 - Fixed: pg_sift: `count(DISTINCT d)` of a `date` column that is not among the sixteen dimensions of the cube, but whose calendar cells the units keep, counted the months (or years) of the cells instead of the days: 14 for a column of 400 days over 14 months, with `Units From Pre-aggregates` of every unit. The count reads the histogram of the column itself, and the units of a column without one are scanned.
