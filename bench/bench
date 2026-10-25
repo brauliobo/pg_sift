@@ -67,7 +67,7 @@ Commands
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
   generic    the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse, one container at a time, the answers checked against PostgreSQL's before any time: `generic [--rows N] [--suites tpch,hits,tseries] [--engines pg_duckdb,clickhouse] [--runs N] [--check-only] [--docs]` (steps/generic.py)
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
-             asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--docs] [--no-wait]`,
+             asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--any-plan] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh)
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)

@@ -64,7 +64,7 @@ s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECOND
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
-s_cases() { bench cases --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" --lane-budget "${P_LANE_BUDGET:-20}" ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
+s_cases() { bench cases --rows "$P_ROWS" --rounds "${P_CASE_ROUNDS:-3}" --lane-budget "${P_LANE_BUDGET:-20}" ${P_ANY_PLAN:+--any-plan} ${DOCS:+--docs}; }   # the cases of bench/cases.tsv at the size of the pass
 s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
 s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
 s_extras() { bench extras all ${DOCS:+--docs}; }

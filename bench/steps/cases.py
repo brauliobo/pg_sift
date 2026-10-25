@@ -408,7 +408,7 @@ def run_point(args, cases, rows, engines, results, failed):
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()
-        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not scaled)
+        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
         TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         for lane in lanes:
             if lane in errors:
@@ -649,6 +649,7 @@ def main():
     ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
     ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large setting is 4GB): written to the file as the work_mem meta')
     ap.add_argument('--lane-budget', type=float, default=LANE_BUDGET, help='seconds of timed runs after which a lane stops repeating, with at least %d runs (0: always the full rounds x runs); a case whose statement takes seconds is not run fifteen times' % MIN_RUNS)
+    ap.add_argument('--any-plan', action='store_true', help='the planner\'s plan at this size is what the rows show, not a failure (a smoke run: at a few thousand rows it keeps PostgreSQL\'s plan)')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')

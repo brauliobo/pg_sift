@@ -512,6 +512,8 @@ bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --rest
 
 It was rehearsed on the benchmark host with 5,000 to 20,000 orders (all nine lanes of the store, one run of 5,000 and 10,000 orders in 181 s with the image build, one of 20,000 in 115 s; the merged file holds the six sizes and the containers are gone). The pg_duckdb time at 10M is an estimate; if either big run takes more than twice its minutes, stop and look (`bench/bench store clean` removes the containers of a stopped run).
 
+**Rehearsal of the whole pass.** `bench final --size smoke --budget 0` (50,000 orders, 10,000 articles, every engine, answers checked, no number kept) ran end to end on the benchmark host in 29 minutes of fixed costs: store 7 (the cold part is 5: 18 s a question on Elasticsearch, again when the host was busy), updates 15 (the sizes of that stage do not depend on the preset: 200,000 and 1,000,000 orders), search 3, cases 2, stats 0.5, gap 0.4, pg_duckdb 0.7, generic suites 0.1. It found two defects, both fixed: the pg_duckdb stage waited two hours for the perf lock that the pass itself holds (`bench final` holds it, the stage now takes it through `locked` like the others), and `cases` failed on plans at 50,000 rows, where the planner keeps PostgreSQL's plan (`--any-plan`, set by the smoke preset: the plan is what the rows show). A fixed cost is a floor of the stage budgets above, not a part of them to subtract.
+
 ## Remote host
 
 `bench/bench remote` reproduces everything on another machine under `~/Projects/sift` without sudo: a PostgreSQL
