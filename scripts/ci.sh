@@ -175,7 +175,7 @@ if [[ $MODE == affected ]]; then
 	esac
 	exit 0
 fi
-RELEASE_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
+STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
 COL_SLICES_LEAN=4 COL_SLICES_DEEP=8 COL_SLICES_DEEP17=12   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
 COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 declare -A JOB_WEIGHT=(
@@ -319,7 +319,7 @@ if [[ $MODE == --selftest ]]; then
 	done
 	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 	prod=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD -u SIFT_CI_DEEP SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep '^release-library-regress ')
-	for t in $RELEASE_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of RELEASE_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
 	for pg in 17 18; do
 	for deep in '' 1; do
@@ -527,13 +527,13 @@ else
 	# the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
 	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
 	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard: those
-	# run, with a smoke of RELEASE_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier runs all of them (about 350 tests,
+	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier runs all of them (about 350 tests,
 	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests)
 	release_library_tests() {
 		local t p
 		for t in $(rest sql .sql $SLOW_REGRESS); do
 			for p in $(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
-			[[ -n ${SIFT_CI_DEEP:-} || " $RELEASE_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
+			[[ -n ${SIFT_CI_DEEP:-} || " $STOCK_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
 			echo "$t"
 		done
 	}
