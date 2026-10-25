@@ -127,12 +127,25 @@ sift_colk_heap_sbs(Relation index)
 	return sbs;
 }
 
+/* The rows of a unit for an aim (0: unknown) */
 uint32
-sift_colk_unit_rows(Relation index)
+sift_colk_unit_rows(uint32 aim)
 {
-	uint32		n = sift_colk_aim_rows(index);
+	return aim == 0 ? ORDER_DEFAULT_ROWS : Min(Max(aim, 64), ORDER_MAX_ROWS);
+}
 
-	return n == 0 ? ORDER_DEFAULT_ROWS : Min(Max(n, 64), ORDER_MAX_ROWS);
+/* The aim for the superblock batches of a build run: the statistics of the heap, or without them (a table never analyzed) the rows a superblock holds in the run */
+uint32
+sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n)
+{
+	uint32		aim = sift_colk_aim_rows(index);
+	uint64		rows = 0;
+
+	if (aim > 0 || n == 0)
+		return aim;
+	for (int i = 0; i < n; i++)
+		rows += in[i]->nrows;
+	return (uint32) Min(rows / n, (uint64) SIFT_COL_UNIT_MAX_ROWS);
 }
 
 typedef bool (*RowNext) (void *state, RowRef *r);

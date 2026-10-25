@@ -448,6 +448,23 @@ typedef struct CutVerdict
 	bool		range;			/* the leaf is a time leaf: a range of its values is read, not an equality */
 } CutVerdict;
 
+/* The rows of the superblock in the middle of the heap: what a unit holds for a table that was never analyzed, and what the build aims a unit at then */
+static double
+mid_rows(Relation heap, BlockNumber nblocks, double nsb)
+{
+	BlockNumber start = (BlockNumber) (nsb / 2) * SIFT_SB_PAGES;
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	TableScanDesc scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
+	double		n = 0;
+
+	heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		n++;
+	table_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	return Max(n, 1);
+}
+
 /* The rule above for the index: no write, the verdict says what a build would do. dry: the options of the index do not stop it. */
 static void
 decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
@@ -515,7 +532,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		else
 			untracked++;
 	}
-	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : (double) SIFT_SB_PAGES * MaxHeapTuplesPerPage / 4;
+	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : mid_rows(heap, nblocks, nsb);
 	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), AUTOCUT_ROWS / Max(rows_per_unit, 1));	/* a quarter of the heap at most: the sample costs what a build of the share costs */
 	if (ncand == 0)
 	{

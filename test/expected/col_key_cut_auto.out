@@ -170,6 +170,29 @@ UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cu
  wide   | tenant_id | cut      | f     | an equality on the key reads many units and the index does not grow
 (3 rows)
 
+-- a table that was never analyzed has no statistics: a unit aims at the rows a superblock holds (the key cut of its build used to aim at 1024, 4 times too small
+-- here, and its units cost 30% of the index), and the decision reads the rows of a superblock from the heap
+CREATE TABLE ku (id int, tenant_id int, a1 int, a2 int, a3 int) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO ku SELECT i, (random() * 100)::int, (random() * 1000)::int, (random() * 1000)::int, (random() * 1000)::int FROM generate_series(1, 400000) i;
+CREATE INDEX ku_cut ON ku USING sift_col (tenant_id, a1, a2, a3) WITH (key_cut = 'tenant_id');
+SELECT sum(units) BETWEEN pg_relation_size('ku') / 8192 / 256 / 2 AND 2 * pg_relation_size('ku') / 8192 / 256 AS units_of_the_superblocks FROM sift.col_segments('ku_cut') WHERE kind = 'immutable';
+ units_of_the_superblocks 
+--------------------------
+ t
+(1 row)
+
+SELECT leaf, decision FROM sift.key_cut_decision('ku_cut');
+   leaf    | decision 
+-----------+----------
+ tenant_id | advise
+(1 row)
+
 -- a time leaf: when no key is worth cutting by, a range of a date or timestamp that holds the rows of one unit is tested the same way; a timestamp that follows the heap is not
 CREATE TABLE kt (id int, tenant int, ts timestamptz, tarr timestamptz, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
@@ -241,6 +264,6 @@ SELECT sift.col_verify('kt_auto', true);
 (1 row)
 
 DROP TABLE kt;
-DROP TABLE ka, kg;
+DROP TABLE ka, kg, ku;
 DROP FUNCTION kopt(regclass), kunits(text);
 DROP EXTENSION pg_sift;

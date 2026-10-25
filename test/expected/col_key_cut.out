@@ -21,10 +21,10 @@ SELECT sift.col_verify('kc_idx', true);
  
 (1 row)
 
--- the segment is column format minor 17 with units of about 1,024 rows; the index without the option is not
-SELECT kind, format, units > 90 AS many_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
-   kind    | format | many_units 
------------+--------+------------
+-- the segment is column format minor 17 with units of about the rows of a superblock (the table was never analyzed); the index without the option is not
+SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+   kind    | format | superblock_units 
+-----------+--------+------------------
  immutable |     17 | t
 (1 row)
 
@@ -59,14 +59,14 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM kchk('built');
- after_step |       shape        |             result              
-------------+--------------------+---------------------------------
- built      | one customer       | same Units: 1 Units Pruned: 99
- built      | customer and dates | same Units: 1 Units Pruned: 99
- built      | customer range     | same Units: 2 Units Pruned: 98
- built      | customer list      | same Units: 3 Units Pruned: 97
- built      | other column       | same Units: 36 Units Pruned: 64
- built      | top-N by key       | same Units: 1 Units Pruned: 0
+ after_step |       shape        |            result             
+------------+--------------------+-------------------------------
+ built      | one customer       | same Units: 1 Units Pruned: 8
+ built      | customer and dates | same Units: 1 Units Pruned: 8
+ built      | customer range     | same Units: 1 Units Pruned: 8
+ built      | customer list      | same Units: 3 Units Pruned: 6
+ built      | other column       | same Units: 8 Units Pruned: 1
+ built      | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
 -- the same customer in the index with superblock units: the random heap puts its rows in every unit
@@ -86,14 +86,14 @@ SELECT kunits('SELECT count(*), sum(amount) FROM kp WHERE cust = 42') AS superbl
 
 INSERT INTO kc SELECT 200000 + i, 42, date '2026-04-01', 7, 'y' FROM generate_series(1, 30) i;
 SELECT * FROM kchk('write buffer');
-  after_step  |       shape        |             result              
---------------+--------------------+---------------------------------
- write buffer | one customer       | same Units: 2 Units Pruned: 99
- write buffer | customer and dates | same Units: 2 Units Pruned: 99
- write buffer | customer range     | same Units: 3 Units Pruned: 98
- write buffer | customer list      | same Units: 4 Units Pruned: 97
- write buffer | other column       | same Units: 37 Units Pruned: 64
- write buffer | top-N by key       | same Units: 10 Units Pruned: 0
+  after_step  |       shape        |            result             
+--------------+--------------------+-------------------------------
+ write buffer | one customer       | same Units: 2 Units Pruned: 8
+ write buffer | customer and dates | same Units: 2 Units Pruned: 8
+ write buffer | customer range     | same Units: 2 Units Pruned: 8
+ write buffer | customer list      | same Units: 4 Units Pruned: 6
+ write buffer | other column       | same Units: 9 Units Pruned: 1
+ write buffer | top-N by key       | same Units: 9 Units Pruned: 0
 (6 rows)
 
 SELECT sift.col_promote('kc_idx') > 0 AS promoted;
@@ -103,27 +103,27 @@ SELECT sift.col_promote('kc_idx') > 0 AS promoted;
 (1 row)
 
 SELECT * FROM kchk('promoted');
- after_step |       shape        |             result              
-------------+--------------------+---------------------------------
- promoted   | one customer       | same Units: 2 Units Pruned: 99
- promoted   | customer and dates | same Units: 2 Units Pruned: 99
- promoted   | customer range     | same Units: 2 Units Pruned: 99
- promoted   | customer list      | same Units: 3 Units Pruned: 98
- promoted   | other column       | same Units: 36 Units Pruned: 65
- promoted   | top-N by key       | same Units: 2 Units Pruned: 0
+ after_step |       shape        |            result             
+------------+--------------------+-------------------------------
+ promoted   | one customer       | same Units: 2 Units Pruned: 8
+ promoted   | customer and dates | same Units: 2 Units Pruned: 8
+ promoted   | customer range     | same Units: 1 Units Pruned: 9
+ promoted   | customer list      | same Units: 3 Units Pruned: 7
+ promoted   | other column       | same Units: 8 Units Pruned: 2
+ promoted   | top-N by key       | same Units: 9 Units Pruned: 0
 (6 rows)
 
 DELETE FROM kc WHERE id % 7 = 0;
 UPDATE kc SET amount = amount + 1, cust = 42 WHERE id % 1009 = 0;
 SELECT * FROM kchk('deleted and updated');
-     after_step      |       shape        |             result              
----------------------+--------------------+---------------------------------
- deleted and updated | one customer       | same Units: 10 Units Pruned: 99
- deleted and updated | customer and dates | same Units: 10 Units Pruned: 99
- deleted and updated | customer range     | same Units: 10 Units Pruned: 99
- deleted and updated | customer list      | same Units: 11 Units Pruned: 98
- deleted and updated | other column       | same Units: 44 Units Pruned: 65
- deleted and updated | top-N by key       | same Units: 24 Units Pruned: 0
+     after_step      |       shape        |             result             
+---------------------+--------------------+--------------------------------
+ deleted and updated | one customer       | same Units: 10 Units Pruned: 8
+ deleted and updated | customer and dates | same Units: 10 Units Pruned: 8
+ deleted and updated | customer range     | same Units: 9 Units Pruned: 9
+ deleted and updated | customer list      | same Units: 11 Units Pruned: 7
+ deleted and updated | other column       | same Units: 16 Units Pruned: 2
+ deleted and updated | top-N by key       | same Units: 17 Units Pruned: 0
 (6 rows)
 
 VACUUM kc;
