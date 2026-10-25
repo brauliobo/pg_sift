@@ -114,6 +114,9 @@ focus_tokens() {
 # agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
 ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
+# the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
+# 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
+ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
@@ -320,6 +323,8 @@ if [[ $MODE == --selftest ]]; then
 	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 	prod=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD -u SIFT_CI_DEEP SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep '^release-library-regress ')
 	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
+	(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
 	for pg in 17 18; do
 	for deep in '' 1; do
@@ -441,6 +446,7 @@ installcheck_batches() {
 	shift
 	for t in "$@"; do
 		[[ installcheck-$t =~ ${SIFT_CI_AFFECTED:-.} ]] || continue
+		[[ -z ${SIFT_CI_ASSERT:-} || ! installcheck-$t =~ $ASSERT_SKIP ]] || continue
 		if grep -qiE 'using sift_table|\<vacuum\>' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
 		b+=("$t")
 		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
