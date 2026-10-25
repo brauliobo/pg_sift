@@ -88,12 +88,14 @@ INSERT INTO buckets VALUES ('k0', NULL, 'a'), ('k1', NULL, 'b'), ('k1', NULL, 'c
 
 -- a hash partitioned table: the remainders are the partitions a key can be in
 CREATE TABLE ev_part (id int, parent_id int, kind text, grp int, ts date, amount int, val float8) PARTITION BY HASH (id);
+-- @heap
 DO $$
 BEGIN
 	FOR i IN 0..@PARTS@ - 1 LOOP
 		EXECUTE format('CREATE TABLE ev_part_%s PARTITION OF ev_part FOR VALUES WITH (MODULUS %s, REMAINDER %s) WITH (autovacuum_enabled = false)', i, @PARTS@, i);
 	END LOOP;
 END $$;
+-- @end
 CREATE FUNCTION fz.gen_part(lo bigint, hi bigint, salt int) RETURNS SETOF ev_part LANGUAGE sql AS $$
 	SELECT id, parent_id, kind, grp, ts, amount, val FROM fz.gen_events(lo, hi, salt) $$;
 INSERT INTO ev_part SELECT * FROM fz.gen_part(1, @ROWS@ / 2, 7);
@@ -198,5 +200,28 @@ CREATE FUNCTION fz.gen_exf(lo bigint, hi bigint, salt int) RETURNS SETOF exf LAN
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO exf SELECT * FROM fz.gen_exf(1, @ROWS@, 0);
 CREATE INDEX exf_col ON exf USING sift_col (id, org, kind, amount, val, dec, stamp, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}', superunit = 0);
+
+-- @table
+-- the fact tables rewritten as sift_tables (the --table mode of the driver, which also drops the sift_col indexes above): the jsonb paths of those indexes are
+-- declared per column, a VACUUM FULL writes their leaves; ev_part is one table here (the pushdown reads a partitioned table through the sift_col indexes of its
+-- partitions only)
+ALTER TABLE events SET ACCESS METHOD sift_table;
+SELECT sift.table_set_paths('events', 'doc', 'doc.parts[]{cat text, dir_a text, score float8}');
+SELECT sift.table_set_paths('events', 'metrics', 'metrics.* float8');
+VACUUM FULL events;
+ALTER TABLE kc SET ACCESS METHOD sift_table;
+ALTER TABLE nzf SET ACCESS METHOD sift_table;
+ALTER TABLE exf SET ACCESS METHOD sift_table;
+SELECT sift.table_set_paths('exf', 'metrics_a', 'metrics_a.* float8');
+SELECT sift.table_set_paths('exf', 'parts', 'parts[]{cat text, score float8}');
+VACUUM FULL exf;
+-- COPY of the rows a generator makes (a superuser: through a file of the data directory); a table without a unique index takes it as a group of columns
+CREATE FUNCTION fz.bulk_insert(tbl regclass, gen text, lo bigint, hi bigint, salt int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE f text := current_setting('data_directory') || '/fz_bulk.dat';
+BEGIN
+	EXECUTE format('COPY (SELECT * FROM fz.%I(%s, %s, %s)) TO %L', gen, lo, hi, salt, f);
+	EXECUTE format('COPY %s FROM %L', tbl, f);
+END $$;
+-- @end
 
 VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, kcut_a, kcut_b, kcut_c;

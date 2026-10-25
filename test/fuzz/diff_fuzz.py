@@ -11,7 +11,12 @@ the pre-aggregates, the arms alone, parallel workers, ...); the results are comp
   test/fuzz/diff_fuzz.py --seeds 1-3 --queries 40 --rows 3000        the quick tier (scripts/ci.sh, job difftest-fuzz)
   test/fuzz/diff_fuzz.py --seeds 100-199 --queries 300 --out DIR     a long search: a reproducer per divergence in DIR (shrunk)
   test/fuzz/diff_fuzz.py --replay FILE                               runs a reproducer written by --out again
-  test/fuzz/diff_fuzz.py --selftest                                  no server: every family generates and renders (the lint job)
+  test/fuzz/diff_fuzz.py --table --seeds 1-3 --queries 40            the same on sift_tables (scripts/ci.sh, job difftest-fuzz-tbl)
+  test/fuzz/diff_fuzz.py --selftest                                  no server: every family generates and renders in both modes (the lint job)
+
+--table rewrites the fact tables USING sift_table (no sift_col index; the jsonb paths are declared with sift.table_set_paths) and runs the DML on them
+(updates, deletes, inserts, rolled back writes, VACUUM [FULL], sift.table_maintain: tombstones, write buffers, unfrozen groups); the reference is the
+normal plan on the same table. The families that need an option of the column index are skipped (TABLE_SKIP).
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT) installed and started. Exit 1 on a divergence or a query the generator got wrong.
 """
@@ -28,6 +33,15 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
            PGOPTIONS='-c client_min_messages=warning')
+
+TABLE = False  # --table: the fact tables are sift_tables
+# families not run on a sift_table, with the reason
+TABLE_SKIP = {
+    'point': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
+    'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
+    'keycut': 'key_cut is an option of the sift_col index',
+    'window': 'the sorted runs (order_columns) are an option of the sift_col index',
+}
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
 REF = 'sift.enable_agg=off;max_parallel_workers_per_gather=0'
@@ -51,6 +65,11 @@ def create_db(name, template=None):
 
 def data_sql(seed, rows, parts):
     t = open(f'{HERE}/diff_fuzz_data.sql').read()
+    for mode, keep in (('table', TABLE), ('heap', not TABLE)):
+        t = re.sub(rf'^-- @{mode}\n(.*?)^-- @end\n', (lambda m: m.group(1)) if keep else '', t, flags=re.S | re.M)
+    if TABLE:
+        t = t.replace(') PARTITION BY HASH (id);', ') USING sift_table;')
+        t = re.sub(r'^CREATE INDEX \w+ ON \w+ USING sift_col.*?;\n', '', t, flags=re.S | re.M)
     return t.replace('@SEED@', str(seed)).replace('@ROWS@', str(rows)).replace('@PARTS@', str(parts))
 
 
@@ -1023,6 +1042,8 @@ def dml_exceptions(r, ctx):
         return f'INSERT INTO exf SELECT * FROM fz.gen_exf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
     if e == 8:
         return r.choice(['VACUUM exf', 'VACUUM (FREEZE) exf'])
+    if TABLE:
+        return r.choice(["SELECT sift.table_maintain('exf')", "SELECT sift.table_maintain('exf')", 'VACUUM FULL exf', bulk_insert(r, ctx, 'exf'), bulk_insert(r, ctx, 'exf')])
     return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
 
 
@@ -1124,7 +1145,32 @@ def dml(r, ctx):
     if e == 14:
         return r.choice([f'UPDATE items SET enabled = NOT enabled WHERE {ids}', f'UPDATE dims SET score = score + 1 WHERE a % {m % 50 + 3} = 0',
                          'DELETE FROM dims WHERE a = %d' % r.randrange(200), "UPDATE lookup SET derived_cat = 'm9' WHERE kind = 'k%d'" % r.randrange(5)])
-    return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'])
+    return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'] + (dml_table(r, ctx, t, ids) if TABLE else []))
+
+
+TABLE_GEN = {'events': ('gen_events', 'next_ev'), 'ev_part': ('gen_part', 'next_pt'), 'nzf': ('gen_nzf', 'next_nz'), 'exf': ('gen_exf', 'next_ex')}
+
+
+def bulk_insert(r, ctx, t):
+    """A COPY of a few rows: a table without a unique index takes it as an unfrozen group (the rows carry their transaction) and not in the write buffer."""
+    gen, counter = TABLE_GEN[t]
+    n = r.choice([5, 40, 200])
+    lo = ctx[counter]; ctx[counter] += n
+    return f"SELECT fz.bulk_insert('{t}', '{gen}', {lo}, {lo + n - 1}, {r.randrange(1, 9)})"
+
+
+def dml_table(r, ctx, t, ids):
+    """Statements that matter to the table only: the maintenance of its segments, a rewrite, COPY, and writes that roll back (their rows stay in the write buffers and the
+    tombstones until a VACUUM drops them) or half roll back."""
+    m = "sift.table_maintain('%s')" % r.choice(['events', 'events', 'kc', 'ev_part'])
+    n = r.choice([5, 40])
+    lo = ctx['next_ev'] if t == 'events' else ctx['next_pt']
+    ctx['next_ev' if t == 'events' else 'next_pt'] += n
+    ins = f"INSERT INTO {t} SELECT * FROM fz.{'gen_events' if t == 'events' else 'gen_part'}({lo}, {lo + n - 1}, {r.randrange(1, 9)})"
+    return [f'SELECT {m}', f'SELECT {m}', 'VACUUM FULL events', f'BEGIN; {ins}; ROLLBACK', f'BEGIN; UPDATE {t} SET amount = amount + 1 WHERE {ids}; ROLLBACK',
+            f'BEGIN; DELETE FROM {t} WHERE {ids}; ROLLBACK',
+            f'BEGIN; {ins}; SAVEPOINT s; UPDATE {t} SET grp = 3 WHERE {ids}; ROLLBACK TO s; DELETE FROM {t} WHERE {ids}; COMMIT',
+            bulk_insert(r, ctx, t), f'BEGIN; {bulk_insert(r, ctx, t)}; ROLLBACK']
 
 
 KCUT_COLS = {'ki': ['ki + 1', 'NULL', '39 - ki', '7'], 'kd': ["kd + {d}", "'infinity'", "'-infinity'", 'NULL', "date '2025-03-01'"],
@@ -1219,6 +1265,8 @@ def dml_nullzone(r, ctx):
         return f'INSERT INTO nzf SELECT * FROM fz.gen_nzf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
     if e == 12:
         return r.choice(['VACUUM nzf', 'VACUUM (FREEZE) nzf'])
+    if TABLE:
+        return r.choice(["SELECT sift.table_maintain('nzf')", "SELECT sift.table_maintain('nzf')", 'VACUUM FULL nzf', bulk_insert(r, ctx, 'nzf'), bulk_insert(r, ctx, 'nzf')])
     return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
 
 
@@ -1245,7 +1293,7 @@ def lines_of(out):
 
 def gen_query(seed, i, ctx, only):
     r = random.Random(seed * 1000003 + i)
-    names = [n for n in FAMILIES if not only or n in only]
+    names = [n for n in FAMILIES if (not only or n in only) and not (TABLE and n in TABLE_SKIP)]
     fam = r.choices(names, [FAMILIES[n][2] for n in names])[0]
     gen, render, _ = FAMILIES[fam]
     parts = gen(r, ctx)
@@ -1266,9 +1314,9 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
         if not only or 'exceptions' in only:
             st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
-        if not only or 'keycut' in only:
+        if not TABLE and (not only or 'keycut' in only):
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
-        if not only or 'window' in only:
+        if not TABLE and (not only or 'window' in only):
             st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
@@ -1432,22 +1480,39 @@ def main():
     ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
     ap.add_argument('--show', action='store_true', help='print every query')
-    ap.add_argument('--selftest', action='store_true', help='no server: every family generates and renders queries for seeds 0-19 (the lint job)')
+    ap.add_argument('--table', action='store_true', help='the fact tables are sift_tables (see above)')
+    ap.add_argument('--selftest', action='store_true', help='no server: every family generates and renders queries for seeds 0-19, with and without --table (the lint job)')
     a = ap.parse_args()
+    global TABLE
+    TABLE = a.table
     if a.selftest:
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
-        for fam, (gen, render, _) in FAMILIES.items():
+        for TABLE in (False, True):
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
+            sql = data_sql(1, a.rows, a.parts)
+            if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE or ('PARTITION BY' in sql) == TABLE:
+                sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
+            fams = {f: v for f, v in FAMILIES.items() if not (TABLE and f in TABLE_SKIP)}
+            for fam, (gen, render, _) in fams.items():
+                for seed in range(20):
+                    sql, _ = render(gen(random.Random(seed), dict(ctx)))
+                    if not sql.strip():
+                        sys.exit(f'diff_fuzz selftest: family {fam} rendered no query for seed {seed}')
             for seed in range(20):
-                sql, _ = render(gen(random.Random(seed), dict(ctx)))
-                if not sql.strip():
-                    sys.exit(f'diff_fuzz selftest: family {fam} rendered no query for seed {seed}')
-        print(f'diff_fuzz selftest: {len(FAMILIES)} families, 20 queries each')
+                for st, qs in episodes(seed, 40, dict(ctx), set()):
+                    for qid, fam, parts, vs, nl in qs:
+                        render_query(fam, parts)
+            print(f"diff_fuzz selftest{' --table' if TABLE else ''}: {len(fams)} families, 20 queries each, 20 scripts of 40 queries")
+            for fam in FAMILIES if TABLE else ():
+                if fam in TABLE_SKIP:
+                    print(f'  skipped on a sift_table: {fam}: {TABLE_SKIP[fam]}')
         return 0
     seeds = []
     for part in a.seeds.split(','):
         lo, _, hi = part.partition('-')
         seeds += range(int(lo), int(hi or lo) + 1)
     only = set(filter(None, a.families.split(',')))
+    if TABLE and only & set(TABLE_SKIP):
+        sys.exit('diff_fuzz: not run on a sift_table: ' + ', '.join(f'{f} ({TABLE_SKIP[f]})' for f in sorted(only & set(TABLE_SKIP))))
     if a.leader_on:
         LEADER[:] = ['on']
     total = {'CRASH': 0, 'ok': 0, 'DIFF': 0, 'GENERR': 0, 'timeout': 0, 'queries': 0}
@@ -1455,10 +1520,10 @@ def main():
     found = []
     t0 = time.time()
     for seed in seeds:
-        tag = f'{seed}'
+        tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)
