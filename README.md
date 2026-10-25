@@ -69,6 +69,10 @@ It does not win, and the table and charts show each case:
 - **Writes, spilling distinct counts and queries that keep a few rows** are slower than PostgreSQL's own plan on some shapes, and the load and the disk are behind ClickHouse's: the list below is generated from the results.
 - **A shape the planner cannot prove equal** keeps the normal plan.
 
+### Limitations and trade-offs
+
+**Known gap: a `numeric` without precision.** On a generated table of 1,000,000 rows, `GROUP BY` four values with `count`, `sum` and `avg` of a bare `numeric` column keeps PostgreSQL's plan: the scan is costed at 83,566 against 16,016 for the normal plan, and when forced it is slower (170 ms against 55 ms). With `numeric(10,2)` the scan is chosen and answers in 0.14 ms against 54 ms. Declare the precision of money-like columns until the cost model reads the bare type.
+
 ## Quick start
 
 ### Install
