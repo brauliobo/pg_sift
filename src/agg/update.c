@@ -209,6 +209,13 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	{
 		uint32		id = combo_val(ex, a->combo, out[j], a->slot);
 
+		if (j + DSET_AHEAD < nsel && a->kind != SAA_M_COUNT)
+		{
+			uint32		ahead = combo_val(ex, a->combo, out[j + DSET_AHEAD], a->slot);
+
+			if (ahead)
+				dset_prefetch(&ex->dset[ai], ex->gid[j + DSET_AHEAD], ahead);
+		}
 		if (id == 0 || (ok && !sift_colsrc_bit(ok, j)))
 			continue;
 		if (a->kind == SAA_M_COUNT || (dset_add(ex, &ex->dset[ai], ex->gid[j], id) && a->kind == SAA_M_DISTINCT))

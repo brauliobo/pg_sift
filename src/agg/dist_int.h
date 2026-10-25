@@ -109,6 +109,9 @@ dset_hash(uint64 x)
 void agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get);
 void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
+/* tuples ahead whose pair slot is prefetched while a loop adds: the set outgrows the caches with the groups */
+#define DSET_AHEAD	8
+void dset_prefetch(const DSet *s, uint32 g, uint32 v);
 Dist *dist_new(AggExec *ex, bool sgn);
 bool dist_add(AggExec *ex, Dist *d, uint32 g, uint32 v);
 uint64 dist_or_words(AggExec *ex, Dist *d, uint32 g, int64 wbase, const uint8 *words, uint64 nwords);

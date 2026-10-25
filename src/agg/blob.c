@@ -1051,6 +1051,8 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 						id = ba->xv[ba->pv[i]];
 			sift_i128	v = g->amap[ai].val[id - 1];
 
+			if (i + DSET_AHEAD < ba->npairs)
+				dset_prefetch(&g->dset[ai], gids[ba->pg[i + DSET_AHEAD]], ba->xv[ba->pv[i + DSET_AHEAD]]);
 			if (!dset_add(g, &g->dset[ai], t, id))
 				continue;
 			if (v == SIFT_NX_NAN)
@@ -1068,6 +1070,8 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 		{
 			uint32		t = gids[ba->pg[i]];
 
+			if (i + DSET_AHEAD < ba->npairs)
+				dset_prefetch(&g->dset[ai], gids[ba->pg[i + DSET_AHEAD]], ba->xv[ba->pv[i + DSET_AHEAD]]);
 			if (dset_add(g, &g->dset[ai], t, ba->xv[ba->pv[i]]))
 				g->acc[ai].n[t]++;
 		}

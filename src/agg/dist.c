@@ -117,6 +117,14 @@ dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
 		pfree(ocnt);
 }
 
+/* the slot of a pair is read soon: the miss of a table past the caches overlaps the work in between */
+void
+dset_prefetch(const DSet *s, uint32 g, uint32 v)
+{
+	if (s->cap)
+		__builtin_prefetch(&s->slot[dset_hash(DSET_PAIR(g, v)) & (s->cap - 1)]);
+}
+
 /* true when the pair is new */
 bool
 dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v)

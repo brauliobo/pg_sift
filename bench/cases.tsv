@@ -137,3 +137,4 @@ verdict_shared_report	the choice between a shared CTE and its inline plan (sever
 grouping_sets_many_keys	prepares the key ids of a chunk once for all the sets that read its rows	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 topn_walk_order_kept	keeps the order of that walk in the backend	orders	default+id	Top-N: amount DESC, id	native	warm_backend:sift.enable_agg = on	ms	faster33	no
 lateral_func_avg	is read by the scan as the grouping of the elements by the key of `x`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+count_distinct_lookup_pairs	the slots of the (group, value) pairs of a joined `count(DISTINCT)` are fetched ahead	orders	default	Pushed Aggregates: count\(DISTINCT d\.cat	native	-	ms	faster33	no
