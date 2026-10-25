@@ -112,6 +112,9 @@ new_data() {
 # No autovacuum in the cluster: a worker holds a snapshot while it analyzes a table, a catalog too, and VACUUM removes only the rows older
 # than every snapshot of the database, so the rows a test deleted stay and its plan or its dead-document count differs now and then (the
 # reloption autovacuum_enabled cannot switch off the workers' catalogs). The one job that needs it (scripts/soak.sh) turns it on for its run.
+# max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
+# 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
+# The WAL a lane keeps is at most this, 1 MB segments, no recycling.
 start() {
 	mkdir -p "$SOCK"
 	if [[ ! -f $DATA/PG_VERSION ]]; then
@@ -122,8 +125,8 @@ start() {
 			unix_socket_directories = '$SOCK'
 			$(conf)
 			fsync = off
-			max_wal_size = 48MB
-			min_wal_size = 32MB
+			max_wal_size = 512MB
+			min_wal_size = 80MB
 			wal_recycle = off
 			shared_buffers = 64MB
 			max_worker_processes = 16
