@@ -165,7 +165,7 @@ Planner: no custom path is needed for a plain scan (AM costs through `relation_e
 
 1. Generic WAL records (`RM_GENERIC_ID`) are replayed by every server but *not* decoded: rows written only through generic WAL are invisible to logical replication.
 2. A custom resource manager (`RegisterCustomRmgr`, id 128..255 reserved for development or registered on the PostgreSQL wiki) must be registered from `_PG_init` during `shared_preload_libraries` processing, on the primary **and on every server that replays its WAL** (a standby without it stops recovery with "resource manager not registered"). `RmgrData.rm_decode` (present in 17 and 18) is called by `LogicalDecodingProcessRecord` for the rmgr's records and may call `ReorderBufferQueueChange` with `REORDER_BUFFER_CHANGE_INSERT/UPDATE/DELETE`, a `RelFileLocator` and a heap-format tuple; the built-in `pgoutput` then publishes it like a heap change (maps the locator to the relation, `heap_deform_tuple`, applies the row filter and column list).
-3. `pgoutput` takes UPDATE/DELETE keys from the old-tuple image; the executor checks the replica identity (`CheckCmdReplicaIdentity`) for every AM, so a published `sift_table` needs one for UPDATE/DELETE like a heap table.
+3. `pgoutput` takes UPDATE/DELETE keys from the old-tuple image; the executor checks replica identity (`CheckCmdReplicaIdentity`) for every AM, so a published `sift_table` needs one for UPDATE/DELETE like a heap table.
 
 **Options compared.**
 

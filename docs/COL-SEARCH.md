@@ -31,7 +31,7 @@ A column provider opts in with `select` in `SiftColProvider` (`sift_colsrc_selec
 
 Contract of the match set:
 
-- a **superset or exact** set of the visible matches of the snapshot: it may hold dead or not yet visible tuples (the index is not MVCC-aware), never miss a visible match;
+- an **exact or wider** set of the visible matches of the snapshot: it may hold dead or not yet visible tuples (the index is not MVCC-aware), never miss a visible match;
 - rows the index cannot decide (phrases are relaxed in the index) are decided on the heap text before they enter the set (`recheck_page`, as `SiftScan`/`SiftCount`): the only heap read of the search itself;
 - exact in its pages (no lossy pages), 64 bytes per page that has a match.
 
