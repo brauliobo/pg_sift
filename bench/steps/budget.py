@@ -28,7 +28,7 @@ STAGES = [  # stage, what it times, the engines
     ('search', 'articles (8 clients) and places (1 client), warm and cold', 'pg_sift, Elasticsearch, pg_search, pg_textsearch, rum, pgx-bm25'),
     ('cases', 'every case of bench/cases.tsv at 1,000,000 orders (tables shared by the cases that read the same one)', 'pg_sift, PostgreSQL (`sift.enable_agg = off`), pg_duckdb'),
     ('duckdb', 'the ten questions of the store at 1,000,000 orders', 'pg_duckdb (heap and Parquet), pg_sift, PostgreSQL'),
-    ('generic', 'the 19 queries of the generic suites (TPC-H-like, ClickBench-like, time series) at 1,000,000 rows, answers checked against PostgreSQL\'s, one container at a time', 'pg_duckdb, ClickHouse (pg_sift and PostgreSQL are in `cases`)'),
+    ('generic', 'the 19 queries of the generic suites (TPC-H-like, ClickBench-like, time series) at 1,000,000 rows, answers checked against PostgreSQL\'s, one engine at a time', 'pg_duckdb, DuckDB, ClickHouse, Citus (columnar, distributed), TimescaleDB (hypertable, continuous aggregate), Elasticsearch (pg_sift and PostgreSQL are in `cases`)'),
 ]
 BASIS = {  # where the minutes of a stage come from
     'store': 'arithmetic on the stored parts of 2026-10-22 (load 32 s, warm 37 s, cold 602 s at 3 CPUs), with the preset\'s cold runs, restarts and load windows',
@@ -37,7 +37,7 @@ BASIS = {  # where the minutes of a stage come from
     'search': 'arithmetic on the stored runs of 2026-10-22: articles 70 + 207 s, places 78 + 267 s, the cold passes 71 + 21 s and 59 + 46 s',
     'cases': 'measured on 2026-10-24 (see Cases below); the pg_duckdb lane of the cases is not in the pass, the `duckdb` and `generic` stages cover that engine',
     'duckdb': 'estimate from the load and the ten questions of the stored 1M run',
-    'generic': 'estimate: three generated datasets (generation, CSV export, ClickHouse load) and 19 queries with 3 timed runs; the loaders and the answers are checked at 20,000 rows, no timing taken',
+    'generic': 'estimate: pg_duckdb 4 (three generated datasets, CSV export, two lanes), Elasticsearch 3, Citus 2.5, TimescaleDB 1.5, ClickHouse 1, DuckDB 0.5, in all 12; the loaders and the answers are checked at 20,000 rows (32 s for the six engines), no timing taken',
 }
 SIFT_BUILD = 3  # minutes: the one step of the preparation that depends on the commit under test (the extension built into the image)
 OUTSIDE = [  # what the pass does not run: a release runs it by name when its code changed
@@ -92,7 +92,7 @@ def stage_table(p):
     total = sum(minutes(p, s) for s, _, _ in STAGES)
     out = ['| stage | minutes | what it times | engines | basis of the minutes |', '|---|---:|---|---|---|']
     out += ['| `%s` | %d | %s | %s | %s |' % (s, minutes(p, s), what, eng, BASIS[s]) for s, what, eng in STAGES]
-    out += ['| **stages** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 85 minutes | every engine measured, none from the cache | |' % total]
+    out += ['| **stages** | **%d** | `bench final --size standard --docs --remeasure-all`, one stage after another; the budget it checks is 94 minutes | every engine measured, none from the cache | |' % total]
     return out, total
 
 
@@ -172,7 +172,7 @@ def block(results):
     st, total = stage_table(p)
     win, full = window_table(results, total)
     out = ['Minutes of the release window on the reference host: the stages of `bench/bench final --size standard` (`bench/presets.env`), then the runs at 10,000,000 orders and the build of the extension. '
-           'The window is **%d minutes** against the 100 the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
+           'The window is **%d minutes** against the one to two hours the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
            'the others are the stored times of the pass of 2026-10-22 (a test host) with the cuts applied, to be replaced by the first pass on the release host.' % full, ''] + st
     out += ['', win[0], win[1]] + win[2:]
     out += ['', '**Done ahead, outside the window.** The data (`bench store prepare`: the CSV of 1,000,000 and 10,000,000 orders; every result records the hash of the data it used) and the pulled images of the other engines '

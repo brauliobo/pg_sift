@@ -43,9 +43,9 @@ import collections, math, os, re, statistics as st, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stats import number as num, sem  # noqa: E402  (steps/stats.py)
+import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 
-with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'engines.tsv')) as f:   # the engines, in table order
-    NAME = {r[0]: r[2] for r in (l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#'))}
+NAME = {r['id']: r['md'] for r in engines.rows()}   # the engines, in table order
 ORDER = list(NAME)
 MIB = 1048576
 UNIT = {'qps': 'queries/s', 'write_ops': 'ops/s', 'wal_mib': 'MiB'}

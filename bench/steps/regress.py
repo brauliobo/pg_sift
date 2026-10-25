@@ -18,6 +18,8 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 HIGHER_BETTER = {'qps'}
 LOWER_BETTER = {'p50_ms', 'cold_p50_ms', 'index_mib', 'build_s'}   # no p95_ms: the tail of 1 s cells is too noisy for a 5% rule
 DETERMINISTIC = {'index_mib'}
@@ -25,9 +27,7 @@ DETERMINISTIC = {'index_mib'}
 
 def references():
     """engine -> reference engine from bench/engines.tsv"""
-    with open(os.path.join(os.path.dirname(HERE), 'engines.tsv')) as f:
-        rows = [l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#')]
-    return {r[0]: r[6] for r in rows if r[6] != '-'}
+    return {r['id']: r['reference'] for r in engines.rows() if r['reference'] != '-'}
 
 
 def load(paths):

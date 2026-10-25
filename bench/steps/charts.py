@@ -28,6 +28,7 @@ from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 import store_charts  # noqa: E402
 import bench_charts  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -63,9 +64,7 @@ def session_date(rows, tier):
 
 def engine_table():
     """id -> (chart label, color) of the engines with chart = yes, in the order of bench/engines.tsv"""
-    with open(os.path.join(os.path.dirname(HERE), 'engines.tsv')) as f:
-        rows = [l.rstrip('\n').split('\t') for l in f if l.strip() and not l.startswith('#')]
-    return {r[0]: (r[1], r[3]) for r in rows if r[4] == 'yes'}
+    return {r['id']: (r['label'], r['color']) for r in engines.rows() if r['chart'] == 'yes'}
 
 
 ENGINES = engine_table()

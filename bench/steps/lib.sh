@@ -4,12 +4,12 @@ export LC_ALL=C
 
 STEPS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # the internal steps that bench/bench runs
 BENCH=$(dirname "$STEPS")
-registry() { awk -F'\t' -v col="$1" -v want="${2:-}" '!/^#/ && NF && (want == "" || $col == want) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv"; }   # ids whose column COL is WANT (any when empty), table order
-ALL_ENGINES=$(registry 1)                    # every engine of bench/engines.tsv
+registry() { awk -F'\t' -v col="$1" -v want="${2:-}" '!/^#/ && NF && $8 != "analytic" && (want == "" || $col == want) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv"; }   # ids of the text engines whose column COL is WANT (any when empty), table order
+ALL_ENGINES=$(registry 1)                    # every text engine of bench/engines.tsv (the analytic ones are the generic suites': steps/generic.py)
 DEFAULT_ENGINES=$(registry 6 yes)            # what `bench run` measures without --engines
 REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.tsv" | sort -u | paste -sd' ')   # the engines that are references for `bench regress`
-PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
-SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
+PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
+SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
 REPO=$(dirname "$BENCH")
 . "$REPO/scripts/quiet.sh"                   # quiet_wait, quiet_batch, quiet_report: host noise by pressure stall information
 . "$BENCH/versions.env"

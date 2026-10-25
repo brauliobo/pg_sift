@@ -43,7 +43,7 @@ done
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 [[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
 FWD+=(--size "$SIZE")
-[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=85 || BUDGET=25; }; }
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=94 || BUDGET=25; }; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
@@ -60,7 +60,7 @@ s_gap() {
   [[ -z $DOCS ]] || { for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/bench/results/store-${f##*/}"; done
                       python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
 }
-s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECONDS=${P_CHURN:-20} bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes 200000,1000000 ${DOCS:+--docs}; }
+s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECONDS=${P_CHURN:-20} bench store section "${FWD[@]}" --run-id "final-$SIZE-updates" --sizes "${P_SECTION_SIZES:-200000,1000000}" ${DOCS:+--docs}; }
 s_search() { bench all "${FWD[@]}" --run-id "final-$SIZE-search" ${DOCS:+--docs}; }
 s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
