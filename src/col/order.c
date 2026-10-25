@@ -24,6 +24,7 @@ typedef struct RowRef
 {
 	const SiftColBatch *b;
 	uint32		r;
+	uint32		chunk;			/* a merge: the chunk of its input that b is, to unpin when the row has left the window */
 } RowRef;
 
 typedef struct OrderCtx
@@ -135,6 +136,8 @@ sift_colk_unit_rows(Relation index)
 }
 
 typedef bool (*RowNext) (void *state, RowRef *r);
+/* the rows that left the window, for a source that owns what they point into */
+typedef void (*RowDone) (void *state, const RowRef *refs, uint64 n);
 
 /*
  * The rows of a build in the order of the key: the first leaf's key and null flag and the TID are copied next to the reference, so that the sort compares
@@ -203,11 +206,11 @@ sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 #include "lib/sort_template.h"
 
 /*
- * Where a window of avail rows in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes (within
- * slack rows), so that one value of the leading leaf is in as few units as it can be. The rows are refs[i], or row i of win when refs is NULL.
+ * Where a window of avail rows refs[0, avail) in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes
+ * (within slack rows), so that one value of the leading leaf is in as few units as it can be.
  */
 static uint64
-cut_at(const OrderCtx *ctx, const RowRef *refs, SiftColBatch *win, uint64 avail, uint64 unit_rows, uint64 slack)
+cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, uint64 slack)
 {
 	uint64		end = Min(avail, unit_rows);
 
@@ -217,23 +220,10 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, SiftColBatch *win, uint64 avail,
 
 		for (uint64 d = 0; d < slack + 1 && best == 0; d++)
 		{
-			RowRef		x,
-						y;
-
-			if (end >= d + 1)
-			{
-				x = refs ? refs[end - d - 1] : (RowRef) {win, end - d - 1};
-				y = refs ? refs[end - d] : (RowRef) {win, end - d};
-				if (key_cmp(&x, &y, ctx, 1) != 0)
-					best = end - d;
-			}
-			if (best == 0 && d > 0 && end + d < avail)
-			{
-				x = refs ? refs[end + d - 1] : (RowRef) {win, end + d - 1};
-				y = refs ? refs[end + d] : (RowRef) {win, end + d};
-				if (key_cmp(&x, &y, ctx, 1) != 0)
-					best = end + d;
-			}
+			if (end >= d + 1 && key_cmp(&refs[end - d - 1], &refs[end - d], ctx, 1) != 0)
+				best = end - d;
+			if (best == 0 && d > 0 && end + d < avail && key_cmp(&refs[end + d - 1], &refs[end + d], ctx, 1) != 0)
+				best = end + d;
 		}
 		if (best > 0)
 			end = best;
@@ -242,31 +232,27 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, SiftColBatch *win, uint64 avail,
 }
 
 /*
- * Cuts the rows of a stream, which arrives in the order of the key (and of the TID within a key), into units of about unit_rows, each cut where the
- * first leaf changes if that is within a quarter of unit_rows of the count (so that one value of the leading leaf is in as few units as it can be), the
- * rows of a unit in TID order. The rows wait in a window of unit_rows + unit_rows / 4 + 1 rows, which is the memory of the cut. Returns the number of units.
- * The rows of an array (refs, which outlive the call) are read where they are; those of a stream (next, whose batches are reused) are copied into the window.
+ * Cuts the rows into units of about unit_rows, each cut where the first leaf changes if that is within a quarter of unit_rows of the count (so that one value of the
+ * leading leaf is in as few units as it can be), the rows of a unit in TID order. The rows are in the order of the key (and of the TID within a key): either the
+ * array refs (which outlives the call), read where it is, or the stream next, whose rows wait as references in a window of unit_rows + unit_rows / 4 + 1, which is
+ * the memory of the cut; done tells the stream which rows left, so that it can free what they point into. Each row is copied once, into its unit. Returns the number of units.
  */
 static int
-cut_stream(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, void *state, const SiftColSchema *schema, const OrderCtx *ctx, uint32 unit_rows, MemoryContext cx)
+cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone done, void *state, const SiftColSchema *schema, const OrderCtx *ctx, uint32 unit_rows,
+		 MemoryContext cx)
 {
 	uint64		slack = unit_rows / 4;
 	uint64		want = unit_rows + slack + 1;
-	SiftColBatch *win = refs ? NULL : sift_cbatch_create(cx, schema),
-			   *spare = refs ? NULL : sift_cbatch_create(cx, schema),
-			   *out = sift_cbatch_create(cx, schema);
-	RowRef	   *wr = refs ? NULL : palloc_array(RowRef, want);
-	uint64		pos = 0;
+	SiftColBatch *out = sift_cbatch_create(cx, schema);
+	RowRef	   *win = refs ? NULL : palloc_array(RowRef, want);
+	uint64		n = 0,
+				pos = 0;
 	uint32		seq = 0,
 				num = 0;
 	bool		eof = false;
 
-	if (win)
-		win->keyed = spare->keyed = win->unsorted = spare->unsorted = true;
-
 	for (;;)
 	{
-		RowRef		r;
 		uint64		avail,
 					end;
 		RowRef	   *u;
@@ -278,21 +264,17 @@ cut_stream(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, void *
 		}
 		else
 		{
-			while (!eof && win->nrows < want)
-			{
-				if (next(state, &r))
-					sift_cbatch_add_from(win, r.b, r.r);
+			while (!eof && n < want)
+				if (next(state, &win[n]))
+					n++;
 				else
 					eof = true;
-			}
-			avail = win->nrows;
-			for (uint64 i = 0; i < avail; i++)
-				wr[i] = (RowRef) {win, (uint32) i};
-			u = wr;
+			avail = n;
+			u = win;
 		}
 		if (avail == 0)
 			break;
-		end = cut_at(ctx, u, NULL, avail, unit_rows, slack);
+		end = cut_at(ctx, u, avail, unit_rows, slack);
 		sort_by_tid(u, end);
 		/*
 		 * The number of a unit is the sequence of the cut by a key. Without a key the units are in the order of the TIDs and take the superblock of their first
@@ -312,16 +294,10 @@ cut_stream(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, void *
 			pos += end;
 		else
 		{
-			sift_cbatch_reset(spare, 0);
-			spare->keyed = spare->unsorted = true;
-			for (uint64 i = end; i < avail; i++)
-				sift_cbatch_add_from(spare, win, i);
-			{
-				SiftColBatch *t = win;
-
-				win = spare;
-				spare = t;
-			}
+			if (done)
+				done(state, u, end);
+			memmove(win, win + end, (n - end) * sizeof(RowRef));
+			n -= end;
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -329,7 +305,7 @@ cut_stream(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, void *
 }
 
 /*
- * Sorts the rows of the batches by the leaves of the order key and adds them to w as units (cut_stream). Returns the number of units. Memory: one
+ * Sorts the rows of the batches by the leaves of the order key and adds them to w as units (cut_rows). Returns the number of units. Memory: one
  * reference per row, and the batches themselves; sift_colk_merge is the form that holds a unit of each input.
  */
 int
@@ -351,7 +327,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};
 	sort_refs(refs, total, &ctx);
-	units = cut_stream(w, refs, total, NULL, NULL, schema, &ctx, unit_rows, cx);
+	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx);
 	pfree(refs);
 	return units;
 }
@@ -363,8 +339,7 @@ typedef struct MergeIn
 	uint64		gen;
 	bool		keyed;
 	uint32		next_unit;
-	SiftColBatch *buf[2];		/* the loaded chunk and the one before it, whose last row the new one must not precede */
-	int			cur;
+	int			chunk;			/* the loaded chunk (MergeSrc.chunk), -1 before the first; the one before it is kept until the new one is checked against it */
 	RowRef	   *ord;			/* the rows of the chunk in the order of the key */
 	uint32		ordcap;
 	uint32		n;
@@ -372,8 +347,18 @@ typedef struct MergeIn
 	bool		done;
 } MergeIn;
 
+/* The rows of a chunk stay where they were decoded until the window of the cut has copied them into a unit: a chunk is reused when no row of it is pinned by the window and its input has loaded another */
+typedef struct MergeChunk
+{
+	SiftColBatch *b;
+	uint32		pins;
+	bool		held;			/* the loaded chunk of its input */
+} MergeChunk;
+
 typedef struct MergeSrc
 {
+	MergeChunk *chunk;
+	int			nchunk;
 	MergeIn    *in;
 	int			n;
 	const OrderCtx *ctx;
@@ -385,18 +370,27 @@ typedef struct MergeSrc
 	MemoryContext cx;
 } MergeSrc;
 
+static int
+chunk_get(MergeSrc *m, const SiftColSchema *schema)
+{
+	for (int i = 0; i < m->nchunk; i++)
+		if (m->chunk[i].pins == 0 && !m->chunk[i].held)
+			return i;
+	m->chunk = m->chunk ? repalloc(m->chunk, (m->nchunk + 1) * sizeof(MergeChunk)) : MemoryContextAlloc(m->cx, sizeof(MergeChunk));
+	m->chunk[m->nchunk] = (MergeChunk) {.b = sift_cbatch_create(m->cx, schema)};
+	return m->nchunk++;
+}
+
 static void
 load_chunk(MergeSrc *m, MergeIn *in)
 {
 	SiftColSegment *seg = in->seg;
 	const SiftColSchema *schema = seg->schema;
 	MemoryContext old;
-	SiftColBatch *prev = in->buf[in->cur];
-	uint32		prevn = in->n;
-	SiftColBatch *b;
+	int			prev = in->chunk;
+	int			cur = chunk_get(m, schema);
+	SiftColBatch *b = m->chunk[cur].b;
 
-	in->cur ^= 1;
-	b = in->buf[in->cur];
 	sift_cbatch_reset(b, 0);
 	old = MemoryContextSwitchTo(m->scratch);
 	if (in->keyed)
@@ -424,30 +418,34 @@ load_chunk(MergeSrc *m, MergeIn *in)
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(m->scratch);
+	in->chunk = cur;
 	in->n = b->nrows;
 	in->pos = 0;
 	if (in->n == 0)
-	{
 		in->done = true;
-		return;
-	}
-	if (in->ordcap < in->n)
+	else
 	{
-		in->ordcap = Max(in->n, 2 * in->ordcap);
-		in->ord = in->ord ? repalloc(in->ord, in->ordcap * sizeof(RowRef)) : MemoryContextAlloc(m->cx, in->ordcap * sizeof(RowRef));
-	}
-	for (uint32 r = 0; r < in->n; r++)
-		in->ord[r] = (RowRef) {b, r};
-	qsort_arg(in->ord, in->n, sizeof(RowRef), ref_cmp, (void *) m->ctx);
-	if (in->keyed && prevn > 0)
-	{
-		RowRef		last = {prev, prevn - 1};
+		if (in->ordcap < in->n)
+		{
+			in->ordcap = Max(in->n, 2 * in->ordcap);
+			in->ord = in->ord ? repalloc(in->ord, in->ordcap * sizeof(RowRef)) : MemoryContextAlloc(m->cx, in->ordcap * sizeof(RowRef));
+		}
+		for (uint32 r = 0; r < in->n; r++)
+			in->ord[r] = (RowRef) {b, r, cur};
+		qsort_arg(in->ord, in->n, sizeof(RowRef), ref_cmp, (void *) m->ctx);
+		if (in->keyed && prev >= 0 && m->chunk[prev].b->nrows > 0)
+		{
+			RowRef		last = {m->chunk[prev].b, m->chunk[prev].b->nrows - 1};
 
-		/* the units of a segment follow each other in the order of the key it was cut by: another key (the option was changed) cannot be merged as a stream */
-		if (ref_cmp(&last, &in->ord[0], (void *) m->ctx) > 0)
-			ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("segment %llu of a key_cut index is not in the order of the key", (unsigned long long) in->gen),
-							errhint("REINDEX the index.")));
+			/* the units of a segment follow each other in the order of the key it was cut by: another key (the option was changed) cannot be merged as a stream */
+			if (ref_cmp(&last, &in->ord[0], (void *) m->ctx) > 0)
+				ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("segment %llu of a key_cut index is not in the order of the key", (unsigned long long) in->gen),
+								errhint("REINDEX the index.")));
+		}
 	}
+	m->chunk[cur].held = !in->done;
+	if (prev >= 0)
+		m->chunk[prev].held = false;
 }
 
 static bool
@@ -472,7 +470,17 @@ merge_next(void *state, RowRef *r)
 	if (best == NULL)
 		return false;
 	*r = best->ord[best->pos++];
+	m->chunk[r->chunk].pins++;
 	return true;
+}
+
+static void
+merge_done(void *state, const RowRef *refs, uint64 n)
+{
+	MergeSrc   *m = state;
+
+	for (uint64 i = 0; i < n; i++)
+		m->chunk[refs[i].chunk].pins--;
 }
 
 /*
@@ -490,12 +498,8 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 	int			units;
 
 	for (int i = 0; i < n; i++)
-	{
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]),
-							 .buf = {sift_cbatch_create(cx, schema), sift_cbatch_create(cx, schema)}};
-		m.in[i].pos = m.in[i].n = 0;
-	}
-	units = cut_stream(w, NULL, 0, merge_next, &m, schema, &ctx, unit_rows, cx);
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]), .chunk = -1};
+	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx);
 	MemoryContextDelete(m.scratch);
 	return units;
 }
