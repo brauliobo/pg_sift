@@ -605,6 +605,26 @@ pack_has_subplan(Node *n, void *context)
 	return IsA(n, SubPlan) || expression_tree_walker(n, pack_has_subplan, context);
 }
 
+/* the statement of the query with `tree` as its plan: what a worker starts (no row marks, no target tables, a plain SELECT) */
+static PlannedStmt *
+select_stmt(AggExec *ex, Plan *tree)
+{
+	PlannedStmt *ps = makeNode(PlannedStmt);
+
+	*ps = *ex->css.ss.ps.state->es_plannedstmt;
+	ps->planTree = tree;
+	ps->rowMarks = NIL;
+#if PG_VERSION_NUM >= 190000
+	ps->resultRelationRelids = NULL;
+#else
+	ps->resultRelations = NIL;
+#endif
+	ps->utilityStmt = NULL;
+	ps->commandType = CMD_SELECT;
+	ps->canSetTag = false;
+	return ps;
+}
+
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
 void
 par_launch(AggExec *ex)
@@ -641,32 +661,12 @@ par_launch(AggExec *ex)
 	for (int ji = 0; ji < ex->spec->njoin; ji++)
 		if (ex->spec->join[ji].params != NIL)
 		{
-			PlannedStmt *ps = makeNode(PlannedStmt);
-
-			*ps = *ex->css.ss.ps.state->es_plannedstmt;
-			ps->planTree = list_nth(ps->subplans, ex->spec->join[ji].subplan - 1);
-			ps->rowMarks = NIL;
-			ps->resultRelations = NIL;
-			ps->utilityStmt = NULL;
-			ps->commandType = CMD_SELECT;
-			ps->canSetTag = false;
-			child_txt[ji] = nodeToString(ps);
+			child_txt[ji] = nodeToString(select_stmt(ex, list_nth(ex->css.ss.ps.state->es_plannedstmt->subplans, ex->spec->join[ji].subplan - 1)));
 			ncorr++;
 		}
 	/* the sub-plans of the expressions start in each worker (they hash a small table once): a statement of the query's sub-plans with no node of its own */
 	if (pack_has_subplan((Node *) ex->pack, NULL))
-	{
-		PlannedStmt *ps = makeNode(PlannedStmt);
-
-		*ps = *ex->css.ss.ps.state->es_plannedstmt;
-		ps->planTree = (Plan *) makeNode(Result);
-		ps->rowMarks = NIL;
-		ps->resultRelations = NIL;
-		ps->utilityStmt = NULL;
-		ps->commandType = CMD_SELECT;
-		ps->canSetTag = false;
-		sub_txt = nodeToString(ps);
-	}
+		sub_txt = nodeToString(select_stmt(ex, (Plan *) makeNode(Result)));
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
