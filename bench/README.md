@@ -485,8 +485,8 @@ The numbers of a release are one pass on the release host, 100 minutes in all. N
 
 ```
 Release pass, size standard (bench/presets.env), stages one after another:
-  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 16, duckdb 6 min
-Total about 81 min, budget 85 min.
+  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 18, duckdb 6 min
+Total about 83 min, budget 85 min.
 ```
 
 **Ahead, the day before** (nothing is timed, `nice`, the host may be in use; the data and the images do not depend on the commit, they are reused while their hash and the sources match):
@@ -503,7 +503,8 @@ bench/bench final --size standard --dry-run                      # every precond
 
 ```sh
 export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=16G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only
-bench/bench final --size standard --docs --remeasure-all                                      # 81 min: the eight stages; `bench resume` continues an interrupted run
+bench/bench final --size standard --docs --remeasure-all                                      # 83 min: the eight stages; `bench resume` continues an interrupted run
+bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none                        # 2 min
 ```
 
 A step that fails is recorded and the pass goes on; `bench final` prints the stage log at its end.

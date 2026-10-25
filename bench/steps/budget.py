@@ -62,8 +62,8 @@ def window_table(results, total):
     bl, bw = next((v for t, v in sz.items() if t.startswith('10M')), (0, 0))
     rows = [
         ('store at 25,000 and 100,000 orders', '`bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none`', small, 'measured on 2026-10-22' if sz else NOT),
-        ('store at 10,000,000 orders', '`bench store all --sizes 10000000 --cold-runs 0 --restart-runs 0 --update-sizes none`', big,
-         'measured on 2026-10-22: load %.0f s, the ten questions %.0f s (five of them measured again on a noisy disk)' % (bl, bw) if sz else NOT),
+        ('store at 10,000,000 orders', '`bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none`', (bl + bw * 4 / 7) / 60,
+         'arithmetic on the run of 2026-10-22 (load %.0f s, the ten questions %.0f s with 5 timed runs and 2 warm-ups, five of them measured again on a noisy disk): 3 timed runs and 1 warm-up scale the questions by 4/7' % (bl, bw) if sz else NOT),
         ('pg_duckdb at 10,000,000 orders', '`bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`', 5, 'estimate'),
         ('the extension built into the image', 'the one step of the preparation that depends on the commit', SIFT_BUILD, 'estimate'),
     ]
@@ -170,7 +170,7 @@ def block(results):
     st, total = stage_table(p)
     win, full = window_table(results, total)
     out = ['Minutes of the release window on the reference host: the stages of `bench/bench final --size standard` (`bench/presets.env`), then the runs at 10,000,000 orders and the build of the extension. '
-           'The window is **%d minutes** of the 100 the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
+           'The window is **%d minutes** against the 100 the release has for every engine together. Which minutes are measured and which are arithmetic is in the last column: only the cases stage has been run since the cuts of the preset, '
            'the others are the stored times of the pass of 2026-10-22 (a test host) with the cuts applied, to be replaced by the first pass on the release host.' % full, ''] + st
     out += ['', win[0], win[1]] + win[2:]
     out += ['', '**Done ahead, outside the window.** The data (`bench store prepare`: the CSV of 1,000,000 and 10,000,000 orders; every result records the hash of the data it used) and the pulled images of the other engines '
