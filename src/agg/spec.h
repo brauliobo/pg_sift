@@ -79,6 +79,7 @@ typedef struct SiftAggNum
 	int			n;				/* steps; 0: no program */
 	SiftAggNx  *step;
 	int			scale;			/* digits after the point of the result: the dscale PostgreSQL gives it */
+	int			dig;			/* digits the proof gave the result: a sum of it adds up exactly (agg_sum_add), the pre-aggregates take only 26 */
 } SiftAggNum;
 
 #define SIFT_AGG_MAX_WIDE	8		/* conjuncts on wide leaves (SAP_WIDE) of one scan: what a column source takes in set_wide */

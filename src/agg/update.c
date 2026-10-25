@@ -510,7 +510,7 @@ upd_sum_num(const AggUpd *u)
 			if (nx[j] == SIFT_NX_NAN)
 				acc->nf[ex->gid[j]] = 1;
 			else
-				acc->w[ex->gid[j]] += nx[j];
+				agg_sum_add(acc, ex->gid[j], nx[j]);
 			acc->n[ex->gid[j]]++;
 		}
 }

@@ -247,6 +247,9 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 
 				leaf = sift_aggnum_linear(&a->num, &mul, &add);
 			}
+			/* the cell's sum times the program's factor is not carried out of 128 bits */
+			if (a->num.dig > 26)
+				return SPW_AGG_ARG;
 			/* the arithmetic of an element's value is not checked against the zone of the unit: the rollup's tuples hold sums only */
 			if (group >= 0 && a->num.n > 1)
 				return SPW_AGG_ARG;

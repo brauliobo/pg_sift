@@ -108,6 +108,7 @@ acc_alloc(AggExec *ex, uint32 cap)
 			case SAA_SUM_NUM:
 			case SAA_AVG_NUM:
 				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				break;
 			case SAA_MIN:

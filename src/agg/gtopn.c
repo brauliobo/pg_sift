@@ -65,7 +65,7 @@ gkey(AggExec *ex, const SiftAggAgg *a, const AggAcc *acc, uint32 g, GKey *k)
 		case SAA_SUM_NUM:
 			k->null = acc->n[g] == 0;
 			k->v = acc->w[g];
-			return !acc->nf[g];
+			return !acc->nf[g] && acc->i[g] == 0;
 		case SAA_SUM_F64:
 			k->null = acc->n[g] == 0;
 			k->v = f8_order(acc->d[g]);

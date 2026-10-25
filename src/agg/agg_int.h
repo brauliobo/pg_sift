@@ -404,6 +404,27 @@ leaf_wide(const SiftSrcLeaf *lf)
 	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64;
 }
 
+/*
+ * The sum of a numeric aggregate (SAA_SUM_NUM, SAA_AVG_NUM) of a group is acc->w + acc->i * 2^128: w wraps, acc->i counts the wraps, so a sum of values of up to 38 digits
+ * is exact whatever the number of rows (agg_sum_datum builds the numeric when a group has wrapped).
+ */
+static inline void
+agg_sum_add(AggAcc *acc, uint32 g, sift_i128 v)
+{
+	if (__builtin_add_overflow(acc->w[g], v, &acc->w[g]))
+		acc->i[g] += v > 0 ? 1 : -1;
+}
+
+/* the sum (w, carry) of a partial state added to group g */
+static inline void
+agg_sum_merge(AggAcc *acc, uint32 g, sift_i128 w, int64 carry)
+{
+	acc->i[g] += carry;
+	agg_sum_add(acc, g, w);
+}
+
+extern Datum agg_sum_datum(const AggAcc *acc, uint32 g, int scale);
+
 static inline const sift_i128 *
 pow10_tab(void)
 {

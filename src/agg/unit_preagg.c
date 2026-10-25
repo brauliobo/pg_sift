@@ -121,7 +121,7 @@ preagg_add(AggExec *ex, int ai, uint32 g, const PaVal *v)
 							add;
 
 				sift_aggnum_linear(&a->num, &mul, &add);
-				acc->w[g] += mul * v->sum + add * v->nn;
+				agg_sum_add(acc, g, mul * v->sum + add * v->nn);
 			}
 			acc->n[g] += v->nn;
 			break;

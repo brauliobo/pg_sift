@@ -857,7 +857,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				if (a->distinct)
 					break;
 				acc->n[t] += ba->a.n[r];
-				acc->w[t] += ba->a.w[r];
+				agg_sum_merge(acc, t, ba->a.w[r], ba->a.i[r]);
 				acc->nf[t] |= ba->a.nf[r];
 				break;
 			case SAA_COUNT_DISTINCT:
@@ -1032,7 +1032,7 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 			if (v == SIFT_NX_NAN)
 				acc->nf[t] = 1;
 			else
-				acc->w[t] += v;
+				agg_sum_add(acc, t, v);
 			acc->n[t]++;
 		}
 		return;

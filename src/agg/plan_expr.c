@@ -1133,7 +1133,7 @@ compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 
 	o->n = 0;
 	o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
-	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig;
+	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig && (o->dig = dig, true);
 }
 
 /* + - * of int8, int4 and int2 operands (int8pl, int84pl, int48pl ...): the SNX op of the function, -1 for any other */

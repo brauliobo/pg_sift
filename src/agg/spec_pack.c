@@ -57,6 +57,7 @@ put_num(Pack *p, const SiftAggNum *n)
 {
 	put_int(p, n->n);
 	put_int(p, n->scale);
+	put_int(p, n->dig);
 	for (int i = 0; i < n->n; i++)
 	{
 		const SiftAggNx *x = &n->step[i];
@@ -463,6 +464,7 @@ get_num(Unpack *u, SiftAggNum *n)
 {
 	n->n = get_int(u);
 	n->scale = get_int(u);
+	n->dig = get_int(u);
 	n->step = palloc(Max(n->n, 1) * sizeof(SiftAggNx));
 	for (int i = 0; i < n->n; i++)
 	{

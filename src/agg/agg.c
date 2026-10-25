@@ -531,12 +531,12 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 			return Float8GetDatum(acc->d[g] / (double) acc->n[g]);
 		case SAA_SUM_NUM:
 			*isnull = acc->n[g] == 0;
-			return *isnull ? (Datum) 0 : scaled_numeric(acc->nf[g] ? SIFT_NX_NAN : acc->w[g], a->num.scale);
+			return *isnull ? (Datum) 0 : agg_sum_datum(acc, g, a->num.scale);
 		case SAA_AVG_NUM:
 			*isnull = acc->n[g] == 0;
 			if (*isnull)
 				return (Datum) 0;
-			return DirectFunctionCall2(numeric_div, scaled_numeric(acc->nf[g] ? SIFT_NX_NAN : acc->w[g], a->num.scale),
+			return DirectFunctionCall2(numeric_div, agg_sum_datum(acc, g, a->num.scale),
 									   DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
 		case SAA_PCT_CONT:
 		case SAA_PCT_DISC:
