@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 6; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 8; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then
@@ -156,7 +156,7 @@ if [[ $MODE == affected ]]; then
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-table(-tuned)?)?$'
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl(-[12])?)?$'
+		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-table(-tuned)?)?$'; fi
 	done
 	case $OUT in
@@ -179,7 +179,7 @@ if [[ $MODE == affected ]]; then
 	exit 0
 fi
 STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
-COL_SLICES_LEAN=4 COL_SLICES_DEEP=8 COL_SLICES_DEEP17=12   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
+COL_SLICES_LEAN=4 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
 COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 declare -A JOB_WEIGHT=(
 	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
@@ -470,19 +470,21 @@ if [[ $MODE == full ]]; then
 	job soak soak 1 "$S/soak.sh" --duration "$(lean_or_deep 180 600)" --check-every 30
 	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
 	job soak-col soak-col 1 "$S/colsoak.sh" --duration "$(lean_or_deep 120 300)"
-	# the deep tier cuts the three longest single jobs in two (run 40193282663: 1867 to 2505 s each on 18, up to 2376 s on 17): the mutants alternate between the jobs,
-	# the seeds of the corpus differ, two rounds of mutations each
-	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
-		for k in 1 2; do
-			job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/2 --docs 8000 --queries 40 --rounds 2 --minimize 1
-		done
-		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed 1 --docs 5000 --queries 150 --rounds 2
-		job difftest-2 difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed 2 --docs 5000 --queries 150 --rounds 2
-	else
+	# The deep tier keeps the differential families of the corpus on PostgreSQL 18 only (they are the half of its lane seconds, and 17 runs them in the lean tier and the
+	# quick tier), and cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
 		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+		job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
+	elif (( PG_MAJOR >= 18 )); then
+		for k in 1 2 3; do
+			job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/3 --docs 8000 --queries 40 --rounds 2 --minimize 1
+		done
+		for k in 1 2 3 4; do
+			job difftest-$k difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed $k --docs 5000 --queries 100 --rounds 1
+		done
+		job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
 	fi
-	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 2500 3000)" --queries "$(lean_or_deep 40 60)" --rounds "$(lean_or_deep 1 2)"
 	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
 	# the two differential tests of the column index take 160 minutes of one lane each on PostgreSQL 18, and more on 17, longer than the rest of the tier together
 	# in four lanes: they are cut into COL_SLICES disjoint slices of the corpus (coldiff.sh --slice K/N) that the lanes and the shards take like any other job. Every
@@ -504,12 +506,14 @@ if [[ $MODE == full ]]; then
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 3 --warn-time
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
-	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on --stop-after 3
-	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
-		job difftest-fuzz-tbl-1 difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 150 --rows 6000 --leader-on --stop-after 3
-		job difftest-fuzz-tbl-2 difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 7-12 --queries 150 --rows 6000 --leader-on --stop-after 3
-	else
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
+		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
 		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
+	elif (( PG_MAJOR >= 18 )); then
+		for k in 1 2; do
+			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+		done
 	fi
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
@@ -533,13 +537,13 @@ else
 	# the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
 	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
 	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard: those
-	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier runs all of them (about 350 tests,
-	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests)
+	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
+	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
 		local t p
 		for t in $(rest sql .sql $SLOW_REGRESS); do
 			for p in $(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
-			[[ -n ${SIFT_CI_DEEP:-} || " $STOCK_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
+			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
 			echo "$t"
 		done
 	}
