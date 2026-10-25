@@ -32,12 +32,24 @@ DECLARE l text; t text := '';
 BEGIN FOR l IN EXECUTE 'EXPLAIN ' || q LOOP t := t || l || E'\n'; END LOOP; RETURN md5(t); END $$;
 SQL
 
+sql primary "LOAD 'pg_sift'" "SELECT count(*) FROM sift.stats()" >/dev/null || bail "sift is not installed in the node"
+
 # a new backend: the plan of the statement as an md5, then hits,misses,shared hits of the session
 backend() {
 	local node=$1 pre=${2:-SET sift.enable_agg = on}
 	sql "$node" "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "$pre" "SELECT plan_md5(series_query(10))" \
 		"SELECT string_agg(value::text, ',' ORDER BY name) FROM sift.stats() WHERE name IN ('verdict_cache_hits', 'verdict_cache_misses', 'verdict_cache_shared_hits')" | tr '\n' ' ' | sed 's/ $//'
 }
+# wait_for DESCRIPTION COMMAND...: the command succeeds within 30 s, else the test ends (a setup that failed must not leave a loop that never ends)
+wait_for() {
+	local what=$1
+	shift
+	for _ in $(seq 300); do "$@" >/dev/null 2>&1 && return 0; sleep 0.1; done
+	bail "timeout: $what"
+}
+n_locks() { [[ $(sql primary "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND $1") == "$2" ]]; }
+victim() { sql primary "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()"; }
+have_victim() { [[ -n $(victim) ]]; }
 FULL='0,1,0'
 SHARED='1,0,1'
 stat() { echo "${1#* }"; }
@@ -55,10 +67,10 @@ check "the setting at 0 plans in full, and the plan is the same" test "$(stat "$
 sql primary "REINDEX INDEX events_col" >/dev/null
 coproc HOLD { sql primary; }
 echo "SELECT pg_advisory_lock(20984, 1);" >&"${HOLD[1]}"
-until [[ $(sql primary "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted") == 1 ]]; do sleep 0.1; done
+wait_for "the lock is held" n_locks granted 1
 backend primary "SET sift.test_verdict_gate = on" >"$(dir primary)/gated.out" 2>&1 &
 GATED=$!
-until [[ $(sql primary "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") == 1 ]]; do sleep 0.1; done
+wait_for "the backend is at the gate" n_locks "NOT granted" 1
 D=$(backend primary)
 check "the statement is planned in full by the backend that was not held" test "$(stat "$D")" == "$FULL"
 echo "SELECT pg_advisory_unlock(20984, 1);" >&"${HOLD[1]}"
@@ -73,11 +85,11 @@ exec {HOLD[1]}>&-
 node_conf primary "restart_after_crash = on"
 sql primary "SELECT pg_reload_conf()" >/dev/null
 sql primary "SELECT pg_sleep(600)" >/dev/null 2>&1 &
-until [[ -n $(sql primary "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()") ]]; do sleep 0.1; done
+wait_for "the victim backend is there" have_victim
 SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 9'
-kill -9 "$(sql primary "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()")"
+kill -9 "$(victim)"
 wait
-until sql primary "SELECT 1" >/dev/null 2>&1; do sleep 0.2; done
+wait_for "the server is back after the crash" sql primary "SELECT 1"
 G=$(backend primary)
 H=$(backend primary)
 check "after a crash restart the first backend plans in full" test "$(stat "$G")" == "$FULL"
