@@ -9,7 +9,7 @@ INSERT INTO facts SELECT i, i, i % 100, i * 0.5 FROM generate_series(1, 30000) i
 CREATE INDEX facts_col ON facts USING sift_col (id, u, v, w);
 VACUUM (FREEZE, ANALYZE) facts;
 CREATE FUNCTION q(keys text) RETURNS text LANGUAGE sql AS
-$$ SELECT format('SELECT %s count(*) AS n, sum(v) AS s, avg(w) AS a, min(v) AS lo, max(w) AS hi FROM facts %s', coalesce(keys || ',', ''), CASE WHEN keys IS NULL THEN '' ELSE 'GROUP BY ' || keys END) $$;
+$$ SELECT format('SELECT %s count(*) AS n, sum(v) AS s, avg(w) AS a, min(v) AS lo, max(w) AS hi, avg(v) AS a2, sum(w) AS s2, min(w) AS lo2, max(v) AS hi2 FROM facts %s', coalesce(keys || ',', ''), CASE WHEN keys IS NULL THEN '' ELSE 'GROUP BY ' || keys END) $$;
 -- the plan of a query and why it was or was not the scan, for a hash memory and a number of groups
 CREATE FUNCTION why(keys text, mem text, mult text DEFAULT '1') RETURNS TABLE (hash_kb int, groups text, used boolean, slug text, detail boolean)
 LANGUAGE plpgsql AS $$
@@ -26,10 +26,10 @@ SELECT * FROM why('u', '4MB', '2');
     8192 | u      | t    |      | 
 (1 row)
 
-SELECT * FROM why('u', '512kB');
+SELECT * FROM why('u', '1MB');
  hash_kb | groups | used |     slug     | detail 
 ---------+--------+------+--------------+--------
-     512 | u      | f    | group_memory | t
+    1024 | u      | f    | group_memory | t
 (1 row)
 
 -- 100 groups, or one, fit any memory

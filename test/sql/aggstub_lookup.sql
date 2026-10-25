@@ -68,7 +68,7 @@ SELECT same($$SELECT CASE WHEN o.kind = 'web' THEN i.category ELSE coalesce(i.ki
 -- a key of the metrics next to the unnest
 SELECT same($$SELECT i.category, count((o.metrics->>'m_total')::float8) AS c, round(avg((o.metrics->>'m_total')::float8)::numeric, 9) AS a, max((o.metrics->>'value')::float8) AS v
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY 1$$) AS metric_key;
-SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, avg((metrics->>'m_total')::float8) AS a
+SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, round(avg((metrics->>'m_total')::float8)::numeric, 9) AS a
 			  FROM o WHERE (metrics->>'m_total')::float8 IS NOT NULL GROUP BY 1$$) AS metric_key_rows;
 
 -- the outer aggregate over the per-order aggregates (the order is the group; the plan is the planner's choice at this size, the

@@ -35,10 +35,12 @@ SELECT (SELECT count(*) FROM mt) = (SELECT count(*) FROM mv) AND (SELECT sum(v) 
 	(SELECT sum(v) FROM mt) = (SELECT sum(v) FROM mn) AS same_rows;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
+SET sift.enable_agg = off;
 SELECT count(*), sum(v) FROM mt WHERE id BETWEEN 100 AND 5000;
 SELECT count(*), sum(v) FROM mv WHERE id BETWEEN 100 AND 5000;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
+RESET sift.enable_agg;
 
 -- a second call finds nothing left to clear (the tombstones stay, so it looks at them again but clears no bit)
 SELECT busy, dead_rows, merged FROM sift.table_maintain('mt');

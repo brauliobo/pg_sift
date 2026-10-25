@@ -11,7 +11,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, u, v, w);
 VACUUM (FREEZE, ANALYZE) facts;
 
 CREATE FUNCTION q(keys text) RETURNS text LANGUAGE sql AS
-$$ SELECT format('SELECT %s count(*) AS n, sum(v) AS s, avg(w) AS a, min(v) AS lo, max(w) AS hi FROM facts %s', coalesce(keys || ',', ''), CASE WHEN keys IS NULL THEN '' ELSE 'GROUP BY ' || keys END) $$;
+$$ SELECT format('SELECT %s count(*) AS n, sum(v) AS s, avg(w) AS a, min(v) AS lo, max(w) AS hi, avg(v) AS a2, sum(w) AS s2, min(w) AS lo2, max(v) AS hi2 FROM facts %s', coalesce(keys || ',', ''), CASE WHEN keys IS NULL THEN '' ELSE 'GROUP BY ' || keys END) $$;
 
 -- the plan of a query and why it was or was not the scan, for a hash memory and a number of groups
 CREATE FUNCTION why(keys text, mem text, mult text DEFAULT '1') RETURNS TABLE (hash_kb int, groups text, used boolean, slug text, detail boolean)
@@ -25,7 +25,7 @@ END $$;
 
 -- 30,000 groups of about 200 bytes fit the 8 MB of the defaults; they do not fit 512 kB, and the sort of the normal plan is the cheaper spill
 SELECT * FROM why('u', '4MB', '2');
-SELECT * FROM why('u', '512kB');
+SELECT * FROM why('u', '1MB');
 -- 100 groups, or one, fit any memory
 SELECT * FROM why('v', '64kB');
 SELECT * FROM why(NULL, '64kB');
