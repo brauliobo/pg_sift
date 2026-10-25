@@ -291,8 +291,13 @@ replicate the heap staging table of an ingest pipeline; the AM refuses to publis
   by-reference values belong to the slot (allocated in its memory context, freed when it is cleared, no context of its own); a
   slot whose unit is no longer the reader's current one (another row was fetched meanwhile, a cursor moved on) finds its row again
   by TID through the table's fetch scan. Rows of the row-format segments are copied into the slot as heap tuples. TID fetches
-  (index scans, bitmap, UPDATE) keep the last decoded unit of a backend-wide fetch scan (valid while the directory and the
-  backend's xmin stay; its pages are unpinned after every fill), and a caller that needs the version of a row, not its values (row
+  (index scans, bitmap, UPDATE) keep the decoded units and TID lists of up to 32 superblocks in a backend-wide fetch scan (valid while
+  the directory and the backend's xmin stay; its pages are unpinned after every fill; the oldest are dropped past 8 MB per table,
+  `SIFT_TBL_FETCH_BYTES`: a miss re-reads the TIDs of the superblock, about 600,000 instructions, and 4 slots missed once in 5
+  fetches of a 100,000-row table whose updated keys sit in 7 superblocks). A fetch that finds a tombstone of the current
+  transaction that deletes the row for the snapshot answers invisible without reading the row, and the first fetch after a begin
+  does not sync the tombstones twice: the uniqueness check of a key updated 20 times in one transaction went from 441,000 to
+  137,000 instructions an UPDATE (heap 111,000; 600,000-row bench case `tbl_update_keys` 3,076 to 950 ms, heap 705 ms). A caller that needs the version of a row, not its values (row
   locks, uniqueness checks, `index_delete_tuples`), asks for it without decoding (`sift_tbl_fetch_lazy`: the live-row list of the
   unit answers). The system columns `xmin`, `xmax`, `cmin` and `cmax` are read by TID when asked, from the same fetch (`sift_tbl_fetch_lazy`) and the tombstones.
 - **BM25 `sift` and btree on a `sift_table`**: `ambuild` runs `table_index_build_scan` (callback above); `aminsert` receives the

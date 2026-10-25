@@ -33,6 +33,7 @@ typedef struct SiftTblFetch
 {
 	IndexFetchTableData base;
 	SiftTblRel *st;
+	bool		fresh;			/* the tombstones were synced by the begin and no fetch followed yet */
 } SiftTblFetch;
 
 IndexFetchTableData *
@@ -45,6 +46,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
 	sift_tbl_tomb_sync(rel, f->st);
+	f->fresh = true;
 	return &f->base;
 }
 
@@ -59,9 +61,9 @@ sift_tbl_index_fetch_end(IndexFetchTableData *data)
 	pfree(data);
 }
 
-/* Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again */
+/* Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale */
 static bool
-fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead)
+fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync)
 {
 	SiftTblRowVer rv;
 	bool		dead;
@@ -69,8 +71,10 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	if (all_dead)
 		*all_dead = false;
 	PredicateLockRelation(rel, snapshot);
-	if (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF)
+	if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
 		sift_tbl_tomb_sync(rel, st);
+	if (sift_tbl_deleted_by_self(st, snapshot, sift_key_from_tid(tid)))
+		return false;
 	if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 	{
 		if (all_dead)
@@ -98,8 +102,11 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 {
 	SiftTblFetch *f = (SiftTblFetch *) scan;
 
+	bool		sync = !f->fresh;
+
+	f->fresh = false;
 	*call_again = false;
-	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead);
+	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync);
 }
 
 typedef struct VblockTest
@@ -179,7 +186,7 @@ sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapsho
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
-	return fetch_visible(rel, st, tid, snapshot, slot, NULL);
+	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true);
 }
 
 bool

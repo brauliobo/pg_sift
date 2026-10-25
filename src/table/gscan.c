@@ -741,16 +741,39 @@ fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 	return true;
 }
 
+/* The slot of a new fetch scan: an empty one, else the least recently used; the scans are dropped, oldest first, while they hold more than SIFT_TBL_FETCH_BYTES */
+static int
+fetch_victim(struct SiftTblGroupCache *c)
+{
+	for (;;)
+	{
+		Size		bytes = 0;
+		int			lru = -1;
+
+		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
+		{
+			if (c->fetch[i] == NULL)
+				return i;
+			bytes += MemoryContextMemAllocated(c->fetch[i]->cxt, true);
+			if (lru < 0 || c->fetch_used[i] < c->fetch_used[lru])
+				lru = i;
+		}
+		if (bytes <= SIFT_TBL_FETCH_BYTES)
+			return lru;
+		sift_tbl_gscan_end(c->fetch[lru]);
+		c->fetch[lru] = NULL;
+	}
+}
+
 /*
  * The fetch scan serving the TID fetches into superblock sb while the directory stays, and the xmin of the backend keeps the segments from
- * being recycled: the one that holds sb, else a new one, else the least recently used is replaced
+ * being recycled: the one that holds sb, else a new one
  */
 static SiftTblGroupScan *
 fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
-	int			pick = -1,
-				spare = 0;
+	int			pick = -1;
 
 	if (!fetch_kept(rel, st, c))
 		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
@@ -760,17 +783,13 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 				c->fetch[i] = NULL;
 			}
 	for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
-	{
 		if (c->fetch[i] && c->fetch[i]->cache_sb == sb)
 			pick = i;
-		if (c->fetch[spare] && (c->fetch[i] == NULL || c->fetch_used[i] < c->fetch_used[spare]))
-			spare = i;
-	}
 	if (pick < 0)
 	{
 		MemoryContext old = MemoryContextSwitchTo(st->cxt);
 
-		pick = spare;
+		pick = fetch_victim(c);
 		if (c->fetch[pick])
 			sift_tbl_gscan_end(c->fetch[pick]);
 		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
