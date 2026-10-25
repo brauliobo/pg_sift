@@ -120,7 +120,8 @@
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
-#define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
+#define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
+#define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
 #define AGG_DIST_CHUNK_BYTES	512.0
@@ -341,6 +342,29 @@ json_build_walker(Node *n, double *ops)
 	return expression_tree_walker(n, json_build_walker, ops);
 }
 
+/* the combo is only the argument of sums and averages that add the entries of their dictionary leaf (SiftAggAgg.wsum): no tuple is evaluated by it */
+static bool
+combo_wsum_only(const SiftAggSpec *s, int ci)
+{
+	const SiftAggCombo *cb = &s->combo[ci];
+	bool		only = cb->nslots > 0;
+
+	for (int sl = 0; sl < cb->nslots; sl++)
+	{
+		bool		used = false;
+
+		only &= cb->slot[sl].direct;
+		for (int ai = 0; ai < s->naggs; ai++)
+			if ((s->agg[ai].kind >= SAA_X_COUNT && s->agg[ai].kind <= SAA_X_AVG) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
+			{
+				only &= s->agg[ai].wsum != 0;
+				used = true;
+			}
+		only &= used;
+	}
+	return only;
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
@@ -404,6 +428,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				cost += entries * cb->nslots * AGG_EVAL_SLOT;
 			continue;
 		}
+		if (combo_wsum_only(s, ci))
+			continue;
 		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
 	}
 	return cost;
@@ -1418,12 +1444,36 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 }
 
 /* The rows read and tested, the zones kept and the units opened */
+/* is every reader of the leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum)? */
+static bool
+leaf_wsum_only(const SiftAggSpec *s, int leaf)
+{
+	bool		sums = false,
+				other = false;
+
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+
+		sums |= a->wsum == leaf + 1;
+		other |= a->leaf == leaf || (a->filter != NULL && pred_uses_leaf(a->filter, leaf));
+	}
+	for (int i = 0; i < s->npred; i++)
+		other |= pred_uses_leaf(s->pred[i], leaf);
+	for (int k = 0; k < s->nkeys; k++)
+		other |= s->key[k].kind != SAK_COMBO && s->key[k].leaf == leaf;
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int p = 0; p < s->combo[ci].nleaves; p++)
+			other |= s->combo[ci].leaf[p] == leaf && !combo_wsum_only(s, ci);
+	return sums && !other;
+}
+
 /*
  * The dictionary entries a wide leaf builds for each row read, in operators: a unit has its own dictionary, so a column of 50,000 values read in
  * units of 10,000 rows builds about 9,500 entries a unit, not a fifth of its rows.
  */
 static double
-wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
+wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -1441,7 +1491,7 @@ wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
 
 		image = typmod < 0 || precision > 38 || scale < 0 || scale > 38;
 	}
-	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? AGG_WIDE_IMAGE : AGG_WIDE_ENTRY);
+	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
 }
 
 /*
@@ -1506,7 +1556,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
-			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s->leaves[i], k));
+			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k));
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;

@@ -294,6 +294,7 @@ typedef struct SiftAggAgg
 	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
 	SiftAggGen *gen;			/* SAA_GEN */
 	Oid			aggfn;			/* SAA_M_PG: the aggregate function */
+	int			wsum;			/* SAA_X_SUM, SAA_X_AVG of a numeric leaf read as a dictionary (wide): the leaf + 1, whose entries the sum adds without the combo; 0 none */
 } SiftAggAgg;
 
 /*

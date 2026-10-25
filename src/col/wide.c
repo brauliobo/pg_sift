@@ -302,3 +302,44 @@ sift_col_numimg_to_text(const uint8 *img, uint32 len, int32 dscale, char *buf, u
 	buf[n] = '\0';
 	return n;
 }
+
+int
+sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, uint8 *dig, uint32 cap, uint32 *nd)
+{
+	uint8		inv;
+	uint32		end = len,
+				np;
+	unsigned	last;
+
+	if (len == 0)
+		return 0;
+	if (img[0] == SIFT_NIMG_ZERO)
+		return len == 1 ? 1 : 0;
+	if ((img[0] != SIFT_NIMG_NEG && img[0] != SIFT_NIMG_POS) || len < 5)
+		return 0;
+	inv = img[0] == SIFT_NIMG_NEG ? 0xFF : 0;
+	if (inv && img[len - 1] != 0xFF)
+		return 0;
+	end -= inv != 0;
+	if (end < 5 || 2 * (end - 4) > cap)
+		return 0;
+	*exp10 = (int32) ((uint32) (img[1] ^ inv) << 16 | (uint32) (img[2] ^ inv) << 8 | (uint32) (img[3] ^ inv)) - EXP_BIAS;
+	if (*exp10 > SIFT_NIMG_EXP_MAX || *exp10 < SIFT_NIMG_EXP_MIN)
+		return 0;
+	np = end - 4;
+	for (uint32 k = 0; k < np; k++)
+	{
+		unsigned	pair = (unsigned) (img[4 + k] ^ inv) - 1;
+
+		if (pair > 99)
+			return 0;
+		dig[2 * k] = (uint8) (pair / 10);
+		dig[2 * k + 1] = (uint8) (pair % 10);
+	}
+	last = dig[2 * np - 1];
+	if (dig[0] == 0 || (last == 0 && dig[2 * np - 2] == 0))
+		return 0;				/* not canonical: the first digit or the last pair is zero */
+	*neg = inv != 0;
+	*nd = 2 * np - (last == 0);
+	return 2;
+}

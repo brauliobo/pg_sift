@@ -42,6 +42,7 @@ typedef struct DictSlot
 	const void *id;
 	uint64	  **lut;			/* per predicate id: bit set of n + 1 entries (bit n: the NULL input) */
 	uint32	  **kmap;			/* per key: n + 1 key ids */
+	struct DNum *num;			/* wide numeric dictionaries: the integer and scale of each entry, decoded when a row first adds it (scale WNUM_UNSET before) */
 } DictSlot;
 
 /* distinct numbers to ids 1.. in order of appearance (open addressing) */

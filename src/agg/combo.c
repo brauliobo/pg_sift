@@ -748,7 +748,7 @@ slot_ot(AggExec *ex, const SiftAggSlot *sl)
  * digits, the weight of the first one), which is what pg_upgrade keeps stable; NaN, the infinities and what does not fit 38 digits
  * are not ok and stay numerics (the sums add them with numeric_add).
  */
-static void
+void
 numeric_decode(Datum d, DNum *out)
 {
 	const char *data = VARDATA_ANY(DatumGetPointer(d));

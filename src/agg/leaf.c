@@ -326,6 +326,9 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 				pfree(s->kmap[i]);
 		memset(s->lut, 0, np * sizeof(uint64 *));
 		memset(s->kmap, 0, nk * sizeof(uint32 *));
+		if (s->num)
+			pfree(s->num);
+		s->num = NULL;
 	}
 	s->id = d->id;
 	return s;

@@ -150,6 +150,7 @@ put_agg(Pack *p, const SiftAggAgg *a)
 {
 	put_int(p, a->kind);
 	put_int(p, a->leaf);
+	put_int(p, a->wsum);
 	put_int(p, a->nvx);
 	for (int j = 0; j < a->nvx; j++)
 	{
@@ -565,6 +566,7 @@ get_agg(Unpack *u, SiftAggAgg *a)
 {
 	a->kind = get_int(u);
 	a->leaf = get_int(u);
+	a->wsum = get_int(u);
 	a->nvx = get_int(u);
 	a->vx = palloc(Max(a->nvx, 1) * sizeof(SiftAggVx));
 	for (int j = 0; j < a->nvx; j++)

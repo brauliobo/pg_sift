@@ -94,6 +94,8 @@ agg_selection(AggExec *ex, SiftAggAgg *a, int start, int n, int nsel, bool *all)
 	}
 	if (a->leaf >= 0)
 		any |= clear_null_rows(ex, a->leaf, nsel);
+	if (a->wsum > 0)
+		any |= clear_null_rows(ex, a->wsum - 1, nsel);
 	for (int k = 0; k < a->nvx; k++)
 		if (a->vx[k].op == SVX_LEAF)
 			any |= clear_null_rows(ex, a->vx[k].leaf, nsel);
@@ -263,6 +265,8 @@ numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
 			return;
 		}
 	}
+	if (x == (Datum) 0)
+		x = scaled_numeric_exact(m->m, m->scale);
 	if (!acc->nf[g])
 	{
 		/* leaves the integer form */
@@ -322,6 +326,54 @@ direct_add(AggExec *ex, int ai, uint32 g, uint32 id)
 			}
 	}
 	acc->n[g]++;
+	MemoryContextSwitchTo(old);
+}
+
+#define WNUM_UNSET	INT16_MIN
+
+/*
+ * sum and avg of a numeric leaf read as a dictionary (wide): a row adds the integer and scale of its entry, decoded once per dictionary the first time a
+ * row reads it, where the combo made a datum of every entry and PostgreSQL's numeric_add added it. The entries that are not a finite number of 38 digits
+ * (NaN, infinities) go to numeric_add with the entry itself.
+ */
+static void
+wide_sum_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
+{
+	SiftAggAgg *a = &ex->spec->agg[ai];
+	AggAcc	   *acc = &ex->acc[ai];
+	const SiftSrcVec *v = get_vec(ex, a->wsum - 1);
+	const SiftSrcDict *d = v->dict;
+	const uint32 *idx,
+			   *codes = v->data;
+	DictSlot   *ds = dict_slot(ex, d);
+	MemoryContext old;
+
+	gather_idx(ex, a->wsum - 1, nsel, &idx);
+	if (ds->num == NULL)
+	{
+		ds->num = MemoryContextAlloc(ex->cxt, (size_t) d->n * sizeof(DNum));
+		for (uint32 i = 0; i < d->n; i++)
+			ds->num[i].scale = WNUM_UNSET;
+	}
+	old = MemoryContextSwitchTo(ex->tcxt);
+	for (int j = 0; j < nsel; j++)
+	{
+		uint32		c;
+		DNum	   *e;
+		Datum		x = (Datum) 0;
+		uint32		g = ex->gid[j];
+
+		if (ok && !sift_colsrc_bit(ok, j))
+			continue;
+		c = codes[idx[j]];
+		e = &ds->num[c];
+		if (unlikely(e->scale == WNUM_UNSET))
+			numeric_decode(PointerGetDatum(d->bytes + d->off[c]), e);
+		if (!e->ok)
+			x = datumCopy(PointerGetDatum(d->bytes + d->off[c]), false, -1);
+		numeric_sum_add(acc, g, x, e);
+		acc->n[g]++;
+	}
 	MemoryContextSwitchTo(old);
 }
 
@@ -638,7 +690,10 @@ agg_update(AggExec *ex, int ai, int start, int n, int nsel)
 		case SAA_X_MAX:
 		case SAA_X_SUM:
 		case SAA_X_AVG:
-			direct_update(ex, ai, u.ok, nsel);
+			if (a->wsum > 0)
+				wide_sum_update(ex, ai, u.ok, nsel);
+			else
+				direct_update(ex, ai, u.ok, nsel);
 			break;
 		default:
 			SIFT_INVARIANT(false, "sift: aggregate kind %d is not a scan aggregate", a->kind);

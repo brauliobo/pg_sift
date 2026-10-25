@@ -52,6 +52,8 @@ typedef struct DNum
 	bool		ok;
 } DNum;
 
+extern void numeric_decode(Datum d, DNum *out);
+
 /* a leaf that is a column of an earlier lookup: its values are known by id, not by the rows of that table that hold them */
 typedef struct PriorVal
 {
