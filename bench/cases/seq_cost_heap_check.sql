@@ -1,4 +1,4 @@
--- the heap check of a scan priced as the sequential scan PostgreSQL would run, on a server with seq_page_cost above random_page_cost (100 and 4)
+-- the heap check of a scan priced as the sequential scan PostgreSQL would run, with seq_page_cost above random_page_cost (100 and 4)
 -- label: `count(*), sum(amount) WHERE created_at in a quarter GROUP BY country` after `CLUSTER`, `seq_page_cost = 100`, `random_page_cost = 4`
 -- ordered: yes
 -- vacuum: no
