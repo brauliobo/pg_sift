@@ -331,7 +331,7 @@ mapped_finish(AggExec *ex)
 Datum
 agg_sum_datum(const AggAcc *acc, uint32 g, int scale)
 {
-	Datum		lo = scaled_numeric(acc->nf[g] ? SIFT_NX_NAN : acc->w[g], scale);
+	Datum		lo = acc->nf[g] ? scaled_numeric(SIFT_NX_NAN, scale) : scaled_numeric_exact(acc->w[g], scale);
 
 	if (acc->nf[g] || acc->i[g] == 0)
 		return lo;
@@ -352,7 +352,7 @@ mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnul
 		return (Datum) 0;
 	if (a->restype == NUMERICOID)
 	{
-		Datum		tot = acc->nf[g] || a->kind == SAA_M_SUM || a->kind == SAA_M_AVG ? acc->v[g] : scaled_numeric(acc->w[g], (int) acc->i[g]);
+		Datum		tot = acc->nf[g] || a->kind == SAA_M_SUM || a->kind == SAA_M_AVG ? acc->v[g] : scaled_numeric_exact(acc->w[g], (int) acc->i[g]);
 
 		return sum ? tot : DirectFunctionCall2(numeric_div, tot, DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
 	}

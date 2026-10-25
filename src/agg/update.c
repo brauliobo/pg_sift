@@ -267,7 +267,7 @@ numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
 		/* leaves the integer form */
 		acc->nf[g] = 1;
 		if (acc->n[g] > 0)
-			acc->v[g] = scaled_numeric(acc->w[g], (int) acc->i[g]);
+			acc->v[g] = scaled_numeric_exact(acc->w[g], (int) acc->i[g]);
 	}
 	if (acc->n[g] == 0)
 		acc->v[g] = datumCopy(x, false, -1);

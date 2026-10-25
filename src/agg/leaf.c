@@ -810,9 +810,13 @@ unit_parent(AggExec *ex)
 	return ex->parent;
 }
 
-/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale; SIFT_NX_NAN is the NaN */
+/*
+ * v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale. The integer of a sum can be any
+ * 128-bit value, SIFT_NX_NAN (2^127 - 1) included, so the sums use this one; scaled_numeric reads that value as NaN, as the values of the
+ * numeric programs (at most 38 digits, which never reach it) do.
+ */
 Datum
-scaled_numeric(__int128 v, int scale)
+scaled_numeric_exact(__int128 v, int scale)
 {
 	char		tmp[48],
 				buf[64];
@@ -820,8 +824,6 @@ scaled_numeric(__int128 v, int scale)
 	int			n = 0;
 	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
 
-	if (v == SIFT_NX_NAN)
-		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	do
 	{
 		tmp[n++] = '0' + (int) (u % 10);
@@ -837,4 +839,13 @@ scaled_numeric(__int128 v, int scale)
 	}
 	*o = '\0';
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+/* v / 10^scale as a numeric of that scale; SIFT_NX_NAN is the NaN */
+Datum
+scaled_numeric(__int128 v, int scale)
+{
+	if (v == SIFT_NX_NAN)
+		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	return scaled_numeric_exact(v, scale);
 }
