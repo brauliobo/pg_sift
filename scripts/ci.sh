@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 5; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 6; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then
@@ -191,11 +191,17 @@ declare -A JOB_WEIGHT=(
 	[plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
 )
 JOB_WEIGHT_DEFAULT=10
-# the jobs whose size the deep tier changes: lane seconds of the deep run 40165541682 on PostgreSQL 18 (the col slices are the mean of their eight)
-declare -A JOB_WEIGHT_DEEP=([difftest]=2204 [difftest-mutants]=1083 [fuzz]=1010 [soak]=620 [difftest-fuzz]=1329 [difftest-nopos]=342 [soak-col]=305 [soak-gin]=130 [difftest-col-analytics]=150
-	[difftest-col-1]=1206 [difftest-col-2]=1206 [difftest-col-3]=1206 [difftest-col-4]=1206 [difftest-col-5]=1206 [difftest-col-6]=1206 [difftest-col-7]=1206 [difftest-col-8]=1206 [difftest-col-tbl-1]=983 [difftest-col-tbl-2]=983 [difftest-col-tbl-3]=983 [difftest-col-tbl-4]=983 [difftest-col-tbl-5]=983 [difftest-col-tbl-6]=983 [difftest-col-tbl-7]=983 [difftest-col-tbl-8]=983 [difftest-fuzz-tbl]=2212)
-# weight_of JOB [deep]: the weight in seconds of a lane
-weight_of() { if [[ -n ${2:-} && -v JOB_WEIGHT_DEEP[$1] ]]; then echo "${JOB_WEIGHT_DEEP[$1]}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi; }
+# the deep full tier is cut by the lane seconds each job took on its PostgreSQL major (run 40193282663; the other jobs weigh 10, a major from 19 on weighs like 18):
+# scripts/weights-deep.tsv, job, seconds on 17, seconds on 18
+declare -A JOB_WEIGHT_DEEP17 JOB_WEIGHT_DEEP18
+while IFS=$'\t' read -r job w17 w18; do
+	[[ $job == '#'* ]] || { JOB_WEIGHT_DEEP17[$job]=$w17; JOB_WEIGHT_DEEP18[$job]=$w18; }
+done <"$REPO/scripts/weights-deep.tsv"
+# weight_of JOB [deep [MAJOR]]: the weight in seconds of a lane
+weight_of() {
+	local -n deep_w=JOB_WEIGHT_DEEP$([[ ${3:-${PG_MAJOR:-18}} == 17 ]] && echo 17 || echo 18)
+	if [[ -n ${2:-} ]]; then echo "${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi
+}
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
@@ -320,7 +326,7 @@ if [[ $MODE == --selftest ]]; then
 		lo='' hi=0
 		for (( k = 1; k <= ns - (pg < 18 ? 1 : 0); k++ )); do
 			l=0
-			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
 			[[ -z $lo ]] || (( l < lo )) && lo=$l
 		done

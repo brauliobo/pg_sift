@@ -93,4 +93,6 @@
 ^sql/.*\.sql$	.
 ^scripts/(perf-select\.py|test-perf-select\.py)$	{perf}
 ^(bench/steps/perf_gate\.py|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
+# the weights of the deep full tier, read by scripts/ci.sh only to cut the shards (the jobs run are those of the map above)
+^scripts/weights-deep\.tsv$	-
 ^(scripts/(apply-rename\.(py|sh)|private-overlay\.sh)|test/README\.md)$	-
