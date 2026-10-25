@@ -7,7 +7,7 @@
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
-or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `--@ prepare` / `--@ load` for a case that times a load). `run` builds
+or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load). `run` builds
 each case's table in a schema of its own on the server named by PGHOST / PGPORT (steps/cases.sh starts it), asserts the plan of the sift lane from
 EXPLAIN (a case that falls back to the normal plan fails), then times the lanes interleaved in rounds and compares every answer with the native one:
 
@@ -68,7 +68,7 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh): ', m))
         self.load = 'load' in self.sec
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
@@ -191,6 +191,26 @@ def server_session(timeout):
     return Session(os.environ['PGPORT'], timeout, None, db=DB, host=os.environ['PGHOST'])
 
 
+class Fresh:
+    """a lane whose every statement is the first of a new backend (`-- fresh: yes`): a pooled connection that was reset, a script, the first connection of the day. The library is
+    loaded by the server at its start (the cases cluster preloads it), so the plan of the first statement is the one of any other"""
+
+    def __init__(self, setup):
+        self.setup = setup
+
+    def run(self, sql):
+        s = server_session(TIMEOUT)
+        try:
+            for st in self.setup:
+                s.run(st)
+            return s.run(sql)
+        finally:
+            s.close()
+
+    def close(self):
+        pass
+
+
 def lane_sessions(case, engines, duck_port):
     """lane -> Session: sift and native always, then the variants of the registry and the engines the run asked for (the registry lists the ones a case may use)"""
     # a case that turns the access-method scan on (-- set: sift.enable_col_scan = on) compares it with the plan PostgreSQL makes without it
@@ -200,10 +220,13 @@ def lane_sessions(case, engines, duck_port):
     out = {}
     wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # a large work_mem is 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
-        s = server_session(TIMEOUT)
-        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
-            s.run(st)
-        out[lane] = s
+        setup = ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets
+        if case.opt.get('fresh') == 'yes' and not lane.startswith('warm'):   # a lane named warm... keeps its backend: the same statement as the second of a backend
+            out[lane] = Fresh(setup)
+            continue
+        out[lane] = server_session(TIMEOUT)
+        for st in setup:
+            out[lane].run(st)
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
         s = Session(duck_port, TIMEOUT, None)
         s.run('SET duckdb.force_execution = on')
@@ -273,8 +296,8 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         if err:
             errors.setdefault(lane, err[:110])
         if lane == 'sift':
-            # the plan of the runs that are timed is the one after the first: in a backend that has not loaded the library (it needs no shared_preload_libraries) the
-            # first statement is planned without it, and the note says so
+            # the plan of the runs that are timed is the one after the first: where the first statement of a backend is planned another way (the cases cluster loads the
+            # library at its start, so it is rare), the note says so
             again = plan_text(s, sql[lane])
             if plan_shape(again) != plan_shape(text):
                 notes[lane] = '%s (the first plan of a backend was %s)' % (plan_note(again), notes[lane])

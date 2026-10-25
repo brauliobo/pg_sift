@@ -43,7 +43,8 @@ export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
 # fsync and autovacuum are off in the test cluster; wal_level and full_page_writes stay as they are: bulk_copy_wal measures the WAL a COPY writes
-SETTINGS=(max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
+# the library is loaded when the server starts: the first statement of a backend is planned with it, and the shared table of verdicts (sift.verdict_cache_kb) exists
+SETTINGS=(shared_preload_libraries=pg_sift max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
           parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB checkpoint_timeout=30min)
 
 cleanup() {

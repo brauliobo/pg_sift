@@ -130,3 +130,6 @@ oltp_update_index	oltp_update_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster3
 run_window	a range on a leaf with a sorted run (`order_columns`), or an equality on it	orders	default WITH (order_columns = 'created_at')	Units Filtered By Sorted Run: [1-9]	native,pg_duckdb	-	ms	faster33	no
 two_level_cell_conditions	the conditions of the outer aggregates of a two-level scan read the value of each cell once	orders	default	Pushed Aggregates	native	-	ms	faster33	no
 dict_small_request	the ids of a dictionary's entries (the key of a group by a text column	orders	default	Group Keys: tag	native	-	ms	faster33	no
+dict_first_scan	made when a tuple first reads the entry	orders	default+id+title	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
+dict_first_stored	is stored uncompressed in the segments written from now on	orders	default+id+title WITH (dict_stored = 17)	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
+verdict_shared_report	the choice between a shared CTE and its inline plan (several planner runs of the statement) is kept in the backend	events	-	Custom Scan \(SiftAgg\)	native	no_shared:sift.verdict_cache_kb = 0,warm_backend:sift.enable_agg = on	ms	faster33	no
