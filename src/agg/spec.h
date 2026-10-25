@@ -266,7 +266,7 @@ typedef struct SiftAggGen
 	bool		distinct;		/* DISTINCT: the distinct values of a group, in btree order, go through the transition function */
 	int			darg;			/* DISTINCT: the argument that varies (the others are constants) */
 	bool		ordered;		/* WITHIN GROUP: the values of a group go through a tuplesort, then through the transition function */
-	bool		parallel;		/* workers keep partial states that the leader merges with the aggregate's combine function (through its serial and deserial functions when the state is internal) */
+	const char *serial;			/* why no workers keep partial states for the leader to merge with the aggregate's combine function (through its serial and deserial functions when the state is internal); NULL: they can */
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
@@ -562,6 +562,7 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
+	const char *serial;			/* why the plan asks for none whatever the cost, for EXPLAIN VERBOSE (the planner's reasons; sift_aggspec_serial_reason has those of the spec); else NULL */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (agg/topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */

@@ -632,6 +632,40 @@ unsafe_in_worker(Node *n, void *context)
 	return check_functions_in_node(n, fn_unsafe, NULL) || expression_tree_walker(n, unsafe_in_worker, context);
 }
 
+/* can equal values of the wide leaf be spelled in more than one way (1.0 and 1.00, 1 month and 30 days)? A uuid, bytea or network address has one spelling */
+bool
+spelled_wide(const SiftSrcLeaf *lf)
+{
+	Oid			typid = OidIsValid(lf->wtypid) ? lf->wtypid : lf->typid;
+
+	return typid != UUIDOID && typid != BYTEAOID && typid != INETOID && typid != CIDROID && typid != MACADDROID && typid != MACADDR8OID;
+}
+
+/*
+ * Does a group key read a wide leaf whose equal values are spelled in more than one way? The group shows the spelling of the first row, which the workers' tables
+ * merge in no order. The counts, sums, averages and variances over a wide leaf do not show it.
+ */
+static bool
+key_spelling(AggCtx *c, const SiftAggSpec *s)
+{
+	for (int j = 0; j < s->nkeys; j++)
+	{
+		const SiftAggKey *k = &s->key[j];
+		const SiftAggCombo *cb = k->kind == SAK_COMBO ? &s->combo[k->leaf] : NULL;
+
+		for (int i = 0; i < (cb ? cb->nleaves : 1); i++)
+		{
+			int			leaf = cb ? cb->leaf[i] : k->leaf;
+
+			if (leaf < 0 || (!cb && k->kind != SAK_LEAF && k->kind != SAK_LUT) || !leaf_of(c, leaf)->wide)
+				continue;
+			if (spelled_wide(leaf_of(c, leaf)))
+				return true;
+		}
+	}
+	return false;
+}
+
 /*
  * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
  * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
@@ -640,17 +674,25 @@ unsafe_in_worker(Node *n, void *context)
 int
 parallel_workers(AggCtx *c, SiftAggSpec *s)
 {
-	if (!sift_aggspec_parallel_ok(s) || c->sub_serial || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
-		max_parallel_workers_per_gather <= 0 || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
+	if (!sift_aggspec_parallel_ok(s) || !c->root->glob->parallelModeOK || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
 		return 0;
+	if (c->sub_serial || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
+	{
+		s->serial = "an expression of the query has a sub-select or a function that is not parallel safe";
+		return 0;
+	}
 	/* a worker runs the plan of a correlated join itself (its own executor state, from the statement the leader sends) */
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->j.params != NIL && (jc->subroot == NULL || unsafe_in_worker((Node *) jc->subroot->parse, NULL)))
+		{
+			s->serial = "the plan of a correlated join is not parallel safe";
 			return 0;
-	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
-	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
-		if (leaf_of(c, s->leaves[i])->wide)
-			return 0;
+		}
+	if (key_spelling(c, s))
+	{
+		s->serial = "a group key shows one of the spellings of equal values (1.0, 1.00), which the workers read in no order";
+		return 0;
+	}
 	/* the leader writes the lookup tables to the shared memory and each worker maps them: a scan of fewer rows than AGG_SHARE_RATIO for each of their rows does not pay for it */
 	if (agg_share_rows(c, s) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
 		return 0;
@@ -964,11 +1006,11 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
-	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
 	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
 		nworkers = 0;
+	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
 	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);

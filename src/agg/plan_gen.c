@@ -241,22 +241,40 @@ fn_cost(AggCtx *c, Oid fn)
  * order of the input is the scan's (heap order of a fresh index), which is what the normal plan's sequential scan gives; an
  * ORDER BY in the call, a variadic aggregate, a hypothetical-set aggregate and an aggregate of another table's column keep the plan.
  */
-/* a partial state per worker, merged by the combine function: the functions are parallel safe, the state is a plain type or comes with its serial and deserial functions */
+/* does the aggregate show nothing of how its equal values are spelled? A variance adds them */
 static bool
-gen_parallel_ok(Oid agg, Oid transfn, Oid combfn, Oid serfn, Oid deserfn, Oid transtype)
+spelling_free(Aggref *a)
+{
+	switch (a->aggfnoid)
+	{
+		case F_VARIANCE_NUMERIC:
+		case F_VAR_SAMP_NUMERIC:
+		case F_VAR_POP_NUMERIC:
+		case F_STDDEV_NUMERIC:
+		case F_STDDEV_SAMP_NUMERIC:
+		case F_STDDEV_POP_NUMERIC:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* why a partial state per worker, merged by the combine function, is not possible (NULL: it is): the functions are parallel safe, the state is a plain type or comes with its serial and deserial functions */
+static const char *
+gen_serial_fns(Oid agg, Oid transfn, Oid combfn, Oid serfn, Oid deserfn, Oid transtype)
 {
 	if (!OidIsValid(combfn) || IsPolymorphicType(transtype) || func_volatile(combfn) == PROVOLATILE_VOLATILE)
-		return false;
+		return "it has no combine function, or a polymorphic or volatile one";
 	if (transtype == INTERNALOID && (!OidIsValid(serfn) || !OidIsValid(deserfn)))
-		return false;
+		return "its internal state has no serial and deserial functions";
 	for (int i = 0; i < 5; i++)
 	{
 		Oid			fn = i == 0 ? agg : i == 1 ? transfn : i == 2 ? combfn : i == 3 ? serfn : deserfn;
 
 		if (OidIsValid(fn) && func_parallel(fn) != PROPARALLEL_SAFE)
-			return false;
+			return "a function of the aggregate is not parallel safe";
 	}
-	return true;
+	return NULL;
 }
 
 /* the functions of the aggregate that decide how its state is carried and combined */
@@ -389,17 +407,22 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	g->distinct = a->aggdistinct != NIL;
 	g->ordered = ordered;
 	g->hyp = hyp;
-	/* the representation of equal values (1.0, 1.00) that min and max keep follows the order of the rows, which the workers' do not */
+	/* the spelling of equal values (1.0, 1.00) that min, max and the lists keep follows the order of the rows, which the workers' do not; the list of a uuid is a copy of the data, which the leader merges slower than a scan reads it */
 	for (int k = 0; k < g->nargs; k++)
 		for (int j = 0; j < g->arg[k].nleaves; j++)
-			wide |= leaf_of(c, g->arg[k].leaf[j])->wide;
-	g->parallel = !wide && !ordered && !mapped && !g->distinct && a->aggorder == NIL && gen_parallel_ok(a->aggfnoid, fns.transfn, fns.combfn, fns.serfn, fns.deserfn, fns.transtype);
+			wide |= leaf_of(c, g->arg[k].leaf[j])->wide && !spelling_free(a);
+	g->serial = wide ? "it keeps values of a wide column, in the order the workers read them" :
+		ordered ? "the values of a group are one sort" :
+		mapped ? "its argument is a column of a joined table" :
+		g->distinct ? "DISTINCT keeps the values of a group in one sort or set" :
+		a->aggorder != NIL ? "ORDER BY keeps the values of a group in one sort" :
+		gen_serial_fns(a->aggfnoid, fns.transfn, fns.combfn, fns.serfn, fns.deserfn, fns.transtype);
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
 	g->cost = AGG_GEN_ROW + fn_cost(c, fns.transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
 	g->hll = -1;
 	/* a nondeterministic collation hashes the sort key of a string, which a unit does not hold */
-	if (g->parallel && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)
+	if (g->serial == NULL && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)
 	{
 		FmgrInfo	fi;
 

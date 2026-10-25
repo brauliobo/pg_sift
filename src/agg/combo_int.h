@@ -53,6 +53,7 @@ typedef struct DNum
 } DNum;
 
 extern void numeric_decode(Datum d, DNum *out);
+extern void numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m);
 
 /* a leaf that is a column of an earlier lookup: its values are known by id, not by the rows of that table that hold them */
 typedef struct PriorVal

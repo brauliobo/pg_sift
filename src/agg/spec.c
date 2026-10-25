@@ -345,8 +345,9 @@ plain_key(const SiftAggKey *k)
 	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO || k->kind == SAK_SPINE;
 }
 
-static bool
-plain_agg(const SiftAggAgg *a)
+/* why the workers' partial states of the aggregate cannot be merged by the leader (NULL: they can) */
+static const char *
+agg_serial(const SiftAggAgg *a)
 {
 	switch (a->kind)
 	{
@@ -360,13 +361,11 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_PCT_CONT:
 		case SAA_PCT_DISC:
 		case SAA_GROUPING:
-			return true;
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
 		case SAA_COUNT_DISTINCT:
 		case SAA_M_COUNT:
 		case SAA_M_DISTINCT:
-			return true;
 		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
 		case SAA_O_COUNT_STAR:
 		case SAA_O_COUNT_ROWS:
@@ -374,20 +373,26 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_O_SUM_I64:
 		case SAA_O_SUM_F64:
 		case SAA_O_AVG_F64:
-			return true;
 		case SAA_MIN:
 		case SAA_MAX:
-			return true;
 		/* the aggregates of the columns of a nullable input (a preserved join): counts and float sums add up (the lanes keep the order of the sums) */
 		case SAA_X_COUNT:
-			return true;
+			return NULL;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
-			return a->restype == FLOAT8OID;
+			return a->restype == FLOAT8OID || a->restype == NUMERICOID ? NULL : "its sum is neither a float8 nor a numeric";
 		case SAA_GEN:
-			return a->gen->parallel;
+			return a->gen->serial;
+		case SAA_X_MIN:
+		case SAA_X_MAX:
+		case SAA_M_MIN:
+		case SAA_M_MAX:
+		case SAA_M_SUM:
+		case SAA_M_AVG:
+		case SAA_M_PG:
+			return "its partial state holds ids of values that are the worker's own";
 		default:
-			return false;
+			return "its partial state is not one the leader can merge";
 	}
 }
 
@@ -454,6 +459,8 @@ sift_aggspec_dstream(const SiftAggSpec *s)
 const char *
 sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 {
+	const char *why;
+
 	*agg = -1;
 	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */
 	for (int i = 0; i < s->njoin; i++)
@@ -463,10 +470,10 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 		if (!plain_key(&s->key[j]))
 			return "a group key whose groups the workers cannot merge";
 	for (int i = 0; i < s->naggs; i++)
-		if (!plain_agg(&s->agg[i]))
+		if ((why = agg_serial(&s->agg[i])) != NULL)
 		{
 			*agg = i;
-			return "its partial state is not one the leader can merge";
+			return why;
 		}
 	/* the float sums of the scan are merged in lane order, the generic states as the workers finish: not in one scan */
 	for (int i = 0; i < s->naggs; i++)

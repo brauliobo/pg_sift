@@ -141,7 +141,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 	put_int(p, g->sorted);
 	put_int(p, g->first);
 	put_int(p, g->hyp);
-	put_int(p, g->parallel);
+	put_str(p, g->serial);
 	put_int(p, g->hll);
 }
 
@@ -419,6 +419,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_dbl(p, s->est_groups);
 	put_dbl(p, s->est_rows);
 	put_int(p, s->nworkers);
+	put_str(p, s->serial);
 	put_str(p, s->desc_quals);
 	put_node(p, s->search);
 	put_node(p, s->topn);
@@ -557,7 +558,9 @@ get_gen(Unpack *u)
 	g->sorted = get_int(u);
 	g->first = get_int(u);
 	g->hyp = get_int(u);
-	g->parallel = get_int(u);
+	g->serial = get_str(u);
+	if (!*g->serial)
+		g->serial = NULL;
 	g->hll = get_int(u);
 	return g;
 }
@@ -865,6 +868,9 @@ sift_aggspec_unpack(const List *items)
 	s->est_groups = strtod(get_str(u), NULL);
 	s->est_rows = strtod(get_str(u), NULL);
 	s->nworkers = get_int(u);
+	s->serial = get_str(u);
+	if (!*s->serial)
+		s->serial = NULL;
 	s->desc_quals = get_str(u);
 	s->search = get_node(u);
 	s->topn = get_node(u);

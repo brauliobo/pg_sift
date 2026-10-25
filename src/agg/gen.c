@@ -251,7 +251,7 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 		st->ffc = palloc0(SizeForFunctionCallInfo(st->nfinal));
 		InitFunctionCallInfoData(*st->ffc, &st->finalfn, st->nfinal, ref->inputcollid, (Node *) ex->gas, NULL);
 	}
-	if (g->parallel)
+	if (g->serial == NULL)
 	{
 		Expr	   *e;
 

@@ -204,7 +204,7 @@ first_mode(SiftAggAgg *out, int nsort, bool leader)
 
 	g->sorted = false;
 	g->first = true;
-	g->parallel = true;
+	g->serial = NULL;
 	g->cost = leader ? AGG_GEN_FIRST + nsort * AGG_GEN_FIRST_KEY : AGG_GEN_FOLLOW;
 	out->desc = psprintf("first_row%s", out->desc + strlen("array_agg"));
 }

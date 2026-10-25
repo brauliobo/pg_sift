@@ -115,6 +115,85 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM shapes ORDER BY n;
 
-DROP FUNCTION answer(text, bool), used(text), rnum(int, int);
-DROP TABLE shapes, s, rs;
+-- the sums go to the workers at the planner's own choice; a group that left the integer form in a worker (NaN, past 38 digits, a sum past 128 bits)
+-- crosses to the leader as a numeric, and the leader's sum is the normal plan's
+CREATE TABLE wp (id int, g int, x numeric, y numeric(30, 5)) WITH (autovacuum_enabled = false);
+INSERT INTO wp SELECT i, i % 7, CASE WHEN i % 5000 = 0 THEN 'NaN'::numeric WHEN i % 7001 = 0 THEN 99999999999999999999999999999999999999999 + i WHEN i % 997 = 0 THEN NULL
+	ELSE (i * 7919 % 100003)::numeric / (10 ^ (i % 6))::numeric END, (i % 1001)::numeric / 8 FROM generate_series(1, 120000) i;
+INSERT INTO wp SELECT 100000 + i, 7, 99999999999999999999999999999999999999, 1 FROM generate_series(1, 300) i;
+CREATE INDEX wp_col ON wp USING sift_col (g, x, y);
+VACUUM (FREEZE, ANALYZE) wp;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE FUNCTION in_workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Workers Planned%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION same_rows(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO b;
+	RETURN a = b;
+END $$;
+CREATE TABLE wshapes (n int, q text);
+INSERT INTO wshapes VALUES
+ (1, 'SELECT g, sum(x), avg(x), count(x) FROM wp GROUP BY g'),
+ (2, 'SELECT g, sum(y), avg(y) FROM wp GROUP BY g'),
+ (3, 'SELECT g % 3, sum(x), avg(x) FROM wp WHERE id % 2 = 0 GROUP BY g % 3'),
+ (4, 'SELECT g, sum(x) FILTER (WHERE x > 100), avg(x) FROM wp GROUP BY g');
+SELECT n, in_workers(q) AS workers, same_rows(q) AS same_rows FROM wshapes ORDER BY n;
+
+-- a wide leaf that no group key reads goes to the workers (counts, a sum of an expression, variances, the key of a uuid); a key of equal
+-- numerics shows one of their spellings (1.0, 1.00), and so do min, max and the list of them; the list of a uuid is the data itself: those scans stay in one process. Rows equal at 0, 2 and 4 workers (not for the ones that show a spelling, which the normal plan's workers also choose in no order)
+CREATE TABLE wu (id int, g int, u uuid, n numeric) WITH (autovacuum_enabled = false);
+INSERT INTO wu SELECT i, i % 7, md5((i % 301)::text)::uuid, CASE WHEN i % 4000 = 0 THEN 'NaN'::numeric WHEN i % 5003 = 0 THEN 'Infinity' WHEN i % 997 = 0 THEN NULL
+	WHEN i % 7001 = 0 THEN 99999999999999999999999999999999999999999 + i WHEN i % 3 = 0 THEN (i % 1001)::numeric / 8 WHEN i % 3 = 1 THEN (i % 1001)::numeric / 8 + 0.000
+	ELSE round((i % 1001)::numeric / 8, 3) END FROM generate_series(1, 90000) i;
+CREATE INDEX wu_col ON wu USING sift_col (g, u, n);
+VACUUM (FREEZE, ANALYZE) wu;
+-- why the forced scan has no workers (EXPLAIN VERBOSE: Serial Because), 'workers' when nothing keeps them from it
+CREATE FUNCTION scan_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'no scan';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'workers'; END IF;
+		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE TABLE ushapes (n int, q text);
+INSERT INTO ushapes VALUES
+ (1, 'SELECT g, count(n), sum(n), avg(n), stddev(n), variance(n) FROM wu GROUP BY g'),
+ (2, 'SELECT g, sum(n * 2), sum(CASE WHEN g = 1 THEN n ELSE 1 END) FROM wu GROUP BY g'),
+ (3, 'SELECT u, count(*), sum(n) FROM wu GROUP BY u'),
+ (4, 'SELECT g, count(u), count(n) FILTER (WHERE g = 2) FROM wu GROUP BY g'),
+ (5, 'SELECT g, count(n) FILTER (WHERE n > 100), sum(n) FROM wu WHERE u > ''80000000-0000-0000-0000-000000000000'' GROUP BY g'),
+ (6, 'SELECT n, count(*) FROM wu GROUP BY n'),
+ (7, 'SELECT g, min(n), max(n) FROM wu GROUP BY g'),
+ (8, 'SELECT g, array_length(array_agg(n), 1) FROM wu GROUP BY g'),
+ (9, 'SELECT g, array_length(array_agg(u), 1) FROM wu GROUP BY g');
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT n, scan_workers(q) FROM ushapes ORDER BY n;
+SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM ushapes WHERE n < 6 OR n >= 8 ORDER BY n;
+SET max_parallel_workers_per_gather = 4;
+SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM ushapes WHERE n < 6 OR n >= 8 ORDER BY n;
+SET max_parallel_workers_per_gather = 0;
+SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM ushapes ORDER BY n;
+
+DROP FUNCTION answer(text, bool), used(text), rnum(int, int), in_workers(text), same_rows(text), scan_workers(text);
+DROP TABLE shapes, s, rs, wp, wshapes, wu, ushapes;
 DROP EXTENSION pg_sift;

@@ -1445,6 +1445,8 @@ explain_source(SiftAggSpec *s, ExplainState *es)
 		int			agg;
 		const char *why = sift_aggspec_serial_reason(s, &agg);
 
+		if (why == NULL)
+			why = s->serial;
 		if (why)
 			ExplainPropertyText("Serial Because", agg >= 0 ? psprintf("%s: %s", s->agg[agg].desc, why) : why, es);
 	}

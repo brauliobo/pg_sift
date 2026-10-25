@@ -234,7 +234,7 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
  * gives a sum of numerics) until a value or a sum does not fit 38 digits, or is NaN or infinite: from then on it is a numeric
  * (acc->nf) and numeric_add does the rest.
  */
-static void
+void
 numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
 {
 	const sift_i128 *p10 = pow10_tab();

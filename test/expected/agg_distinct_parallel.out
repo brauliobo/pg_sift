@@ -73,7 +73,7 @@ FROM shapes s ORDER BY s.n;
 -------------------+----------+---------+---------+---------+-------------------
  count amount      | parallel | t       | t       | t       | t
  count global      | parallel | t       | t       | t       | t
- count expression  | serial   | t       | t       | t       | t
+ count expression  | parallel | t       | t       | t       | t
  count with int    | parallel | t       | t       | t       | t
  sum amount        | parallel | t       | t       | t       | t
  avg amount        | serial   | t       | t       | t       | t
@@ -147,9 +147,9 @@ END $$;
 SELECT mode_of('SELECT grp, string_agg(DISTINCT kind, '','') FROM facts GROUP BY grp', 4) AS string_agg_mode,
        serial_because('SELECT grp, string_agg(DISTINCT kind, '','') FROM facts GROUP BY grp') AS string_agg_why,
        serial_because('SELECT grp, count(DISTINCT amount) FROM facts GROUP BY grp') AS count_distinct_why;
- string_agg_mode |                                                string_agg_why                                                 | count_distinct_why 
------------------+---------------------------------------------------------------------------------------------------------------+--------------------
- serial          | Serial Because: string_agg(DISTINCT facts.kind, ','::text): its partial state is not one the leader can merge | 
+ string_agg_mode |                                                   string_agg_why                                                    | count_distinct_why 
+-----------------+---------------------------------------------------------------------------------------------------------------------+--------------------
+ serial          | Serial Because: string_agg(DISTINCT facts.kind, ','::text): DISTINCT keeps the values of a group in one sort or set | 
 (1 row)
 
 DROP TABLE facts, shapes;
