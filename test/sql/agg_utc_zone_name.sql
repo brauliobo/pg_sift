@@ -63,7 +63,10 @@ BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-SELECT z, per_day(z, 'date_trunc(''day'', ts AT TIME ZONE ''UTC'')') AS utc_name, per_day(z, 'date_trunc(''day'', ts, ''GMT'')') AS gmt_name, per_day(z, 'date_trunc(''day'', ts AT TIME ZONE ''Etc/UTC'')') AS slash_name
+-- (from PostgreSQL 18 a bare name is read as the session zone's abbreviation first; before it the abbreviations table alone, the name is the UTC in every zone)
+SELECT z, per_day(z, 'date_trunc(''day'', ts AT TIME ZONE ''UTC'')') = (z <> 'UTC+3' OR current_setting('server_version_num')::int < 180000) AS utc_name,
+       per_day(z, 'date_trunc(''day'', ts, ''GMT'')') = (z <> 'GMT-11' OR current_setting('server_version_num')::int < 180000) AS gmt_name,
+       per_day(z, 'date_trunc(''day'', ts AT TIME ZONE ''Etc/UTC'')') AS slash_name
 FROM unnest(ARRAY['UTC', 'Europe/London', 'America/New_York', 'UTC+3', 'GMT-11']) WITH ORDINALITY u(z, i) ORDER BY i;
 
 -- a plan made in the zone UTC runs in a zone that names UTC
