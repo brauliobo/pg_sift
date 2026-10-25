@@ -70,7 +70,11 @@ sift_colsrc_stats(Relation rel, SiftSrcStats *st)
 void
 sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp)
 {
-	provider_of_rel(index)->stamp(index, stamp);
+	const SiftSrcProvider *prov = provider_of_rel(index);
+
+	memset(stamp, 0, sizeof(*stamp));
+	if (prov->stamp)
+		prov->stamp(index, stamp);
 }
 
 void
