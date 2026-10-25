@@ -150,6 +150,16 @@ SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (1, 2, 3, 4
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
 RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;
 
+-- a worker runs the sub-plan with the snapshot of the statement active: a stable SQL function in it reads a row this transaction wrote, under REPEATABLE READ
+CREATE FUNCTION blocked_count() RETURNS bigint LANGUAGE sql STABLE PARALLEL SAFE AS $$ SELECT count(*) FROM blocked $$;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+INSERT INTO blocked VALUES (1), (2), (3);
+SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_table_scan_size = 0;
+SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$) AS with_subplan;
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$);
+ROLLBACK;
+DROP FUNCTION blocked_count();
+
 -- a rescan: the node is the inner side of a nested loop and runs again for each row of the outer side (the groups are replayed)
 SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;
 SELECT * FROM same($$SELECT g, c.n FROM generate_series(1, 3) g CROSS JOIN (SELECT count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL)) c$$);

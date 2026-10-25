@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a parallel worker of an aggregate scan that starts a sub-plan or a child plan did not make the snapshot of the statement its active snapshot, so a build with assertions stopped the worker (`GetActiveSnapshot() == queryDesc->snapshot`) and the sub-plan ran with the restored copy of the leader's active snapshot instead of the one it was started with; the worker now pushes it for the life of the executor states. No plan changes.
 - Changed: pg_sift: a column chunk of plain 3, 5, 6 or 7-byte values (a timestamp with microseconds spread over years) is decoded with one 8-byte load per value and not a library copy per value. No format change.
 - Fixed: pg_sift: an `ORDER BY` a text column `LIMIT n` over a `sift_table` whose column was added with `ALTER TABLE .. ADD COLUMN` after its column groups were written ended the backend with a segmentation fault: the column of those groups, all NULL, had no dictionary (test `tbl_topn_absent`).
 - Improved: pg_sift: a short IN list of integers that has runs of consecutive members (`id IN (7, 8, 9)`) is one range test of the column engine, not one pass over the chunk a member, and the AVX2 range kernel compares in registers (`filter_few_rows`, 1,000,000 rows: 24.4 to 15.0 million instructions a query, 2.07 to 1.66 ms).

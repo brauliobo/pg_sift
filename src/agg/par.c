@@ -474,6 +474,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
+	/* the executor states below start with the snapshot of the leader's statement as the active one (ExecutorStart asserts it), as in a backend */
+	PushActiveSnapshot(snap);
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
 	wparams = RestoreParamList(&params);
 	/* the statements below may hold scans of this kind in their other sub-plans */
@@ -590,6 +592,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		ExecutorEnd(ex->wsub);
 		FreeQueryDesc(ex->wsub);
 	}
+	PopActiveSnapshot();
 	UnregisterSnapshot(snap);
 }
 
