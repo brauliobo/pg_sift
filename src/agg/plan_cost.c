@@ -103,7 +103,8 @@
 #define AGG_PREAGG_HLL		40000.0	/* a unit's stored sketch merged into the aggregate's: up to 16,384 registers unpacked and maxed (about 60 us for a dense one) */
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_START_COST		100000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units the first time a backend runs it, 0.07 to 0.3 ms from the second; charged 0.25 ms, which a selective btree plan does not pay and which put the scan above the btree plan for a lookup of 500 to 700 rows (the scan runs it in 60 to 100 us, the btree plan in 200 to 370) */
-#define AGG_GORD_OPEN		10000.0	/* a top-N that reads the order array of its key: the array of each segment opened and its first chunk decoded, 0.03 ms measured */
+#define AGG_GORD_START		12000.0	/* a top-N that reads the order array of its key opens no unit: the executor starts, the array of each segment is opened and its first chunk decoded, 25 to 35 us measured */
+#define AGG_START_PLAIN		40000.0	/* the same for an aggregate with no groups */
 #define AGG_RESTART_COST	60000.0	/* a scan an enclosing query restarts for each value: PostgreSQL's nested loop charges the price of the inner path for every row of the outer. A probe takes 74 us (1,000,000 rows) to 120 us (100,000) where a btree's takes 6 us, which PostgreSQL prices at about 12: the restart is priced at 150 so that a btree on the key and the order wins where there is one (the start over itself is 4.5 us) */
 #define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
 #define AGG_ARM_TUPLE		150.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured) */
@@ -2154,6 +2155,9 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
 	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
+	/* a search is opened first (k.open_cost) and its native plan is the index scan of the search, which the scan starts no cheaper than */
+	if (s->nkeys == 0 && s->naggs > 0 && !s->topn && c->nparts == 0 && c->level_params == NIL && !c->search)
+		startup -= (AGG_START_COST - AGG_START_PLAIN) * cpu_operator_cost;
 	for (int i = 0; i < s->npred; i++)
 		startup += in_tables_cost(c, s->pred[i]);
 	if (s->nworkers > 0)
@@ -2169,7 +2173,10 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	agg_arm_vet(vet, vis * 100.0);
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
-		k.scan_cost = AGG_GORD_OPEN * cpu_operator_cost;
+	{
+		startup = AGG_GORD_START * cpu_operator_cost;
+		k.scan_cost = 0;
+	}
 	p->startup_cost = startup + k.scan_cost;
 	p->total_cost = p->startup_cost + k.rows_out * cpu_tuple_cost;
 	/* the rows of a top-N are fetched from the heap, one page each */

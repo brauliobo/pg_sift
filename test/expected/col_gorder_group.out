@@ -47,8 +47,8 @@ $$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   136
- units        |   120
+ global order |   160
+ units        |    96
 (2 rows)
 
 -- a range of the key and the page after a key inside the group
@@ -144,8 +144,8 @@ UPDATE gg SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   136
- units        |   120
+ global order |   160
+ units        |    96
 (2 rows)
 
 SELECT * FROM gg_mm_all();
@@ -159,15 +159,15 @@ VACUUM gg;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   136
- units        |   120
+ global order |   160
+ units        |    96
 (2 rows)
 
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 20
- units  | 16
+ array  | 26
+ units  | 10
 (2 rows)
 
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
@@ -185,8 +185,8 @@ SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   136
- units        |   120
+ global order |   160
+ units        |    96
 (2 rows)
 
 SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
@@ -204,8 +204,8 @@ SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
- global order |   136
- units        |   120
+ global order |   160
+ units        |    96
 (2 rows)
 
 -- a write buffer of more rows than the scan sorts for so few reads the units

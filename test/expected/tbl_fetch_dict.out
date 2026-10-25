@@ -72,13 +72,15 @@ SELECT loads = 0 AS no_dictionary_loaded FROM sift._test_col_dict_cache(false);
  t
 (1 row)
 
--- many strings of a segment: the dictionary is loaded once, then cached
+-- many strings of a segment: the dictionary is loaded once, then cached (the fetch path, not the aggregate scan that reads the columns)
+SET sift.enable_agg = off;
 SELECT sum(length(s)) AS chars FROM tf WHERE id <= 2000;
  chars 
 -------
  71713
 (1 row)
 
+RESET sift.enable_agg;
 SELECT loads > 0 AS loaded FROM sift._test_col_dict_cache(false);
  loaded 
 --------

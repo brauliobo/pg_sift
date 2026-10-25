@@ -29,8 +29,10 @@ UPDATE tf SET n = n + 1 WHERE id = 77 RETURNING id, s, v, n;
 UPDATE tf_heap SET n = n + 1 WHERE id = 77;
 SELECT loads = 0 AS no_dictionary_loaded FROM sift._test_col_dict_cache(false);
 
--- many strings of a segment: the dictionary is loaded once, then cached
+-- many strings of a segment: the dictionary is loaded once, then cached (the fetch path, not the aggregate scan that reads the columns)
+SET sift.enable_agg = off;
 SELECT sum(length(s)) AS chars FROM tf WHERE id <= 2000;
+RESET sift.enable_agg;
 SELECT loads > 0 AS loaded FROM sift._test_col_dict_cache(false);
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf EXCEPT SELECT id, s, v FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v FROM tf_heap EXCEPT SELECT id, s, v FROM tf) d;

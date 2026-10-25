@@ -40,7 +40,7 @@ CREATE INDEX events_col ON events USING sift_col (id, parent_id, skew_id, ts, ki
 CREATE INDEX events_memo ON events USING sift (memo);
 
 CREATE TABLE facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, role text NOT NULL, val float8 NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO facts SELECT i, 1 + (i * 104729) % :np, date '2024-01-01' + (hashint4(i + :seed + 7) & 1023) % 730, 'role_' || chr(97 + i % 3), 1 + (i % 11) + 0.5 * (i % 2)
+INSERT INTO facts SELECT i, 1 + (i::bigint * 104729) % :np, date '2024-01-01' + (hashint4(i + :seed + 7) & 1023) % 730, 'role_' || chr(97 + i % 3), 1 + (i % 11) + 0.5 * (i % 2)
 	FROM generate_series(1, :n / 3) i;
 CREATE INDEX facts_parent ON facts (parent_id, ts);
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, ts, role, val);
