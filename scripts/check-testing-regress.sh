@@ -3,6 +3,7 @@
 # release-library-regress (the stock build) runs it and fails on a missing function (needs no PostgreSQL and no build).
 #
 #   scripts/check-testing-regress.sh
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
