@@ -14,6 +14,7 @@
 #include "access/heapam.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
@@ -217,6 +218,12 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 	bool		added = false;
 
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+		return false;
+	/*
+	 * A VACUUM that vacuums the other indexes of the table with workers runs this index in its leader, in parallel mode, where the write of the option cannot
+	 * assign a transaction id (nor increment the command counter): the next merge decides.
+	 */
+	if (IsInParallelMode())
 		return false;
 	/*
 	 * The merge holds the index metapage; a VACUUM holds the heap and waits for the metapage, so waiting for the heap here is a deadlock. The lock is the one

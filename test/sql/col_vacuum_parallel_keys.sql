@@ -1,0 +1,42 @@
+-- A VACUUM that vacuums the b-trees of a table with parallel workers runs the sift_col index in the leader, in parallel mode, where no transaction id may be assigned and no
+-- catalog row written: a merge there leaves the key_columns = 'auto' decision to the next merge instead of failing with "cannot assign transaction IDs during
+-- a parallel operation".
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE FUNCTION pv_opt(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce(array_to_string(reloptions, ','), '') FROM pg_class WHERE oid = idx $$;
+
+-- clustered by set_id: about 6 owners in a unit, which the cube holds; two b-trees and the primary key for the workers of the VACUUM
+CREATE TABLE pv (id int PRIMARY KEY, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO pv SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(0, 29999) i;
+CREATE INDEX pv_v ON pv (v);
+CREATE INDEX pv_owner ON pv (set_id);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pv;
+CREATE INDEX pv_idx ON pv USING sift_col (id, set_id, v);
+SELECT pv_opt('pv_idx') AS built;
+
+-- two rounds of non-HOT updates that scatter the owners, each promoted into its own segment
+UPDATE pv SET set_id = (id::bigint * 7919 % 600)::int;
+VACUUM pv;
+SELECT sift.col_promote('pv_idx') > 0 AS promoted;
+UPDATE pv SET set_id = (id::bigint * 104729 % 600)::int;
+VACUUM pv;
+SELECT sift.col_promote('pv_idx') > 0 AS promoted;
+
+-- rows to remove, so that the index is vacuumed; every index is big enough for a worker
+DELETE FROM pv WHERE id % 20 = 3;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+VACUUM (PARALLEL 2) pv;
+SELECT pv_opt('pv_idx') AS after_parallel_vacuum;
+
+-- outside parallel mode the merge decides
+RESET max_parallel_maintenance_workers;
+SELECT sift.col_merge('pv_idx', true) >= 0 AS merged;
+SELECT pv_opt('pv_idx') AS after_merge;
+
+DROP TABLE pv;
+DROP FUNCTION pv_opt(regclass);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
