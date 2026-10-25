@@ -115,6 +115,7 @@ leak_psql() { psql -X -qAt -v ON_ERROR_STOP=1 -d postgres "$@"; }
 # auxiliary processes, found by their process titles
 leak_procs() {
 	local pid cmd
+	[[ -d /proc/self ]] || return 0   # no /proc (macOS): the growth check of the long-lived processes is skipped; the log scans and the cluster checks stay
 	for pid in $(head -1 "$1/postmaster.pid") $(pgrep -P "$(head -1 "$1/postmaster.pid")"); do
 		cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null) || continue
 		[[ $pid == $(head -1 "$1/postmaster.pid") || $cmd =~ ^postgres:\ (checkpointer|background\ writer|walwriter|autovacuum\ launcher|logical\ replication\ launcher|startup|walreceiver|archiver|io\ worker) ]] ||

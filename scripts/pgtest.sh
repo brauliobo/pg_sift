@@ -40,6 +40,8 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# macOS: the postmaster dies with "became multithreaded" unless LC_ALL names a valid locale (the default C of a non-login shell does not count)
+[[ $(uname) != Darwin ]] || export LC_ALL=en_US.UTF-8
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 PORT=${SIFT_PORT:-56100}
 DB=${SIFT_DB:-sift}
