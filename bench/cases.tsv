@@ -158,3 +158,5 @@ two_level_lookup_arms	the arms of a two-level aggregate that read the columns of
 two_level_join_types	the arms of a two-level scan may differ in the type of the join of a lateral `LIMIT 1` child	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 cte_shared_series	the shared plan of a CTE that several aggregates read is made with `enable_memoize` off	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 cte_hoisted_in	no longer repeats an aggregating `IN` sub-select of the CTE body in every arm	events	-	sift_hoisted	native	-	ms	faster33	no
+
+keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by default	orders	default	Units Pruned: [1-9]	native	-	ms	faster33	no
