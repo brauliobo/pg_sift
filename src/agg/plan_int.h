@@ -441,9 +441,12 @@ typedef struct CteVerdict
 	uint64		key;
 	bool		cacheable,		/* the statement has a key */
 				known,			/* the cache has the verdict (won, and the totals of the plan it was made from) */
+				from_shared,	/* another backend made it */
 				won;
 	double		scans,
-				shared;
+				shared,
+				inl,			/* the total cost of the inline plan and of the plan with the shared CTEs, as they were planned in full; 0: not known */
+				pln;
 	int			nrels;
 	Oid			rels[VERDICT_RELS];
 }			CteVerdict;
@@ -453,6 +456,10 @@ typedef struct CteVerdict
 
 extern void verdict_new_planning(void);
 extern void verdict_lookup(Query *q, int kind, CteVerdict *vd);
-extern void verdict_remember(const CteVerdict *vd, bool won, double scans, double shared);
+#define VERDICT_TAKE	0
+#define VERDICT_SWITCH	1
+#define VERDICT_FULL	2
+extern int verdict_accept(CteVerdict *vd, double cost);
+extern void verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double inl, double pln);
 
 #endif							/* SIFT_AGG_PLAN_INT_H */

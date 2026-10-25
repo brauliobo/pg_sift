@@ -28,7 +28,9 @@ CREATE FUNCTION plan_it(q text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUT
 CREATE FUNCTION arms(q text) RETURNS text LANGUAGE sql AS
 $$ SELECT string_agg(arm || ':' || used, ' ' ORDER BY arm) FROM sift.explain_why(q) WHERE arm IN ('cte_inline', 'verdict_cached') $$;
 CREATE FUNCTION counts() RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats() WHERE name LIKE 'verdict_cache_%' $$;
+$$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats() WHERE name LIKE 'verdict_cache_%' AND name <> 'verdict_cache_shared_hits' $$;
+CREATE FUNCTION shared_hits() RETURNS bigint LANGUAGE sql AS
+$$ SELECT value FROM sift.stats() WHERE name = 'verdict_cache_shared_hits' $$;
 
 -- the first statement is planned in full, the next with other constants from its verdict
 SELECT sift.stats_reset();
@@ -76,6 +78,42 @@ SELECT plan_it(lateral_query(20));
 SELECT counts();
 DROP FUNCTION lateral_query;
 
+-- the verdicts are kept for the other backends of the database too (sift.verdict_cache_kb): a backend that connects after the first one plans the statement
+-- from its verdict (a shared hit), and the key carries the files of the column index, so that a REINDEX is not served the verdict of the old one
+SELECT plan_it(series_query(10));
+\c
+SET max_parallel_workers_per_gather = 0;
+SELECT sift.stats_reset();
+SELECT plan_it(series_query(10));
+SELECT counts(), shared_hits();
+REINDEX INDEX events_col;
+\c
+SET max_parallel_workers_per_gather = 0;
+SELECT sift.stats_reset();
+SELECT plan_it(series_query(10));
+SELECT counts(), shared_hits();
+\c
+SET max_parallel_workers_per_gather = 0;
+SELECT sift.stats_reset();
+SELECT plan_it(series_query(10));
+SELECT counts(), shared_hits();
+
+-- the table is a cache: where a backend cannot have it (no room in /dev/shm, no more segments) it plans in full and no statement
+-- fails; the setting at 0 is the clean switch, for the backends that set it
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_verdict_shm_fail = on;
+SELECT sift.stats_reset();
+SELECT plan_it(series_query(10));
+SELECT plan_it(series_query(10));
+SELECT counts(), shared_hits();
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.verdict_cache_kb = 0;
+SELECT sift.stats_reset();
+SELECT plan_it(series_query(10));
+SELECT counts(), shared_hits();
+
 -- the statement of another constant planned from the verdict cached for this one gives the rows of the plan without the scans
 CREATE FUNCTION digest(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE d text;
@@ -89,6 +127,6 @@ SELECT plan_it(series_query(10));
 SELECT digest(series_query(25), true) = digest(series_query(25), false) AS same_rows;
 SELECT counts();
 DROP FUNCTION digest;
-DROP FUNCTION counts, arms, plan_it, series_query, fill;
+DROP FUNCTION counts, shared_hits, arms, plan_it, series_query, fill;
 DROP TABLE events, kinds;
 DROP EXTENSION pg_sift;

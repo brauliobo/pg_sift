@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 85 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 86 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -637,6 +637,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave on. Off loads the whole joined table. Gains need a btree on the table's equality columns or a selective condition; a set that is most of the table gains nothing (100,000 keys: 30.4 vs 31.3 ms).
 
+#### sift.verdict_cache_kb
+
+`sift_col`, `sift_table` · default · since 3.4 · default 256 kB
+
+- **What it does:** a new backend plans the form of a statement that won (a shared CTE or its inline plan, the flattened form or the one as written) from the choice another backend made, not all of them
+- **Gain:** first statement of a new backend, a 27 KB dashboard statement (21 CTEs, 16 lateral sub-selects) over 3,000,000 rows: median 128 ms planning to 11 ms (the normal plan 10 ms) once another backend has planned the statement; the first backend pays the same as without
+- **Impact:** index size: -; build, merge and writes: -; other: one table for the server, whatever the number of backends: 56 bytes an entry and up to three entries a statement, 256 kB by default (1 MB at most); where it cannot be allocated the backend logs once and plans in full; the size is taken when the first backend allocates it (a restart to change it); a plan in full at every eighth read of an entry
+- **When:** Statements that the auto(shared-cte-choice) choice helps, planned by a backend that has not seen the shape but another backend of the database has: a pool that resets its sessions, a new connection. The first backend after a start of the server plans in full; a table that was changed since (ANALYZE, a rewrite, a REINDEX) moves the key and is planned in full once.
+- **Default:** 256 kB — On: 256 kB of shared memory, allocated by the first backend that needs it; a wrong verdict is a plan of the other variant of the same query, never other rows, and the plan of the variant must cost within a factor of 4 of the one the verdict was made from. The 3.3 rule needs no more (no index growth, no write cost).
+- **Turn off:** SET sift.verdict_cache_kb = 0 (superuser; postgresql.conf for all backends): each backend then plans every statement in full once.
+- **Upgrade from 3.3:** Nothing to do after ALTER EXTENSION UPDATE: the table is allocated by the first backend that plans a statement with a shared CTE, in the shared memory of the server; no REINDEX.
+- **Advice:** Leave at the default. 0 turns the sharing off (each backend then plans every statement in full once); more room helps only a server with more than about 2,000 statements that read a shared CTE.
+
 #### sift.agg_share_lookups
 
 `sift_col`, `sift_table` · default · since 3.2 · default on
@@ -964,12 +977,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
 
-- **What it does:** Chooses between keeping a CTE that several aggregates read and inlining it so that each aggregate is a scan, prices the lookup tables and the heap check as PostgreSQL's own reads, and keeps the verdict per backend (4,096 statements) so a statement seen again plans only the winning variant
+- **What it does:** Chooses between keeping a CTE that several aggregates read and inlining it so that each aggregate is a scan, prices the lookup tables and the heap check as PostgreSQL's own reads, and keeps the verdict per backend (4,096 statements) and in shared memory (sift.verdict_cache_kb) so a statement seen again, by this backend or by one that connected later, plans only the winning variant
 - **Gain:** Planning -23% over a 624-statement replay (7,684 to 5,942 ms; -29% where the scans win), -38% on a 21-CTE family (891 to 550 Minstr); cte_two_readers 239 to 9.5 ms when the scans win
-- **Impact:** index size: -; build, merge and writes: -; other: Memory under 1 MB a backend (4,096 entries of about 200 bytes). Every 8th hit plans in full; an entry drops on DDL, an index change, ANALYZE or VACUUM of a table it reads. Cold planning is not helped. A stale verdict is a plan of the other variant, never other rows. No index, write or WAL effect.
-- **When:** Statements with a CTE that two or more aggregates read, or flattenable laterals, over a table with a column index, planned again by a backend that has seen the shape (other constants are the same shape). A first plan, a CTE read once (auto(cte-preinline)) and statements without a shared CTE are not helped. The pricing of lookup tables read whole and of the heap check holds for every scan.
+- **Impact:** index size: -; build, merge and writes: -; other: Memory under 1 MB a backend (4,096 entries of about 200 bytes). Every 8th hit plans in full; an entry drops on DDL, an index change, ANALYZE or VACUUM of a table it reads. A new backend takes the verdicts the others made from shared memory (256 kB; sift.verdict_cache_kb); the first plan after a start of the server and after a change of a table is in full. A stale verdict is a plan of the other variant, never other rows. No index, write or WAL effect.
+- **When:** Statements with a CTE that two or more aggregates read, or flattenable laterals, over a table with a column index, planned again by a backend that has seen the shape, or by a new one when another backend saw it (other constants are the same shape). A first plan, a CTE read once (auto(cte-preinline)) and statements without a shared CTE are not helped. The pricing of lookup tables read whole and of the heap check holds for every scan.
 - **Default:** automatic — Both variants are plans of the same query, so a wrong verdict costs plan quality at worst, never rows. It removes up to four planner runs for a repeated statement; the 3.3 rule needs no more (no index growth, no write cost, planning -23%).
-- **Turn off:** SET sift.enable_agg = off (no CTE or lateral planning by the hook). The cache has no setting: it drops its entries when a planner setting, work_mem, hash_mem_multiplier, max_parallel_workers_per_gather or a sift.* setting changes.
+- **Turn off:** SET sift.enable_agg = off (no CTE or lateral planning by the hook). sift.verdict_cache_kb = 0 turns the shared table off. The cache of a backend has no setting: it drops its entries when a planner setting, work_mem, hash_mem_multiplier, max_parallel_workers_per_gather or a sift.* setting changes.
 - **Upgrade from 3.3:** No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not.
 - **Advice:** Leave on. sift.explain_why shows a verdict_cached row for a statement planned from the cache and sift.stats() counts verdict_cache_hits, verdict_cache_misses and verdict_cache_flips.
 
@@ -1854,7 +1867,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1874,6 +1887,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift_col(key_cut)`, `sift_
 | `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
 | `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
+| `sift.verdict_cache_kb` | new | 256 kB |  | Nothing to do after ALTER EXTENSION UPDATE: the table is allocated by the first backend that plans a statement with a shared CTE, in the shared memory of the server; no REINDEX. |
 | `sift.plan_scale` | 1 | 1 |  | Now also scales the normal side of a plan on PostgreSQL 19 (3.3 did nothing there, as PostgreSQL 19 removed the hook it used); nothing to do. |
 | `sift.agg_force` | new | off |  | New, off: a diagnostic that nothing sets after the update. Nothing to do. |
 | `auto(lateral-decorrelation)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not. |

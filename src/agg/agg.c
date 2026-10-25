@@ -204,6 +204,11 @@ sift_agg_init(void)
 							"Backends that run the same query at once wait for the one that loads the rows (30 s at most); a segment the system has no room for gives a notice and the backend loads its own tables.",
 							&sift_agg_lookup_shared_kb, -1, -1, MAX_KILOBYTES,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.verdict_cache_kb",
+							"Shared memory, for all backends together, that keeps the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the one as written, so that a new backend plans the form that won only (0: off).",
+							"The table is allocated, at the size of this setting, by the first backend that plans such a statement after the server starts; a later change turns the use of it on and off (0), not its size. An entry is 56 bytes and a statement keeps up to three; the largest table is about 1 MB.",
+							&sift_verdict_cache_kb, 256, 0, 1024,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,
@@ -242,6 +247,16 @@ sift_agg_init(void)
 							"The older form of sift.agg_lookup_max_kb: rows a sub-select, VALUES list or function joined to Custom Scan (SiftAgg) may return, whatever their width (-1: the memory limit decides).",
 							NULL, &sift_agg_lookup_max_rows, -1, -1, INT_MAX,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
+	DefineCustomBoolVariable("sift.test_verdict_shm_fail",
+							 "Testing: the table of the shared verdicts cannot be had (an error in the registry), once for a backend.",
+							 NULL, &sift_test_verdict_fail, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_verdict_gate",
+							 "Testing: a statement whose verdict is not cached waits, before it is planned in full, for the advisory lock (20984, 1) to be free.",
+							 NULL, &sift_test_verdict_gate, false,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+#endif
 	DefineCustomBoolVariable("sift.test_agg_wait",
 							 "Testing: a top-N scan waits, once its source is open and before it reads a unit, for the advisory lock (20983, 1) to be free.",
 							 NULL, &sift_test_agg_wait, false,

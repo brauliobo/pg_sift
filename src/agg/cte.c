@@ -736,6 +736,9 @@ static struct
 }			first_plan;
 static bool planning_second;
 
+/* set for the plan in full that follows a verdict the plan of the variant did not confirm: that plan reads no verdict */
+static bool verdict_replan;
+
 /*
  * The statement planned as the verdict kept for it says (verdict.c): the inline plan when the scans won, else the plan that keeps the shared CTEs.
  * The totals are those of the plan in full that made the verdict.
@@ -778,17 +781,36 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	SharedCteWalk walk = {true, NIL};
 	CteVerdict	vd;
 	bool		same,
-				won;
+				won,
+				replan = verdict_replan;
 
 	inline_won = false;
+	verdict_replan = false;
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
 	agg_vet_forget();
 	inline_parse = copyObject(parse);
 	shared_cte_walker((Node *) inline_parse, &walk);
 	verdict_lookup(inline_parse, VERDICT_CTE, &vd);
-	if (vd.known)
-		return plan_cached(SIFT_PLANNER_ARGS(parse), inline_parse, &vd, cx);
+	if (vd.known && !replan)
+	{
+		/* the trees are consumed by the plan; where it costs far from what the verdict was made from, the statement is planned again from this copy (verdict_accept) */
+		Query	   *again = vd.inl > 0 ? copyObject(parse) : NULL;
+		PlannedStmt *stmt = plan_cached(SIFT_PLANNER_ARGS(parse), inline_parse, &vd, cx);
+		int			r = verdict_accept(&vd, stmt->planTree->total_cost);
+
+		if (r == VERDICT_TAKE)
+			return stmt;
+		discard_plan(*cx);
+		if (r == VERDICT_FULL)
+			verdict_replan = true;
+		else
+		{
+			inline_parse = copyObject(again);
+			shared_cte_walker((Node *) inline_parse, &(SharedCteWalk) {true, NIL});
+		}
+		return r == VERDICT_FULL ? plan_cte(SIFT_PLANNER_ARGS(again), cx) : plan_cached(SIFT_PLANNER_ARGS(again), inline_parse, &vd, cx);
+	}
 	if (sift_agg_scale_horizon > 1.0)
 	{
 		pristine = copyObject(parse);
@@ -800,7 +822,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
-	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost);
+	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, v.inlined->planTree->total_cost, v.plain->planTree->total_cost);
 	if (!planning_second)
 	{
 		first_plan.set = true;
@@ -886,7 +908,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		if (has_shared_cte(parse))
 		{
 			verdict_lookup(parse, VERDICT_FLAT, &fv);
-			if (fv.known)
+			if (fv.known && verdict_accept(&fv, 0) == VERDICT_TAKE)
 				return fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
 		}
 		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
@@ -907,7 +929,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		if (flatplan != NULL)
 		{
 			discard_plan(flat_cx);
-			verdict_remember(&fv, false, 0, 0);
+			verdict_remember(&fv, false, 0, 0, 0, 0);
 		}
 		return plain;
 	}
@@ -920,11 +942,11 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 flatplan->planTree->total_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
-		verdict_remember(&fv, true, 0, 0);
+		verdict_remember(&fv, true, 0, 0, 0, 0);
 		return flatplan;
 	}
 	discard_plan(flat_cx);
-	verdict_remember(&fv, false, 0, 0);
+	verdict_remember(&fv, false, 0, 0, 0, 0);
 	return plain;
 }
 

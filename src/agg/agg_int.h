@@ -311,6 +311,11 @@ extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_lookup_shared_kb;
+extern int		sift_verdict_cache_kb;
+#ifdef SIFT_TESTING
+extern bool		sift_test_verdict_fail;
+extern bool		sift_test_verdict_gate;
+#endif
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
