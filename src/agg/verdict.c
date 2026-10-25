@@ -38,7 +38,6 @@
 #include "storage/spin.h"
 #include "utils/guc_tables.h"
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -68,17 +67,10 @@ typedef struct VerdictEntry
 				shared,
 				inl,
 				pln;
-	int			nrels;
-	Oid			rels[VERDICT_RELS];
 } VerdictEntry;
 
 static HTAB *cache;
 static dlist_head recent = DLIST_STATIC_INIT(recent);
-
-/* the relations of all the entries, one bit each: an invalidation of another relation costs a test, not a walk of the cache */
-static uint64 rel_bloom;
-
-#define REL_BIT(relid) (UINT64CONST(1) << ((relid) % 64))
 
 int			sift_verdict_cache_kb = 256;
 
@@ -291,34 +283,6 @@ forget_entry(VerdictEntry *e)
 	hash_search(cache, &e->key, HASH_REMOVE, NULL);
 }
 
-static bool
-names_rel(const VerdictEntry *e, Oid relid)
-{
-	for (int i = 0; i < e->nrels; i++)
-		if (e->rels[i] == relid)
-			return true;
-	return false;
-}
-
-/* relid: a table whose relcache entry was invalidated (InvalidOid: all of them) */
-static void
-verdict_inval(Datum arg, Oid relid)
-{
-	dlist_mutable_iter it;
-
-	if (cache == NULL || (relid != InvalidOid && !(rel_bloom & REL_BIT(relid))))
-		return;
-	dlist_foreach_modify(it, &recent)
-	{
-		VerdictEntry *e = dlist_container(VerdictEntry, lru, it.cur);
-
-		if (relid == InvalidOid || names_rel(e, relid))
-			forget_entry(e);
-	}
-	if (dlist_is_empty(&recent))
-		rel_bloom = 0;
-}
-
 /* the settings do not change while a statement is planned: one hash serves the lookups of its plans */
 static bool settings_known;
 static uint64 settings_memo;
@@ -483,7 +447,6 @@ cache_create(void)
 	HASHCTL		ctl = {.keysize = sizeof(uint64), .entrysize = sizeof(VerdictEntry), .hcxt = TopMemoryContext};
 
 	cache = hash_create("sift CTE verdicts", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	CacheRegisterRelcacheCallback(verdict_inval, (Datum) 0);
 }
 
 /* the entry of the cache of this backend under key, with the verdict of vd; flips: a verdict that replaces another of the other choice is counted */
@@ -511,10 +474,6 @@ local_enter(uint64 key, const CteVerdict *vd, bool count_flips)
 	e->shared = vd->shared;
 	e->inl = vd->inl;
 	e->pln = vd->pln;
-	e->nrels = vd->nrels;
-	memcpy(e->rels, vd->rels, sizeof(Oid) * vd->nrels);
-	for (int i = 0; i < vd->nrels; i++)
-		rel_bloom |= REL_BIT(vd->rels[i]);
 }
 
 /* the verdict kept under key, in this backend or in the table of all of them (then it is kept here too): into vd; an entry is read VERDICT_RECHECK - 1 times, the next read is a miss */
@@ -570,7 +529,6 @@ verdict_lookup(Query *q, int kind, CteVerdict *vd)
 	compute_query_id = compute;
 	vd->key = hash_combine64(hash_combine64(hash_combine64(hash_combine64(q->queryId, settings_hash()), sizes.h), kind), MyDatabaseId) | 1;
 	q->queryId = queryid;
-	vd->nrels = sizes.n;
 	vd->cacheable = true;
 	if (cache == NULL)
 		cache_create();

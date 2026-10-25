@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Memory-safety patterns of src/ that a grep can decide (needs no PostgreSQL and no build), see docs/SAFETY.md "Relation cache state":
 #   - rd_amcache, the slot the relcache frees whenever it reloads the entry, is touched only by the files that own an accessor of it
-#     (col/am.c sift_col_rel, bm25/wbuf.c get_hint, agg/stub_src.c): every other file asks the accessor at the point of use;
+#     (col/am.c sift_col_rel, bm25/wbuf.c get_hint, agg/stub_src.c, table/store.c sift_tbl_rel, which only tests it for NULL): every other file asks the accessor at the point of use;
 #   - a local that keeps the result of the accessor, `SiftColRel *r = sift_col_rel(index)`, is a pointer into memory the relcache frees: it
 #     is read after a lock or a catalog read only if the entry was fetched again. A site says why none comes between the fetch and its last
 #     use (or takes sift_col_rel_private, which is not flagged); the earlier report, sift.col_verify and the cost estimate of a scan all kept one;
@@ -17,7 +17,7 @@ SRC=$(cd "$(dirname "$0")/../src" && pwd)
 exec python3 -I - "$SRC" "${1:-}" <<'PY'
 import os, re, sys, tempfile
 
-AMCACHE_FILES = {"col/am.c", "bm25/wbuf.c", "agg/stub_src.c"}
+AMCACHE_FILES = {"col/am.c", "bm25/wbuf.c", "agg/stub_src.c", "table/store.c"}
 loop = re.compile(r"\bfor\s*\(\s*(?:const\s+)?(?:int64|uint64|int64_t|uint64_t)\s+(\w+)\s*=[^;]*;\s*\1\s*<=([^;]*);")
 amcache = re.compile(r"\brd_amcache\b")
 held = re.compile(r"\bSiftColRel\s*\*\s*\w+\s*=\s*sift_col_rel\(")

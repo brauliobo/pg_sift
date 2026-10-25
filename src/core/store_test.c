@@ -25,6 +25,7 @@
 #include "funcapi.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/inval.h"
 #include "utils/timestamp.h"
 
 #include "bm25/maint.h"
@@ -50,6 +51,7 @@ PG_FUNCTION_INFO_V1(sift_test_page);
 PG_FUNCTION_INFO_V1(sift_test_poke);
 PG_FUNCTION_INFO_V1(sift_test_churn);
 PG_FUNCTION_INFO_V1(sift_test_dir_updates_count);
+PG_FUNCTION_INFO_V1(sift_test_relcache_burn);
 
 /* a new setting starts the count of the directory updates it applies to */
 static void
@@ -686,6 +688,20 @@ Datum
 sift_test_dir_updates_count(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(sift_test_dir_updates);
+}
+
+static void
+burn_inval(Datum arg, Oid relid)
+{
+}
+
+/* sift._test_relcache_burn(n): n relcache callback slots of this backend taken by a library that does nothing with them (test/t/relcache_slots.sh) */
+Datum
+sift_test_relcache_burn(PG_FUNCTION_ARGS)
+{
+	for (int i = PG_GETARG_INT32(0); i > 0; i--)
+		CacheRegisterRelcacheCallback(burn_inval, (Datum) 0);
+	PG_RETURN_VOID();
 }
 
 Datum

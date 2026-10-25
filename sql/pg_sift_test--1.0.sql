@@ -385,3 +385,6 @@ CREATE FUNCTION sift._test_col_point_file_damage(index regclass, stride int4, OU
 
 CREATE FUNCTION sift._test_col_gorder(index regclass, leaf int4, OUT seg int8, OUT pos int4, OUT key int8, OUT tid tid, OUT null_row bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_gorder' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_relcache_burn(slots int4) RETURNS void
+	AS 'MODULE_PATHNAME', 'sift_test_relcache_burn' LANGUAGE C STRICT;

@@ -398,8 +398,8 @@ typedef struct PartMemo
 
 typedef struct FactsWatch
 {
-	Oid			relid;			/* an index or a table the facts depend on */
-	uint32		gen;			/* bumped by every invalidation of its catalog entry */
+	uint32		hash;			/* the syscache hash of the pg_class row of an index or a table the facts depend on */
+	uint32		gen;			/* bumped by every change of that row */
 } FactsWatch;
 
 typedef struct PartFacts
@@ -437,17 +437,18 @@ static MemoryContext facts_cx;
 static HTAB *facts;
 static HTAB *src_facts;
 static HTAB *facts_watch;
-static uint32 facts_all;		/* bumped by an invalidation of every relation */
+static uint32 facts_all;		/* bumped by an invalidation of every row */
 static int	facts_replaced;		/* entries read again since the cache was emptied: their old facts stay until it is */
 
+/* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries, and sixty-four for the syscaches */
 static void
-facts_inval(Datum arg, Oid relid)
+facts_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	FactsWatch *w;
 
-	if (relid == InvalidOid)
+	if (hashvalue == 0)
 		facts_all++;
-	else if (facts_watch != NULL && (w = hash_search(facts_watch, &relid, HASH_FIND, NULL)) != NULL)
+	else if (facts_watch != NULL && (w = hash_search(facts_watch, &hashvalue, HASH_FIND, NULL)) != NULL)
 		w->gen++;
 }
 
@@ -464,7 +465,8 @@ static FactsWatch *
 facts_watch_of(Oid relid)
 {
 	bool		found;
-	FactsWatch *w = hash_search(facts_watch, &relid, HASH_ENTER, &found);
+	uint32		hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
+	FactsWatch *w = hash_search(facts_watch, &hash, HASH_ENTER, &found);
 
 	if (!found)
 		w->gen = 0;
@@ -531,7 +533,7 @@ facts_init(void)
 	if (facts_cx == NULL)
 	{
 		facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
-		CacheRegisterRelcacheCallback(facts_inval, (Datum) 0);
+		CacheRegisterSyscacheCallback(RELOID, facts_inval, (Datum) 0);
 	}
 	ctl.hcxt = facts_cx;
 	facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);

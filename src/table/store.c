@@ -19,7 +19,6 @@
 #include "storage/procarray.h"
 #include "utils/fmgrprotos.h"
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -56,20 +55,6 @@ typedef struct CacheEnt
 
 static HTAB *cache_tab;
 static List *retired;			/* contexts of cache entries replaced while a scan may still use them: freed at transaction end */
-
-static void
-cache_inval(Datum arg, Oid relid)
-{
-	HASH_SEQ_STATUS seq;
-	CacheEnt   *e;
-
-	if (cache_tab == NULL)
-		return;
-	hash_seq_init(&seq, cache_tab);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (relid == InvalidOid || e->relid == relid)
-			e->st->invalid = true;
-}
 
 static void
 cache_xact(XactEvent event, void *arg)
@@ -121,11 +106,20 @@ sift_tbl_rel(Relation rel)
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(CacheEnt),.hcxt = CacheMemoryContext};
 
 		cache_tab = hash_create("sift_table relations", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		CacheRegisterRelcacheCallback(cache_inval, (Datum) 0);
 		RegisterXactCallback(cache_xact, NULL);
 		on_proc_exit(cache_exit, 0);
 	}
 	e = hash_search(cache_tab, &relid, HASH_ENTER, &found);
+	/*
+	 * The relcache frees rd_amcache with the entry of the relation when it invalidates it: a table that has a cache entry and no mark was invalidated since.
+	 * No relcache callback for it: a backend has ten of those slots for all its libraries.
+	 */
+	if (rel->rd_amcache == NULL)
+	{
+		rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, 1);
+		if (found)
+			e->st->invalid = true;
+	}
 	if (found && (e->st->invalid || e->st->relnumber != rel->rd_locator.relNumber))
 	{
 		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
