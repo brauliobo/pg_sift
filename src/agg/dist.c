@@ -1025,33 +1025,46 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 			cnt[ex->gid[j]]++;
 }
 
+/* DD_SORT: calls fn(arg, sid, value) for each distinct pair of the sort, in its order */
+static void
+dist_sorted(Dist *d, void (*fn) (void *arg, int32 sid, int64 val), void *arg)
+{
+	bool		isnull;
+	int32		prev_sid = -1;
+	int64		prev_val = 0;
+
+	tuplesort_rescan(d->sort);
+	while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
+	{
+		int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
+		int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
+
+		if (sid != prev_sid || val != prev_val)
+			fn(arg, sid, val);
+		prev_sid = sid;
+		prev_val = val;
+	}
+}
+
+static void
+dist_count_sid(void *arg, int32 sid, int64 val)
+{
+	((Dist *) arg)->cnt[sid]++;
+}
+
 /* DD_SORT: sorts the pairs and sets the count of each group */
 static void
 dist_finish(AggExec *ex, int ai)
 {
 	Dist	   *d = ex->dist[ai];
 	AggAcc	   *acc = &ex->acc[ai];
-	TupleTableSlot *t;
-	bool		isnull;
-	int32		prev_sid = -1;
-	int64		prev_val = 0;
 	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap;
 
 	if (d == NULL || d->mode != DD_SORT || d->done)
 		return;
 	tuplesort_performsort(d->sort);
 	d->cnt = MemoryContextAllocZero(ex->tcxt, Max(d->nsid, 1) * sizeof(uint64));
-	t = d->get;
-	while (tuplesort_gettupleslot(d->sort, true, false, t, NULL))
-	{
-		int32		sid = DatumGetInt32(slot_getattr(t, 1, &isnull));
-		int64		val = DatumGetInt64(slot_getattr(t, 2, &isnull));
-
-		if (sid != prev_sid || val != prev_val)
-			d->cnt[sid]++;
-		prev_sid = sid;
-		prev_val = val;
-	}
+	dist_sorted(d, dist_count_sid, d);
 	for (uint32 g = 0; g < Min(ngr, d->sidgroups); g++)
 		if (d->sid[g])
 			acc->n[g] = d->cnt[d->sid[g] - 1];
@@ -1098,59 +1111,62 @@ dist_collect(void *arg, uint32 g, uint32 v)
 	dp->pv[dp->np++] = v;
 }
 
+typedef struct DistEach
+{
+	const uint32 *sg;
+	DistFn		fn;
+	void	   *arg;
+} DistEach;
+
+static void
+dist_each_sid(void *arg, int32 sid, int64 val)
+{
+	DistEach   *e = arg;
+
+	e->fn(e->arg, e->sg[sid], (uint32) val);
+}
+
+/* fn(arg, group, value id) for each distinct pair of aggregate ai, from the sort or the set */
+static void
+dist_each(AggExec *ex, int ai, DistFn fn, void *arg)
+{
+	Dist	   *d = ex->dist[ai];
+
+	dist_finish(ex, ai);
+	if (d->mode == DD_SORT)
+	{
+		uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+		uint32	   *sg = palloc0(Max(d->nsid, 1) * sizeof(uint32));
+		DistEach	e = {sg, fn, arg};
+
+		for (uint32 g = 0; g < Min(n, d->sidgroups); g++)
+			if (d->sid[g])
+				sg[d->sid[g] - 1] = g;
+		dist_sorted(d, dist_each_sid, &e);
+		pfree(sg);
+	}
+	else
+		dist_walk(d, fn, arg);
+}
+
 /* the pairs of aggregate ai in the groups of cidx (blob numbering): the arrays pg and pv, np of them */
 void
 dist_pairs(AggExec *ex, int ai, const uint32 *cidx, uint32 **pg_out, uint32 **pv_out, uint32 *np_out)
 {
-	Dist	   *d = ex->dist[ai];
-	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
-				np = 0;
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
 	uint64		total = 0;
-	uint32	   *pg,
-			   *pv;
+	DistPairs	dp = {cidx, NULL, NULL, 0};
 
 	dist_finish(ex, ai);
 	for (uint32 g = 0; g < n; g++)
 		if (cidx[g] != UINT32_MAX)
 			total += ex->acc[ai].n[g];
-	pg = palloc(Max(total, 1) * sizeof(uint32));
-	pv = palloc(Max(total, 1) * sizeof(uint32));
-	if (d->mode == DD_SORT)
-	{
-		uint32	   *sg = palloc0(Max(d->nsid, 1) * sizeof(uint32));
-		bool		isnull;
-		int32		prev_sid = -1;
-		int64		prev_val = 0;
-
-		for (uint32 g = 0; g < Min(n, d->sidgroups); g++)
-			if (d->sid[g])
-				sg[d->sid[g] - 1] = g;
-		tuplesort_rescan(d->sort);
-		while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
-		{
-			int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
-			int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
-
-			if ((sid != prev_sid || val != prev_val) && cidx[sg[sid]] != UINT32_MAX)
-			{
-				pg[np] = cidx[sg[sid]];
-				pv[np++] = (uint32) val;
-			}
-			prev_sid = sid;
-			prev_val = val;
-		}
-		pfree(sg);
-	}
-	else
-	{
-		DistPairs	dp = {cidx, pg, pv, 0};
-
-		dist_walk(d, dist_collect, &dp);
-		np = dp.np;
-	}
-	*pg_out = pg;
-	*pv_out = pv;
-	*np_out = np;
+	dp.pg = palloc(Max(total, 1) * sizeof(uint32));
+	dp.pv = palloc(Max(total, 1) * sizeof(uint32));
+	dist_each(ex, ai, dist_collect, &dp);
+	*pg_out = dp.pg;
+	*pv_out = dp.pv;
+	*np_out = dp.np;
 }
 
 /* The (group of cidx, value id) pairs of the set of a sum or average over distinct values (ex->dset[ai]), as dist_pairs gives those of a count */
@@ -1209,36 +1225,9 @@ split_collect(void *arg, uint32 g, uint32 v)
 void
 dist_pairs_split(AggExec *ex, int ai, const uint32 *gpart, const uint32 *cidx, PartPairs *out, int stride)
 {
-	Dist	   *d = ex->dist[ai];
 	PairSplit	sp = {gpart, cidx, out, stride};
 
-	dist_finish(ex, ai);
-	if (d->mode == DD_SORT)
-	{
-		uint32		n = ex->hash ? ex->ngroups : ex->gcap;
-		uint32	   *sg = palloc0(Max(d->nsid, 1) * sizeof(uint32));
-		bool		isnull;
-		int32		prev_sid = -1;
-		int64		prev_val = 0;
-
-		for (uint32 g = 0; g < Min(n, d->sidgroups); g++)
-			if (d->sid[g])
-				sg[d->sid[g] - 1] = g;
-		tuplesort_rescan(d->sort);
-		while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
-		{
-			int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
-			int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
-
-			if (sid != prev_sid || val != prev_val)
-				split_collect(&sp, sg[sid], (uint32) val);
-			prev_sid = sid;
-			prev_val = val;
-		}
-		pfree(sg);
-	}
-	else
-		dist_walk(d, split_collect, &sp);
+	dist_each(ex, ai, split_collect, &sp);
 }
 
 /* the same for the set of a sum or average over distinct numbers */
