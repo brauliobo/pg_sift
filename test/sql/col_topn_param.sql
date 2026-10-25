@@ -70,7 +70,7 @@ INSERT INTO tp_q VALUES
 	('left',        $q$SELECT d.k, x.id, x.ts FROM %s d(k) LEFT JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 2) x ON true$q$),
 	('scalar',      $q$SELECT d.k, (SELECT ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 1) FROM %s d(k)$q$),
 	('scalar_asc',  $q$SELECT d.k, (SELECT id FROM tp WHERE dev = d.k ORDER BY v, id LIMIT 1) FROM %s d(k)$q$),
-	('exists_in',   $q$SELECT d.k FROM %s d(k) WHERE EXISTS (SELECT 1 FROM tp WHERE dev = d.k ORDER BY ts LIMIT 1)$q$),
+	('exists_in',   $q$SELECT d.k FROM %s d(k) WHERE EXISTS (SELECT 1 FROM tp WHERE dev = d.k ORDER BY ts LIMIT 1) ORDER BY d.k$q$),
 	('grouped',     $q$SELECT d.k, count(*), sum(x.id), max(x.ts) FROM %s d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 5) x GROUP BY d.k ORDER BY d.k$q$),
 	('sorted',      $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x ORDER BY x.id DESC LIMIT 20$q$),
 	('text_key',    $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE nm = 'n' || d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
