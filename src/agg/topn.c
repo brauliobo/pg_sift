@@ -195,6 +195,8 @@ typedef struct TopExpr
 static SiftSrcVecType expr_vtype(Oid typid);
 static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt);
 
+#define TOP_GKEYS 4
+
 typedef struct TopKey
 {
 	int			leaf;
@@ -376,8 +378,12 @@ struct SiftTopN
 	int64		nrhead;			/* units answered from the head of their sorted run */
 	bool		wkeep;			/* the write buffers' superblocks are known (whead): a superblock outside them has no row in memory */
 	int64		fetched;
-	int			gatt;			/* the heap column of the only key when it is a plain integer or time column (col/gorder.h can order it), else 0 */
-	Oid			gtyp;
+	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
+	int			gatt[TOP_GKEYS];
+	Oid			gtyp[TOP_GKEYS];
+	struct GRow *gq;			/* sift_topn_gorder with more keys: the rows of the whole groups of the first key that make the n, in order */
+	int			gqn;
+	int			gqpos;
 	const SiftTopGPred *gcond;	/* sift_topn_gorder: what the key of an entry must satisfy */
 	struct SiftGOrd *go;		/* the global order of the key read in place of the units (sift_topn_gorder): rows come from the heap in the order of the key */
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
@@ -509,17 +515,12 @@ enum_ranks(TopKey *k, Oid typid)
 	ReleaseCatCacheList(list);
 }
 
-/* The heap column of the only sort key when the global order of the leaf can stand for the scan (integer and time types, a plain column of a heap), else 0 */
-static int
-order_attno(const SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
+int
+sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 {
-	const TopKey *k = &t->key[0];
-	const SiftSrcLeaf *lf;
+	const SiftSrcLeaf *lf = &lay->leaf[leaf];
 	Node	   *e;
 
-	if (t->nkey != 1 || k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->blob || k->nenum || lay->is_table || heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		return 0;
-	lf = &lay->leaf[k->leaf];
 	if (lf->path != NIL || lf->parent >= 0 || lf->wide || lf->attno < 1 || lf->attno > list_length(lay->attexprs))
 		return 0;
 	switch (lf->typid)
@@ -536,6 +537,23 @@ order_attno(const SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 	}
 	e = list_nth(lay->attexprs, lf->attno - 1);
 	return IsA(e, Var) && ((Var *) e)->varattno > 0 ? ((Var *) e)->varattno : 0;
+}
+
+/* Can the global order of the first key stand for the scan, the others being read from the heap rows: plain integer and time columns of a heap */
+static bool
+order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
+{
+	if (t->nkey > TOP_GKEYS || lay->is_table || heap->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+		return false;
+	for (int j = 0; j < t->nkey; j++)
+	{
+		const TopKey *k = &t->key[j];
+
+		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->blob || k->nenum || (t->gatt[j] = sift_topn_leaf_attno(lay, k->leaf)) == 0)
+			return false;
+		t->gtyp[j] = lay->leaf[k->leaf].typid;
+	}
+	return true;
 }
 
 SiftTopN *
@@ -671,8 +689,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 			t->uvn = palloc((Size) t->limit * t->nov);
 		}
 	}
-	t->gatt = order_attno(t, lay, heap);
-	t->gtyp = t->gatt > 0 ? lay->leaf[t->key[0].leaf].typid : InvalidOid;
+	t->gok = order_gok(t, lay, heap);
 	t->snap = snapshot;
 	t->src = src;
 	t->rel = heap;
@@ -3355,6 +3372,8 @@ gcond_box(const SiftTopGPred *p)
 
 	if (p->kind == STG_CMP)
 	{
+		if (!p->lead)
+			return r;
 		switch (p->op)
 		{
 			case SCMP_EQ:
@@ -3412,10 +3431,19 @@ gcond_box(const SiftTopGPred *p)
 	return r;
 }
 
+/* does the heap row pass: a NULL column passes no comparison */
 static bool
-gcond_test(const SiftTopGPred *p, int64 key)
+gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 {
 	if (p->kind == STG_CMP)
+	{
+		bool		isnull;
+		Datum		d = slot_getattr(slot, p->attno, &isnull);
+		int64		key;
+
+		if (isnull)
+			return false;
+		key = heap_key(p->typid, d);
 		switch (p->op)
 		{
 			case SCMP_EQ:
@@ -3431,10 +3459,114 @@ gcond_test(const SiftTopGPred *p, int64 key)
 			default:
 				return key >= p->val;
 		}
+	}
 	for (int i = 0; i < p->nchild; i++)
-		if (gcond_test(p->child[i], key) == (p->kind == STG_OR))
+		if (gcond_test(p->child[i], slot) == (p->kind == STG_OR))
 			return p->kind == STG_OR;
 	return p->kind == STG_AND;
+}
+
+/* a row of a group of the first key: its address and the values of the keys, which the heap row gave */
+typedef struct GRow
+{
+	ItemPointerData tid;
+	bool		isnull[TOP_GKEYS];
+	int64		key[TOP_GKEYS];
+} GRow;
+
+/* the keys after the first, then the address */
+static int
+grow_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftTopN *t = arg;
+	const GRow *x = a,
+			   *y = b;
+
+	for (int j = 1; j < t->nkey; j++)
+	{
+		const TopKey *k = &t->key[j];
+
+		if (x->isnull[j] != y->isnull[j])
+			return x->isnull[j] == k->nulls_first ? -1 : 1;
+		if (!x->isnull[j] && x->key[j] != y->key[j])
+			return (x->key[j] < y->key[j]) != k->desc ? -1 : 1;
+	}
+	return ItemPointerCompare(unconstify(ItemPointerData *, &x->tid), unconstify(ItemPointerData *, &y->tid));
+}
+
+/*
+ * More keys than the first: the array gives the rows in the order of the first key only, so the scan takes the whole groups of rows that share a value of it
+ * (the heap row says what the others hold, and whether it passes the condition) until the groups make the n rows, and puts each group in order. A scan that
+ * reads more entries than GORD_SCAN_MIN, or 64 for each row wanted, before the n are in has a first key that many rows share: the units read it better.
+ */
+#define GORD_SCAN_MIN	4096
+
+static bool
+gord_prep(SiftTopN *t)
+{
+	TopFetch   *f = &t->pf[0];
+	int64		cap = Max(GORD_SCAN_MIN, 64 * (int64) t->limit),
+				scanned = 0,
+				gkey = 0,
+				key;
+	bool		isnull,
+				gnull = false,
+				have = false,
+				closed = false;
+	int			gstart = 0,
+				room = 64;
+	ItemPointerData tid;
+
+	t->gq = MemoryContextAlloc(GetMemoryChunkContext(t), room * sizeof(GRow));
+	while (sift_gord_next(t->go, &key, &isnull, &tid))
+	{
+		bool		call_again = false,
+					all_dead,
+					hnull;
+		Datum		d;
+		GRow	   *r;
+		ItemPointerData entry = tid;	/* the fetch leaves the address of the version it found in tid: the entry is the root of its chain, which a second fetch starts from */
+
+		if (++scanned > cap)
+			return false;
+		if (have && (key != gkey || isnull != gnull))
+		{
+			qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
+			if (t->gqn >= t->limit)
+			{
+				closed = true;
+				break;
+			}
+			gstart = t->gqn;
+		}
+		have = true;
+		gkey = key;
+		gnull = isnull;
+		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
+			continue;
+		t->fetched++;
+		d = slot_getattr(f->slot, t->gatt[0], &hnull);
+		if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
+			continue;
+		if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
+			continue;
+		if (t->gqn == room)
+		{
+			room *= 2;
+			t->gq = repalloc(t->gq, room * sizeof(GRow));
+		}
+		r = &t->gq[t->gqn++];
+		r->tid = entry;
+		for (int j = 0; j < t->nkey; j++)
+		{
+			d = slot_getattr(f->slot, t->gatt[j], &r->isnull[j]);
+			r->key[j] = r->isnull[j] ? 0 : heap_key(t->gtyp[j], d);
+		}
+	}
+	/* the end of the array closes the last group; a group that ended the scan above is sorted already */
+	if (!closed && t->gqn - gstart > 1)
+		qsort_arg(t->gq + gstart, t->gqn - gstart, sizeof(GRow), grow_cmp, t);
+	return true;
 }
 
 /*
@@ -3448,7 +3580,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	SiftGBound	b = {0};
 
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (t->gatt == 0 || t->skip > 0 || t->all)
+	if (!t->gok || t->skip > 0 || t->all)
 		return false;
 	if (cond != NULL)
 	{
@@ -3464,6 +3596,8 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	}
 	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
 	t->gcond = cond;
+	if (t->go != NULL && t->nkey > 1 && !gord_prep(t))
+		t->go = NULL;
 	return t->go != NULL;
 }
 
@@ -3481,20 +3615,25 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 	bool		isnull;
 	ItemPointerData tid;
 
-	while (t->emitted < t->limit && sift_gord_next(t->go, &key, &isnull, &tid))
+	while (t->emitted < t->limit && (t->nkey > 1 ? t->gqpos < t->gqn : sift_gord_next(t->go, &key, &isnull, &tid)))
 	{
 		bool		call_again = false,
 					all_dead,
 					hnull;
 		Datum		d;
 
+		if (t->nkey > 1)
+			tid = t->gq[t->gqpos++].tid;
 		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
-		d = slot_getattr(f->slot, t->gatt, &hnull);
-		if (hnull != isnull || (!hnull && heap_key(t->gtyp, d) != key))
-			continue;
-		if (t->gcond != NULL && (isnull || !gcond_test(t->gcond, key)))
-			continue;
+		if (t->nkey == 1)
+		{
+			d = slot_getattr(f->slot, t->gatt[0], &hnull);
+			if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
+				continue;
+			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
+				continue;
+		}
 		t->fetched++;
 		t->emitted++;
 		ExecClearTuple(slot);
@@ -3686,6 +3825,7 @@ sift_topn_rewind(SiftTopN *t)
 {
 	t->pos = 0;
 	t->emitted = 0;
+	t->gqpos = 0;
 	if (t->go)
 		sift_gord_rewind(t->go);
 	if (t->sort)

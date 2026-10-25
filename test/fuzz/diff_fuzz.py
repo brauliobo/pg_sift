@@ -1199,16 +1199,27 @@ def go_const(r, col):
 def gen_gorder(r, ctx):
     col = r.choice(GO_COLS)
     cond = ''
-    if r.random() < 0.5:  # a condition on the key bounds the part of the array that is read
+    keyset = ''
+    if r.random() < 0.3:  # a second key (id, which is unique, so the order is total), with the page after a key as a row comparison or its expansion
+        keyset = r.choice(['', '', 'rc', 'rc', 'or'])
+    if keyset == 'rc':
+        cond = f"(g.{col}, g.id) {r.choice(['>', '>=', '<', '<='])} ({go_const(r, col)}, {go_const(r, 'id')})"
+    elif keyset == 'or':
+        op = r.choice(['>', '<'])
+        cond = f"g.{col} {op} {go_const(r, col)} OR (g.{col} = {go_const(r, col)} AND g.id {op} {go_const(r, 'id')})"
+    elif r.random() < 0.5:  # a condition on the key bounds the part of the array that is read
         def cmp():
             return f"g.{col} {r.choice(['<', '<=', '>', '>=', '=', '<>'])} {go_const(r, col)}"
         cond = r.choice([cmp, lambda: f"{cmp()} AND {cmp()}", lambda: f"({cmp()} OR {cmp()})", lambda: f"g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"])()
     return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
-                cond=cond, where=[], keys=[], aggs=[], having=[], ordered=True)
+                cond=cond, second=keyset != '' or (col != 'id' and r.random() < 0.15), dir2=r.choice(['', ' DESC']),
+                where=[], keys=[], aggs=[], having=[], ordered=True)
 
 
 def render_gorder(p):
     where = f" WHERE {p['cond']}" if p['cond'] else ''
+    if p['second'] and p['col'] != 'id':
+        return f"SELECT g.{p['col']}, g.id FROM gof g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']}, g.id{p['dir2']} LIMIT {p['limit']}", True
     return f"SELECT g.{p['col']} FROM gof g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
 
 

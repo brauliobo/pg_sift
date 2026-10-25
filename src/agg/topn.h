@@ -112,6 +112,9 @@ typedef struct SiftTopGPred
 {
 	SiftTopGKind kind;
 	int			op;				/* STG_CMP: SiftCmpOp */
+	bool		lead;			/* STG_CMP: the column is the first sort key, whose range the condition bounds */
+	int			attno;			/* STG_CMP: the heap column and its type */
+	Oid			typid;
 	int64		val;
 	int			nchild;
 	struct SiftTopGPred **child;
@@ -122,6 +125,8 @@ extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred
 extern bool sift_topn_gordered(const SiftTopN *t);
 
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
+/* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
+extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
 
 /*
  * The order the superblocks are visited in. Before the scan the zones of the sort column's first key in a few superblocks, spread over the
