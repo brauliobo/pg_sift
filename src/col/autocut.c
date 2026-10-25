@@ -1,7 +1,8 @@
 /*
  * col/autocut.c - the default of the option key_cut: CREATE INDEX and REINDEX of an index without key_cut (or with key_cut = 'auto')
  * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the first leaf, in the order of the index,
- * that is key-shaped (sift_col_key_shaped); it is chosen when an equality on one of its values reads at least AUTOCUT_RATIO times the units its rows fill
+ * that is key-shaped (sift_col_key_shaped); when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
+ * chosen when an equality on one of its values reads at least AUTOCUT_RATIO times the units its rows fill
  * and at least AUTOCUT_MIN_UNITS, no other leaf of the index follows the order of the table (key_cut would widen its zones), and the index would not grow by
  * more than AUTOCUT_GROWTH_PCT. The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
  * units of the superblock cut and in the units of the key cut, the addresses of the rows are priced by what they measured, and the other leaves are
@@ -10,7 +11,7 @@
  * point_tid_columns or order_columns is left alone: the first lists rows, the second says the workload sorts by a column without a key, which a key cut
  * makes slower. sift.key_cut_decision(index) runs the same rule on an existing index and says what it would decide, without changing anything.
  *
- * The sample is a fixed set of superblocks spread over the heap. For a key taken at a random row of the sample, the other sampled superblocks that hold
+ * The sample is a fixed set of superblocks spread over the heap, at most a quarter of it. For a key taken at a random row of the sample, the other sampled superblocks that hold
  * the key give the superblocks it is in (each stands for 1/f superblocks, f the sampled share), and the other sampled rows of the key give its rows.
  */
 #include "postgres.h"
@@ -51,6 +52,7 @@
 #define AUTOCUT_DIR_BYTES	0.5		/* what the directory of a unit takes for a row */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 #define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
+#define AUTOCUT_QUICK_SLACK	4		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough */
 
 typedef struct Cell
 {
@@ -64,7 +66,8 @@ typedef struct Track
 	int			c;				/* leaf of the schema */
 	AttrNumber	hatt;
 	uint8		type;
-	bool		cand;
+	bool		cand;			/* key-shaped: an equality on its values is tested */
+	bool		time;			/* a date or timestamp that is not a key: a range of its values is tested */
 	int64	   *v;				/* the value of each sampled row, 0 for a NULL */
 	bool	   *nl;
 	Cell	   *cells;
@@ -136,6 +139,12 @@ static bool
 cand_type(uint8 type)
 {
 	return type == SIFT_COLT_INT2 || type == SIFT_COLT_INT4 || type == SIFT_COLT_INT8 || type == SIFT_COLT_DATE;
+}
+
+static bool
+time_type(uint8 type)
+{
+	return type == SIFT_COLT_DATE || type == SIFT_COLT_TIMESTAMP || type == SIFT_COLT_TIMESTAMPTZ;
 }
 
 /* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
@@ -234,6 +243,60 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 	qsort(fills, nk, sizeof(double), dbl_cmp);
 	*ideal = fills[nk / 2];
 	return reads[nk / 2];
+}
+
+/*
+ * The same for the values of a time leaf, which do not repeat: AUTOCUT_KEYS ranges at places spread over the sorted values of the sample, each holding the
+ * rows of one unit (a day, a week of a table that takes it). A unit is read when its zone meets the range, so the units read are the sampled superblocks
+ * that meet it (the first stands for itself, the others for 1/f each), and the units its rows fill are those of the rows with a value in it.
+ */
+static double
+ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_units, double *ideal, bool *fired)
+{
+	double		f = nsampled / nsb,
+				reads[AUTOCUT_KEYS],
+				fills[AUTOCUT_KEYS];
+	int64	   *s = palloc_array(int64, nrows);
+	uint32		n = 0,
+				half;
+	int			nfire = 0;
+
+	*fired = false;
+	for (uint32 i = 0; i < nrows; i++)
+		if (!t->nl[i])
+			s[n++] = t->v[i];
+	if (n < AUTOCUT_KEYS)
+	{
+		pfree(s);
+		return 0;
+	}
+	qsort(s, n, sizeof(int64), i64_cmp);
+	half = Max(1, n / nsb / 2);
+	for (int k = 0; k < AUTOCUT_KEYS; k++)
+	{
+		uint32		mid = (uint64) n * (2 * k + 1) / (2 * AUTOCUT_KEYS),
+					from = mid > half ? mid - half : 0,
+					to = Min(n - 1, mid + half);
+		int64		lo = s[from],
+					hi = s[to];
+		double		hits = 0;
+
+		while (from > 0 && s[from - 1] == lo)
+			from--;
+		while (to + 1 < n && s[to + 1] == hi)
+			to++;
+		for (int u = 0; u < nsampled; u++)
+			hits += t->has[u] && t->lo[u] <= hi && lo <= t->hi[u];
+		reads[k] = Min(nsb, hits > 1 ? 1 + (hits - 1) / f : 1);
+		fills[k] = Max(1, (double) (to - from + 1) / n * nsb);
+		nfire += reads[k] >= min_units && reads[k] >= AUTOCUT_RATIO * fills[k];
+	}
+	pfree(s);
+	*fired = nfire * 2 > AUTOCUT_KEYS;
+	qsort(reads, AUTOCUT_KEYS, sizeof(double), dbl_cmp);
+	qsort(fills, AUTOCUT_KEYS, sizeof(double), dbl_cmp);
+	*ideal = fills[AUTOCUT_KEYS / 2];
+	return reads[AUTOCUT_KEYS / 2];
 }
 
 /* the bytes the codec of the index writes for the values of the rows (a NULL takes the value before it, as in a unit) */
@@ -341,6 +404,7 @@ typedef struct CutVerdict
 	double		reads;
 	double		ideal;
 	double		growth;
+	bool		range;			/* the leaf is a time leaf: a range of its values is read, not an equality */
 } CutVerdict;
 
 /* The rule above for the index: no write, the verdict says what a build would do. dry: the options of the index do not stop it. */
@@ -358,13 +422,18 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				untracked = 0,
 				want,
 				full,
-				pick = -1,
-				first = -1;
+				first = -1,
+				nfire = 0,
+				fire[AUTOCUT_LEAVES];
 	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
 	double		nsb = ceil((double) nblocks / SIFT_SB_PAGES),
 				rows_per_unit,
 				def_row = 0,
 				kc_row = 0;
+	double		reads[AUTOCUT_LEAVES],
+				fills[AUTOCUT_LEAVES];
+	bool		blocked[AUTOCUT_LEAVES] = {false};
+	int			first_open;
 	int64	   *tmp;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
@@ -398,16 +467,18 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			hatt != 0 && value_of(d->type, 0, &x))
 		{
 			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = d->type, .cand = cand_type(d->type) && sift_col_key_shaped(heap, index, sc, d)};
-			ncand += tr[ntr++].cand;
+			tr[ntr].time = !tr[ntr].cand && time_type(d->type);
+			ncand += tr[ntr].cand || tr[ntr].time;
+			ntr++;
 		}
 		else
 			untracked++;
 	}
 	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : (double) SIFT_SB_PAGES * MaxHeapTuplesPerPage / 4;
-	full = (int) Min(Min(AUTOCUT_SBS, nsb), AUTOCUT_ROWS / Max(rows_per_unit, 1));
+	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), AUTOCUT_ROWS / Max(rows_per_unit, 1));	/* a quarter of the heap at most: the sample costs what a build of the share costs */
 	if (ncand == 0)
 	{
-		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date)";
+		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date) and no date or timestamp column";
 		goto done;
 	}
 	if (full < AUTOCUT_MIN_SBS)
@@ -495,64 +566,108 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
 	def_row = layout_bytes(tr, ntr, samp, -1) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES;
-	for (int t = 0; t < ntr && pick < 0; t++)
-	{
-		double		fill = 0,
-					u;
-		bool		fired;
+	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
+	for (int pass = 0; pass < 2; pass++)
+		for (int t = 0; t < ntr; t++)
+		{
+			double		fill = 0,
+						u;
+			bool		fired;
 
-		if (!tr[t].cand)
-			continue;
-		/* the key list of a leaf is kept where it fits the share of the bytes of a unit (SIFT_CSET_PRES_PCT) */
-		/* the first look asks a quarter of the units: a sample of a few superblocks puts one hit at 1/f units, so it cannot tell 16 from 64, but it can tell a key that sits in few */
-		u = units_read(&tr[t], samp->nsb, nsb, rows_per_unit,
-					   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row,
-					   quick ? AUTOCUT_MIN_UNITS / 4 : AUTOCUT_MIN_UNITS, &fill, &fired);
-		if (first < 0)
-		{
-			first = t;
-			v->reads = u;
-			v->ideal = fill;
+			if (!(pass == 0 ? tr[t].cand : tr[t].time))
+				continue;
+			/* the first look asks a quarter of the units: a sample of a few superblocks puts one hit at 1/f units, so it cannot tell 16 from 64, but it can tell a key that sits in few */
+			if (pass == 0)
+				/* the key list of a leaf is kept where it fits the share of the bytes of a unit (SIFT_CSET_PRES_PCT) */
+				u = units_read(&tr[t], samp->nsb, nsb, rows_per_unit,
+							   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row,
+							   quick ? AUTOCUT_MIN_UNITS / 4 : AUTOCUT_MIN_UNITS, &fill, &fired);
+			else
+				u = ranges_read(&tr[t], samp->n, samp->nsb, nsb, quick ? AUTOCUT_MIN_UNITS / 4 : AUTOCUT_MIN_UNITS, &fill, &fired);
+			if (first < 0)
+			{
+				first = t;
+				v->reads = u;
+				v->ideal = fill;
+				v->range = pass == 1;
+			}
+			if (fired)
+			{
+				fire[nfire] = t;
+				reads[nfire] = u;
+				fills[nfire++] = fill;
+			}
 		}
-		if (fired)
-		{
-			pick = t;
-			v->reads = u;
-			v->ideal = fill;
-		}
-	}
-	leaf = NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[pick >= 0 ? pick : first].c].attno - 1)->attname);
+	leaf = NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[nfire > 0 ? fire[0] : first].c].attno - 1)->attname);
 	strlcpy(v->leaf, leaf, sizeof(v->leaf));
-	if (pick < 0)
+	if (nfire == 0)
 	{
 		v->reason = "an equality on the key reads few units, or not many times those its rows fill";
 		goto done;
 	}
+	/* a leaf that follows the order of the table would lose its zones to the cut: the first look says so as well as the sample does, and ends there */
+	for (int i = 0; i < nfire; i++)
+		for (int t = 0; t < ntr && !blocked[i]; t++)
+			if (t != fire[i] && !scattered(&tr[t], samp->nsb))
+			{
+				blocked[i] = true;
+				if (i == 0)
+					v->reason = psprintf("the leaf \"%s\" follows the order of the table, and the cut would widen its zones",
+										 NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[t].c].attno - 1)->attname));
+			}
+	for (first_open = 0; first_open < nfire && blocked[first_open];)
+		first_open++;
+	if (first_open == nfire)
+		goto done;
+	/* a time leaf is cut by or left alone, never advised, so the first look prices its cut and ends there when it grows the index well over the limit */
 	if (quick)
 	{
+		for (int i = first_open; i < nfire; i++)
+			if (!blocked[i] && tr[fire[i]].time &&
+				100.0 * (layout_bytes(tr, ntr, samp, fire[i]) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES + AUTOCUT_TID_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
+			{
+				blocked[i] = true;
+				if (i == 0)
+					v->reason = "a range of the leaf reads many units, but the index would grow by more than 3%";
+			}
+		for (first_open = 0; first_open < nfire && blocked[first_open];)
+			first_open++;
+		if (first_open == nfire)
+			goto done;
 		v->maybe = true;
 		goto done;
 	}
-	/* a leaf that follows the order of the table would lose its zones to the cut */
-	for (int t = 0; t < ntr; t++)
-		if (t != pick && !scattered(&tr[t], samp->nsb))
+	/* the first that fires and does not grow the index is cut by; when every one that fires would grow it, the first is advised */
+	for (int i = 0; i < nfire && v->res != SIFT_AUTOCUT_CUT; i++)
+	{
+		int			pick = fire[i];
+		double		growth;
+
+		if (blocked[i])
+			continue;
+		kc_row = layout_bytes(tr, ntr, samp, pick) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES + AUTOCUT_TID_BYTES;
+		growth = 100.0 * (kc_row - def_row) / def_row;
+		if (tr[pick].time && growth > AUTOCUT_GROWTH_PCT)
 		{
-			v->reason = psprintf("the leaf \"%s\" follows the order of the table, and the cut would widen its zones",
-								 NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[t].c].attno - 1)->attname));
-			goto done;
+			if (v->res == SIFT_AUTOCUT_NONE && i == first_open)
+				v->reason = "a range of the leaf reads many units, but the index would grow by more than 3%";
+			continue;
 		}
-	kc_row = layout_bytes(tr, ntr, samp, pick) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES + AUTOCUT_TID_BYTES;
-	v->growth = 100.0 * (kc_row - def_row) / def_row;
-	if (v->growth <= AUTOCUT_GROWTH_PCT)
-	{
-		v->res = SIFT_AUTOCUT_CUT;
-		v->reason = "an equality on the key reads many units and the index does not grow";
+		if (growth <= AUTOCUT_GROWTH_PCT || v->res == SIFT_AUTOCUT_NONE)
+		{
+			strlcpy(v->leaf, NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[pick].c].attno - 1)->attname), sizeof(v->leaf));
+			v->reads = reads[i];
+			v->ideal = fills[i];
+			v->range = tr[pick].time;
+			v->growth = growth;
+			v->reason = NULL;
+			v->res = growth <= AUTOCUT_GROWTH_PCT ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
+		}
 	}
-	else
-	{
-		v->res = SIFT_AUTOCUT_ADVISED;
-		v->reason = "an equality on the key reads many units, but the index would grow by more than 3%";
-	}
+	if (v->res == SIFT_AUTOCUT_CUT)
+		v->reason = v->range ? "a range of the leaf reads many units and the index does not grow" : "an equality on the key reads many units and the index does not grow";
+	else if (v->res == SIFT_AUTOCUT_ADVISED)
+		v->reason = v->range ? "a range of the leaf reads many units, but the index would grow by more than 3%" : "an equality on the key reads many units, but the index would grow by more than 3%";
 done:
 	MemoryContextSwitchTo(old);
 	if (v->reason != NULL)
@@ -594,10 +709,11 @@ sift_col_auto_cut(Relation heap, Relation index)
 		appendStringInfo(&opt, "auto: %s", v.leaf);
 		sift_col_set_option(index, "key_cut", opt.data);
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: an equality on \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%)",
-						RelationGetRelationName(index), v.leaf, v.leaf, v.reads, v.units, v.ideal, v.growth),
-				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the key, so the equality reads the few units of its range; the addresses of the rows of a unit are in the index.",
-						   v.sampled, v.leaf),
+				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%)",
+						RelationGetRelationName(index), v.leaf, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth),
+				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s",
+						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
+						   v.range ? " Reading all the rows of one key of another leaf takes more units." : ""),
 				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else
@@ -606,8 +722,8 @@ sift_col_auto_cut(Relation heap, Relation index)
 			sift_col_set_option(index, "key_cut", "auto");
 		if (v.res == SIFT_AUTOCUT_ADVISED)
 			ereport(NOTICE,
-					(errmsg("sift_col index \"%s\": an equality on \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that, and the index would grow by %.1f%%",
-							RelationGetRelationName(index), v.leaf, v.reads, v.units, v.ideal, v.leaf, v.growth),
+					(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that, and the index would grow by %.1f%%",
+							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.leaf, v.growth),
 					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when the index does not grow by more than %d%%. No other leaf follows the order of the table.",
 							   v.sampled, AUTOCUT_GROWTH_PCT),
 					 errhint("CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX, if the lookups of this key matter more than the size.",

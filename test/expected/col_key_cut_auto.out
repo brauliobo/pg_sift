@@ -136,14 +136,14 @@ SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
 SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
-NOTICE:  sift_col index "ka_auto": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 96 of 123 units, where 1 hold its rows (predicted index size +2.5%)
-DETAIL:  A sample of 123 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the key, so the equality reads the few units of its range; the addresses of the rows of a unit are in the index.
+NOTICE:  sift_col index "ka_auto": key_cut = 'tenant_id' was chosen: an equality on "tenant_id" would read about 93 of 123 units, where 1 hold its rows (predicted index size +2.7%)
+DETAIL:  A sample of 32 superblocks shows the values of "tenant_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index.
 HINT:  ALTER INDEX ka_auto SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 DROP INDEX ka_auto;
 CREATE INDEX ka_narrow ON ka USING sift_col (tenant_id, a1, a2);
-NOTICE:  sift_col index "ka_narrow": an equality on "tenant_id" reads about 123 of 123 units, where 1 hold its rows; key_cut = 'tenant_id' would cut that, and the index would grow by 8.9%
-DETAIL:  The predicted size comes from a sample of 123 superblocks; an automatic cut is chosen only when the index does not grow by more than 3%. No other leaf follows the order of the table.
+NOTICE:  sift_col index "ka_narrow": an equality on "tenant_id" reads about 120 of 123 units, where 1 hold its rows; key_cut = 'tenant_id' would cut that, and the index would grow by 9.5%
+DETAIL:  The predicted size comes from a sample of 32 superblocks; an automatic cut is chosen only when the index does not grow by more than 3%. No other leaf follows the order of the table.
 HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX ka_narrow SET (key_cut = 'tenant_id') and REINDEX, if the lookups of this key matter more than the size.
 SET client_min_messages = warning;
 CREATE INDEX ka_seq ON ka USING sift_col (tenant_id, seq, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
@@ -158,6 +158,77 @@ UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cu
  wide   | tenant_id | cut      | f     | an equality on the key reads many units and the index does not grow
 (3 rows)
 
+-- a time leaf: when no key is worth cutting by, a range of a date or timestamp that holds the rows of one unit is tested the same way; a timestamp that follows the heap is not
+CREATE TABLE kt (id int, tenant int, ts timestamptz, tarr timestamptz, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kt SELECT i, tenant, ts, '2024-01-01'::timestamptz + i * interval '5 minutes', d, d / 7, d / 30, d % 7, d % 30,
+	(i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000, repeat('x', 100)
+FROM (SELECT i, (random() * 100)::int AS tenant, '2024-01-01'::timestamptz + random() * interval '730 days' AS ts FROM generate_series(1, 125000) i) s,
+	LATERAL (SELECT floor(extract(epoch FROM ts) / 86400)::int AS d) l;
+VACUUM (FREEZE, ANALYZE) kt;
+CREATE INDEX kt_auto ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_arrival ON kt USING sift_col (tenant, tarr, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_both ON kt USING sift_col (tenant, ts, tarr, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_narrow ON kt USING sift_col (tenant, ts, a6, a7);
+SELECT kopt('kt_auto'), kopt('kt_arrival'), kopt('kt_both'), kopt('kt_narrow');
+       kopt       | kopt | kopt | kopt 
+------------------+------+------+------
+ key_cut=auto: ts | none | none | none
+(1 row)
+
+SELECT 'auto' AS idx, leaf, decision, reason FROM sift.key_cut_decision('kt_auto')
+UNION ALL SELECT 'arrival', leaf, decision, reason FROM sift.key_cut_decision('kt_arrival')
+UNION ALL SELECT 'both', leaf, decision, reason FROM sift.key_cut_decision('kt_both')
+UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt_narrow');
+   idx   | leaf | decision |                                      reason                                       
+---------+------+----------+-----------------------------------------------------------------------------------
+ auto    | ts   | cut      | a range of the leaf reads many units and the index does not grow
+ arrival | tarr | none     | an equality on the key reads few units, or not many times those its rows fill
+ both    | ts   | none     | the leaf "tarr" follows the order of the table, and the cut would widen its zones
+ narrow  | ts   | none     | a range of the leaf reads many units, but the index would grow by more than 3%
+(4 rows)
+
+CREATE INDEX kt_off ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (key_cut = 'off');
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
+UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kt_off'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS time_cut;
+         time_cut         
+--------------------------
+  Index: kt_auto Units: 1
+(1 row)
+
+SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
+ count |   sum   | min 
+-------+---------+-----
+   164 | 3259552 | 614
+(1 row)
+
+UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS by_superblock;
+       by_superblock       
+---------------------------
+  Index: kt_off Units: 123
+(1 row)
+
+SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
+ count |   sum   | min 
+-------+---------+-----
+   164 | 3259552 | 614
+(1 row)
+
+UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+SELECT sift.col_verify('kt_auto', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE kt;
 DROP TABLE ka;
 DROP FUNCTION kopt(regclass), kunits(text);
 DROP EXTENSION pg_sift;

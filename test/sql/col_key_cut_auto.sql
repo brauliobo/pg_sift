@@ -80,6 +80,34 @@ CREATE INDEX ka_wide ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7
 SELECT 'narrow' AS idx, leaf, decision, growth_pct > 3 AS grows, reason FROM sift.key_cut_decision('ka_narrow')
 UNION ALL SELECT 'seq', leaf, decision, growth_pct > 3, reason FROM sift.key_cut_decision('ka_seq')
 UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cut_decision('ka_wide');
+-- a time leaf: when no key is worth cutting by, a range of a date or timestamp that holds the rows of one unit is tested the same way; a timestamp that follows the heap is not
+CREATE TABLE kt (id int, tenant int, ts timestamptz, tarr timestamptz, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kt SELECT i, tenant, ts, '2024-01-01'::timestamptz + i * interval '5 minutes', d, d / 7, d / 30, d % 7, d % 30,
+	(i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000, repeat('x', 100)
+FROM (SELECT i, (random() * 100)::int AS tenant, '2024-01-01'::timestamptz + random() * interval '730 days' AS ts FROM generate_series(1, 125000) i) s,
+	LATERAL (SELECT floor(extract(epoch FROM ts) / 86400)::int AS d) l;
+VACUUM (FREEZE, ANALYZE) kt;
+CREATE INDEX kt_auto ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_arrival ON kt USING sift_col (tenant, tarr, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_both ON kt USING sift_col (tenant, ts, tarr, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+CREATE INDEX kt_narrow ON kt USING sift_col (tenant, ts, a6, a7);
+SELECT kopt('kt_auto'), kopt('kt_arrival'), kopt('kt_both'), kopt('kt_narrow');
+SELECT 'auto' AS idx, leaf, decision, reason FROM sift.key_cut_decision('kt_auto')
+UNION ALL SELECT 'arrival', leaf, decision, reason FROM sift.key_cut_decision('kt_arrival')
+UNION ALL SELECT 'both', leaf, decision, reason FROM sift.key_cut_decision('kt_both')
+UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt_narrow');
+CREATE INDEX kt_off ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (key_cut = 'off');
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
+UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kt_off'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS time_cut;
+SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
+UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS by_superblock;
+SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
+UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+SELECT sift.col_verify('kt_auto', true);
+DROP TABLE kt;
 DROP TABLE ka;
 DROP FUNCTION kopt(regclass), kunits(text);
 DROP EXTENSION pg_sift;
