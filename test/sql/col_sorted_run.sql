@@ -71,11 +71,12 @@ BEGIN
 	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);
 END $$;
 
--- the rows as text, in order; -0 and 0 are the same value and either may be the row a plan takes among ties
+-- the rows as text, in order; -0 and 0 are the same value and either may be the row a plan takes among ties. The row text and not row_to_json, and the
+-- pattern only on a row that has a -0: the json of 4,000 rows cost 0.5 s on a server with assertions under a sanitizer, the text 22 ms
 CREATE FUNCTION sr_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, regexp_replace(row_to_json(x)::text, ''-0(?![.0-9])'', ''0'', ''g'') AS r FROM (' || q || ') x) y' INTO r;
+	EXECUTE 'SELECT md5(string_agg(CASE WHEN r ~ ''-0[,)]'' THEN regexp_replace(r, ''-0(?![.0-9])'', ''0'', ''g'') ELSE r END, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, x::text AS r FROM (' || q || ') x) y' INTO r;
 	RETURN r;
 END $$;
 
