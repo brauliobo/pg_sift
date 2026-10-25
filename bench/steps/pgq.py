@@ -15,3 +15,45 @@ def timed(db, sqls, setup=(), timed=True, timeout=600):
         raise RuntimeError(p.stderr.strip()[:300] + ' :: ' + last[:120])
     t = TIME.findall(p.stdout)
     return (float(re.findall(r'Time: ([0-9.]+) ms', p.stdout)[-1]) if t else None), TIME.sub('', p.stdout)
+
+
+class Backend:
+    """one psql backend kept open: the output of a statement ends at a marker line (steps/store_engine.py, steps/gap.py). A statement runs with its output discarded (\\o /dev/null)
+    unless `capture`; STRICT raises on an ERROR or FATAL line of the output, else they are part of the lines returned; STDERR is merged into the output (None: left to the terminal)"""
+
+    def __init__(self, argv, env=None, setup=(), strict=True, stderr=subprocess.STDOUT):
+        self.strict = strict
+        self.p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1, env=env)
+        try:
+            for sql in [*setup, '\\o /dev/null']:
+                self.run(sql)
+        except BaseException:   # no backend (the server is starting): reap this psql
+            self.p.kill()
+            self.p.communicate()
+            raise
+
+    def run(self, sql, capture=False):
+        w = self.p.stdin.write
+        if capture:
+            w('\\o\n')
+        w(sql + ('' if sql.startswith('\\') else ';') + '\n')
+        if capture:
+            w('\\o /dev/null\n')
+        w('\\echo __DONE__\n')
+        self.p.stdin.flush()
+        out = []
+        while True:
+            line = self.p.stdout.readline()
+            if line == '':
+                raise RuntimeError('psql ended: ' + ' '.join(out[-3:]))
+            if line.strip() == '__DONE__':
+                break
+            out.append(line.rstrip('\n'))
+        bad = [l for l in out if l.startswith(('ERROR', 'FATAL'))]
+        if self.strict and bad:
+            raise RuntimeError(bad[0][:300])
+        return out
+
+    def close(self):
+        self.p.stdin.close()
+        self.p.wait()
