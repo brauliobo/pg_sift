@@ -126,6 +126,7 @@
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
 #define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
 #define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
+#define AGG_WIDE_COLD		35.0	/* a row of such an image leaf, read by a worker: the unit's dictionary of images is inflated (zstd) and indexed in the worker, whose cache is empty, where the backend that repeats a scan finds it decoded (2,000,000 rows of almost unique values: 24 ns inflated, 6 ns of fresh pages, 3 ns indexed, a row) */
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
 #define AGG_DIST_CHUNK_BYTES	512.0
@@ -1576,6 +1577,7 @@ typedef struct CostAcc
 	double		scan_cost;
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
+	double		cold_rows;		/* rows of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
 	double		gen_cost;
 	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
@@ -1656,30 +1658,37 @@ leaf_wsum_only(const SiftAggSpec *s, int leaf)
 	return sums && !other;
 }
 
+/* is the numeric leaf stored as images (no precision, or past 38 digits) rather than as 128-bit lanes? */
+static bool
+numeric_image(AggCtx *c, const SiftSrcLeaf *lf)
+{
+	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	int32		typmod = e && IsA(e, Var) ? ((Var *) e)->vartypmod : -1;
+	int			precision = ((typmod - VARHDRSZ) >> 16) & 0xffff,
+				scale = (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
+
+	return lf->wtypid == NUMERICOID && (typmod < 0 || precision > 38 || scale < 0 || scale > 38);
+}
+
 /*
- * The dictionary entries a wide leaf builds for each row read, in operators: a unit has its own dictionary, so a column of 50,000 values read in
- * units of 10,000 rows builds about 9,500 entries a unit, not a fifth of its rows.
+ * The dictionary entries a wide leaf builds for each row read, as a share of the rows: a unit has its own dictionary, so a column of 50,000 values
+ * read in units of 10,000 rows builds about 9,500 entries a unit, not a fifth of its rows.
  */
+static double
+wide_entry_frac(AggCtx *c, int leaf, const CostAcc *k)
+{
+	double		units = c->stats.nunits > 0 ? c->stats.nunits : k->units,
+				nd = Max(leaf_distinct_frac(c, leaf, k->rows) * k->rows, 1.0),
+				per_unit = k->rows / units;
+
+	return Min(nd * -expm1(-per_unit / nd) * units / Max(k->rows, 1.0), 1.0);
+}
+
+/* the entries of it, in operators */
 static double
 wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
 {
-	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
-	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
-	double		units = c->stats.nunits > 0 ? c->stats.nunits : k->units,
-				nd = Max(leaf_distinct_frac(c, leaf, k->rows) * k->rows, 1.0),
-				per_unit = k->rows / units,
-				entries = nd * -expm1(-per_unit / nd);
-	int32		typmod = e && IsA(e, Var) ? ((Var *) e)->vartypmod : -1;
-	bool		image = false;
-
-	if (lf->wtypid == NUMERICOID)
-	{
-		int			precision = ((typmod - VARHDRSZ) >> 16) & 0xffff,
-					scale = (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
-
-		image = typmod < 0 || precision > 38 || scale < 0 || scale > 38;
-	}
-	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
+	return wide_entry_frac(c, leaf, k) * (numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
 }
 
 /* The nanoseconds a row costs the tests of the IN lists of the predicate p beyond a small table in the cache: a list of spread values is a hash or bit table */
@@ -1760,11 +1769,16 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
+		{
 			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k));
+			if (numeric_image(c, leaf_of(c, s->leaves[i])))
+				k->cold_rows += k->rows * wide_entry_frac(c, s->leaves[i], k);
+		}
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;
 	k->scan_cost = (k->scan_cost + k->units * AGG_UNIT_COST) * Max(k->zone_kept, 1.0 / k->units);
+	k->cold_rows *= Max(k->zone_kept, 1.0 / k->units);
 }
 
 /* The tuples that reach the groups and what each takes */
@@ -2073,7 +2087,7 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 	 */
 	if (priced)
 		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
-	k->scan_cost = (k->scan_cost + arm - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+	k->scan_cost = (k->scan_cost + arm - load + (priced ? k->cold_rows * AGG_WIDE_COLD * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{

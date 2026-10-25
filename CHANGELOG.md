@@ -5,6 +5,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 ## Unreleased
 
 - Fixed: pg_sift: the few-keys rule no longer keeps the normal plan's price for a lookup whose keys PostgreSQL estimates at a fraction of the smaller list a join of its plan reads (ten ids semi-joined to forty: one, or two): the plan of the lookup is read down to its inputs, a CTE as its query, so a request for ten ids takes the scan instead of an index nested loop that reads the rows of the largest id.
+- Changed: pg_sift: the planner prices the scan of a numeric without a precision (stored as images) for the workers that read it cold: a worker inflates and indexes the dictionary of images of every unit it takes, where a backend that repeats the scan finds them decoded, so the parallel scan of a column of almost unique values scaled to 1.7x with 3 processes while PostgreSQL's plan scales to 3.4x. `GROUP BY` 6 groups, `count`, `sum`, `avg` of 2,000,000 almost unique values (2 / 4 / 8 workers allowed, default costs): the planner took the scan at 103 / 91 / 86 ms against PostgreSQL's 96 / 70 / 70 ms (up to 31% slower), it now keeps PostgreSQL's plan (79 / 62 / 62 ms); 500,000 rows 27.7 against 24 ms, now 24 to 26 ms. Without workers the scan is still taken (135 against 213 ms). No effect when `parallel_setup_cost` is 0.
 
 ## 3.4.1 - 2026-10-26
 
