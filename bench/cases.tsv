@@ -142,3 +142,4 @@ count_distinct_lookup_pairs	the slots of the (group, value) pairs of a joined `c
 point_tid_in_covered	is planned on the addresses and the heap, as it is on a query it does not cover	orders	default	Index	native	-	ms	faster33	no
 lateral_flat_plan	plans the flat query first and, when it reads every table that has a column index in a scan, stops there	events	-	Custom Scan \(SiftAgg\)	native	warm_backend:sift.enable_agg = on	ms	faster33	no
 hits_latest_time	a descending scan of a column that follows the table	hits	-	Top-N: event_time DESC	native	-	ms	faster33	no
+ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the heap	tseries	-	Top-N: value DESC	native	-	ms	faster33	no

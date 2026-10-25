@@ -832,6 +832,29 @@ enum_rank(const TopKey *k, Oid oid)
 	return k->erank[lo];
 }
 
+/* A float's place in the sort order as an integer (the order of float8: -0 is +0, NaN is the largest) and back (any NaN key reads as a NaN) */
+static inline int64
+f8_key(double d)
+{
+	int64		b;
+
+	if (isnan(d))
+		return PG_INT64_MAX;
+	d = d == 0 ? 0.0 : d;
+	memcpy(&b, &d, sizeof(b));
+	return b < 0 ? b ^ PG_INT64_MAX : b;
+}
+
+static inline double
+f8_of_key(int64 k)
+{
+	double		d;
+
+	k = k < 0 ? k ^ PG_INT64_MAX : k;
+	memcpy(&d, &k, sizeof(d));
+	return d;
+}
+
 /* the key of row i; floats map to integers of the same order (NaN last); a numeric NaN is PG_INT64_MAX in the vector (SiftSrcVec.ovf) */
 static inline bool
 row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
@@ -850,19 +873,7 @@ row_key(const TopKey *k, const SiftSrcVec *v, int i, int64 *out)
 			*out = ((const int64 *) v->data)[i];
 			break;
 		default:
-			{
-				double		d = ((const double *) v->data)[i];
-				int64		b;
-
-				if (isnan(d))
-					*out = PG_INT64_MAX;
-				else
-				{
-					d = d == 0 ? 0.0 : d;
-					memcpy(&b, &d, sizeof(b));
-					*out = b < 0 ? b ^ PG_INT64_MAX : b;
-				}
-			}
+			*out = f8_key(((const double *) v->data)[i]);
 	}
 	return true;
 }
@@ -2498,7 +2509,7 @@ segbest_desc(const void *a, const void *b)
 }
 
 /*
- * scan_rows for an integer first key, TOPN_SEG rows at a time: the segments are taken by the best value they hold (a descending scan of a column that
+ * scan_rows for an integer or float first key, TOPN_SEG rows at a time: the segments are taken by the best value they hold (a descending scan of a column that
  * ascends, or the reverse, would push every row of the unit in turn), a segment whose best cannot pass the bar ends the unit, and for the others a range
  * kernel marks the rows that can pass: only those reach the heap. A value equal to the bar's passes, as in scan_rows. The NULL rows (the vector's value
  * there is undefined) go first, through scan_rows.
@@ -2506,9 +2517,10 @@ segbest_desc(const void *a, const void *b)
 static void
 vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rmask, int nrow, Rank *bar, bool *barred, int *m)
 {
-	const bool	wide = k0->vtype == SCV_I64;
+	const bool	wide = k0->vtype == SCV_I64,
+				isf = k0->vtype == SCV_F64;
 	const char *data = key0->data;
-	const int	esz = wide ? 8 : 4;
+	const int	esz = wide || isf ? 8 : 4;
 	int			nw = (nrow + 63) / 64,
 				nseg = (nrow + TOPN_SEG - 1) / TOPN_SEG,
 				nb = 0;
@@ -2546,7 +2558,16 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 					mx;
 		bool		some;
 
-		if (wide)
+		if (isf)
+		{
+			double		a,
+						b;
+
+			some = sift_aggk->minmax_f64(&a, &b, (const double *) data + off, all ? NULL : vm + off / 64, len);
+			mn = f8_key(a);
+			mx = f8_key(b);
+		}
+		else if (wide)
 			some = sift_aggk->minmax_i64(&mn, &mx, (const int64 *) data + off, all ? NULL : vm + off / 64, len);
 		else
 		{
@@ -2582,7 +2603,10 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 		{
 			if (rank_after(rank_of(k0, false, sb[q].best), *bar))
 				break;			/* the segments after this one hold worse values */
-			if (wide)
+			if (isf)
+				sift_aggk->cmp_f64(hit, (const double *) data + off, len, k0->desc ? SCMP_GE : SCMP_LE,
+								   f8_of_key((int64) ((k0->desc ? ~bar->ord : bar->ord) ^ UINT64CONST(0x8000000000000000))));
+			else if (wide)
 			{
 				uint64		bv = (uint64) (~bar->ord ^ UINT64CONST(0x8000000000000000));
 
@@ -2664,7 +2688,7 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
 	barred = bar_rank(t, &bar);
-	if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum == 0 && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) &&
+	if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum == 0 && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64 || k0->vtype == SCV_F64) &&
 		sift_colk->bits_count(rmask, nw) * TOPN_VEC_DENSITY >= nrow)
 		vec_rows(t, k0, key0, rmask, nrow, &bar, &barred, &m);
 	else
