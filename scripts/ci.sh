@@ -190,10 +190,9 @@ declare -A JOB_WEIGHT=(
 	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
 )
 JOB_WEIGHT_DEFAULT=10
-# the jobs whose size the deep tier changes: lane seconds of the deep run 40079220375 on PostgreSQL 18 (the slices are the eighth of difftest-col 5860 s and difftest-col-tbl 5101 s)
-declare -A JOB_WEIGHT_DEEP=([difftest]=1949 [difftest-mutants]=1281 [fuzz]=728 [soak]=613 [difftest-fuzz]=510 [difftest-nopos]=474 [soak-col]=303 [soak-gin]=136 [difftest-col-analytics]=150
-	[difftest-col-1]=714 [difftest-col-2]=714 [difftest-col-3]=714 [difftest-col-4]=714 [difftest-col-5]=714 [difftest-col-6]=714 [difftest-col-7]=714 [difftest-col-8]=714
-	[difftest-col-tbl-1]=638 [difftest-col-tbl-2]=638 [difftest-col-tbl-3]=638 [difftest-col-tbl-4]=638 [difftest-col-tbl-5]=638 [difftest-col-tbl-6]=638 [difftest-col-tbl-7]=638 [difftest-col-tbl-8]=638)
+# the jobs whose size the deep tier changes: lane seconds of the deep run 40165541682 on PostgreSQL 18 (the col slices are the mean of their eight)
+declare -A JOB_WEIGHT_DEEP=([difftest]=2204 [difftest-mutants]=1083 [fuzz]=1010 [soak]=620 [difftest-fuzz]=1329 [difftest-nopos]=342 [soak-col]=305 [soak-gin]=130 [difftest-col-analytics]=150
+	[difftest-col-1]=1206 [difftest-col-2]=1206 [difftest-col-3]=1206 [difftest-col-4]=1206 [difftest-col-5]=1206 [difftest-col-6]=1206 [difftest-col-7]=1206 [difftest-col-8]=1206 [difftest-col-tbl-1]=983 [difftest-col-tbl-2]=983 [difftest-col-tbl-3]=983 [difftest-col-tbl-4]=983 [difftest-col-tbl-5]=983 [difftest-col-tbl-6]=983 [difftest-col-tbl-7]=983 [difftest-col-tbl-8]=983 [difftest-fuzz-tbl]=2212)
 # weight_of JOB [deep]: the weight in seconds of a lane
 weight_of() { if [[ -n ${2:-} && -v JOB_WEIGHT_DEEP[$1] ]]; then echo "${JOB_WEIGHT_DEEP[$1]}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi; }
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
