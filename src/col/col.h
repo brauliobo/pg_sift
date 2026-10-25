@@ -15,6 +15,7 @@
 
 #include "core/sift.h"
 #include "core/cpu.h"
+#include "core/varint.h"
 #include "col/kern.h"
 #include "col/wide.h"
 #include "core/filter.h"
@@ -819,6 +820,16 @@ extern bool sift_col_unit_exact(const SiftColUnit *unit);
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);
 
 extern const SiftColCounters *sift_col_counters(const SiftColSource *src);
+
+/* An unsigned value as a varint at the end of out */
+static inline void
+sift_col_put_varint(StringInfo out, uint64 v)
+{
+	enlargeStringInfo(out, 10);
+	out->len = (char *) sift_put_varint((uint8 *) out->data + out->len, v) - out->data;
+	out->data[out->len] = '\0';
+}
+
 /* The index-bound declarations (relcache, planner expressions, shredder adapter, options, SQL entry points): col/pg.h, PostgreSQL only */
 
 #endif							/* SIFT_COL_H */

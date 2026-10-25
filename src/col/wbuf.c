@@ -91,14 +91,6 @@ rec_at(PageCursor *c, Size *size)
 }
 
 static void
-put_varint(StringInfo buf, uint64 x)
-{
-	enlargeStringInfo(buf, 10);
-	buf->len = (char *) sift_put_varint((uint8 *) buf->data + buf->len, x) - buf->data;
-	buf->data[buf->len] = '\0';
-}
-
-static void
 put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 {
 	uint8		flag = (v->isnull || v->overflow ? COLV_NULL : 0) | (v->overflow ? COLV_OVERFLOW : 0) | v->tag << COLV_TAG_SHIFT;
@@ -109,13 +101,13 @@ put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 	if (def->kind == SIFT_COLK_GROUP)
 	{
 		Assert(v->v.i >= 0);
-		put_varint(buf, v->v.i);
+		sift_col_put_varint(buf, v->v.i);
 		return;
 	}
 	switch (def->store)
 	{
 		case SIFT_COLS_INT:
-			put_varint(buf, sift_zigzag(v->v.i));
+			sift_col_put_varint(buf, sift_zigzag(v->v.i));
 			break;
 		case SIFT_COLS_F4:
 			{
@@ -128,7 +120,7 @@ put_value(StringInfo buf, const SiftColDef *def, const SiftColValue *v)
 			appendBinaryStringInfo(buf, (char *) &v->v.f, sizeof(double));
 			break;
 		case SIFT_COLS_STR:
-			put_varint(buf, v->len);
+			sift_col_put_varint(buf, v->len);
 			appendBinaryStringInfo(buf, v->v.s, v->len);
 			break;
 	}

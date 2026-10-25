@@ -27,36 +27,6 @@
 #include "col/preagg_int.h"
 #include "core/cmp.h"
 
-static void
-put_u(StringInfo out, uint64 v)
-{
-	while (v >= 0x80)
-	{
-		appendStringInfoChar(out, (char) (v | 0x80));
-		v >>= 7;
-	}
-	appendStringInfoChar(out, (char) v);
-}
-
-static void
-put_zz(StringInfo out, int64 v)
-{
-	put_u(out, ((uint64) v << 1) ^ (uint64) (v >> 63));
-}
-
-static void
-put_zz128(StringInfo out, SiftCI128 v)
-{
-	unsigned __int128 u = ((unsigned __int128) v << 1) ^ (unsigned __int128) (v >> 127);
-
-	while (u >= 0x80)
-	{
-		appendStringInfoChar(out, (char) ((uint8) u | 0x80));
-		u >>= 7;
-	}
-	appendStringInfoChar(out, (char) (uint8) u);
-}
-
 static inline bool
 is_null(const uint64 *nulls, uint32 i)
 {
@@ -375,12 +345,12 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 			mm[nm++] = sd->meas[i];
 	b->ngroups = ng;
 	appendStringInfoChar(out, (char) nm);
-	put_u(out, ng);
+	sift_col_put_varint(out, ng);
 	appendStringInfoChar(out, (nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP) | (sc->minmax ? PAGG_MINMAX : 0));
 	b->cut[0] = out->len;
 	for (int i = 0; i < nm; i++)
 	{
-		put_u(out, mm[i]);
+		sift_col_put_varint(out, mm[i]);
 		b->cut[i + 1] = out->len;
 	}
 	b->nm = nm;
@@ -393,12 +363,12 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 			if (i == 0)
 				put_zz(out, ord[i].key);
 			else
-				put_u(out, (uint64) ord[i].key - (uint64) prev);
+				sift_col_put_varint(out, (uint64) ord[i].key - (uint64) prev);
 			prev = ord[i].key;
 		}
 	}
 	for (uint32 i = 0; i < ng; i++)
-		put_u(out, cnt[ord[i].g]);
+		sift_col_put_varint(out, cnt[ord[i].g]);
 	b->tail[0] = out->len;
 	b->mmb[0] = 0;
 	for (int m = 0; m < nm; m++)
@@ -427,7 +397,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 				sf[gid[i]] = nn[gid[i]]++ == 0 ? v : sf[gid[i]] + v;
 			}
 			for (uint32 i = 0; i < ng; i++)
-				put_u(out, nn[ord[i].g]);
+				sift_col_put_varint(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 			{
 				double		v = nn[ord[i].g] ? sf[ord[i].g] : 0;
@@ -454,7 +424,7 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 					}
 				}
 			for (uint32 i = 0; i < ng; i++)
-				put_u(out, nn[ord[i].g]);
+				sift_col_put_varint(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
 			mm_at = out->len;
@@ -484,8 +454,8 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 	for (int d = 0; d < nd; d++)
 		if (db[d].keep)
 		{
-			put_u(out, spec->dim[db[d].spec].leaf + db[d].grain * SIFT_PAGG_CAL);
-			put_u(out, db[d].blob.len);
+			sift_col_put_varint(out, spec->dim[db[d].spec].leaf + db[d].grain * SIFT_PAGG_CAL);
+			sift_col_put_varint(out, db[d].blob.len);
 		}
 	for (int d = 0; d < nd; d++)
 		if (db[d].keep)
@@ -723,11 +693,11 @@ ru_encode(const RuBuild *b, StringInfo out)
 	qsort(ord, nt, sizeof(uint32), cmp_tuple);
 	appendStringInfoChar(out, (char) b->nd);
 	appendStringInfoChar(out, (char) b->nm);
-	put_u(out, nt);
+	sift_col_put_varint(out, nt);
 	for (int j = 0; j < b->nd; j++)
-		put_u(out, b->dleaf[j]);
+		sift_col_put_varint(out, b->dleaf[j]);
 	for (int m = 0; m < b->nm; m++)
-		put_u(out, b->mleaf[m]);
+		sift_col_put_varint(out, b->mleaf[m]);
 	for (int j = 0; j < b->nd; j++)
 	{
 		bool		any = false;
@@ -759,7 +729,7 @@ ru_encode(const RuBuild *b, StringInfo out)
 		}
 	}
 	for (uint32 i = 0; i < nt; i++)
-		put_u(out, b->cnt[ord[i]]);
+		sift_col_put_varint(out, b->cnt[ord[i]]);
 	for (int m = 0; m < b->nm; m++)
 	{
 		const SiftCPaggCol *mc = b->mc[m];
@@ -799,7 +769,7 @@ ru_encode(const RuBuild *b, StringInfo out)
 			}
 		}
 		for (uint32 i = 0; i < nt; i++)
-			put_u(out, nn[ord[i]]);
+			sift_col_put_varint(out, nn[ord[i]]);
 		for (uint32 i = 0; i < nt; i++)
 		{
 			uint32		g = ord[i];
@@ -1030,8 +1000,8 @@ emit_rollups(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggC
 	appendStringInfoChar(out, (char) nl);
 	for (int i = 0; i < nl; i++)
 	{
-		put_u(out, list[i] < 0 ? s->ncols : list[i]);	/* the rows of the unit: the number of leaves, which no list is */
-		put_u(out, body[i].len);
+		sift_col_put_varint(out, list[i] < 0 ? s->ncols : list[i]);	/* the rows of the unit: the number of leaves, which no list is */
+		sift_col_put_varint(out, body[i].len);
 	}
 	for (int i = 0; i < nl; i++)
 	{
@@ -1176,11 +1146,7 @@ sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const Sift
 	sift_cpagg_cube(s, &mirror, xc, nx, 0, &xb, &xe);
 	if (xb.len + xe.len > 0 && xb.len + xe.len <= (clen + elen) / SIFT_PAGG_EXC_SHARE)
 	{
-		uint32		v = xleaf;
-
-		for (; v >= 0x80; v >>= 7)
-			appendStringInfoChar(xcube, (char) (v | 0x80));
-		appendStringInfoChar(xcube, (char) v);
+		sift_col_put_varint(xcube, xleaf);
 		appendBinaryStringInfo(xcube, xb.data, xb.len);
 		appendBinaryStringInfo(xecube, xe.data, xe.len);
 		made = true;

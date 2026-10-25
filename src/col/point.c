@@ -120,17 +120,6 @@ sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out,
 	pfree(e);
 }
 
-void
-sift_cpoint_put_varint(StringInfo out, uint64 v)
-{
-	while (v >= 0x80)
-	{
-		appendStringInfoChar(out, (char) (v | 0x80));
-		v >>= 7;
-	}
-	appendStringInfoChar(out, (char) v);
-}
-
 bool
 sift_cpoint_get_varint(const uint8 **p, const uint8 *end, uint64 *v)
 {
@@ -210,7 +199,7 @@ sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo
 			{
 				uint64		code = sift_cpoint_tid_code(e[k].tid);
 
-				sift_cpoint_put_varint(&body, code - prev);
+				sift_col_put_varint(&body, code - prev);
 				prev = code;
 			}
 			nbytes = body.len;

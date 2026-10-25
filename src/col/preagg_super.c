@@ -10,36 +10,6 @@
 #include "col/preagg_int.h"
 #include "core/cmp.h"
 
-static void
-put_u(StringInfo out, uint64 v)
-{
-	while (v >= 0x80)
-	{
-		appendStringInfoChar(out, (char) (v | 0x80));
-		v >>= 7;
-	}
-	appendStringInfoChar(out, (char) v);
-}
-
-static void
-put_zz(StringInfo out, int64 v)
-{
-	put_u(out, ((uint64) v << 1) ^ (uint64) (v >> 63));
-}
-
-static void
-put_zz128(StringInfo out, SiftCI128 v)
-{
-	unsigned __int128 u = ((unsigned __int128) v << 1) ^ (unsigned __int128) (v >> 127);
-
-	while (u >= 0x80)
-	{
-		appendStringInfoChar(out, (char) ((uint8) u | 0x80));
-		u >>= 7;
-	}
-	appendStringInfoChar(out, (char) (uint8) u);
-}
-
 bool
 sift_cpagg_super_leaf(const SiftCAgg *u, uint32 n, bool sums, SiftCSuperLeaf *out)
 {
@@ -226,24 +196,24 @@ merge_dim(const SiftCHist *h, uint32 n, int d0, StringInfo body)
 	if (ok)
 	{
 		appendStringInfoChar(body, (char) nm);
-		put_u(body, ng);
+		sift_col_put_varint(body, ng);
 		appendStringInfoChar(body, (hasnull ? PAGG_NULLGROUP : 0) | (first->minmax ? PAGG_MINMAX : 0));
 		for (int j = 0; j < nm; j++)
-			put_u(body, first->meas[mslot[j]]);
+			sift_col_put_varint(body, first->meas[mslot[j]]);
 		for (uint32 i = 0; i < ng - (hasnull ? 1 : 0); i++)
 		{
 			if (i == 0)
 				put_zz(body, key[i]);
 			else
-				put_u(body, (uint64) key[i] - (uint64) prev);
+				sift_col_put_varint(body, (uint64) key[i] - (uint64) prev);
 			prev = key[i];
 		}
 		for (uint32 i = 0; i < ng; i++)
-			put_u(body, cnt[i]);
+			sift_col_put_varint(body, cnt[i]);
 		for (int j = 0; j < nm; j++)
 		{
 			for (uint32 i = 0; i < ng; i++)
-				put_u(body, nn[j][i]);
+				sift_col_put_varint(body, nn[j][i]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(body, sum[j][i]);
 			for (int pass = 0; first->minmax && pass < 2; pass++)
@@ -299,8 +269,8 @@ sift_cpagg_super_cube(const SiftColSchema *s, const uint8 *const *blob, const ui
 		appendStringInfoChar(out, (char) kept);
 		for (int d = 0; d < kept; d++)
 		{
-			put_u(out, leaf[d]);
-			put_u(out, body[d].len);
+			sift_col_put_varint(out, leaf[d]);
+			sift_col_put_varint(out, body[d].len);
 		}
 		for (int d = 0; d < kept; d++)
 		{

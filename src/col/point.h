@@ -76,8 +76,7 @@ sift_cpoint_tid_key(uint64 code)
 	return (code >> 9) << 16 | (code & (SIFT_CPOINT_TID_MAXOFF - 1));
 }
 
-/* Appends the code to out as LEB128; reads one at *p (not past end), false when it is cut or longer than a code can be */
-extern void sift_cpoint_put_varint(StringInfo out, uint64 v);
+/* Reads a LEB128 code at *p (not past end), false when it is cut or longer than a code can be */
 extern bool sift_cpoint_get_varint(const uint8 **p, const uint8 *end, uint64 *v);
 
 /*
