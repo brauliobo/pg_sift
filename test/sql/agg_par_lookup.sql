@@ -1,7 +1,8 @@
 -- The rows of a joined table, VALUES list, sub-select or function are loaded once, by the leader, and the workers of a scan read them from the
--- shared memory: a query with such a join plans workers, and its rows are those of the scan without workers and of the normal plan. A child plan
--- that runs per combination of leaves (unless the leader reads it as a table of the first row of a unique key), and a query with a function that is
--- unsafe or restricted in a worker, keep one process.
+-- shared memory: a query with such a join plans workers, and its rows are those of the scan without workers and of the normal plan. A worker starts
+-- the plan of a child that runs per combination of leaves (the rows it returned are shared with the other processes) and the hashed sub-plans of the
+-- keys and conditions. A query with a function that is unsafe or restricted in a worker, a sub-plan that holds one and the output of an ARRAY
+-- sub-select keep one process.
 CREATE EXTENSION pg_sift;
 
 SET parallel_setup_cost = 0;
@@ -90,8 +91,12 @@ INSERT INTO p_q (q, par) VALUES
 	  UNION ALL SELECT NULL, NULL, count(*), sum(e.price) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty', true),
 	('SELECT e.kind, sum(e.qty), sum(z.w) FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1', false),
 	('SELECT e.kind, count(z.w), min(z.tag), max(z.tier) FROM ev e JOIN zones z ON z.id = e.zone_id GROUP BY 1', false),
-	('SELECT count(*) FROM ev e WHERE e.qty NOT IN (SELECT i FROM (VALUES (1), (2), (7)) v(i))', false),
-	-- a sum over a column of the joined table, a hashed sub-plan, a function that is unsafe or restricted in a worker: one process; a child plan the leader reads as a table of one row by unique key: workers
+	('SELECT count(*) FROM ev e WHERE e.qty NOT IN (SELECT i FROM (VALUES (1), (2), (7)) v(i))', true),
+	-- a hashed sub-plan in a key (each worker starts it and hashes the small table), one that holds a function unsafe in a worker, and the output of an ARRAY sub-select (a parameter the leader sets)
+	('SELECT e.kind IN (SELECT kind FROM labels) AS known, count(*), sum(e.price) FROM ev e GROUP BY 1', true),
+	('SELECT e.qty, e.kind IN (SELECT kind FROM labels WHERE unsafe_id(1) = 1) AS known, count(*) FROM ev e GROUP BY 1, 2', false),
+	('SELECT e.kind = ANY (ARRAY(SELECT kind FROM labels)) AS known, count(*) FROM ev e GROUP BY 1', false),
+	-- a sum over a column of the joined table, a function that is unsafe or restricted in a worker: one process; a child plan the leader reads as a table of one row by unique key: workers
 	('SELECT s.name, count(*) FROM ev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1', true),
 	('SELECT v.n, unsafe_id(count(*)::int) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty GROUP BY 1', false),
 	('SELECT v.n, count(*) FROM ev e JOIN (VALUES (0, ''zero''), (1, ''one'')) v(i, n) ON v.i = e.qty WHERE restricted_imm(e.qty) < 5 GROUP BY 1', false);

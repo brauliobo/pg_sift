@@ -389,20 +389,15 @@ run_scan(AggExec *ex)
 	table_init(ex);
 	if (ex->spec->spine)
 		spine_load(ex);
-	ex->gtab = ex->lanes ? result_view(ex) : ex;
-	ex->pending = MemoryContextAllocZero(ex->cxt, SIFT_AGG_LANES * sizeof(char *));
 	if (ex->ndsorder > 0)
 		dist_stream_scan(ex);
 	else if (ex->par == NULL || parallel_leader_participation)
 		scan_items(ex);
 	backend_finish(ex);
-	/* the rows of a preserved side that no tuple matched: after the workers told which they matched */
-	if (ex->par && join_preserved(ex->spec))
+	/* the rows of a preserved side that no tuple matched, and of a spine that no cell joined: after the workers told which they matched */
+	if (ex->par && (join_preserved(ex->spec) || ex->spec->spine))
 		par_finish(ex);
 	unmatched_tail(ex);
-	/* the ids of the groups are the leader's table's: the rows of the tail go to the result like the table of a lane */
-	if (ex->gtab != ex)
-		lane_tail(ex);
 	arms_flush(ex);
 	if (ex->spec->spine)
 		spine_tail(ex);
@@ -413,10 +408,11 @@ run_scan(AggExec *ex)
 	for (int i = 0; ex->lane_serial && i < ex->spec->naggs; i++)
 		if (ex->acc[i].dt)
 			memcpy(ex->acc[i].d, ex->acc[i].dt, (ex->hash ? ex->ngroups : ex->gcap) * sizeof(double));
-	osa_finish_all(ex->gtab);
-	gen_flush(ex->gtab);
-	SIFT_INVARIANT(!ex->lanes || ex->next_lane == SIFT_AGG_LANES, "sift: a lane of the aggregate scan is missing");
-	final_checks(ex->gtab, ex->n_tuples);
+	if (ex->lanes)
+		lanes_sum(ex);
+	osa_finish_all(ex);
+	gen_flush(ex);
+	final_checks(ex, ex->n_tuples);
 }
 
 /* the groups that exist, in index order */
@@ -834,13 +830,13 @@ topn_run(AggExec *ex)
 static void
 finish_groups(AggExec *ex)
 {
-	empty_set_groups(ex->gtab);
-	dist_finish_all(ex->gtab);
-	dist_end_all(ex->gtab);
-	mapped_finish(ex->gtab);
-	list_groups(ex->gtab);
-	gen_finish(ex->gtab);
-	ex->n_groups = ex->gtab->nglist;
+	empty_set_groups(ex);
+	dist_finish_all(ex);
+	dist_end_all(ex);
+	mapped_finish(ex);
+	list_groups(ex);
+	gen_finish(ex);
+	ex->n_groups = ex->nglist;
 }
 
 /* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
@@ -857,12 +853,11 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 		{
 			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-			ex->gtab = ex;
 			finish_groups(ex);
 			ex->total_val = palloc(s->naggs * sizeof(Datum));
 			ex->total_null = palloc(s->naggs * sizeof(bool));
 			for (int i = 0; i < s->naggs; i++)
-				ex->total_val[i] = agg_datum(ex->gtab, i, ex->gtab->glist[0], &ex->total_null[i]);
+				ex->total_val[i] = agg_datum(ex, i, ex->glist[0], &ex->total_null[i]);
 			MemoryContextSwitchTo(old);
 		}
 	}
@@ -897,7 +892,7 @@ group_tuple(AggExec *t, uint32 g, TupleTableSlot *slot)
 static bool
 group_slot(AggExec *ex, TupleTableSlot *slot)
 {
-	AggExec    *t = ex->gtab;
+	AggExec    *t = ex;
 
 	while (ex->gpos >= t->nglist)
 		if (!spill_more(ex))
@@ -1171,8 +1166,6 @@ agg_end(CustomScanState *node)
 		engine_close(ex->fuse->F);
 	}
 	dist_end_all(ex);
-	if (ex->gtab)
-		dist_end_all(ex->gtab);
 	spill_end(ex);
 	if (ex->started && !ex->fuse)
 		stats_run(ex);

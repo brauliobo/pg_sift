@@ -581,26 +581,32 @@ fn_unsafe(Oid funcid, void *context)
 	return func_parallel(funcid) != PROPARALLEL_SAFE;
 }
 
-/* does a function of the packed spec (its expressions are Nodes among Integers and Strings) run only in the leader? */
+/* does a function of the packed spec (its expressions are Nodes among Integers and Strings), or of a query, run only in the leader? */
 static bool
 unsafe_in_worker(Node *n, void *context)
 {
-	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList) || IsA(n, Query))
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList))
 		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, unsafe_in_worker, context, 0);
 	return check_functions_in_node(n, fn_unsafe, NULL) || expression_tree_walker(n, unsafe_in_worker, context);
 }
 
 /*
  * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
  * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
- * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables.
+ * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables; the plan of a correlated join runs in each worker.
  */
 int
 parallel_workers(AggCtx *c, SiftAggSpec *s)
 {
-	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
+	if (!sift_aggspec_parallel_ok(s) || c->sub_serial || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
 		max_parallel_workers_per_gather <= 0 || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
 		return 0;
+	/* a worker runs the plan of a correlated join itself (its own executor state, from the statement the leader sends) */
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->j.params != NIL && (jc->subroot == NULL || unsafe_in_worker((Node *) jc->subroot->parse, NULL)))
+			return 0;
 	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
@@ -898,7 +904,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
 	/* only a count(DISTINCT) carries a set per group, which is what makes the table of a partition's groups worth finishing early: the tuples of the others cost more than the table */
-	if (c->part_key && sift_aggspec_spillable(s) && !sift_aggspec_ordered(s))
+	if (c->part_key && sift_aggspec_spillable(s) && !(sift_aggspec_float_sums(s) && !sift_aggspec_workers_only(s)))
 		for (int i = 0; i < s->naggs; i++)
 			s->part_final |= s->agg[i].kind == SAA_COUNT_DISTINCT;
 	if (!first_fits(s))

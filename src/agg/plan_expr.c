@@ -290,6 +290,7 @@ subst_mutator(Node *n, SubstCtx *s)
 	if (IsA(n, SubPlan))
 	{
 		s->c->nsubplan++;
+		s->c->sub_serial |= !((SubPlan *) n)->parallel_safe;
 		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
 	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !null_input_param(n))
@@ -299,6 +300,7 @@ subst_mutator(Node *n, SubstCtx *s)
 				Param	   *init = copyObject((Param *) n);
 
 				s->c->nsubplan++;
+				s->c->sub_serial = true;
 				s->c->subplan_cost += sp->startup_cost;
 				init->paramid += SIFT_AGG_INIT_PARAM;
 				return (Node *) init;

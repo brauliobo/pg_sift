@@ -196,11 +196,11 @@ fuse_start(AggExec *ex)
 	engine_rels(F);
 	MemoryContextSwitchTo(old);
 	run_scan(F);
-	empty_set_groups(F->gtab);
-	dist_finish_all(F->gtab);
-	dist_end_all(F->gtab);
-	mapped_finish(F->gtab);
-	list_groups(F->gtab);
+	empty_set_groups(F);
+	dist_finish_all(F);
+	dist_end_all(F);
+	mapped_finish(F);
+	list_groups(F);
 	for (int i = 0; i < n; i++)
 	{
 		AggExec    *o = list_nth(m, i);
@@ -217,7 +217,7 @@ fuse_start(AggExec *ex)
 static void
 fuse_list(AggExec *ex)
 {
-	AggExec    *t = ex->fuse->F->gtab;
+	AggExec    *t = ex->fuse->F;
 	int			setkey = t->spec->nkeys - 1;
 
 	ex->glist = MemoryContextAlloc(ex->cxt, Max(t->nglist, 1) * sizeof(uint32));
@@ -231,7 +231,7 @@ fuse_list(AggExec *ex)
 TupleTableSlot *
 fuse_next(AggExec *ex, TupleTableSlot *slot)
 {
-	AggExec    *t = ex->fuse->F->gtab;
+	AggExec    *t = ex->fuse->F;
 	uint32		g;
 
 	if (ex->glist == NULL)

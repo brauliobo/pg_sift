@@ -580,16 +580,37 @@ extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist.c), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
 
+/* a float sum: the order of its additions is part of its result */
 static inline bool
-sift_aggspec_ordered(const SiftAggSpec *s)
+sift_aggkind_float_sum(const SiftAggAgg *a)
+{
+	return a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
+		((a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == FLOAT8OID);
+}
+
+/* a scan with a spine or a correlated child plan: workers were added for them after the release that scanned the others in lanes */
+extern bool sift_aggspec_workers_only(const SiftAggSpec *s);
+
+/* a scan with a float sum, in the specs whose scan can be split in lanes */
+static inline bool
+sift_aggspec_float_sums(const SiftAggSpec *s)
 {
 	if (!sift_aggspec_parallel_ok(s))
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64 ||
-			((s->agg[i].kind == SAA_X_SUM || s->agg[i].kind == SAA_X_AVG) && s->agg[i].restype == FLOAT8OID))
+		if (sift_aggkind_float_sum(&s->agg[i]))
 			return true;
 	return false;
+}
+
+/*
+ * The float sums are added in lane order, whoever scans: in a plan with workers (launched or not), and in the scans that were always added so, with
+ * or without workers. The scans that gained workers later (sift_aggspec_workers_only) add in the order of the rows when the plan has none, as they did.
+ */
+static inline bool
+sift_aggspec_ordered(const SiftAggSpec *s)
+{
+	return sift_aggspec_float_sums(s) && (s->nworkers > 0 || !sift_aggspec_workers_only(s));
 }
 
 /* the types sift_aggspec_operand_int reads */

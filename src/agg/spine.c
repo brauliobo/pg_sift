@@ -3,7 +3,9 @@
  */
 #include "postgres.h"
 
+#include "access/tupdesc.h"
 #include "executor/executor.h"
+#include "utils/datum.h"
 #include "nodes/makefuncs.h"
 #include "utils/memutils.h"
 
@@ -60,27 +62,38 @@ spine_index(SpineSt *sp, int npair)
 	pfree(rgrp);
 }
 
-/* The rows of the spine's plan, once when the scan starts: their join values and the ids of the columns the query groups by. */
+/* does the scan read column c of the spine's plan? (a join value, or a column that is a key) */
+static bool
+spine_col_used(const SiftAggSpine *sa, int c)
+{
+	for (int p = 0; p < sa->npair; p++)
+		if (sa->pair[p].col == c)
+			return true;
+	for (int o = 0; o < sa->nout; o++)
+		if (sa->outcol[o] == c)
+			return true;
+	return false;
+}
+
+/*
+ * The rows of the spine's plan, with the columns the scan reads, as bytes in the executor's memory: the leader runs the plan once, before the
+ * workers start, and a worker reads the same bytes from the shared memory (a worker has no plan to run). Size: spine_buf->len.
+ */
 void
-spine_load(AggExec *ex)
+spine_fetch(AggExec *ex)
 {
 	const SiftAggSpine *sa = ex->spec->spine;
-	PlanState  *child = list_nth(ex->css.custom_ps, sa->child);
-	MemoryContext caller = MemoryContextSwitchTo(ex->cxt);
-	SpineSt    *sp = palloc0(sizeof(SpineSt));
-	uint32		cap = 64,
-				kid[SIFT_AGG_MAX_JKEYS];
+	PlanState  *child;
+	MemoryContext caller = CurrentMemoryContext;
+	StringInfoData b;
+	SpineHdr	hdr = {0};
 
-	ex->spine = sp;
-	for (int p = 0; p < sa->npair; p++)
-	{
-		const Const *k = (const Const *) sa->pair[p].konst;
-
-		ot_init(&sp->jot[p], sa->pair[p].eqop, sa->pair[p].typid, sa->pair[p].collid);
-		kid[p] = k == NULL || k->constisnull ? 0 : ot_id(&sp->jot[p], k->constvalue);
-	}
-	sp->jid = palloc(cap * sa->npair * sizeof(uint32));
-	sp->oid = palloc(cap * Max(sa->nout, 1) * sizeof(uint32));
+	if (ex->spine_buf)
+		return;
+	child = list_nth(ex->css.custom_ps, sa->child);
+	MemoryContextSwitchTo(ex->cxt);
+	initStringInfo(&b);
+	appendBinaryStringInfo(&b, (const char *) &hdr, sizeof(hdr));
 	for (;;)
 	{
 		TupleTableSlot *slot;
@@ -91,35 +104,44 @@ spine_load(AggExec *ex)
 		if (TupIsNull(slot))
 			break;
 		slot_getallattrs(slot);
-		if (sp->nrow == cap)
+		for (int c = 0; c < sa->ncol; c++)
 		{
-			cap *= 2;
-			sp->jid = repalloc(sp->jid, cap * sa->npair * sizeof(uint32));
-			sp->oid = repalloc(sp->oid, cap * Max(sa->nout, 1) * sizeof(uint32));
-		}
-		for (int p = 0; p < sa->npair; p++)
-		{
-			int			col = sa->pair[p].col;
+			Form_pg_attribute at;
+			Size		n;
+			char	   *w;
 
-			sp->jid[(Size) sp->nrow * sa->npair + p] = col < 0 ? kid[p] : slot->tts_isnull[col] ? 0 : ot_id(&sp->jot[p], slot->tts_values[col]);
+			if (!spine_col_used(sa, c))
+				continue;
+			at = TupleDescAttr(slot->tts_tupleDescriptor, c);
+			n = datumEstimateSpace(slot->tts_values[c], slot->tts_isnull[c], at->attbyval, at->attlen);
+			enlargeStringInfo(&b, n);
+			w = b.data + b.len;
+			datumSerialize(slot->tts_values[c], slot->tts_isnull[c], at->attbyval, at->attlen, &w);
+			b.len = w - b.data;
 		}
+		hdr.nrow++;
+	}
+	hdr.len = b.len;
+	memcpy(b.data, &hdr, sizeof(hdr));
+	ex->spine_buf = b.data;
+	MemoryContextSwitchTo(caller);
+}
+
+/* The ids of the spine's values in the key tables: after the tables start again, the rows get them again */
+static void
+spine_intern(AggExec *ex)
+{
+	const SiftAggSpine *sa = ex->spec->spine;
+	SpineSt    *sp = ex->spine;
+	MemoryContext caller = MemoryContextSwitchTo(ex->tcxt);
+
+	for (uint32 r = 0; r < sp->nrow; r++)
 		for (int o = 0; o < sa->nout; o++)
 		{
-			int			col = sa->outcol[o];
-			uint32		id = 0;
+			Size		i = (Size) r * sa->nout + o;
 
-			if (!slot->tts_isnull[col])
-			{
-				MemoryContextSwitchTo(ex->tcxt);
-				id = ot_id(&ex->ks[sa->outkey[o]].ot, slot->tts_values[col]);
-				MemoryContextSwitchTo(ex->cxt);
-			}
-			sp->oid[(Size) sp->nrow * sa->nout + o] = id;
+			sp->oid[i] = sp->onull[i] ? 0 : ot_id(&ex->ks[sa->outkey[o]].ot, sp->odat[i]);
 		}
-		sp->nrow++;
-	}
-	sp->hit = palloc0(Max(sp->nrow, 1));
-	spine_index(sp, sa->npair);
 	MemoryContextSwitchTo(caller);
 	/* the ids of the spine's columns are all known: the groups of the direct table have room for them */
 	for (int o = 0; !ex->hash && o < sa->nout; o++)
@@ -128,6 +150,92 @@ spine_load(AggExec *ex)
 			direct_grow(ex);
 			break;
 		}
+}
+
+/* The rows of the spine's plan, once when the scan starts: their join values and the ids of the columns the query groups by. */
+void
+spine_load(AggExec *ex)
+{
+	const SiftAggSpine *sa = ex->spec->spine;
+	MemoryContext caller = CurrentMemoryContext,
+				rowcx;
+	SpineSt    *sp;
+	const SpineHdr *hdr;
+	const char *rd;
+	Datum	   *vals = palloc0(Max(sa->ncol, 1) * sizeof(Datum));
+	bool	   *nulls = palloc(Max(sa->ncol, 1) * sizeof(bool));
+	uint32		kid[SIFT_AGG_MAX_JKEYS];
+
+	spine_fetch(ex);
+	hdr = (const SpineHdr *) ex->spine_buf;
+	rd = ex->spine_buf + sizeof(SpineHdr);
+	MemoryContextSwitchTo(ex->cxt);
+	sp = palloc0(sizeof(SpineSt));
+	ex->spine = sp;
+	rowcx = AllocSetContextCreate(ex->cxt, "sift spine row", ALLOCSET_SMALL_SIZES);
+	for (int p = 0; p < sa->npair; p++)
+	{
+		const Const *k = (const Const *) sa->pair[p].konst;
+
+		ot_init(&sp->jot[p], sa->pair[p].eqop, sa->pair[p].typid, sa->pair[p].collid);
+		kid[p] = k == NULL || k->constisnull ? 0 : ot_id(&sp->jot[p], k->constvalue);
+	}
+	sp->nrow = hdr->nrow;
+	sp->jid = palloc(Max(sp->nrow, 1) * Max(sa->npair, 1) * sizeof(uint32));
+	sp->oid = palloc(Max(sp->nrow, 1) * Max(sa->nout, 1) * sizeof(uint32));
+	sp->odat = palloc(Max(sp->nrow, 1) * Max(sa->nout, 1) * sizeof(Datum));
+	sp->onull = palloc(Max(sp->nrow, 1) * Max(sa->nout, 1) * sizeof(bool));
+	for (uint32 r = 0; r < sp->nrow; r++)
+	{
+		MemoryContextReset(rowcx);
+		MemoryContextSwitchTo(rowcx);
+		for (int c = 0; c < sa->ncol; c++)
+		{
+			nulls[c] = true;
+			if (spine_col_used(sa, c))
+				vals[c] = datumRestore((char **) &rd, &nulls[c]);
+		}
+		MemoryContextSwitchTo(ex->cxt);
+		for (int p = 0; p < sa->npair; p++)
+		{
+			int			col = sa->pair[p].col;
+
+			sp->jid[(Size) r * sa->npair + p] = col < 0 ? kid[p] : nulls[col] ? 0 : ot_id(&sp->jot[p], vals[col]);
+		}
+		for (int o = 0; o < sa->nout; o++)
+		{
+			int			col = sa->outcol[o];
+			const OutTable *ot = &ex->ks[sa->outkey[o]].ot;
+			Size		i = (Size) r * sa->nout + o;
+
+			sp->onull[i] = nulls[col];
+			sp->odat[i] = nulls[col] ? (Datum) 0 : datumCopy(vals[col], ot->byval, ot->len);
+		}
+	}
+	MemoryContextDelete(rowcx);
+	sp->hit = palloc0(Max(sp->nrow, 1));
+	spine_index(sp, sa->npair);
+	spine_intern(ex);
+	MemoryContextSwitchTo(caller);
+	pfree(vals);
+	pfree(nulls);
+}
+
+/* The key tables start again (a lane of a parallel scan is done): the spine's values get ids in the new ones, and the cells' join keys, which were ids of the old ones, are forgotten. */
+void
+spine_reset(AggExec *ex)
+{
+	SpineSt    *sp = ex->spine;
+
+	for (int k = 0; k < ex->spec->narms; k++)
+	{
+		SpineMemo  *m = &sp->memo[k];
+
+		m->n = 0;
+		if (m->slot)
+			memset(m->slot, 0, m->nslot * sizeof(uint32));
+	}
+	spine_intern(ex);
 }
 
 static void

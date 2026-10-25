@@ -334,7 +334,7 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 static bool
 plain_key(const SiftAggKey *k)
 {
-	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO;
+	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO || k->kind == SAK_SPINE;
 }
 
 static bool
@@ -446,17 +446,6 @@ const char *
 sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 {
 	*agg = -1;
-	/* the rows of the spine are those of a plan the leader runs, and the rows no cell joined are a group of the end of the scan */
-	if (s->spine)
-		return "the rows of a spine are those of a plan the leader runs";
-	/*
-	 * a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan
-	 * run per combination of leaves (params) is not, unless the leader reads it as a table of the unique key it takes the first row of
-	 * (join_first_rows; a leader that cannot runs the scan alone)
-	 */
-	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use))
-			return "a joined child plan runs per combination of values";
 	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */
 	for (int i = 0; i < s->njoin; i++)
 		if (sift_aggjoin_preserves(s->join[i].kind) && s->narms > 0)
@@ -480,6 +469,16 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 					return "a float sum is merged in lane order, a generic state as the workers finish";
 				}
 	return NULL;
+}
+
+bool
+sift_aggspec_workers_only(const SiftAggSpec *s)
+{
+	bool		only = s->spine;
+
+	for (int i = 0; i < s->njoin; i++)
+		only |= s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use);
+	return only;
 }
 
 bool

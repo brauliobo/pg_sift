@@ -366,16 +366,16 @@ table_reset(AggExec *ex)
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
 		ComboSt    *cs = &ex->cs[ci];
-		bool		chained = false;
-
-		/* the ids it gave to the values of an earlier lookup's output rows are keyed by rows that start again: the memo goes with them */
+		/* the ids it gave to the values of an earlier lookup's output rows are keyed by rows that start again: that memo goes with them (the value ids stay) */
 		for (int p = 0; p < ex->spec->combo[ci].nleaves; p++)
-			chained |= ex->spec->combo[ci].leaf[p] < 0;
-		if (chained)
-		{
-			combo_reset(ex, ci);
-			continue;
-		}
+			if (ex->spec->combo[ci].leaf[p] < 0)
+			{
+				if (cs->pv[p].memo)
+					pfree(cs->pv[p].memo);
+				if (cs->pv[p].rep)
+					pfree(cs->pv[p].rep);
+				memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+			}
 		/* the direct table forgets the ids of the entries only: it can be megabytes */
 		for (uint32 x = 0; cs->dir && x < cs->nent; x++)
 			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)
@@ -385,4 +385,6 @@ table_reset(AggExec *ex)
 		combo_forget_priors(ex, ci);
 	}
 	table_init(ex);
+	if (ex->spine)
+		spine_reset(ex);
 }

@@ -75,12 +75,13 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "agg/memo.h"
 
 /*
  * The superblocks are split in items that the participants take from a counter. Float sums are order dependent, so that a result
- * does not depend on the number of workers: such a scan has SIFT_AGG_LANES items, lane l being the superblocks l, l + SIFT_AGG_LANES, ..., and the
- * tables of the lanes are combined in lane order, whoever scanned them. The other aggregates are exact in any order: items are
- * MORSEL_SBS superblocks, and a participant keeps one table for all its items.
+ * does not depend on the number of workers: such a scan has SIFT_AGG_LANES items, lane l being the superblocks l, l + SIFT_AGG_LANES, ..., and
+ * a participant keeps the float sums of each lane it scanned apart (AggAcc.lv), in the one table it scans into; the leader adds the lanes in lane
+ * order, whoever scanned them. The other aggregates are exact in any order: items are MORSEL_SBS superblocks.
  */
 #define MORSEL_SBS	2
 #define MORSEL_SUPER_DIV	4
@@ -280,40 +281,6 @@ take_item(AggExec *ex, uint32 *item)
 	return *item < ex->shared->nitems;
 }
 
-/* the lanes that are next in order go into the result */
-static void
-lanes_combine(AggExec *ex)
-{
-	while (ex->next_lane < SIFT_AGG_LANES && ex->pending[ex->next_lane])
-	{
-		blob_merge(ex->gtab, ex->pending[ex->next_lane]);
-		pfree(ex->pending[ex->next_lane]);
-		ex->pending[ex->next_lane++] = NULL;
-	}
-}
-
-static void
-lanes_put(AggExec *ex, int lane, const char *data, Size len)
-{
-	ex->pending[lane] = MemoryContextAlloc(ex->cxt, len);
-	memcpy(ex->pending[lane], data, len);
-	lanes_combine(ex);
-}
-
-AggExec *
-result_view(AggExec *ex)
-{
-	AggExec    *g = MemoryContextAlloc(ex->cxt, sizeof(AggExec));
-
-	*g = *ex;
-	g->lanes = false;
-	g->tcxt = AllocSetContextCreate(ex->cxt, "sift agg result", ALLOCSET_DEFAULT_SIZES);
-	g->ks = MemoryContextAlloc(ex->cxt, Max(ex->spec->nkeys, 1) * sizeof(KeyState));
-	memcpy(g->ks, ex->ks, Max(ex->spec->nkeys, 1) * sizeof(KeyState));
-	table_init(g);
-	return g;
-}
-
 /* the check that avg(float8) owes (float_guard): the inputs of the whole scan could have overflowed the sum of squares */
 void
 final_checks(AggExec *g, int64 ntuples)
@@ -334,7 +301,7 @@ final_checks(AggExec *g, int64 ntuples)
 /*
  * A scan whose plan asks for workers runs them under a parallel context of its own (not under a Gather: the partial tables are
  * not tuples). The leader and the workers take items from the counter in the shared memory; a worker sends its tables to the
- * leader through a shm_mq, as blobs, and the leader merges them. Lanes wait for the lanes before them.
+ * leader through a shm_mq, as one blob each, and the leader merges them.
  */
 #define KEY_SHARED	UINT64CONST(0x53494654A001)
 #define KEY_SPEC	UINT64CONST(0x53494654A002)
@@ -347,6 +314,11 @@ final_checks(AggExec *g, int64 ntuples)
 #define SHARE_MAX	((Size) 1 << 30)
 #define DONE_MAGIC	0x53414732
 #define HITS_MAGIC	0x53414733
+#define SPINE_MAGIC	0x53414734
+#define KEY_SPINE	UINT64CONST(0x53494654A006)
+#define KEY_CHILD	UINT64CONST(0x53494654C000)	/* + the join: the statement whose plan is its correlated child */
+#define KEY_SUB	UINT64CONST(0x53494654E000)	/* the statement whose sub-plans the expressions of the spec start */
+#define KEY_MEMO	UINT64CONST(0x53494654D000)	/* + the join: the rows of its child by parameter values (agg/memo.c) */
 
 /* the rows of a preserved side that a worker's tuples matched: nrow flags of the table of combo ci */
 typedef struct WorkerHits
@@ -388,35 +360,6 @@ send_blob(shm_mq_handle *mqh, const void *data, Size len)
 				 errhint("More details may be available in the server log.")));
 }
 
-/* the table of the lane just scanned, as a blob: kept in order here, sent by a worker */
-static void
-lane_done(AggExec *ex, uint32 lane)
-{
-	StringInfoData b;
-
-	initStringInfo(&b);
-	blob_dump(ex, lane, &b);
-	if (ex->mqh)
-		send_blob(ex->mqh, b.data, b.len);
-	else
-		lanes_put(ex, lane, b.data, b.len);
-	pfree(b.data);
-	table_reset(ex);
-}
-
-/* the groups the leader's own table holds (the rows of a preserved side that no tuple matched) are added to the result */
-void
-lane_tail(AggExec *ex)
-{
-	StringInfoData b;
-
-	initStringInfo(&b);
-	blob_dump(ex, -1, &b);
-	blob_merge(ex->gtab, b.data);
-	pfree(b.data);
-	table_reset(ex);
-}
-
 /* the float sums of the lane just scanned are added to those of the lanes before it, as the leader adds the table of each lane */
 void
 lane_fold(AggExec *ex)
@@ -445,6 +388,48 @@ lane_fold(AggExec *ex)
 	}
 }
 
+/* the float sums of the lane just scanned are kept apart: the lanes are added in order when every process is done (lanes_sum) */
+static void
+lane_keep(AggExec *ex, uint32 lane)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+
+	for (int i = 0; i < ex->spec->naggs; i++)
+	{
+		AggAcc	   *a = &ex->acc[i];
+
+		if (a->lv == NULL)
+			continue;
+		a->lv[lane] = MemoryContextAllocZero(ex->tcxt, ex->gcap * sizeof(double));
+		memcpy(a->lv[lane], a->d, n * sizeof(double));
+		memset(a->d, 0, n * sizeof(double));
+	}
+}
+
+/* the sums of the lanes, in lane order, then the sums of the rows after the lanes (the tail of a preserved side) */
+void
+lanes_sum(AggExec *ex)
+{
+	uint32		n = ex->hash ? ex->ngroups : ex->gcap;
+
+	for (int i = 0; i < ex->spec->naggs; i++)
+	{
+		AggAcc	   *a = &ex->acc[i];
+
+		if (a->lv == NULL)
+			continue;
+		for (uint32 g = 0; g < n; g++)
+		{
+			double		t = 0;
+
+			for (int l = 0; l < SIFT_AGG_LANES; l++)
+				if (a->lv[l])
+					t += a->lv[l][g];
+			a->d[g] = t + a->d[g];
+		}
+	}
+}
+
 static void par_poll(AggExec *ex);
 
 void
@@ -461,8 +446,8 @@ scan_items(AggExec *ex)
 			part_flush(ex);
 		if (ex->lane_serial)
 			lane_fold(ex);
-		else if (ex->shared->ordered)
-			lane_done(ex, item);
+		else if (ex->lanes)
+			lane_keep(ex, item);
 		if (ex->par)
 			par_poll(ex);
 	}
@@ -477,6 +462,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	AggExec    *ex = palloc0(sizeof(AggExec));
 	Snapshot	snap = RegisterSnapshot(RestoreSnapshot(shm_toc_lookup(toc, KEY_SNAP, false)));
 	WorkerDone	done = {DONE_MAGIC};
+	ParamListInfo wparams;
+	char	   *subtxt;
 
 	shm_mq_set_sender(mq, MyProc);
 	ex->mqh = shm_mq_attach(mq, seg, NULL);
@@ -488,7 +475,30 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	engine_rels(ex);
 	ex->snap = snap;
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
-	engine_open(ex, snap, RestoreParamList(&params));
+	wparams = RestoreParamList(&params);
+	/* the statements below may hold scans of this kind in their other sub-plans */
+	RegisterCustomScanMethods(&sift_agg_plan_methods);
+	/* the sub-plans of the expressions (a hashed IN (SELECT ..)) start in an executor state of the statement, whose plan has no node of its own */
+	if ((subtxt = shm_toc_lookup(toc, KEY_SUB, true)) != NULL)
+	{
+		ex->wsub = CreateQueryDesc((PlannedStmt *) stringToNode(subtxt), "", snap, InvalidSnapshot, None_Receiver, wparams, NULL, 0);
+		standard_ExecutorStart(ex->wsub, 0);
+		ex->css.ss.ps.state = ex->wsub->estate;
+	}
+	engine_open(ex, snap, wparams);
+	ex->wchild = palloc0(Max(ex->spec->njoin, 1) * sizeof(QueryDesc *));
+	ex->cmemo = palloc0(Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
+	ex->cmslot = palloc0(Max(ex->spec->njoin, 1) * sizeof(TupleTableSlot *));
+	for (int ji = 0; ji < ex->spec->njoin; ji++)
+	{
+		char	   *txt = shm_toc_lookup(toc, KEY_CHILD + ji, true);
+
+		if (txt == NULL)
+			continue;
+		ex->wchild[ji] = CreateQueryDesc((PlannedStmt *) stringToNode(txt), "", snap, InvalidSnapshot, None_Receiver, wparams, NULL, 0);
+		standard_ExecutorStart(ex->wchild[ji], 0);
+		ex->cmemo[ji] = shm_toc_lookup(toc, KEY_MEMO + ji, true);
+	}
 	ex->shared = sh;
 	ex->lanes = sh->ordered;
 	if (ex->topn)
@@ -498,6 +508,11 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	scan_buffers(ex);
 	table_init(ex);
+	if (ex->spec->spine)
+	{
+		ex->spine_buf = shm_toc_lookup(toc, KEY_SPINE, false);
+		spine_load(ex);
+	}
 	if (ex->topn)
 	{
 		StringInfoData b;
@@ -511,7 +526,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	}
 	else
 		scan_items(ex);
-	if (!sh->ordered && !ex->topn)
+	if (!ex->topn)
 	{
 		StringInfoData b;
 
@@ -534,6 +549,16 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		send_blob(ex->mqh, msg, sizeof(h) + h.nrow);
 		pfree(msg);
 	}
+	if (ex->spine)
+	{
+		WorkerHits	h = {SPINE_MAGIC, 0, ex->spine->nrow};
+		char	   *msg = palloc(sizeof(h) + h.nrow);
+
+		memcpy(msg, &h, sizeof(h));
+		memcpy(msg + sizeof(h), ex->spine->hit, h.nrow);
+		send_blob(ex->mqh, msg, sizeof(h) + h.nrow);
+		pfree(msg);
+	}
 	done.n_units = ex->n_units;
 	done.n_pre_units = ex->n_pre_units;
 	done.n_super = ex->n_super;
@@ -550,8 +575,31 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	sift_colsrc_counters(ex->src, &done.cc);
 	send_blob(ex->mqh, &done, sizeof(done));
 	shm_mq_detach(ex->mqh);
+	/* before the executor states: the expression context of the lookups is a child of the state of the sub-plans */
 	engine_close(ex);
+	for (int ji = 0; ji < ex->spec->njoin; ji++)
+		if (ex->wchild[ji])
+		{
+			ExecutorFinish(ex->wchild[ji]);
+			ExecutorEnd(ex->wchild[ji]);
+			FreeQueryDesc(ex->wchild[ji]);
+		}
+	if (ex->wsub)
+	{
+		ExecutorFinish(ex->wsub);
+		ExecutorEnd(ex->wsub);
+		FreeQueryDesc(ex->wsub);
+	}
 	UnregisterSnapshot(snap);
+}
+
+/* does the packed spec (its expressions are Nodes among Integers and Strings) start a sub-plan? */
+static bool
+pack_has_subplan(Node *n, void *context)
+{
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList))
+		return false;
+	return IsA(n, SubPlan) || expression_tree_walker(n, pack_has_subplan, context);
 }
 
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
@@ -568,11 +616,54 @@ par_launch(AggExec *ex)
 	AggPar	   *par;
 	MapShared  *ml;
 	Size		msize = 0;
-	int			nmaps = 0;
+	int			nmaps = 0,
+				ncorr = 0;
+	char	  **child_txt;
+	char	   *sub_txt = NULL;
 
 	if (nw <= 0 || IsParallelWorker())
 		return;
 	spec_txt = nodeToString(ex->pack);
+	/* the rows of the spine are those of a plan the leader runs once, before the workers start: they read the rows from the shared memory */
+	if (ex->spec->spine)
+	{
+		spine_fetch(ex);
+		if (((const SpineHdr *) ex->spine_buf)->len > SHARE_MAX)
+			return;
+	}
+	/* the plan of a correlated join, as a statement of its own: each worker starts it and runs it for the inputs it meets */
+	child_txt = palloc0(Max(ex->spec->njoin, 1) * sizeof(char *));
+	ex->cmemo = MemoryContextAllocZero(ex->cxt, Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
+	ex->cmslot = MemoryContextAllocZero(ex->cxt, Max(ex->spec->njoin, 1) * sizeof(TupleTableSlot *));
+	for (int ji = 0; ji < ex->spec->njoin; ji++)
+		if (ex->spec->join[ji].params != NIL)
+		{
+			PlannedStmt *ps = makeNode(PlannedStmt);
+
+			*ps = *ex->css.ss.ps.state->es_plannedstmt;
+			ps->planTree = list_nth(ps->subplans, ex->spec->join[ji].subplan - 1);
+			ps->rowMarks = NIL;
+			ps->resultRelations = NIL;
+			ps->utilityStmt = NULL;
+			ps->commandType = CMD_SELECT;
+			ps->canSetTag = false;
+			child_txt[ji] = nodeToString(ps);
+			ncorr++;
+		}
+	/* the sub-plans of the expressions start in each worker (they hash a small table once): a statement of the query's sub-plans with no node of its own */
+	if (pack_has_subplan((Node *) ex->pack, NULL))
+	{
+		PlannedStmt *ps = makeNode(PlannedStmt);
+
+		*ps = *ex->css.ss.ps.state->es_plannedstmt;
+		ps->planTree = (Plan *) makeNode(Result);
+		ps->rowMarks = NIL;
+		ps->resultRelations = NIL;
+		ps->utilityStmt = NULL;
+		ps->commandType = CMD_SELECT;
+		ps->canSetTag = false;
+		sub_txt = nodeToString(ps);
+	}
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
@@ -582,7 +673,10 @@ par_launch(AggExec *ex)
 
 		if (cb->join < 0)
 			continue;
-		if (m == NULL || ex->spec->join[cb->join].params != NIL)
+		/* a correlated child runs per worker, for the inputs the worker meets (its rows are the worker's own) */
+		if (ex->spec->join[cb->join].params != NIL)
+			continue;
+		if (m == NULL)
 			return;
 		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
 		nmaps++;
@@ -597,9 +691,19 @@ par_launch(AggExec *ex)
 	shm_toc_estimate_chunk(&pcxt->estimator, slen);
 	shm_toc_estimate_chunk(&pcxt->estimator, mul_size(MQ_SIZE, nw));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
-		if (ex->spec->combo[ci].join >= 0)
+		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL)
 			shm_toc_estimate_chunk(&pcxt->estimator, ml[ci].size);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps);
+	for (int ji = 0; ji < ex->spec->njoin; ji++)
+		if (child_txt[ji])
+		{
+			shm_toc_estimate_chunk(&pcxt->estimator, strlen(child_txt[ji]) + 1);
+			shm_toc_estimate_chunk(&pcxt->estimator, memo_size());
+		}
+	if (ex->spec->spine)
+		shm_toc_estimate_chunk(&pcxt->estimator, ((const SpineHdr *) ex->spine_buf)->len);
+	if (sub_txt)
+		shm_toc_estimate_chunk(&pcxt->estimator, strlen(sub_txt) + 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL));
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -623,17 +727,43 @@ par_launch(AggExec *ex)
 	for (int i = 0; i < nw; i++)
 		shm_mq_set_receiver(shm_mq_create(p + (Size) i * MQ_SIZE, MQ_SIZE), MyProc);
 	shm_toc_insert(pcxt->toc, KEY_MQ, p);
+	for (int ji = 0; ji < ex->spec->njoin; ji++)
+		if (child_txt[ji])
+		{
+			char	   *cm = shm_toc_allocate(pcxt->toc, strlen(child_txt[ji]) + 1);
+
+			strcpy(cm, child_txt[ji]);
+			shm_toc_insert(pcxt->toc, KEY_CHILD + ji, cm);
+			ex->cmemo[ji] = shm_toc_allocate(pcxt->toc, memo_size());
+			memo_init(ex->cmemo[ji]);
+			shm_toc_insert(pcxt->toc, KEY_MEMO + ji, ex->cmemo[ji]);
+		}
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
 		const SiftAggCombo *cb = &ex->spec->combo[ci];
 		char	   *mp;
 
-		if (cb->join < 0)
+		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL)
 			continue;
 		mp = shm_toc_allocate(pcxt->toc, ml[ci].size);
 		map_share_write(ex->cs[ci].map, &ex->spec->join[cb->join], &ml[ci], mp);
 		shm_toc_insert(pcxt->toc, KEY_MAP + ci, mp);
 		ex->lookup_shared += ml[ci].nrow;
+	}
+	if (sub_txt)
+	{
+		char	   *sm = shm_toc_allocate(pcxt->toc, strlen(sub_txt) + 1);
+
+		strcpy(sm, sub_txt);
+		shm_toc_insert(pcxt->toc, KEY_SUB, sm);
+	}
+	if (ex->spec->spine)
+	{
+		Size		len = ((const SpineHdr *) ex->spine_buf)->len;
+		char	   *sm = shm_toc_allocate(pcxt->toc, len);
+
+		memcpy(sm, ex->spine_buf, len);
+		shm_toc_insert(pcxt->toc, KEY_SPINE, sm);
 	}
 	LaunchParallelWorkers(pcxt);
 	if (pcxt->nworkers_launched == 0)
@@ -694,6 +824,14 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		par->ndone++;
 		shm_mq_detach(par->mqh[w]);
 	}
+	else if (*(const uint32 *) data == SPINE_MAGIC)
+	{
+		const WorkerHits *h = (const WorkerHits *) data;
+
+		SIFT_INVARIANT(ex->spine != NULL && ex->spine->nrow == h->nrow, "sift: bad message of a parallel aggregate");
+		for (uint32 r = 0; r < h->nrow; r++)
+			ex->spine->hit[r] |= ((const char *) (h + 1))[r];
+	}
 	else if (*(const uint32 *) data == HITS_MAGIC)
 	{
 		const WorkerHits *h = (const WorkerHits *) data;
@@ -705,15 +843,8 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 	}
 	else if (ex->topn)
 		sift_topn_import(ex->topn, data, len);
-	else if (ex->shared->ordered)
-	{
-		const BlobHdr *h = (const BlobHdr *) data;
-
-		SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad message of a parallel aggregate");
-		lanes_put(ex, h->lane, data, len);
-	}
 	else
-		blob_merge(ex->gtab, data);
+		blob_merge(ex, data);
 }
 
 /* the messages that are there; whether there were any */

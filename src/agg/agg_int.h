@@ -94,6 +94,11 @@ typedef struct AggExec
 	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
 	SpineSt    *spine;			/* the rows of the arms' spine (SiftAggSpec.spine) */
+	struct QueryDesc **wchild;	/* a worker: the executor state of the plan of each correlated join (the leader's is in the EState it runs in) */
+	struct QueryDesc *wsub;		/* a worker: the executor state whose sub-plans the expressions of the spec start (the leader's is the node's EState) */
+	struct ChildMemo **cmemo;	/* per join: the rows of its correlated child by parameter values, shared with the other processes of the scan (NULL: none) */
+	TupleTableSlot **cmslot;	/* per join: a slot of the child's row type that reads the minimal tuples of the memo */
+	const char *spine_buf;		/* the spine's plan rows, serialized by the leader before the scan (spine_fetch): a worker reads them from the shared memory */
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
@@ -146,11 +151,8 @@ typedef struct AggExec
 	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
-	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */
-	bool		lanes;			/* this table is one of the lanes */
+	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
-	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
-	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
 	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
 	uint32		nvorder;

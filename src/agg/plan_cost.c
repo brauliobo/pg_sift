@@ -1775,13 +1775,13 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 }
 
 /*
- * Each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them. The lookup tables are
+ * Each process aggregates its share into a table of its own; the leader merges them. The lookup tables are
  * read once, by the leader, who writes them to the shared memory (agg/lookshare.c): the divisor is not theirs.
  */
 static void
 cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
-	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
+	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
 	double		arm = k->arm_cost * AGG_SCAN_SPEED * cpu_operator_cost,
 				serial = k->scan_cost,

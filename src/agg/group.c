@@ -170,6 +170,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 			default:
 				break;
 		}
+		if (ex->lanes && sift_aggkind_float_sum(&ex->spec->agg[i]))
+			a[i].lv = MemoryContextAllocZero(ex->tcxt, SIFT_AGG_LANES * sizeof(double *));
 	}
 	return a;
 }
@@ -179,8 +181,11 @@ acc_free(AggAcc *a, int naggs)
 {
 	for (int i = 0; i < naggs; i++)
 	{
-		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf, a[i].dt};
+		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf, a[i].dt, a[i].lv};
 
+		for (int l = 0; a[i].lv && l < SIFT_AGG_LANES; l++)
+			if (a[i].lv[l])
+				pfree(a[i].lv[l]);
 		for (int c = 0; c < lengthof(col); c++)
 			if (col[c])
 				pfree(col[c]);
@@ -221,6 +226,13 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 			}
 			if (o->dt)
 				n->dt[t] = o->dt[g];
+			for (int l = 0; o->lv && l < SIFT_AGG_LANES; l++)
+				if (o->lv[l])
+				{
+					if (n->lv[l] == NULL)
+						n->lv[l] = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
+					n->lv[l][t] = o->lv[l][g];
+				}
 			if (o->last)
 				n->last[t] = o->last[g];
 			if (o->nf)

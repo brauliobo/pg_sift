@@ -119,7 +119,7 @@ void
 groups_topn(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
-	AggExec    *t = ex->gtab;
+	AggExec    *t = ex;
 	const SiftAggAgg *a;
 	const AggAcc *acc;
 	int			n = t->nglist,

@@ -115,6 +115,27 @@ bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
 	pfree(tmp);
 }
 
+/* the float sums each lane kept (lane_keep): a bit mask of the lanes, then the sums of the groups of each */
+static void
+bw_lanes(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
+{
+	uint64		mask = 0;
+	double	   *tmp = palloc(Max(ng, 1) * sizeof(double));
+
+	for (int l = 0; l < SIFT_AGG_LANES; l++)
+		mask |= (uint64) (acc->lv[l] != NULL) << l;
+	bw_put(b, &mask, sizeof(mask));
+	for (int l = 0; l < SIFT_AGG_LANES; l++)
+	{
+		if (acc->lv[l] == NULL)
+			continue;
+		for (uint32 r = 0; r < ng; r++)
+			tmp[r] = acc->lv[l][gl[r]];
+		bw_put(b, tmp, (Size) ng * sizeof(double));
+	}
+	pfree(tmp);
+}
+
 /* the values of an output table whose ids are listed in old[0..nused), as datums */
 static void
 bw_values(StringInfo b, const OutTable *t, const uint32 *old, uint32 nused)
@@ -577,6 +598,9 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
 	for (int k = 0; k < s->narms; k++)
 		bw_put(b, ex->arm[k].amax, Max(s->arm[k].ninner, 1) * sizeof(double));
+	for (int i = 0; i < s->naggs; i++)
+		if (ex->acc[i].lv)
+			bw_lanes(b, &ex->acc[i], gl, ng);
 }
 
 void
@@ -1094,6 +1118,7 @@ blob_merge(AggExec *g, const char *p)
 	const uint32 *lid[SIFT_AGG_MAX_KEYS];
 	const int64 *seen;
 	BlobAgg    *ba = palloc0(Max(s->naggs, 1) * sizeof(BlobAgg));
+	const double **lvec = palloc0(Max(s->naggs, 1) * SIFT_AGG_LANES * sizeof(double *));
 	bool		grow = false;
 
 	SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad partial aggregate");
@@ -1118,6 +1143,15 @@ blob_merge(AggExec *g, const char *p)
 		for (int i = 0; i < s->arm[k].ninner; i++)
 			g->arm[k].amax[i] = Max(g->arm[k].amax[i], am[i]);
 	}
+	for (int i = 0; i < s->naggs; i++)
+		if (g->acc[i].lv)
+		{
+			uint64		mask = *(const uint64 *) br_get(&p, sizeof(uint64));
+
+			for (int l = 0; l < SIFT_AGG_LANES; l++)
+				if (mask >> l & 1)
+					lvec[i * SIFT_AGG_LANES + l] = br_get(&p, (Size) ng * sizeof(double));
+		}
 	if (!g->hash)
 		for (int j = 0; j < s->nkeys; j++)
 			grow |= key_used(&g->ks[j]) > g->ks[j].cap;
@@ -1154,6 +1188,20 @@ blob_merge(AggExec *g, const char *p)
 			merge_set(g, i, &ba[i], gids);
 		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			merge_osa(g, i, &ba[i], gids);
+	/* the lanes a process scanned are its own: their sums are put in place, the leader adds them in lane order (lanes_sum) */
+	for (int i = 0; i < s->naggs; i++)
+		for (int l = 0; g->acc[i].lv && l < SIFT_AGG_LANES; l++)
+		{
+			const double *v = lvec[i * SIFT_AGG_LANES + l];
+
+			if (v == NULL)
+				continue;
+			if (g->acc[i].lv[l] == NULL)
+				g->acc[i].lv[l] = MemoryContextAllocZero(g->tcxt, g->gcap * sizeof(double));
+			for (uint32 r = 0; r < ng; r++)
+				g->acc[i].lv[l][gids[r]] = v[r];
+		}
 	pfree(gids);
 	pfree(ba);
+	pfree(lvec);
 }
