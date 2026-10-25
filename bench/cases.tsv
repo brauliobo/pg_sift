@@ -140,3 +140,4 @@ topn_walk_order_kept	keeps the order of that walk in the backend	orders	default+
 lateral_func_avg	is read by the scan as the grouping of the elements by the key of `x`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 count_distinct_lookup_pairs	the slots of the (group, value) pairs of a joined `count(DISTINCT)` are fetched ahead	orders	default	Pushed Aggregates: count\(DISTINCT d\.cat	native	-	ms	faster33	no
 point_tid_in_covered	is planned on the addresses and the heap, as it is on a query it does not cover	orders	default	Index	native	-	ms	faster33	no
+lateral_flat_plan	plans the flat query first and, when it reads every table that has a column index in a scan, stops there	events	-	Custom Scan \(SiftAgg\)	native	warm_backend:sift.enable_agg = on	ms	faster33	no
