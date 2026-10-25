@@ -784,6 +784,11 @@ for s in "${ORDER[@]}" leakcheck; do
 	for id in ${bad:-}; do [[ $id != installcheck-batch* ]] || grep -h '^not ok' "$LOG/$id.log" | sed "s/^/$red    /; s/\$/$off/"; done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
+# a server that crashed: the log of its job says only that psql lost the connection; the signal and the statement the backend ran are in the server log
+if (( failed )); then
+	find "$BASE" -path "$LOG" -prune -o -name '*.log' -print 2>/dev/null | xargs -r grep -hE -A1 'was terminated by signal|^TRAP:|PANIC:' 2>/dev/null | cut -c1-300 | head -n 30 |
+		{ read -r first && { echo "${red}server crashes (signal, statement, assertion):$off"; echo "$first"; cat; }; }
+fi
 # the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
 if [[ -n ${STATS:-} ]]; then
 	kill "$STATS" 2>/dev/null
