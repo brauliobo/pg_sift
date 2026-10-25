@@ -374,8 +374,14 @@ tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	add_wbuf(t, sb_lo, sb_hi);
 	for (int k = 0; k < t->nparts; k++)
 	{
-		sift_col_begin(t->part[k].src, NULL, 0, sb_lo, sb_hi);
-		t->part[k].have = sift_col_next(t->part[k].src, &t->part[k].unit);
+		TblPart    *p = &t->part[k];
+		SiftColPred preds[SIFT_AGGZONE_MAX + SIFT_COLSRC_MAX_FILTERS];
+		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, prune, nprune, preds);
+
+		for (int i = 0; i < p->flt.n; i++)
+			preds[n++] = p->flt.pred[i];
+		sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
+		p->have = sift_col_next(p->src, &p->unit);
 	}
 	t->last = -1;
 }
@@ -407,6 +413,41 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 		unit->priv = best;
 		return true;
 	}
+}
+
+/* A filter is the source's when every segment layout holds its column as an integer leaf: a segment without the column would need the catalog's default tested */
+static uint64
+tbl_set_filters(void *impl, const SiftSrcFilter *f, int nf)
+{
+	TblSource  *t = impl;
+	uint64		ok = 0;
+
+	for (int k = 0; k < t->nparts; k++)
+		t->part[k].flt = (SiftAggFilters) {0};
+	for (int i = 0; i < nf; i++)
+	{
+		bool		all = true;
+
+		for (int k = 0; k < t->nparts; k++)
+			all &= t->part[k].col[f[i].leaf] >= 0 && sift_aggfilt_int(&t->part[k].schema->cols[t->part[k].col[f[i].leaf]]);
+		if (!all)
+			continue;
+		for (int k = 0; k < t->nparts; k++)
+			sift_aggfilt_add(&t->part[k].flt, t->cxt, t->part[k].col[f[i].leaf], &f[i]);
+		ok |= UINT64CONST(1) << i;
+	}
+	return ok;
+}
+
+static bool
+tbl_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftAggFiltRun run = {&p->flt, t->lay, t->tol};
+
+	sift_aggsel_stored(&t->sel, p->src, &p->unit, bits, sift_aggfilt_op, &run);
+	return sift_aggsel_rows_left(bits, unit->nrow);
 }
 
 static void
@@ -844,6 +885,8 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.set_filters = tbl_set_filters,
+	.filter = tbl_filter,
 	.set_wide = tbl_set_wide,
 	.filter_wide = tbl_filter_wide,
 	.overflow = tbl_overflow,

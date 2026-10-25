@@ -7,7 +7,9 @@
 #include "nodes/bitmapset.h"
 #include "agg/pre.h"
 #include "agg/sel.h"
+#include "agg/zoneprune.h"
 #include "agg/colsrc.h"
+#include "agg/chunkfilter.h"
 #include "table/table.h"
 
 typedef struct TblLeafBuf
@@ -38,6 +40,8 @@ typedef struct TblPart
 	int		   *leaf_of_col;	/* [schema->ncols] the layout leaf a leaf of this schema holds, -1 when the table dropped it */
 	SiftColUnit unit;			/* the head of this source's units, valid when have */
 	bool		have;
+	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin, on this schema's leaves */
+	SiftAggFilters flt;			/* the filters set_filters accepted, on this schema's columns */
 } TblPart;
 
 typedef struct TblSource

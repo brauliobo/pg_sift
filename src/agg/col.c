@@ -381,115 +381,18 @@ col_nsb(void *impl)
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
 }
 
-/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none; a NULL test is one predicate */
-static int
-zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftColPred *out)
-{
-	if (z->nulltest)
-	{
-		out[0] = (SiftColPred) {z->leaf, z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL};
-		return 1;
-	}
-	vals[0].v.i = z->lo;
-	vals[1].v.i = z->hi;
-	out[0] = (SiftColPred) {z->leaf, SIFT_COLOP_GE, 1, &vals[0]};
-	out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_LE, 1, &vals[1]};
-	if (z->nvals > 0)
-	{
-		SiftColValue *set = MemoryContextAllocZero(cxt, z->nvals * sizeof(SiftColValue));
-
-		for (int i = 0; i < z->nvals; i++)
-			set[i].v.i = z->vals[i];
-		out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_IN, z->nvals, set};
-	}
-	return 2;
-}
-
-/* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
-static bool
-zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z)
-{
-	if (z->nulltest)
-		return p[0].col == z->leaf && p[0].op == (z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL);
-	if (p[0].col != z->leaf || p[0].op != SIFT_COLOP_GE || p[0].vals[0].v.i != z->lo)
-		return false;
-	if (z->nvals == 0)
-		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
-	if (p[1].op != SIFT_COLOP_IN || p[1].nvals != z->nvals)
-		return false;
-	for (int i = 0; i < z->nvals; i++)
-		if (p[1].vals[i].v.i != z->vals[i])
-			return false;
-	return true;
-}
-
-/*
- * The zone tests of the entries that are no junction, into src->zpred. A begin comes for every range of units a worker takes, and a set of many values
- * is converted to column values and copied for each: the tests of the last begin stay while the entries hold the same ranges and values.
- */
-static void
-zone_tests(ColSource *src, const SiftSrcPrune *prune, int nprune)
-{
-	int			n = 0;
-
-	if (src->zpred == NULL)
-		src->zpred = MemoryContextAllocZero(src->cxt, 2 * SIFT_COLSRC_MAX_LEAVES * sizeof(SiftColPred));
-	for (int k = 0; k < nprune; k++)
-		if (prune[k].nkids == 0)
-		{
-			int			len = prune[k].nulltest ? 1 : 2;
-
-			if (n + len > src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
-				zone_preds(src->cxt, &prune[k], MemoryContextAllocZero(src->cxt, 2 * sizeof(SiftColValue)), &src->zpred[n]);
-			n += len;
-		}
-	src->nzpred = n;
-}
-
-/* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin) */
-static SiftColPrune
-zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
-{
-	SiftColPrune c = {.any = z->any, .nkids = z->nkids};
-
-	if (z->nkids == 0)
-	{
-		SiftColPred *preds = MemoryContextAlloc(cxt, 2 * sizeof(SiftColPred));
-
-		c.npreds = zone_preds(cxt, z, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
-		c.preds = preds;
-		return c;
-	}
-	c.kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));
-	for (int i = 0; i < z->nkids; i++)
-		((SiftColPrune *) c.kids)[i] = zone_tree(cxt, &z->kids[i]);
-	return c;
-}
-
 #define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
 
 /* The predicates a begin over the prune entries tests (the zone trees and the tests behind them are made once for the entries) */
 static int
 col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
 {
-	int			n;
+	int			n = sift_aggzone_preds(&src->zones, src->cxt, NULL, prune, nprune, preds);
 
-	if (src->zfor != prune)
-	{
-		src->zfor = prune;
-		src->nzone = 0;
-		src->zone = MemoryContextAlloc(src->cxt, Max(nprune, 1) * sizeof(SiftColPrune));
-		for (int k = 0; k < nprune; k++)
-			if (prune[k].nkids > 0)
-				src->zone[src->nzone++] = zone_tree(src->cxt, &prune[k]);
-	}
-	zone_tests(src, prune, nprune);
-	memcpy(preds, src->zpred, src->nzpred * sizeof(SiftColPred));
-	n = src->nzpred;
 	for (int i = 0; i < src->nspred; i++)
 		preds[n++] = src->spred[i];
-	for (int i = 0; i < src->nflt; i++)
-		preds[n++] = src->fpred[i];
+	for (int i = 0; i < src->flt.n; i++)
+		preds[n++] = src->flt.pred[i];
 	for (int i = 0; i < src->nwtest; i++)
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			preds[n++] = src->wtest[i].pred;
@@ -506,7 +409,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	n = col_preds(src, prune, nprune, preds);
-	sift_col_begin_zones(src->cs, preds, n, src->zone, src->nzone, sb_lo, sb_hi);
+	sift_col_begin_zones(src->cs, preds, n, src->zones.zone, src->zones.nzone, sb_lo, sb_hi);
 }
 
 static bool
@@ -516,7 +419,7 @@ col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint6
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept);
+	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept);
 }
 
 static bool

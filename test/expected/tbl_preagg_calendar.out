@@ -319,7 +319,7 @@ SELECT * FROM pm_check('tcy');
  42 | tz at UTC, month    | some | t
  43 | tz at UTC, year     | some | t
  44 | tz session: scan    | scan | t
- 45 | tz, range           | some | t
+ 45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
  47 | tz at UTC, range    | some | t
  48 | tz 3-arg UTC        | some | t
@@ -408,10 +408,10 @@ SELECT * FROM pm_check('tcm');
  21 | hour: refused       | scan | t
  22 | zone on id          | all  | t
  23 | range of days       | all  | t
- 24 | range cuts a day    | some | t
+ 24 | range cuts a day    | none | t
  25 | open range          | all  | t
  26 | range, no key       | all  | t
- 27 | range cuts, no key  | some | t
+ 27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: scan           | scan | t
@@ -430,7 +430,7 @@ SELECT * FROM pm_check('tcm');
  43 | tz at UTC, year     | all  | t
  44 | tz session: scan    | scan | t
  45 | tz, range           | all  | t
- 46 | tz, range at +03    | some | t
+ 46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
  48 | tz 3-arg UTC        | all  | t
 (48 rows)
@@ -464,10 +464,10 @@ SELECT * FROM pm_check('tcm');
  21 | hour: refused       | scan | t
  22 | zone on id          | some | t
  23 | range of days       | some | t
- 24 | range cuts a day    | some | t
+ 24 | range cuts a day    | none | t
  25 | open range          | some | t
  26 | range, no key       | some | t
- 27 | range cuts, no key  | some | t
+ 27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: scan           | scan | t
@@ -486,7 +486,7 @@ SELECT * FROM pm_check('tcm');
  43 | tz at UTC, year     | some | t
  44 | tz session: scan    | scan | t
  45 | tz, range           | some | t
- 46 | tz, range at +03    | some | t
+ 46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | some | t
  48 | tz 3-arg UTC        | some | t
 (48 rows)
@@ -750,11 +750,11 @@ SELECT * FROM pm_check('tci', 1, 100, '{6}');
  20 | year of the week    | some | t
  21 | hour: refused       | scan | t
  22 | zone on id          | some | t
- 23 | range of days       | some | t
- 24 | range cuts a day    | some | t
+ 23 | range of days       | none | t
+ 24 | range cuts a day    | none | t
  25 | open range          | some | t
- 26 | range, no key       | some | t
- 27 | range cuts, no key  | some | t
+ 26 | range, no key       | none | t
+ 27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: scan           | scan | t
@@ -772,8 +772,8 @@ SELECT * FROM pm_check('tci', 1, 100, '{6}');
  42 | tz at UTC, month    | some | t
  43 | tz at UTC, year     | some | t
  44 | tz session: scan    | scan | t
- 45 | tz, range           | some | t
- 46 | tz, range at +03    | some | t
+ 45 | tz, range           | none | t
+ 46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | some | t
  48 | tz 3-arg UTC        | some | t
 (47 rows)
@@ -806,11 +806,11 @@ SELECT * FROM pm_check('tci');
  20 | year of the week    | all  | t
  21 | hour: refused       | scan | t
  22 | zone on id          | all  | t
- 23 | range of days       | all  | t
- 24 | range cuts a day    | all  | t
+ 23 | range of days       | none | t
+ 24 | range cuts a day    | none | t
  25 | open range          | all  | t
- 26 | range, no key       | all  | t
- 27 | range cuts, no key  | all  | t
+ 26 | range, no key       | none | t
+ 27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: scan           | scan | t
@@ -822,14 +822,14 @@ SELECT * FROM pm_check('tci');
  36 | date, year          | all  | t
  37 | date, dow           | all  | t
  38 | date, via timestamp | all  | t
- 39 | date, range         | all  | t
+ 39 | date, range         | none | t
  40 | date, test          | all  | t
  41 | date, test in       | all  | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
  44 | tz session: scan    | scan | t
- 45 | tz, range           | all  | t
- 46 | tz, range at +03    | all  | t
+ 45 | tz, range           | none | t
+ 46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
  48 | tz 3-arg UTC        | all  | t
 (48 rows)
@@ -890,7 +890,7 @@ SELECT * FROM pm_check('tcy', 35, 48);
  42 | tz at UTC, month    | some | t
  43 | tz at UTC, year     | some | t
  44 | tz session: scan    | scan | t
- 45 | tz, range           | some | t
+ 45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
  47 | tz at UTC, range    | some | t
  48 | tz 3-arg UTC        | some | t

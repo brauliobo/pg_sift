@@ -1,0 +1,146 @@
+/*
+ * agg/chunkfilter.c - the integer filters of a scan on the encoded chunks of a unit (agg/chunkfilter.h).
+ */
+#include "postgres.h"
+
+#include "utils/memutils.h"
+
+#include "agg/chunkfilter.h"
+#include "agg/sel.h"
+
+static const SiftColOp filter_ops[] = {
+	[SSF_EQ] = SIFT_COLOP_EQ, [SSF_NE] = SIFT_COLOP_NE, [SSF_LT] = SIFT_COLOP_LT, [SSF_LE] = SIFT_COLOP_LE, [SSF_GT] = SIFT_COLOP_GT,
+	[SSF_GE] = SIFT_COLOP_GE, [SSF_IN] = SIFT_COLOP_IN, [SSF_NOTIN] = SIFT_COLOP_NOTIN, [SSF_NOTNULL] = SIFT_COLOP_NOTNULL
+};
+
+bool
+sift_aggfilt_int(const SiftColDef *def)
+{
+	return def->parent < 0 && def->store == SIFT_COLS_INT;
+}
+
+void
+sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFilter *f)
+{
+	bool		set = f->op == SSF_IN || f->op == SSF_NOTIN;
+	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
+	SiftColValue *vals = MemoryContextAllocZero(cxt, Max(nvals, 1) * sizeof(SiftColValue));
+
+	if (fl->pred == NULL)
+	{
+		fl->pred = MemoryContextAlloc(cxt, SIFT_COLSRC_MAX_FILTERS * sizeof(SiftColPred));
+		fl->leaf = MemoryContextAlloc(cxt, SIFT_COLSRC_MAX_FILTERS * sizeof(int));
+	}
+	for (int i = 0; i < nvals; i++)
+		vals[i].v.i = set ? f->set[i] : f->val;
+	fl->pred[fl->n] = (SiftColPred) {col, filter_ops[f->op], nvals, vals};
+	fl->leaf[fl->n++] = f->leaf;
+}
+
+/*
+ * The share of the unit's rows the predicate keeps, from the zone of its leaf (the values spread evenly between min and max): what orders
+ * the filters of a unit, the most selective first, and tells nothing else
+ */
+static double
+filter_share(const SiftColUnit *cu, const SiftColPred *p)
+{
+	SiftColZone z;
+	double		span,
+				live,
+				c = p->nvals > 0 ? (double) p->vals[0].v.i : 0.0;
+
+	sift_col_zone(cu, p->col, &z);
+	live = z.nvals > 0 ? (double) (z.nvals - z.nnull) / z.nvals : 0.0;
+	if (p->op == SIFT_COLOP_NOTNULL || z.nnull == z.nvals || z.has_ovf)
+		return live;
+	span = (double) z.max - (double) z.min + 1.0;
+	switch (p->op)
+	{
+		case SIFT_COLOP_EQ:
+			return live / span;
+		case SIFT_COLOP_NE:
+			return live * (1.0 - 1.0 / span);
+		case SIFT_COLOP_IN:
+			return live * Min(1.0, p->nvals / span);
+		case SIFT_COLOP_NOTIN:
+			return live * Max(0.0, 1.0 - p->nvals / span);
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+			return live * Min(1.0, Max(0.0, (c - z.min + (p->op == SIFT_COLOP_LE)) / span));
+		default:
+			return live * Min(1.0, Max(0.0, (z.max - c + (p->op == SIFT_COLOP_GE)) / span));
+	}
+}
+
+/*
+ * The engine keeps the rows whose value overflowed (stored as NULL, flagged): for a numeric leaf those are the NaNs, which pass the
+ * comparisons that a number greater than all others passes (> >= <> and "not null") and no other. The others are cleared from sel.
+ */
+static void
+clear_nan_rows(const SiftColUnit *cu, const SiftColPred *p, SiftColSel *sel)
+{
+	SiftColVec	v;
+
+	if (p->op == SIFT_COLOP_GT || p->op == SIFT_COLOP_GE || p->op == SIFT_COLOP_NE || p->op == SIFT_COLOP_NOTNULL || p->op == SIFT_COLOP_NOTIN)
+		return;
+	sift_col_read(cu, p->col, NULL, &v);
+	for (uint32 w = 0; v.ovf && w < sel->nwords; w++)
+		sel->bits[w] &= ~v.ovf[w];
+	sift_col_sel_count(sel);
+}
+
+/*
+ * The filters of the source on the unit as stored, the most selective first. The two bounds of a range on one leaf are one filter, as selective as the
+ * rows between them, and go to sift_col_filter together: a unit with a sorted run for the leaf takes the range from the run.
+ */
+void
+sift_aggfilt_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
+{
+	const SiftAggFiltRun *run = arg;
+	const SiftAggFilters *fl = run->fl;
+	SiftColPred	pair[SIFT_COLSRC_MAX_FILTERS][2];
+	int			np[SIFT_COLSRC_MAX_FILTERS];
+	int			leaf[SIFT_COLSRC_MAX_FILTERS];
+	double		share[SIFT_COLSRC_MAX_FILTERS];
+	int			order[SIFT_COLSRC_MAX_FILTERS];
+	bool		used[SIFT_COLSRC_MAX_FILTERS] = {false};
+	int			nf = 0;
+
+	for (int i = 0; i < fl->n; i++)
+	{
+		int			j;
+
+		if (used[i])
+			continue;
+		pair[nf][0] = fl->pred[i];
+		np[nf] = 1;
+		leaf[nf] = fl->leaf[i];
+		share[nf] = filter_share(cu, &fl->pred[i]);
+		if (sift_col_pred_is_bound(&fl->pred[i]))
+			for (j = i + 1; j < fl->n; j++)
+				if (!used[j] && fl->pred[j].col == fl->pred[i].col && sift_col_pred_is_bound(&fl->pred[j]))
+				{
+					pair[nf][np[nf]++] = fl->pred[j];
+					share[nf] = Max(0.0, share[nf] + filter_share(cu, &fl->pred[j]) - 1.0);
+					used[j] = true;
+					break;
+				}
+		for (j = nf; j > 0 && share[order[j - 1]] > share[nf]; j--)
+			order[j] = order[j - 1];
+		order[j] = nf++;
+	}
+	for (int i = 0; i < nf; i++)
+	{
+		const SiftColPred *p = pair[order[i]];
+		SiftColZone z;
+
+		sift_col_zone(cu, p->col, &z);
+		z.has_ovf &= !run->tol[leaf[order[i]]];
+		if (!sift_col_filter(cu, p, np[order[i]], sel))
+			break;
+		if (z.has_ovf && sift_colsrc_nan_leaf(&run->lay->leaf[leaf[order[i]]]))
+			for (int k = 0; k < np[order[i]]; k++)
+				clear_nan_rows(cu, &p[k], sel);
+	}
+}
+
