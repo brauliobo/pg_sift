@@ -97,7 +97,7 @@ BEGIN
 			ELSIF hi = 5 THEN
 				adv := format('a schema with wide leaves is written for 3.2 and later at every setting: drop the index before going back to %s', tgt);
 			ELSIF hi = 17 AND tgt = '3.3' THEN
-				adv := format('ALTER INDEX %s RESET (key_cut), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
+				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
 			ELSIF r.amname = 'sift_col' THEN

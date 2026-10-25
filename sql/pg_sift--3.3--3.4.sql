@@ -50,7 +50,7 @@ BEGIN
 				 'the segments written before the option have no point directory, so an equality or IN list on the column reads their units (zones and summaries cut most); a REINDEX writes it'),
 				('^point_tid_columns=.', 16, 'point_tid_columns', false,
 				 'the segments written before the option list the rows of the column by their number in the segment, so an equality or IN list on the column reads the units of the rows it finds; a REINDEX lists their heap addresses'),
-				('^key_cut=.', 17, 'key_cut', false,
+				('^key_cut=(?!off$|auto$)', 17, 'key_cut', false,
 				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key'),
 				('^hll_columns=.', 20, 'hll_columns', false,
 				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it'),
@@ -234,7 +234,7 @@ BEGIN
 		END IF;
 		-- the key a workload looks rows up by: a leaf of point_columns, point_tid_columns or key_columns that is not unique (or the first of key =>). key_cut keeps
 		-- its units ordered through writes and merges, with no rewrite of the heap; it is only free when no leaf is ordered now (it would widen the zones of those).
-		has_kc := EXISTS (SELECT 1 FROM unnest(ix.reloptions) o WHERE o ~ '^key_cut=.');
+		has_kc := EXISTS (SELECT 1 FROM unnest(ix.reloptions) o WHERE o ~ '^key_cut=(?!auto$)');
 		IF NOT has_kc AND units >= 16 THEN
 			cand := ARRAY(SELECT DISTINCT btrim(k) FROM unnest(ix.reloptions) o,
 				LATERAL unnest(string_to_array(regexp_replace(split_part(o, '=', 2), '^auto:', ''), ',')) k
@@ -297,6 +297,12 @@ COMMENT ON FUNCTION sift.approx_count_distinct_serial(internal) IS 'Serial funct
 COMMENT ON FUNCTION sift.approx_count_distinct_deserial(bytea, internal) IS 'Deserial function of sift.approx_count_distinct: the sketch of a worker.';
 COMMENT ON FUNCTION sift.approx_count_distinct_final(internal) IS 'Final function of sift.approx_count_distinct: the estimate of the distinct values, 0 for none.';
 COMMENT ON AGGREGATE sift.approx_count_distinct(anyelement) IS 'An estimate of the distinct values of x (relative standard error 0.81%), the same in every plan; count(DISTINCT x) stays exact.';
+
+CREATE FUNCTION sift.key_cut_decision(index regclass,
+	OUT leaf text, OUT units float8, OUT sampled float8, OUT reads float8, OUT ideal float8, OUT growth_pct float8, OUT decision text, OUT reason text)
+	RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_col_key_cut_decision' LANGUAGE C STRICT VOLATILE;
+COMMENT ON FUNCTION sift.key_cut_decision(regclass) IS 'What CREATE INDEX or REINDEX of a sift_col index would decide for key_cut now, from a sample of the heap: the key-shaped column, the units an equality on it reads (reads) against the units its rows fill (ideal), the predicted growth of the index when cut by it, the decision (cut, advise or none) and the reason. Changes nothing.';
 
 -- sift.table_set_paths says so when the groups written before the declaration have no leaves for the paths (VACUUM FULL makes them).
 CREATE OR REPLACE FUNCTION sift.table_set_paths(tbl regclass, col name, spec text) RETURNS void

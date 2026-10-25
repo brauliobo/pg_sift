@@ -398,8 +398,8 @@ sift_col_init(void)
 						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4 and date foreign key columns and the columns named *_id that are not unique and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, and 15 for a key list or bitmap (default auto)",
 						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_cut",
-						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17; default none: a unit is a superblock)",
-						 "", NULL, ShareUpdateExclusiveLock);
+						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
+						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
 					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
 					  0, 0, 32768, ShareUpdateExclusiveLock);
@@ -581,12 +581,25 @@ sift_col_options_point_tid_columns(Relation index)
 	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
 }
 
+/* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *
 sift_col_options_key_cut(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
+	const char *v = o->key_cut ? (const char *) o + o->key_cut : "";
 
-	return o->key_cut ? (const char *) o + o->key_cut : "";
+	if (strncmp(v, "auto:", 5) == 0)
+		return v + 5;
+	return strcmp(v, "auto") == 0 || strcmp(v, "off") == 0 ? "" : v;
+}
+
+/* whether a build decides key_cut: the option is not set, or holds a choice of an earlier build */
+bool
+sift_col_options_key_cut_auto(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->key_cut == 0 || strncmp((const char *) o + o->key_cut, "auto", 4) == 0;
 }
 
 const char *

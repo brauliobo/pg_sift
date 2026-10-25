@@ -612,6 +612,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
 	bool		chosen;
+	SiftAutoCut autocut;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
@@ -641,6 +642,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_auto_cube(heap, index);
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
+	autocut = sift_col_auto_cut(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
@@ -654,7 +656,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_vacuum_notice(heap, index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
-	sift_col_report_key_cut(index);
+	if (autocut != SIFT_AUTOCUT_ADVISED)
+		sift_col_report_key_cut(index);
 	return res;
 }
 

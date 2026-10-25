@@ -58,6 +58,14 @@ extern void sift_col_report_key_cut(Relation index);
 /* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
+typedef enum SiftAutoCut
+{
+	SIFT_AUTOCUT_NONE,
+	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
+	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
+} SiftAutoCut;
+extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
+extern bool sift_col_options_key_cut_auto(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build.c) */
 extern bool sift_col_volatile_name(const char *name);
 #define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */

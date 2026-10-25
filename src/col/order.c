@@ -41,9 +41,9 @@ ref_null(const RowRef *x, int leaf)
 }
 
 static int
-key_cmp(const RowRef *x, const RowRef *y, const OrderCtx *c, int upto)
+key_cmp_from(const RowRef *x, const RowRef *y, const OrderCtx *c, int from, int upto)
 {
-	for (int i = 0; i < upto && i < c->nleaf; i++)
+	for (int i = from; i < upto && i < c->nleaf; i++)
 	{
 		int			leaf = c->leaf[i];
 		bool		nx = ref_null(x, leaf),
@@ -63,6 +63,12 @@ key_cmp(const RowRef *x, const RowRef *y, const OrderCtx *c, int upto)
 			return kx < ky ? -1 : 1;
 	}
 	return 0;
+}
+
+static int
+key_cmp(const RowRef *x, const RowRef *y, const OrderCtx *c, int upto)
+{
+	return key_cmp_from(x, y, c, 0, upto);
 }
 
 static int
@@ -140,6 +146,45 @@ win_tid_cmp(const void *a, const void *b, void *arg)
 }
 
 /*
+ * Where a window of avail rows in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes (within
+ * slack rows), so that one value of the leading leaf is in as few units as it can be. The rows are refs[i], or row i of win when refs is NULL.
+ */
+static uint64
+cut_at(const OrderCtx *ctx, const RowRef *refs, SiftColBatch *win, uint64 avail, uint64 unit_rows, uint64 slack)
+{
+	uint64		end = Min(avail, unit_rows);
+
+	if (end < avail && ctx->nleaf > 0)
+	{
+		uint64		best = 0;
+
+		for (uint64 d = 0; d < slack + 1 && best == 0; d++)
+		{
+			RowRef		x,
+						y;
+
+			if (end >= d + 1)
+			{
+				x = refs ? refs[end - d - 1] : (RowRef) {win, end - d - 1};
+				y = refs ? refs[end - d] : (RowRef) {win, end - d};
+				if (key_cmp(&x, &y, ctx, 1) != 0)
+					best = end - d;
+			}
+			if (best == 0 && d > 0 && end + d < avail)
+			{
+				x = refs ? refs[end + d - 1] : (RowRef) {win, end + d - 1};
+				y = refs ? refs[end + d] : (RowRef) {win, end + d};
+				if (key_cmp(&x, &y, ctx, 1) != 0)
+					best = end + d;
+			}
+		}
+		if (best > 0)
+			end = best;
+	}
+	return end;
+}
+
+/*
  * Cuts the rows of a stream, which arrives in the order of the key (and of the TID within a key), into units of about unit_rows, each cut where the
  * first leaf changes if that is within a quarter of unit_rows of the count (so that one value of the leading leaf is in as few units as it can be), the
  * rows of a unit in TID order. The rows wait in a window of unit_rows + unit_rows / 4 + 1 rows, which is the memory of the cut. Returns the number of units.
@@ -175,34 +220,7 @@ cut_stream(SiftColSegWriter *w, RowNext next, void *state, const SiftColSchema *
 		avail = win->nrows;
 		if (avail == 0)
 			break;
-		end = Min(avail, unit_rows);
-		if (end < avail && ctx->nleaf > 0)
-		{
-			uint64		best = 0;
-
-			for (uint64 d = 0; d < slack + 1 && best == 0; d++)
-			{
-				RowRef		x = {win, 0},
-							y = {win, 0};
-
-				if (end >= d + 1)
-				{
-					x.r = end - d - 1;
-					y.r = end - d;
-					if (key_cmp(&x, &y, ctx, 1) != 0)
-						best = end - d;
-				}
-				if (best == 0 && d > 0 && end + d < avail)
-				{
-					x.r = end + d - 1;
-					y.r = end + d;
-					if (key_cmp(&x, &y, ctx, 1) != 0)
-						best = end + d;
-				}
-			}
-			if (best > 0)
-				end = best;
-		}
+		end = cut_at(ctx, NULL, win, avail, unit_rows, slack);
 		for (uint64 i = 0; i < end; i++)
 			ord[i] = i;
 		qsort_arg(ord, end, sizeof(uint32), win_tid_cmp, win);
@@ -236,22 +254,80 @@ cut_stream(SiftColSegWriter *w, RowNext next, void *state, const SiftColSchema *
 	return seq;
 }
 
-typedef struct ArraySrc
+static int
+ref_tid_cmp(const void *a, const void *b)
 {
-	const RowRef *refs;
-	uint64		n;
-	uint64		i;
-} ArraySrc;
+	const RowRef *x = a,
+			   *y = b;
 
-static bool
-array_next(void *state, RowRef *r)
+	return x->b->keys[x->r] < y->b->keys[y->r] ? -1 : x->b->keys[x->r] > y->b->keys[y->r];
+}
+
+/*
+ * cut_stream for the rows of batches that all stay in memory, in the order of the key: the window is a range of the refs, and each row is copied once, into
+ * its unit, where cut_stream copies it into the window, into the unit and, when it waits for the next unit, into the other window.
+ */
+static int
+cut_refs(SiftColSegWriter *w, const RowRef *refs, uint64 total, const SiftColSchema *schema, const OrderCtx *ctx, uint32 unit_rows, MemoryContext cx)
 {
-	ArraySrc   *a = state;
+	uint64		slack = unit_rows / 4;
+	uint64		want = unit_rows + slack + 1;
+	SiftColBatch *out = sift_cbatch_create(cx, schema);
+	RowRef	   *ord = palloc_array(RowRef, want);
+	uint64		pos = 0;
+	uint32		seq = 0,
+				num = 0;
 
-	if (a->i == a->n)
-		return false;
-	*r = a->refs[a->i++];
-	return true;
+	while (pos < total)
+	{
+		uint64		end = cut_at(ctx, refs + pos, NULL, Min(want, total - pos), unit_rows, slack);
+
+		memcpy(ord, refs + pos, end * sizeof(RowRef));
+		qsort(ord, end, sizeof(RowRef), ref_tid_cmp);
+		/* the number of a unit: the sequence of the cut by a key; without a key the units take the superblock of their first row, as cut_stream's do */
+		if (ctx->nleaf == 0)
+			num = Max(num + (seq > 0), sift_key_block(ord[0].b->keys[ord[0].r]) / SIFT_SB_PAGES);
+		else
+			num = seq;
+		sift_cbatch_reset(out, num);
+		seq++;
+		out->keyed = true;
+		for (uint64 i = 0; i < end; i++)
+			sift_cbatch_add_from(out, ord[i].b, ord[i].r);
+		sift_colw_add(w, out);
+		pos += end;
+		CHECK_FOR_INTERRUPTS();
+	}
+	pfree(ord);
+	return seq;
+}
+
+typedef struct SortEnt
+{
+	int64		k0;				/* the key of the leading leaf of the cut */
+	bool		isnull;
+	RowRef		ref;
+} SortEnt;
+
+static int
+ent_cmp(const void *a, const void *b, void *arg)
+{
+	const SortEnt *x = a,
+			   *y = b;
+	const OrderCtx *c = arg;
+
+	if (x->isnull != y->isnull)
+		return x->isnull ? 1 : -1;
+	if (!x->isnull && x->k0 != y->k0)
+		return x->k0 < y->k0 ? -1 : 1;
+	if (c->nleaf > 1)
+	{
+		int			r = key_cmp_from(&x->ref, &y->ref, c, 1, c->nleaf);
+
+		if (r != 0)
+			return r;
+	}
+	return x->ref.b->keys[x->ref.r] < y->ref.b->keys[y->ref.r] ? -1 : x->ref.b->keys[x->ref.r] > y->ref.b->keys[y->ref.r];
 }
 
 /*
@@ -265,8 +341,8 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	uint64		total = 0,
 				k = 0;
-	ArraySrc	src;
 	RowRef	   *refs;
+	SortEnt    *ents;
 	int			units;
 
 	for (int i = 0; i < nin; i++)
@@ -274,12 +350,31 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 	if (total == 0)
 		return 0;
 	refs = palloc_array(RowRef, total);
-	for (int i = 0; i < nin; i++)
-		for (uint32 r = 0; r < in[i]->nrows; r++)
-			refs[k++] = (RowRef) {in[i], r};
-	qsort_arg(refs, total, sizeof(RowRef), ref_cmp, &ctx);
-	src = (ArraySrc) {refs, total, 0};
-	units = cut_stream(w, array_next, &src, schema, &ctx, unit_rows, cx);
+	if (nleaf == 0)
+	{
+		for (int i = 0; i < nin; i++)
+			for (uint32 r = 0; r < in[i]->nrows; r++)
+				refs[k++] = (RowRef) {in[i], r};
+		qsort_arg(refs, total, sizeof(RowRef), ref_cmp, &ctx);
+	}
+	else
+	{
+		ents = palloc_array(SortEnt, total);
+		for (int i = 0; i < nin; i++)
+			for (uint32 r = 0; r < in[i]->nrows; r++)
+			{
+				RowRef		x = {in[i], r};
+				bool		isnull = ref_null(&x, leaf[0]);
+
+				/* the leading leaf is read once, not at each of the n log n comparisons */
+				ents[k++] = (SortEnt) {isnull ? 0 : sift_crun_key(&schema->cols[leaf[0]], in[i]->col[leaf[0]].key[r]), isnull, x};
+			}
+		qsort_arg(ents, total, sizeof(SortEnt), ent_cmp, &ctx);
+		for (k = 0; k < total; k++)
+			refs[k] = ents[k].ref;
+		pfree(ents);
+	}
+	units = cut_refs(w, refs, total, schema, &ctx, unit_rows, cx);
 	pfree(refs);
 	return units;
 }

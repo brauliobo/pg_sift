@@ -18,8 +18,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 90 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
+| [default](#default) | 91 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -324,6 +324,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (key_columns = 'off') then REINDEX (the build NOTICE names it); RESET returns to auto. ALTER INDEX alone applies to units written afterwards; older units are scanned.
 - **Upgrade from 3.3:** No format change: a merge of every segment of an index with key_columns auto now decides the key lists again from the segments it rewrites, so a key-shaped column that the cube holds in under 40% of the units gets its key list at the merge. An explicit list is unchanged. Nothing to do.
 - **Advice:** Leave at auto: non-unique foreign key and *_id columns of int2, int4 and date get a key list or bitmap within 3% of a unit. Name columns for equality filters; off removes it. REINDEX to apply.
+
+#### sift_col(key_cut)
+
+`sift_col` · default · since 3.4 · default ''
+
+- **What it does:** a lookup or a range of the key reads the units of its range whatever the order of the heap: one key value in 1 to 3 of 419 units against all 419 by zones (1,500,000 rows, 8 columns, 15% of a key's rows outside their heap range): count/sum of one key 5.06 to 0.35 ms, the busiest key 4.53 to 0.31, a list of 10 keys 4.80 to 0.58, a key and a date range 4.20 to 0.41; the units keep their range under churn and after pg_repack, because promotion, merge and REINDEX cut again by the key
+- **Gain:** chosen only where an equality on the key reads at least 8 times the units its rows fill and at least 64 units: count/sum of one key 5.06 to 0.35 ms, 4.53 to 0.31 for the busiest key, 4.80 to 0.58 for 10 keys (1,500,000 rows, 8 columns, 419 units); a scan that does not use the key 3.56 and 3.87 ms (noise); not cut: a heap-ordered column of the index, order_columns or point_tid_columns, an index whose predicted size grows by more than 3%
+- **Impact:** index size: predicted from the sample and checked: -9.9% predicted, -13% serial and -5% parallel measured (1,500,000 rows, 8 columns, a key whose rows are partly scattered); an automatic cut needs a predicted growth of at most 3%, above it the NOTICE advises key_cut = 'col' with the predicted growth (+5.3% at 11 independent integer columns, 1,000,000 rows); build, merge and writes: build +41% (2.30 to 3.25 s serial, 1.29 to 1.83 s parallel, 1,500,000 rows; +30% without the sample), promotion +21% (0.047 to 0.057 s for 50,000 rows), insert of 50,000 rows 0.20 against 0.205 s; other: format minor 17; CREATE INDEX and REINDEX read a sample of at most 400,000 rows of the heap to decide (0.07 to 0.25 s on a 1,500,000-row table); chosen, the build sorts the rows by the key and writes each once in its unit: build 2.30 to 3.25 s serial and 1.29 to 1.83 s parallel (+41%), a promotion of 50,000 rows 0.047 to 0.057 s (+21%), insert unchanged (0.20 s); the index 13% smaller serial and 5% smaller parallel on the measured table; the units list their TIDs (0.65 bytes a row), so an index of independent columns grows 30% at 2 leaves, 9% at 6, 5.3% at 11, and the build then only advises; segments are minor 17, which 3.2 and older refuse
+- **When:** CREATE INDEX or REINDEX of an index with no key_cut (or key_cut = 'auto') on a table of at least 64 superblocks (16,384 pages): the first key-shaped column (foreign key or *_id, not unique) of the index whose equality would read at least 8 times the units its rows fill and at least 64 units, when no other leaf follows the heap order (a cut would widen its zones), the index has no order_columns or point_tid_columns, and the predicted size of the index grows by at most 3%. Not chosen: a small table, a key already clustered, a predicted growth above 3% (advised).
+- **Default:** '' — Default since 3.4: where it applies an equality on the key reads 5 to 15 times less (the busiest key 4.53 to 0.31 ms) and the 3.3 rule holds: the index is predicted, from a sample, to grow by at most 3% (it shrank 5 to 13% on the measured table); a build 41% longer and a promotion 21% longer pay for it. The narrow, heap-ordered, order_columns and growing cases it loses on are left out by the rule.
+- **Turn off:** ALTER INDEX .. SET (key_cut = 'off') then REINDEX (or CREATE INDEX .. WITH (key_cut = 'off')); the choice is written as 'auto: col' and the NOTICE names it. ALTER INDEX .. RESET (key_cut) and a REINDEX decide again.
+- **Upgrade from 3.3:** Existing indexes keep their units; the choice is made by a CREATE INDEX or REINDEX of an index without the option. A 3.3 library cannot read minor 17: ALTER INDEX .. SET (key_cut = 'off') before the REINDEX of an index a 3.3 library must read.
+- **Advice:** Leave it automatic: CREATE INDEX writes key_cut = 'auto: col' and says what it measured and predicted; where it would grow the index it prints the command instead. sift.key_cut_decision(index) says what a REINDEX would decide. Set key_cut = 'off' on an index that also sorts or ranges by another column without the key (an unkeyed ORDER BY .. LIMIT 0.30 against 0.91 ms at 200,000 rows), or name the columns yourself. Segments are format minor 17; RESET and REINDEX roll back.
 
 #### sift_col(key_cut_rows)
 
@@ -1294,20 +1307,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** No format change (minor 16 is the 3.3 one): the aggregate scan of an existing index now reads through the directory too, and the access-method scan merges the address lists by runs. Nothing to do.
 - **Advice:** Opt-in where the b-tree on an id or key can go: lookups of up to 64 keys read no unit. Not for index-only scans; a unit with a dead row is read. Larger index; REINDEX to apply.
 
-#### sift_col(key_cut)
-
-`sift_col` · opt-in · since 3.4 · default ''
-
-- **What it does:** a lookup or a range of the key reads the units of its range whatever the order of the heap: one key value of 600 in 1 of 100 units, against 8 of 8 by superblock; the units keep their range under churn and after pg_repack, because promotion, merge and REINDEX cut again by the key
-- **Gain:** count/sum for one key 33.4 to 0.30 ms (1,000,000 rows, no b-tree); other columns slower: an id range 8.2 against 0.15 ms (800,000 rows)
-- **Impact:** index size: index 17% smaller to 16% larger for narrow rows, +0.2% for wide rows (200,000 to 2,000,000 rows); build, merge and writes: build CPU 3.4 to 4.1 times (the sort), promotion and merge about 3.5 times; other: format minor 17; the index 17% smaller to 16% larger for narrow rows (units list their TIDs) and 0.2% larger for wide ones; the build CPU 3.4 to 4.1 times (the sort), a promotion and a merge about 3.5 times; a build writes a sorted segment for each half of maintenance_work_mem of rows and a merge streams them (one unit of each input in memory); segments are minor 17, which 3.2 and older refuse
-- **When:** An equality or range of the declared key (up to 4 integer, date, timestamp, numeric or float columns) reads only the units of its range, also after churn or a repack. Ranges of columns that follow heap order get slower.
-- **Default:** '' — Opt-in: the sort makes build CPU 3.4 to 4.1x and promotion and merge about 3.5x, an id range 8.2 against 0.15 ms, and minor 17 is refused by 3.2 and older; a key count/sum goes 33.4 to 0.30 ms.
-- **Why not the default:** under 5% on a relevant class, over 3% index growth, over 5% write cost
-- **Turn off:** ALTER INDEX .. RESET (key_cut) for units written afterwards, then REINDEX re-cuts older units by superblock; sift.col_format_minor <= 14 also writes superblock units again.
-- **Upgrade from 3.3:** New, unset: nothing changes for an existing index. CREATE INDEX with it cuts the units by the key; on an existing index ALTER INDEX .. SET (key_cut) applies to the units written afterwards and a REINDEX cuts the older ones (sift.upgrade_commands() lists it). Column format minor 17: a 3.3 library cannot read it; ALTER INDEX .. RESET (key_cut) and a REINDEX roll it back.
-- **Advice:** Set it only for the one key a workload looks rows up by, when the table has churned or been repacked; the zones of the other columns widen. Segments are format minor 17; RESET and REINDEX roll back.
-
 #### sift_col(order_columns)
 
 `sift_col` · opt-in · since 3.3 · default ''
@@ -1945,7 +1944,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, 
 | `sift_col(key_columns)` | '' | '' | minor 15 | No format change: a merge of every segment of an index with key_columns auto now decides the key lists again from the segments it rewrites, so a key-shaped column that the cube holds in under 40% of the units gets its key list at the merge. An explicit list is unchanged. Nothing to do. |
 | `sift_col(point_columns)` | '' | '' | minor 14 | No format change: the aggregate scan of an existing index now reads through the point directory for a short IN list, an equality, a short range and the keys of a lookup join. Nothing to do. |
 | `sift_col(point_tid_columns)` | '' | '' | minor 16 | No format change (minor 16 is the 3.3 one): the aggregate scan of an existing index now reads through the directory too, and the access-method scan merges the address lists by runs. Nothing to do. |
-| `sift_col(key_cut)` | new | '' | minor 17, unreadable by 3.3 | New, unset: nothing changes for an existing index. CREATE INDEX with it cuts the units by the key; on an existing index ALTER INDEX .. SET (key_cut) applies to the units written afterwards and a REINDEX cuts the older ones (sift.upgrade_commands() lists it). Column format minor 17: a 3.3 library cannot read it; ALTER INDEX .. RESET (key_cut) and a REINDEX roll it back. |
+| `sift_col(key_cut)` | new | '' | minor 17, unreadable by 3.3 | Existing indexes keep their units; the choice is made by a CREATE INDEX or REINDEX of an index without the option. A 3.3 library cannot read minor 17: ALTER INDEX .. SET (key_cut = 'off') before the REINDEX of an index a 3.3 library must read. |
 | `sift_col(key_cut_rows)` | new | 0 | minor 17, unreadable by 3.3 | New, 0: read only with key_cut, and applies to the units written afterwards. No REINDEX of an index without key_cut. |
 | `sift_col(order_columns)` | '' | '' | minor 18, unreadable by 3.3 | Run heads need no setting: every build, promotion and merge after the update writes them for an index with order_columns (column format minor 18, +0.6% to +2.4% of the index); the units already written keep minor 13 until a merge or REINDEX rewrites them, and both live in one index. A 3.3 library cannot read minor 18; sift.col_format_minor 14 or less writes the runs without heads. |
 | `sift_col(order_array_columns)` | new | '' | minor 21, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (order_array_columns = 'a, b') applies to the segments written afterwards and a REINDEX gives the older ones their array; a segment with arrays is column format minor 21, which a 3.3 library cannot read (ALTER INDEX .. RESET (order_array_columns) and REINDEX first). |
@@ -1990,6 +1989,8 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
 | sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %s bytes | `src/agg/lookshm.c` |  |
 | SiftAgg not used: %s: %s | `src/agg/refuse.c` |  |
+| sift_col index "%s": key_cut = '%s' was chosen: an equality on "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%) | `src/col/autocut.c` | `key_cut` |
+| sift_col index "%s": an equality on "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
 | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
 | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
