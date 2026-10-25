@@ -180,7 +180,7 @@ COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICE
 declare -A JOB_WEIGHT=(
 	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
 	[difftest-col-4]=849 [difftest-col-tbl-2]=800 [difftest-col-2]=789 [difftest-col-tbl-3]=675 [tap-shell-compat_matrix]=578 [fuzz]=558
-	[tap-001_crash]=504 [installcheck-col_key_presence]=450 [tap-shell-store_crash]=341 [tap-shell-col_index_crash]=283
+	[tap-001_crash]=504 [installcheck-col_key_presence]=30 [tap-shell-store_crash]=341 [tap-shell-col_index_crash]=283
 	[installcheck-col_topn_parallel]=252 [installcheck-agg_group_spill_fuzz]=248 [installcheck-tbl_writepath]=246 [difftest-nopos]=236 [difftest-fuzz]=204
 	[tap-shell-index_build_crash]=197 [soak]=195 [tap-shell-col_auto_merge_partition]=194 [installcheck-col_sorted_run]=186 [tap-014_tbl_writepath]=181
 	[tap-006_truncate]=178 [tap-shell-index_random_crash]=165 [installcheck-agg_preagg_rollup]=158 [installcheck-tbl_preagg_calendar]=154 [hardened]=152

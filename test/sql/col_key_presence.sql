@@ -180,8 +180,14 @@ SELECT blobs > 0 AS has_blobs, exact = 0 AND bloom = 0 AS only_bitmaps, intact =
 FROM sift._test_col_set_damage('kp_on', 6);
 
 -- a bit flipped, one at a time, in the section of the summaries in the stream (its structure, every 7th byte of the bitmaps): the reader or the check of the
--- bitmaps against the chunks refuses each
-SELECT runs > 0 AS has_sections, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_set_file_damage('kp_on', 7);
+-- bitmaps against the chunks refuses each. Each flip opens and verifies the whole segment, so the cost grows with the square of the rows: two units of the table
+CREATE TABLE kp_f (LIKE kp) WITH (autovacuum_enabled = off);
+ALTER TABLE kp_f ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kp_f SELECT * FROM kp WHERE id <= 15000 ORDER BY id;
+VACUUM (FREEZE, ANALYZE) kp_f;
+CREATE INDEX kp_f_on ON kp_f USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+SELECT runs > 0 AS has_sections, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_set_file_damage('kp_f_on', 7);
+DROP TABLE kp_f;
 
 -- the same index built by workers: the same bytes of bitmaps, the same answers
 CREATE TABLE kp_w (LIKE kp) WITH (autovacuum_enabled = off);
