@@ -47,8 +47,13 @@
 /* Rows of a unit the first key of which is an integer, at least, for the best value of a segment to be looked at before its rows (vec_rows), and the rows of a segment */
 #define TOPN_VEC_ROWS	512
 #define TOPN_SEG		256
-/* ... and one row in this many of the unit passes the filters at least: the passes of the kernels cost the same whatever the rows are, so fewer rows go to the heap one by one */
-#define TOPN_VEC_DENSITY	16
+/*
+ * ... and one row in this many of the unit passes the filters at least: the passes of the kernels cost the same whatever the rows are, so fewer rows go
+ * to the heap one by one. Measured on 1,000,000 rows (LIMIT 10, keys in no order): at 30% and above the kernels take 25 to 45% fewer instructions, at 15-20%
+ * the same to 14% fewer, at 10% and 6% 2 to 10% more (the decode of the filter and the key column is what costs, 28M of 28M instructions) and the time is the same;
+ * a key that follows the table gains 1.3M of 2.3M at 10%, which is 0.03 ms. One row in 8 keeps all of it but that.
+ */
+#define TOPN_VEC_DENSITY	8
 
 bool		sift_topn_zone_keys = true;
 #ifdef SIFT_TESTING
