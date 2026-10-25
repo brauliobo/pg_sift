@@ -430,14 +430,12 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 	return true;
 }
 
+/* Every page the unit has rows on is all-visible: the mask is read first, as unit_clean does, and the unit's liveness after it */
 bool
-sift_col_unit_allvisible(const SiftColUnit *unit)
+unit_pages_allvisible(ColUnit *cu)
 {
-	ColUnit    *cu = unit->priv;
 	const uint64 *av = unit_allvisible(cu);
 
-	if (!unit_clean(cu))
-		return false;
 	if (cu->v.keyed)
 	{
 		if (av == NULL)			/* every page of the table is all-visible */
@@ -451,6 +449,14 @@ sift_col_unit_allvisible(const SiftColUnit *unit)
 		if (cu->v.pagemask[w] & ~av[w])
 			return false;
 	return true;
+}
+
+bool
+sift_col_unit_allvisible(const SiftColUnit *unit)
+{
+	ColUnit    *cu = unit->priv;
+
+	return unit_clean(cu) && unit_pages_allvisible(cu);
 }
 
 bool

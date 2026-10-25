@@ -32,7 +32,30 @@ sift_col_unit_preagg_ok(const SiftColUnit *unit)
 	SiftColSegment *seg;
 	uint32		u;
 
-	return sift_col_unit_super(unit, &seg, &u) || (sift_col_unit_stored(unit, &seg, &u) && sift_col_unit_exact(unit));
+	return sift_col_unit_super(unit, &seg, &u) || (sift_col_unit_stored(unit, &seg, &u) && (sift_col_unit_exact(unit) || sift_col_unit_dead_on(unit)));
+}
+
+/* the leaf's counts and sums net of the dead rows; min and max only bound what is left */
+static bool
+agg_dead(const SiftColUnit *unit, int col, SiftCAgg *a)
+{
+	SiftCLeafAgg la;
+	uint32		ndead,
+				nnull;
+
+	if (sift_col_unit_dead_bounds(unit))
+		return true;
+	if (!sift_col_unit_dead_leaf(unit, col, &ndead, &nnull, &la) || ndead > a->nvals || nnull > a->nnull)
+		return false;
+	a->nvals -= ndead;
+	a->nnull -= nnull;
+	a->sum -= la.sum;
+	if (la.flags & SIFT_CAGG_SUMSQ_OVF)
+		a->flags |= SIFT_CAGG_SUMSQ_OVF;
+	else
+		a->sumsq -= la.sumsq;
+	a->flags |= SIFT_CAGG_LOOSE;
+	return true;
 }
 
 bool
@@ -47,7 +70,9 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	sift_cseg_agg(seg, col, u, a);
-	return !(a->zflags & SIFT_COLZ_OVERFLOW);
+	if (a->zflags & SIFT_COLZ_OVERFLOW)
+		return false;
+	return !sift_col_unit_dead_on(unit) || agg_dead(unit, col, a);
 }
 
 bool
@@ -56,7 +81,7 @@ sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
 	SiftColSegment *seg;
 	uint32		u;
 
-	if (unit->except >= 0 || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+	if (unit->except >= 0 || sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	return sift_cseg_presence(seg, col, u, p);
@@ -69,7 +94,7 @@ sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
 	uint32		u,
 				len;
 
-	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+	if (sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	return (*blob = sift_cseg_hll(seg, col, u, &len)) != NULL;
@@ -411,7 +436,8 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 		if (!sift_col_unit_preagg_ok(unit))
 			return false;
 		sift_col_unit_stored(unit, &seg, &u);
-		if (!seg_hist(seg, u, dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)))
+		if (!seg_hist(seg, u, dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)) ||
+			(sift_col_unit_dead_on(unit) && !sift_col_unit_dead_hist(unit, out)))
 			return false;
 	}
 	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
@@ -432,7 +458,7 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 ? NULL : need, r) || r->list != list)
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 || sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
 		corrupt_cube(seg, u);
 	if (list < 0)
 	{
@@ -451,6 +477,8 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 		if (!x_rollup(seg, u, list, mcxt, &x) || !rollup_subtract(r, &x))
 			return false;
 	}
+	if (sift_col_unit_dead_on(unit) && !sift_col_unit_dead_rollup(unit, r))
+		return false;
 	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
 	for (int j = 0; j < r->ndims; j++)
 		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)

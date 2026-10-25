@@ -295,6 +295,18 @@ cal_cells(const SiftCPaggCol *c, uint32 nrows, int grain, const int64 *days, int
 	}
 }
 
+bool
+sift_cpagg_cal_rows(const SiftColSchema *s, int leaf, int grain, const SiftCPaggCol *c, int64 *cells)
+{
+	int64	   *days = palloc(Max(c->n, 1) * sizeof(int64));
+	bool		ok = cal_days(c, s->cols[leaf].type == SIFT_COLT_DATE, c->n, days);
+
+	if (ok)
+		cal_cells(c, c->n, grain, days, cells);
+	pfree(days);
+	return ok;
+}
+
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
 build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg,

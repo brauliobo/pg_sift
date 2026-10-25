@@ -648,6 +648,12 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 	return sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
 }
 
+static int
+col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
+{
+	return sift_col_unit_dead(&((ColSource *) impl)->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
+}
+
 static bool
 col_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
 {
@@ -851,6 +857,7 @@ static const SiftSrcProvider col_provider = {
 	.filter_wide = col_filter_wide,
 	.preagg = col_preagg,
 	.unit_exact = col_unit_exact,
+	.unit_dead = col_unit_dead,
 	.unit_except = col_unit_except,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,

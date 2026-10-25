@@ -33,6 +33,14 @@
 #define SIFT_COLSRC_MAX_LEAVES		128
 
 /* The element type of the vector a leaf is decoded to */
+/* how unit_dead reads a unit with dead rows */
+typedef enum SiftSrcDead
+{
+	SSD_OFF,
+	SSD_BOUNDS,
+	SSD_ON
+} SiftSrcDead;
+
 typedef enum SiftSrcVecType
 {
 	SCV_I32,					/* int32: int2, int4, date, bool (0/1) */
@@ -329,6 +337,7 @@ typedef struct SiftSrcUnitAgg
 	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */
 	bool		has_nan;
 	bool		is_const;		/* every non-NULL value equal */
+	bool		loose;			/* a unit net of its dead rows: min and max only bound the values left (the counts and the integer sums are exact) */
 } SiftSrcUnitAgg;
 
 /*
@@ -581,6 +590,12 @@ typedef struct SiftSrcProvider
 	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
 	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
 	/*
+	 * Optional: a unit that is not exact because rows of it are dead answers net of them (counts and integer sums, min and max loose) while SSD_ON; returns the number of dead rows, -1
+	 * when it cannot (then nothing is on). SSD_BOUNDS only checks that it could, for the cost of its pages' visibility: unit_agg then gives the zone (min, max, has_minmax) of the unit
+	 * with its dead rows, a bound of the live ones, and nothing else is valid. SSD_OFF reads the unit as its own rows again.
+	 */
+	int			(*unit_dead) (void *impl, const SiftSrcUnit *unit, int mode);
+	/*
 	 * Optional (NULL: no unit has exceptions). Leaf >= 0: when the exact unit holds the pre-aggregates of its rows where `leaf` is not NULL (docs/COL-PREAGG.md 11), the
 	 * next unit_hist and unit_rollup calls on it return what the rows where `leaf` IS NULL add up to (counts and sums net of those rows, no minimum or maximum; false
 	 * from them when they cannot tell) and this returns true. Leaf -1: the unit's own rows again. unit_agg and unit_presence refuse a unit set to a leaf.
@@ -831,6 +846,12 @@ static inline bool
 sift_colsrc_unit_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
 {
 	return src->prov->unit_exact != NULL && src->prov->unit_exact(src->impl, unit);
+}
+
+static inline int
+sift_colsrc_unit_dead(SiftSrcSource *src, const SiftSrcUnit *unit, int mode)
+{
+	return src->prov->unit_dead != NULL ? src->prov->unit_dead(src->impl, unit, mode) : -1;
 }
 
 static inline bool

@@ -118,6 +118,10 @@ typedef struct ColUnit
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
+	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */
+	bool		delta_on;
+	bool		delta_bounds;	/* delta_on, but only the unit's zone may be read */
+	uint64	   *live;			/* the liveness bits of the unit, when col/delta.c has read them (SIFT_COL_NWORDS(nrows) words): the selection of its rows copies them */
 	SiftKey    *keys;
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
@@ -267,5 +271,9 @@ unit_clean(ColUnit *cu)
 	}
 	return cu->clean;
 }
+
+
+/* col/delta.c */
+extern bool unit_pages_allvisible(ColUnit *cu);
 
 #endif

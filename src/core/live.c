@@ -155,24 +155,24 @@ sift_live_ndead(const SiftLive *l)
 void
 sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwords)
 {
-	uint64		start = SIFT_LIVE_START(l->nsb);
-	Buffer		buf = InvalidBuffer;
+	uint32		sh = rank % 8,
+				nout = (n + 7) / 8,
+				nin = (sh + n + 7) / 8;
+	uint8	   *raw = palloc(nin + 1);
 
 	memset(out, 0, nwords * sizeof(uint64));
-	for (uint32 i = 0; i < n;)
+	if (n == 0)
 	{
-		uint64		r = rank + i;
-		uint32		sh = r % 8,
-					take = Min(8 - sh, n - i);
-		uint64		byte = (sift_live_byte(l, start + r / 8, &buf) >> sh) & ((1u << take) - 1);
-
-		out[i / 64] |= byte << (i % 64);
-		if (i % 64 + take > 64)
-			out[i / 64 + 1] |= byte >> (64 - i % 64);
-		i += take;
+		pfree(raw);
+		return;
 	}
-	if (BufferIsValid(buf))
-		UnlockReleaseBuffer(buf);
+	sift_live_copy(l, SIFT_LIVE_START(l->nsb) + rank / 8, nin, raw);
+	raw[nin] = 0;
+	for (uint32 i = 0; i < nout; i++)
+		out[i / 8] |= (uint64) (((raw[i] | (uint32) raw[i + 1] << 8) >> sh) & 0xFF) << (8 * (i % 8));
+	if (n % 64)
+		out[(n - 1) / 64] &= (UINT64CONST(1) << (n % 64)) - 1;
+	pfree(raw);
 }
 
 void

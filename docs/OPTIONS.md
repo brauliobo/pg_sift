@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 90 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 91 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -584,6 +584,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.agg_preagg_distinct = off (session, role, database or postgresql.conf): distinct values are counted from the rows of every unit. No REINDEX; the stored histograms stay.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave on. Off counts distinct values from the rows of every unit. A key with tens of thousands of values gains nothing from the histograms (see the bench case); measure it with agg_preagg off.
+
+#### sift.agg_dead_delta
+
+`sift_col` · default · since 3.4 · default 15
+
+- **What it does:** after churn most units of a table have a dead row (a VACUUM cleared its liveness bit) and were read by their rows although every page is all-visible: a unit with at most this percent of its rows dead is answered from its stored counts and sums minus its dead rows, one row at a time (counts, NULL counts, integer and numeric sums; a minimum, a maximum, count(DISTINCT), a float sum and the write buffer still scan); 3,000,000 rows, 20% of the rows changed a month: 84 to 721 of 721 units from their pre-aggregates
+- **Gain:** 60 days of the churn simulator (bench/churn), both arms on one build (integration at 452cc9fb and the change, PostgreSQL 18.6, x86-64): grouped sum, dirty state: 300,000 rows 5.26 to 4.84 ms; 3,000,000 rows, 20% a month 21.6 to 15.0 ms (336 to 160 million instructions); 10,000,000 rows, 5% a month 69.2 to 42.8 ms (1,078 to 439 million); 10,000,000 rows, 20% a month 104.1 to 80.2 ms (1,214 to 821 million); a window over the newest days 3.73 to 3.35 ms (3,000,000 rows) and 4.60 to 3.70 ms (10,000,000, 5%); the same rows after a forced merge and VACUUM answer in 0.05 to 0.13 ms
+- **Impact:** index size: none: the setting is read only, the index bytes are those the same state has with it off; build, merge and writes: none: 0 bytes of WAL written by the statements with it on (300,000 rows state, pg_current_wal_lsn before and after); other: no stored byte and no write; a unit with more dead rows than the limit, or a page that is not all-visible, is scanned as before; a dead row costs about 500 instructions against about 100 for a scanned row, so a unit over about 17% dead is cheaper to scan; the attempt is dropped for a statement whose first 8 units read for their dead rows were scanned anyway (a statement the setting cannot help: key lookup +1.3% instructions at 300,000 rows, +0.8% at 3,000,000, float sum +0%)
+- **When:** A sift_col index with pre-aggregates (sift.agg_preagg), a unit with a dead row whose heap pages are all-visible and no more dead rows than the limit, for count, sum and avg of integer and numeric columns (grouped, ranged and by calendar cell). Not a minimum, a maximum, a distinct count, a float sum, a unit with exceptions, a superunit, a sift_table or the write buffer.
+- **Default:** 15 — It passes the 3.3 rule on the class it is for (the grouped sum of a churned table, 8% to 38% faster in time and 24% to 59% in instructions, and the window over the newest days 7% to 20%), grows no index (0%) and writes nothing (0 bytes of WAL, under the 5%); the statements it cannot help run the same instructions or +1.3%
+- **Turn off:** SET sift.agg_dead_delta = 0 (or ALTER SYSTEM / ALTER DATABASE): a dirty unit is read by its rows, as 3.3 does.
+- **Upgrade from 3.3:** New in 3.4: nothing to do after ALTER EXTENSION UPDATE; it reads the units already there.
+- **Advice:** Leave at 15. Raise it only for a table whose dead rows are few and spread evenly; above about 17% dead a unit is cheaper to scan. 0 scans every dirty unit, as 3.3 does. A lone segment above dead_rewrite_pct (10) dead is rewritten by VACUUM before it gets there.
 
 #### sift.agg_super
 
@@ -1919,7 +1932,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1941,6 +1954,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, 
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
 | `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
 | `sift.col_unit_floor` | new | 2048 |  | New in 3.4: nothing to do after ALTER EXTENSION UPDATE; the promotions and the merges that follow write the new cut, the units already there are read as they are and a merge of everything cuts them by superblock again. |
+| `sift.agg_dead_delta` | new | 15 |  | New in 3.4: nothing to do after ALTER EXTENSION UPDATE; it reads the units already there. |
 | `sift.agg_lookup_columns` | new | on |  | Nothing to do after ALTER EXTENSION UPDATE: the setting is read by the library, no REINDEX, the format is unchanged. |
 | `sift.verdict_cache_kb` | new | 256 kB |  | Nothing to do after ALTER EXTENSION UPDATE: the table is allocated by the first backend that plans a statement with a shared CTE, in the shared memory of the server; no REINDEX. |
 | `sift.plan_scale` | 1 | 1 |  | Now also scales the normal side of a plan on PostgreSQL 19 (3.3 did nothing there, as PostgreSQL 19 removed the hook it used); nothing to do. |

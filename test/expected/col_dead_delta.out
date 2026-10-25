@@ -1,0 +1,202 @@
+-- sift.agg_dead_delta: a unit with dead rows (a VACUUM cleared their liveness bits) whose pages are all-visible answers from its pre-aggregates minus the cube of its dead
+-- rows: counts and integer or numeric sums exact, NULLs counted; a minimum, a maximum, a distinct count, a float sum and a unit with a page that is not all-visible are scanned.
+-- The answers never change: with the setting on, off and with the scan planner off they are the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE dd (id int, grp int, kind text, amount numeric(12,2), qty int, big int8, f float8, ts date, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
+       4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
+FROM generate_series(1, 40000) g;
+CREATE INDEX dd_col ON dd USING sift_col (id, grp, kind, amount, qty, big, f, ts)
+	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_dims = 'kind, grp: amount, qty', calendar_columns = 'ts');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) dd;
+-- the units that answer net of dead rows, as EXPLAIN ANALYZE counts them
+CREATE FUNCTION dd_net(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Units Net Of Dead Rows: ' THEN n := substring(l from 'Rows: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+-- the answers of a query with the setting on, off and with the scan planner off
+CREATE FUNCTION dd_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text;
+BEGIN
+	SET LOCAL sift.agg_dead_delta = 25;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
+	SET LOCAL sift.agg_dead_delta = 0;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
+	RETURN a IS NOT DISTINCT FROM b AND b IS NOT DISTINCT FROM c;
+END $$;
+CREATE TABLE dd_q (n int, q text);
+INSERT INTO dd_q VALUES
+	(1, 'SELECT count(*), count(grp), count(amount), sum(amount), sum(qty), avg(amount), sum(big) FROM dd'),
+	(2, 'SELECT grp, count(*), count(amount), sum(amount), sum(qty), avg(qty), sum(big) FROM dd GROUP BY grp'),
+	(3, 'SELECT kind, count(*), sum(amount) FROM dd GROUP BY kind'),
+	(4, 'SELECT kind, grp, count(*), sum(amount), count(qty) FROM dd GROUP BY kind, grp'),
+	(5, 'SELECT ts, count(*), sum(qty) FROM dd GROUP BY ts'),
+	(6, 'SELECT ts, count(*), sum(amount) FROM dd WHERE ts >= date ''2024-02-01'' AND ts < date ''2024-04-01'' GROUP BY ts'),
+	(7, 'SELECT count(*), sum(amount) FROM dd WHERE grp IS NULL'),
+	(8, 'SELECT kind, count(*), sum(amount) FROM dd WHERE grp IN (1, 2, 3) GROUP BY kind'),
+	(9, 'SELECT count(*), sum(amount) FROM dd WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''),
+	(10, 'SELECT grp, min(amount), max(amount), count(*) FROM dd GROUP BY grp'),
+	(11, 'SELECT min(qty), max(qty), min(ts), max(ts) FROM dd'),
+	(12, 'SELECT count(DISTINCT kind), count(DISTINCT grp) FROM dd'),
+	(13, 'SELECT grp, sum(f), count(*) FROM dd GROUP BY grp'),
+	(14, 'SELECT sum(f), count(*) FROM dd'),
+	(15, 'SELECT count(*), sum(amount), sum(qty) FROM dd WHERE grp = 3'),
+	(16, 'SELECT count(*), sum(amount) FROM dd WHERE qty > 10'),
+	(17, 'SELECT date_trunc(''month'', ts)::date AS m, count(*), sum(amount), sum(qty) FROM dd GROUP BY 1'),
+	(18, 'SELECT date_trunc(''month'', ts)::date AS m, kind, count(*), sum(amount) FROM dd WHERE ts >= date ''2024-03-01'' GROUP BY 1, 2');
+-- dead rows: deletes spread over every superblock, one group dead in every unit, rows of the NULL group dead; vacuumed with every page visible afterwards (a promotion of the write buffer
+-- or a second round that crosses the dirty share would rewrite the segments they are in)
+DELETE FROM dd WHERE id % 29 = 1 OR kind = 'rare' OR (kind IS NULL AND id % 2 = 0);
+VACUUM (DISABLE_PAGE_SKIPPING) dd;
+SELECT sift.col_verify('dd_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT n, dd_same(q) AS same FROM dd_q ORDER BY n;
+ n  | same 
+----+------
+  1 | t
+  2 | t
+  3 | t
+  4 | t
+  5 | t
+  6 | t
+  7 | t
+  8 | t
+  9 | t
+ 10 | t
+ 11 | t
+ 12 | t
+ 13 | t
+ 14 | t
+ 15 | t
+ 16 | t
+ 17 | t
+ 18 | t
+(18 rows)
+
+-- the counts, sums, histograms and filters are answered net of the dead rows; the minimum, maximum, distinct and float queries scan
+SELECT n, dd_net(q) > 0 AS net FROM dd_q ORDER BY n;
+ n  | net 
+----+-----
+  1 | t
+  2 | t
+  3 | t
+  4 | t
+  5 | t
+  6 | t
+  7 | t
+  8 | t
+  9 | f
+ 10 | f
+ 11 | f
+ 12 | f
+ 13 | f
+ 14 | f
+ 15 | t
+ 16 | t
+ 17 | t
+ 18 | f
+(18 rows)
+
+-- ... and the group that no row is left in is not one of the groups of the answer
+SELECT kind, count(*) FROM dd GROUP BY kind ORDER BY kind;
+ kind | count 
+------+-------
+ k0   |  7389
+ k1   |  6650
+ k2   |  7388
+ k3   |  7388
+ k4   |  7388
+      |   840
+(6 rows)
+
+-- the setting off scans every dirty unit
+SET sift.agg_dead_delta = 0;
+SELECT dd_net('SELECT grp, count(*), sum(amount) FROM dd GROUP BY grp') AS net_off;
+ net_off 
+---------
+       0
+(1 row)
+
+SET sift.agg_dead_delta = 25;
+-- more dead rows than the share: the unit scans
+SET sift.agg_dead_delta = 1;
+SELECT dd_net('SELECT grp, count(*), sum(amount) FROM dd GROUP BY grp') AS net_over_share;
+ net_over_share 
+----------------
+              0
+(1 row)
+
+SET sift.agg_dead_delta = 25;
+-- a page that is not all-visible: the unit scans and the answer is the heap's
+UPDATE dd SET qty = qty + 1 WHERE id % 1000 = 5;
+SELECT n, dd_same(q) AS same FROM dd_q WHERE n IN (1, 2, 3, 9) ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 9 | t
+(4 rows)
+
+VACUUM (DISABLE_PAGE_SKIPPING) dd;
+-- the merge of everything leaves no dead rows: every unit is exact again
+SELECT sift.col_merge('dd_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT n, dd_same(q) AS same FROM dd_q ORDER BY n;
+ n  | same 
+----+------
+  1 | t
+  2 | t
+  3 | t
+  4 | t
+  5 | t
+  6 | t
+  7 | t
+  8 | t
+  9 | t
+ 10 | t
+ 11 | t
+ 12 | t
+ 13 | t
+ 14 | t
+ 15 | t
+ 16 | t
+ 17 | t
+ 18 | t
+(18 rows)
+
+SELECT dd_net('SELECT kind, count(*), sum(amount) FROM dd GROUP BY kind') AS net_after_merge;
+ net_after_merge 
+-----------------
+               0
+(1 row)
+
+SELECT sift.col_verify('dd_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP FUNCTION dd_net(text), dd_same(text);
+DROP TABLE dd, dd_q;
+DROP EXTENSION pg_sift;

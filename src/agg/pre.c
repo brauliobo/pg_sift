@@ -62,6 +62,7 @@ sift_aggpre_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, Si
 	agg->nnull = a.nnull;
 	agg->has_nan = (a.zflags & SIFT_COLZ_NAN) != 0;
 	agg->is_const = (a.zflags & SIFT_COLZ_CONST) != 0;
+	agg->loose = (a.flags & SIFT_CAGG_LOOSE) != 0;
 	agg->has_minmax = a.nnull < a.nvals && def->store != SIFT_COLS_STR && !(a.zflags & SIFT_COLZ_INLINE);
 	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)
 	{

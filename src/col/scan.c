@@ -1265,6 +1265,8 @@ sift_col_sel_all(const SiftColUnit *unit, SiftColSel *sel)
 	sift_col_sel_alloc(unit->src, cu->v.nrows, sel);
 	if (unit_clean(cu))
 		set_ones(sel->bits, sel->n);
+	else if (cu->live)
+		memcpy(sel->bits, cu->live, sel->nwords * sizeof(uint64));
 	else
 		sift_cseg_live(cu->seg, cu->u, sel->bits);
 	sift_col_sel_count(sel);

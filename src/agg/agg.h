@@ -24,6 +24,7 @@ extern PGDLLIMPORT double sift_plan_scale;
 extern PGDLLIMPORT double sift_agg_scale_horizon;
 extern PGDLLIMPORT bool sift_agg_two_level_on;
 extern PGDLLIMPORT bool sift_agg_preagg;
+extern PGDLLIMPORT int sift_agg_dead_delta;
 extern PGDLLIMPORT bool sift_agg_super;
 extern PGDLLIMPORT bool sift_agg_dist_stream;
 extern PGDLLIMPORT bool sift_agg_join_filter;

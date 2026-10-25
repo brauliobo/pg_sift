@@ -2,6 +2,7 @@
 -- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and
 -- the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata: all, some, none ('-': no SiftAgg).
 CREATE EXTENSION pg_sift;
+SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

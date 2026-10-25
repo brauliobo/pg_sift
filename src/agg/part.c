@@ -1198,6 +1198,12 @@ part_unit_exact(void *impl, const SiftSrcUnit *unit)
 	return sift_colsrc_unit_exact(cur_of(impl), unit_of(impl));
 }
 
+static int
+part_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
+{
+	return sift_colsrc_unit_dead(cur_of(impl), unit_of(impl), mode);
+}
+
 static bool
 part_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
 {
@@ -1387,6 +1393,7 @@ static const SiftSrcProvider part_provider = {
 	.set_wide = part_set_wide,
 	.filter_wide = part_filter_wide,
 	.unit_exact = part_unit_exact,
+	.unit_dead = part_unit_dead,
 	.unit_except = part_unit_except,
 	.unit_agg = part_unit_agg,
 	.unit_hist = part_unit_hist,

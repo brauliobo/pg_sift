@@ -203,6 +203,24 @@ preagg_zones(AggExec *ex)
 	return true;
 }
 
+/* false when the zone of a leaf the conjuncts compare, as bounded with the dead rows in it, cannot lie inside the comparison: preagg_zones fails whatever the dead rows are (the unit's rollup of the rows and the dim's histogram test the comparisons themselves) */
+static bool
+preagg_zone_bounds(AggExec *ex)
+{
+	if (ex->pa.rows || ex->pa.hdim >= 0)
+		return true;
+	for (int k = 0; k < ex->nprune; k++)
+	{
+		const SiftSrcPrune *z = &ex->prune[k];
+		SiftSrcUnitAgg a;
+
+		if (!z->nulltest && z->leaf != ex->pa.dim &&
+			sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) && (!a.has_minmax || a.min < z->lo || a.max > z->hi))
+			return false;
+	}
+	return true;
+}
+
 /*
  * count(DISTINCT leaf) of a leaf of key_columns: the bitmap or list of the unit's values added to the aggregate's set. False when the unit has none; the values
  * added so far do no harm, the scan of the unit adds them again to a set.
@@ -268,7 +286,8 @@ preagg_sums(AggExec *ex)
 				return false;
 			continue;
 		}
-		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums))
+		if (!sift_colsrc_unit_agg(ex->src, &ex->unit, leaf, &ua) || (a->kind != SAA_COUNT && a->kind != SAA_MIN && a->kind != SAA_MAX && !ua.has_sums) ||
+			(ua.loose && (a->kind == SAA_MIN || a->kind == SAA_MAX)))
 			return false;
 		v[ai] = (PaVal) {nrow, ua.nvals - ua.nnull, ua.sum, ua.has_minmax, ua.min, ua.max};
 	}
@@ -1027,13 +1046,73 @@ preagg_hist_hdim(AggExec *ex)
 	return ok;
 }
 
+static bool preagg_unit_exact(AggExec *ex);
+
+#define PA_DEAD_TRIES 8
+
+/* The aggregates that a unit net of its dead rows can give: counts and integer sums, not the minimum and maximum, the distinct values or the sketch of a unit, nor a float sum, which only an exact unit adds in its order */
+static bool
+preagg_dead_ok(AggExec *ex)
+{
+	if (ex->pa.list >= 0)
+		return false;
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+	{
+		const SiftAggAgg *a = &ex->spec->agg[ai];
+		int			leaf = pa_leaf(a);
+
+		if (a->kind == SAA_MIN || a->kind == SAA_MAX || a->kind == SAA_COUNT_DISTINCT || a->kind == SAA_GEN || a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 ||
+			(leaf >= 0 && a->kind != SAA_COUNT && ex->lay->leaf[leaf].vtype == SCV_F64))
+			return false;
+	}
+	return true;
+}
+
 static bool
 preagg_unit_try(AggExec *ex)
 {
+	bool		ok;
+	int			dead;
+
 	ex->pa_xleaf = -1;
 	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
 		return false;
-	if (!sift_colsrc_unit_exact(ex->src, &ex->unit) || preagg_rechecked(ex) || !preagg_arith(ex))
+	if (sift_colsrc_unit_exact(ex->src, &ex->unit))
+		return preagg_unit_exact(ex);
+	/* a unit with dead rows and every page all-visible: its pre-aggregates minus the dead rows' (counts and integer sums), the unit's rows being the live ones meanwhile */
+	/* a statement whose first dirty units, read for their dead rows, all went to their scans anyway (the histogram it needs is missing) stops paying for the attempt */
+	if (!ex->pa_dead || (ex->n_dead_units == 0 && ex->pa_dead_miss >= PA_DEAD_TRIES))
+		return false;
+	/* its zone is checked before its dead rows are read: a comparison the zone is not inside sends the unit to its scan, which has them from the liveness bits */
+	if (sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_BOUNDS) < 0 || !preagg_zone_bounds(ex))
+	{
+		sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_OFF);
+		ex->n_dead_scan++;
+		return false;
+	}
+	if ((dead = sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_ON)) >= 0)
+	{
+		ex->unit.nrow -= dead;
+		ok = preagg_unit_exact(ex);
+		ex->unit.nrow += dead;
+	}
+	else
+		ok = false;
+	sift_colsrc_unit_dead(ex->src, &ex->unit, SSD_OFF);
+	if (ok)
+		ex->n_dead_units++;
+	else
+	{
+		ex->n_dead_scan++;
+		ex->pa_dead_miss++;
+	}
+	return ok;
+}
+
+static bool
+preagg_unit_exact(AggExec *ex)
+{
+	if (preagg_rechecked(ex) || !preagg_arith(ex))
 		return false;
 	/* the rollup of the rows tests the comparisons on its tuples, so the unit need not lie inside them; a unit without it waits for a merge, nothing is asked for */
 	if (ex->pa.rows)
@@ -1099,13 +1178,15 @@ preagg_init(AggExec *ex)
 {
 	SiftSrcPreagg pa;
 
-	ex->pa_on = false;
+	ex->pa_on = ex->pa_dead = false;
+	ex->pa_dead_miss = 0;
 	ex->pa_why = SPW_OFF;
 	if (!sift_agg_preagg)
 		return;
 	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
+	ex->pa_dead = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex);
 	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
@@ -1131,7 +1212,7 @@ preagg_init(AggExec *ex)
 			}
 			else
 			{
-				ex->pa_on = false;
+				ex->pa_on = ex->pa_dead = false;
 				ex->pa_why = SPW_ZONE;
 			}
 		}

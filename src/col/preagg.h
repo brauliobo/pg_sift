@@ -53,6 +53,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
+#define SIFT_CAGG_LOOSE			0x4			/* a unit net of its dead rows (col/delta.c): min and max bound its live rows, they are not their minimum and maximum */
 
 typedef struct SiftCLeafAgg
 {
@@ -371,5 +372,7 @@ extern void sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec,
 extern bool sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, const uint8 *blob, uint32 len,
 									 const uint8 *eblob, uint32 elen, int format, const uint8 *xblob, uint32 xlen, const uint8 *xeblob, uint32 xelen);
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
+/* The cells of a calendar grain of the n rows of a date or timestamp leaf (the dead rows of a unit, col/delta.c); false for an infinity or a day no cell can start on */
+extern bool sift_cpagg_cal_rows(const SiftColSchema *s, int leaf, int grain, const SiftCPaggCol *c, int64 *cells);
 
 #endif							/* SIFT_COL_PREAGG_H */

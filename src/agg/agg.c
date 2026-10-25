@@ -98,6 +98,7 @@ bool		sift_enable_agg = true;
 bool		sift_agg_force = false;
 double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
+int			sift_agg_dead_delta = 15;
 bool		sift_agg_super = true;
 bool		sift_agg_dense = true;
 bool		sift_agg_dist_stream = true;
@@ -147,6 +148,12 @@ sift_agg_init(void)
 							 "Answers the units of an aggregate scan whose rows are all visible from the pre-aggregates the sift_col index stored with them.",
 							 NULL, &sift_agg_preagg, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_dead_delta",
+							"Most percent of the rows of a unit that may be dead for the unit to be answered from its pre-aggregates net of them (counts and integer sums), with sift.agg_preagg; 0 scans such a unit.",
+							"A VACUUM that removes a row version clears its liveness bit in the unit, and the unit then has no exact pre-aggregates: it was read row by row. When every page it has rows on is all-visible, "
+							"the values of its dead rows are read at their positions and taken off the groups of its pre-aggregates, one row at a time. Minimum, maximum, count(DISTINCT), sketches, float sums and "
+							"leaves of elements still scan the unit.",
+							&sift_agg_dead_delta, 15, 0, 100, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_preagg_distinct",
 							 "Answers count(DISTINCT col) of a column the cube stores a histogram of from the groups of the histograms of the units whose rows are all visible, with sift.agg_preagg.",
 							 NULL, &sift_agg_preagg_distinct, true,
@@ -1450,6 +1457,11 @@ explain_units(AggExec *ex, AggExec *c, ExplainState *es)
 	{
 		ExplainPropertyInteger("Units Net Of Exceptions", NULL, c->n_exc_units, es);
 		ExplainPropertyInteger("Units With Exceptions Scanned", NULL, c->n_exc_scan, es);
+	}
+	if (c->n_dead_units > 0 || c->n_dead_scan > 0)
+	{
+		ExplainPropertyInteger("Units Net Of Dead Rows", NULL, c->n_dead_units, es);
+		ExplainPropertyInteger("Units With Dead Rows Scanned", NULL, c->n_dead_scan, es);
 	}
 	if (c->super_on)
 		ExplainPropertyInteger("Superunits", NULL, c->n_super, es);

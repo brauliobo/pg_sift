@@ -999,6 +999,26 @@ def gen_floor(r, ctx):
     return p
 
 
+# ---------- a unit with dead rows whose pages are all-visible answers net of them (docs/COL-PREAGG.md 12): the rows of the normal plan after deletes and VACUUM, with the share and without ----------
+DEAD_KEYS = ['{e}.kind', '{e}.ki', '{e}.kd', "date_trunc('month', {e}.kd)::date", "date_trunc('day', {e}.kt)::date", '({e}.kn IS NULL)', '{e}.ki % 5']
+DEAD_AGGS = ['count(*)', 'count({e}.ki)', 'count({e}.kn)', 'sum({e}.amount)', 'avg({e}.amount)', 'sum({e}.kn)', 'sum({e}.ki)', 'avg({e}.kn)', 'sum({e}.val)',
+             'min({e}.amount)', 'max({e}.kn)', 'count(DISTINCT {e}.kind)']
+
+
+def dead_pred(r, e):
+    return r.choice([f"{e}.kind = 'k{r.randrange(5)}'", f"{e}.kind IN ('k{r.randrange(5)}', 'k{r.randrange(5)}')", f'{e}.ki < {r.randrange(40)}', f'{e}.ki IS NULL', f'{e}.kn IS NOT NULL',
+                     f"{e}.kd >= date '2025-0{r.randrange(1, 8)}-15'", f'{e}.ki {r.choice(["=", "<>"])} {r.randrange(40)}',
+                     f"{e}.ctid >= '({r.randrange(600)},1)' AND {e}.ctid < '({r.randrange(600, 1500)},1)'"])
+
+
+def gen_dead(r, ctx):
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(DEAD_KEYS, r.choice([0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(DEAD_AGGS, r.randrange(1, 5)) if r.random() < 0.9 or len(ks) == 0))
+    if not ag:
+        ag = ['count(*)']
+    return dict(table='udd', form='agg', keys=ks, aggs=ag, where=[dead_pred(r, 'e') for _ in range(r.choice([0, 0, 1, 1, 2]))], having=[], ordered=True)
+
+
 # ---------- a range on a leaf with a sorted run (order_columns): a unit takes the rows of the range from the run, not from a test of every row ----------
 WINDOW_COLS = ['ki', 'kd', 'kt', 'kn']
 
@@ -1188,7 +1208,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
@@ -1225,6 +1245,9 @@ def variants(r, fam):
     v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
     if fam in ('topn', 'trail'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
+    if fam == 'dead':  # the dead rows scanned, and any share of them netted
+        v.append(('nodelta', 'sift.enable_agg=on;sift.agg_dead_delta=0;max_parallel_workers_per_gather=0'))
+        v.append(('alldead', 'sift.enable_agg=on;sift.agg_dead_delta=100;max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
     if fam == 'numsum':  # every SIMD level of the host (a level it lacks runs the next lower one): the sums must be the same bytes
@@ -1387,6 +1410,34 @@ def dml_floor(r, ctx):
     return st + ['ANALYZE ufl']
 
 
+def dml_dead(r, ctx):
+    """Statements on udd, a plain index with cubes and a rollup over rows of 3 kB (a dozen superblocks): deletes spread over the units and VACUUM with every page visible afterwards (the
+    units with dead rows), sparse updates, inserts, and the promotions and merges that clean them again."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    if e < 5:
+        return [f'DELETE FROM udd WHERE {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 5:
+        return [f'DELETE FROM udd WHERE kind = \'k{r.randrange(5)}\' AND id % {m} < {r.randrange(1, m)}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 6:
+        return [f'DELETE FROM udd WHERE ki IS NULL AND {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 7:
+        c = r.choice(KCUT_KEYS)
+        return [f'UPDATE udd SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 8:
+        return [f'UPDATE udd SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e in (9, 10):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO udd SELECT * FROM fz.gen_ufl({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 11:
+        return ['VACUUM udd']
+    if e == 12:
+        return [r.choice(["SELECT sift.col_promote('udd_idx')", "SELECT sift.col_merge('udd_idx', true)", "SELECT sift.col_merge('udd_idx', false)"])]
+    return ['ANALYZE udd']
+
+
 def dml_window(r, ctx):
     """Statements on kcut_w, whose units keep a sorted run of the range leaves: updates that move rows in and out of a range, deletes, inserts and every way the units are written again."""
     m = r.choice([13, 40, 97, 211])
@@ -1481,6 +1532,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rt = random.Random(seed * 32452843 + 17)
     rw = random.Random(seed * 32452843 + 11)
     ru = random.Random(seed * 49979687 + 13)
+    rd = random.Random(seed * 67867979 + 19)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
@@ -1499,6 +1551,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
+        if not only or 'dead' in only:
+            st += [q for _ in range(rd.randrange(dmls + 1)) for q in dml_dead(rd, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)

@@ -2,7 +2,8 @@
 -- per superblock, and a merge that stays that sparse does the same; a merge that reaches the floor in every superblock cuts by superblock again, whatever the
 -- cut of its inputs. The answers never change and the index verifies after every step. 40,000 rows of 1 kB are 22 superblocks; the least number of
 -- superblocks the rule needs is lowered from 16 to 4 for the test.
--- A plain VACUUM skips a page another backend holds pinned and leaves its dead row version in the index, which a merge then counts: the VACUUMs here wait for the page.
+-- A VACUUM does not wait for a page another backend holds pinned (a checkpoint writing it) unless a row version of the page has to be frozen, and leaves the dead row versions
+-- of the page in the index, which a merge then counts: the VACUUMs here freeze, so that they wait for the page.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
@@ -45,7 +46,7 @@ SELECT * FROM fl_segs();
 
 -- a promotion of 4,000 rows over 22 superblocks: two units of the floor, not 22
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 0;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
 SELECT fl_same();
 SELECT sift.col_verify('fl_col', true);
@@ -53,7 +54,7 @@ SELECT sift.col_verify('fl_col', true);
 -- the floor off: a unit for each superblock reached
 SET sift.col_unit_floor = 0;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
 SELECT fl_same();
 RESET sift.col_unit_floor;
@@ -61,36 +62,35 @@ RESET sift.col_unit_floor;
 -- fewer superblocks than the least the rule needs (16, here raised to 30): a unit for each
 SET sift.test_col_floor_sbs = 30;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 2;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
 SET sift.test_col_floor_sbs = 4;
 
--- the merge of all of them (the overlays are cut by TID range and by superblock) reaches the floor in every superblock: a unit for each again (its rows are not counted:
--- a VACUUM that a checkpoint or another backend delays leaves a few recently dead row versions in the index, which the answers vet)
+-- the merge of all of them (the overlays are cut by TID range and by superblock) reaches the floor in every superblock: a unit for each again
 SELECT sift.col_merge('fl_col', true) >= 0 AS merged;
-SELECT n, units = ceil(pg_relation_size('fl') / 8192.0 / 256) AS unit_per_superblock FROM fl_segs();
+SELECT n, rows, units = ceil(pg_relation_size('fl') / 8192.0 / 256) AS unit_per_superblock FROM fl_segs();
 SELECT fl_same();
 SELECT sift.col_verify('fl_col', true);
 
 -- rounds of churn: each promotion is an overlay of the floor, the tier merge of eight of them stays sparse and stays cut by TID range
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 3 AND id % 7 = 3;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 4 AND id % 7 = 4;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 5 AND id % 7 = 5;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 6 AND id % 7 = 6;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 7 AND id % 7 = 0;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8 AND id % 7 = 1;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 9 AND id % 7 = 2;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 0 AND id % 7 = 3;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1 AND id % 7 = 4;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT n < 10 AS tier_merged, buffer_rows FROM fl_segs();
 SELECT (SELECT max(units) FROM sift.col_segments('fl_col') WHERE kind = 'immutable' AND rows < 20000) <= 4 AS overlays_in_few_units;
 SELECT fl_same();
@@ -99,7 +99,7 @@ SELECT sift.col_verify('fl_col', true);
 -- deletes and inserts through the same cut
 DELETE FROM fl WHERE id % 97 = 0;
 INSERT INTO fl SELECT 100000 + g, g % 7, g % 1000, repeat('x', 1000) FROM generate_series(1, 500) g;
-VACUUM (DISABLE_PAGE_SKIPPING) fl;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT fl_same();
 SELECT sift.col_merge('fl_col', true) >= 0 AS merged;
 SELECT fl_same();
