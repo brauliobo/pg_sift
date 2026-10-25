@@ -647,9 +647,9 @@ parallel_workers(AggCtx *c, SiftAggSpec *s)
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->j.params != NIL && (jc->subroot == NULL || unsafe_in_worker((Node *) jc->subroot->parse, NULL)))
 			return 0;
-	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
+	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order: not so for a wide leaf that only sums and averages add */
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
-		if (leaf_of(c, s->leaves[i])->wide)
+		if (leaf_of(c, s->leaves[i])->wide && !leaf_wsum_only(s, s->leaves[i]))
 			return 0;
 	/* the leader writes the lookup tables to the shared memory and each worker maps them: a scan of fewer rows than AGG_SHARE_RATIO for each of their rows does not pay for it */
 	if (agg_share_rows(c, s) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))

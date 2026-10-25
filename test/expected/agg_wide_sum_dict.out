@@ -217,6 +217,50 @@ SELECT n, answer(q, true) = answer(q, false) AS same_answer FROM shapes ORDER BY
  8 | t
 (8 rows)
 
-DROP FUNCTION answer(text, bool), used(text), rnum(int, int);
-DROP TABLE shapes, s, rs;
+-- the sums go to the workers at the planner's own choice; a group that left the integer form in a worker (NaN, past 38 digits, a sum past 128 bits)
+-- crosses to the leader as a numeric, and the leader's sum is the normal plan's
+CREATE TABLE wp (id int, g int, x numeric, y numeric(30, 5)) WITH (autovacuum_enabled = false);
+INSERT INTO wp SELECT i, i % 7, CASE WHEN i % 5000 = 0 THEN 'NaN'::numeric WHEN i % 7001 = 0 THEN 99999999999999999999999999999999999999999 + i WHEN i % 997 = 0 THEN NULL
+	ELSE (i * 7919 % 100003)::numeric / (10 ^ (i % 6))::numeric END, (i % 1001)::numeric / 8 FROM generate_series(1, 120000) i;
+INSERT INTO wp SELECT 100000 + i, 7, 99999999999999999999999999999999999999, 1 FROM generate_series(1, 300) i;
+CREATE INDEX wp_col ON wp USING sift_col (g, x, y);
+VACUUM (FREEZE, ANALYZE) wp;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE FUNCTION in_workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Workers Planned%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION same_rows(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || q || ') t' INTO b;
+	RETURN a = b;
+END $$;
+CREATE TABLE wshapes (n int, q text);
+INSERT INTO wshapes VALUES
+ (1, 'SELECT g, sum(x), avg(x), count(x) FROM wp GROUP BY g'),
+ (2, 'SELECT g, sum(y), avg(y) FROM wp GROUP BY g'),
+ (3, 'SELECT g % 3, sum(x), avg(x) FROM wp WHERE id % 2 = 0 GROUP BY g % 3'),
+ (4, 'SELECT g, sum(x) FILTER (WHERE x > 100), avg(x) FROM wp GROUP BY g');
+SELECT n, in_workers(q) AS workers, same_rows(q) AS same_rows FROM wshapes ORDER BY n;
+ n | workers | same_rows 
+---+---------+-----------
+ 1 | t       | t
+ 2 | t       | t
+ 3 | t       | t
+ 4 | t       | t
+(4 rows)
+
+DROP FUNCTION answer(text, bool), used(text), rnum(int, int), in_workers(text), same_rows(text);
+DROP TABLE shapes, s, rs, wp, wshapes;
 DROP EXTENSION pg_sift;

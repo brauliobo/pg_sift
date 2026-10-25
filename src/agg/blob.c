@@ -93,6 +93,13 @@ br_get(const char **p, Size n)
 	return r;
 }
 
+/* a sum or average of numerics added as 38-digit integers until one does not fit (numeric_sum_add) */
+static bool
+numeric_sum_agg(const SiftAggAgg *a)
+{
+	return (a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == NUMERICOID;
+}
+
 /* the aggregate arrays a state holds per group, besides the count: what acc_alloc made */
 static void
 bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
@@ -113,6 +120,34 @@ bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
 		bw_put(b, tmp, (Size) ng * col[c].esize);
 	}
 	pfree(tmp);
+}
+
+/* the numeric sums that left the integer form (nf): their numeric values, as (position, length, bytes) after a count; the sums of the others are in the columns */
+static void
+bw_numeric_sums(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
+{
+	uint32		hd[2] = {0, 0};
+
+	for (uint32 r = 0; r < ng; r++)
+		hd[0] += acc->nf[gl[r]] != 0 && acc->n[gl[r]] > 0;
+	bw_put(b, hd, sizeof(hd));
+	for (uint32 r = 0; r < ng; r++)
+	{
+		struct
+		{
+			uint32		pos;
+			uint32		len;
+		}			rec;
+		Pointer		v;
+
+		if (!acc->nf[gl[r]] || acc->n[gl[r]] == 0)
+			continue;
+		v = DatumGetPointer(acc->v[gl[r]]);
+		rec.pos = r;
+		rec.len = VARSIZE_ANY(v);
+		bw_put(b, &rec, sizeof(rec));
+		bw_put(b, v, rec.len);
+	}
 }
 
 /* the float sums each lane kept (lane_keep): a bit mask of the lanes, then the sums of the groups of each */
@@ -584,6 +619,8 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 	for (int i = 0; i < s->naggs; i++)
 	{
 		bw_acc(b, &ex->acc[i], gl, ng);
+		if (numeric_sum_agg(&s->agg[i]))
+			bw_numeric_sums(b, &ex->acc[i], gl, ng);
 		if (set_agg(&s->agg[i]))
 			blob_set(ex, i, gl, ng, cidx, pairs ? &pairs[i] : NULL, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
@@ -790,6 +827,7 @@ typedef struct BlobAgg
 	const uint32 *wg;
 	const uint64 *wrows;
 	uint32	   *xv;				/* dictionary values: the ids in the table */
+	const struct varlena **nv;			/* numeric sums out of the integer form: the value of each group that has one */
 	uint32		nrec;			/* ordered sets: the runs of the values */
 	const OsaRec *rec;
 	const char *gcur;			/* generic aggregates: the next partial state */
@@ -861,10 +899,22 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				acc->n[t] += ba->a.n[r];
 				acc->i[t] += ba->a.i[r];
 				break;
-			case SAA_SUM_F64:
-			case SAA_AVG_F64:
 			case SAA_X_SUM:
 			case SAA_X_AVG:
+				if (a->restype == NUMERICOID)
+				{
+					DNum		m = {.m = ba->a.w[r], .scale = (int16) ba->a.i[r], .ok = !ba->a.nf[r]};
+					MemoryContext old = MemoryContextSwitchTo(g->tcxt);
+
+					if (ba->a.n[r] > 0)
+						numeric_sum_add(acc, t, m.ok ? (Datum) 0 : PointerGetDatum(ba->nv[r]), &m);
+					MemoryContextSwitchTo(old);
+					acc->n[t] += ba->a.n[r];
+					break;
+				}
+				sift_fallthrough;
+			case SAA_SUM_F64:
+			case SAA_AVG_F64:
 				acc->n[t] += ba->a.n[r];
 				acc->d[t] += ba->a.d[r];
 				acc->nf[t] |= ba->a.nf[r];
@@ -917,6 +967,18 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		ba->a.nf = (uint8 *) br_get(p, ng);
 	if (acc->w)
 		ba->a.w = (sift_i128 *) br_get(p, (Size) ng * sizeof(sift_i128));
+	if (numeric_sum_agg(&g->spec->agg[ai]))
+	{
+		const uint32 *hd = br_get(p, 8);
+
+		ba->nv = palloc0(Max(ng, 1) * sizeof(*ba->nv));
+		for (uint32 i = 0; i < hd[0]; i++)
+		{
+			const uint32 *rec = br_get(p, 8);
+
+			ba->nv[rec[0]] = br_get(p, rec[1]);
+		}
+	}
 	if (set_agg(&g->spec->agg[ai]))
 	{
 		const SiftAggAgg *a = &g->spec->agg[ai];

@@ -375,7 +375,7 @@ plain_agg(const SiftAggAgg *a)
 			return true;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
-			return a->restype == FLOAT8OID;
+			return a->restype == FLOAT8OID || a->restype == NUMERICOID;
 		case SAA_GEN:
 			return a->gen->parallel;
 		default:

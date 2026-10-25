@@ -1448,7 +1448,7 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 
 /* The rows read and tested, the zones kept and the units opened */
 /* is every reader of the leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum)? */
-static bool
+bool
 leaf_wsum_only(const SiftAggSpec *s, int leaf)
 {
 	bool		sums = false,
