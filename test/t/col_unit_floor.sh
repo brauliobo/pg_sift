@@ -50,8 +50,9 @@ check "the tier merge, asked again, completes: fewer segments, the merged overla
 	test "$(sql fl "SELECT count(*) < 9 FROM sift.col_segments('fl_idx') WHERE kind = 'immutable'")|$(sql fl "SELECT max(units) <= 4 FROM sift.col_segments('fl_idx') WHERE kind = 'immutable' AND rows < 20000")" == "t|t"
 check "and the index verifies and answers the heap's" test "$(verified && echo ok)|$(answer on)|$(ctidq on)" == "ok|$(answer off)|$(ctidq off)"
 
-# the merge of all of them: the base is cut by superblock, the overlays by TID range and by superblock
-sql fl "SET sift.col_unit_floor = 0" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8" "VACUUM fl" >/dev/null
+# the merge of all of them: the base is cut by superblock, the overlays by TID range and by superblock. VACUUM seals the write buffer only once it holds a quarter of
+# write_buffer_limit, so rows may stay in it, and the merge of all would promote them as a segment of its own before it PANICs: promote them here, to compare the segments
+sql fl "SET sift.col_unit_floor = 0" "UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8" "VACUUM fl" "SELECT sift.col_promote('fl_idx')" >/dev/null
 sql fl "CHECKPOINT" >/dev/null
 BEFORE=$(segs)
 check "the merge of all PANICs once its segment is written" panics "SET sift.test_col_merge_panic = on" "SELECT sift.col_merge('fl_idx', true)"
