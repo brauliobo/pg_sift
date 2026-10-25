@@ -788,7 +788,7 @@ reads_column_index(Node *node, void *context)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *) node;
 
-		found = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid);
+		found = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid);
 	}
 	else if (node != NULL && IsA(node, Query))
 		found = query_tree_walker((Query *) node, reads_column_index, context, QTW_EXAMINE_RTES_BEFORE);
@@ -860,7 +860,7 @@ plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
 			{
 				RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, subroot->parse->rtable);
 
-				below = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid);
+				below = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid);
 				break;
 			}
 		case T_Append:

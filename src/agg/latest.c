@@ -366,7 +366,7 @@ latest_of(Query *q, Index rti, bool apply)
 
 		/* the arrays are for the scan: a sub-select of another sub-select's groups would only trade the window for a hash aggregate */
 		foreach_node(RangeTblEntry, r, sub->rtable)
-			indexed |= r->rtekind == RTE_RELATION && r->relkind == RELKIND_RELATION && has_column_index(r->relid);
+			indexed |= r->rtekind == RTE_RELATION && r->relkind == RELKIND_RELATION && has_column_source(r->relid);
 		if (!indexed)
 			return false;
 		if (sub->hasSubLinks)

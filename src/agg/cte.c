@@ -67,11 +67,12 @@ static bool late_checked;
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
 
+/* a table the aggregate scan reads: a sift_table, or a heap table with a column index */
 bool
-has_column_index(Oid relid)
+has_column_source(Oid relid)
 {
 	Relation	rel = relation_open(relid, AccessShareLock);
-	bool		found = false;
+	bool		found = sift_colsrc_is_table(rel->rd_rel->relam);
 
 	foreach_oid(ix, RelationGetIndexList(rel))
 		found |= sift_colsrc_is_index(get_rel_relam(ix));
@@ -88,7 +89,7 @@ reads_indexed_table(Query *q, List *siblings, int depth, int level)
 {
 	foreach_node(RangeTblEntry, rte, q->rtable)
 	{
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
 			return true;
 		if (depth <= 0)
 			continue;
@@ -539,7 +540,7 @@ plain_reader(PlannedStmt *stmt, Plan *plan)
 	{
 		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
 
-		if (rte->rtekind == RTE_RELATION && has_column_index(rte->relid))
+		if (rte->rtekind == RTE_RELATION && has_column_source(rte->relid))
 			return true;
 	}
 	foreach_ptr(Plan, p, child_plans(plan))
@@ -874,7 +875,7 @@ static bool
 reads_column_index(Query *q)
 {
 	foreach_node(RangeTblEntry, rte, q->rtable)
-		if ((rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid)) ||
+		if ((rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid)) ||
 			(rte->rtekind == RTE_SUBQUERY && reads_column_index(rte->subquery)))
 			return true;
 	foreach_node(CommonTableExpr, cte, q->cteList)
@@ -990,7 +991,7 @@ static bool
 reads_indexed_plan(PlannedStmt *ps)
 {
 	foreach_node(RangeTblEntry, rte, ps->rtable)
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_index(rte->relid))
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
 			return true;
 	return false;
 }

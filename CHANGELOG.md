@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a `sift_table` is read by the rewrites that only looked for a table with a `sift_col` index: the decorrelation of a `LATERAL` sub-select that aggregates and of `EXISTS` / `NOT EXISTS`, the inline plan of a shared CTE and the cost of a statement that reads one. Such a statement on a table of this access method ran as the normal plan with a sub-plan for each outer row (test `tbl_agg_rewrites`).
 - Fixed: pg_sift: a parallel worker of an aggregate scan that starts a sub-plan or a child plan did not make the snapshot of the statement its active snapshot, so a build with assertions stopped the worker (`GetActiveSnapshot() == queryDesc->snapshot`) and the sub-plan ran with the restored copy of the leader's active snapshot instead of the one it was started with; the worker now pushes it for the life of the executor states. No plan changes.
 - Changed: pg_sift: a column chunk of plain 3, 5, 6 or 7-byte values (a timestamp with microseconds spread over years) is decoded with one 8-byte load per value and not a library copy per value. No format change.
 - Fixed: pg_sift: a `VACUUM` that vacuumed the other indexes of the table with parallel workers failed with "cannot assign transaction IDs during a parallel operation" when a merge of a `sift_col` index in its leader decided `key_columns = 'auto'` again (the write of the option); the merge leaves the decision to the next one outside parallel mode (`col_vacuum_parallel_keys`).

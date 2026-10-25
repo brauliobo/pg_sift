@@ -788,7 +788,7 @@ decor_analyze(Query *sub, Decor *d)
 		list_length(sub->rtable) != 1 || contain_volatile_functions((Node *) sub) || contain_vars_of_level((Node *) sub, 2))
 		return false;
 	t = linitial_node(RangeTblEntry, sub->rtable);
-	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || !has_column_index(t->relid))
+	if (t->rtekind != RTE_RELATION || t->relkind != RELKIND_RELATION || t->tablesample != NULL || !has_column_source(t->relid))
 		return false;
 	d->sub = sub;
 	if (contain_vars_of_level(sub->havingQual, 1))
