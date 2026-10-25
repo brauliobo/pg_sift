@@ -665,44 +665,58 @@ match_leaf(AggCtx *c, Node *e)
 }
 
 /*
- * `x->>'k' IS [NOT] NULL` on a path whose leaf has another type than text (`attributes->normalized bool`) is the null test of that
- * leaf (`->>` turns a JSON null into NULL, so both are NULL for a missing key and a JSON null, both not NULL for a value). The
- * argument becomes the typed access `(x->>'k')::bool`, which match_leaf knows; a value the leaf could not hold makes the scan raise
- * the overflow error instead of being a non-NULL text.
+ * `x->>'k'` of a path whose leaf has another type than text (`attributes->normalized bool`, the member `score float8` of the elements of
+ * `jsonb_array_elements`) as the typed access `(x->>'k')::bool`, which match_leaf knows; NULL when it is none. `->>` turns a JSON null into NULL, so
+ * the text and the leaf are both NULL for a missing key and a JSON null, both not NULL for a value (a value the leaf could not hold makes the scan
+ * raise the overflow error instead of being a non-NULL text, or keeps the normal plan: reads_overflow).
  */
+Node *
+typed_member(AggCtx *c, Node *arg)
+{
+	JsonRef		r = {0};
+
+	arg = strip_relabel(arg);
+	if (exprType(arg) != TEXTOID || (func_of(arg) != F_JSONB_OBJECT_FIELD_TEXT && func_of(arg) != F_JSONB_EXTRACT_PATH_TEXT) || !json_access(c, arg, &r) ||
+		!r.as_text)
+		return NULL;
+	if (r.att > 0 && scalar_leaf(c, r.att, r.path, TEXTOID) >= 0)
+		return NULL;
+	for (int i = 0; i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+		bool		hit = r.att > 0 ? l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, r.path) :
+			r.att == 0 && c->group >= 0 && c->func_kind == FK_ELEMENTS && r.fcol == 1 && list_length(r.path) == 1 && l->parent == c->group && !l->lossy &&
+			l->typid != TEXTOID && strcmp(l->name, strVal(linitial(r.path))) == 0;
+
+		if (hit)
+		{
+			CoerceViaIO *io = makeNode(CoerceViaIO);
+
+			io->arg = (Expr *) arg;
+			io->resulttype = l->typid;
+			io->coerceformat = COERCE_EXPLICIT_CAST;
+			io->location = -1;
+			return (Node *) io;
+		}
+	}
+	return NULL;
+}
+
+/* `x->>'k' IS [NOT] NULL` of such a member is the null test of the typed leaf */
 static Node *
 nulltest_mutator(Node *n, AggCtx *c)
 {
-	NullTest   *nt;
-	JsonRef		r = {0};
-	Node	   *arg;
+	Node	   *typed;
 
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && exprType(strip_relabel((Node *) ((NullTest *) n)->arg)) == TEXTOID)
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (typed = typed_member(c, (Node *) ((NullTest *) n)->arg)) != NULL)
 	{
-		nt = (NullTest *) n;
-		arg = strip_relabel((Node *) nt->arg);
-		if ((func_of(arg) == F_JSONB_OBJECT_FIELD_TEXT || func_of(arg) == F_JSONB_EXTRACT_PATH_TEXT) && json_access(c, arg, &r) &&
-			r.as_text && r.att > 0 && scalar_leaf(c, r.att, r.path, TEXTOID) < 0)
-			for (int i = 0; i < c->lay->nleaves; i++)
-			{
-				SiftSrcLeaf *l = leaf_of(c, i);
+		NullTest   *out = makeNode(NullTest);
 
-				if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, r.path))
-				{
-					CoerceViaIO *io = makeNode(CoerceViaIO);
-					NullTest   *out = makeNode(NullTest);
-
-					io->arg = (Expr *) arg;
-					io->resulttype = l->typid;
-					io->coerceformat = COERCE_EXPLICIT_CAST;
-					io->location = -1;
-					*out = *nt;
-					out->arg = (Expr *) io;
-					return (Node *) out;
-				}
-			}
+		*out = *(NullTest *) n;
+		out->arg = (Expr *) typed;
+		return (Node *) out;
 	}
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }

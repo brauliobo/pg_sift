@@ -647,6 +647,13 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (list_length(a->args) != 1)
 		return false;
 	arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
+	/* count(x->>'k') counts the values of the typed leaf of the member: both are NULL for a missing key and a JSON null */
+	if (fid == F_COUNT_ANY && a->aggdistinct == NIL)
+	{
+		Node	   *typed = typed_member(c, arg);
+
+		arg = typed != NULL ? typed : arg;
+	}
 	if (count_rows_kind(c, a, arg, out))
 	{
 		out->desc = pstrdup(get_func_name(fid));
