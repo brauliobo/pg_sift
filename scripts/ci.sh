@@ -54,6 +54,11 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status
+# --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
+if [[ $MODE == --shards ]]; then
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 5; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	exit
+fi
 if [[ $MODE == --times ]]; then
 	R=${2:-$(ls -td "${TMPDIR:-/tmp}"/sift-ci-*/logs/results 2>/dev/null | head -1)}
 	sort -k4,4nr "$R" | awk 'BEGIN { printf "%-44s %7s %7s  %-6s %s\n", "job", "wall_s", "cpu_s", "lane", "status" }
@@ -292,8 +297,7 @@ if [[ $MODE == --selftest ]]; then
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
 	for pg in 17 18; do
 	for deep in '' 1; do
-		ns=3; (( pg == 17 )) && ns=5
-		[[ -z $deep ]] || { ns=5; (( pg == 17 )) && ns=10; }
+		ns=$("$0" --shards "$pg" "$deep")
 		all=$(env -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
 		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
