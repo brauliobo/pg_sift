@@ -66,7 +66,7 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 {
 }
 
-const ZoneArrays *
+ZoneArrays *
 sift_cseg_zones_find(SiftColSegment *seg, int col)
 {
 	return NULL;
