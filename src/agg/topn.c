@@ -2098,8 +2098,9 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 
 /*
  * A unit of which every row passes, asked for at most as many rows as the head of the run of the first key holds: the n best rows of the unit
- * are the first n entries of the head from the end the sort wants, with their keys and heap addresses, so the unit is not read. A row that is dead or
- * changed since the unit was written fails the mask (the visibility check clears its bit), and the unit is read as before.
+ * are the first n entries of the head from the end the sort wants, with their keys and heap addresses, so the unit is not read. Asked for more, the head still
+ * answers once the heap is full and the last entry of the head is after its bar: the rows after the head are not before that entry, so none can enter the result.
+ * A row that is dead or changed since the unit was written fails the mask (the visibility check clears its bit), and the unit is read as before.
  */
 static bool
 head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
@@ -2119,7 +2120,7 @@ head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 	bool		barred;
 
 	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
-		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0 || t->limit > SIFT_SRC_HEAD_MAX)
+		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0)
 		return false;
 	for (int i = 0; i < nrow / 64; i++)
 		if (rmask[i] != ~UINT64CONST(0))
@@ -2132,11 +2133,11 @@ head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 		return false;
 	h = k0->desc ? hi : lo;
 	n = k0->desc ? nhi : nlo;
-	if (n < (uint32) t->limit)
+	barred = bar_rank(t, &bar);
+	if (n < (uint32) t->limit && !(barred && n > 0 && rank_after(rank_of(k0, false, h[n - 1].key), bar)))
 		return false;
 	part = unit_part(t, src);
-	barred = bar_rank(t, &bar);
-	for (uint32 i = 0; i < (uint32) t->limit; i++)
+	for (uint32 i = 0; i < Min(n, (uint32) t->limit); i++)
 	{
 		TopEnt		e = {0};
 
@@ -2169,16 +2170,16 @@ sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb)
 	bool		barred;
 
 	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
-		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0 || t->limit > SIFT_SRC_HEAD_MAX)
+		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0)
 		return false;
 	if (!t->wkeep || walk_in_head(t, sb) || !sift_colsrc_sb_heads(src, sb, k0->leaf, lo, &nlo, hi, &nhi))
 		return false;
 	h = k0->desc ? hi : lo;
 	n = k0->desc ? nhi : nlo;
-	if (n < (uint32) t->limit)
-		return false;
 	barred = bar_rank(t, &bar);
-	for (uint32 i = 0; i < (uint32) t->limit; i++)
+	if (n < (uint32) t->limit && !(barred && n > 0 && rank_after(rank_of(k0, false, h[n - 1].key), bar)))
+		return false;
+	for (uint32 i = 0; i < Min(n, (uint32) t->limit); i++)
 	{
 		TopEnt		e = {0};
 

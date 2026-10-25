@@ -42,14 +42,15 @@ BEGIN
 	RETURN coalesce(jsonb_path_query_first(j, '$.**."Units Answered By Run Head"')::int, 0);
 END $$;
 
--- every column, direction and limit around the head (H is 25 for these units of about 3,200 rows, and 32 at the most): the keys alone (any row of a tie) and with the id as the tiebreak
+-- every column, direction and limit around the head (H is 25 for these units of about 3,200 rows, and 32 at the most; a limit above H is answered from a head
+-- only once the heap holds that many rows and its bar is before the last entry of the head): the keys alone (any row of a tie) and with the id as the tiebreak
 CREATE FUNCTION rh_check(OUT shape text, OUT same bool, OUT heads int) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE
 	col text; dir text; lim int; q text; qk text; a text; b text; c text; ak text; bk text; ck text;
 BEGIN
 	FOREACH col IN ARRAY ARRAY['id', 'k', 'kn', 'ts', 'd'] LOOP
 	FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
-	FOREACH lim IN ARRAY ARRAY[1, 10, 20, 33, 40] LOOP
+	FOREACH lim IN ARRAY ARRAY[1, 10, 20, 33, 40, 100] LOOP
 		q := format('SELECT id, %1$s FROM rh ORDER BY %1$s %2$s, id LIMIT %3$s', col, dir, lim);
 		qk := format('SELECT %1$s FROM rh ORDER BY %1$s %2$s LIMIT %3$s', col, dir, lim);
 		PERFORM rh_mode('plain'); a := rh_rows(q); ak := rh_rows(qk);
@@ -65,10 +66,10 @@ END $$;
 
 CREATE FUNCTION rh_summary(OUT queries int, OUT same int, OUT from_heads int, OUT heads_above_limit int) LANGUAGE sql AS $$
 	SELECT count(*)::int, count(*) FILTER (WHERE same)::int, count(*) FILTER (WHERE heads > 0)::int,
-	       count(*) FILTER (WHERE heads > 0 AND shape ~ 'limit (33|40)$')::int FROM rh_check()
+	       count(*) FILTER (WHERE heads > 0 AND shape ~ 'limit (33|40|100)$')::int FROM rh_check()
 $$;
 
--- clean units: heads answer id, k, ts and d (not kn, which has NULLs) for a limit up to H, and not for a limit above 32
+-- clean units: heads answer id, k, ts and d (not kn, which has NULLs) for a limit up to H, and for a limit above it in the units after the heap's bar
 SELECT * FROM rh_summary();
 SELECT shape, heads > 0 AS from_heads FROM rh_check() WHERE shape IN ('k ASC limit 10', 'k DESC limit 20', 'k ASC limit 33', 'kn ASC limit 10', 'ts DESC limit 1') ORDER BY shape;
 
