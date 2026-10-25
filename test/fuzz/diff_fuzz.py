@@ -49,6 +49,9 @@ BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
 REF = 'sift.enable_agg=off;max_parallel_workers_per_gather=0'
 
 
+# an f-string expression of Python before 3.12 cannot hold a backslash
+COLLATE_C = ' COLLATE "C"'
+
 # ---------- psql ----------
 def psql(db, text, check=True):
     for _ in range(120):
@@ -630,7 +633,7 @@ def gen_topn(r, ctx):
     two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a', ('c', 'd'): 'coalesce(e.parent_id, e.grp, e.a)',
            ('e', 'f'): 'CASE WHEN e.a > e.b THEN e.a ELSE e.b END', ('g', 'h'): 'greatest(e.a, e.b, e.grp)', ('i', 'j'): 'coalesce(e.kind, e.id::text)',
            ('k', 'l'): 'e.a IS NULL OR e.b IS NULL', ('o', 'p'): 'abs(e.a - e.b)', ('q', 'r'): 'round(e.num, 1)', ('s', 't'): 'date_trunc(\'month\', e.ts)', ('u', 'v'): 'mod(e.id, 10) + e.grp', ('m', 'n'): 'least(e.ts, DATE \'2025-06-01\')'}
-    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}' + (' COLLATE \"C\"' if k == 'title' and r.random() < 0.8 else '')} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
+    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}' + (COLLATE_C if k == 'title' and r.random() < 0.8 else '')} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     if r.random() < 0.15:
         order[0] = f"{two[r.choice(list(two))]} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip()
     grouped_ = r.random() < 0.25
