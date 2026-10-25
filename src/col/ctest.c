@@ -678,10 +678,16 @@ chunk_set(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	uint64	   *one = palloc(SIFT_COL_NWORDS(c->n) * sizeof(uint64));
 
 	memset(tmp, 0, SIFT_COL_NWORDS(c->n) * sizeof(uint64));
-	for (uint32 i = 0; i < t->nset; i++)
+	/* a run of consecutive members (an IN of ids 7, 8, 9) is one range: one pass over the chunk instead of one a member */
+	for (uint32 i = 0; i < t->nset;)
 	{
-		chunk_range(c, t->set[i], t->set[i], one);
+		uint32		j = i;
+
+		while (j + 1 < t->nset && t->set[j] != PG_INT64_MAX && t->set[j + 1] == t->set[j] + 1)
+			j++;
+		chunk_range(c, t->set[i], t->set[j], one);
 		sift_colk->bits_or(tmp, one, SIFT_COL_NWORDS(c->n));
+		i = j + 1;
 	}
 	pfree(one);
 }
