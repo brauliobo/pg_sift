@@ -473,6 +473,8 @@ the same table and statement with `sift.enable_agg = off`); variants are further
 a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
 store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check.
 
+**The generic suites on the other engines.** `bench/bench generic` (`steps/generic.py`, stage `generic`) runs the 19 queries of the TPC-H-like, ClickBench-like and time-series suites on pg_duckdb and ClickHouse over the same generated rows, one container at a time: the pg_duckdb image generates the suite (`bench/sql/SUITE/gen.sql` without its pg_sift index) and answers with PostgreSQL's plans and with DuckDB's, exports the tables to CSV and is removed; ClickHouse (`bench/sql/SUITE/ch.sql`) loads the CSV. Every answer is compared with PostgreSQL's before a time is taken (`--check-only` stops there; a `--@ ch` or `--@ duck` section of a case replaces the statement for that engine).
+
 **Time of a run.** A case at 1,000,000 orders spends its seconds in two places: the build (`orders` from the generator, its btrees, the `sift_col` index, the case's setup, VACUUM FREEZE) and its timed runs (rounds of 1 untimed and 5 timed runs on every lane: 3 by default, 2 in the release pass, `--rounds`). Cases that only read `orders` and have the same index and setup are one build (`share_builds` in `steps/cases.py`: the first case of the group names the schema, `c_s_ID`; it is dropped after the last of the group, `--no-share` gives every case a table of its own), and a lane stops repeating after `--lane-budget` seconds (20; 10 in the release pass) of timed runs, with at least 3 runs, so a statement of seconds is not run fifteen times (the rows say how many runs they have: `n`). Measured on 2026-10-24: without sharing (`--no-share --lane-budget 0`) the builds took 839 s and 73 tables, with sharing 377 s and 35. The seconds of the timed runs of the three runs of that day were 660 (3 rounds, 20 s cap), 431 (2 rounds, 10 s cap) and 319 (3 rounds, no cap): they follow the load of the host, not the settings, so this data shows the saving of the sharing and not that of the cap or the rounds. `bench/bench cases --plan` prints an estimate before a run.
 
 **Writing a case.** `created_at` of the generator is random per row, so a range on it prunes no unit: a case that needs zones to cut takes its range on `id`, which follows the heap. A `sift_col` index created without explicit operator classes (`id sift.col_int4_ops`, ...) has no indexable clause, and the plan check fails with the plan lost.
@@ -485,8 +487,8 @@ The numbers of a release are one pass on the release host, 100 minutes in all. N
 
 ```
 Release pass, size standard (bench/presets.env), stages one after another:
-  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 18, duckdb 6 min
-Total about 83 min, budget 85 min.
+  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 16, duckdb 6, generic 3 min
+Total about 84 min, budget 85 min.
 ```
 
 **Ahead, the day before** (nothing is timed, `nice`, the host may be in use; the data and the images do not depend on the commit, they are reused while their hash and the sources match):
@@ -503,7 +505,7 @@ bench/bench final --size standard --dry-run                      # every precond
 
 ```sh
 export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=16G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only
-bench/bench final --size standard --docs --remeasure-all                                      # 83 min: the eight stages; `bench resume` continues an interrupted run
+bench/bench final --size standard --docs --remeasure-all                                      # 84 min: the nine stages; `bench resume` continues an interrupted run
 bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none                        # 2 min
 ```
 

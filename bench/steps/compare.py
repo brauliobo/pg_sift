@@ -105,6 +105,16 @@ def case_pairs(results, prefix=None):
     return [(f['case'].id, f['native'] / f['sift']) for f in figs if not f['kept']], sum(1 for f in figs if f['kept'])
 
 
+def engine_pairs(results, prefix, arm):
+    """[(case, engine / pg_sift)] of one generic suite: the engine's times are bench/results/generic.tsv (steps/generic.py, its own run and PostgreSQL build), pg_sift's those of cases.tsv"""
+    gpath, cpath = os.path.join(results, 'generic.tsv'), os.path.join(results, 'cases.tsv')
+    if not (os.path.exists(gpath) and os.path.exists(cpath)):
+        return []
+    sift = {f['case'].id: f['sift'] for f in cases_render.collect(extras.read(cpath)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['sift']}
+    other = {r['case']: float(r['value']) for r in extras.read(gpath)[1] if r['arm'] == arm and r['metric'] == 'ms' and r['value'] not in ('NA', '')}
+    return [(c, o / sift[c]) for c, o in other.items() if c.startswith(prefix) and c in sift]
+
+
 def rate_pairs(S, tier, others, variant, metric, inverse=False):
     """throughput (pg_sift over the system) or time (the system over pg_sift) of a phase: the best layout of each side"""
     pick = max if not inverse else min
@@ -151,7 +161,8 @@ def rows_of(results):
         gp = case_pairs(results, prefix)
         if gp and (gp[0] or gp[1]):
             pairs, kept = gp
-            rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+            rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': cell(engine_pairs(results, prefix, 'clickhouse')),
+                                'es': NOT, 'citus': NOT, 'duckdb': cell(engine_pairs(results, prefix, 'pg_duckdb'))}))
     tier = t1
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
     for name, variant, metric, inv in (('Update 10% of the rows, rows per second (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),

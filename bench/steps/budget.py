@@ -28,14 +28,16 @@ STAGES = [  # stage, what it times, the engines
     ('search', 'articles (8 clients) and places (1 client), warm and cold', 'pg_sift, Elasticsearch, pg_search, pg_textsearch, rum, pgx-bm25'),
     ('cases', 'every case of bench/cases.tsv at 1,000,000 orders (tables shared by the cases that read the same one)', 'pg_sift, PostgreSQL (`sift.enable_agg = off`), pg_duckdb'),
     ('duckdb', 'the ten questions of the store at 1,000,000 orders', 'pg_duckdb (heap and Parquet), pg_sift, PostgreSQL'),
+    ('generic', 'the 19 queries of the generic suites (TPC-H-like, ClickBench-like, time series) at 1,000,000 rows, answers checked against PostgreSQL\'s, one container at a time', 'pg_duckdb, ClickHouse (pg_sift and PostgreSQL are in `cases`)'),
 ]
 BASIS = {  # where the minutes of a stage come from
     'store': 'arithmetic on the stored parts of 2026-10-22 (load 32 s, warm 37 s, cold 602 s at 3 CPUs), with the preset\'s cold runs, restarts and load windows',
     'updates': 'arithmetic on the stored section of 2026-10-22 (720 s of update phases, 336 s of them ClickHouse\'s DELETE), with the preset\'s repetitions and churn windows',
     'compression': 'estimate', 'stats': 'estimate', 'gap': 'estimate',
     'search': 'arithmetic on the stored runs of 2026-10-22: articles 70 + 207 s, places 78 + 267 s, the cold passes 71 + 21 s and 59 + 46 s',
-    'cases': 'measured on 2026-10-24 without the pg_duckdb container (see Cases below)',
+    'cases': 'measured on 2026-10-24 (see Cases below); the pg_duckdb lane of the cases is not in the pass, the `duckdb` and `generic` stages cover that engine',
     'duckdb': 'estimate from the load and the ten questions of the stored 1M run',
+    'generic': 'estimate: three generated datasets (generation, CSV export, ClickHouse load) and 19 queries with 3 timed runs; the loaders and the answers are checked at 20,000 rows, no timing taken',
 }
 SIFT_BUILD = 3  # minutes: the one step of the preparation that depends on the commit under test (the extension built into the image)
 OUTSIDE = [  # what the pass does not run: a release runs it by name when its code changed
@@ -83,7 +85,7 @@ def presets():
 def minutes(p, stage):
     store = sum(int(p.get('P_MIN_' + k, 0)) for k in ('SETUP', 'WARM', 'COLD', 'UPDATES'))
     return {'store': store, 'updates': int(p.get('P_MIN_SECTION', 0)), 'compression': int(p.get('P_MIN_COMPRESSION', 0)), 'stats': int(p.get('P_MIN_STATS', 0)), 'gap': int(p.get('P_MIN_GAP', 0)),
-            'search': int(p.get('P_MIN_SEARCH', 0)), 'cases': int(p.get('P_MIN_CASES', 0)), 'duckdb': int(p.get('P_MIN_DUCKDB', 0))}[stage]
+            'search': int(p.get('P_MIN_SEARCH', 0)), 'cases': int(p.get('P_MIN_CASES', 0)), 'duckdb': int(p.get('P_MIN_DUCKDB', 0)), 'generic': int(p.get('P_MIN_GENERIC', 0))}[stage]
 
 
 def stage_table(p):
@@ -159,7 +161,7 @@ def cases_table(results, p):
     build, run = sum(v[1] for v in one.values()), sum(v[2] for v in one.values())
     fixed = sum(v[1] for v in extra.values())
     out = ['%d cases at %s orders on one backend: %.0f s of table builds (a case that reads the table of an earlier one has 0), %.0f s of timed runs (%s rounds of 1 untimed and 5 timed runs on every lane, a lane stops repeating after %s s: the preset of the pass), '
-           '%.0f s to generate the orders and load the pg_duckdb container: **%.0f minutes** (without the container\'s own runs, which the 16 minutes of the stage allow for).' % (len(one), format(n, ','), build, run, p.get('P_CASE_ROUNDS', 3), p.get('P_LANE_BUDGET', 20), fixed, (build + run + fixed) / 60), '',
+           '%.0f s to generate the orders: **%.0f minutes** for the 88 cases of that run; the generic cases add about 2 more, and the stage allows 16.' % (len(one), format(n, ','), build, run, p.get('P_CASE_ROUNDS', 3), p.get('P_LANE_BUDGET', 20), fixed, (build + run + fixed) / 60), '',
            '<details><summary>Seconds of each case: build and timed runs</summary>', '', '| case | build (s) | timed runs (s) |', '|---|---:|---:|']
     out += ['| `%s` | %.1f | %.1f |' % (k, v[1], v[2]) for k, v in sorted(one.items(), key=lambda kv: -(kv[1][1] + kv[1][2]))]
     return out + ['', '</details>']

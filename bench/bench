@@ -65,6 +65,7 @@ Commands
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
+  generic    the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse, one container at a time, the answers checked against PostgreSQL's before any time: `generic [--rows N] [--suites tpch,hits,tseries] [--engines pg_duckdb,clickhouse] [--runs N] [--check-only] [--docs]` (steps/generic.py)
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
              asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh)
@@ -680,6 +681,7 @@ case $cmd in
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
   cases) exec "$STEPS/cases.sh" "$@" ;;
+  generic) exec python3 -I "$STEPS/generic.py" run "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac
