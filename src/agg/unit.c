@@ -346,8 +346,8 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 	check_overflow(ex, rv, true);
 }
 
-/* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
-#define SPARSE_RATIO	8
+/* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit: above about 3% the gather costs more than the decode it saves (1M rows, 6% kept: 66% more instructions at an eighth) */
+#define SPARSE_RATIO	32
 /* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 3% (ten keys of 300 parents) it costs what it saves */
 #define NARROW_RATIO	32
 
