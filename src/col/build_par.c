@@ -27,7 +27,6 @@
 
 /* The directory is shared by the participants: 16 of them leave 7 segments each */
 #define MAX_WORKERS		15
-#define MIN_BUDGET		(16 * 1024 * 1024)
 
 typedef struct ColShared
 {
@@ -109,6 +108,7 @@ open_gate(ColShared *sh, Relation index, int nlaunched)
 	sift_store_init_meta_ex(wt, 0, 0, sift_col_rel(index)->schema->hash, SIFT_COL_META_FLAG);
 	sift_wt_finish(wt);
 	sh->nlaunched = nlaunched;
+	sh->budget = sift_colb_budget(nlaunched + 1);	/* fewer participants than planned share the memory between fewer */
 	pg_atomic_write_u32(&sh->next, nlaunched + 1);
 	pg_atomic_write_membarrier_u32(&sh->ready, 1);
 	ConditionVariableBroadcast(&sh->readycv);
@@ -128,7 +128,7 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 {
 	*sh = (ColShared) {.common = {RelationGetRelid(heap), RelationGetRelid(index), info->ii_Concurrent},
 		.nblocks = RelationGetNumberOfBlocks(heap), .nslots = nslots,
-		.budget = Max((Size) maintenance_work_mem * 1024 / 2 / nslots, MIN_BUDGET), .maxsegs = SIFT_COL_BUILD_SEGMENTS / nslots};
+		.budget = sift_colb_budget(nslots), .maxsegs = SIFT_COL_BUILD_SEGMENTS / nslots};
 	sh->nsbs = ((uint64) sh->nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 	pg_atomic_init_u32(&sh->ready, 0);
 	pg_atomic_init_u32(&sh->next, 0);

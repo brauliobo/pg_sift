@@ -6,6 +6,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/table.h"
@@ -101,6 +103,18 @@ static uint64
 next_gen(ColBuild *b)
 {
 	return b->shared ? sift_store_new_gen(b->index) : b->nsegs + 1;
+}
+
+Size
+sift_colb_budget(int nslots)
+{
+	Size		b = (Size) maintenance_work_mem * 1024 / 2 / nslots;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_segment_kb > 0)
+		return (Size) sift_test_col_segment_kb * 1024;
+#endif
+	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
 }
 
 /*
@@ -396,13 +410,116 @@ sift_colb_publish(Relation index, SiftSegEntry *segs, int nsegs)
 	sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = &p,.extra = InvalidBuffer});
 }
 
+#define MAX_PLAN_WORKERS	15
+#define PLAN_PROBE_SBS		32				/* superblocks of the probe, at most */
+#define PLAN_PROBE_BYTES	((Size) 48 << 20)	/* the probe stops when its rows hold this much */
+#define PLAN_SLACK			1.15			/* what the superblocks not probed may hold more than the ones probed */
+
+/* whether the rows (bytes in memory) of a key-cut build make runs that fit the segments of nslots participants */
+static bool
+runs_fit(double bytes, int nslots, double *runs)
+{
+	double		per = bytes / nslots;
+
+	*runs = ceil(per / sift_colb_budget(nslots));
+	return *runs <= SIFT_COL_BUILD_SEGMENTS / nslots - 1;
+}
+
+/*
+ * A build with key_cut holds the rows in memory and writes a segment each time they pass the budget; the directory has room for SIFT_COL_BUILD_SEGMENTS of
+ * them for all the participants, so a table whose rows make more runs than that cannot be built with the memory it was given, and the build used to find
+ * out after as many runs, hours into the scan of a large table. The rows of a few superblocks are held as the build holds them, which gives the bytes a row
+ * takes in memory, and the runs are counted before the table is read: fewer workers make fewer, larger runs, so the build takes the most that fit. When no
+ * number does, the build of an explicit key_cut stops here, saying the setting it needs, and the choice of the automatic decision is given up (may_decline).
+ */
+bool
+sift_colb_plan_runs(Relation heap, Relation index, IndexInfo *info, bool may_decline)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+	double		nsbs = ceil((double) nblocks / SIFT_SB_PAGES),
+				bytes,
+				runs;
+	ColBuild   *b;
+	Snapshot	snap = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	int			n = (int) Min(nsbs, PLAN_PROBE_SBS),
+				want = Max(info->ii_ParallelWorkers, 0),
+				slots;
+	double		rows,
+				held;
+
+	if (n < 1)
+		return true;
+	b = sift_colb_begin(index, NULL, PG_UINT64_MAX / 2, SIFT_COL_BUILD_SEGMENTS, NULL, false);
+	b->budget = PG_UINT64_MAX / 2;	/* it writes nothing, not even under a test's small budget */
+	b->reported = 1e18;				/* the probe is not progress */
+	for (int i = 0; i < n; i++)
+	{
+		MemoryContext old = MemoryContextSwitchTo(b->cxt);
+		BlockNumber start = (BlockNumber) ((uint64) ((i + 0.5) * nsbs / n)) << SIFT_SB_SHIFT;
+		TableScanDesc scan;
+
+		if (start >= nblocks)
+			break;
+		scan = table_beginscan_strat(heap, snap, 0, NULL, true, false);
+		heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
+		table_index_build_range_scan(heap, index, info, true, false, false, 0, InvalidBlockNumber, build_cb, b, scan);
+		MemoryContextSwitchTo(old);
+		flush_page(b);
+		flush_batch(b);
+		if (MemoryContextMemAllocated(b->heldcxt, true) >= PLAN_PROBE_BYTES)
+		{
+			n = i + 1;
+			break;
+		}
+	}
+	rows = b->indexed;
+	held = MemoryContextMemAllocated(b->heldcxt, true);
+	sift_colb_free(b);
+	if (rows < 1)
+		return true;
+	bytes = held / rows * (rows / n * nsbs) * PLAN_SLACK;
+	for (slots = Min(want, MAX_PLAN_WORKERS) + 1; slots > 1 && !runs_fit(bytes, slots, &runs); slots--)
+		;
+	if (runs_fit(bytes, slots, &runs))
+	{
+		if (slots - 1 < want)
+		{
+			ereport(NOTICE,
+					(errmsg("sift_col index \"%s\": the build uses %d parallel workers, not %d", RelationGetRelationName(index), slots - 1, want),
+					 errdetail("Its key_cut makes about %.0f MB of rows in memory, which %d participants cannot write as the at most %d segments the directory has room for with maintenance_work_mem = %d kB.",
+							   bytes / 1048576, want + 1, SIFT_COL_BUILD_SEGMENTS, maintenance_work_mem)));
+			info->ii_ParallelWorkers = slots - 1;
+		}
+		return true;
+	}
+	{
+		uint64		need_mb = Max((uint64) ceil(2 * bytes / (SIFT_COL_BUILD_SEGMENTS - 1) / 1048576), 128);
+		char		setting[32];
+
+		if (may_decline)
+			return false;
+		if (need_mb >= 1024)
+			snprintf(setting, sizeof(setting), "%lluGB", (unsigned long long) ((need_mb + 1023) / 1024));
+		else
+			snprintf(setting, sizeof(setting), "%lluMB", (unsigned long long) need_mb);
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift_col build with key_cut would need about %.0f segments, and the directory has room for %d", runs, SIFT_COL_BUILD_SEGMENTS),
+				 errdetail("The table makes about %.0f MB of rows in memory (%.0f bytes a row, estimated from %d superblocks), and a segment is written each time they pass the %zu kB the build holds with maintenance_work_mem = %d kB.",
+						   bytes / 1048576, held / rows, n, sift_colb_budget(1) / 1024, maintenance_work_mem),
+				 errhint("SET maintenance_work_mem = '%s'; SET max_parallel_maintenance_workers = 0; and run the statement again (the build then uses about %s in this session), or create the index without key_cut.%s",
+						 setting, setting,
+						 info->ii_Concurrent ? psprintf(" CREATE INDEX CONCURRENTLY leaves the invalid index \"%s\": DROP INDEX CONCURRENTLY it first.", RelationGetRelationName(index)) : "")));
+	}
+}
+
 static IndexBuildResult *
 serial_build(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = palloc0(sizeof(IndexBuildResult));
 	SiftSegEntry *segs = palloc(SIFT_COL_BUILD_SEGMENTS * sizeof(SiftSegEntry));
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-	ColBuild   *b = sift_colb_begin(index, wt, Max((Size) maintenance_work_mem * 1024 / 2, 64 * 1024 * 1024), SIFT_COL_BUILD_SEGMENTS, segs, false);
+	ColBuild   *b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false);
 	int			nsegs;
 
 	if (heap->rd_rel->reltuples > 0)
@@ -705,7 +822,9 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_auto_cube(heap, index);
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
-	autocut = sift_col_auto_cut(heap, index);
+	autocut = sift_col_auto_cut(heap, index, info);
+	if (!sift_col_options_key_cut_auto(index) && sift_col_key_cut(sift_col_rel(index)))
+		sift_colb_plan_runs(heap, index, info, false);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)

@@ -326,6 +326,26 @@ SELECT sift.col_verify('kc_idx', true);
 (1 row)
 
 DROP TABLE kl;
+-- the rows of a table make runs, and the directory holds a fixed number of them: a build whose runs cannot fit stops before it reads the table, and says the setting it needs
+SET sift.test_col_segment_kb = 16;
+DO $$
+DECLARE hint text;
+BEGIN
+	CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
+	RAISE INFO '%', regexp_replace(SQLERRM, '[0-9.]+', 'N', 'g');
+	RAISE INFO '%', regexp_replace(hint, '[0-9.]+', 'N', 'g');
+END $$;
+INFO:  sift_col build with key_cut would need about N segments, and the directory has room for N
+INFO:  SET maintenance_work_mem = 'NMB'; SET max_parallel_maintenance_workers = N; and run the statement again (the build then uses about NMB in this session), or create the index without key_cutN
+RESET sift.test_col_segment_kb;
+SELECT to_regclass('kc_big') IS NULL AS no_index;
+ no_index 
+----------
+ t
+(1 row)
+
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
 DROP EXTENSION pg_sift;
