@@ -43,6 +43,7 @@ TABLE_SKIP = {
     'window': 'the sorted runs (order_columns) are an option of the sift_col index',
     'trail': 'trf is read through a sift_col index of its own, which the mode drops',
     'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
+    'zonekey': 'zkf is read through its sift_col index only',
 }
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
@@ -1161,6 +1162,27 @@ def dml_gorder(r, ctx):
     return r.choice(["SELECT sift.col_promote('gof_idx')", "SELECT sift.col_merge('gof_idx', true)", "SELECT sift.col_merge('gof_idx', false)"])
 
 
+# ---------- calendar keys of a timestamptz in the session's zone: the steps of the zone's clock, cut where its offset changes ----------
+ZK_ZONES = ['UTC', 'America/New_York', 'Europe/London', 'Asia/Kolkata', 'Asia/Kathmandu', 'Australia/Lord_Howe', 'Pacific/Chatham', 'America/Sao_Paulo', 'Europe/Amsterdam', 'UTC+3', '+05:45', 'PST8PDT']
+ZK_KEYS = ["date_trunc('{u}', {e}.z)" for u in ('second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium')] + \
+    ["extract({f} from {e}.z)" for f in ('hour', 'minute', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'year', 'isoyear', 'century')] + \
+    ['{e}.z::date', "date_trunc('day', {e}.z)::date", "extract(dow from date_trunc('week', {e}.z))", "date_trunc('hour', {e}.z)::time", "date_trunc('day', {e}.z, 'Etc/UTC')"]
+
+
+def gen_zonekey(r, ctx):
+    ks = [(k.replace('{u}', r.choice(['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium']))
+           .replace('{f}', r.choice(['hour', 'minute', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'year', 'isoyear', 'century']))).replace('{e}', 'e')
+          for k in r.sample(ZK_KEYS, r.choice([1, 1, 2]))]
+    where = [r.choice(['e.org = %d' % r.randrange(5), 'e.amount < %d' % r.randrange(10, 100), "e.z >= timestamptz '2024-03-10+00'", 'e.z IS NOT NULL', "e.z < timestamptz '2100-01-01+00'"])
+             for _ in range(r.choice([0, 0, 1, 2]))]
+    return dict(table='zkf', keys=ks, aggs=['count(*)', 'sum(e.amount)'] + r.sample(['min(e.z)', 'max(e.amount)', 'count(e.z)', 'count(DISTINCT e.org)'], r.choice([0, 1, 2])),
+                where=where, having=[], ordered=True, tz=r.choice(ZK_ZONES))
+
+
+def base_of(parts, nl):
+    return BASE + (';enable_nestloop=off' if nl else '') + (';TimeZone=%s' % parts['tz'] if parts.get('tz') else '')
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
@@ -1170,6 +1192,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
+    'zonekey': (gen_zonekey, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1592,7 +1615,7 @@ def handle(seed, rows, parts_n, qid, fam, parts, vs, nl, hist, res, out_dir, tag
     bad = diverged(res)
     # the variants that differ, the state replayed once
     vs_bad = [(n, s) for n, s in vs if n in bad]
-    base = BASE + (';enable_nestloop=off' if nl else '')
+    base = base_of(parts, nl)
     create_db(work, base_db)
     psql(work, ''.join(s + ';\n' for s in hist), check=False)
     p2 = shrink_parts(work, qid, fam, parts, vs_bad, nl, base)
@@ -1690,7 +1713,7 @@ def main():
             entries, qinfo = [], {}
             for qid, fam, parts, vs, nl in qs:
                 sql, ordered = render_query(fam, parts)
-                base = BASE + (';enable_nestloop=off' if nl else '')
+                base = base_of(parts, nl)
                 entries.append(query_script(qid, sql, ordered, base, vs))
                 qinfo[qid] = (fam, parts, vs, nl, sql)
                 if a.show:

@@ -240,6 +240,21 @@ INSERT INTO gof SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
 CREATE INDEX gof_idx ON gof USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
 	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', point_tid_columns = 'b');
 
+-- instants of a time zone's clock changes (the weeks around the daylight saving time of the northern and the southern zones, the days of the reform, local mean time),
+-- the infinities and NULL, grouped by the day or hour of the session's zone
+CREATE TABLE zkf (id int, org int, z timestamptz, amount int, pad text) WITH (autovacuum_enabled = false, fillfactor = 10);
+CREATE FUNCTION fz.gen_zkf(lo bigint, hi bigint, salt int) RETURNS SETOF zkf LANGUAGE sql AS $$
+	SELECT i::int, fz.h(i, 150 + salt) % 5,
+	       CASE fz.h(i, 151 + salt) % 400
+	            WHEN 0 THEN NULL WHEN 1 THEN 'infinity' WHEN 2 THEN '-infinity'
+	            ELSE (ARRAY[timestamptz '2024-03-09+00', '2024-11-02+00', '2024-03-31+00', '2024-10-05+00', '2024-04-06+00', '1883-11-17+00', '1582-10-01+00', '2018-02-03+00', '2100-02-27+00'])[1 + fz.h(i, 152 + salt) % 9]
+	                 + (fz.h(i, 153 + salt) % 4000) * interval '41 minutes 13 seconds' END,
+	       fz.h(i, 154 + salt) % 100,
+	       repeat('x', 200)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO zkf SELECT * FROM fz.gen_zkf(1, @ROWS@, 0);
+CREATE INDEX zkf_idx ON zkf USING sift_col (id sift.col_int4_ops, org sift.col_int4_ops, z sift.col_timestamptz_ops, amount sift.col_int4_ops);
+
 -- @table
 -- the fact tables rewritten as sift_tables (the --table mode of the driver, which also drops the sift_col indexes above): the jsonb paths of those indexes are
 -- declared per column, a VACUUM FULL writes their leaves; ev_part is one table here (the pushdown reads a partitioned table through the sift_col indexes of its
@@ -263,4 +278,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, zkf, kcut_a, kcut_b, kcut_c;

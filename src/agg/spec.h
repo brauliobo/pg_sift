@@ -143,6 +143,9 @@ typedef enum SiftAggKeyKind
 	SAK_SPINE					/* a column of the spine of a two level aggregate: no arm computes it, the spine rows give its ids */
 } SiftAggKeyKind;
 
+#define SIFT_ZONE_STEP	1
+#define SIFT_ZONE_CUT	2
+
 typedef struct SiftAggKey
 {
 	SiftAggKeyKind kind;
@@ -150,6 +153,8 @@ typedef struct SiftAggKey
 	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
 	int			bucket;			/* SAK_LUT of a timestamp leaf: the expression is the same within this many seconds, so it is evaluated once per bucket of rows */
+	int			zoned;			/* bucket of a timestamptz leaf on the clock of the session's time zone when the scan starts, not of UTC: SIFT_ZONE_STEP the bucket is a step of that clock, SIFT_ZONE_CUT
+								 * date_trunc to a second, minute or hour, which keeps the offset of the row: the bucket is the instant it cuts to; 0: UTC */
 	SiftAggNum	num;			/* SAK_NUM */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;

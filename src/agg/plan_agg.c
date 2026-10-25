@@ -120,7 +120,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
 	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) &&
-			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr)) > 0))
+			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr, &k->zoned)) > 0))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;

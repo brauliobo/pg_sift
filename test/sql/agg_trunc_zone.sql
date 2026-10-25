@@ -1,0 +1,115 @@
+-- date_trunc, extract and date() of a timestamptz read the clock of the session's time zone. A scan groups them by the step of that clock (a day, an hour) of each row, cut on the
+-- offsets the zone has at the instants of the rows, and evaluates the expression once per step. The rows must be those of the normal plan in every zone, whatever the offsets
+-- do inside the data (daylight saving time that moves the clock by 30 or 60 minutes, offsets of 30 and 45 minutes and of seconds before 1900, the days before the Gregorian
+-- calendar, the infinities, NULL), after SET TIME ZONE, from a plan that was made in another zone, and with parallel workers. A call or a unit that is not a step of the clock
+-- (epoch, seconds with fractions, julian, a zone named in the call) keeps the normal plan and gives the same rows too.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET extra_float_digits = 0;
+
+CREATE TABLE tz (id int, ts timestamptz, g int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
+-- instants around the clock changes of the zones below, in every century the calendar changes in, and the odd ones
+INSERT INTO tz
+SELECT i, t + (i % 7) * interval '13 minutes 7 seconds 123 milliseconds', i % 5, i % 11
+FROM (
+	SELECT row_number() OVER ()::int AS i, t FROM (
+		SELECT timestamptz '2024-03-09 12:00+00' + s * interval '37 minutes' AS t FROM generate_series(0, 599) s			-- New York spring forward (2024-03-10), London, Sydney
+		UNION ALL SELECT timestamptz '2024-11-02 12:00+00' + s * interval '37 minutes' FROM generate_series(0, 599) s		-- New York fall back (2024-11-03): the repeated hour
+		UNION ALL SELECT timestamptz '2024-03-31 00:00+00' + s * interval '11 minutes' FROM generate_series(0, 599) s		-- London, Europe
+		UNION ALL SELECT timestamptz '2024-10-05 12:00+00' + s * interval '53 minutes' FROM generate_series(0, 399) s		-- Lord Howe (30 minutes), Sydney
+		UNION ALL SELECT timestamptz '2024-04-06 00:00+00' + s * interval '47 minutes' FROM generate_series(0, 399) s		-- Lord Howe fall back
+		UNION ALL SELECT timestamptz '2018-02-03 00:00+00' + s * interval '90 minutes' FROM generate_series(0, 399) s		-- Sao Paulo (the last years of its daylight saving time)
+		UNION ALL SELECT timestamptz '1999-12-31 12:00+00' + s * interval '20 hours' FROM generate_series(0, 299) s		-- the year 2000, leap
+		UNION ALL SELECT timestamptz '2100-02-27 00:00+00' + s * interval '5 hours' FROM generate_series(0, 99) s			-- 2100 is not a leap year
+		UNION ALL SELECT timestamptz '1883-11-17 00:00+00' + s * interval '9 minutes' FROM generate_series(0, 599) s		-- the railway day, and the offsets of seconds of local mean time
+		UNION ALL SELECT timestamptz '1937-06-30 00:00+00' + s * interval '7 minutes' FROM generate_series(0, 399) s		-- Amsterdam's offset of 20 minutes
+		UNION ALL SELECT timestamptz '1582-10-01 00:00+00' + s * interval '17 hours' FROM generate_series(0, 99) s		-- the days of the reform
+		UNION ALL SELECT timestamptz '0001-12-30 00:00+00' + s * interval '19 hours' FROM generate_series(0, 99) s		-- the first year
+		UNION ALL SELECT timestamptz '4000-12-30 00:00+00' + s * interval '19 hours' FROM generate_series(0, 99) s
+		UNION ALL SELECT timestamptz '2024-01-01 00:00+00' + s * interval '1 day 1 hour 1 minute 1 second' FROM generate_series(0, 599) s
+	) x
+) y;
+INSERT INTO tz SELECT 100000 + i, v, i % 5, i FROM unnest(ARRAY['infinity', '-infinity', NULL, NULL, '294000-01-01', '4000-06-01 BC']::timestamptz[]) WITH ORDINALITY u(v, i);
+CREATE INDEX tz_col ON tz USING sift_col (id, ts, g, v);
+VACUUM ANALYZE tz;
+
+CREATE TABLE zones (z text);
+INSERT INTO zones VALUES ('UTC'), ('America/New_York'), ('Europe/London'), ('Asia/Kolkata'), ('Asia/Kathmandu'), ('Australia/Lord_Howe'), ('Pacific/Chatham'),
+	('America/Sao_Paulo'), ('Europe/Amsterdam'), ('Pacific/Kiritimati'), ('Pacific/Pago_Pago'), ('UTC+3'), ('+05:45'), ('PST8PDT');
+
+-- the key expressions: every unit of date_trunc, the fields of extract that are whole steps of the clock, date()
+CREATE TABLE exprs (n int, e text, steps boolean);
+INSERT INTO exprs SELECT row_number() OVER (), format('date_trunc(%L, ts)', u), true
+FROM unnest(ARRAY['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium']) u;
+INSERT INTO exprs SELECT 100 + row_number() OVER (), format('extract(%s from ts)', u), true
+FROM unnest(ARRAY['minute', 'hour', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'quarter', 'year', 'isoyear', 'decade', 'century', 'millennium']) u;
+INSERT INTO exprs VALUES (200, 'ts::date', true), (201, 'date_part(''hour'', ts)::int', true), (202, 'date_trunc(''day'', ts)::date', true), (203, 'extract(dow from date_trunc(''week'', ts))', true),
+	(204, 'to_char(ts, ''YYYY-MM-DD'')', false),
+	(300, 'extract(epoch from ts)', false), (301, 'extract(second from ts)', false), (302, 'extract(julian from ts)', false), (303, 'extract(timezone_hour from ts)', false),
+	(304, 'date_trunc(''day'', ts, ''Asia/Tokyo'')', false), (309, 'date_trunc(''day'', ts AT TIME ZONE ''Etc/UTC'')', true), (308, 'date_trunc(''day'', ts, ''Etc/UTC'')', true),
+	(307, 'date_trunc(''hour'', ts::timestamp)', false);
+
+-- the key of every row, the counts and a sum per key, with the scan and with the normal plan, in zone z, with w workers: the checksum of the output
+CREATE FUNCTION run(e text, z text, w int, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('TimeZone', z, true);
+	PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('sift.agg_force', push::text, true);
+	EXECUTE format('SELECT md5(string_agg(row(k, n, s)::text, E''\n'' ORDER BY k)) FROM (SELECT %s AS k, count(*) AS n, sum(v) AS s FROM tz GROUP BY 1) q', e) INTO r;
+	RETURN r;
+END $$;
+
+-- does the plan group by a step of the clock (the key says "per ...")
+CREATE FUNCTION stepped(e text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; b boolean := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_force', 'true', true);
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT %s AS k, count(*) FROM tz GROUP BY 1', e) LOOP
+		b := b OR l ~ 'Group Keys:.*\(per ';
+	END LOOP;
+	RETURN b;
+END $$;
+
+-- one row per expression: zones where the rows differ, and whether the plan uses the steps (it does for exactly the expressions that are steps of the clock)
+SELECT n, e, stepped(e) = steps AS plan_ok,
+       (SELECT count(*) FROM zones WHERE run(x.e, z, 0, true) IS DISTINCT FROM run(x.e, z, 0, false)) AS zones_differ
+FROM exprs x ORDER BY n;
+
+-- the same with two parallel workers (the zone is the leader's), and every zone for the expressions that matter most
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+SELECT n, e, (SELECT count(*) FROM zones WHERE run(x.e, z, 2, true) IS DISTINCT FROM run(x.e, z, 0, false)) AS zones_differ
+FROM exprs x WHERE n IN (4, 6, 8, 103, 104, 200, 202) ORDER BY n;
+RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;
+
+-- a plan made in one zone runs in another: a statement of a function keeps its (generic) plan for the session, the zone is set before each call
+SET plan_cache_mode = force_generic_plan;
+CREATE FUNCTION by_day_push(z text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'true', true);
+	PERFORM set_config('TimeZone', z, true);
+	SELECT md5(string_agg(row(k, n)::text, ',' ORDER BY k)) INTO r FROM (SELECT date_trunc('day', ts) AS k, count(*) AS n FROM tz GROUP BY 1) q;
+	RETURN r;
+END $$;
+CREATE FUNCTION by_day_native(z text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'false', true);
+	PERFORM set_config('TimeZone', z, true);
+	SELECT md5(string_agg(row(k, n)::text, ',' ORDER BY k)) INTO r FROM (SELECT date_trunc('day', ts) AS k, count(*) AS n FROM tz GROUP BY 1) q;
+	RETURN r;
+END $$;
+SELECT z, by_day_push(z) = by_day_native(z) AS same FROM unnest(ARRAY['UTC', 'Asia/Kathmandu', 'America/New_York', 'UTC', 'Pacific/Chatham', 'Australia/Lord_Howe']) WITH ORDINALITY u(z, i) ORDER BY i;
+RESET plan_cache_mode;
+
+-- more than one key, a filter and a second step key on the same column
+SELECT count(*) FILTER (WHERE run(format('(date_trunc(''day'', ts), g)::text'), z, 0, true) IS DISTINCT FROM run(format('(date_trunc(''day'', ts), g)::text'), z, 0, false)) AS differ FROM zones;
+SELECT count(*) FILTER (WHERE run('extract(hour from ts) * 100 + extract(minute from ts)', z, 0, true) IS DISTINCT FROM run('extract(hour from ts) * 100 + extract(minute from ts)', z, 0, false)) AS differ FROM zones;
+
+DROP FUNCTION run(text, text, int, bool), stepped(text), by_day_push(text), by_day_native(text);
+DROP TABLE tz, zones, exprs;
+DROP EXTENSION pg_sift;

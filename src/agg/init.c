@@ -272,6 +272,8 @@ register_key(AggExec *ex, int ki)
 		k->expr = init_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
 		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+		k->zone = sk->zoned ? zone_open(ex->cxt, session_timezone) : NULL;
+		k->zcut = sk->zoned == SIFT_ZONE_CUT;
 		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
 	}
 	else if (sk->kind == SAK_NUM)

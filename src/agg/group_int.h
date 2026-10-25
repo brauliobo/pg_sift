@@ -7,6 +7,7 @@
 #include "agg/agg_fwd_int.h"
 #include "agg/accum_int.h"
 #include "agg/leaf_int.h"
+#include "agg/zoneoff.h"
 
 typedef struct KeyState
 {
@@ -24,6 +25,9 @@ typedef struct KeyState
 	uint32	   *wid;
 	uint32		nwide;			/* the entries of the open addressing table */
 	int64		bucket;			/* LUT keys on a timestamp leaf: the microseconds one evaluation covers (the table maps bucket numbers to ids); 0: not one */
+	ZoneOff    *zone;			/* a bucket key of a timestamptz leaf read on the session's clock: the offsets of the zone the scan started in; NULL: the buckets are of UTC */
+	bool		zcut;			/* zone: the bucket is the instant a date_trunc cuts to (SIFT_ZONE_CUT), whose first row is the one the key is evaluated at */
+	int64		witness;		/* zcut: the instant of the row whose bucket is being given an id */
 	bool		cal;			/* LUT keys on a date leaf: the units answered from calendar cells map the first day of a cell (the table of wide values) to ids */
 	uint32		nullid;			/* LUT keys on integer leaves: the id of expr(NULL) */
 	uint32		cap;			/* direct mode: ids 0..cap-1 */

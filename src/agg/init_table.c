@@ -262,7 +262,7 @@ table_init(AggExec *ex)
 	for (int j = 0; j < s->nkeys; j++)
 	{
 		KeyState   *k = &ex->ks[j];
-		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .cal = k->cal};
+		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .zone = k->zone, .zcut = k->zcut, .cal = k->cal};
 
 		*k = keep;
 		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);

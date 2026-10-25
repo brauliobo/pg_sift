@@ -313,7 +313,7 @@ extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
 extern const char *bucket_text(int secs);
-extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr);
+extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned);
 extern int leaf_digits(Oid typid, int32 typmod);
 extern bool nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2);
 extern bool nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig);

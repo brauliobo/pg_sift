@@ -572,11 +572,11 @@ key_range_fill(void *arg, int32 v, void *entry)
 		*(uint32 *) entry = key_value_id(f->ex, f->ki, leaf_datum(k->param->paramtype, v), false);
 }
 
-/* the id of a bucket of a timestamp key: the key's expression of the bucket's first microsecond (an infinity is a bucket of its own) */
+/* the id of a bucket of a timestamp key: the key's expression of the bucket's first microsecond, or an instant of a step of the zone's clock (an infinity is a bucket of its own) */
 static uint32
 bucket_id(AggExec *ex, KeyState *k, int64 bucket)
 {
-	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : bucket * k->bucket;
+	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : k->zcut ? k->witness : k->zone ? zone_instant(k->zone, bucket, k->bucket) : bucket * k->bucket;
 
 	return key_value_id(ex, (int) (k - ex->ks), Int64GetDatum(us), false);
 }
@@ -598,10 +598,11 @@ bucket_floor(int64 v, const int64 us)
 /*
  * The bucket numbers of the selected rows as int32 (a NULL row gets 0) and their range; false: an infinity or a range a table
  * cannot hold is among them. us is a constant at each call, so the division is an unsigned multiplication: adding a multiple of us
- * above 2^63 makes every timestamp positive, and the same multiple of buckets comes off the quotient.
+ * above 2^63 makes every timestamp positive, and the same multiple of buckets comes off the quotient. shift: the offset of the zone's clock (a valid timestamp
+ * is days short of the limits of int64, so the sum cannot overflow).
  */
 static pg_attribute_always_inline bool
-bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, const uint64 us, int32 *mn, int32 *mx)
+bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, const uint64 us, const int64 shift, int32 *mn, int32 *mx)
 {
 	const int64 *data = v->data;
 	const uint8 *isnull = v->isnull;
@@ -621,7 +622,7 @@ bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, co
 		}
 		lo = Min(lo, d);
 		hi = Max(hi, d);
-		out[i] = (uint32) (((uint64) d + off) / us - off_buckets);
+		out[i] = (uint32) (((uint64) (d + shift) + off) / us - off_buckets);
 	}
 	if (lo > hi)
 	{
@@ -630,11 +631,110 @@ bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, co
 	}
 	if (lo == PG_INT64_MIN || hi == PG_INT64_MAX)
 		return false;
-	lo = bucket_floor(lo, us);
-	hi = bucket_floor(hi, us);
+	lo = bucket_floor(lo + shift, us);
+	hi = bucket_floor(hi + shift, us);
 	*mn = (int32) lo;
 	*mx = (int32) hi;
 	return lo >= PG_INT32_MIN && hi <= PG_INT32_MAX && hi - lo < MAX_RANGE;
+}
+
+/* the zone's pieces cover the selected rows that are not an infinity or NULL (false: there are none) */
+static bool
+zone_rows(ZoneOff *z, const SiftSrcVec *v, const uint32 *idx, int nsel)
+{
+	const int64 *data = v->data;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]];
+
+		if ((v->isnull && v->isnull[idx[i]]) || d == PG_INT64_MAX || d == PG_INT64_MIN)
+			continue;
+		lo = Min(lo, d);
+		hi = Max(hi, d);
+	}
+	if (lo > hi)
+		return false;
+	zone_cover(z, lo, hi);
+	return true;
+}
+
+/*
+ * bucket_numbers for a key on the zone's clock: one piece of constant offset over the rows is a shift of the vector kernel, several are a lookup of the piece of each row.
+ * False as bucket_numbers: an infinity or a range a table cannot hold is among the rows.
+ */
+static bool
+bucket_numbers_zoned(KeyState *k, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, int32 *mn, int32 *mx)
+{
+	ZoneOff    *z = k->zone;
+	const int64 *data = v->data;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN,
+				us = k->bucket,
+				shift;
+	int64		blo = PG_INT64_MAX,
+				bhi = PG_INT64_MIN;
+	bool		inf = false;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]];
+
+		if (v->isnull && v->isnull[idx[i]])
+			continue;
+		inf |= d == PG_INT64_MAX || d == PG_INT64_MIN;
+		if (!inf)
+		{
+			lo = Min(lo, d);
+			hi = Max(hi, d);
+		}
+	}
+	if (inf)
+		return false;
+	if (lo > hi)
+	{
+		for (int i = 0; i < nsel; i++)
+			out[i] = 0;
+		*mn = *mx = 0;
+		return true;
+	}
+	zone_cover(z, lo, hi);
+	if (zone_piece(z, lo) == zone_piece(z, hi))
+	{
+		shift = z->off[zone_piece(z, lo)];
+		switch (us)
+		{
+			case USECS_PER_SEC:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC, shift, mn, mx);
+			case USECS_PER_SEC * 60:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC * 60, shift, mn, mx);
+			case USECS_PER_HOUR:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_HOUR, shift, mn, mx);
+			case USECS_PER_DAY:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_DAY, shift, mn, mx);
+			default:
+				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) us);
+		}
+	}
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		b;
+
+		if (v->isnull && v->isnull[idx[i]])
+		{
+			out[i] = 0;
+			continue;
+		}
+		b = zone_bucket(z, data[idx[i]], us);
+		blo = Min(blo, b);
+		bhi = Max(bhi, b);
+		out[i] = (uint32) b;
+	}
+	*mn = (int32) blo;
+	*mx = (int32) bhi;
+	return blo >= PG_INT32_MIN && bhi <= PG_INT32_MAX && bhi - blo < MAX_RANGE;
 }
 
 /* the key ids of the selected rows by the hash table of bucket numbers: infinities and wide ranges */
@@ -645,10 +745,12 @@ bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx
 	int64		last = 0;
 	uint32		lastid = 0;
 
+	if (k->zone)
+		zone_rows(k->zone, v, idx, nsel);
 	for (int i = 0; i < nsel; i++)
 	{
 		int64		d = data[idx[i]],
-					b = d == PG_INT64_MAX || d == PG_INT64_MIN ? d : bucket_floor(d, k->bucket);
+					b = d == PG_INT64_MAX || d == PG_INT64_MIN ? d : k->zcut ? zone_cut(k->zone, d, k->bucket) : k->zone ? zone_bucket(k->zone, d, k->bucket) : bucket_floor(d, k->bucket);
 
 		if (v->isnull && v->isnull[idx[i]])
 			ids[i] = 0;			/* every function of a bucket key is strict: the key of a NULL is NULL */
@@ -656,6 +758,7 @@ bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx
 		{
 			if (b != last || lastid == 0)
 			{
+				k->witness = d;
 				lastid = ident_wide_id(ex, k, b);
 				last = b;
 			}
@@ -709,23 +812,29 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 				mx;
 	bool		table;
 
-	switch (k->bucket)
-	{
-		case USECS_PER_SEC:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, &mn, &mx);
-			break;
-		case USECS_PER_SEC * 60:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, &mn, &mx);
-			break;
-		case USECS_PER_HOUR:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, &mn, &mx);
-			break;
-		case USECS_PER_DAY:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, &mn, &mx);
-			break;
-		default:
-			SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
-	}
+	mn = mx = 0;
+	if (k->zcut)
+		table = false;
+	else if (k->zone)
+		table = bucket_numbers_zoned(k, v, idx, nsel, vals_out, &mn, &mx);
+	else
+		switch (k->bucket)
+		{
+			case USECS_PER_SEC:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, 0, &mn, &mx);
+				break;
+			case USECS_PER_SEC * 60:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, 0, &mn, &mx);
+				break;
+			case USECS_PER_HOUR:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, 0, &mn, &mx);
+				break;
+			case USECS_PER_DAY:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, 0, &mn, &mx);
+				break;
+			default:
+				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
+		}
 	if (!table || rt_span(&k->rt, mn, mx) > MAX_RANGE)
 	{
 		bucket_hash_ids(ex, k, v, idx, nsel, vals_out);

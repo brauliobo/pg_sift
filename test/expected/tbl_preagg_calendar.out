@@ -373,7 +373,7 @@ SELECT * FROM pm_check('tcm');
  41 | date, test in       | none | t
  42 | tz at UTC, month    | some | t
  43 | tz at UTC, year     | some | t
- 44 | tz session: scan    | -    | t
+ 44 | tz session: scan    | scan | t
  45 | tz, range           | some | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | some | t
@@ -539,7 +539,7 @@ SELECT * FROM pm_check('tcm');
  41 | date, test in       | none | t
  42 | tz at UTC, month    | none | t
  43 | tz at UTC, year     | none | t
- 44 | tz session: scan    | -    | t
+ 44 | tz session: scan    | scan | t
  45 | tz, range           | none | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | none | t
