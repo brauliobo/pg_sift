@@ -175,7 +175,7 @@ if [[ $MODE == affected ]]; then
 	esac
 	exit 0
 fi
-COL_SLICES_LEAN=4 COL_SLICES_DEEP=8   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour
+COL_SLICES_LEAN=4 COL_SLICES_DEEP=8 COL_SLICES_DEEP17=12   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
 COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 declare -A JOB_WEIGHT=(
 	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
@@ -309,11 +309,11 @@ if [[ $MODE == --selftest ]]; then
 		done
 		grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan ${deep:+(deep) }lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	done
-	# the lean full tier before PostgreSQL 18 runs half of the slices (the first and second of 4), the deep one all of them
+	# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean), the first six of 12 (deep)
 	for pg in 16 17; do
 		for deep in '' 1; do
 			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
-			(( n == (deep ? COL_SLICES_DEEP : COL_SLICES_LEAN / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
+			(( n == (deep ? COL_SLICES_DEEP17 : COL_SLICES_LEAN) / 2 )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
 		done
 	done
 	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
@@ -470,10 +470,10 @@ if [[ $MODE == full ]]; then
 	# Lean: each scenario runs a third of the scenario queries (the slice moves from one heap state to the next, so every query meets several states and every state
 	# meets queries of every kind), and before PostgreSQL 18 half the corpus (slices 1 and 2 of 4, every other query in name order: the corpus is the same on every major,
 	# the other half runs on 18)
-	for (( k = 1; k <= COL_SLICES; k++ )); do
-		(( PG_MAJOR >= 18 || k <= COL_SLICES / 2 )) || [[ -n ${SIFT_CI_DEEP:-} ]] || continue
-		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
-		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+	slices=$COL_SLICES; (( PG_MAJOR >= 18 )) || [[ -z ${SIFT_CI_DEEP:-} ]] || slices=$COL_SLICES_DEEP17
+	for (( k = 1; k <= slices / (PG_MAJOR >= 18 ? 1 : 2); k++ )); do
+		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
