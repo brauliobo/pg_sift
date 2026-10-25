@@ -33,7 +33,7 @@ class Engine(Server):
             try:
                 if self.conn is None:
                     self.conn = http.client.HTTPConnection('127.0.0.1', self.ctx.port, timeout=600)
-                path = '/?database=%s&default_format=TabSeparated&max_threads=%d&date_time_input_format=best_effort' % (db, self.ctx.cpus)
+                path = '/?database=%s&default_format=TabSeparated&max_threads=%d&date_time_input_format=best_effort&aggregate_functions_null_for_empty=1' % (db, self.ctx.cpus)
                 headers = {'X-ClickHouse-User': 'bench', 'X-ClickHouse-Key': 'bench'}
                 if body is None:
                     self.conn.request('POST', path, body=sql.encode(), headers=headers)
@@ -56,6 +56,11 @@ class Engine(Server):
             with open(os.path.join(work, suite, table + '.csv'), 'rb') as f:
                 self.query('INSERT INTO %s FORMAT CSV' % table, body=f.read())
 
+    def unload(self, suite, work):
+        for f in sorted(os.listdir(os.path.join(work, suite))):
+            if f.endswith('.csv'):
+                self.query('DROP TABLE IF EXISTS %s' % os.path.splitext(f)[0])
+
     def runner(self, arm, sql):
         def go():
             t = time.perf_counter()
@@ -63,5 +68,5 @@ class Engine(Server):
                 text = self.query(sql)
             except RuntimeError as e:
                 raise Unsupported('error: ' + str(e)[:200])
-            return (time.perf_counter() - t) * 1000, [l.split('\t') for l in text.split('\n') if l != '']
+            return (time.perf_counter() - t) * 1000, [['' if c == '\\N' else c for c in l.split('\t')] for l in text.split('\n') if l != '']
         return go

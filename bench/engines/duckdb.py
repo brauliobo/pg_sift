@@ -36,7 +36,7 @@ class Engine(Server):
     section = 'duck'
 
     def up(self):
-        self.p = subprocess.Popen([tool(self.ctx.work), '-noheader', '-list', '-separator', '|', ':memory:'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.p = subprocess.Popen([tool(self.ctx.work), '-noheader', '-list', '-separator', '|', '-nullvalue', '', ':memory:'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.execute("SET threads = %d; SET memory_limit = '%s'" % (self.ctx.cpus, self.ctx.memory.upper().replace('G', 'GB')))
 
     def execute(self, sql):
@@ -62,6 +62,10 @@ class Engine(Server):
                 err = self.execute(sql)[2]
                 if err:
                     sys.exit('generic: DuckDB: loading %s: %s' % (table, err))
+
+    def unload(self, suite, work):
+        for table in json.load(open(os.path.join(work, suite, 'schema.json'))):
+            self.execute('DROP TABLE IF EXISTS %s' % table)
 
     def runner(self, arm, sql):
         def go():

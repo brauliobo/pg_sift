@@ -111,7 +111,7 @@ def generic_rows(results):
     return extras.read(gpath)[1] if os.path.exists(gpath) else []
 
 
-def engine_pairs(results, prefix, *arms):
+def engine_pairs(results, prefix, *arms, ids=None):
     """[(case, engine / pg_sift)] of one generic suite: the engine's time (the faster of ARMS) is bench/results/generic.tsv (steps/generic.py, its own run and PostgreSQL build), pg_sift's that of cases.tsv"""
     cpath = os.path.join(results, 'cases.tsv')
     if not os.path.exists(cpath):
@@ -121,7 +121,7 @@ def engine_pairs(results, prefix, *arms):
     for r in generic_rows(results):
         if r['arm'] in arms and r['metric'] == 'ms' and r['value'] not in ('NA', ''):
             other[r['case']] = min(float(r['value']), other.get(r['case'], float('inf')))
-    return [(c, o / sift[c]) for c, o in other.items() if c.startswith(prefix) and c in sift]
+    return [(c, o / sift[c]) for c, o in other.items() if c.startswith(prefix) and c in sift and (ids is None or c in ids)]
 
 
 ARM_LABEL = {'pg': 'PostgreSQL 18 (the pg_duckdb image, its own plan)', 'pg_duckdb': 'pg_duckdb', 'duckdb': 'DuckDB (command line client, in-memory tables)', 'clickhouse': 'ClickHouse', 'citus': 'Citus (columnar tables)',
@@ -177,6 +177,10 @@ def rows_of(results):
             pairs, kept = gp
             rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': cell(engine_pairs(results, prefix, 'clickhouse')),
                                 'es': cell(engine_pairs(results, prefix, 'elasticsearch')), 'citus': cell(engine_pairs(results, prefix, 'citus', 'citus_dist')), 'duckdb': cell(engine_pairs(results, prefix, 'pg_duckdb', 'duckdb'))}))
+    ids = {c.id for c in cases_mod.read_registry() if c.dataset == 'orders'} & {r['case'] for r in generic_rows(results)}
+    if ids:
+        rows.append((f'Headline benchmark cases that only read the orders table ({len(ids)} of them)', {'pg': NOT, 'ch': cell(engine_pairs(results, '', 'clickhouse', ids=ids)), 'es': cell(engine_pairs(results, '', 'elasticsearch', ids=ids)),
+                     'citus': cell(engine_pairs(results, '', 'citus', 'citus_dist', ids=ids)), 'duckdb': cell(engine_pairs(results, '', 'pg_duckdb', 'duckdb', ids=ids))}))
     tier = t1
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
     for name, variant, metric, inv in (('Update 10% of the rows, rows per second (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),
@@ -317,10 +321,10 @@ def generic_block(results):
         for r in mine:
             if r['value'] in ('NA', ''):
                 why.setdefault(r['note'] or 'no reason recorded', []).append(r['case'])
-        pairs = [p for _, prefix in GENERIC for p in engine_pairs(results, prefix, arm)] if arm != 'pg' else []
+        pairs = engine_pairs(results, '', arm) if arm != 'pg' else []
         body.append('| %s | %d of %d | %s | %s |' % (ARM_LABEL.get(arm, arm), len(ran), len(mine), cell(pairs) if pairs else 'the reference (see the cases)' if arm == 'pg' else NOT,
                                                    '; '.join('%s (%s)' % (reason.replace('|', '\\|'), ', '.join('`%s`' % c for c in cs)) for reason, cs in why.items()) or '-'))
-    return ['The 19 queries of the generic suites (TPC-H-like, ClickBench-like, time series) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
+    return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above).', ''] + head + body
 

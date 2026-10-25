@@ -88,6 +88,10 @@ class Engine(Server):
             self.request('POST', '/%s/_refresh' % table)
             self.request('POST', '/%s/_forcemerge?max_num_segments=1' % table)
 
+    def unload(self, suite, work):
+        for table in json.load(open(os.path.join(work, suite, 'schema.json'))):
+            self.request('DELETE', '/' + table)
+
     def approximate(self, sql):
         return 'count(distinct' in sql.lower()   # cardinality aggregation: a HyperLogLog++ sketch, not an exact count
 

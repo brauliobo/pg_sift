@@ -1,0 +1,1 @@
+CREATE TABLE orders (id UInt64, customer_id UInt32, country LowCardinality(String), category LowCardinality(String), status LowCardinality(String), amount Decimal(10, 2), quantity UInt8, created_at DateTime64(6), title String, segment_id Int32, order_date Date) ENGINE = MergeTree PARTITION BY toYYYYMM(created_at) ORDER BY (country, created_at, id)

@@ -78,6 +78,9 @@ class Server:
         env = [x for e in env for x in ('-e', e)]
         sh('docker', 'run', '-d', '--name', self.name, *flags, *run_args, '-p', '127.0.0.1:%d:%d' % (self.ctx.port, port_map), *env, *args)
 
+    def unload(self, suite, work):
+        """drops the tables of the suite, so that the next suite may name one alike"""
+
     def down(self):
         sh('docker', 'rm', '-fv', self.name, check=False)
 
@@ -128,6 +131,10 @@ class PgServer(Server):
             with open(os.path.join(work, suite, table + '.csv')) as f:
                 sh('psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-h', '127.0.0.1', '-p', str(self.ctx.port), '-U', 'postgres', '-d', 'bench', '-c', 'COPY %s FROM STDIN CSV' % table, stdin=f)
         self.psql('bench', 'ANALYZE')
+
+    def unload(self, suite, work):
+        for table in self.schemas[suite]:
+            self.psql('bench', 'DROP TABLE IF EXISTS %s CASCADE' % table)
 
     def session(self, arm, setting=None):
         s = Session(self.ctx.port, self.ctx.timeout, setting, db='bench')

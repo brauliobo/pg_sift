@@ -8,6 +8,7 @@ import sys
 from suite_engine import SQL, PgServer, Unsupported, image, log, session_run, sh  # noqa: F401  (log: the adapters share the import line)
 
 SOURCE = True
+PREPEND = {'orders': ['store/gen.sql']}   # the suite is made on top of another suite's file
 
 
 class Engine(PgServer):
@@ -45,7 +46,7 @@ class Engine(PgServer):
     def generate(self, suite, rows, work):
         """the suite in the server, its tables as CSV and the schema (column and type) of each in work/SUITE"""
         before = self.tables()
-        gen = ''.join(l for l in open(os.path.join(SQL, suite, 'gen.sql')) if 'USING sift_col' not in l)
+        gen = ''.join(l for f in PREPEND.get(suite, []) + [suite + '/gen.sql'] for l in open(os.path.join(SQL, f)) if 'USING sift_col' not in l)
         p = subprocess.run(['psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-v', 'n=%d' % rows, '-h', '127.0.0.1', '-p', str(self.ctx.port), '-U', 'postgres', '-d', 'bench', '-f', '-'],
                            input=gen, capture_output=True, text=True, env={**os.environ, 'PGOPTIONS': '-c client_min_messages=warning'})
         if p.returncode:
@@ -61,6 +62,7 @@ class Engine(PgServer):
                 subprocess.run(['psql', '-X', '-q', '-h', '127.0.0.1', '-p', str(self.ctx.port), '-U', 'postgres', '-d', 'bench', '-c',
                                 'COPY (SELECT %s FROM %s) TO STDOUT CSV' % (', '.join(c[0] for c in cols), table)], stdout=f, check=True)
         json.dump(schema, open(os.path.join(wd, 'schema.json'), 'w'))
+        self.schemas[suite] = schema
 
     def load(self, suite, work):
         raise NotImplementedError('the source generates its suites')

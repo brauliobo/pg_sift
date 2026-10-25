@@ -2,7 +2,7 @@
 """The generic suites (TPC-H-like, ClickBench-like, time series: bench/cases.tsv datasets tpch, hits, tseries) on the other engines of bench/engines.tsv (kind analytic), with the answers checked
 against PostgreSQL's before any time is taken. Standard library, psql and docker only.
 
-    python3 -I generic.py run [--rows N] [--suites tpch,hits,tseries] [--engines ID,ID] [--runs 5] [--check-only] [--work DIR] [--out FILE] [--port P]
+    python3 -I generic.py run [--rows N] [--suites tpch,hits,tseries,orders] [--engines ID,ID] [--runs 5] [--check-only] [--work DIR] [--out FILE] [--port P]
 
 One engine at a time (a container, or a process for DuckDB itself), each an adapter bench/engines/ID.py over steps/suite_engine.py. The source (pg_duckdb: PostgreSQL 18 with pg_duckdb) comes first: it
 generates each suite with bench/sql/SUITE/gen.sql (its pg_sift index lines left out), answers every query with PostgreSQL's own plan (the arm `pg`, the reference) and with
@@ -24,14 +24,15 @@ from suite_engine import REPO, Unsupported, canon, first_diff, log, same, timed 
 
 
 def suite_cases(suites):
-    return [c for c in cases_mod.read_registry() if c.dataset in suites]
+    """the cases of the suites; of the orders, the headline cases that only read the table (the others have a setup of their own or write)"""
+    return [c for c in cases_mod.read_registry() if c.dataset in suites and (c.dataset != 'orders' or c.headline and not c.load and not {'setup', 'prepare'} & set(c.sec))]
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('cmd', choices=['run'])
     ap.add_argument('--rows', type=int, default=1000000)
-    ap.add_argument('--suites', default='tpch,hits,tseries')
+    ap.add_argument('--suites', default='tpch,hits,tseries,orders')
     ap.add_argument('--engines', help='ids of bench/engines.tsv (kind analytic); default: those with default = yes')
     ap.add_argument('--runs', type=int, default=5)
     ap.add_argument('--cpus', type=int, default=3)
@@ -59,41 +60,47 @@ def main():
     runs = 0 if a.check_only else a.runs
     results, failures, reference, skipped = [], [], {}, {}   # (case, arm, median, min, max, note); the PostgreSQL answer by case; engine -> [case: reason]
 
+    def run_suite(eng, suite_cases_):
+        for c in suite_cases_:
+            for arm in eng.arms(c):
+                note, med, lo, hi = '', None, None, None
+                try:
+                    sql = eng.statement(c, arm)
+                    note = eng.precheck(arm, sql) or ''
+                    if not note:
+                        med, lo, hi, got = timed(eng.runner(arm, sql), runs)
+                        got = canon(got)
+                        if arm == 'pg':
+                            reference[c.id] = got
+                            if not got or got == [['']]:
+                                log('%s: the answer is empty at %d rows, so the engines agree on nothing' % (c.id, a.rows))
+                        elif c.id not in reference:
+                            note = 'PostgreSQL did not answer the case on this dataset, so there is nothing to compare with'
+                        elif not same(reference[c.id], got):
+                            note = 'answers differ from PostgreSQL (%d rows against %d)%s' % (len(got), len(reference[c.id]), first_diff(reference[c.id], got))
+                            if eng.approximate(sql):
+                                note = '%s: count(DISTINCT) is an estimate in this engine' % note
+                            else:
+                                failures.append('%s: %s %s' % (c.id, arm, note))
+                except Unsupported as u:
+                    note = str(u)
+                if note:
+                    med = lo = hi = None
+                    skipped.setdefault(arm, []).append('%s: %s' % (c.id, note))
+                results.append((c.id, arm, med, lo, hi, open('/proc/loadavg').read().split()[0], note))
+
     for eid in order:
         eng = adapters[eid].Engine(ctx)
         log('%s (one %s), %d rows of each suite' % (eid, 'process' if eid == 'duckdb' else 'container', a.rows))
         eng.up()
         try:
-            for suite in suites:
+            for suite in suites:   # one suite at a time in an engine: two suites name a table alike (the orders of TPC-H and of the store)
                 if getattr(adapters[eid], 'SOURCE', False):
                     eng.generate(suite, a.rows, a.work)
                 else:
                     eng.load(suite, a.work)
-            for c in cases:
-                for arm in eng.arms(c):
-                    note, med, lo, hi = '', None, None, None
-                    try:
-                        sql = eng.statement(c, arm)
-                        note = eng.precheck(arm, sql) or ''
-                        if not note:
-                            med, lo, hi, got = timed(eng.runner(arm, sql), runs)
-                            got = canon(got)
-                            if arm == 'pg':
-                                reference[c.id] = got
-                                if not got or got == [['']]:
-                                    log('%s: the answer is empty at %d rows, so the engines agree on nothing' % (c.id, a.rows))
-                            elif not same(reference[c.id], got):
-                                note = 'answers differ from PostgreSQL (%d rows against %d)%s' % (len(got), len(reference[c.id]), first_diff(reference[c.id], got))
-                                if eng.approximate(sql):
-                                    note = '%s: count(DISTINCT) is an estimate in this engine' % note
-                                else:
-                                    failures.append('%s: %s %s' % (c.id, arm, note))
-                    except Unsupported as u:
-                        note = str(u)
-                    if note:
-                        med = lo = hi = None
-                        skipped.setdefault(arm, []).append('%s: %s' % (c.id, note))
-                    results.append((c.id, arm, med, lo, hi, open('/proc/loadavg').read().split()[0], note))
+                run_suite(eng, [c for c in cases if c.dataset == suite])
+                eng.unload(suite, a.work)
         finally:
             eng.down()
 

@@ -12,7 +12,7 @@ class Engine(PgServer):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.dist = set()   # the suites with distributed tables
+        self.dist, self.ready = set(), False   # the suites with distributed tables; the node and the schema dist are set up
 
     def arms(self, case):
         return ['citus'] + ['citus_dist'] * (case.dataset in self.dist)
@@ -26,12 +26,19 @@ class Engine(PgServer):
     def arm_settings(self, arm):
         return ['SET search_path TO dist, public'] * (arm == 'citus_dist')
 
+    def unload(self, suite, work):
+        for table in self.schemas[suite]:
+            self.psql('bench', 'DROP TABLE IF EXISTS dist.%s CASCADE' % table, check=False)
+        self.dist.discard(suite)
+        super().unload(suite, work)
+
     def load(self, suite, work):
         super().load(suite, work)
         path = os.path.join(SQL, suite, 'citus.sql')
         if not os.path.exists(path):
             return
-        if not self.dist:
+        if not self.ready:
+            self.ready = True
             self.psql('bench', "SELECT citus_set_coordinator_host('localhost', 5432); SELECT citus_set_node_property('localhost', 5432, 'shouldhaveshards', true); CREATE SCHEMA dist")
         self.dist.add(suite)
         for table, cols in self.schemas[suite].items():

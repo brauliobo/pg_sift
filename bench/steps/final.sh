@@ -43,7 +43,7 @@ done
 preset "$SIZE" || die "unknown size $SIZE ($PRESETS)"
 [[ -z $DOCS || $SIZE == standard || $SIZE == full ]] || die "--docs publishes numbers: they are only measured at --size standard or full, not $SIZE"
 FWD+=(--size "$SIZE")
-[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=94 || BUDGET=25; }; }
+[[ -n $BUDGET ]] || { [[ $SIZE == full ]] && BUDGET=0 || { [[ $SIZE == standard ]] && BUDGET=96 || BUDGET=25; }; }
 SIZES=$P_ROWS; [[ $SIZE != full ]] || SIZES=1000000,10000000
 OUT=$BENCH/out/run-final-$SIZE; GAPOUT=$OUT   # one directory per size: `bench resume` finds it and the stages find their runs in it
 export STAGE_STATE=$STORE/final-state/$SIZE STAGE_LOG=$GAPOUT/stages.tsv
