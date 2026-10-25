@@ -64,13 +64,21 @@ C=$(backend primary "SET sift.verdict_cache_kb = 0")
 check "the setting at 0 plans in full, and the plan is the same" test "$(stat "$C")|$(plan_of "$C")" == "$FULL|$(plan_of "$A")"
 
 # two backends meet the same new statement (a REINDEX moves the key); the first waits at the gate after its lookup, the second plans and keeps the verdict
-sql primary "REINDEX INDEX events_col" >/dev/null
+sql primary "REINDEX INDEX events_col" >/dev/null || bail "reindex failed"
 coproc HOLD { sql primary; }
 echo "SELECT pg_advisory_lock(20984, 1);" >&"${HOLD[1]}"
 wait_for "the lock is held" n_locks granted 1
 backend primary "SET sift.test_verdict_gate = on" >"$(dir primary)/gated.out" 2>&1 &
 GATED=$!
-wait_for "the backend is at the gate" n_locks "NOT granted" 1
+# the gated backend is the one waiting for the advisory lock; if it ended instead, its output says whether it found a verdict (no wait) or failed
+at_gate() { [[ $(sql primary "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'") == 1 ]]; }
+for _ in $(seq 300); do
+	at_gate && break
+	kill -0 "${HOLD_PID}" 2>/dev/null || bail "the session that holds the lock ended"
+	kill -0 "$GATED" 2>/dev/null || bail "the gated backend ended without waiting at the gate: $(cat "$(dir primary)/gated.out")"
+	sleep 0.1
+done
+at_gate || bail "timeout: the backend is at the gate"
 D=$(backend primary)
 check "the statement is planned in full by the backend that was not held" test "$(stat "$D")" == "$FULL"
 echo "SELECT pg_advisory_unlock(20984, 1);" >&"${HOLD[1]}"
