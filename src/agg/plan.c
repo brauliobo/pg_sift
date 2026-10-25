@@ -606,7 +606,7 @@ parallel_workers(AggCtx *c, SiftAggSpec *s)
 		if (leaf_of(c, s->leaves[i])->wide)
 			return 0;
 	/* the leader writes the lookup tables to the shared memory and each worker maps them: a scan of fewer rows than AGG_SHARE_RATIO for each of their rows does not pay for it */
-	if (agg_share_rows(c) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
+	if (agg_share_rows(c, s) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
 		return 0;
 	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
 }

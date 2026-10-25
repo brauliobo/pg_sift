@@ -629,7 +629,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.2 · default on
 
 - **What it does:** the table of a lookup join loads only the rows its own conditions can match, and keeps its rows between queries (backend cache, shared memory)
-- **Gain:** semi join of a group of 1,000 keys, 3,000,000 rows: generic lookup join 70.8 to 22.9 ms, byte table 24.8 to 5.5 ms
+- **Gain:** semi join of a group of 1,000 keys, 3,000,000 rows: generic lookup join 70.8 to 22.9 ms, byte table 24.8 to 5.5 ms; keyed by a dependent lookup (a CTE of ids joined to the table of their rows, 90,000 rows, 1,500,000 events): 1 key 83.6 to 1.1 ms, 1,000 keys 101.8 to 30.5 ms, 12,000 keys unchanged
 - **Impact:** index size: -; build, merge and writes: -; other: memory: up to 256 MB a backend, and shared memory of 5% of shared_buffers by default; the memory limits stop a larger table from being loaded
 - **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
 - **Default:** on — On: group of 1,000 keys over 3,000,000 rows, generic lookup join 70.8 to 22.9 ms and byte table 24.8 to 5.5 ms; the worst case is a tie (100,000 keys 30.4 against 31.3 ms).

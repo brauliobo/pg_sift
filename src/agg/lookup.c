@@ -832,6 +832,128 @@ map_kept_keep(Relation rel, const KeptTry *t, MapTab *m, MemoryContext cxt)
 		lookshm_unclaim(t->key);
 }
 
+/*
+ * A lookup table whose rows make a tuple only with the keys of another lookup: a later inner or semi join keyed by a column of the table alone (the ids of the
+ * request joined to the table of their rows), or a child plan (a CTE or sub-select of ids) inner or semi joined on the same leaf of the scan as the table is.
+ * The dependent of the fewest keys, with the column of the table that holds them (att, of the integer type typ): -1 when there is none.
+ */
+static int
+map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ)
+{
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
+	int			best = -1;
+	uint32		nbest = 0;
+
+	if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nidx > 0 || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
+		return -1;
+	for (int cd = 0; cd < s->ncombo; cd++)
+	{
+		const SiftAggCombo *cc = &s->combo[cd];
+		const SiftAggJoin *dj;
+		int			a = 0;
+		Oid			t = InvalidOid;
+
+		if (cd == ci || cc->join < 0 || cc->level != 0)
+			continue;
+		dj = &s->join[cc->join];
+		if ((dj->kind != SJ_INNER && dj->kind != SJ_SEMI) || dj->params != NIL || dj->nkey != 1 || dj->keynull[0])
+			continue;
+		if (combo_prior_keyed(ex, cd, ci))
+		{
+			int			c = dj->keyexpr[0] != NULL && IsA(dj->keyexpr[0], Param) ? cc->refcol[((Param *) dj->keyexpr[0])->paramid] : -1;
+
+			if (c >= 0 && c < j->ncol)
+			{
+				a = j->colatt[c];
+				t = j->coltype[c];
+			}
+		}
+		else if (dj->child >= 0 && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && dj->keypos[0] >= 0 &&
+				 cc->leaf[dj->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
+		{
+			a = j->keyatt[0];
+			t = j->keytype[0];
+		}
+		if (a <= 0 || (t != INT4OID && t != INT8OID))
+			continue;
+		if (ex->cs[cd].map == NULL)
+			ex->cs[cd].map = map_load(ex, cd);
+		if (ex->cs[cd].map->ktext[0])
+			continue;
+		if (best < 0 || ex->cs[cd].map->kd[0].n < nbest)
+		{
+			best = cd;
+			nbest = ex->cs[cd].map->kd[0].n;
+			*att = a;
+			*typ = t;
+		}
+	}
+	return best;
+}
+
+/*
+ * The rows of a table that its dependent lookup keys, read through a btree on the column: one probe a key, where the table is read page by page. It pays while the keys
+ * are few against the pages (sift_agg_probe_pays). Returns the index opened, with the scan key of the array of keys; NULL: read the table whole.
+ */
+static Relation
+map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key)
+{
+	const MapTab *dm;
+	Relation	best = NULL;
+	Oid			typ = InvalidOid;
+	double		rpk;
+	bool		unique = false;
+	int			att = 0,
+				cd = map_keyed_dependent(ex, ci, &att, &typ);
+	Datum	   *vals;
+	int			n = 0;
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+
+	if (cd < 0)
+		return NULL;
+	dm = ex->cs[cd].map;
+	foreach_oid(ioid, RelationGetIndexList(rel))
+	{
+		Relation	idx = index_open(ioid, AccessShareLock);
+
+		if (best == NULL && idx->rd_rel->relam == BTREE_AM_OID && idx->rd_index->indisvalid && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+			idx->rd_index->indkey.values[0] == att && idx->rd_opcintype[0] == typ)
+		{
+			best = idx;
+			unique = idx->rd_index->indisunique && idx->rd_index->indnkeyatts == 1;
+		}
+		else
+			index_close(idx, AccessShareLock);
+	}
+	if (best == NULL)
+		return NULL;
+	rpk = sift_agg_rows_per_key(RelationGetRelid(rel), att, rel->rd_rel->reltuples);
+	if ((rpk <= 0 && !unique) || !sift_agg_probe_pays(dm->kd[0].n, dm->kd[0].n * Max(rpk, 1.0), RelationGetNumberOfBlocks(rel)))
+	{
+		index_close(best, AccessShareLock);
+		return NULL;
+	}
+	vals = palloc((dm->kd[0].n + 1) * sizeof(Datum));
+	for (uint32 i = 0; i < dm->kd[0].n; i++)
+	{
+		int64		v = dm->kd[0].ival[i];
+
+		if (typ == INT4OID && (v < PG_INT32_MIN || v > PG_INT32_MAX))
+			continue;			/* no int4 value equals it */
+		vals[n++] = typ == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
+	}
+	get_typlenbyvalalign(typ, &typlen, &typbyval, &typalign);
+	ScanKeyEntryInitialize(key, SK_SEARCHARRAY, 1, BTEqualStrategyNumber, typ, InvalidOid,
+						   get_opcode(get_opfamily_member(best->rd_opfamily[0], typ, typ, BTEqualStrategyNumber)),
+						   PointerGetDatum(construct_array(vals, n, typ, typlen, typbyval, typalign)));
+	pfree(vals);
+	return best;
+}
+
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 static MapTab *
 map_load_table(AggExec *ex, int ci, MemoryContext cxt)
@@ -868,6 +990,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys) : NULL;
+	if (idx == NULL && !none && sift_agg_lookup_pushdown && j->nidx == 0 && (idx = map_probe(ex, ci, rel, keys)) != NULL)
+		nkeys = 1;
 	if (idx == NULL && !none && (m = map_kept_find(ex, ci, rel, cxt, own != NULL, &kept)) != NULL)
 	{
 		MemoryContextSwitchTo(old);
@@ -1088,6 +1212,8 @@ MapTab *
 map_load(AggExec *ex, int ci)
 {
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
+	int			att;
+	Oid			typ;
 
 	if (ex->pmaps && ex->pmaps[ci])
 		return map_share_attach(ex->pmaps[ci], j, ex->cxt);
@@ -1095,7 +1221,7 @@ map_load(AggExec *ex, int ci)
 		return map_new(j, false, ex->cxt);
 	if (j->child >= 0)
 		return map_load_child(ex, ci);
-	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) ? map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
+	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) && !(sift_agg_lookup_pushdown && map_keyed_dependent(ex, ci, &att, &typ) >= 0) ? map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
 }
 
 /*

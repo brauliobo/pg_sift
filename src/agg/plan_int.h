@@ -403,7 +403,7 @@ extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
-extern double agg_share_rows(AggCtx *c);
+extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);

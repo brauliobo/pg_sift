@@ -65,6 +65,7 @@
 #include "agg/dist_int.h"
 #include "agg/search.h"
 #include "agg/plan_int.h"
+#include "agg/agg_int.h"
 
 /*
  * The executor's cost per value in units of cpu_operator_cost (about 3 ns: docs/COL-PLAN.md, "Cost", fitted on whole table runs of
@@ -1512,12 +1513,114 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
-/* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
-static double
-join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
+/*
+ * A lookup table that a dependent lookup keys is read by a btree probe for each of its `keys`: a descent each and a heap page for each of the `rows` they find (at most
+ * the table's pages), all random pages. It pays while that costs less than the pages of the table at the page cost of PostgreSQL's own scan of them (as join_load_rows
+ * prices a table read whole).
+ */
+bool
+sift_agg_probe_pays(double keys, double rows, double pages)
 {
+	return (keys + Min(rows, pages)) * random_page_cost < pages * Min(seq_page_cost, random_page_cost);
+}
+
+/* the rows a value of column att has: the rows of the table over the distinct values its statistics say; 0 when they say nothing */
+double
+sift_agg_rows_per_key(unsigned int relid, int att, double tuples)
+{
+	HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(relid), Int16GetDatum(att), BoolGetDatum(false));
+	double		nd;
+
+	if (!HeapTupleIsValid(tp))
+		return 0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+	ReleaseSysCache(tp);
+	if (nd < 0)
+		nd = -nd * tuples;
+	return nd > 0 && tuples > 0 ? Max(tuples / nd, 1.0) : 0;
+}
+
+/*
+ * The keys of a dependent lookup that the loader probes in a btree of the table (map_keyed_dependent and map_probe in agg/lookup.c): an inner or semi join keyed by a
+ * column of the table alone, or a child plan inner or semi joined on the same leaf of the scan, when a btree starts with the column and the probes cost less than its pages
+ * (sift_agg_probe_pays). 0: the table is read whole. The keys are the rows PostgreSQL expects of the dependent lookup, taken as the geometric mean with the table's rows
+ * when it has no statistics for them (join_key_zone).
+ */
+static double
+join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
+{
+	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	const SiftAggCombo *cb = &s->combo[jc->combo];
+	const SiftAggJoin *j = &jc->j;
+	double		tuples = Max(jrel->tuples, 1.0),
+				best = 0;
+
+	*rows = 0;
+	if (!sift_agg_lookup_pushdown || (j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nidx > 0 || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
+		return 0;
+	foreach_ptr(JoinCtx, dj, c->joins)
+	{
+		const SiftAggCombo *cc = &s->combo[dj->combo];
+		const SiftAggJoin *d = &dj->j;
+		int			att = 0;
+		Oid			typ = InvalidOid;
+		double		keys,
+					rpk;
+		bool		usable = false,
+					unique = false;
+
+		if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
+			continue;
+		if (dependent_join(c, s, jc) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
+		{
+			int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
+
+			if (col >= 0 && col < j->ncol)
+			{
+				att = j->colatt[col];
+				typ = j->coltype[col];
+			}
+		}
+		else if (dj->cpath != NULL && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && d->keypos[0] >= 0 &&
+				 cc->leaf[d->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
+		{
+			att = j->keyatt[0];
+			typ = j->keytype[0];
+		}
+		if (att <= 0 || (typ != INT4OID && typ != INT8OID))
+			continue;
+		foreach_node(IndexOptInfo, ii, jrel->indexlist)
+			if (ii->relam == BTREE_AM_OID && ii->indpred == NIL && !ii->hypothetical && ii->indexkeys[0] == att)
+			{
+				usable = true;
+				unique |= ii->unique && ii->nkeycolumns == 1;
+			}
+		if (!usable)
+			continue;
+		rpk = sift_agg_rows_per_key(planner_rt_fetch(jc->rti, c->root)->relid, att, tuples);
+		if (rpk <= 0 && !unique)
+			continue;
+		rpk = Max(rpk, 1.0);
+		keys = lookup_rows(c, dj);
+		keys = Min(!lookup_counted(c, dj) ? sqrt(keys * tuples) : keys, tuples);
+		if (sift_agg_probe_pays(keys, keys * rpk, jrel->pages) && (best == 0 || keys < best))
+		{
+			best = keys;
+			*rows = keys * rpk;
+		}
+	}
+	return best;
+}
+
+/* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities or the keys of a dependent lookup, the rest of a table is read whole */
+static double
+join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
+{
+	PlannerInfo *root = c->root;
 	RelOptInfo *jrel = root->simple_rel_array[jc->rti];
-	double		tuples = Max(jrel->tuples, 1.0);
+	double		tuples = Max(jrel->tuples, 1.0),
+				probes,
+				prows;
 
 	if (jc->cpath != NULL)
 	{
@@ -1529,6 +1632,12 @@ join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
 		*row_cost = AGG_IDX_ROW;
 		return Min(Max(jrel->rows, 1.0), tuples);
 	}
+	if ((probes = join_probe_keys(c, s, jc, &prows)) > 0)
+	{
+		/* the descents and the pages of the rows found, as sift_agg_probe_pays counts them: the price meets that of the whole table where the rule turns */
+		*row_cost = AGG_IDX_ROW + (probes + Min(prows, jrel->pages)) * random_page_cost / (Max(prows, 1.0) * cpu_operator_cost);
+		return Max(prows, 1.0);
+	}
 	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
 	*row_cost = AGG_JOIN_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	return tuples;
@@ -1536,7 +1645,7 @@ join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
 
 /* the rows of the lookup tables a parallel scan has the leader write to the shared memory (agg/lookshare.c) */
 double
-agg_share_rows(AggCtx *c)
+agg_share_rows(AggCtx *c, SiftAggSpec *s)
 {
 	double		rows = 0;
 
@@ -1545,7 +1654,7 @@ agg_share_rows(AggCtx *c)
 		double		row_cost;
 
 		if (jc->j.params == NIL)
-			rows += join_load_rows(jc, c->root, &row_cost);
+			rows += join_load_rows(c, s, jc, &row_cost);
 	}
 	return rows;
 }
@@ -1582,7 +1691,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 				k->child_cost += native;
 			continue;
 		}
-		rows = join_load_rows(jc, c->root, &row_cost);
+		rows = join_load_rows(c, s, jc, &row_cost);
 		k->load_rows += rows;
 		k->load_cost += rows * row_cost;
 		if (jc->cpath != NULL)
