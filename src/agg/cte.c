@@ -25,6 +25,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
@@ -114,29 +115,146 @@ shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 	return reads_indexed_table(q, siblings, 4, 1);
 }
 
+/* does the query hold a Var of a level above the sub-select it is walked as? depth: the sub-selects below it */
+static bool
+outer_var_walker(Node *n, int *depth)
+{
+	bool		found;
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varlevelsup > *depth;
+	if (!IsA(n, Query))
+		return expression_tree_walker(n, outer_var_walker, depth);
+	(*depth)++;
+	found = query_tree_walker((Query *) n, outer_var_walker, depth, 0);
+	(*depth)--;
+	return found;
+}
+
+/* does the query, or a sub-select of it, aggregate, window or combine rows (work, not a lookup of a table)? */
+static bool
+computes_walker(Node *n, void *context)
+{
+	Query	   *q;
+
+	if (n == NULL)
+		return false;
+	if (!IsA(n, Query))
+		return expression_tree_walker(n, computes_walker, context);
+	q = (Query *) n;
+	return q->hasAggs || q->hasWindowFuncs || q->groupClause != NIL || q->distinctClause != NIL || q->setOperations != NULL ||
+		query_tree_walker(q, computes_walker, context, 0);
+}
+
+/*
+ * A shared CTE written inline is copied into every query that reads it, with the sub-selects of its WHERE: one that computes something (the ranking
+ * of the keys with the most rows, two aggregates of the table) is then planned and run once per copy. It becomes a CTE of the same WITH, read
+ * by the copies, which PostgreSQL computes once. Only an IN sub-select that reads nothing of the query around it moves.
+ */
+static void
+hoist_sublinks(Node *quals, List **hoisted, int *nhoist)
+{
+	if (quals != NULL && IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == AND_EXPR)
+	{
+		foreach_ptr(Node, arg, ((BoolExpr *) quals)->args)
+			hoist_sublinks(arg, hoisted, nhoist);
+	}
+	else if (quals != NULL && IsA(quals, SubLink))
+	{
+		SubLink    *sl = (SubLink *) quals;
+		Query	   *sub;
+		int			depth = 0;
+
+		if (sl->subLinkType != ANY_SUBLINK || !IsA(sl->subselect, Query))
+			return;
+		sub = castNode(Query, sl->subselect);
+		if (!computes_walker((Node *) sub, NULL) || query_tree_walker(sub, outer_var_walker, &depth, 0))
+			return;
+		{
+			CommonTableExpr *h = makeNode(CommonTableExpr);
+			Query	   *read = makeNode(Query);
+			RangeTblEntry *rte = makeNode(RangeTblEntry);
+			RangeTblRef *rtr = makeNode(RangeTblRef);
+
+			/* the sub-select leaves the CTE body for the WITH: the CTEs it reads are one level nearer */
+			IncrementVarSublevelsUp((Node *) sub, -1, 2);
+			h->ctename = psprintf("sift_hoisted_%d", ++*nhoist);
+			h->ctematerialized = CTEMaterializeAlways;
+			h->ctequery = (Node *) sub;
+			h->cterefcount = 1;
+			h->location = -1;
+			foreach_node(TargetEntry, tle, sub->targetList)
+			{
+				if (tle->resjunk)
+					continue;
+				h->ctecolnames = lappend(h->ctecolnames, makeString(tle->resname));
+				h->ctecoltypes = lappend_oid(h->ctecoltypes, exprType((Node *) tle->expr));
+				h->ctecoltypmods = lappend_int(h->ctecoltypmods, exprTypmod((Node *) tle->expr));
+				h->ctecolcollations = lappend_oid(h->ctecolcollations, exprCollation((Node *) tle->expr));
+			}
+			rte->rtekind = RTE_CTE;
+			rte->ctename = h->ctename;
+			rte->ctelevelsup = 2;
+			rte->coltypes = h->ctecoltypes;
+			rte->coltypmods = h->ctecoltypmods;
+			rte->colcollations = h->ctecolcollations;
+			rte->eref = makeAlias(h->ctename, h->ctecolnames);
+			rte->inFromCl = true;
+			rtr->rtindex = 1;
+			read->commandType = CMD_SELECT;
+			read->querySource = QSRC_ORIGINAL;
+			read->canSetTag = true;
+			read->rtable = list_make1(rte);
+			read->jointree = makeFromExpr(list_make1(rtr), NULL);
+			for (int i = 0; i < list_length(h->ctecolnames); i++)
+				read->targetList = lappend(read->targetList,
+										   makeTargetEntry((Expr *) makeVar(1, i + 1, list_nth_oid(h->ctecoltypes, i), list_nth_int(h->ctecoltypmods, i),
+																		   list_nth_oid(h->ctecolcollations, i), 0),
+														   i + 1, strVal(list_nth(h->ctecolnames, i)), false));
+			sl->subselect = (Node *) read;
+			*hoisted = lappend(*hoisted, h);
+		}
+	}
+}
+
 /* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
 typedef struct SharedCteWalk
 {
 	bool		inline_them;
 	List	   *names;
+	int			hoisted;
 } SharedCteWalk;
 
 /* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With inline_them the walk goes on (it is of a copy of the query) */
 static bool
 shared_cte_walker(Node *n, SharedCteWalk *w)
 {
+	List	   *ctes = NIL;
+
 	if (n == NULL)
 		return false;
 	if (!IsA(n, Query))
 		return expression_tree_walker(n, shared_cte_walker, w);
 	foreach_node(CommonTableExpr, cte, ((Query *) n)->cteList)
+	{
+		Query	   *body = castNode(Query, cte->ctequery);
+
 		if (shared_cte_over_column_index(cte, ((Query *) n)->cteList))
 		{
 			if (!w->inline_them)
 				return true;
 			cte->ctematerialized = CTEMaterializeNever;
 			w->names = lappend(w->names, cte->ctename);
+			/* ahead of the CTE: the WITH is read in order */
+			if (body->cteList == NIL && body->jointree != NULL)
+				hoist_sublinks(body->jointree->quals, &ctes, &w->hoisted);
 		}
+		ctes = lappend(ctes, cte);
+	}
+	if (w->inline_them)
+		((Query *) n)->cteList = ctes;
 	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
 }
 
