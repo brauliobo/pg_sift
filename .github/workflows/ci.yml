@@ -113,6 +113,7 @@ jobs:
         run: |
           # a pull request: one PostgreSQL 18 job, the regression tests of the areas the diff touches (`jobs`, narrower than the push's: scripts/areas.tsv `fast:` rows) and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
+          set -o pipefail   # a jq error must fail the step: an empty matrix skips every test job and the gate passes
           d=; [ "$DEEP" = true ] && d=1
           jq -nc --argjson full17 "$(scripts/ci.sh --shards 17 $d)" --argjson full18 "$(scripts/ci.sh --shards 18 $d)" --argjson n "${NSHARDS:-1}" --arg cipr "$CIPR" --arg cassert "$CASSERT" --arg cassertjobs "$CASSERTJOBS" --arg label "$LABEL_ASSERTIONS" --argjson heavy "$HEAVY" --argjson deep "$DEEP" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
             if $event == "pull_request" then (if $cipr == "true" and $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end)
@@ -121,7 +122,7 @@ jobs:
             + (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
               + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
               + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}]
-              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: "^installcheck-agg_(cte_|.*_cost$|.*_scope$|.*lateral|.*subplan|plan_|nested_ctes|.*placeholder|statement_cte)|" + $cassertjobs, cassert: true}] else [] end) end
+              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: ("^installcheck-agg_(cte_|.*_cost$|.*_scope$|.*lateral|.*subplan|plan_|nested_ctes|.*placeholder|statement_cte)|" + $cassertjobs), cassert: true}] else [] end) end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
