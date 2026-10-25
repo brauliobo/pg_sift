@@ -233,7 +233,8 @@ typedef struct GOrdLeaf
 	uint64		at;
 	uint64		bytes;
 	SiftCGOrdHdr hdr;
-	SiftCGOrdDir *dir;
+	uint8	   *dir;			/* the header and the directory bytes, read on first use and checked entry by entry as they are used (verify checks them all) */
+	uint64		gat;			/* a grouped block: where its groups start in the block */
 } GOrdLeaf;
 
 typedef struct SegPriv

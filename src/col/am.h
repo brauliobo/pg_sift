@@ -103,6 +103,7 @@ extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_key_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);
 extern void sift_col_validate_order_array_columns(const char *value);
+extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
@@ -132,7 +133,8 @@ extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 
 /* Key-cut units */
 extern bool sift_col_index_keyed(Oid indexoid);
-extern uint32 sift_colk_unit_rows(Relation index);
+extern uint32 sift_colk_unit_rows(uint32 aim);
+extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);

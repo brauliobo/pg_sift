@@ -770,11 +770,13 @@ topn_same_scale(Oid a, Oid b)
 }
 
 /*
- * The condition of the scan as the global order of the key tests it, when it is all comparisons of the key with constants of its own type (an operand that
- * is NULL is no row: the units answer it)
+ * The condition of the scan as the heap row is tested against it, when it is all comparisons of integer, date or time columns with constants of their type (an
+ * operand that is NULL is no row: the units answer it). A column that is not the first sort key is tested on the heap row; the scan accepts it only where the first
+ * is pinned (an equality in the same conjunction: the page after a key) or an array grouped by the column answers it (sift_topn_gorder), or it would read the array from the
+ * bound to the end for rows that few of them pass; `pinned` says the first is.
  */
 static SiftTopGPred *
-topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf)
+topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 {
 	SiftTopGPred *g = palloc0(sizeof(SiftTopGPred));
 
@@ -783,12 +785,15 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf)
 		g->kind = p->kind == SAP_AND ? STG_AND : STG_OR;
 		g->nchild = p->nchild;
 		g->child = palloc(p->nchild * sizeof(SiftTopGPred *));
+		for (int i = 0; p->kind == SAP_AND && i < p->nchild && !pinned; i++)
+			pinned = p->child[i]->kind == SAP_CMP && p->child[i]->leaf == keyleaf && p->child[i]->op == SCMP_EQ;
 		for (int i = 0; i < p->nchild; i++)
-			if ((g->child[i] = topn_gpred(ex, p->child[i], keyleaf)) == NULL)
+			if ((g->child[i] = topn_gpred(ex, p->child[i], keyleaf, pinned)) == NULL)
 				return NULL;
 		return g;
 	}
-	if (p->kind == SAP_CMP && p->leaf == keyleaf && p->level == 0 && !p->late && topn_same_scale(p->argtype, ex->lay->leaf[keyleaf].typid))
+	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&
+		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
@@ -800,23 +805,31 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf)
 			return NULL;
 		g->kind = STG_CMP;
 		g->op = p->op;
+		g->lead = p->leaf == keyleaf;
+		g->pinned = pinned;
+		g->leaf = p->leaf;
+		g->typid = ex->lay->leaf[p->leaf].typid;
 		g->val = sift_aggspec_operand_int(p->argtype, d);
 		return g;
 	}
 	return NULL;
 }
 
-/* all conjuncts of the scan as one condition: NULL when there are none or the order of the key cannot answer one */
+/* all conjuncts of the scan as one condition: NULL when the order of the key cannot answer one */
 static SiftTopGPred *
 topn_gcond(AggExec *ex, const SiftTopN *t)
 {
 	SiftTopGPred *g = palloc0(sizeof(SiftTopGPred));
+	int			keyleaf = sift_topn_leaf(t, 0);
+	bool		pinned = false;
 
 	g->kind = STG_AND;
 	g->nchild = ex->spec->npred;
 	g->child = palloc(g->nchild * sizeof(SiftTopGPred *));
 	for (int i = 0; i < g->nchild; i++)
-		if ((g->child[i] = topn_gpred(ex, ex->spec->pred[i], sift_topn_leaf(t, 0))) == NULL)
+		pinned |= ex->spec->pred[i]->kind == SAP_CMP && ex->spec->pred[i]->leaf == keyleaf && ex->spec->pred[i]->op == SCMP_EQ;
+	for (int i = 0; i < g->nchild; i++)
+		if ((g->child[i] = topn_gpred(ex, ex->spec->pred[i], keyleaf, pinned)) == NULL)
 			return NULL;
 	return g;
 }

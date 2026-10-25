@@ -21,6 +21,9 @@ typedef struct SiftGBound
 	bool		has_hi;
 	int64		lo;
 	int64		hi;
+	int			npin;			/* conditions leaf = value of the query: a global order grouped by one of the leaves reads the entries of that group only, and cannot answer without it */
+	int			pinleaf[4];
+	int64		pinval[4];
 } SiftGBound;
 
 /* The merge for a scan that wants rows rows. NULL when the source has no global order of the leaf, or its write buffers hold too many rows to sort for so few (sift_colsrc_gorder_open) */
@@ -28,5 +31,7 @@ extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool des
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
 extern void sift_gord_rewind(SiftGOrd *g);
+/* The leaf the arrays are grouped by, whose pinned value the scan reads the entries of; -1 when they are not grouped */
+extern int	sift_gord_group(const SiftGOrd *g);
 
 #endif

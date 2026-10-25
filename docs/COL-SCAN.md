@@ -4,7 +4,7 @@ A `sift_col` index built with the operator classes `sift.col_*_ops` is a **bitma
 
 ```sql
 CREATE INDEX ON items USING sift_col (id sift.col_int4_ops, kind sift.col_text_ops, ts sift.col_timestamptz_ops);
-SET sift.enable_col_scan = on;      -- off by default
+SET sift.enable_col_scan = on;      -- on by default; off keeps the planner from bitmap scans of the index
 SELECT * FROM items WHERE kind = 'cat_a' AND ts >= '2024-03-01' AND ts < '2024-03-02';   -- Bitmap Heap Scan, no leading column needed
 ```
 
@@ -29,7 +29,7 @@ SELECT * FROM items WHERE kind = 'cat_a' AND ts >= '2024-03-01' AND ts < '2024-0
 - A column with a point directory (`point_columns`) keeps the units that hold its keys' rows, `1 - exp(-rows / units)` of them for a random layout, and only those rows are filtered; rows come from the clause's selectivity, so a generic plan prices a parameter as its constant. An `IN` list is answered by the directory up to 65,536 keys (past 64, while it names under a sixteenth of the rows): a key costs 1.2 to 2 microseconds, 100 keys 0.13 ms, 1,000 keys 1.0 ms at 800,000 rows (answered from the units instead: 2.8 and 14 ms).
 - Pick quality against SiftAgg and the heap: 12 of 96 (query, size) picks in the tables below were more than 1.3 times slower than the best other plan, none by more than 0.5 ms (worst: `count(*)` with an `IN` list of 100 values at 25,000 rows, SiftAgg 0.27 ms against 0.74 ms). The one larger loss: `count(*) WHERE rnd IS NULL` on 1,000,000 rows with no NULL, where the planner keeps SiftAgg (2.45 ms) and the bitmap scan takes 0.06 ms (the zones hold no NULL). A range at 0.1% to 80% of the table picks the bitmap scan up to 40% and the heap scan at 80%, where the plans are within 10% of each other.
 
-**Setting** `sift.enable_col_scan` (default off): off, the planner builds no bitmap path on a `sift_col` index (it also holds when `enable_seqscan` is off). The index stays in the relation's index list, SiftAgg reads it as before.
+**Setting** `sift.enable_col_scan` (default on): off, the planner builds no bitmap path on a `sift_col` index (it also holds when `enable_seqscan` is off). The index stays in the relation's index list, SiftAgg reads it as before.
 
 **Tuple by tuple** (`amgettuple`, `amcanreturn`, also under `sift.enable_col_scan`): the index offers an `Index Scan` and an `Index Only Scan` in the order of the units (it has no order to give: `amcanorder` is off). A plan that stops early (`LIMIT 10` without `ORDER BY`), reads a few rows or runs on the inner side of a nested loop does not build a bitmap. A query that needs only integer, date, timestamp, boolean, float and numeric columns of the index does not read the heap (the visibility map decides, as for a btree: `Heap Fetches` in `EXPLAIN`). `pg_stat_user_indexes` counts the scans and `EXPLAIN` shows `Index Searches`.
 

@@ -575,6 +575,23 @@ unit_put_directory_keyed(StringInfo out, const SiftKey *keys, uint32 nrows)
 	pfree(off);
 }
 
+Size
+sift_cunit_directory_bytes(const SiftKey *keys, uint32 nrows, bool keyed, uint32 sb, uint32 *pages)
+{
+	StringInfoData out;
+	Size		len;
+
+	initStringInfo(&out);
+	if (keyed)
+		unit_put_directory_keyed(&out, keys, nrows);
+	else
+		unit_put_directory(&out, keys, nrows, sb);
+	len = out.len;
+	*pages = ((const uint32 *) out.data)[2];	/* the third word of both heads */
+	pfree(out.data);
+	return len;
+}
+
 void
 sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
 				  Size *start, SiftCZone *zones)

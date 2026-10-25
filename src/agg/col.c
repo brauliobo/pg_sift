@@ -595,11 +595,11 @@ col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, ui
 }
 
 static int
-col_gorder_open(void *impl, int leaf, int rows)
+col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
 {
 	ColSource  *src = impl;
 
-	return sift_col_gorder_open(src->cs, leaf, rows);
+	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped);
 }
 
 static bool
@@ -608,10 +608,16 @@ col_gorder_info(void *impl, int i, int leaf, uint32 *entries, uint32 *values)
 	return sift_col_gorder_info(((ColSource *) impl)->cs, i, leaf, entries, values);
 }
 
-static uint32
-col_gorder_seek(void *impl, int i, int leaf, int64 key, bool after)
+static void
+col_gorder_range(void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
-	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, key, after);
+	sift_col_gorder_range(((ColSource *) impl)->cs, i, leaf, vs, ve, ns, ne);
+}
+
+static uint32
+col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after);
 }
 
 static uint32
@@ -844,6 +850,7 @@ static const SiftSrcProvider col_provider = {
 	.gorder_open = col_gorder_open,
 	.gorder_info = col_gorder_info,
 	.gorder_chunk = col_gorder_chunk,
+	.gorder_range = col_gorder_range,
 	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,

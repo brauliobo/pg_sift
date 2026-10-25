@@ -624,10 +624,11 @@ extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
  * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _chunk: the entries
  * [c * SIFT_CGORD_ROWS, + the count returned) as keys and heap addresses, each SIFT_CGORD_CAP slots.
  */
-extern int sift_col_gorder_open(SiftColSource *src, int col, int rows);
+extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
 extern uint32 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr);
-extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, int64 key, bool after);
+extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
+extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after);
 /*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap

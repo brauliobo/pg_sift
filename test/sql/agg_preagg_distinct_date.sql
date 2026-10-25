@@ -1,0 +1,34 @@
+-- count(DISTINCT date_column) reads the histogram of the column itself. A date that is not among the dimensions of the cube (it has 16, the sixteen columns
+-- before it took them) still has its calendar cells in the units, and a cell is a month or a year of days: the count of the cells is not the count of the days.
+-- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan
+-- (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+
+\ir test/agg_preagg_helpers.sql
+
+\ir test/agg_preagg_units.sql
+
+CREATE TABLE dc AS
+SELECT i AS id, i % 7 AS c1, i % 8 AS c2, i % 9 AS c3, i % 10 AS c4, i % 11 AS c5, i % 12 AS c6, i % 13 AS c7, i % 14 AS c8, i % 15 AS c9, i % 16 AS c10,
+       i % 17 AS c11, i % 18 AS c12, i % 19 AS c13, i % 20 AS c14, i % 21 AS c15, i % 22 AS c16, date '2024-01-01' + (hashint4(i) & 2147483647) % 400 AS dt
+FROM generate_series(1, 20000) i;
+CREATE INDEX dc_col ON dc USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, dt);
+VACUUM (FREEZE, ANALYZE) dc;
+
+SELECT q.shape, u.pre,
+       pa_rows(q.q, true, true) IS NOT DISTINCT FROM pa_rows(q.q, false, true) AND pa_rows(q.q, false, true) IS NOT DISTINCT FROM pa_rows(q.q, false, false) AS same,
+       pa_rows(q.q, false, false) AS rows
+FROM (VALUES ('days of the column', 'SELECT count(DISTINCT dt) FROM dc'),
+             ('a test of the column', 'SELECT count(DISTINCT dt) FROM dc WHERE dt >= date ''2024-06-01'''),
+             ('a test of another', 'SELECT count(DISTINCT dt) FROM dc WHERE c1 = 3'),
+             ('beside a sum', 'SELECT count(DISTINCT dt), sum(id) FROM dc'),
+             ('a key', 'SELECT c1, count(DISTINCT dt) FROM dc GROUP BY c1')) q(shape, q), LATERAL pa_units(q.q) u
+ORDER BY q.shape;
+
+DROP TABLE dc;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

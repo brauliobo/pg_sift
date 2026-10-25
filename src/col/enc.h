@@ -342,6 +342,9 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
 extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
 							  Size *start, SiftCZone *zones);
 
+/* The bytes of the row directory of the sorted keys of a unit: of superblock sb, or of a key-cut unit (keyed); *pages is the number of heap pages the keys fall in */
+extern Size sift_cunit_directory_bytes(const SiftKey *keys, uint32 nrows, bool keyed, uint32 sb, uint32 *pages);
+
 /*
  * Must the STR leaf col of the batch be stored inline in a segment whose dictionary of the leaf is seg: some string is over
  * SIFT_COL_DICT_MAX_ENTRY bytes, or the dictionary would exceed maxbytes with the strings the batch adds.

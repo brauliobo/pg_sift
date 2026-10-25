@@ -5,7 +5,7 @@
 # merge (the 112 of 128 entries stall); now it promotes and merges the other segments itself.
 . "$(dirname "$0")/lib.bash"
 
-plan 6
+plan 5
 node_init lock 9 "autovacuum = off"
 node_start lock || bail "start failed"
 # per database, which the worker reads as well

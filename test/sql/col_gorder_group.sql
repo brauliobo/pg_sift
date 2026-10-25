@@ -1,0 +1,86 @@
+-- The global order grouped by a column: the arrays of order_array_columns are sorted by the group and then the key, so a scan that pins the group
+-- (WHERE g = x ORDER BY k LIMIT n) reads the entries of that group only; the rows with no group are not in them, a query that does not pin the group reads the units. The answers are
+-- the heap's through NULL keys, NULL groups, ties, both directions, ranges and pages after a key, DML, a promotion, a merge and a REINDEX.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = notice;
+\set VERBOSITY terse
+
+CREATE TABLE gg (id int, g int, k int, t timestamp, pad text DEFAULT repeat('x', 200));
+ALTER TABLE gg ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO gg (id, g, k, t)
+SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7) % 9 END, CASE WHEN i % 31 = 0 THEN NULL ELSE (i * 7919) % 500 END,
+	   CASE WHEN i % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((i * 104729) % 90000) * interval '1 second' END
+FROM generate_series(1, 12000) i;
+-- a group that is only NULL keys, and a group of one row
+INSERT INTO gg (id, g, k, t) SELECT 20000 + i, 100, NULL, NULL FROM generate_series(1, 30) i;
+INSERT INTO gg (id, g, k, t) VALUES (20100, 101, 5, TIMESTAMP '2001-01-01');
+CREATE INDEX gg_i ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops, t sift.col_timestamp_ops)
+	WITH (order_columns = 'k, t', order_array_columns = 'k, t', order_array_group = 'g');
+SELECT sift.col_verify('gg_i');
+ANALYZE gg;
+
+-- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the array of the group
+CREATE FUNCTION gg_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
+END $$;
+
+CREATE FUNCTION gg_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', c, w, d, nl, l)), 1::bigint
+   FROM (VALUES ('k'), ('t')) q(c),
+		unnest(ARRAY['g = 3', 'g = 0', 'g = 8 AND id > 0', 'g = 100', 'g = 101', 'g = 500', 'g = 4 AND id > 6000', 'g = 2 AND id <= 3000']) w,
+		unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) l $$;
+SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+
+-- a range of the key and the page after a key inside the group
+SELECT result, count(*) FROM (
+	SELECT gg_chk(format('SELECT id, k FROM gg WHERE g = 5 AND %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
+	FROM unnest(ARRAY['k > 250', 'k <= 40', 'k BETWEEN 100 AND 120', 'k = 77', '(k, id) > (250, 5000)', 'k > 1000', 'k < 10 OR k > 490']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
+GROUP BY 1 ORDER BY 1;
+
+-- no pin on the group, or a condition that leaves no bound on the key: the units
+SELECT gg_chk('SELECT id, k FROM gg ORDER BY k, id LIMIT 10') AS no_group, gg_chk('SELECT id, k FROM gg WHERE g > 3 ORDER BY k, id LIMIT 10') AS group_range,
+	   gg_chk('SELECT id, k FROM gg WHERE g = 3 OR g = 4 ORDER BY k, id LIMIT 10') AS two_groups, gg_chk('SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k, id LIMIT 10') AS other_column;
+
+-- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge
+INSERT INTO gg (id, g, k, t) SELECT 30000 + i, i % 11, (i * 13) % 300 - 20, TIMESTAMP '2003-01-01' + i * interval '1 minute' FROM generate_series(1, 2500) i;
+DELETE FROM gg WHERE id % 11 = 0;
+UPDATE gg SET g = coalesce(g, 0) + 1 WHERE id % 7 = 0;
+UPDATE gg SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
+SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+VACUUM gg;
+SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
+SELECT sift.col_verify('gg_i');
+SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+SELECT sift.col_merge('gg_i'::regclass, true) >= 0 AS merged;
+SELECT sift.col_verify('gg_i');
+SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+-- a write buffer of more rows than the scan sorts for so few reads the units
+INSERT INTO gg (id, g, k, t) SELECT 50000 + i, 3, i, NULL FROM generate_series(1, 5000) i;
+SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS big_buffer;
+
+-- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
+DROP INDEX gg_i;
+CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k');
+SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;
+DROP INDEX gg_p;
+
+-- the option is validated: one column, an integer, date or timestamp, not an array column
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'k');
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'g, id');
+CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'pad');
+
+DROP TABLE gg CASCADE;
+DROP FUNCTION gg_chk(text), gg_all();
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

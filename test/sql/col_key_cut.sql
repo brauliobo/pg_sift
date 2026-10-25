@@ -18,8 +18,8 @@ VACUUM (FREEZE, ANALYZE) kc;
 VACUUM (FREEZE, ANALYZE) kp;
 SELECT sift.col_verify('kc_idx', true);
 
--- the segment is column format minor 17 with units of about 1,024 rows; the index without the option is not
-SELECT kind, format, units > 90 AS many_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
+-- the segment is column format minor 17 with units of about the rows of a superblock (the table was never analyzed); the index without the option is not
+SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT kind, format FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
 
 CREATE FUNCTION kchk(step text) RETURNS TABLE (after_step text, shape text, result text) LANGUAGE plpgsql AS $$

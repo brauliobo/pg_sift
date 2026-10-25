@@ -113,6 +113,7 @@ write_run(ColBuild *b, bool last)
 	int			n = list_length(b->held);
 	SiftColBatch **in = palloc_array(SiftColBatch *, n);
 	int			i = 0;
+	uint32		aim;
 	ListCell   *lc;
 
 	if (!last && b->nsegs + 1 >= b->maxsegs)
@@ -123,8 +124,9 @@ write_run(ColBuild *b, bool last)
 	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 	b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
-	sift_colw_set_keyed(b->w, sift_colk_aim_rows(b->index));
-	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->index), b->wcxt);
+	aim = sift_colk_run_rows(b->index, in, n);
+	sift_colw_set_keyed(b->w, aim);
+	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(aim), b->wcxt);
 	end_segment(b);
 	pfree(in);
 	list_free(b->held);

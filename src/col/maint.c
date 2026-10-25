@@ -180,7 +180,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
-			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(index), cx);
+			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx);
 		}
 		else if (unit_floor_applies(unit, nbrows, nb))
 		{
@@ -611,7 +611,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				sift_colw_set_preagg(w, pagg);
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
 			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, key_cut ? sift_col_rel(index)->cut : NULL, key_cut ? sift_col_rel(index)->ncut : 0,
-							key_cut ? sift_colk_unit_rows(index) : unit, maintenance_work_mem, pcx);
+							key_cut ? sift_colk_unit_rows(sift_colk_aim_rows(index)) : unit, maintenance_work_mem, pcx);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;

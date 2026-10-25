@@ -190,6 +190,15 @@ sift_col_validate_order_columns(const char *value)
 }
 
 void
+sift_col_validate_order_array_group(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_validate_order_array_columns(const char *value)
 {
 	const char *err = sift_crun_syntax(value);
@@ -243,8 +252,8 @@ sift_col_init(void)
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
-							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
-							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",
+							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
@@ -406,6 +415,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_array_columns",
 						 "the columns of order_columns (integer, date and timestamp) whose segments written from now on also keep every row's key and heap address sorted, so that ORDER BY column LIMIT n above 32 reads n entries whatever the number of units; 1 to 4 bytes a row for each column; the segments are column format minor 21 (default none)",
 						 "", sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_array_group",
+						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
+						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "hll_columns",
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
@@ -444,6 +456,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
 	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
+	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
 	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
@@ -607,6 +620,14 @@ sift_col_options_order_columns(Relation index)
 }
 
 const char *
+sift_col_options_order_array_group(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_group ? (const char *) o + o->order_array_group : "";
+}
+
+const char *
 sift_col_options_order_array_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
@@ -754,6 +775,25 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_columns(index), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
 										"not an integer, date or timestamp column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
+		if (sift_col_options_order_array_group(index)[0] != '\0')
+		{
+			bool		grp[SIFT_COL_MAX_COLS] = {false};
+			int			ng = 0;
+
+			if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_group(index), r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
+											"not an integer, date or timestamp column")) != NULL)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+			for (int i = 0; i < n; i++)
+				if (grp[i])
+				{
+					if (r->pagg.gorder[i])
+						ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: column \"%s\" is in order_array_columns", names[i])));
+					r->pagg.gorder_group = i + 1;
+					ng++;
+				}
+			if (ng != 1)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
+		}
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i])
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),

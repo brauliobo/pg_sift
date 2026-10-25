@@ -48,7 +48,7 @@ Medians of six runs, warm, PostgreSQL 18.6, the same table and answers with `sif
 | `SELECT customer_id, sum(amount) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 5` | 12 ms | 177 ms |
 | `SELECT country, category, count(*), sum(amount) FROM orders WHERE created_at >= '2025-06-01' AND created_at < '2025-07-01' GROUP BY 1, 2` | 20 ms | 30 ms |
 
-The last row is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the planner kept PostgreSQL's plan on this table, because the scan costs more than a parallel sequential scan. Full-text search is [below](#try-it-full-text-search).
+The last row is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen but runs in one process and is no faster than PostgreSQL's parallel plan ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
 
 **Use it** when the data stays in PostgreSQL and you want dashboards, reports or ranked search from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
 
@@ -70,7 +70,7 @@ The last row is a month of random dates, which no unit can skip: the gain is the
 
 ### Limitations and trade-offs
 
-**Known gap: a `numeric` without precision.** On a generated table of 1,000,000 rows, `GROUP BY` four values with `count`, `sum` and `avg` of a bare `numeric` column keeps PostgreSQL's plan: the scan is costed at 83,566 against 16,016 for the normal plan, and when forced it is slower (170 ms against 55 ms). With `numeric(10,2)` the scan is chosen and answers in 0.14 ms against 54 ms. Declare the precision of money-like columns until the cost model reads the bare type.
+**Known gap: a `numeric` without precision.** `GROUP BY` two columns (16 groups) with `count`, `sum` and `avg` of a bare `numeric` column takes the scan, but in one process, and it keeps the dictionary route of a numeric without a scale. Against PostgreSQL's own plan in one process it is about 2.3x faster (1,000,000 rows: 50.0 ms against 113 ms; 100,000 rows 9.0 against 12.0 ms; 10,000,000 rows 461 against 1,065 ms), but PostgreSQL's plan is parallel by default (2 workers per gather) and the scan is not: the scan is 10% slower at 1,000,000 rows (50.3 against 45.7 ms) and 13% slower at 10,000,000 (439 against 389 ms), and faster at 100,000 (7.7 against 12.1 ms). With `numeric(10,2)` the same query takes 5.8 ms against 44.6 ms at 1,000,000 rows and 21.9 against 392 ms at 10,000,000. Declare the precision of money-like columns.
 
 ## Quick start
 
@@ -213,7 +213,7 @@ Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-op
 
 ## Options
 
-143 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
+144 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
 <!-- sift-options:end -->
 
 ## Vulkan (experimental)
@@ -232,5 +232,5 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->524 regression tests (`test/sql`), 42 isolation specs, 91 TAP tests (`test/t`), 962 column fixtures and 252 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->526 regression tests (`test/sql`), 42 isolation specs, 91 TAP tests (`test/t`), 962 column fixtures and 252 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

@@ -333,9 +333,10 @@ sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint
 }
 
 int
-sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows)
+sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
 {
-	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows) : -1;
+	*grouped = -1;
+	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped) : -1;
 }
 
 bool
@@ -344,10 +345,16 @@ sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, ui
 	return src->prov->gorder_info(src->impl, i, leaf, entries, values);
 }
 
-uint32
-sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, int64 key, bool after)
+void
+sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
-	return src->prov->gorder_seek(src->impl, i, leaf, key, after);
+	src->prov->gorder_range(src->impl, i, leaf, vs, ve, ns, ne);
+}
+
+uint32
+sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	return src->prov->gorder_seek(src->impl, i, leaf, vs, ve, key, after);
 }
 
 uint32

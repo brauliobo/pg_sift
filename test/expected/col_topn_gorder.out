@@ -137,7 +137,34 @@ GROUP BY 1 ORDER BY 1;
  units        |    60
 (2 rows)
 
--- shapes that read the units: a second key, an OFFSET, a filter on another column
+-- more keys: the array gives the rows in the order of the first key, the groups of rows that share a value of it are put in order by the keys that follow, which the heap row
+-- holds, until the groups make the n rows; a page after a key (a row comparison, or its expansion) reads the array from the key
+CREATE FUNCTION gt_ks(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
+END $$;
+SELECT result, count(*) FROM (
+	SELECT gt_ks(format('SELECT id, %1$s FROM gt %2$s ORDER BY %1$s %3$s, id %4$s LIMIT %5$s', c, w, d, d2, l)) AS result
+	FROM (VALUES ('b', ''), ('b', 'WHERE (b, id) > (250, 5000)'), ('b', 'WHERE b > 250 OR (b = 250 AND id > 5000)'), ('b', 'WHERE (b, id) <= (40, 20000)'), ('b', 'WHERE b = 77'),
+				 ('a', ''), ('a', 'WHERE (a, id) >= (-3, 900)'), ('d', ''), ('d', 'WHERE (d, id) > (DATE ''1990-03-01'', 4000)'),
+				 ('t', 'WHERE (t, id) > (TIMESTAMP ''2000-03-01'', 1)'), ('c', 'WHERE c > 0 AND id > 10000')) q(c, w),
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['ASC', 'DESC']) d2, unnest(ARRAY[1, 10, 50, 400]) l) r
+GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |   160
+ units        |    16
+(2 rows)
+
+DROP FUNCTION gt_ks(text);
+-- shapes that read the units: an OFFSET, a filter on another column
 SELECT gt_chk('b', 'ASC', 'LAST', 50, 'WHERE a > 0');
  gt_chk 
 --------

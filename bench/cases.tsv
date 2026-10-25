@@ -98,7 +98,6 @@ lateral_comma_agg	`FROM x, LATERAL (SELECT sum(f.a) FROM f WHERE f.k = x.k)` (th
 exists_decor	`EXISTS (SELECT .. FROM f WHERE f.k = x.k AND ..)` and `NOT EXISTS` where PostgreSQL leaves a sub-plan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 index_pick	a table with several `sift_col` indexes is planned through the cheapest index	orders	default	Index: orders_col	native	-	ms	faster33	no
 window_first_rows	the first N rows of each group asked with a window function	orders	default+id	fallback:Bitmap Heap Scan on orders	native	-	ms	faster33	no
-group_order_window	emits its groups in that order	orders	default	Group Order Keys	native	-	ms	faster33	no
 soft_delete_exceptions	`WHERE stamp IS NULL` is answered from the pre-aggregates	orders	default	Filters: removed_at IS NULL	native	-	ms	faster33	no
 approx_distinct_sketch	`hll_columns` (default none;	orders	default+title WITH (hll_columns = 'title, customer_id')	approx_count_distinct.*Units Without The Sketch: 0	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 count_distinct_highcard	a hundred thousand groups of a few rows	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no
@@ -111,11 +110,8 @@ point_dense_keys	only while the keys are expected to have fewer rows than 4,096	
 tpch_q1	tpch_q1	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
 tpch_q6	tpch_q6	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
 tpch_q3	tpch_q3	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q3_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 tpch_q10	tpch_q10	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q10_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 tpch_q12	tpch_q12	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q12_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 hits_count	hits_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_filter_count	hits_filter_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_sum_avg	hits_sum_avg	hits	-	Pushed Aggregates	native	-	ms	faster33	no
@@ -136,7 +132,6 @@ run_window	a range on a leaf with a sorted run (`order_columns`), or an equality
 range_wide_bytes	plain 3, 5, 6 or 7-byte values	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 two_level_cell_conditions	the conditions of the outer aggregates of a two-level scan read the value of each cell once	orders	default	Pushed Aggregates	native	-	ms	faster33	no
 dict_small_request	the ids of a dictionary's entries (the key of a group by a text column	orders	default	Group Keys: tag	native	-	ms	faster33	no
-dict_blocks_first_statement	are decompressed one at a time	orders	default	fallback:Index Scan using orders_pkey	native	warm_forced:sift.agg_force = on	ms	faster33	no
 dict_first_scan	made when a tuple first reads the entry	orders	default+id+title	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
 verdict_shared_report	the choice between a shared CTE and its inline plan (several planner runs of the statement) is kept in the backend	events	-	Custom Scan \(SiftAgg\)	native	no_shared:sift.verdict_cache_kb = 0,warm_backend:sift.enable_agg = on	ms	faster33	no
 set_pruned_request	are checked in one loop for each width of the list	orders	default	Pushed Aggregates	native	-	ms	faster33	no
@@ -145,14 +140,21 @@ topn_walk_order_kept	keeps the order of that walk in the backend	orders	default+
 lateral_func_avg	is read by the scan as the grouping of the elements by the key of `x`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 count_distinct_lookup_pairs	the slots of the (group, value) pairs of a joined `count(DISTINCT)` are fetched ahead	orders	default	Pushed Aggregates: count\(DISTINCT d\.cat	native	-	ms	faster33	no
 point_tid_in_covered	is planned on the addresses and the heap, as it is on a query it does not cover	orders	default	Index	native	-	ms	faster33	no
-point_tid_key_range	a key with a range on another column hands the heap only the rows of the range	orders	default	Index Scan|Bitmap Heap Scan	native	-	ms	faster33	no
 lateral_flat_plan	plans the flat query first and, when it reads every table that has a column index in a scan, stops there	events	-	Custom Scan \(SiftAgg\)	native	warm_backend:sift.enable_agg = on	ms	faster33	no
 hits_latest_time	a descending scan of a column that follows the table	hits	-	Top-N: event_time DESC	native	-	ms	faster33	no
 ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the heap	tseries	-	Top-N: value DESC	native	-	ms	faster33	no
-group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no
 order_array	the reloption `order_array_columns` of a `sift_col` index	orders	default	Global Order: true	native	no_array:search_path = order_array_plain	ms	faster33	no
 hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no
 order_array_range	the scan searches each segment's array for the first entry of the range	orders	default	Global Order: true	native	no_array:search_path = order_array_range_plain	ms	faster33	no
+order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no
+order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no
+group_order_window	emits its groups in that order	orders	default	Group Order Keys	native	-	ms	faster33	no
+tpch_q3_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q10_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q12_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+dict_blocks_first_statement	are decompressed one at a time	orders	default	fallback:Index Scan using orders_pkey	native	warm_forced:sift.agg_force = on	ms	faster33	no
+point_tid_key_range	a key with a range on another column hands the heap only the rows of the range	orders	default	Index Scan|Bitmap Heap Scan	native	-	ms	faster33	no
+group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no
 lookup_keyed_probe	is loaded by a btree probe for each of those keys while the descents and the pages of the rows they find cost less	orders	default	Lookup Index Scans: [1-9]	native	lookup_off:sift.agg_lookup_pushdown = off	ms	faster33	no
 two_level_lookup_arms	the arms of a two-level aggregate that read the columns of a lateral `LIMIT 1` lookup (`rm.derived_cat AS category`, no `CASE` around it) are one scan	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 two_level_join_types	the arms of a two-level scan may differ in the type of the join of a lateral `LIMIT 1` child	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
@@ -165,3 +167,4 @@ calendar_session_zone	`date_trunc`, `extract` and `date()` (`::date`) of a `time
 numeric_image_sum	built from the digits of the stored image, not from its text through `numeric_in`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by default	orders	default	Units Pruned: [1-9]	native	-	ms	faster33	no
 sum_product_47	each pair is multiplied in 256 bits	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (Only )?Scan using orders_sc_col|Bitmap Heap Scan on orders_sc	native	-	ms	faster33	no
