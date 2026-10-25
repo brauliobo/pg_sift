@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 89 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 90 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1012,6 +1012,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not.
 - **Advice:** Leave on; the window is kept when the scan costs more. The cost model rates the scan too dear for a year of rows (4-5x faster in a test): SET sift.agg_force = on shows it. sift.explain_why names window_first for a window left as written.
 
+#### auto(ordered-groups)
+
+`sift_col`, `sift_table` · default · since 3.4 · default automatic
+
+- **What it does:** The groups of an aggregate scan come out in the order the query's ORDER BY or window on their keys asks for (also over a sub-select or inlined CTE that the window reads), so no Sort is put above the scan: the distinct values of each key are sorted once with the pathkey's comparator and the groups by their ranks
+- **Gain:** 40,586 groups, window over a CTE of the scan, 1,000,000 rows: 645 to 514 ms with 4 workers, 800 to 705 ms in one process; bench group_order_window
+- **Impact:** index size: -; build, merge and writes: -; other: No index, write or WAL effect. A second path is planned for each order the query asks (about 0.1 ms); the rank arrays take 4 bytes for each distinct value of a key and 4 bytes for each group and key, freed after the sort. The groups stay in memory: the path is offered only when the group table fits hash memory.
+- **When:** An ORDER BY or window whose leading keys are group keys, a sub-select or inlined CTE read by a window or ORDER BY (constant columns and COALESCE(key, constant) allowed). Not grouping sets, DISTINCT ON, ORDER BY an aggregate LIMIT, or a group table over hash memory.
+- **Default:** automatic — Cost-based: the ordered path competes with the unordered one plus the Sort (or Incremental Sort) and wins when cheaper.
+- **Turn off:** SET sift.enable_agg = off (the whole aggregate scan). There is no setting for the order alone.
+- **Upgrade from 3.3:** No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it.
+- **Advice:** Leave on. The node costs the sort by the groups (n log n integer compares), below the Sort it replaces; the unordered path is still planned, so a statement that wants no order keeps its plan.
+
 #### auto(shared-cte-choice)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -1949,6 +1962,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, 
 | `sift.agg_force` | new | off |  | New, off: a diagnostic that nothing sets after the update. Nothing to do. |
 | `auto(lateral-decorrelation)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not. |
 | `auto(top-n-per-group)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not. |
+| `auto(ordered-groups)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it. |
 | `auto(shared-cte-choice)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not. |
 | `auto(cte-preinline)` | automatic | automatic |  | No REINDEX and no setting: nothing is stored, so the new library (after ALTER EXTENSION UPDATE and new connections) plans it at once for a 3.3 index; plans of statements of this shape change, their rows do not. |
 | `auto(point-directory-aggregate)` | automatic | automatic |  | No format change and no REINDEX: after the library is updated the aggregate scan reads an existing 3.3 point directory for the shapes above. |
