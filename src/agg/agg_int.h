@@ -113,6 +113,8 @@ typedef struct AggExec
 	int			dnext;
 	bool		started;
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
+	int			widen;			/* TOPN_TIES: the scan this engine runs is the widen-th start again (topn_widen) */
+	List	   *retries;		/* ... the engines of the earlier starts' successors, closed with the node */
 	/* groups */
 	bool		hash;
 	uint32		direct_max;		/* groups above which the table is a hash table */

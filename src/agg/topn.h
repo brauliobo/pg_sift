@@ -47,11 +47,18 @@ extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
  * of the whole set of rows that pass (the window functions over (), SiftAggSpec.agg), after the columns of the heap in the scan tuple: no unit
  * is left out for the sort key's zone, and the scan is serial. TOPN_RAWKEY: the first key is a uuid or bytea leaf that nothing else of the scan reads: the
  * source reads it as the codes of the dictionary it stores (SiftSrcProvider.set_raw), not through the per-unit dictionary of datums.
+ * TOPN_TIES: the keys of the spec are a prefix of the query's ORDER BY and the Sort above puts the rest in order: the scan gives the rows in the order
+ * of the prefix, up to the last row that ties with the LIMIT + OFFSET-th on it. The heap holds LIMIT + OFFSET + slack rows (the slack is flags >> TOPN_SLACK_SHIFT, the
+ * planner's estimate of the rows that tie), and when the last of them ties with the one that counts, the scan starts again with a heap 16 times
+ * larger, twice, then keeps every row (sift_topn_incomplete).
  */
 #define TOPN_SKIP_OFFSET	1
 #define TOPN_SORT			2
 #define TOPN_TOTALS			4
 #define TOPN_RAWKEY			8
+#define TOPN_TIES			16
+#define TOPN_SLACK_SHIFT	8
+#define TOPN_WIDEN_MAX		2
 /*
  * What a sort key does to the value of its leaf before it is compared (a sort expression the scan evaluates for every row that passes, which cannot
  * raise): TXK_COALESCE: NULL is the constant c (an integer, date or timestamp leaf and a constant of its type); TXK_LOWER, TXK_UPPER: the string of the
@@ -87,7 +94,7 @@ typedef struct SiftTopN SiftTopN;
  * are kept in a heap; NULL (all rows), more rows, more keys or an overflow keep every row that passes in a sort of keys and TIDs
  * (work_mem, then disk), which still fetches from the heap only the rows the Limit takes; nothing wanted (zero or negative) reads nothing.
  */
-extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
+extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt, int widen);
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
 /* The scan reads the global order of the key: false when the source or the query cannot (the units are read as before) */
@@ -170,6 +177,8 @@ extern void sift_topn_rewind(SiftTopN *t);
 
 extern int64 sift_topn_skipped(const SiftTopN *t);
 extern int64 sift_topn_fetched(const SiftTopN *t);
+extern bool sift_topn_incomplete(const SiftTopN *t);	/* TOPN_TIES: after the scan, the rows that tie with the last one wanted are not all in the heap */
+extern int	sift_topn_candidates(const SiftTopN *t);	/* TOPN_TIES: the rows the heap held; 0 otherwise */
 extern int64 sift_topn_sorted(const SiftTopN *t);	/* rows that went to the sort; -1: the heap holds the rows */
 
 #endif							/* SIFT_TOPN_H */

@@ -121,7 +121,7 @@ hits_region_users	hits_region_users	hits	-	Pushed Aggregates	native	-	ms	faster3
 hits_top_phrases	hits_top_phrases	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_like_count	hits_like_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_like_group	hits_like_group	hits	-	Pushed Aggregates	native	-	ms	faster33	no
-hits_order_time	hits_order_time	hits	-	fallback:Seq Scan on hits	native	-	ms	faster33	no
+hits_order_time	hits_order_time	hits	-	Incremental Sort.*Top-N: event_time	native	-	ms	faster33	no
 ts_range_by_day	ts_range_by_day	tseries	-	Pushed Aggregates	native	-	ms	faster33	no
 ts_hour_metric	ts_hour_metric	tseries	-	Pushed Aggregates	native	-	ms	faster33	no
 ts_top_devices	ts_top_devices	tseries	-	Pushed Aggregates	native	-	ms	faster33	no
@@ -145,3 +145,4 @@ lateral_flat_plan	plans the flat query first and, when it reads every table that
 hits_latest_time	a descending scan of a column that follows the table	hits	-	Top-N: event_time DESC	native	-	ms	faster33	no
 ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the heap	tseries	-	Top-N: value DESC	native	-	ms	faster33	no
 order_array	the reloption `order_array_columns` of a `sift_col` index	orders	default	Global Order: true	native	no_array:search_path = order_array_plain	ms	faster33	no
+hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no

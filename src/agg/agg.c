@@ -850,6 +850,37 @@ finish_groups(AggExec *ex)
 	ex->n_groups = ex->nglist;
 }
 
+/*
+ * TOPN_TIES: the last row of the heap ties with the one that counts on the keys the scan holds, so rows of the tie that the Sort above
+ * needs may be missing. The scan starts again on an engine of its own with a heap 16 times larger (twice, then every row is kept).
+ */
+static void
+topn_widen(AggExec *ex)
+{
+	EState	   *estate = ex->css.ss.ps.state;
+
+	while (sift_topn_incomplete(ex->topn))
+	{
+		AggExec    *w = MemoryContextAllocZero(estate->es_query_cxt, sizeof(AggExec));
+
+		w->spec = ex->spec;
+		w->pack = ex->pack;
+		w->params = ex->params;
+		w->snap = ex->snap;
+		w->css.ss.ps.state = estate;
+		w->css.custom_ps = ex->css.custom_ps;
+		w->widen = ex->widen + 1;
+		engine_contexts(w, estate->es_query_cxt);
+		engine_rels(w);
+		topn_run(w);
+		sift_topn_close(ex->topn);
+		ex->topn = w->topn;
+		w->topn = NULL;
+		ex->widen = w->widen;
+		ex->retries = lappend(ex->retries, w);
+	}
+}
+
 /* After the rows of the heap, the aggregates over every row that passed (the one group of the scan) are the same in all of them */
 static TupleTableSlot *
 topn_next(AggExec *ex, TupleTableSlot *slot)
@@ -860,6 +891,7 @@ topn_next(AggExec *ex, TupleTableSlot *slot)
 	if (!ex->started)
 	{
 		topn_run(ex);
+		topn_widen(ex);
 		if (s->naggs > 0 && !sift_topn_empty(ex->topn))
 		{
 			MemoryContext old = MemoryContextSwitchTo(ex->cxt);
@@ -1028,7 +1060,7 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 	if (ex->spec->search)
 		ex->search = sift_search_open(ex->spec->search, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
 	if (ex->spec->topn)
-		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->src, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt);
+		ex->topn = sift_topn_open(ex->spec->topn, ex->lay, ex->src, ex->heap, snapshot, ex->lutcx, EXPR_PARENT(ex), ex->cxt, ex->widen);
 	init_states(ex);
 	register_preds(ex);
 	for (int j = 0; j < ex->spec->nkeys; j++)
@@ -1181,6 +1213,11 @@ agg_end(CustomScanState *node)
 	if (ex->started && !ex->fuse)
 		stats_run(ex);
 	engine_close(ex);
+	foreach_ptr(AggExec, w, ex->retries)
+	{
+		engine_close(w);
+		MemoryContextDelete(w->cxt);
+	}
 	if (ex->cxt)
 		MemoryContextDelete(ex->cxt);
 	foreach_ptr(PlanState, child, node->custom_ps)
@@ -1485,6 +1522,10 @@ explain_run(AggExec *ex, ExplainState *es)
 	if (s->topn && ex->topn)
 	{
 		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
+		if (sift_topn_candidates(ex->topn) > 0)
+			ExplainPropertyInteger("Top-N Candidates", NULL, sift_topn_candidates(ex->topn), es);
+		if (ex->widen > 0)
+			ExplainPropertyInteger("Top-N Restarts", NULL, ex->widen, es);
 		if (sift_topn_runs_read(ex->topn) > 0)
 			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
 		if (sift_topn_heads_used(ex->topn) > 0)

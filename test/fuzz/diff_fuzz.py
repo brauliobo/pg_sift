@@ -41,6 +41,7 @@ TABLE_SKIP = {
     'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'keycut': 'key_cut is an option of the sift_col index',
     'window': 'the sorted runs (order_columns) are an option of the sift_col index',
+    'trail': 'trf is read through a sift_col index of its own, which the mode drops',
     'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
 }
 
@@ -640,6 +641,44 @@ def render_topn(p):
     return sql, True
 
 
+# ---------- trailing sort keys (TOPN_TIES): ORDER BY leaves, then columns the index does not hold, the Sort above the scan puts the ties in order ----------
+TR_LEAD = ['k', 'd', 't']
+TR_TAIL = ['w', 'x', 's', 'w % 7', 'w * 3 - k', 'length(s)', 'x * w']
+
+
+def gen_trail(r, ctx):
+    order = [f"g.{c} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for c in r.sample(TR_LEAD, r.choice([1, 1, 2]))]
+    for c in r.sample(TR_TAIL, r.choice([1, 1, 2])):
+        e = c.replace('w', 'g.w').replace('x', 'g.x').replace('s', 'g.s').replace('k', 'g.k').replace('length(g.s)', 'length(g.s)')
+        order.append(f"{e} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip())
+    return dict(order=order, limit=r.choice([1, 5, 10, 33, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500]),
+                where=r.sample(['g.k > 20', 'g.d < DATE \'2024-03-01\'', 'g.t IS NOT NULL', 'g.id % 3 = 1', 'g.k BETWEEN 50 AND 250', 'g.w IS NOT NULL'], r.choice([0, 0, 1, 2])),
+                keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_trail(p):
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    return f"SELECT g.id, g.k, g.w, g.s FROM trf g{w} ORDER BY {', '.join(p['order'] + ['g.id'])} LIMIT {p['limit']} OFFSET {p['offset']}", True
+
+
+def dml_trail(r, ctx):
+    """Updates that make a tie group the statistics do not know, deletes, inserts, VACUUM, promotion and merges on trf."""
+    m = r.choice([7, 13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 4:
+        return r.choice([f'UPDATE trf SET k = {r.randrange(-3, 3)} WHERE {ids}', f'UPDATE trf SET t = timestamp \'2025-01-01\' WHERE {ids}', f'UPDATE trf SET w = w + 1, d = NULL WHERE {ids}'])
+    if e == 4:
+        return f'DELETE FROM trf WHERE {ids}'
+    if e in (5, 6, 7):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_tr']; ctx['next_tr'] += n
+        return f'INSERT INTO trf SELECT * FROM fz.gen_trf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 8:
+        return r.choice(['VACUUM trf', 'VACUUM (FREEZE) trf'])
+    return r.choice(["SELECT sift.col_promote('trf_idx')", "SELECT sift.col_merge('trf_idx', true)", "SELECT sift.col_merge('trf_idx', false)"])
+
+
 SPANS = ["('span_a', daterange('2025-07-01', '2026-01-31', '[]'))", "('span_b', daterange('2025-01-01', '2025-06-30', '[]'))",
          "('span_c', daterange('2025-04-01', '2025-09-30', '[]'))", "('span_d', daterange(NULL, '2025-03-01'))"]
 
@@ -1082,7 +1121,7 @@ def dml_gorder(r, ctx):
 
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
-    'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
+    'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
@@ -1119,7 +1158,7 @@ def variants(r, fam):
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     # every SIMD level below the top one the host supports, on the scan: the answers are the same bit for bit
     v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
-    if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
+    if fam in ('topn', 'trail'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
@@ -1341,6 +1380,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rk = random.Random(seed * 104729 + 3)
     rn = random.Random(seed * 1299709 + 5)
     rx = random.Random(seed * 15485863 + 7)
+    rt = random.Random(seed * 32452843 + 17)
     rw = random.Random(seed * 32452843 + 11)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
@@ -1350,6 +1390,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
         if not only or 'exceptions' in only:
             st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
+        if not TABLE and (not only or 'trail' in only):
+            st += [dml_trail(rt, ctx) for _ in range(rt.randrange(dmls + 1))]
         if not TABLE and (not only or 'gorder' in only):
             st += [dml_gorder(rg, ctx) for _ in range(rg.randrange(dmls + 1))]
         if not TABLE and (not only or 'keycut' in only):
@@ -1525,7 +1567,7 @@ def main():
     TABLE = a.table
     if a.selftest:
         for TABLE in (False, True):
-            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_go': a.rows + 1000}
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
             sql = data_sql(1, a.rows, a.parts)
             if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE or ('PARTITION BY' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
@@ -1561,7 +1603,7 @@ def main():
         tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_go': a.rows + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

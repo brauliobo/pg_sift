@@ -201,6 +201,20 @@ CREATE FUNCTION fz.gen_exf(lo bigint, hi bigint, salt int) RETURNS SETOF exf LAN
 INSERT INTO exf SELECT * FROM fz.gen_exf(1, @ROWS@, 0);
 CREATE INDEX exf_col ON exf USING sift_col (id, org, kind, amount, val, dec, stamp, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}', superunit = 0);
 
+-- ORDER BY leaves, then columns the index does not hold (TOPN_TIES, docs/USAGE.md): ties and NULLs in the leaves, and updates that make a tie group the statistics do not know
+CREATE TABLE trf (id int, k int, d date, t timestamp, w bigint, x float8, s text, pad text) WITH (autovacuum_enabled = false);
+CREATE FUNCTION fz.gen_trf(lo bigint, hi bigint, salt int) RETURNS SETOF trf LANGUAGE sql AS $$
+	SELECT i::int,
+	       CASE WHEN fz.h(i, 150 + salt) % 100 < 5 THEN NULL ELSE fz.h(i, 151 + salt) % 300 END,
+	       CASE WHEN fz.h(i, 152 + salt) % 100 < 5 THEN NULL ELSE date '2024-01-01' + fz.h(i, 153 + salt) % 120 END,
+	       CASE WHEN fz.h(i, 154 + salt) % 100 < 5 THEN NULL ELSE timestamp '2025-01-01' + (fz.h(i, 155 + salt) % 4000) * interval '1 second' END,
+	       CASE WHEN fz.h(i, 156 + salt) % 100 < 8 THEN NULL ELSE fz.h(i, 157 + salt) % 1000 END,
+	       CASE WHEN fz.h(i, 158 + salt) % 100 < 8 THEN NULL ELSE (fz.h(i, 159 + salt) % 50) - 25.0 END,
+	       CASE WHEN fz.h(i, 160 + salt) % 100 < 8 THEN NULL ELSE md5((fz.h(i, 161 + salt) % 97)::text) END,
+	       repeat('x', 300)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO trf SELECT * FROM fz.gen_trf(1, @ROWS@, 0);
+CREATE INDEX trf_idx ON trf USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, d sift.col_date_ops, t sift.col_timestamp_ops);
 -- keys of every type the global order covers, with ties and NULLs, read by a single-key ORDER BY .. LIMIT: the rows of the units in the heap order of the keys
 CREATE TABLE gof (id int, a int2, b int, c int8, d date, t timestamp, z timestamptz, pad text) WITH (autovacuum_enabled = false);
 CREATE FUNCTION fz.gen_gof(lo bigint, hi bigint, salt int) RETURNS SETOF gof LANGUAGE sql AS $$
@@ -240,4 +254,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, gof, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, kcut_a, kcut_b, kcut_c;

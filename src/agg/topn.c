@@ -281,6 +281,8 @@ typedef struct OrdCode
 struct SiftTopN
 {
 	int			limit;			/* rows the heap holds; 0: none wanted (a LIMIT that leaves nothing) */
+	int			want;			/* TOPN_TIES: LIMIT + OFFSET, the rows that count; limit is more */
+	bool		incomplete;		/* TOPN_TIES: the heap is full and its last row ties with the one that counts */
 	bool		totals;			/* the aggregates over every row that passes are computed in this scan (TOPN_TOTALS): all units are read */
 	bool		all;			/* no bound the heap can hold (NULL, past the cap, more keys): every row that passes is kept, sorted by the keys and the TID at the end */
 	int64	   *mem;			/* ... in memory while they fit work_mem: nkey keys, the NULL flags (a bit for each key), the TID's number, for each row */
@@ -531,7 +533,7 @@ order_attno(const SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 }
 
 SiftTopN *
-sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt)
+sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt, int widen)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftTopN   *t = palloc0(sizeof(SiftTopN));
@@ -606,6 +608,16 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 	flags = list_nth_int(l, i++);
 	if ((flags & TOPN_SORT) || (t->nkey > sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && t->limit > 0))
 		bounded = false;
+	if (bounded && t->limit > 0 && (flags & TOPN_TIES))
+	{
+		int64		n = (int64) (t->limit + (flags >> TOPN_SLACK_SHIFT)) << (4 * widen);
+
+		t->want = t->limit;
+		if (widen < TOPN_WIDEN_MAX && n <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS))
+			t->limit = (int) n;
+		else
+			bounded = false;
+	}
 	if (flags & TOPN_SKIP_OFFSET)
 		t->skip = offset;
 	t->all = !bounded;
@@ -3248,7 +3260,29 @@ sift_topn_finish(SiftTopN *t)
 	{
 		t->res = t->heap;
 		sort_ents(t->res, t->n, t);
+		if (t->want > 0 && t->n >= t->want)
+		{
+			const TopEnt *w = &t->res[t->want - 1];
+
+			if (t->n == t->limit && key_cmp(t, w, &t->res[t->n - 1]) == 0)
+				t->incomplete = true;
+			else
+				while (t->n > t->want && key_cmp(t, w, &t->res[t->n - 1]) != 0)
+					t->n--;
+		}
 	}
+}
+
+bool
+sift_topn_incomplete(const SiftTopN *t)
+{
+	return t->incomplete;
+}
+
+int
+sift_topn_candidates(const SiftTopN *t)
+{
+	return t->want > 0 && !t->all ? t->limit : 0;
 }
 
 /* The next row of the result: the TID of the sort, or of the heap in order, and the partition it is in */

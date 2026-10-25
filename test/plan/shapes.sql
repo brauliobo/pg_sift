@@ -95,6 +95,18 @@ SELECT date_trunc('month', ts)::date AS bucket, sum(amount) AS total FROM events
 -- expect: scan 0.29 1.2
 SELECT parent_id, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY n DESC, parent_id LIMIT 5 OFFSET 5;
 
+-- name: b07_top_rows_trailing_key
+-- expect: scan 0.13 0.52
+SELECT id, ts, memo FROM events WHERE deleted_at IS NULL ORDER BY ts, memo, id LIMIT 10;
+
+-- name: b08_top_rows_trailing_key_desc_offset
+-- expect: scan 0.16 0.64
+SELECT id, ts, memo FROM events WHERE deleted_at IS NULL AND kind = 'cat_b' ORDER BY ts DESC, memo DESC, id LIMIT 20 OFFSET 15;
+
+-- name: b09_top_rows_trailing_key_ties
+-- expect: normal -
+SELECT id, kind, memo FROM events ORDER BY kind, memo, id LIMIT 10;
+
 -- name: c01_join_tier
 -- expect: scan 0.17 0.68
 SELECT d.tier, count(*) AS n, sum(e.amount) AS total FROM events e JOIN dims d ON d.id = e.parent_id
