@@ -67,7 +67,7 @@ if [[ -n $UPDATE && -n $LK ]]; then
 	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
 		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
 		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
-	{ grep -v "^$LK"$'\t' "$REPO/test/plan/bands.tsv" || true; cat "${SIFT_TMP}/plangate-bands.tsv"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"${SIFT_TMP}/plangate-all.tsv"
+	{ awk -F'\t' 'NR == FNR { new[$1 FS $2] = 1; next } !(($1 FS $2) in new)' "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/bands.tsv"; cat "${SIFT_TMP}/plangate-bands.tsv"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"${SIFT_TMP}/plangate-all.tsv"
 	cat "${SIFT_TMP}/plangate-all.tsv" >"$REPO/test/plan/bands.tsv"
 	rm -f "${SIFT_TMP}/plangate-bands.tsv" "${SIFT_TMP}/plangate-all.tsv"
 	log "updated the $LK rows of test/plan/bands.tsv"
