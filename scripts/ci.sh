@@ -107,6 +107,11 @@ focus_tokens() {
 		done
 	done | sort -u
 }
+# The assertions family of a pull request (the `cassert` output of `affected --github`, run on the PostgreSQL 18 built with --enable-cassert): a change of a source that starts
+# workers or handles snapshots or executor hooks (ASSERT_MARK, read from the file: no list to keep) runs the regression tests that run those paths. The `assertions` label
+# of a pull request runs the family for any change. A change reached the tip with green fast checks and failed an Assert of the server (GetActiveSnapshot) in a worker.
+ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
+ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
@@ -138,6 +143,8 @@ if [[ $MODE == affected ]]; then
 	for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
 	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
+	cassert=false
+	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
 	FAST='^(installcheck-|isolation-emulated$|coverage$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
@@ -153,6 +160,8 @@ if [[ $MODE == affected ]]; then
 			echo "jobs=$RE"
 			echo "fast=$FAST"
 			echo "fastjobs=$FASTRE"
+			echo "cassert=$cassert"
+			echo "cassertjobs=$ASSERT_JOBS"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
 			for f in sqlite mariadb replication macos; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
@@ -242,6 +251,10 @@ if [[ $MODE == --selftest ]]; then
 	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1] }' "$REPO/scripts/focus.tsv")
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	[[ $(focus_regex src/agg/cte.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
+	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
+	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
+	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
+	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
 	fast_agg=$(areas_fast_regex src/agg/agg.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	while read -r id _; do
