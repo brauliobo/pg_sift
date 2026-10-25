@@ -287,8 +287,10 @@ sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len)
 static bool
 point_version_ok(uint32 v)
 {
-	return v == SIFT_CPOINT_VERSION_ROWS || v == SIFT_CPOINT_VERSION;
+	return v == SIFT_CPOINT_VERSION_ROWS || v == SIFT_CPOINT_VERSION || v == SIFT_CPOINT_VERSION_ORD;
 }
+
+static GOrdLeaf *gord_leaf(SiftColSegment *seg, int col);
 
 static const PointLeaf *
 points_read(SiftColSegment *seg)
@@ -323,12 +325,13 @@ points_read(SiftColSegment *seg)
 	if (foot[0] % 8 != 0 || foot[0] + sizeof(hdr) > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
 	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
-	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] != 0 ||
-		foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
+	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] > (hdr[1] == SIFT_CPOINT_VERSION_ORD ? (uint32) seg->schema->ncols : 0) ||
+		foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
-	next = foot[0] + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN;
+	next = foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
-	for (uint32 i = 0; i < hdr[2]; i++)
+	pv->go = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(GOrdLeaf));
+	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
 	{
 		uint32		rec[6];
 		uint64		at;
@@ -337,8 +340,23 @@ points_read(SiftColSegment *seg)
 
 		seg_read(seg, rat, sizeof(rec), rec);
 		seg_read(seg, rat + sizeof(rec), sizeof(at), &at);
+		if (i >= hdr[2])
+		{
+			/* a global order block (col/gorder.h): chunks, entries, values, 0, words of 8 bytes; its header and directory are checked when it is read */
+			if (i == hdr[2])
+				prev = -1;
+			size = (uint64) rec[4] * 8;
+			if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] != SIFT_CPOINT_MODE_ORDER || rec[1] == 0 || rec[2] == 0 || rec[2] >= SIFT_CPOINT_SEG_ROWS ||
+				rec[3] > rec[2] || rec[1] != (rec[2] + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS || size < SIFT_CGORD_HDR + (uint64) rec[1] * SIFT_CGORD_DIRENT ||
+				at != next || size > s->len - sizeof(foot) - next)
+				corrupt(seg, "The global order %u of the DICT section is malformed.", i - hdr[2]);
+			pv->go[rec[0]] = (GOrdLeaf) {s->off + at, size, {rec[2], rec[3], rec[1], SIFT_CGORD_ROWS}, NULL};
+			prev = rec[0];
+			next += size;
+			continue;
+		}
 		size = ALIGN8((uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32));
-		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] > (hdr[1] == SIFT_CPOINT_VERSION ? SIFT_CPOINT_MODE_TIDS : SIFT_CPOINT_MODE_ROWS) ||
+		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] > (hdr[1] == SIFT_CPOINT_VERSION || hdr[1] == SIFT_CPOINT_VERSION_ORD ? SIFT_CPOINT_MODE_TIDS : SIFT_CPOINT_MODE_ROWS) ||
 			rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[3] == 0 ||
 			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (rec[5] == SIFT_CPOINT_MODE_TIDS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
 			at != next || size > s->len - sizeof(foot) - next)
@@ -950,6 +968,15 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 				acc->point_tid_units += seg->nsb;
 			acc->point_keys += pl[col].nkeys;
 			acc->point_rows += pl[col].count;
+		}
+	}
+	{
+		const GOrdLeaf *g = gord_leaf(seg, col);
+
+		if (g != NULL)
+		{
+			acc->gord_rows += g->hdr.entries;
+			acc->gord_bytes += g->bytes;
 		}
 	}
 	if (set_leaf(seg, col) != NULL)
@@ -2293,6 +2320,109 @@ sift_cseg_point_nkeys(SiftColSegment *seg, int col)
 	return pl ? pl[col].nkeys : 0;
 }
 
+/* ---- the global order of a leaf (col/gorder.h) ---- */
+
+/* The block of leaf col with its directory read and checked (the first keys of the chunks of values ascend, the chunks follow one another), NULL when the segment has none */
+static GOrdLeaf *
+gord_leaf(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	GOrdLeaf   *g;
+	uint8	   *raw;
+	SiftCGOrdHdr h;
+	uint32		vchunks;
+	uint64		next;
+
+	points_read(seg);
+	if (pv->go == NULL || pv->go[col].bytes == 0)
+		return NULL;
+	g = &pv->go[col];
+	if (g->dir != NULL)
+		return g;
+	raw = palloc(SIFT_CGORD_HDR + (Size) g->hdr.chunks * SIFT_CGORD_DIRENT);
+	seg_read(seg, g->at, SIFT_CGORD_HDR + (Size) g->hdr.chunks * SIFT_CGORD_DIRENT, raw);
+	if (!sift_cgord_head(raw, g->bytes, &h) || h.entries != g->hdr.entries || h.values != g->hdr.values || h.chunks != g->hdr.chunks)
+		corrupt(seg, "The global order of leaf %d has a malformed header.", col);
+	g->dir = MemoryContextAlloc(seg->mcxt, (Size) h.chunks * sizeof(SiftCGOrdDir));
+	vchunks = (h.values + h.crows - 1) / h.crows;
+	next = SIFT_CGORD_HDR + (uint64) h.chunks * SIFT_CGORD_DIRENT;
+	for (uint32 c = 0; c < h.chunks; c++)
+	{
+		if (!sift_cgord_dirent(raw + SIFT_CGORD_HDR, &h, g->bytes, c, &g->dir[c]) || g->dir[c].off != next || (c > 0 && c < vchunks && g->dir[c].first < g->dir[c - 1].first))
+			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
+		next = (uint64) g->dir[c].off + ALIGN8((uint64) g->dir[c].klen) + ALIGN8((uint64) g->dir[c].alen);
+	}
+	if (next != g->bytes)
+		corrupt(seg, "The global order of leaf %d ends at %llu of %llu.", col, (unsigned long long) next, (unsigned long long) g->bytes);
+	pfree(raw);
+	return g;
+}
+
+bool
+sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+
+	if (g == NULL)
+		return false;
+	*entries = g->hdr.entries;
+	*values = g->hdr.values;
+	return true;
+}
+
+/* The entries [c * SIFT_CGORD_ROWS, + m) of leaf col: keys and heap addresses, each SIFT_CGORD_CAP slots */
+uint32
+sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+	const SiftCGOrdDir *d;
+	uint32		m;
+	uint8	   *buf;
+
+	if (g == NULL || c >= g->hdr.chunks)
+		corrupt(seg, "The global order of leaf %d has no chunk %u.", col, c);
+	d = &g->dir[c];
+	m = sift_cgord_chunk_rows(&g->hdr, c);
+	buf = palloc(ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen) + SIFT_COL_PAD);
+	seg_read(seg, g->at + d->off, ALIGN8((Size) d->klen) + ALIGN8((Size) d->alen), buf);
+	if (!sift_cgord_decode(seg->mcxt, buf, d->klen, buf + ALIGN8((Size) d->klen), d->alen, m, key, addr))
+		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
+	pfree(buf);
+	return m;
+}
+
+/* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */
+static void
+verify_gorder(SiftColSegment *seg, int col, uint32 total)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+	int64		key[SIFT_CGORD_CAP],
+				pk = 0;
+	uint64		addr[SIFT_CGORD_CAP],
+				pa = 0;
+
+	if (g == NULL)
+		return;
+	if (g->hdr.entries != total)
+		corrupt(seg, "The global order of leaf %d holds %u entries for %u rows.", col, g->hdr.entries, total);
+	for (uint32 c = 0; c < g->hdr.chunks; c++)
+	{
+		uint32		m = sift_cseg_gorder_chunk(seg, col, c, key, addr);
+
+		for (uint32 i = 0; i < m; i++)
+		{
+			uint32		p = c * SIFT_CGORD_ROWS + i;
+			bool		isnull = p >= g->hdr.values;
+
+			if (p != 0 && p != g->hdr.values && (isnull ? addr[i] <= pa : key[i] < pk || (key[i] == pk && addr[i] <= pa)))
+				corrupt(seg, "The global order of leaf %d is out of order at entry %u.", col, p);
+			pk = key[i];
+			pa = addr[i];
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
 void
 sift_cseg_verify_points(SiftColSegment *seg)
 {
@@ -2363,6 +2493,8 @@ sift_cseg_verify_points(SiftColSegment *seg)
 			corrupt(seg, "The point directory of leaf %d lists %u keys, %llu rows and %llu words, its record %u, %u and %u.", c, keys, (unsigned long long) listed,
 					(unsigned long long) words, pl[c].nkeys, pl[c].count, pl[c].words);
 	}
+	for (int c = 0; c < seg->schema->ncols; c++)
+		verify_gorder(seg, c, total);
 }
 
 uint32

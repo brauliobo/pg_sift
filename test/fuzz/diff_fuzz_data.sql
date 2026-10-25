@@ -201,6 +201,22 @@ CREATE FUNCTION fz.gen_exf(lo bigint, hi bigint, salt int) RETURNS SETOF exf LAN
 INSERT INTO exf SELECT * FROM fz.gen_exf(1, @ROWS@, 0);
 CREATE INDEX exf_col ON exf USING sift_col (id, org, kind, amount, val, dec, stamp, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}', superunit = 0);
 
+-- keys of every type the global order covers, with ties and NULLs, read by a single-key ORDER BY .. LIMIT: the rows of the units in the heap order of the keys
+CREATE TABLE gof (id int, a int2, b int, c int8, d date, t timestamp, z timestamptz, pad text) WITH (autovacuum_enabled = false);
+CREATE FUNCTION fz.gen_gof(lo bigint, hi bigint, salt int) RETURNS SETOF gof LANGUAGE sql AS $$
+	SELECT i::int,
+	       CASE WHEN fz.h(i, 130 + salt) % 100 < 5 THEN NULL ELSE (fz.h(i, 131 + salt) % 200 - 100)::int2 END,
+	       CASE WHEN fz.h(i, 132 + salt) % 100 < 5 THEN NULL ELSE fz.h(i, 133 + salt) % 700 END,
+	       CASE WHEN fz.h(i, 134 + salt) % 100 < 5 THEN NULL ELSE (fz.h(i, 135 + salt) % 20000)::int8 * 100000 - 1000000000 END,
+	       CASE WHEN fz.h(i, 136 + salt) % 100 < 5 THEN NULL ELSE date '2024-01-01' + fz.h(i, 137 + salt) % 300 END,
+	       CASE WHEN fz.h(i, 138 + salt) % 100 < 5 THEN NULL ELSE timestamp '2025-01-01' + (fz.h(i, 139 + salt) % 50000) * interval '1 second' END,
+	       CASE WHEN fz.h(i, 140 + salt) % 100 < 5 THEN NULL ELSE timestamptz '2025-01-01+00' + (fz.h(i, 141 + salt) % 60000) * interval '1 second' END,
+	       repeat('x', 300)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO gof SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
+CREATE INDEX gof_idx ON gof USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
+	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', point_tid_columns = 'b');
+
 -- @table
 -- the fact tables rewritten as sift_tables (the --table mode of the driver, which also drops the sift_col indexes above): the jsonb paths of those indexes are
 -- declared per column, a VACUUM FULL writes their leaves; ev_part is one table here (the pushdown reads a partitioned table through the sift_col indexes of its
@@ -224,4 +240,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, gof, kcut_a, kcut_b, kcut_c;

@@ -230,6 +230,10 @@ sift_agg_init(void)
 							 "Testing: a top-N scan answers a unit of which every row passes from the head of the sorted run of its first sort column (column format minor 18) instead of reading it.",
 							 NULL, &sift_topn_heads, true,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_topn_gorder",
+							 "Testing: a top-N scan of one integer or time key reads the global order of the key (column format minor 21) in place of the units.",
+							 NULL, &sift_topn_gorder_on, true,
+							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	DefineCustomBoolVariable("sift.topn_runs",
 							 "Lets a top-N scan read a unit through the sorted run of its first sort column (an index with the option order_columns) instead of testing every row of the unit.",
@@ -764,6 +768,8 @@ topn_run(AggExec *ex)
 	table_init(ex);
 	t = ex->topn;
 	if (sift_topn_empty(t))
+		return;
+	if (topn_heads_ok(ex) && ex->spec->nworkers == 0 && sift_topn_gorder_on && sift_topn_gorder(t, ex->src))
 		return;
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
@@ -1478,6 +1484,8 @@ explain_run(AggExec *ex, ExplainState *es)
 			ExplainPropertyInteger("Units Answered By Run Head", NULL, sift_topn_heads_used(ex->topn), es);
 		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
 			ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(ex->topn, 0), sift_topn_ord_units(ex->topn, 1), sift_topn_ord_units(ex->topn, 2)), es);
+		if (sift_topn_gordered(ex->topn))
+			ExplainPropertyBool("Global Order", true, es);
 		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
 		if (sift_topn_sorted(ex->topn) >= 0)
 			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);

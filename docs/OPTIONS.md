@@ -19,7 +19,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 87 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
+| [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -1283,6 +1283,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** Run heads need no setting: every build, promotion and merge after the update writes them for an index with order_columns (column format minor 18, +0.6% to +2.4% of the index); the units already written keep minor 13 until a merge or REINDEX rewrites them, and both live in one index. A 3.3 library cannot read minor 18; sift.col_format_minor 14 or less writes the runs without heads.
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
 
+#### sift_col(order_array_columns)
+
+`sift_col` · opt-in · since 3.4 · default ''
+
+- **What it does:** Ordered runs, optionally with a global order array for LIMIT from 1 to thousands: a subset of order_columns keeps every row's (key, heap address) sorted per segment, so ORDER BY col LIMIT n with no filter, join or aggregate merges the arrays of the segments and of the write buffer and fetches n rows of the heap, whatever the number of units
+- **Gain:** ORDER BY a random-key column LIMIT 200 over 100,000 rows (23 units): 2.20M instructions against 0.85M, LIMIT 1000 6.74M against 2.50M; LIMIT 10 0.40M against 0.43M (callgrind, per statement); scattered column, 800,000 rows, wall ms with no runs / runs / runs + array: LIMIT 200 2.54 / 0.69 / 0.15, LIMIT 1000 5.53 / 1.71 / 0.47 (index 8.96 / 10.77 / 13.39 MB); up to 32 rows the run heads answer too and the array costs the same on a few units (0.14-0.26 ms at 200,000 and 1,000,000 rows); on a key_cut index (a unit for each key range, so a head for each) unkeyed ORDER BY a scattered timestamp, 1,000,000 rows, wall ms heads / array: LIMIT 1 0.64 / 0.14, LIMIT 10 2.0 / 0.22, LIMIT 32 4.8 / 0.20, LIMIT 200 4.6 (runs) / 0.52, LIMIT 1000 6.3 / 1.2 (index 11.1 MB runs, 15.5 MB with the array); 4-column table of random keys, no b-tree, wall ms (seq scan + sort with 2 workers / runs only / runs + array): 3,000,000 rows LIMIT 33 159 / 1.8 / 0.28, LIMIT 200 115 / 3.5 / 0.46, LIMIT 1000 118 / 4.8 / 1.6; 10,000,000 rows LIMIT 33 456 / 1.6 / 0.29, LIMIT 200 432 / 6.9 / 0.70, LIMIT 1000 437 / 11.6 / 1.6 (index 72 MB runs, 116 MB with the array)
+- **Impact:** index size: +1.5% of the index for the key-ordered column of a 15-column page-view fixture (300,000 and 1,000,000 rows) and +5% for the time column of a 4-column readings fixture; +25% to +62% (page views) and +120% (readings) for two or three order columns of random keys; +14% of a 7-column index of 100,000 rows with 3 order columns; build, merge and writes: CREATE INDEX +14.5%, insert of 20,000 rows with its promotion +6%, merge +28%, delete and VACUUM +4% (instructions, 3 order columns of a 7-column index, 100,000 rows); other: format minor 21; every row of the leaf in 0.8 B (a column in key order) to 3.9 B (random keys) of a segment: a 7-column index of 100,000 rows with 3 order columns 3.22 MB to 3.67 MB; segments are minor 21, which 3.3 and older refuse
+- **When:** ORDER BY col LIMIT n over one integer, date or timestamp key of order_columns, with no filter, join or aggregate and a write buffer of at most 4,096 rows (or 8 times n); any other shape reads the units.
+- **Default:** '' — Opt-in: +14% of a 7-column index for 3 order columns, CREATE INDEX +15% and insert with promotion +14% instructions, where the sorted runs and their heads already answer up to 32 rows from a few units; the segments are minor 21, which 3.3 and older refuse.
+- **Why not the default:** over 3% index growth, over 5% write cost
+- **Turn off:** RESET (order_array_columns): new segments get no array; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
+- **Upgrade from 3.3:** New, unset: nothing changes. ALTER INDEX .. SET (order_array_columns = 'a, b') applies to the segments written afterwards and a REINDEX gives the older ones their array; a segment with arrays is column format minor 21, which a 3.3 library cannot read (ALTER INDEX .. RESET (order_array_columns) and REINDEX first).
+- **Advice:** Turn it on (name the column, which must be in order_columns) for a large table, or a key_cut index (its many units cost the heads), where ORDER BY col LIMIT n with n from 1 to a few thousand over a column with scattered values is a frequent, latency-sensitive query that no b-tree serves, and 4-5 bytes a row for the column is affordable; leave it out for LIMIT 32 or less, which the heads of the runs answer.
+
 #### sift_col(hll_columns)
 
 `sift_col` · opt-in · since 3.4 · default ''
@@ -1880,7 +1894,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1895,6 +1909,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `s
 | `sift_col(key_cut)` | new | '' | minor 17, unreadable by 3.3 | New, unset: nothing changes for an existing index. CREATE INDEX with it cuts the units by the key; on an existing index ALTER INDEX .. SET (key_cut) applies to the units written afterwards and a REINDEX cuts the older ones (sift.upgrade_commands() lists it). Column format minor 17: a 3.3 library cannot read it; ALTER INDEX .. RESET (key_cut) and a REINDEX roll it back. |
 | `sift_col(key_cut_rows)` | new | 0 | minor 17, unreadable by 3.3 | New, 0: read only with key_cut, and applies to the units written afterwards. No REINDEX of an index without key_cut. |
 | `sift_col(order_columns)` | '' | '' | minor 18, unreadable by 3.3 | Run heads need no setting: every build, promotion and merge after the update writes them for an index with order_columns (column format minor 18, +0.6% to +2.4% of the index); the units already written keep minor 13 until a merge or REINDEX rewrites them, and both live in one index. A 3.3 library cannot read minor 18; sift.col_format_minor 14 or less writes the runs without heads. |
+| `sift_col(order_array_columns)` | new | '' | minor 21, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (order_array_columns = 'a, b') applies to the segments written afterwards and a REINDEX gives the older ones their array; a segment with arrays is column format minor 21, which a 3.3 library cannot read (ALTER INDEX .. RESET (order_array_columns) and REINDEX first). |
 | `sift_col(hll_columns)` | new | '' | minor 20, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (hll_columns) applies to the units written afterwards and a REINDEX gives the older ones their sketch; a segment with sketches is column format minor 20, which a 3.3 library cannot read (sift.upgrade_commands() lists it). |
 | `sift.maintenance_cost_delay` | 0 | 0 |  | The worker that rewrites a sift_col index by partitions now waits as long as the delay asks (it used to sleep less). Nothing to do. |
 | `sift.vis_page_cache` | new | on |  | New, on: it only affects a scan of an index with key_cut. Nothing to do. |
@@ -1937,6 +1952,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
+| sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
 | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
 | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
 | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |

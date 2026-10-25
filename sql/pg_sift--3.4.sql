@@ -505,7 +505,7 @@ COMMENT ON FUNCTION sift.cluster_advice(regclass, int8, text) IS 'Which physical
 -- need before what they only gain from). kind: reindex or rewrite; object: the index or table; reason: what the command changes; command: the statement;
 -- required: queries miss rows until it runs (a word over 255 bytes is stored as its start and a hash since 3.3, and a text index of an older release holds
 -- it cut at 255 bytes; the index does not say whether it holds one, so every text index except analyzer = keyword is listed, and stays listed after its
--- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax and superunit, on unless the index says otherwise; JSON paths, rollup_dims, key_columns, order_columns, hll_columns) that only the units written after
+-- REINDEX). Otherwise it is a gain: a sift_col index with an option (cube_minmax and superunit, on unless the index says otherwise; JSON paths, rollup_dims, key_columns, order_columns, order_array_columns, hll_columns) that only the units written after
 -- it follow, set on an index whose older units lack the section; a sift_table (it cannot be reindexed) whose segments are below the column format its
 -- schema is written in now (calendar cells for date and timestamp columns, minor 8; complete JSON kinds for declared paths, minor 6). A VACUUM FULL takes
 -- an ACCESS EXCLUSIVE lock and rewrites the table in the format of sift.col_format_minor: schedule it. Reads the catalogs and the metapages, changes
@@ -562,7 +562,9 @@ BEGIN
 				('^key_cut=.', 17, 'key_cut', false,
 				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key'),
 				('^hll_columns=.', 20, 'hll_columns', false,
-				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it')
+				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it'),
+				('^order_array_columns=.', 21, 'order_array_columns', false,
+				 'the segments written before the option have no global order of the columns, so an ORDER BY .. LIMIT above 32 rows on one reads their units; a REINDEX writes it')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;
 		CONTINUE WHEN why IS NULL;

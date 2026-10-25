@@ -4,6 +4,7 @@
 
 #include "core/host.h"
 
+#include "col/gorder.h"
 #include "col/point.h"
 #include "col/preagg.h"
 #include "col/hll.h"
@@ -26,6 +27,14 @@ typedef struct PointAcc
 	bool		bad;
 	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
+	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
+	uint64	   *ntid;
+	uint32		nn;
+	uint32		ncap;
+	uint32		onch;			/* its block, once built (0: none) */
+	uint32		onent;
+	uint32		onvals;
+	StringInfoData otab;
 	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
 	uint32		nkeys;
 	uint32		words;
@@ -94,6 +103,7 @@ struct SiftColSegWriter
 	bool		anyhll;
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
+	bool		anyord;			/* some leaf has a global order block to write (minor 21) */
 	bool		anytids;		/* ... and one of them lists heap addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -269,14 +279,15 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (spec->point[c] || spec->point_tid[c])
+			if (spec->point[c] || spec->point_tid[c] || spec->gorder[c])
 			{
 				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 				if (w->pt == NULL)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
-				w->pt[c].want = true;
+				w->pt[c].want = spec->point[c] || spec->point_tid[c];
+				w->pt[c].ord = spec->gorder[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
 				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
 }
@@ -305,7 +316,9 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 		PointAcc   *a = &w->pt[c];
 		const SiftCPaggCol *v = &cols[c];
 
-		if (!a->want || a->bad)
+		bool		wt = a->tids || a->ord;		/* the entries carry heap addresses */
+
+		if (!(a->want || a->ord) || a->bad)
 			continue;
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
 			if (v->ovf[i])
@@ -322,22 +335,34 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 			a->cap = Max(Max(a->cap * 2, 4096), a->n + v->n);
 			a->key = a->key ? repalloc_huge(a->key, (Size) a->cap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(int64));
 			a->row = a->row ? repalloc_huge(a->row, (Size) a->cap * sizeof(uint32)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint32));
-			if (a->tids)
+			if (wt)
 				a->tid = a->tid ? repalloc_huge(a->tid, (Size) a->cap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint64));
+			MemoryContextSwitchTo(old);
+		}
+		if (a->ord && v->nulls && a->nn + v->n > a->ncap)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			a->ncap = Max(Max(a->ncap * 2, 1024), a->nn + v->n);
+			a->ntid = a->ntid ? repalloc_huge(a->ntid, (Size) a->ncap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(uint64));
 			MemoryContextSwitchTo(old);
 		}
 		for (uint32 i = 0; i < v->n; i++)
 		{
-			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
-				continue;
 			/* no offset number of a heap page of 8 kB reaches the codes' room, but a key from elsewhere must not be listed wrongly */
-			if (a->tids && (rowkeys[i] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+			if (wt && (rowkeys[i] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 			{
 				a->bad = true;
 				break;
 			}
+			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
+			{
+				if (a->ord)
+					a->ntid[a->nn++] = rowkeys[i];
+				continue;
+			}
 			a->key[a->n] = v->key[i];
-			if (a->tids)
+			if (wt)
 				a->tid[a->n] = rowkeys[i];
 			a->row[a->n++] = (uint32) w->rows + i;
 		}
@@ -662,6 +687,18 @@ build_points(SiftColSegWriter *w)
 	{
 		PointAcc   *a = &w->pt[c];
 
+		if (a->ord && !a->bad && a->n + a->nn > 0)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			initStringInfo(&a->otab);
+			MemoryContextSwitchTo(old);
+			a->onent = a->n + a->nn;
+			a->onvals = a->n;
+			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
+			a->onch = (a->onent + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS;
+			w->anyord = true;
+		}
 		if (a->want && !a->bad && a->n > 0)
 		{
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
@@ -687,6 +724,11 @@ build_points(SiftColSegWriter *w)
 			a->row = NULL;
 			a->tid = NULL;
 		}
+		if (a->ntid)
+		{
+			pfree(a->ntid);
+			a->ntid = NULL;
+		}
 	}
 }
 
@@ -700,17 +742,20 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 {
 	int			ncols = w->schema->ncols;
 	uint64		block = sift_sw_tell(w->sw) - sec->off;
-	uint32		ver = w->anytids ? SIFT_CPOINT_VERSION : SIFT_CPOINT_VERSION_ROWS;
+	uint32		ver = w->anyord ? SIFT_CPOINT_VERSION_ORD : w->anytids ? SIFT_CPOINT_VERSION : SIFT_CPOINT_VERSION_ROWS;
 	uint32		hdr[4] = {SIFT_CPOINT_MAGIC, ver, 0, 0};
 	uint64		foot[2];
 	uint32		ftail[2] = {SIFT_CPOINT_MAGIC, ver};
 	uint64		at;
 
-	if (!w->anypoints)
+	if (!w->anypoints && !w->anyord)
 		return;
 	for (int c = 0; c < ncols; c++)
+	{
 		hdr[2] += w->pt[c].nslots > 0;
-	at = block + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN;
+		hdr[3] += w->pt[c].onch > 0;
+	}
+	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
 	for (int c = 0; c < ncols; c++)
 	{
@@ -724,8 +769,22 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		at += a->tab.len;
 	}
 	for (int c = 0; c < ncols; c++)
+	{
+		const PointAcc *a = &w->pt[c];
+		uint32		rec[6] = {c, a->onch, a->onent, a->onvals, (uint32) (a->otab.len / 8), SIFT_CPOINT_MODE_ORDER};
+
+		if (a->onch == 0)
+			continue;
+		sift_sw_write(w->sw, rec, sizeof(rec));
+		sift_sw_write(w->sw, &at, sizeof(at));
+		at += a->otab.len;
+	}
+	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
+	for (int c = 0; c < ncols; c++)
+		if (w->pt[c].onch > 0)
+			sift_sw_write(w->sw, w->pt[c].otab.data, w->pt[c].otab.len);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
 	sift_sw_write(w->sw, foot, sizeof(foot));
@@ -1245,6 +1304,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
+	if (w->anyord)
+		w->format = Max(w->format, SIFT_COL_FORMAT_GORDER);
 	if (w->keyed)
 		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */

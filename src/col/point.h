@@ -13,8 +13,10 @@
 
 #define SIFT_CPOINT_MAGIC	0x4B4C4F43		/* "COLK" */
 #define SIFT_CPOINT_VERSION_ROWS	2		/* the frame of a segment whose tables all list rows (minor 14) */
+#define SIFT_CPOINT_VERSION_ORD	4			/* the frame of a segment that also has global order blocks (minor 21): the header's last word counts their records, which follow those of the tables */
 #define SIFT_CPOINT_VERSION	3			/* the frame of a segment with a table of heap addresses (minor 16): its records carry the mode of the table */
 #define SIFT_CPOINT_MODE_ROWS	0		/* record word 5: the slots list the rows of the segment (the other modes of the frame) */
+#define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/gorder.h): chunks, entries, values, 0, words of 8 bytes */
 #define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows */
 #define SIFT_CPOINT_TID_LIST	UINT64CONST(0x8000)	/* in a table of addresses, in the low 16 bits of a slot's payload: the high 32 are the word offset of a list, not a block (no offset number has this bit) */
 #define SIFT_CPOINT_TID_MAXOFF	512		/* an offset number of the address codes below this, which every heap page of 8 kB does (MaxHeapTuplesPerPage is 291) */

@@ -32,6 +32,7 @@ col/preagg.c
 col/preagg_opt.c
 col/preagg_read.c
 col/preagg_super.c
+col/gorder.c
 col/point.c
 col/runs.c
 col/hll.c
@@ -57,6 +58,7 @@ col/enc.h
 col/enc_int.h
 col/seg.h
 col/seg_int.h
+col/gorder.h
 col/point.h
 col/runs.h
 col/hll.h

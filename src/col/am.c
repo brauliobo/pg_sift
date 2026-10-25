@@ -33,6 +33,7 @@
 #include "col/seg.h"
 #include "col/point.h"
 #include "col/hll.h"
+#include "col/gorder.h"
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "core/cpu.h"
@@ -186,6 +187,15 @@ sift_col_validate_order_columns(const char *value)
 
 	if (err)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_order_array_columns(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option \"%s\": %s", value, err)));
 }
 
 void
@@ -387,6 +397,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_array_columns",
+						 "the columns of order_columns (integer, date and timestamp) whose segments written from now on also keep every row's key and heap address sorted, so that ORDER BY column LIMIT n above 32 reads n entries whatever the number of units; 1 to 4 bytes a row for each column; the segments are column format minor 21 (default none)",
+						 "", sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "hll_columns",
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
@@ -425,6 +438,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
 	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
@@ -575,6 +589,14 @@ sift_col_options_order_columns(Relation index)
 }
 
 const char *
+sift_col_options_order_array_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_columns ? (const char *) o + o->order_array_columns : "";
+}
+
+const char *
 sift_col_options_hll_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
@@ -711,6 +733,13 @@ build_rel(Relation index, MemoryContext mcxt)
 		r->pagg.super = sift_col_options(index)->superunit;
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
+		if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_columns(index), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
+										"not an integer, date or timestamp column")) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			if (r->pagg.gorder[i] && !r->pagg.run[i])
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
+								errhint("The global order extends the sorted run of a column: add it to order_columns.")));
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
 		for (int i = 0; i < n; i++)

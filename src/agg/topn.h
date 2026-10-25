@@ -90,6 +90,9 @@ typedef struct SiftTopN SiftTopN;
 extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
+/* The scan reads the global order of the key: false when the source or the query cannot (the units are read as before) */
+extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src);
+extern bool sift_topn_gordered(const SiftTopN *t);
 
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 
@@ -121,6 +124,7 @@ extern PGDLLIMPORT bool sift_topn_heads;	/* sift.test_topn_heads: answer a unit 
 #else
 #define sift_topn_heads true
 #endif
+extern PGDLLIMPORT bool sift_topn_gorder_on;	/* sift.test_topn_gorder */
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
 extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */

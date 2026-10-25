@@ -588,6 +588,26 @@ col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, ui
 	return h;
 }
 
+static int
+col_gorder_open(void *impl, int leaf, int rows)
+{
+	ColSource  *src = impl;
+
+	return sift_col_gorder_open(src->cs, leaf, rows);
+}
+
+static bool
+col_gorder_info(void *impl, int i, int leaf, uint32 *entries, uint32 *values)
+{
+	return sift_col_gorder_info(((ColSource *) impl)->cs, i, leaf, entries, values);
+}
+
+static uint32
+col_gorder_chunk(void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+{
+	return sift_col_gorder_chunk(((ColSource *) impl)->cs, i, leaf, c, key, addr);
+}
+
 static void
 col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
 {
@@ -802,6 +822,9 @@ static const SiftSrcProvider col_provider = {
 	.run_heads = col_run_heads,
 	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
+	.gorder_open = col_gorder_open,
+	.gorder_info = col_gorder_info,
+	.gorder_chunk = col_gorder_chunk,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,

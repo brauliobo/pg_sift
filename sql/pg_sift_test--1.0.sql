@@ -382,3 +382,6 @@ CREATE FUNCTION sift._test_col_set_file_damage(index regclass, stride int4, OUT 
 	AS 'MODULE_PATHNAME', 'sift_test_col_set_file_damage' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_point_file_damage(index regclass, stride int4, OUT runs int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_point_file_damage' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_gorder(index regclass, leaf int4, OUT seg int8, OUT pos int4, OUT key int8, OUT tid tid, OUT null_row bool) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_gorder' LANGUAGE C STRICT;

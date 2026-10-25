@@ -326,6 +326,24 @@ sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint
 	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
 }
 
+int
+sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows)
+{
+	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows) : -1;
+}
+
+bool
+sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values)
+{
+	return src->prov->gorder_info(src->impl, i, leaf, entries, values);
+}
+
+uint32
+sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+{
+	return src->prov->gorder_chunk(src->impl, i, leaf, c, key, addr);
+}
+
 void
 sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
 {

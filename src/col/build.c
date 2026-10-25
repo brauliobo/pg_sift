@@ -478,6 +478,35 @@ notice_point_tid(Relation index)
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
+/* The option keeps a sorted array of every row of an order_columns column: its bytes are said once, where they are paid */
+static void
+notice_order_array(Relation index)
+{
+	const SiftColLeafStats *ls;
+	const SiftColIndexMeta *d;
+	double		rows = 0,
+				bytes = 0;
+	int			n = 0;
+
+	if (sift_col_options_order_array_columns(index)[0] == '\0')
+		return;
+	d = sift_col_index_defs(index);
+	ls = sift_col_leaf_stats(index);
+	for (int c = 0; c < d->ncols; c++)
+		if (ls[c].gord_rows > 0)
+		{
+			rows += ls[c].gord_rows;
+			bytes += ls[c].gord_bytes;
+			n++;
+		}
+	if (n == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
+			 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
+			 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
+}
+
 /*
  * The primary key of a table that other tables reference is the key a join to it reads. When it is not a column of the index, an aggregate scan of two
  * sift tables joined on it keeps the normal plan (join_condition), and the column costs a few bytes a row (3.4 on 353,029 rows with ids up to 15.5 million;
@@ -618,6 +647,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
 	notice_point_tid(index);
+	notice_order_array(index);
 	notice_pkey(heap, index);
 	notice_volatile(heap, index);
 	sift_col_report_caps(index);

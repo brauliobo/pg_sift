@@ -6,6 +6,7 @@
 
 #include "core/host.h"
 
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/ver.h"
@@ -225,6 +226,15 @@ typedef struct PointLeaf
 	bool		tids;			/* the slots list heap addresses (column format minor 16), not rows of the segment */
 } PointLeaf;
 
+/* The global order block of a leaf (col/gorder.h): stream offset and bytes, the directory read on first use */
+typedef struct GOrdLeaf
+{
+	uint64		at;
+	uint64		bytes;
+	SiftCGOrdHdr hdr;
+	SiftCGOrdDir *dir;
+} GOrdLeaf;
+
 typedef struct SegPriv
 {
 	SiftLive	live;
@@ -275,6 +285,7 @@ typedef struct SegPriv
 	bool		pt_checked;		/* the point directories at the end of the DICT section were looked for */
 	uint64		dict_end;		/* where the dictionaries end in the DICT section (before the point directories, if any) */
 	PointLeaf  *pt;				/* [ncols] (nslots 0: none) */
+	GOrdLeaf   *go;				/* [ncols] (bytes 0: none) */
 } SegPriv;
 
 #define PRIV(seg)	((SegPriv *) (seg)->priv)

@@ -39,7 +39,8 @@
 #define SIFT_COL_FORMAT_HEADS	18			/* 3.4: the sorted runs of the segment also hold their heads, the first and last keys with the heap addresses of their rows; written for an index with the reloption order_columns whose segment is not key-cut, under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_EXCEPT	19		/* 3.4: a unit also holds the cube and the element rollups of its few rows where one NULL-heavy leaf is not NULL (the exceptions), so that a filter IS NULL on it is answered as the unit minus them; written when a unit has exceptions, under a sift.col_format_minor of 15 or more (docs/COL-PREAGG.md 11) */
 #define SIFT_COL_FORMAT_HLL		20			/* 3.4: the segment has the HyperLogLog sketch of some leaf in some unit; written only for an index with the reloption hll_columns, and then for a schema that has no shredded leaves or whose every kind is known */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_HLL	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_GORDER	21		/* 3.4: the segment has the global order of some leaf: every row's key and heap address sorted, in chunks; written for a leaf of the option order_columns under sift.col_order_array */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_GORDER	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -314,6 +315,8 @@ typedef struct SiftColLeafStats
 	double		point_keys;		/* ... the distinct keys of those lists ... */
 	double		point_rows;		/* ... and the rows they list */
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
+	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
+	double		gord_bytes;		/* ... and their bytes */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;
@@ -605,6 +608,14 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
 /* The heap addresses the point directories of heap addresses answered at the last begin (SIFT_COLO_POINT_TIDS), ascending: their units are not read; the caller has the heap check the conditions */
 extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
+/*
+ * The global order of leaf col (col/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
+ * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _chunk: the entries
+ * [c * SIFT_CGORD_ROWS, + the count returned) as keys and heap addresses, each SIFT_CGORD_CAP slots.
+ */
+extern int sift_col_gorder_open(SiftColSource *src, int col, int rows);
+extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
+extern uint32 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr);
 /*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap

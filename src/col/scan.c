@@ -20,6 +20,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/point.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
@@ -1270,4 +1271,146 @@ uint32
 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx)
 {
 	return sift_colk->bits_to_idx(sel->bits, sel->nwords, 0, idx);
+}
+
+/* ---- the global order of a leaf as a source of sorted entries (col/gorder.h): the stored segments and the rows of the write buffers ---- */
+
+typedef struct ColGOrdMem
+{
+	int			leaf;
+	uint32		n;				/* entries: nvals with a value by (key, address), then those without by address */
+	uint32		nvals;
+	int64	   *key;
+	uint64	   *tid;
+} ColGOrdMem;
+
+typedef struct GOrdPair
+{
+	int64		key;
+	uint64		tid;
+} GOrdPair;
+
+static int
+gord_pair_cmp(const void *a, const void *b)
+{
+	const GOrdPair *x = a,
+			   *y = b;
+
+	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->tid, y->tid);
+}
+
+/* The rows of the write buffers sorted like a segment's entries; false when they are more than maxrows (sorting them whole costs more than reading them as units), or one holds an overflow value of the leaf or an address a block of the global order cannot name */
+static bool
+gord_mem(SiftColSource *src, int leaf, uint64 maxrows)
+{
+	ColGOrdMem *g = src->gmem;
+	uint64		n = 0;
+	GOrdPair   *pv,
+			   *pn;
+	uint32		nv = 0,
+				nn = 0;
+
+	if (g != NULL && g->leaf == leaf)
+		return true;
+	for (int i = 0; i < src->nmem; i++)
+		n += src->mem[i].b->nrows;
+	if (n > maxrows)
+		return false;
+	pv = palloc((n + 1) * sizeof(GOrdPair));
+	pn = palloc((n + 1) * sizeof(GOrdPair));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf];
+
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+				return false;
+			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+				pn[nn++] = (GOrdPair) {0, (uint64) b->keys[r]};
+			else
+				pv[nv++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
+		}
+	}
+	qsort(pv, nv, sizeof(GOrdPair), gord_pair_cmp);
+	qsort(pn, nn, sizeof(GOrdPair), gord_pair_cmp);
+	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
+	g->leaf = leaf;
+	g->n = nv + nn;
+	g->nvals = nv;
+	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
+	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
+	for (uint32 i = 0; i < nv; i++)
+	{
+		g->key[i] = pv[i].key;
+		g->tid[i] = pv[i].tid;
+	}
+	for (uint32 i = 0; i < nn; i++)
+	{
+		g->key[nv + i] = 0;
+		g->tid[nv + i] = pn[i].tid;
+	}
+	src->gmem = g;
+	pfree(pv);
+	pfree(pn);
+	return true;
+}
+
+/*
+ * The sources of the global order of leaf col: one for each stored segment, then one for the write buffers when they hold rows. -1 when the order cannot
+ * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value).
+ */
+int
+sift_col_gorder_open(SiftColSource *src, int col, int rows)
+{
+	int			n = src->nseg;
+
+	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
+		return -1;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		uint32		entries,
+					values;
+
+		if (!sift_cseg_gorder(src->seg[i].seg, col, &entries, &values))
+			return -1;
+	}
+	if (!src->mem_loaded)
+		load_wbuf(src);
+	if (src->nmem > 0)
+	{
+		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows)))
+			return -1;
+		if (src->gmem->n > 0)
+			n++;
+	}
+	return n;
+}
+
+bool
+sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values)
+{
+	if (i < src->nseg)
+		return sift_cseg_gorder(src->seg[i].seg, col, entries, values);
+	*entries = src->gmem->n;
+	*values = src->gmem->nvals;
+	return true;
+}
+
+uint32
+sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr)
+{
+	const ColGOrdMem *g = src->gmem;
+	uint32		from,
+				m;
+
+	if (i < src->nseg)
+		return sift_cseg_gorder_chunk(src->seg[i].seg, col, c, key, addr);
+	from = c * SIFT_CGORD_ROWS;
+	m = Min(g->n - from, (uint32) SIFT_CGORD_ROWS);
+	memcpy(key, g->key + from, m * sizeof(int64));
+	for (uint32 k = 0; k < m; k++)
+		addr[k] = g->tid[from + k];
+	return m;
 }

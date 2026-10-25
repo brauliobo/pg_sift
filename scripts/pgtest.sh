@@ -2,7 +2,8 @@
 # Throwaway PostgreSQL cluster that loads sift from the repo build output, without a
 # system-wide install (extension_control_path, dynamic_library_path). PostgreSQL 17 has no
 # extension_control_path: install then copies sift into the server's own directories, as
-# SIFT_SUDO (e.g. sudo) when those are not writable.
+# SIFT_SUDO (e.g. sudo) when those are not writable. Two checkouts that install for PostgreSQL 17 on one machine overwrite each other's library there (a test then fails with an
+# option or a behavior of the other checkout): use PostgreSQL 18 when several work on a machine, or install, start and run in one go.
 #
 #   scripts/pgtest.sh install    build + install into $SIFT_TMP/root
 #   scripts/pgtest.sh start      initdb (first time) + start, without autovacuum (see start)

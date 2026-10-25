@@ -240,6 +240,13 @@ extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);
 extern uint32 sift_cseg_point_nkeys(SiftColSegment *seg, int col);
 extern void sift_cseg_verify_points(SiftColSegment *seg);
+/*
+ * The global order of leaf col (col/gorder.h, column format minor 21): false when the segment has none. entries: its rows, values: those with a value (the first ones in
+ * the order of (key, heap address), then the rows without a value by address). _chunk: the entries [c * SIFT_CGORD_ROWS, + the count it returns) as keys and heap
+ * addresses (SIFT_CGORD_CAP slots each; the keys of a NULL row are 0). _find: the place of the first value at or after key (past it when after), the number of values when none.
+ */
+extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
+extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);

@@ -41,6 +41,7 @@ TABLE_SKIP = {
     'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'keycut': 'key_cut is an option of the sift_col index',
     'window': 'the sorted runs (order_columns) are an option of the sift_col index',
+    'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
 }
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
@@ -1047,6 +1048,38 @@ def dml_exceptions(r, ctx):
     return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
 
 
+# ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
+GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
+
+
+def gen_gorder(r, ctx):
+    return dict(col=r.choice(GO_COLS), dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
+                where=[], keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_gorder(p):
+    return f"SELECT g.{p['col']} FROM gof g ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
+
+
+def dml_gorder(r, ctx):
+    """Updates of an indexed key, deletes, inserts, VACUUM, promotion and merges on gof: the arrays of old segments keep dead rows, the write buffer holds the new ones."""
+    m = r.choice([13, 40, 97, 211, 509])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 3:
+        c = r.choice(['a', 'b', 'c', 'd', 't', 'z'])
+        return f"UPDATE gof SET {c} = NULL WHERE {ids}" if r.random() < 0.3 else f"UPDATE gof SET b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1 WHERE {ids}"
+    if e == 3:
+        return f'DELETE FROM gof WHERE {ids}'
+    if e in (4, 5, 6):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_go']; ctx['next_go'] += n
+        return f'INSERT INTO gof SELECT * FROM fz.gen_gof({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 7:
+        return r.choice(['VACUUM gof', 'VACUUM (FREEZE) gof'])
+    return r.choice(["SELECT sift.col_promote('gof_idx')", "SELECT sift.col_merge('gof_idx', true)", "SELECT sift.col_merge('gof_idx', false)"])
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
@@ -1055,7 +1088,7 @@ FAMILIES = {
     'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
-    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4),
+    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1090,6 +1123,8 @@ def variants(r, fam):
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
+    if fam == 'gorder':  # the scan of the units, which the arrays stand for
+        v.append(('nogorder', 'sift.enable_agg=on;sift.test_topn_gorder=off;max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
@@ -1307,6 +1342,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rn = random.Random(seed * 1299709 + 5)
     rx = random.Random(seed * 15485863 + 7)
     rw = random.Random(seed * 32452843 + 11)
+    rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -1314,6 +1350,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
         if not only or 'exceptions' in only:
             st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
+        if not TABLE and (not only or 'gorder' in only):
+            st += [dml_gorder(rg, ctx) for _ in range(rg.randrange(dmls + 1))]
         if not TABLE and (not only or 'keycut' in only):
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         if not TABLE and (not only or 'window' in only):
@@ -1487,7 +1525,7 @@ def main():
     TABLE = a.table
     if a.selftest:
         for TABLE in (False, True):
-            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_go': a.rows + 1000}
             sql = data_sql(1, a.rows, a.parts)
             if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE or ('PARTITION BY' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
@@ -1523,7 +1561,7 @@ def main():
         tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_go': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

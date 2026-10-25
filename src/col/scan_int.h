@@ -184,6 +184,7 @@ struct SiftColSource
 	bool		ptid_unsorted;	/* a segment's run of addresses started below the last address of the segments before it: sorted at the end of the begin */
 	uint32		nptid;
 	uint32		capptid;
+	struct ColGOrdMem *gmem;	/* the rows of the write buffers sorted for the global order (sift_col_gorder_open), in mcxt */
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	SiftDirSnapshot dir;
