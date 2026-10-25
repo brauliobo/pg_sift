@@ -7,12 +7,12 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
--- log-uniform parents: parent 1 owns about one row in six, the last ones a few hundred rows in 30,000 (a low-discrepancy sequence, so the data is the same on every run)
+-- log-uniform parents: parent 1 owns about one row in ten, the last ones a few dozen rows in 30,000 (a low-discrepancy sequence, so the data is the same on every run)
 CREATE TABLE ks_events (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8, deleted_at timestamptz) WITH (autovacuum_enabled = false);
-INSERT INTO ks_events SELECT i, floor(power(301.0, (i * 0.6180339887498949) % 1.0))::int, date '2024-01-01' + (i - 1) / 30, 'cat_' || chr(97 + i % 4), 1 + i % 17, CASE WHEN i % 29 = 0 THEN now() END
+INSERT INTO ks_events SELECT i, floor(power(1001.0, (i * 0.6180339887498949) % 1.0))::int, date '2024-01-01' + (i - 1) / 30, 'cat_' || chr(97 + i % 4), 1 + i % 17, CASE WHEN i % 29 = 0 THEN now() END
 	FROM generate_series(1, 30000) i;
 CREATE TABLE ks_flat (LIKE ks_events) WITH (autovacuum_enabled = false);
-INSERT INTO ks_flat SELECT id, 1 + id % 300, ts, kind, amount, deleted_at FROM ks_events;
+INSERT INTO ks_flat SELECT id, 1 + id % 1000, ts, kind, amount, deleted_at FROM ks_events;
 ALTER TABLE ks_flat ADD PRIMARY KEY (id);
 CREATE INDEX ks_events_parent ON ks_events (parent_id, ts, deleted_at);
 CREATE INDEX ks_flat_parent ON ks_flat (parent_id, ts, deleted_at);
@@ -21,12 +21,12 @@ CREATE INDEX ks_flat_col ON ks_flat USING sift_col (id, parent_id, ts, kind, amo
 -- the lists: group 1 the five heaviest parents, group 2 the five rarest
 CREATE TABLE ks_pick (grp int NOT NULL, parent_id int NOT NULL);
 INSERT INTO ks_pick SELECT 1, p FROM generate_series(1, 5) p;
-INSERT INTO ks_pick SELECT 2, p FROM generate_series(296, 300) p;
+INSERT INTO ks_pick SELECT 2, p FROM generate_series(996, 1000) p;
 CREATE INDEX ON ks_pick (grp);
 VACUUM (FREEZE, ANALYZE) ks_events, ks_flat, ks_pick;
 
 SELECT round(100 * count(*) FILTER (WHERE parent_id <= 5) / count(*)::numeric) AS pct_rows_heaviest_5,
-       round(100 * count(*) FILTER (WHERE parent_id >= 296) / count(*)::numeric, 1) AS pct_rows_rarest_5 FROM ks_events;
+       round(100 * count(*) FILTER (WHERE parent_id >= 996) / count(*)::numeric, 1) AS pct_rows_rarest_5 FROM ks_events;
 
 CREATE FUNCTION plan_of(q text, skew text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
 DECLARE j jsonb;

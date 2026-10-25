@@ -23,9 +23,9 @@ BEGIN
 	FROM sift.explain_why(q(keys)) e;
 END $$;
 
--- 30,000 groups of about 200 bytes fit the 8 MB of the defaults; they do not fit 1 MB, and the sort of the normal plan is the cheaper spill
+-- 30,000 groups of about 200 bytes fit the 8 MB of the defaults; they do not fit 512 kB, and the sort of the normal plan is the cheaper spill
 SELECT * FROM why('u', '4MB', '2');
-SELECT * FROM why('u', '1MB');
+SELECT * FROM why('u', '512kB');
 -- 100 groups, or one, fit any memory
 SELECT * FROM why('v', '64kB');
 SELECT * FROM why(NULL, '64kB');

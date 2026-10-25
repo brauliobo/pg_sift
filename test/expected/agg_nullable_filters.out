@@ -63,7 +63,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- f      | t        |           0
+ t      | t        |           0
 (1 row)
 
 -- A computed test that is true for an absent input stays with PostgreSQL: it would be true for the calendar's empty days.

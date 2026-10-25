@@ -21,7 +21,7 @@ SELECT parent_id, count(*) AS n, round(avg(amount)::numeric, 3) AS mean FROM eve
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: a03_two_keys_month
--- expect: scan 0.18 0.73
+-- expect: scan 0.081 0.32
 SELECT kind, date_trunc('month', ts)::date AS bucket, sum(amount) AS total, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
@@ -31,7 +31,7 @@ SELECT parent_id, kind, count(*) AS n, min(ts) AS first_day, max(ts) AS last_day
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: a05_three_keys
--- expect: scan 0.18 0.74
+-- expect: scan 0.089 0.36
 SELECT parent_id, kind, date_trunc('quarter', ts)::date AS bucket, sum(qty) AS units, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 
@@ -46,17 +46,17 @@ SELECT kind, count(*) FILTER (WHERE qty > 5) AS big, count(*) FILTER (WHERE qty 
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: a08_one_parent_narrow
--- expect: normal 2.0 8.1
+-- expect: normal 0.99 4.0
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id = 7 AND deleted_at IS NULL AND ts >= date '2025-03-01' AND ts < date '2025-04-01' GROUP BY 1 ORDER BY 1;
 
 -- name: a09_having
--- expect: either 0.45 1.8
+-- expect: either 0.19 0.77
 SELECT parent_id, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 HAVING count(*) > 240 ORDER BY 1;
 
 -- name: a10_expression_key
--- expect: scan 0.19 0.74
+-- expect: scan 0.079 0.32
 SELECT extract(isodow FROM ts)::int AS weekday, kind, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
@@ -92,7 +92,7 @@ SELECT id, ts, amount FROM events WHERE parent_id = 7 AND deleted_at IS NULL ORD
 SELECT date_trunc('month', ts)::date AS bucket, sum(amount) AS total FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY total DESC, bucket LIMIT 3;
 
 -- name: b06_top_offset
--- expect: scan 0.29 1.2
+-- expect: scan 0.12 0.49
 SELECT parent_id, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY n DESC, parent_id LIMIT 5 OFFSET 5;
 
 -- name: b07_top_rows_trailing_key
@@ -118,7 +118,7 @@ SELECT d.tier, e.kind, count(*) AS n FROM events e JOIN dims d ON d.id = e.paren
 WHERE d.active AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: c03_join_month
--- expect: scan 0.18 0.71
+-- expect: scan 0.087 0.35
 SELECT d.tier, date_trunc('month', e.ts)::date AS bucket, round(avg(e.amount)::numeric, 3) AS mean, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id
 WHERE e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
@@ -200,7 +200,7 @@ SELECT kind, avg(mean_amount) AS mean FROM (SELECT parent_id, kind, avg(amount) 
 SELECT kind, count(*) AS parents FROM (SELECT parent_id, kind, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1, 2 HAVING count(*) > 100) s GROUP BY 1 ORDER BY 1;
 
 -- name: e05_two_level_join_outer
--- expect: scan 0.29 1.2
+-- expect: scan 0.13 0.50
 SELECT d.tier, sum(s.n) AS n FROM (SELECT parent_id, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1) s JOIN dims d ON d.id = s.parent_id GROUP BY 1 ORDER BY 1;
 
 -- name: e06_count_of_groups
@@ -213,7 +213,7 @@ SELECT b.bucket, count(e.id) AS n, sum(e.amount) AS total FROM buckets b
 LEFT JOIN events e ON e.ts >= b.bucket AND e.ts < b.bucket + interval '1 month' AND e.deleted_at IS NULL AND e.kind = 'cat_a' GROUP BY 1 ORDER BY 1;
 
 -- name: f02_spine_derived_cells
--- expect: scan 0.29 1.1
+-- expect: scan 0.14 0.56
 SELECT b.bucket, coalesce(e.n, 0) AS n, coalesce(e.total, 0) AS total FROM buckets b
 LEFT JOIN (SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n, sum(amount) AS total FROM events WHERE deleted_at IS NULL AND parent_id = 7 GROUP BY 1) e ON e.bucket = b.bucket
 ORDER BY 1;
@@ -290,15 +290,15 @@ SELECT d.tier, count(*) AS n, sum(e.amount) AS total FROM events_part e JOIN dim
 SELECT parent_id, sum(amount) AS total FROM events_part WHERE deleted_at IS NULL GROUP BY 1 ORDER BY total DESC, parent_id LIMIT 5;
 
 -- name: h05_partitions_count
--- expect: either 0.35 1.4
+-- expect: either 0.17 0.67
 SELECT count(*) AS n FROM events_part;
 
 -- name: i01_count_all
--- expect: scan 0.31 1.2
+-- expect: scan 0.15 0.58
 SELECT count(*) AS n FROM events;
 
 -- name: i02_count_by_kind
--- expect: scan 0.15 0.58
+-- expect: scan 0.070 0.28
 SELECT kind, count(*) AS n FROM events GROUP BY 1 ORDER BY 1;
 
 -- name: i03_sum_by_parent
@@ -310,15 +310,15 @@ SELECT parent_id, sum(amount) AS total FROM events GROUP BY 1 ORDER BY 1;
 SELECT min(ts) AS first_day, max(ts) AS last_day, min(amount) AS low, max(amount) AS high FROM events;
 
 -- name: i05_count_live
--- expect: scan 0.28 1.1
+-- expect: scan 0.14 0.54
 SELECT count(*) AS n FROM events WHERE deleted_at IS NULL;
 
 -- name: i06_sum_by_kind_month
--- expect: scan 0.18 0.73
+-- expect: scan 0.082 0.33
 SELECT kind, date_trunc('month', ts)::date AS bucket, sum(amount) AS total, count(*) AS n FROM events GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: j01_distinct_global
--- expect: scan 0.31 1.2
+-- expect: scan 0.13 0.51
 SELECT count(DISTINCT parent_id) AS parents FROM events WHERE deleted_at IS NULL;
 
 -- name: j02_distinct_by_kind
@@ -334,7 +334,7 @@ SELECT date_trunc('month', ts)::date AS bucket, count(DISTINCT parent_id) AS par
 SELECT kind, count(DISTINCT parent_id) AS parents, count(DISTINCT ts) AS days, count(*) AS n FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: j05_distinct_one_parent
--- expect: scan 0.28 1.1
+-- expect: scan 0.14 0.55
 SELECT kind, count(DISTINCT ts) AS days FROM events WHERE parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: j06_select_distinct
@@ -380,7 +380,7 @@ SELECT bucket, sum(amount) AS total, sum(sum(amount)) OVER (ORDER BY bucket) AS 
 SELECT kind, sum(amount) AS total, round((100 * sum(amount) / sum(sum(amount)) OVER ())::numeric, 2) AS pct FROM events WHERE deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: l04_lag_of_months
--- expect: scan 0.17 0.69
+-- expect: scan 0.084 0.34
 SELECT bucket, n, n - lag(n) OVER (ORDER BY bucket) AS change FROM (SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE deleted_at IS NULL AND kind = 'cat_a' GROUP BY 1) s ORDER BY 1;
 
 -- name: l05_top_parents_per_kind
@@ -397,7 +397,7 @@ SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE memo @@> 'cab
 SELECT count(*) AS n FROM events WHERE memo @@> 'cable';
 
 -- name: m03_search_one_parent
--- expect: either 0.41 1.6
+-- expect: either 0.20 0.81
 SELECT kind, count(*) AS n FROM events WHERE memo @@> 'switch' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: m04_search_latest_rows
@@ -455,7 +455,7 @@ SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE 
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events WHERE ts = date '2025-03-01' AND deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: o05_deleted_rows
--- expect: scan 0.16 0.66
+-- expect: scan 0.076 0.30
 SELECT kind, count(*) AS n FROM events WHERE deleted_at IS NOT NULL GROUP BY 1 ORDER BY 1;
 
 -- name: o06_text_not_equal

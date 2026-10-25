@@ -79,7 +79,7 @@ SELECT 'correlated' AS filter, * FROM plan_nodes(series_query('SELECT x.parent_i
 SELECT 'not in' AS filter, * FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
  filter | scan_nodes | hoisted_ctes | hoisted_reads 
 --------+------------+--------------+---------------
- not in |          1 |            0 |             0
+ not in |          2 |            0 |             0
 (1 row)
 
 SELECT differences(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25')) AS aggregate_differences,

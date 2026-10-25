@@ -42,7 +42,7 @@ SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_co
 
 DROP TABLE page_costs;
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug |                                                                                          reason                                                                                          
 ------+------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  f    | cost | the normal plan is estimated cheaper than the scan (the scan costs N, the normal plan N; N% of the heap pages are not all-visible, which adds N to the scan: VACUUM (ANALYZE) the table)
@@ -50,7 +50,7 @@ SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY
 
 -- the share of the pages is the table's, not the query's
 SELECT used, slug, reason ~ '^the normal plan is estimated cheaper than the scan \(the scan costs [0-9.]+, the normal plan [0-9.]+; 100% of the heap pages' AS pages_100
-FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug | pages_100 
 ------+------+-----------
  f    | cost | t
@@ -64,7 +64,7 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
 (1 row)
 
 -- the same for a shared CTE that two aggregates read: the inlined scans pay the heap check and lose to the shared plan
-SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
  used |   slug   |                                                                                                                            reason                                                                                                                            
 ------+----------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  f    | cte_cost | the shared CTE plan is estimated cheaper than the plan with the CTE inlined (inline costs N (the scans N), the shared CTE N (the work the scans replace N); N% of the heap pages are not all-visible, which adds N to the scans: VACUUM (ANALYZE) the table)
@@ -95,13 +95,13 @@ SELECT used, slug FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 20
 SET sift.explain_refusals = on;
 SET client_min_messages = warning;
 DO $$ DECLARE r record; BEGIN
-	FOR r IN EXPLAIN WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v LOOP END LOOP;
+	FOR r IN EXPLAIN WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v LOOP END LOOP;
 	FOR r IN EXPLAIN SELECT v, count(*), sum(k) FROM ordered WHERE k < 200 GROUP BY v LOOP END LOOP;
 END $$;
 RESET client_min_messages;
 RESET sift.explain_refusals;
 VACUUM ordered;
-SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
  used | slug | reason 
 ------+------+--------
  t    |      | 
@@ -117,7 +117,7 @@ SELECT (SELECT charge FROM charges WHERE k_below = 20) > 0 AS charged,
  t       | t
 (1 row)
 
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug | reason 
 ------+------+--------
  t    |      | 

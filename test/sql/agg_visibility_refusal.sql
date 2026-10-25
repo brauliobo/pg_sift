@@ -43,15 +43,15 @@ SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_co
 DROP TABLE page_costs;
 
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 -- the share of the pages is the table's, not the query's
 SELECT used, slug, reason ~ '^the normal plan is estimated cheaper than the scan \(the scan costs [0-9.]+, the normal plan [0-9.]+; 100% of the heap pages' AS pages_100
-FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 -- a scan that loses for another reason says nothing of the map: one key of a table the btree reads at once
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
 -- the same for a shared CTE that two aggregates read: the inlined scans pay the heap check and lose to the shared plan
-SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
 -- no way out is promised when the shared plan pays the heap check too: a VACUUM would cut both
 SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');
 
@@ -64,20 +64,20 @@ SELECT used, slug FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 20
 SET sift.explain_refusals = on;
 SET client_min_messages = warning;
 DO $$ DECLARE r record; BEGIN
-	FOR r IN EXPLAIN WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v LOOP END LOOP;
+	FOR r IN EXPLAIN WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v LOOP END LOOP;
 	FOR r IN EXPLAIN SELECT v, count(*), sum(k) FROM ordered WHERE k < 200 GROUP BY v LOOP END LOOP;
 END $$;
 RESET client_min_messages;
 RESET sift.explain_refusals;
 
 VACUUM ordered;
-SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
+SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 10) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
 CREATE TABLE charges AS
 SELECT k_below, c.empty_cost - (SELECT scan_cost FROM sift.explain_why(format('SELECT v, count(*), sum(k) FROM ordered WHERE k < %s GROUP BY v', k_below))) AS charge
 FROM costs c;
 SELECT (SELECT charge FROM charges WHERE k_below = 20) > 0 AS charged,
 	(SELECT charge FROM charges WHERE k_below = 20) < 0.5 * (SELECT charge FROM charges WHERE k_below = 300) AS tenth_charges_less;
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 13 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
 DROP FUNCTION why(text), cte_why(text);

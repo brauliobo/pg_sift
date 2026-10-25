@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
-CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, big_id int8, kind text, amount numeric(10, 2), day date) WITH (autovacuum_enabled = false);
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, big_id int8, kind text, amount numeric(10, 2), day date, ref int) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i,
        CASE WHEN i <= 5 THEN -i                           -- negative ids
@@ -12,10 +12,11 @@ SELECT i,
             WHEN i % 1000 = 0 THEN NULL
             ELSE 1 + (i::bigint * 7919) % 40000 END,
        (i % 50)::int2, 5000000000 + (i::bigint * 7919) % 40000,
-       (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0, date '2024-01-01' + i % 700
+       (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0, date '2024-01-01' + i % 700, i
 FROM generate_series(1, 400000) i;
 CREATE INDEX ev_entity ON ev (dim_a_id, day);
-CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, big_id, kind, amount, day);
+CREATE INDEX ev_ref ON ev (ref);
+CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, big_id, kind, amount, day, ref);
 VACUUM (FREEZE, ANALYZE) ev;
 
 -- the plan of a statement, EXPLAIN without the numbers
@@ -40,11 +41,14 @@ SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE day >= '2024-01-01' A
 SELECT plan_kind('EXECUTE off_q(''{1,2,3}'')') AS enable_agg_off;
 RESET sift.enable_agg;
 
--- the planner's own guess of 10 elements keeps the bitmap scan; the elements assumed by sift.agg_param_set_size move the choice
-SET sift.agg_param_set_size = 0;
+-- on a column of one row per value the planner's own guess of 10 elements keeps the index scan (opening the scan costs more than 10 probes); the elements assumed by sift.agg_param_set_size move the choice
 PREPARE guess_q(int4[]) AS
-SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE day >= '2024-01-01' AND dim_a_id = ANY ($1) GROUP BY kind ORDER BY kind;
-SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS planner_guess;
+SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
+SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS default_assumed;
+SET sift.agg_param_set_size = 0;
+PREPARE guess_q0(int4[]) AS
+SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
+SELECT plan_kind('EXECUTE guess_q0(''{1,2,3}'')') AS planner_guess;
 RESET sift.agg_param_set_size;
 
 -- the plan shows the parameter, and a query SiftAgg cannot run keeps its plan whatever the size of the array
