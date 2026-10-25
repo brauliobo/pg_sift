@@ -393,3 +393,51 @@ anything the engine does: group segments are written by `sift_colw_*` (and `sift
 | liveness `sift_cseg_bulkdelete` with a TID callback | VACUUM step 2 |
 | `sift_colw_set_tag` (segment xmin of a bulk write) | removed with the write path of 3.1: the engine writer takes the `xmin`/`cmin` of every row from the batch (`sift_cbatch_add_ver`), and the direct column writes of a rewrite are frozen (no versions) |
 | `sift_col_add_batches` (write buffer rows as in-memory units), the `SiftSrcProvider` seam of `agg/colsrc.h` | used by the table provider (`table/src.c`) |
+
+---
+
+## 13. Feature parity with `sift_col`
+
+Both engines share the column format, the writer and the aggregate scan; what differs is which features the table's provider (`table/src.c`) offers the scan through the `SiftSrcProvider` seam (`agg/colsrc.h`) and which of the index's options have a counterpart. The table is compared with the callbacks each provider sets, so a feature added to one provider changes the table. `missing` means the plan or the scan degrades to the normal path (the note says how); `n/a` means the table has no such thing.
+
+<!-- gen:parity -->
+
+| Feature | `sift_col` | `sift_table` | Note |
+|---|---|---|---|
+| Aggregate pushdown (SiftAgg): filters, grouping, aggregates, top-N | works | works | the same executor over either source |
+| Per-unit sums, counts, minimum and maximum | works | works | exact while the unit has no dead row and its pages are visible (a table: no write buffer row or tombstone in the superblock) |
+| Group histograms (the cube) and calendar cells | works | works | a table writes the default cube and the cells of every date and timestamp column; an index takes `preagg` and `calendar_columns` |
+| Minimum and maximum per group of the cube (`cube_minmax`) | works | missing | a table would grow 6.1% for it: not a default, no setting yet |
+| Superunit summaries (`superunit`) | works | missing | whole-table aggregates read one summary for 16 units on an index |
+| Key lists and bitmaps of a leaf (`key_columns`) | works | missing | `count(DISTINCT)` is pushed down and counts the values of the rows; no key list of the units to read instead |
+| HyperLogLog sketch (`hll_columns`, `approx_count_distinct`) | works | missing | `sift.approx_count_distinct` is pushed down and reads the rows; no sketch of the units |
+| Exceptions of a leaf that is NULL in nearly every row (soft-delete stamp) | works | missing | `IS NULL` / `IS NOT NULL` read the unit's NULL count either way |
+| Rollups of the elements of a list (`rollup`, paths) | works | missing | declared paths (`sift.table_set_paths`) make leaves of a table, not rollups |
+| Zone pruning of units by the filters of the statement | works | works | range, equality, `IN`, `IS NULL`, `OR` of those |
+| Skip map for parallel morsels | works | missing | a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map |
+| Parallel scan workers | works | works | partitions of a partitioned table: index only (`open_part`) |
+| Partitioned table pushdown | works | missing | partitions of `sift_table` are scanned by PostgreSQL's own plan |
+| Text tests on the encoded form (prefix zones, dictionary codes) | works | missing | the executor tests the strings of the decoded leaf; no prefix zone or dictionary code test |
+| Integer comparisons on encoded chunks | works | works | the table takes a filter when every segment layout holds the column as an integer leaf (agg/chunkfilter.c) |
+| Decoding only the rows a filter keeps | works | works | a unit with few kept rows decodes them, and one the integer filters left few rows is narrowed to them |
+| Decoding straight into the executor's vector | works | partial | a leaf that is not wide decodes into the executor's buffer in its own type (the read shared with `sift_col`); wide leaves (numeric over 18 digits, interval, enum) decode, then copy |
+| Point directory and heap addresses of a key (`point_columns`, `point_tid_columns`) | works | n/a | a table has no index scan of its own: a btree serves point lookups |
+| Units cut by a key (`key_cut`) | works | n/a | a table has no option surface; a lookup of a key reads the units of its superblocks |
+| Sorted runs, run heads and the global order (`order_columns`) | works | missing | `ORDER BY .. LIMIT` walks the zones of the units instead |
+| Global order of a leaf (`order_array_columns`) | works | missing | the sorted `(key, heap address)` entries of every row of a segment; the top-N walks the zones of the units instead |
+| Aggregates of a unit net of its dead rows | works | missing | a unit with a dead row is read as its rows; the counts and integer sums of the unit stay unused |
+| Top-N from the zones of the units | works | works |  |
+| Cache of the top-N walk | works | missing | the walk is made again by every statement |
+| Top-N on raw uuid and bytea keys | works | works | a uuid column is a dictionary of its values; the top-N of uuid and bytea reads the stored codes |
+| Stored dictionary order (`dict_lookup`) | works | works | written for a dictionary of 1,024 strings or more under `sift.table_dict_lookup` (off by default); the top-N of the table reads its byte order |
+| jsonb paths as leaves | works | works | `paths` on an index, `sift.table_set_paths` on a table |
+| Shapes that read the heap row again (`set_recheck`) | works | missing | a table keeps the normal plan for them |
+| Wide types (numeric over 18 digits, interval, enum) | works | works |  |
+| LATERAL, EXISTS and shared CTE rewrites | works | works | the planner rewrites apply to a statement over a table |
+| Statistics for the planner (zones, sizes, point and set cover) | works | partial | a table reports its rows, units and distinct counts, not the zones of its units |
+| Automatic merge and defragmentation | works | works | `sift.col_auto_merge`, `sift.table_auto_defrag` |
+| VACUUM, crash recovery, physical replication, upgrade | works | works | test/t col_* and tbl_* scripts |
+| Differential tests against the normal plan | works | works | coldiff (`--table`), diff_fuzz |
+| GPU kernels (`sift.gpu`) | works | missing | build option, off by default |
+
+<!-- /gen:parity -->
