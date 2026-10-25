@@ -147,6 +147,7 @@ point_tid_key_range	a key with a range on another column hands the heap only the
 lateral_flat_plan	plans the flat query first and, when it reads every table that has a column index in a scan, stops there	events	-	Custom Scan \(SiftAgg\)	native	warm_backend:sift.enable_agg = on	ms	faster33	no
 hits_latest_time	a descending scan of a column that follows the table	hits	-	Top-N: event_time DESC	native	-	ms	faster33	no
 ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the heap	tseries	-	Top-N: value DESC	native	-	ms	faster33	no
+group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no
 order_array	the reloption `order_array_columns` of a `sift_col` index	orders	default	Global Order: true	native	no_array:search_path = order_array_plain	ms	faster33	no
 hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no
 lookup_keyed_probe	is loaded by a btree probe for each of those keys while the descents and the pages of the rows they find cost less	orders	default	Lookup Index Scans: [1-9]	native	lookup_off:sift.agg_lookup_pushdown = off	ms	faster33	no

@@ -34,6 +34,9 @@ SELECT * FROM same_rows('SELECT ts, wk, dow, count(*) AS n, sum(amount) AS s, co
 SELECT * FROM same_rows('SELECT ts, parent_id, dow, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY ts, parent_id, dow');
 -- seven keys: 16,384 slots at the start, the 90 groups of the days
 SELECT * FROM same_rows('SELECT ts, wk, dow, quarter, wk + 1 AS w1, dow + 1 AS d1, quarter + 1 AS q1, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY 1, 2, 3, 4, 5, 6, 7');
+-- a key whose room doubles and no other key changes (one key of 40,000 groups, a key of few values before it): the groups keep their numbers
+SELECT * FROM same_rows('SELECT id, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY id');
+SELECT * FROM same_rows('SELECT dow, id, count(*) AS n, sum(amount) AS s, count(DISTINCT parent_id) AS p FROM sp_facts GROUP BY dow, id');
 
 DROP FUNCTION same_rows(text);
 DROP TABLE sp_facts;

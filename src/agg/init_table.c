@@ -245,7 +245,7 @@ table_init(AggExec *ex)
 	uint64		total = 1;
 
 	ex->hash = false;
-	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : s->nkeys == 1 ? SINGLE_DIRECT_MAX : DIRECT_MAX;
 	/*
 	 * The arrays of the direct table are allocated for every slot of the product of the key ranges, whether a group falls in it or not: a
 	 * statement of 28 aggregates over keys that fill 1,200 of a million slots holds 218 MB. Past twice hash memory the groups go to the hash

@@ -89,6 +89,9 @@ float_key(double d)
 	return bits;
 }
 
+/* tuples ahead whose slot of a group or value table is prefetched: the tables outgrow the cache at millions of groups */
+#define GROUP_AHEAD 16
+
 AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
 {
@@ -200,7 +203,41 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	AggAcc	   *na = acc_alloc(ex, newcap);
 	int64	   *nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
 
-	for (uint32 g = 0; g < oldcap; g++)
+	/* the groups keep their numbers: copy the arrays whole, an unseen slot holds what a new one does */
+	if (remap == NULL)
+	{
+		memcpy(nseen, ex->seen, oldcap * sizeof(int64));
+		for (int i = 0; i < ex->spec->naggs; i++)
+		{
+			AggAcc	   *o = &ex->acc[i],
+					   *n = &na[i];
+
+			memcpy(n->n, o->n, oldcap * sizeof(int64));
+			if (o->i)
+				memcpy(n->i, o->i, oldcap * sizeof(int64));
+			if (o->w)
+				memcpy(n->w, o->w, oldcap * sizeof(sift_i128));
+			if (o->d)
+				memcpy(n->d, o->d, oldcap * sizeof(double));
+			if (o->dt)
+				memcpy(n->dt, o->dt, oldcap * sizeof(double));
+			if (o->last)
+				memcpy(n->last, o->last, oldcap * sizeof(uint64));
+			if (o->nf)
+				memcpy(n->nf, o->nf, oldcap * sizeof(uint8));
+			if (o->v)
+				memcpy(n->v, o->v, oldcap * sizeof(Datum));
+			if (o->r)
+				memcpy(n->r, o->r, oldcap * sizeof(Datum));
+			for (int l = 0; o->lv && l < SIFT_AGG_LANES; l++)
+				if (o->lv[l])
+				{
+					n->lv[l] = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
+					memcpy(n->lv[l], o->lv[l], oldcap * sizeof(double));
+				}
+		}
+	}
+	for (uint32 g = 0; remap && g < oldcap; g++)
 	{
 		uint32		t = remap ? remap[g] : g;
 
@@ -415,8 +452,13 @@ direct_grow(AggExec *ex)
 	}
 	else
 	{
+		bool		same = true;
+
 		direct_layout(ex);
-		for (uint32 g = 0; g < oldcap; g++)
+		/* only the last key grew: every group keeps its number */
+		for (int j = 0; j < nk - 1; j++)
+			same &= ex->ks[j].cap == oldcaps[j];
+		for (uint32 g = 0; !same && g < oldcap; g++)
 		{
 			uint64		t = 0;
 
@@ -424,7 +466,7 @@ direct_grow(AggExec *ex)
 				t += (uint64) ((g / oldmult[j]) % oldcaps[j]) * ex->ks[j].mult;
 			remap[g] = (uint32) t;
 		}
-		groups_resize(ex, (uint32) total, remap, oldcap);
+		groups_resize(ex, (uint32) total, same ? NULL : remap, oldcap);
 	}
 	pfree(remap);
 }
@@ -442,6 +484,7 @@ ident_add(AggExec *ex, KeyState *k, int64 v)
 	k->idval[k->nident++] = v;
 	return k->nident;
 }
+
 
 static inline uint32
 wide_hash(int64 v, uint32 cap)
@@ -816,7 +859,16 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
 			for (int i = 0; i < nsel; i++)
+			{
+				if (i + GROUP_AHEAD < nsel)
+				{
+					uint32		h = wide_hash((int32) vals_out[i + GROUP_AHEAD], k->wcap);
+
+					__builtin_prefetch(&k->wid[h]);
+					__builtin_prefetch(&k->wval[h]);
+				}
 				vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, (int32) vals_out[i]);
+			}
 			*map_out = NULL;		/* the values are the ids */
 			*base_out = 0;
 			return;
@@ -960,6 +1012,12 @@ compute_gids(AggExec *ex, int nsel)
 	{
 		uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
 
+		if (i + GROUP_AHEAD < nsel)
+		{
+			for (int j = 0; j < nk; j++)
+				ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i + GROUP_AHEAD];
+			__builtin_prefetch(&ex->hslot[ids_hash(ids, nk, ex->nhslot)]);
+		}
 		for (int j = 0; j < nk; j++)
 			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
 		ex->gid[i] = hash_group(ex, ids);
