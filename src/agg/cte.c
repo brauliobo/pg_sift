@@ -745,7 +745,7 @@ static bool verdict_replan;
  * The totals are those of the plan in full that made the verdict.
  */
 static PlannedStmt *
-plan_cached(SIFT_PLANNER_PARAMS, Query *inline_parse, const CteVerdict *vd, MemoryContext *cx)
+plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 {
 	PlannedStmt *stmt;
 
@@ -753,6 +753,9 @@ plan_cached(SIFT_PLANNER_PARAMS, Query *inline_parse, const CteVerdict *vd, Memo
 	if (vd->won)
 	{
 		const char *outer_variant = agg_variant_push("inline");
+		Query	   *inline_parse = copyObject(parse);
+
+		shared_cte_walker((Node *) inline_parse, &(SharedCteWalk) {true, NIL});
 
 		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
 		agg_variant = outer_variant;
@@ -790,28 +793,27 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	if (!sift_enable_agg || !has_shared_cte(parse))
 		return plan_in_own_context(SIFT_PLANNER_ARGS(parse), cx);
 	agg_vet_forget();
-	inline_parse = copyObject(parse);
-	shared_cte_walker((Node *) inline_parse, &walk);
-	verdict_lookup(inline_parse, VERDICT_CTE, &vd);
+	verdict_lookup(parse, VERDICT_CTE, &vd);
 	if (vd.known && !replan)
 	{
-		/* the trees are consumed by the plan; where it costs far from what the verdict was made from, the statement is planned again from this copy (verdict_accept) */
-		Query	   *again = vd.inl > 0 ? copyObject(parse) : NULL;
-		PlannedStmt *stmt = plan_cached(SIFT_PLANNER_ARGS(parse), inline_parse, &vd, cx);
+		/*
+		 * The shared plan consumes the tree and the inline plan a copy of it: where the plan costs far from what the verdict was made from (verdict_accept), the
+		 * statement is planned again from the tree that is left (the inline plan) or from a copy made for it (the shared plan).
+		 */
+		Query	   *again = vd.won ? parse : vd.inl > 0 ? copyObject(parse) : NULL;
+		PlannedStmt *stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
 		int			r = verdict_accept(&vd, stmt->planTree->total_cost);
 
 		if (r == VERDICT_TAKE)
 			return stmt;
 		discard_plan(*cx);
-		if (r == VERDICT_FULL)
-			verdict_replan = true;
-		else
-		{
-			inline_parse = copyObject(again);
-			shared_cte_walker((Node *) inline_parse, &(SharedCteWalk) {true, NIL});
-		}
-		return r == VERDICT_FULL ? plan_cte(SIFT_PLANNER_ARGS(again), cx) : plan_cached(SIFT_PLANNER_ARGS(again), inline_parse, &vd, cx);
+		if (r == VERDICT_SWITCH)
+			return plan_cached(SIFT_PLANNER_ARGS(again), &vd, cx);
+		verdict_replan = true;
+		return plan_cte(SIFT_PLANNER_ARGS(again), cx);
 	}
+	inline_parse = copyObject(parse);
+	shared_cte_walker((Node *) inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
 	{
 		pristine = copyObject(parse);

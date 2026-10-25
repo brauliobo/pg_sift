@@ -311,10 +311,19 @@ verdict_inval(Datum arg, Oid relid)
 static bool settings_known;
 static uint64 settings_memo;
 
+/* the size class and the epoch of a table do not change while a statement is planned, and the lookups of its plans (the flattened form and the one as written, each with its CTEs shared and inlined) meet the same tables */
+static struct
+{
+	Oid			relid;
+	uint64		h;
+}			rel_memo[64];
+static int	n_memo;
+
 void
 verdict_new_planning(void)
 {
 	settings_known = false;
+	n_memo = 0;
 }
 
 /* the settings a plan depends on: the planner's (methods, costs), the memory a plan may use and the extension's */
@@ -431,10 +440,25 @@ sizes_walker(Node *node, TableSizes *s)
 		/* a partitioned table has no pages of its own: the entry is dropped with it, and checked again every few hits as its partitions grow */
 		if (rte->relkind != RELKIND_PARTITIONED_TABLE)
 		{
-			rel = relation_open(rte->relid, AccessShareLock);
-			s->h = hash_combine64(s->h, size_class(RelationGetNumberOfBlocks(rel)));
-			s->h = hash_combine64(s->h, table_epoch(rel));
-			relation_close(rel, AccessShareLock);
+			uint64		h = 0;
+			int			k;
+
+			for (k = 0; k < n_memo && rel_memo[k].relid != rte->relid; k++)
+				;
+			if (k < n_memo)
+				h = rel_memo[k].h;
+			else
+			{
+				rel = relation_open(rte->relid, AccessShareLock);
+				h = hash_combine64(size_class(RelationGetNumberOfBlocks(rel)), table_epoch(rel));
+				relation_close(rel, AccessShareLock);
+				if (n_memo < lengthof(rel_memo))
+				{
+					rel_memo[n_memo].relid = rte->relid;
+					rel_memo[n_memo++].h = h;
+				}
+			}
+			s->h = hash_combine64(s->h, h);
 		}
 		return false;
 	}
