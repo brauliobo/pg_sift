@@ -626,6 +626,7 @@ extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
 extern int sift_col_gorder_open(SiftColSource *src, int col, int rows);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
 extern uint32 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr);
+extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, int64 key, bool after);
 /*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap

@@ -14,8 +14,17 @@
 
 typedef struct SiftGOrd SiftGOrd;
 
+/* A range of the key, ends included, for the conjuncts of the query on it: the rows with no value are not in it */
+typedef struct SiftGBound
+{
+	bool		has_lo;
+	bool		has_hi;
+	int64		lo;
+	int64		hi;
+} SiftGBound;
+
 /* The merge for a scan that wants rows rows. NULL when the source has no global order of the leaf, or its write buffers hold too many rows to sort for so few (sift_colsrc_gorder_open) */
-extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, MemoryContext cxt);
+extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, const SiftGBound *bound, MemoryContext cxt);
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
 extern void sift_gord_rewind(SiftGOrd *g);

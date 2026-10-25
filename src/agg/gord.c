@@ -14,6 +14,8 @@ typedef struct GCur
 	int			src;
 	uint32		entries;
 	uint32		values;
+	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
+	uint32		ve;
 	uint32		chunk;			/* the chunk in key/addr, UINT32_MAX: none */
 	uint32		cm;
 	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
@@ -35,6 +37,7 @@ struct SiftGOrd
 	int			leaf;
 	bool		desc;
 	bool		nulls_first;
+	bool		bounded;		/* a range of the key: the rows with no value are not in it */
 	int			ncur;
 	GCur	  **cur;
 	bool		started;
@@ -67,11 +70,11 @@ cur_group(SiftGOrd *g, GCur *c)
 				k2;
 	uint64		a;
 
-	if (c->ge == 0)
+	if (c->ge <= c->vs)
 		return false;
 	cur_at(g, c, c->ge - 1, &k, &a);
 	c->gs = c->ge - 1;
-	while (c->gs > 0)
+	while (c->gs > c->vs)
 	{
 		cur_at(g, c, c->gs - 1, &k2, &a);
 		if (k2 != k)
@@ -89,19 +92,19 @@ cur_enter(SiftGOrd *g, GCur *c)
 
 	if (nulls)
 	{
-		c->pos = c->values;
-		c->end = c->entries;
+		c->pos = g->bounded ? 0 : c->values;
+		c->end = g->bounded ? 0 : c->entries;
 	}
 	else if (g->desc)
 	{
-		c->ge = c->values;
+		c->ge = c->ve;
 		c->end = cur_group(g, c) ? c->ge : 0;
 		c->pos = c->end == 0 ? 0 : c->gs;
 	}
 	else
 	{
-		c->pos = 0;
-		c->end = c->values;
+		c->pos = c->vs;
+		c->end = c->ve;
 	}
 }
 
@@ -156,7 +159,7 @@ cur_start(SiftGOrd *g, GCur *c)
 }
 
 SiftGOrd *
-sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, MemoryContext cxt)
+sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, const SiftGBound *b, MemoryContext cxt)
 {
 	int			n = sift_colsrc_gorder_open(src, leaf, rows);
 	SiftGOrd   *g;
@@ -168,6 +171,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	g->leaf = leaf;
 	g->desc = desc;
 	g->nulls_first = nulls_first;
+	g->bounded = b != NULL && (b->has_lo || b->has_hi);
 	g->cur = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
 	for (int i = 0; i < n; i++)
 	{
@@ -175,6 +179,10 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 
 		c->src = i;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
+			continue;
+		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, b->lo, false) : 0;
+		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, b->hi, true) : c->values;
+		if (g->bounded && (b->has_lo && b->has_hi && b->lo > b->hi ? true : c->vs >= c->ve))
 			continue;
 		g->cur[g->ncur++] = c;
 	}

@@ -1,7 +1,8 @@
 -- ORDER BY column LIMIT n over the global order of the column: the scan merges the sorted arrays of the segments
 -- and of the write buffer and fetches n rows of the heap, which confirms each entry as a b-tree's entry is confirmed. The rows are the heap's, in the heap's order with the
 -- addresses of the rows as the tie-break, over NULLs, ties, DESC, NULLS FIRST and LAST, deleted and updated rows, rows of the write buffer, a promotion and a merge;
--- a segment without the array, an OFFSET, a filter or a second key keep the scan that reads the units.
+-- a segment without the array, an OFFSET, a second key or a filter on another column keep the scan that reads the units. Conditions of the query on the key bound the part of
+-- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET sift.async_maintenance = off;
@@ -119,7 +120,24 @@ SELECT gt_chk('b', 'ASC', 'LAST', 100) AS promoted_buffer;
  global order
 (1 row)
 
--- shapes that read the units: a second key, an OFFSET, a filter
+-- conditions on the key: the entries of the range only are read, whatever the types, the directions, the NULL order and the ends of the type
+SELECT result, count(*) FROM (
+	SELECT gt_chk(c, d, nl, l, 'WHERE ' || w) AS result
+	FROM (VALUES ('id', 'id > 11990'), ('id', 'id <= 40'), ('id', 'id = 777'), ('a', 'a >= -5 AND a < 5'), ('a', 'a > 0 OR a < -28'), ('a', 'a < -1000'),
+				 ('b', 'b > 1000'), ('b', 'b > 10 AND b < 5'), ('b', 'b <> 3 AND b < 6'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b <= 7 OR b >= 490 OR b = 250'),
+				 ('c', 'c > 100000000000'), ('c', 'c <> 0 AND c < -190000000000'), ('c', 'c > 9223372036854775800'), ('c', 'c < -9223372036854775807 - 1'),
+				 ('d', 'd >= DATE ''1990-03-01'' AND d < DATE ''1990-03-10'''), ('d', 'd = DATE ''1990-02-01'''), ('d', 'd <> DATE ''1990-02-01'''),
+				 ('t', 't BETWEEN ''2000-03-01'' AND ''2000-03-02'''), ('t', 't > ''2000-01-10'' AND t <= ''2000-01-10 01:00'' OR t = ''2000-02-02'''),
+				 ('z', 'z < ''2000-01-02+00''')) q(c, w),
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 10, 200]) l) r
+GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |   192
+ units        |    60
+(2 rows)
+
+-- shapes that read the units: a second key, an OFFSET, a filter on another column
 SELECT gt_chk('b', 'ASC', 'LAST', 50, 'WHERE a > 0');
  gt_chk 
 --------

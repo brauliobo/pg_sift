@@ -1410,6 +1410,28 @@ sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32
 }
 
 uint32
+sift_col_gorder_seek(SiftColSource *src, int i, int col, int64 key, bool after)
+{
+	const ColGOrdMem *g = src->gmem;
+	uint32		lo = 0,
+				hi;
+
+	if (i < src->nseg)
+		return sift_cseg_gorder_seek(src->seg[i].seg, col, key, after);
+	hi = g->nvals;
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (after ? g->key[mid] <= key : g->key[mid] < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+uint32
 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr)
 {
 	const ColGOrdMem *g = src->gmem;

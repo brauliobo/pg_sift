@@ -97,8 +97,28 @@ typedef struct SiftTopN SiftTopN;
 extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt, int widen);
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
-/* The scan reads the global order of the key: false when the source or the query cannot (the units are read as before) */
-extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src);
+/*
+ * A condition of the query on the key that the global order answers: AND / OR of comparisons (SiftCmpOp) of the key with a constant, tested on the key of each
+ * entry and bounding the part of the array that is read
+ */
+typedef enum SiftTopGKind
+{
+	STG_AND,
+	STG_OR,
+	STG_CMP
+} SiftTopGKind;
+
+typedef struct SiftTopGPred
+{
+	SiftTopGKind kind;
+	int			op;				/* STG_CMP: SiftCmpOp */
+	int64		val;
+	int			nchild;
+	struct SiftTopGPred **child;
+} SiftTopGPred;
+
+/* The scan reads the global order of the key (the part of it that the condition keeps): false when the source or the query cannot (the units are read as before) */
+extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond);
 extern bool sift_topn_gordered(const SiftTopN *t);
 
 extern int	sift_topn_leaf(const SiftTopN *t, int j);

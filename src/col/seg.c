@@ -2505,6 +2505,43 @@ sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint6
 	return m;
 }
 
+/*
+ * The first entry of the values of leaf col whose key is not before key (after: is after it), found in the directory by the first keys of the chunks and in
+ * one chunk; the number of values when there is none.
+ */
+uint32
+sift_cseg_gorder_seek(SiftColSegment *seg, int col, int64 key, bool after)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+	int64		ks[SIFT_CGORD_CAP];
+	uint64		as[SIFT_CGORD_CAP];
+	uint32		lo = 0,
+				hi,
+				m;
+
+	if (g == NULL)
+		corrupt(seg, "The global order of leaf %d is not there.", col);
+	hi = (g->hdr.values + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS;		/* the chunks that hold a value */
+	/* the last such chunk whose first key is before key (or equal to it, for an upper bound) */
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (after ? g->dir[mid].first <= key : g->dir[mid].first < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo == 0)
+		return 0;
+	m = sift_cseg_gorder_chunk(seg, col, lo - 1, ks, as);
+	m = Min(m, g->hdr.values - (lo - 1) * SIFT_CGORD_ROWS);
+	for (uint32 i = 0; i < m; i++)
+		if (after ? ks[i] > key : ks[i] >= key)
+			return (lo - 1) * SIFT_CGORD_ROWS + i;
+	return Min(lo * SIFT_CGORD_ROWS, g->hdr.values);
+}
+
 /* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */
 static void
 verify_gorder(SiftColSegment *seg, int col, uint32 total)

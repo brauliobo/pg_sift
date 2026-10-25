@@ -345,6 +345,12 @@ sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, ui
 }
 
 uint32
+sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, int64 key, bool after)
+{
+	return src->prov->gorder_seek(src->impl, i, leaf, key, after);
+}
+
+uint32
 sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
 {
 	return src->prov->gorder_chunk(src->impl, i, leaf, c, key, addr);

@@ -152,6 +152,7 @@ ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the hea
 group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no
 order_array	the reloption `order_array_columns` of a `sift_col` index	orders	default	Global Order: true	native	no_array:search_path = order_array_plain	ms	faster33	no
 hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no
+order_array_range	the scan searches each segment's array for the first entry of the range	orders	default	Global Order: true	native	no_array:search_path = order_array_range_plain	ms	faster33	no
 lookup_keyed_probe	is loaded by a btree probe for each of those keys while the descents and the pages of the rows they find cost less	orders	default	Lookup Index Scans: [1-9]	native	lookup_off:sift.agg_lookup_pushdown = off	ms	faster33	no
 two_level_lookup_arms	the arms of a two-level aggregate that read the columns of a lateral `LIMIT 1` lookup (`rm.derived_cat AS category`, no `CASE` around it) are one scan	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 two_level_join_types	the arms of a two-level scan may differ in the type of the join of a lateral `LIMIT 1` child	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no

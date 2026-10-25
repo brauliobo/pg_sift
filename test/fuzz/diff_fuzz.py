@@ -1154,13 +1154,36 @@ def dml_exceptions(r, ctx):
 GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
 
 
+def go_const(r, col):
+    """A constant inside (and a little beyond) the domain of the column in fz.gen_gof, as a literal of its type."""
+    if col == 'id':
+        return str(r.randrange(0, 3000))
+    if col == 'a':
+        return str(r.randrange(-110, 110))
+    if col == 'b':
+        return str(r.randrange(-5, 710))
+    if col == 'c':
+        return str(r.randrange(-1000000000, 1100000000, 100000))
+    if col == 'd':
+        return f"DATE '2024-01-01' + {r.randrange(-5, 310)}"
+    ts = 'TIMESTAMP' if col == 't' else 'TIMESTAMPTZ'
+    return f"{ts} '2025-01-01{'' if col == 't' else '+00'}' + {r.randrange(-100, 60100)} * interval '1 second'"
+
+
 def gen_gorder(r, ctx):
-    return dict(col=r.choice(GO_COLS), dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
-                where=[], keys=[], aggs=[], having=[], ordered=True)
+    col = r.choice(GO_COLS)
+    cond = ''
+    if r.random() < 0.5:  # a condition on the key bounds the part of the array that is read
+        def cmp():
+            return f"g.{col} {r.choice(['<', '<=', '>', '>=', '=', '<>'])} {go_const(r, col)}"
+        cond = r.choice([cmp, lambda: f"{cmp()} AND {cmp()}", lambda: f"({cmp()} OR {cmp()})", lambda: f"g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"])()
+    return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
+                cond=cond, where=[], keys=[], aggs=[], having=[], ordered=True)
 
 
 def render_gorder(p):
-    return f"SELECT g.{p['col']} FROM gof g ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
+    where = f" WHERE {p['cond']}" if p['cond'] else ''
+    return f"SELECT g.{p['col']} FROM gof g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
 
 
 def dml_gorder(r, ctx):

@@ -652,6 +652,7 @@ typedef struct SiftSrcProvider
 	int			(*gorder_open) (void *impl, int leaf, int rows);
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
 	uint32		(*gorder_chunk) (void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
+	uint32		(*gorder_seek) (void *impl, int i, int leaf, int64 key, bool after);	/* the first value entry with key >= key (after: > key) */
 	/*
 	 * Optional (needs run_info found a run): the head of that run, the best SiftSrcRunHeads.n entries of the run read ascending (lo) and descending (hi)
 	 * with the heap address of each row; 0 when the run has none. Stored when the unit was written: sound only if every row of the unit still passes.
@@ -834,6 +835,7 @@ extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, in
 extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows);
 extern bool sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values);
 extern uint32 sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
+extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, int64 key, bool after);
 extern void sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */

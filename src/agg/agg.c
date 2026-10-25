@@ -746,13 +746,79 @@ topn_parallel(AggExec *ex)
 	sift_topn_finish(ex->topn);
 }
 
+/* a scan with no join or aggregate, whatever its conditions */
+static bool
+topn_plain_ok(AggExec *ex)
+{
+	return ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
+		ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->ntype == 0 &&
+		ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
+}
+
 /* a scan with no condition, join or aggregate: every row of a clean unit passes, and the head of its sorted run names the n best of them */
 static bool
 topn_heads_ok(AggExec *ex)
 {
-	return ex->spec->npred == 0 && ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
-		ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->nzone == 0 && ex->nfilter == 0 && ex->ntype == 0 &&
-		ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
+	return ex->spec->npred == 0 && ex->nzone == 0 && ex->nfilter == 0 && topn_plain_ok(ex);
+}
+
+/* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */
+static bool
+topn_same_scale(Oid a, Oid b)
+{
+	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
+}
+
+/*
+ * The condition of the scan as the global order of the key tests it, when it is all comparisons of the key with constants of its own type (an operand that
+ * is NULL is no row: the units answer it)
+ */
+static SiftTopGPred *
+topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf)
+{
+	SiftTopGPred *g = palloc0(sizeof(SiftTopGPred));
+
+	if (p->kind == SAP_AND || p->kind == SAP_OR)
+	{
+		g->kind = p->kind == SAP_AND ? STG_AND : STG_OR;
+		g->nchild = p->nchild;
+		g->child = palloc(p->nchild * sizeof(SiftTopGPred *));
+		for (int i = 0; i < p->nchild; i++)
+			if ((g->child[i] = topn_gpred(ex, p->child[i], keyleaf)) == NULL)
+				return NULL;
+		return g;
+	}
+	if (p->kind == SAP_CMP && p->leaf == keyleaf && p->level == 0 && !p->late && topn_same_scale(p->argtype, ex->lay->leaf[keyleaf].typid))
+	{
+		bool		isnull;
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+
+		MemoryContextSwitchTo(old);
+		if (isnull)
+			return NULL;
+		g->kind = STG_CMP;
+		g->op = p->op;
+		g->val = sift_aggspec_operand_int(p->argtype, d);
+		return g;
+	}
+	return NULL;
+}
+
+/* all conjuncts of the scan as one condition: NULL when there are none or the order of the key cannot answer one */
+static SiftTopGPred *
+topn_gcond(AggExec *ex, const SiftTopN *t)
+{
+	SiftTopGPred *g = palloc0(sizeof(SiftTopGPred));
+
+	g->kind = STG_AND;
+	g->nchild = ex->spec->npred;
+	g->child = palloc(g->nchild * sizeof(SiftTopGPred *));
+	for (int i = 0; i < g->nchild; i++)
+		if ((g->child[i] = topn_gpred(ex, ex->spec->pred[i], sift_topn_leaf(t, 0))) == NULL)
+			return NULL;
+	return g;
 }
 
 /* the vectors of a scan are allocated when the first unit is read: a walk that the heads of the runs answer reads none */
@@ -787,8 +853,13 @@ topn_run(AggExec *ex)
 	t = ex->topn;
 	if (sift_topn_empty(t))
 		return;
-	if (topn_heads_ok(ex) && ex->spec->nworkers == 0 && sift_topn_gorder_on && sift_topn_gorder(t, ex->src))
-		return;
+	if (topn_plain_ok(ex) && ex->spec->nworkers == 0 && sift_topn_gorder_on)
+	{
+		SiftTopGPred *cond = ex->spec->npred > 0 ? topn_gcond(ex, t) : NULL;
+
+		if ((ex->spec->npred == 0 || cond != NULL) && sift_topn_gorder(t, ex->src, cond))
+			return;
+	}
 	nsb = sift_colsrc_nsb(ex->src);
 	if (sift_topn_wants_zones(t) && nsb >= 2 * sift_topn_nprobes())
 	{

@@ -609,6 +609,12 @@ col_gorder_info(void *impl, int i, int leaf, uint32 *entries, uint32 *values)
 }
 
 static uint32
+col_gorder_seek(void *impl, int i, int leaf, int64 key, bool after)
+{
+	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, key, after);
+}
+
+static uint32
 col_gorder_chunk(void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
 {
 	return sift_col_gorder_chunk(((ColSource *) impl)->cs, i, leaf, c, key, addr);
@@ -838,6 +844,7 @@ static const SiftSrcProvider col_provider = {
 	.gorder_open = col_gorder_open,
 	.gorder_info = col_gorder_info,
 	.gorder_chunk = col_gorder_chunk,
+	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,

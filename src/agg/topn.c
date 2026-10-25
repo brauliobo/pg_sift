@@ -378,6 +378,7 @@ struct SiftTopN
 	int64		fetched;
 	int			gatt;			/* the heap column of the only key when it is a plain integer or time column (col/gorder.h can order it), else 0 */
 	Oid			gtyp;
+	const SiftTopGPred *gcond;	/* sift_topn_gorder: what the key of an entry must satisfy */
 	struct SiftGOrd *go;		/* the global order of the key read in place of the units (sift_topn_gorder): rows come from the heap in the order of the key */
 	pg_atomic_uint64 *shared;	/* parallel scan: the first-key rank of the n-th row of any participant (sift_topn_share) */
 };
@@ -3337,18 +3338,132 @@ heap_key(Oid typid, Datum d)
 	}
 }
 
+/* The range of the key that a condition keeps: the ends that it bounds */
+typedef struct GBox
+{
+	bool		empty;
+	bool		has_lo;
+	bool		has_hi;
+	int64		lo;
+	int64		hi;
+} GBox;
+
+static GBox
+gcond_box(const SiftTopGPred *p)
+{
+	GBox		r = {false, false, false, 0, 0};
+
+	if (p->kind == STG_CMP)
+	{
+		switch (p->op)
+		{
+			case SCMP_EQ:
+				r.has_lo = r.has_hi = true;
+				r.lo = r.hi = p->val;
+				break;
+			case SCMP_LT:
+				r.empty = p->val == PG_INT64_MIN;
+				r.has_hi = true;
+				r.hi = p->val - !r.empty;
+				break;
+			case SCMP_LE:
+				r.has_hi = true;
+				r.hi = p->val;
+				break;
+			case SCMP_GT:
+				r.empty = p->val == PG_INT64_MAX;
+				r.has_lo = true;
+				r.lo = p->val + !r.empty;
+				break;
+			case SCMP_GE:
+				r.has_lo = true;
+				r.lo = p->val;
+				break;
+			default:
+				break;
+		}
+		return r;
+	}
+	r = gcond_box(p->child[0]);
+	for (int i = 1; i < p->nchild; i++)
+	{
+		GBox		c = gcond_box(p->child[i]);
+
+		if (p->kind == STG_AND)
+		{
+			r.empty |= c.empty;
+			if (c.has_lo && (!r.has_lo || c.lo > r.lo))
+				r.has_lo = true, r.lo = c.lo;
+			if (c.has_hi && (!r.has_hi || c.hi < r.hi))
+				r.has_hi = true, r.hi = c.hi;
+		}
+		else if (c.empty)
+			continue;
+		else if (r.empty)
+			r = c;
+		else
+		{
+			r.has_lo = r.has_lo && c.has_lo;
+			r.lo = Min(r.lo, c.lo);
+			r.has_hi = r.has_hi && c.has_hi;
+			r.hi = Max(r.hi, c.hi);
+		}
+	}
+	return r;
+}
+
+static bool
+gcond_test(const SiftTopGPred *p, int64 key)
+{
+	if (p->kind == STG_CMP)
+		switch (p->op)
+		{
+			case SCMP_EQ:
+				return key == p->val;
+			case SCMP_NE:
+				return key != p->val;
+			case SCMP_LT:
+				return key < p->val;
+			case SCMP_LE:
+				return key <= p->val;
+			case SCMP_GT:
+				return key > p->val;
+			default:
+				return key >= p->val;
+		}
+	for (int i = 0; i < p->nchild; i++)
+		if (gcond_test(p->child[i], key) == (p->kind == STG_OR))
+			return p->kind == STG_OR;
+	return p->kind == STG_AND;
+}
+
 /*
  * The scan reads the global order of the key (one entry for every row ever indexed, in the order of the key) in place of the units: the rows of the heap come in
  * the order of the key and the n-th one ends the scan. An entry is for the heap to confirm, as a b-tree's is: the row of the address may be dead, or another one
  * where the first was vacuumed, which holds another key.
  */
 bool
-sift_topn_gorder(SiftTopN *t, SiftSrcSource *src)
+sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 {
+	SiftGBound	b = {0};
+
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
 	if (t->gatt == 0 || t->skip > 0 || t->all)
 		return false;
-	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, GetMemoryChunkContext(t));
+	if (cond != NULL)
+	{
+		GBox		box = gcond_box(cond);
+
+		/* a condition that leaves no bound is a filter of the whole array: the units, with their zones, read less */
+		if (!box.empty && !box.has_lo && !box.has_hi)
+			return false;
+		if (box.empty)
+			b.has_lo = b.has_hi = true, b.lo = 1, b.hi = 0;
+		else
+			b = (SiftGBound) {box.has_lo, box.has_hi, box.lo, box.hi};
+	}
+	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
+	t->gcond = cond;
 	return t->go != NULL;
 }
 
@@ -3377,6 +3492,8 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 			continue;
 		d = slot_getattr(f->slot, t->gatt, &hnull);
 		if (hnull != isnull || (!hnull && heap_key(t->gtyp, d) != key))
+			continue;
+		if (t->gcond != NULL && (isnull || !gcond_test(t->gcond, key)))
 			continue;
 		t->fetched++;
 		t->emitted++;
