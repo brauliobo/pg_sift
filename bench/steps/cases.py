@@ -578,10 +578,11 @@ def changelog_lines(root):
     return out
 
 
-def claims(line):
-    """a bullet that gives a before and after, a ratio or a count of instructions: a measured speed"""
+def needs_case(line):
+    """a bullet that adds or changes something (an optimization, a default, a feature: each is measured by a case or waived with its reason), or a fix or an improvement that gives
+    a before and after, a ratio or a count of instructions (a measured speed)"""
     kind = line[2:].split(':', 1)[0]
-    return kind in ('Added', 'Changed', 'Fixed') and bool(CLAIM.search(line))
+    return kind in ('Added', 'Changed') or kind in ('Improved', 'Fixed') and bool(CLAIM.search(line))
 
 
 def allow_list(root):
@@ -630,7 +631,7 @@ def cmd_check(args):
     unmeasured = 0
     used = set()
     for line in lines:
-        if not claims(line):
+        if not needs_case(line):
             continue
         covered = next((c.id for c in cases if c.changelog in line), None)
         waived = next((a for a in allowed if a in line), None)
@@ -639,22 +640,24 @@ def cmd_check(args):
             continue
         unmeasured += 1
         if changed is None or line in changed:
-            errors.append('CHANGELOG claims a speed with no case: "%s ..." (add bench/cases/ID.sql and a row in bench/cases.tsv whose changelog column is a phrase of the line, or a reasoned line in scripts/bench-cases.allow)' % line[:110])
+            errors.append('CHANGELOG line has no case: "%s ..." (add bench/cases/ID.sql and a row in bench/cases.tsv whose changelog column is a phrase of the line; or a line in scripts/bench-cases.allow: `case ID` when a case measures it, else why no query can)' % line[:110])
     for a in allowed:
         if a not in used:
-            errors.append('scripts/bench-cases.allow: "%s" matches no speed claim of the Unreleased section (remove it)' % a)
+            errors.append('scripts/bench-cases.allow: "%s" matches no Added, Changed or measured line of the Unreleased section (remove it)' % a)
         elif not allowed[a]:
             errors.append('scripts/bench-cases.allow: "%s" has no reason' % a)
-    total = sum(1 for l in lines if claims(l))
+        elif allowed[a].startswith('case ') and allowed[a].split()[1].rstrip(':,;') not in ids:
+            errors.append('scripts/bench-cases.allow: "%s" names the case %s, which bench/cases.tsv does not have' % (a, allowed[a].split()[1]))
+    total = sum(1 for l in lines if needs_case(l))
     if changed is not None and unmeasured:
-        notes.append('%d of the %d speed claims of Unreleased have no case yet (only the lines this change adds fail; --strict fails on all)' % (unmeasured, total))
+        notes.append('%d of the %d Added, Changed and measured lines of Unreleased have no case yet (only the lines this change adds fail; --strict fails on all)' % (unmeasured, total))
     for e in errors:
         print('bench-cases: ' + e)
     for n in notes:
         print('bench-cases: ' + n)
     if errors:
         return 1
-    print('bench-cases: %d cases, each with an anchor in CHANGELOG.md, a block and result rows; %d of %d speed claims of Unreleased covered' % (len(cases), total - unmeasured, total))
+    print('bench-cases: %d cases, each with an anchor in CHANGELOG.md, a block and result rows; %d of %d Added, Changed and measured lines of Unreleased covered' % (len(cases), total - unmeasured, total))
     return 0
 
 
