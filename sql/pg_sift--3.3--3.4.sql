@@ -297,3 +297,19 @@ COMMENT ON FUNCTION sift.approx_count_distinct_serial(internal) IS 'Serial funct
 COMMENT ON FUNCTION sift.approx_count_distinct_deserial(bytea, internal) IS 'Deserial function of sift.approx_count_distinct: the sketch of a worker.';
 COMMENT ON FUNCTION sift.approx_count_distinct_final(internal) IS 'Final function of sift.approx_count_distinct: the estimate of the distinct values, 0 for none.';
 COMMENT ON AGGREGATE sift.approx_count_distinct(anyelement) IS 'An estimate of the distinct values of x (relative standard error 0.81%), the same in every plan; count(DISTINCT x) stays exact.';
+
+-- sift.table_set_paths says so when the groups written before the declaration have no leaves for the paths (VACUUM FULL makes them).
+CREATE OR REPLACE FUNCTION sift.table_set_paths(tbl regclass, col name, spec text) RETURNS void
+	LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
+BEGIN
+	PERFORM sift.table_paths_check(tbl, col, spec);
+	IF coalesce(spec, '') = '' THEN
+		DELETE FROM sift.table_paths WHERE relid = tbl AND attname = col;
+	ELSE
+		INSERT INTO sift.table_paths VALUES (tbl, col, spec) ON CONFLICT (relid, attname) DO UPDATE SET spec = EXCLUDED.spec;
+		IF EXISTS (SELECT 1 FROM sift.table_segments(tbl) WHERE kind = 'columns') THEN
+			RAISE NOTICE 'the column groups of "%" written so far may keep "%" as one leaf: its paths are used once every group has their leaves (VACUUM FULL rewrites them)', tbl, col;
+		END IF;
+	END IF;
+END
+$fn$;

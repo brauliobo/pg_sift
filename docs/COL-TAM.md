@@ -372,7 +372,7 @@ Run by `scripts/ci.sh` on PostgreSQL 17, 18 and 19; `SANITIZE=1` (ASan + UBSan) 
   spec)` (an extension configuration table, so `pg_dump` carries it; keyed by column name, so a renamed or dropped column has no paths); an event trigger
   clears it with the table. Promotion, merge and `VACUUM FULL` shred the declared column into leaves next to the exact bytes (no format change: a segment
   carries its schema), and the write buffer is shredded as rows are read. The planner uses the paths only when every segment it reads has them, so the
-  plan stays the normal one until `VACUUM FULL` has rewritten the older segments, and a rewrite of the table that is not `VACUUM FULL` (`ALTER TABLE ...
+  plan stays the normal one until `VACUUM FULL` has rewritten the older segments (`sift.table_set_paths` says so, in a NOTICE, when the table has column groups), and a rewrite of the table that is not `VACUUM FULL` (`ALTER TABLE ...
   TYPE`) drops the leaves until the next one. A value of another JSON type than its path declares is kept exactly (overflow) and a query that reads
   that path keeps the normal plan while such a row exists; the `jsonb_typeof` forms still run (`filter_types`). Not done: rollups of the elements for a
   table (the scan reads the elements), and ANALYZE gives the paths no statistics.

@@ -933,6 +933,9 @@ BEGIN
 		DELETE FROM sift.table_paths WHERE relid = tbl AND attname = col;
 	ELSE
 		INSERT INTO sift.table_paths VALUES (tbl, col, spec) ON CONFLICT (relid, attname) DO UPDATE SET spec = EXCLUDED.spec;
+		IF EXISTS (SELECT 1 FROM sift.table_segments(tbl) WHERE kind = 'columns') THEN
+			RAISE NOTICE 'the column groups of "%" written so far may keep "%" as one leaf: its paths are used once every group has their leaves (VACUUM FULL rewrites them)', tbl, col;
+		END IF;
 	END IF;
 END
 $fn$;

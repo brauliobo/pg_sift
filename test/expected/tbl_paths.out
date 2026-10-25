@@ -83,6 +83,7 @@ SELECT * FROM pt_compare();
 
 -- a declaration applies to the segments written afterwards: the stored ones lack the leaves until a rewrite, and until then the plan is the normal one
 SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text, doc->w int4, doc->items[]{k int4, p float8}');
+NOTICE:  the column groups of "public.pt" written so far may keep "doc" as one leaf: its paths are used once every group has their leaves (VACUUM FULL rewrites them)
  table_set_paths 
 -----------------
  
@@ -193,6 +194,7 @@ SELECT * FROM pt_compare();
 
 -- a narrower declaration is served by the segments that have its leaves; the leaves it no longer declares are gone from the next rewrite
 SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text');
+NOTICE:  the column groups of "public.pt" written so far may keep "doc" as one leaf: its paths are used once every group has their leaves (VACUUM FULL rewrites them)
  table_set_paths 
 -----------------
  
@@ -263,6 +265,7 @@ SELECT * FROM pt_compare();
 
 -- the declaration goes with its table and does not outlive its column
 SELECT sift.table_set_paths('pt', 'doc', 'doc->ch text');
+NOTICE:  the column groups of "public.pt" written so far may keep "doc" as one leaf: its paths are used once every group has their leaves (VACUUM FULL rewrites them)
  table_set_paths 
 -----------------
  
