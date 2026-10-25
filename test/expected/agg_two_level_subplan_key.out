@@ -21,13 +21,7 @@ FROM generate_series(1, 12000) i;
 CREATE TABLE events_nv (LIKE events INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO events_nv SELECT * FROM events;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX events_nv_col ON events_nv USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index events_nv_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_nv_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE events_nv;
 -- the arms per row and category, and per row; dim1 and dim2 are the key of each arm, tail is the GROUP BY and what follows

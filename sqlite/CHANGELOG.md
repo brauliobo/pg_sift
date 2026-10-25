@@ -4,6 +4,10 @@
 (`v1.3.0` is `sift-sqlite` 1.3.0) and `sqlite/VERSION` holds the version, which `sift_version()` reports. Changes of the PostgreSQL
 extension are in [../CHANGELOG.md](../CHANGELOG.md).
 
+## 3.4.0
+
+- Rebuilt with the PostgreSQL release 3.4.0.
+
 ## 3.3.0
 
 - Rebuilt with the PostgreSQL release 3.3.0.

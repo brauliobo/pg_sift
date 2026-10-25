@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 8; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then

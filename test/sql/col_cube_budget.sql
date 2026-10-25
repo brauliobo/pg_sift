@@ -1,0 +1,38 @@
+-- The byte budget of the cube counts what a kept dimension holds (all its measures, min and max) and is 40% of the unit's encoded bytes, at least 8 kB:
+-- an index of 15 columns whose 8 dimensions have 50 values keeps every dimension in every unit that is not the small last one, where the 2% of the
+-- first three measures kept two. The query of the last dimension is answered from the units' histograms, as the scan and the plain plan give it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE cb AS
+SELECT g AS id,
+       (hashint4(g + 1) & 2147483647) % 50 AS d1, (hashint4(g + 8) & 2147483647) % 50 AS d2, (hashint4(g + 15) & 2147483647) % 50 AS d3, (hashint4(g + 22) & 2147483647) % 50 AS d4,
+       (hashint4(g + 29) & 2147483647) % 50 AS d5, (hashint4(g + 36) & 2147483647) % 50 AS d6, (hashint4(g + 43) & 2147483647) % 50 AS d7, (hashint4(g + 50) & 2147483647) % 50 AS d8,
+       round((((hashint4(g * 7 + 3) & 2147483647) % 100000) / 100.0)::numeric, 2)::numeric(12, 2) AS m1, (hashint4(g * 11 + 6) & 2147483647) % 1000 AS m2,
+       round((((hashint4(g * 7 + 5) & 2147483647) % 100000) / 100.0)::numeric, 2)::numeric(12, 2) AS m3, (hashint4(g * 11 + 8) & 2147483647) % 1000 AS m4,
+       round((((hashint4(g * 7 + 7) & 2147483647) % 100000) / 100.0)::numeric, 2)::numeric(12, 2) AS m5, (hashint4(g * 11 + 10) & 2147483647) % 1000 AS m6
+FROM generate_series(1, 60000) g;
+CREATE INDEX cb_col ON cb USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, m1, m2, m3, m4, m5, m6);
+VACUUM (FREEZE, ANALYZE) cb;
+
+SELECT d, (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('cb_col', d)) >= (SELECT count(*) FROM sift.col_unit_agg('cb_col', d)) - 1 AS all_but_the_last
+FROM unnest(ARRAY['d1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8']) d ORDER BY d;
+SELECT sift.col_verify('cb_col', true);
+
+\ir test/agg_preagg_helpers.sql
+
+\ir test/agg_preagg_units.sql
+
+-- the last dimension: from the histograms of the units that have it, and the rows are those of the scan and of the plain plan
+SET cpu_tuple_cost = 0.5;
+SELECT pa_rows(q, true, true) IS NOT DISTINCT FROM pa_rows(q, false, true) AND pa_rows(q, false, true) IS NOT DISTINCT FROM pa_rows(q, false, false) AS same
+FROM (VALUES ('SELECT d8, count(*), sum(m1) FROM cb GROUP BY d8')) t(q);
+SELECT u.pre >= u.units - 1 AS from_the_cube
+FROM (VALUES ('SELECT d8, count(*), sum(m1) FROM cb GROUP BY d8')) t(q), LATERAL pa_units(t.q) u;
+
+DROP TABLE cb;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

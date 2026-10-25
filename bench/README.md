@@ -462,6 +462,8 @@ phrase it measures, the dataset and index, the plan the scan must show, the base
 `sql/store/queries` (`--@ pg` for every lane, `--@ sift` or `--@ duck` to replace it, `--@ setup` DDL after the index, `--@ prepare` / `--@ load` / `--@ check` for a case that times a load). The data is
 the `orders` table of the orders benchmark with two derived columns (`segment_id`, 6,313 values; `order_date`), its btrees and a `sift_col` index with the options of the row.
 
+The cluster of the cases is scratch on tmpfs (`CASES_TMP`, default `/dev/shm/sift-cases`; data and WAL in memory, `fsync = off`) and the timings are warm medians, so a case says nothing about reads from a device. The tmpfs data counts against `CASES_MEM`: 1,000,000 orders left 14 GB in the directory by the end of the run, so `CASES_MEM=16G` kills the checkpointer (signal 9) and `CASES_MEM=40G` does not.
+
 ```sh
 bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
 bench/bench cases --cases topn_page_totals --engines pg_duckdb   # one case, also on a pg_duckdb container (docker)
@@ -506,7 +508,7 @@ bench/bench final --size standard --dry-run                      # every precond
 **The window** (one engine at a time, on a host nothing else uses; `bench refresh --calm` exits 75 at once when the host is not calm):
 
 ```sh
-export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=16G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only
+export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=40G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only: 14 GB at 1,000,000 orders, counted in CASES_MEM
 bench/bench final --size standard --docs --remeasure-all                                      # 95 min: the nine stages; `bench resume` continues an interrupted run
 bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-small                      # 2 min
 bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-big   # 6 min

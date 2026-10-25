@@ -44,7 +44,7 @@ SELECT 'page cut' AS index, nunits('SELECT sum(amt) FROM nu') AS sum_units UNION
 SELECT 'page cut' AS index, nunits('SELECT q, count(*), sum(amt) FROM nu GROUP BY 1') AS group_units UNION ALL SELECT 'key cut', nunits('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1');
   index   |               group_units                
 ----------+------------------------------------------
- page cut |  Units: 26 Units From Pre-aggregates: 25
+ page cut |  Units: 26 Units From Pre-aggregates: 26
  key cut  |  Units: 37 Units From Pre-aggregates: 37
 (2 rows)
 

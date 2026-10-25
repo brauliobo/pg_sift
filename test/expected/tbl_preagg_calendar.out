@@ -160,7 +160,7 @@ UNION ALL SELECT 'tcy', years > days + months FROM sift._test_tbl_cal_grains('tc
 -----+-----------
  tcd | t
  tcm | t
- tcy | t
+ tcy | f
 (3 rows)
 
 -- 1. cells of days
@@ -312,17 +312,17 @@ SELECT * FROM pm_check('tcy');
  35 | date, month         | none | t
  36 | date, year          | all  | t
  37 | date, dow           | none | t
- 38 | date, via timestamp | none | t
- 39 | date, range         | none | t
- 40 | date, test          | none | t
+ 38 | date, via timestamp | some | t
+ 39 | date, range         | some | t
+ 40 | date, test          | some | t
  41 | date, test in       | none | t
- 42 | tz at UTC, month    | some | t
- 43 | tz at UTC, year     | some | t
+ 42 | tz at UTC, month    | all  | t
+ 43 | tz at UTC, year     | all  | t
  44 | tz session: scan    | scan | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
- 47 | tz at UTC, range    | some | t
- 48 | tz 3-arg UTC        | some | t
+ 47 | tz at UTC, range    | all  | t
+ 48 | tz 3-arg UTC        | all  | t
 (48 rows)
 
 -- 4. rows in the write buffer: their superblocks are scanned, the others answer
@@ -393,18 +393,18 @@ SELECT * FROM pm_check('tcm');
   6 | extract year        | all  | t
   7 | cut then month      | all  | t
   8 | count of the key    | all  | t
-  9 | day                 | none | t
- 10 | cast to date        | none | t
- 11 | week                | none | t
- 12 | extract dow         | none | t
- 13 | extract isodow      | none | t
- 14 | extract doy         | none | t
- 15 | extract day         | none | t
- 16 | extract week        | none | t
- 17 | extract isoyear     | none | t
+  9 | day                 | some | t
+ 10 | cast to date        | some | t
+ 11 | week                | some | t
+ 12 | extract dow         | some | t
+ 13 | extract isodow      | some | t
+ 14 | extract doy         | some | t
+ 15 | extract day         | some | t
+ 16 | extract week        | some | t
+ 17 | extract isoyear     | some | t
  18 | extract quarter     | all  | t
  19 | extract decade      | all  | t
- 20 | year of the week    | none | t
+ 20 | year of the week    | some | t
  21 | hour: refused       | scan | t
  22 | zone on id          | all  | t
  23 | range of days       | all  | t
@@ -449,18 +449,18 @@ SELECT * FROM pm_check('tcm');
   6 | extract year        | some | t
   7 | cut then month      | some | t
   8 | count of the key    | some | t
-  9 | day                 | none | t
- 10 | cast to date        | none | t
- 11 | week                | none | t
- 12 | extract dow         | none | t
- 13 | extract isodow      | none | t
- 14 | extract doy         | none | t
- 15 | extract day         | none | t
- 16 | extract week        | none | t
- 17 | extract isoyear     | none | t
+  9 | day                 | some | t
+ 10 | cast to date        | some | t
+ 11 | week                | some | t
+ 12 | extract dow         | some | t
+ 13 | extract isodow      | some | t
+ 14 | extract doy         | some | t
+ 15 | extract day         | some | t
+ 16 | extract week        | some | t
+ 17 | extract isoyear     | some | t
  18 | extract quarter     | some | t
  19 | extract decade      | some | t
- 20 | year of the week    | none | t
+ 20 | year of the week    | some | t
  21 | hour: refused       | scan | t
  22 | zone on id          | some | t
  23 | range of days       | some | t
@@ -883,17 +883,17 @@ SELECT * FROM pm_check('tcy', 35, 48);
  35 | date, month         | none | t
  36 | date, year          | all  | t
  37 | date, dow           | none | t
- 38 | date, via timestamp | none | t
- 39 | date, range         | none | t
- 40 | date, test          | none | t
+ 38 | date, via timestamp | some | t
+ 39 | date, range         | some | t
+ 40 | date, test          | some | t
  41 | date, test in       | none | t
- 42 | tz at UTC, month    | some | t
- 43 | tz at UTC, year     | some | t
+ 42 | tz at UTC, month    | all  | t
+ 43 | tz at UTC, year     | all  | t
  44 | tz session: scan    | scan | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
- 47 | tz at UTC, range    | some | t
- 48 | tz 3-arg UTC        | some | t
+ 47 | tz at UTC, range    | all  | t
+ 48 | tz 3-arg UTC        | all  | t
 (14 rows)
 
 RESET TimeZone;

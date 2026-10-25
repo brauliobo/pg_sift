@@ -20,9 +20,6 @@ CREATE TABLE ev (id int PRIMARY KEY, zone_id int, day date, kind text, qty int, 
 INSERT INTO ev SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 65 END, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3], i % 9, (i % 13) + 0.5
 FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, qty, price);
-NOTICE:  sift_col index ev_col keeps the keys of zone_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 128 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM ANALYZE ev;
 ANALYZE zones;
 ANALYZE labels;

@@ -13,9 +13,6 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 600 END, CASE WHEN i % 17 = 0 
                                               FROM generate_series(1, 1 + i % 4) j)) END
 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
-NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) events;
 -- the arms per row and category, and per row, with the columns given as NULL constants; the outer query is the aggregates and the tail
 CREATE FUNCTION report(cols text, tail text, keys text DEFAULT 'category, bucket_date') RETURNS text LANGUAGE sql AS $$

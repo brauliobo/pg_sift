@@ -73,7 +73,7 @@
 ^Formula/	gh:macos|{perf}
 ^(bench/|docs/|tools/|packaging/|\.github/|[^/]+\.md$|META\.json|LICENSE|NOTICE|\.(git|docker)ignore)	-
 ^scripts/neutral\.(denylist|words|allow)$	-
-^scripts/(pgdg-repo|check-neutral|check-testing-regress|check-errors|check-approx|check-memory|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|genlib|options-released|limits\.allow|refusals\.allow)	-
+^scripts/(pgdg-repo|apt-install|check-neutral|check-testing-regress|check-errors|check-approx|check-memory|bm25-size|release|release-aur|package|assert|pg-assert|valgrind|multibuild|build-bench|make-compat-fixture|merge-bytes|perf-gate-maint|quiet|wait-profile|gen-aggvk|col-scan-table|restructure-src|gen-limits|gen-reference|gen-options|genlib|options-released|limits\.allow|refusals\.allow)	-
 ^scripts/old-lib-check\.sh$	^tap-shell-old_lib_refusal$
 ^(bench/scaling/|scripts/scaling-gate\.sh$)	^tap-shell-scaling_slope$
 ^src/core/visibility\.c$	^tap-shell-sb_mask_small$

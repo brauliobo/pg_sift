@@ -324,7 +324,20 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
                 if sum(times[lane]) / 1000 > LANE_BUDGET and len(times[lane]) >= MIN_RUNS:   # a lane of seconds a run: the median of a few runs, not of fifteen
                     break
                 times[lane].append(lanes[lane].run(sql[lane])[0])
-    return times, notes, errors
+    return times, notes, errors, texts
+
+
+INDEX_IN_PLAN = re.compile(r'(?:Index(?: Only)? Scan(?: Backward)? using|Bitmap Index Scan on) (\w+)|Index: (\w+)')
+
+
+def pages_read(session, sql, text):
+    """what a lane touches, whatever the storage: the shared buffers of one run (hit + read of the top node of EXPLAIN (ANALYZE, BUFFERS)) and the bytes of the indexes its plan reads
+    (a btree, the column index of a scan); (None, None, '') when the plan has no buffers line"""
+    plan = session.run('EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) %s' % sql.rstrip(';'))[1]
+    m = next((re.search(r'shared hit=(\d+)(?: read=(\d+))?', l) for l in plan if 'Buffers:' in l and 'shared' in l), None)
+    names = sorted({a or b for a, b in INDEX_IN_PLAN.findall(text)})
+    size = sum(int(session.run("SELECT pg_relation_size('%s')" % n)[1][0]) for n in names) if names else 0
+    return (int(m.group(1)) + int(m.group(2) or 0), int(m.group(2) or 0), names, size) if m else (None, None, names, size)
 
 
 def why(session, sql):
@@ -450,7 +463,7 @@ def run_point(args, cases, rows, engines, results, failed):
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()
-        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
+        times, notes, errors, texts = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
         TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         for lane in lanes:
             if lane in errors:
@@ -459,6 +472,12 @@ def run_point(args, cases, rows, engines, results, failed):
                 point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                if lane != 'pg_duckdb' and not c.load:
+                    got, read, names, size = pages_read(lanes[lane], expand(c.statement(lane), c), texts.get(lane, ''))
+                    if got is not None:
+                        point.append(dict(case=c.id, arm=lane, metric='buffers', value=str(got), note='shared hit + read of one run, read=%d' % read, load=load))
+                    if names:
+                        point.append(dict(case=c.id, arm=lane, metric='index_bytes', value=str(size), note=', '.join(names), load=load))
             lanes[lane].close()
         if 'why' in notes:
             point.append(dict(case=c.id, arm='why', metric='ms', value='', note=notes['why'], load=load))

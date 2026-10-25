@@ -89,7 +89,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
  rows | units 
 ------+-------
- 2716 |    16
+ 2722 |    17
 (1 row)
 
 SET sift.test_col_floor_sbs = 4;

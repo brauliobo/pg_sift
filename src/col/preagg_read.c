@@ -372,7 +372,6 @@ sift_cpagg_mirror(const SiftColSchema *s, const SiftCPaggSpec *spec, const uint8
 			to = &out->dim[out->ndims++];
 			*to = spec->dim[k];
 			to->grain = spec->dim[k].cal ? leaf[d] / SIFT_PAGG_CAL : 0;
-			to->lean = 0;
 			to->nmeas = nm;
 			memcpy(to->meas, meas, nm * sizeof(int16));
 		}
