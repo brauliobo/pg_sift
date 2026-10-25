@@ -3574,10 +3574,50 @@ gord_prep(SiftTopN *t)
  * the order of the key and the n-th one ends the scan. An entry is for the heap to confirm, as a b-tree's is: the row of the address may be dead, or another one
  * where the first was vacuumed, which holds another key.
  */
+/* the conditions on a column other than the first key that the array read does not narrow: those outside an equality of the group leaf gl at the top of the conjunction, with the first key not pinned */
+static int
+gcond_loose(const SiftTopGPred *p, int gl, bool top)
+{
+	int			n = 0;
+
+	if (p->kind == STG_CMP)
+		return p->lead || p->pinned || (top && p->op == SCMP_EQ && p->leaf == gl) ? 0 : 1;
+	for (int i = 0; i < p->nchild; i++)
+		n += gcond_loose(p->child[i], gl, top && p->kind == STG_AND);
+	return n;
+}
+
+/* the equalities of the top of the conjunction on columns other than the first key: a global order grouped by one of them reads the entries of that group */
+static int
+gcond_pins(const SiftTopGPred *p, SiftGBound *b)
+{
+	if (p->kind == STG_CMP)
+	{
+		if (!p->lead && p->op == SCMP_EQ && b->npin < 4)
+		{
+			b->pinleaf[b->npin] = p->leaf;
+			b->pinval[b->npin++] = p->val;
+		}
+		return b->npin;
+	}
+	if (p->kind == STG_AND)
+		for (int i = 0; i < p->nchild; i++)
+			if (p->child[i]->kind == STG_CMP)
+				gcond_pins(p->child[i], b);
+	return b->npin;
+}
+
+/*
+ * The scan reads the global order of the key (one entry for every row ever indexed, in the order of the key) in place of the units: the rows of the heap come in
+ * the order of the key and the n-th one ends the scan. An entry is for the heap to confirm, as a b-tree's is: the row of the address may be dead, or another one
+ * where the first was vacuumed, which holds another key.
+ */
 bool
 sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 {
 	SiftGBound	b = {0};
+	bool		bounds = false;
+	int			gl;
 
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
 	if (!t->gok || t->skip > 0 || t->all)
@@ -3586,17 +3626,25 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	{
 		GBox		box = gcond_box(cond);
 
-		/* a condition that leaves no bound is a filter of the whole array: the units, with their zones, read less */
-		if (!box.empty && !box.has_lo && !box.has_hi)
-			return false;
 		if (box.empty)
 			b.has_lo = b.has_hi = true, b.lo = 1, b.hi = 0;
 		else
-			b = (SiftGBound) {box.has_lo, box.has_hi, box.lo, box.hi};
+			b.has_lo = box.has_lo, b.has_hi = box.has_hi, b.lo = box.lo, b.hi = box.hi;
+		bounds = box.empty || box.has_lo || box.has_hi;
+		(void) gcond_pins(cond, &b);
 	}
 	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
+	if (t->go == NULL)
+		return false;
+	gl = sift_gord_group(t->go);
+	/* a condition that leaves no bound on the key and no group is a filter of the whole array: the units, with their zones, read less */
+	if (cond != NULL && ((!bounds && gl < 0) || gcond_loose(cond, gl, true) > 0))
+	{
+		t->go = NULL;
+		return false;
+	}
 	t->gcond = cond;
-	if (t->go != NULL && t->nkey > 1 && !gord_prep(t))
+	if (t->nkey > 1 && !gord_prep(t))
 		t->go = NULL;
 	return t->go != NULL;
 }

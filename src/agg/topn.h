@@ -113,6 +113,8 @@ typedef struct SiftTopGPred
 	SiftTopGKind kind;
 	int			op;				/* STG_CMP: SiftCmpOp */
 	bool		lead;			/* STG_CMP: the column is the first sort key, whose range the condition bounds */
+	bool		pinned;			/* STG_CMP: ... or the first key is pinned by an equality in the same conjunction, so the rows that fail are few in the part of the array read */
+	int			leaf;			/* STG_CMP: the leaf of the column */
 	int			attno;			/* STG_CMP: the heap column and its type */
 	Oid			typid;
 	int64		val;

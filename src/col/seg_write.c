@@ -28,9 +28,14 @@ typedef struct PointAcc
 	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
 	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
+	int64	   *gk;				/* ord with a group leaf: the group of each entry of key, and of each one of ntid (a row with no group is left out when the block is built) */
+	uint8	   *gok;
+	int64	   *ngk;
+	uint8	   *ngok;
 	uint64	   *ntid;
 	uint32		nn;
 	uint32		ncap;
+	uint32		gcap;
 	uint32		onch;			/* its block, once built (0: none) */
 	uint32		onent;
 	uint32		onvals;
@@ -317,13 +322,17 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 		const SiftCPaggCol *v = &cols[c];
 
 		bool		wt = a->tids || a->ord;		/* the entries carry heap addresses */
+		const SiftCPaggCol *gv = a->ord && w->pagg.gorder_group > 0 ? &cols[w->pagg.gorder_group - 1] : NULL;	/* the group of each row */
 
 		if (!(a->want || a->ord) || a->bad)
 			continue;
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
 			if (v->ovf[i])
 				a->bad = true;
-		if (!v->ready || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
+		for (uint32 i = 0; gv && gv->ovf && i < SIFT_COL_NWORDS(gv->n); i++)
+			if (gv->ovf[i])
+				a->bad = true;
+		if (!v->ready || (gv && !gv->ready) || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;
 			continue;
@@ -345,6 +354,20 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 
 			a->ncap = Max(Max(a->ncap * 2, 1024), a->nn + v->n);
 			a->ntid = a->ntid ? repalloc_huge(a->ntid, (Size) a->ncap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(uint64));
+			if (gv)
+			{
+				a->ngk = a->ngk ? repalloc_huge(a->ngk, (Size) a->ncap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(int64));
+				a->ngok = a->ngok ? repalloc_huge(a->ngok, (Size) a->ncap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap);
+			}
+			MemoryContextSwitchTo(old);
+		}
+		if (gv && a->n + v->n > a->gcap)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			a->gcap = a->cap;
+			a->gk = a->gk ? repalloc_huge(a->gk, (Size) a->gcap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap * sizeof(int64));
+			a->gok = a->gok ? repalloc_huge(a->gok, (Size) a->gcap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap);
 			MemoryContextSwitchTo(old);
 		}
 		for (uint32 i = 0; i < v->n; i++)
@@ -358,8 +381,24 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
 			{
 				if (a->ord)
+				{
+					if (gv)
+					{
+						bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+
+						a->ngok[a->nn] = !gnull;
+						a->ngk[a->nn] = gnull ? 0 : gv->key[i];
+					}
 					a->ntid[a->nn++] = rowkeys[i];
+				}
 				continue;
+			}
+			if (gv)
+			{
+				bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+
+				a->gok[a->n] = !gnull;
+				a->gk[a->n] = gnull ? 0 : gv->key[i];
 			}
 			a->key[a->n] = v->key[i];
 			if (wt)
@@ -693,11 +732,48 @@ build_points(SiftColSegWriter *w)
 
 			initStringInfo(&a->otab);
 			MemoryContextSwitchTo(old);
-			a->onent = a->n + a->nn;
-			a->onvals = a->n;
-			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
+			if (w->pagg.gorder_group > 0)
+			{
+				/* the rows with no group are not in the block; the arrays of the entries are the point directory's too, so the others are copied */
+				uint32		nv = 0,
+							nl = 0;
+				int64	   *key = palloc((a->n + 1) * sizeof(int64)),
+						   *grp = palloc((a->n + 1) * sizeof(int64)),
+						   *ngrp = palloc((a->nn + 1) * sizeof(int64));
+				uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
+						   *ntid = palloc((a->nn + 1) * sizeof(uint64));
+
+				for (uint32 i = 0; i < a->n; i++)
+					if (a->gok[i])
+					{
+						key[nv] = a->key[i];
+						tid[nv] = a->tid[i];
+						grp[nv++] = a->gk[i];
+					}
+				for (uint32 i = 0; i < a->nn; i++)
+					if (a->ngok[i])
+					{
+						ntid[nl] = a->ntid[i];
+						ngrp[nl++] = a->ngk[i];
+					}
+				a->onent = nv + nl;
+				a->onvals = nv;
+				if (a->onent > 0)
+					sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, &a->otab);
+				pfree(key);
+				pfree(grp);
+				pfree(ngrp);
+				pfree(tid);
+				pfree(ntid);
+			}
+			else
+			{
+				a->onent = a->n + a->nn;
+				a->onvals = a->n;
+				sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
+			}
 			a->onch = (a->onent + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS;
-			w->anyord = true;
+			w->anyord = a->onch > 0 || w->anyord;
 		}
 		if (a->want && !a->bad && a->n > 0)
 		{
@@ -728,6 +804,20 @@ build_points(SiftColSegWriter *w)
 		{
 			pfree(a->ntid);
 			a->ntid = NULL;
+		}
+		if (a->gk)
+		{
+			pfree(a->gk);
+			pfree(a->gok);
+			a->gk = NULL;
+			a->gok = NULL;
+		}
+		if (a->ngk)
+		{
+			pfree(a->ngk);
+			pfree(a->ngok);
+			a->ngk = NULL;
+			a->ngok = NULL;
 		}
 	}
 }

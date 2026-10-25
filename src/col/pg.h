@@ -121,6 +121,7 @@ typedef struct SiftColOptions
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
+	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
@@ -145,6 +146,7 @@ extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" whe
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_array_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 

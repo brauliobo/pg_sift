@@ -247,6 +247,10 @@ CREATE FUNCTION fz.gen_gof(lo bigint, hi bigint, salt int) RETURNS SETOF gof LAN
 INSERT INTO gof SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
 CREATE INDEX gof_idx ON gof USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, d sift.col_date_ops, t sift.col_timestamp_ops,
 	z sift.col_timestamptz_ops) WITH (order_columns = 'id, a, b, c, d, t, z', order_array_columns = 'id, a, b, c, d, t, z', point_tid_columns = 'b');
+-- ... and the same rows with arrays grouped by a column (order_array_group): WHERE a = x ORDER BY b / t LIMIT n reads the entries of the group
+CREATE TABLE gog (LIKE gof) WITH (autovacuum_enabled = false);
+INSERT INTO gog SELECT * FROM fz.gen_gof(1, @ROWS@, 0);
+CREATE INDEX gog_idx ON gog USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, t sift.col_timestamp_ops) WITH (order_columns = 'b, t', order_array_columns = 'b, t', order_array_group = 'a');
 
 -- instants of a time zone's clock changes (the weeks around the daylight saving time of the northern and the southern zones, the days of the reform, local mean time),
 -- the infinities and NULL, grouped by the day or hour of the session's zone
@@ -286,4 +290,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, zkf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, kcut_a, kcut_b, kcut_c;

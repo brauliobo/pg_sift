@@ -649,10 +649,11 @@ typedef struct SiftSrcProvider
 	 * the others are NULL rows by address). gorder_chunk: entries [c * 1024, + the count returned) as keys and heap addresses, each 1032 slots. The entries are
 	 * of rows that may have died since: the caller has the heap say which are live and what they hold.
 	 */
-	int			(*gorder_open) (void *impl, int leaf, int rows);
+	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);	/* grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
 	uint32		(*gorder_chunk) (void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
-	uint32		(*gorder_seek) (void *impl, int i, int leaf, int64 key, bool after);	/* the first value entry with key >= key (after: > key) */
+	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
+	uint32		(*gorder_seek) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none */
 	/*
 	 * Optional (needs run_info found a run): the head of that run, the best SiftSrcRunHeads.n entries of the run read ascending (lo) and descending (hi)
 	 * with the heap address of each row; 0 when the run has none. Stored when the unit was written: sound only if every row of the unit still passes.
@@ -832,10 +833,11 @@ extern bool sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, in
 /* The head of the run (SiftSrcProvider.run_heads): its H, 0 when there is none */
 extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
-extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows);
+extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
 extern bool sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values);
 extern uint32 sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
-extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, int64 key, bool after);
+extern void sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
+extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after);
 extern void sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 
 /* Restricts the rows of the units the next sift_colsrc_begin starts to the keys of the filter, which must outlive them (NULL: no restriction) */

@@ -16,6 +16,8 @@ typedef struct GCur
 	uint32		values;
 	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
 	uint32		ve;
+	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
+	uint32		ne;
 	uint32		chunk;			/* the chunk in key/addr, UINT32_MAX: none */
 	uint32		cm;
 	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
@@ -37,6 +39,7 @@ struct SiftGOrd
 	int			leaf;
 	bool		desc;
 	bool		nulls_first;
+	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
 	bool		bounded;		/* a range of the key: the rows with no value are not in it */
 	int			ncur;
 	GCur	  **cur;
@@ -92,8 +95,8 @@ cur_enter(SiftGOrd *g, GCur *c)
 
 	if (nulls)
 	{
-		c->pos = g->bounded ? 0 : c->values;
-		c->end = g->bounded ? 0 : c->entries;
+		c->pos = g->bounded ? 0 : c->ns;
+		c->end = g->bounded ? 0 : c->ne;
 	}
 	else if (g->desc)
 	{
@@ -161,7 +164,8 @@ cur_start(SiftGOrd *g, GCur *c)
 SiftGOrd *
 sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, const SiftGBound *b, MemoryContext cxt)
 {
-	int			n = sift_colsrc_gorder_open(src, leaf, rows);
+	int			grouped,
+				n = sift_colsrc_gorder_open(src, leaf, rows, b != NULL ? b->npin : 0, b != NULL ? b->pinleaf : NULL, b != NULL ? b->pinval : NULL, &grouped);
 	SiftGOrd   *g;
 
 	if (n < 0)
@@ -169,6 +173,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	g = MemoryContextAllocZero(cxt, sizeof(SiftGOrd));
 	g->src = src;
 	g->leaf = leaf;
+	g->grouped = grouped;
 	g->desc = desc;
 	g->nulls_first = nulls_first;
 	g->bounded = b != NULL && (b->has_lo || b->has_hi);
@@ -176,13 +181,18 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	for (int i = 0; i < n; i++)
 	{
 		GCur	   *c = MemoryContextAllocZero(cxt, sizeof(GCur));
+		uint32		rvs,
+					rve;
 
 		c->src = i;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
-		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, b->lo, false) : 0;
-		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, b->hi, true) : c->values;
-		if (g->bounded && (b->has_lo && b->has_hi && b->lo > b->hi ? true : c->vs >= c->ve))
+		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
+		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false) : rvs;
+		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true) : rve;
+		if (g->bounded && b->has_lo && b->has_hi && b->lo > b->hi)
+			continue;
+		if (c->vs >= c->ve && (g->bounded || c->ns >= c->ne))
 			continue;
 		g->cur[g->ncur++] = c;
 	}
@@ -205,6 +215,12 @@ cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b)
 	if (a->k != b->k)
 		return (a->k < b->k) != g->desc ? -1 : 1;
 	return SIFT_CMP3(a->tid, b->tid);
+}
+
+int
+sift_gord_group(const SiftGOrd *g)
+{
+	return g->grouped;
 }
 
 bool

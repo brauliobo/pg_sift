@@ -1196,7 +1196,27 @@ def go_const(r, col):
     return f"{ts} '2025-01-01{'' if col == 't' else '+00'}' + {r.randrange(-100, 60100)} * interval '1 second'"
 
 
+GG_COLS = ['b', 't']
+
+
+def gen_gorder_group(r, ctx):
+    """A group of gog (the arrays of b and t are grouped by a) pinned by an equality, with a range on the key or the page after one, and a second key: the entries of the group only."""
+    col = r.choice(GG_COLS)
+    cond = f"g.a = {r.choice([go_const(r, 'a'), go_const(r, 'a'), str(r.randrange(-5, 5)), 'NULL'])}"
+    kind = r.random()
+    if kind < 0.35:
+        cond += f" AND g.{col} {r.choice(['<', '<=', '>', '>='])} {go_const(r, col)}"
+    elif kind < 0.5:
+        cond += f" AND g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"
+    elif kind < 0.6:
+        cond += f" AND g.id {r.choice(['<', '>'])} {go_const(r, 'id')}"
+    return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300]), cond=cond, tbl='gog',
+                second=r.random() < 0.3, dir2=r.choice(['', ' DESC']), where=[], keys=[], aggs=[], having=[], ordered=True)
+
+
 def gen_gorder(r, ctx):
+    if r.random() < 0.3:
+        return gen_gorder_group(r, ctx)
     col = r.choice(GO_COLS)
     cond = ''
     keyset = ''
@@ -1218,12 +1238,19 @@ def gen_gorder(r, ctx):
 
 def render_gorder(p):
     where = f" WHERE {p['cond']}" if p['cond'] else ''
+    tbl = p.get('tbl', 'gof')
     if p['second'] and p['col'] != 'id':
-        return f"SELECT g.{p['col']}, g.id FROM gof g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']}, g.id{p['dir2']} LIMIT {p['limit']}", True
-    return f"SELECT g.{p['col']} FROM gof g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
+        return f"SELECT g.{p['col']}, g.id FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']}, g.id{p['dir2']} LIMIT {p['limit']}", True
+    return f"SELECT g.{p['col']} FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
 
 
 def dml_gorder(r, ctx):
+    """The same change to gof and to gog (the arrays grouped by a column)."""
+    st = dml_gorder_one(r, ctx)
+    return st + '; ' + st.replace('fz.gen_gof', '@gen@').replace('gof', 'gog').replace('@gen@', 'fz.gen_gof')
+
+
+def dml_gorder_one(r, ctx):
     """Updates of an indexed key, deletes, inserts, VACUUM, promotion and merges on gof: the arrays of old segments keep dead rows, the write buffer holds the new ones."""
     m = r.choice([13, 40, 97, 211, 509])
     ids = f'id % {m} = {r.randrange(m)}'

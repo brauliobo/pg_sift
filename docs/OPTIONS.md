@@ -19,7 +19,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 91 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
+| [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -1335,6 +1335,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** New, unset: nothing changes. ALTER INDEX .. SET (order_array_columns = 'a, b') applies to the segments written afterwards and a REINDEX gives the older ones their array; a segment with arrays is column format minor 21, which a 3.3 library cannot read (ALTER INDEX .. RESET (order_array_columns) and REINDEX first).
 - **Advice:** Turn it on (name the column, which must be in order_columns) for a large table, or a key_cut index (its many units cost the heads), where ORDER BY col LIMIT n with n from 1 to a few thousand over a column with scattered values is a frequent, latency-sensitive query that no b-tree serves, and 4-5 bytes a row for the column is affordable; leave it out for LIMIT 32 or less, which the heads of the runs answer.
 
+#### sift_col(order_array_group)
+
+`sift_col` · opt-in · since 3.4 · default ''
+
+- **What it does:** The arrays of order_array_columns are sorted by this column and then the key, so WHERE group = x ORDER BY col LIMIT n (n from 1 to thousands, with a range or the page after a key) reads n entries of the group x in each segment and n rows of the heap, whatever the rows of the table: the shape a b-tree on (group, col) serves. A query that does not pin the group reads the units
+- **Gain:** WHERE grp = x ORDER BY ts DESC LIMIT 10, 1024 groups, scattered timestamp, no b-tree, wall ms at 2,000 / 100,000 / 1,000,000 / 3,000,000 rows: units 0.27 / 0.46 / 1.6 / 3.7, ungrouped array 0.27 / 0.48 / 1.7 / 3.6, grouped array 0.22 / 0.25 / 0.32 / 0.22 (a b-tree on (grp, ts) 0.07 / 0.08 / 0.10 / 0.05)
+- **Impact:** index size: +74% to +77% of the index over the runs for one array column (100,000 and 3,000,000 rows), +14% to +19% over an ungrouped array; build, merge and writes: CREATE INDEX +65% over the runs and +11% over an ungrouped array, insert of 20,000 rows with its promotion +18% over the runs (1,000,000 rows, one array column, wall); other: format minor 21; 6.0 B a row for each array column over the runs (the group is a third part of each entry): 1,000,000 rows, 4 columns, one array column: 7.7 MB with the runs, 12.0 MB with an ungrouped array, 13.7 MB grouped (a b-tree on (group, col) 31.6 MB); a row with no group is not in the arrays
+- **When:** WHERE group = constant [AND range or page after a key on the column] ORDER BY column [, ids] LIMIT n over an index with the option, and a write buffer of at most 4,096 rows of the group (or 8 times n); any other shape reads the units.
+- **Default:** '' — Opt-in: +74% of the index over the runs and CREATE INDEX +65%, because each array column is a third part larger; a table whose group queries are rare should keep the runs only.
+- **Why not the default:** over 3% index growth, over 5% write cost
+- **Turn off:** RESET (order_array_group): new segments get the ungrouped arrays; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
+- **Upgrade from 3.3:** New, unset: nothing changes. ALTER INDEX .. SET (order_array_group = x) applies to the segments written afterwards and a REINDEX gives the older ones their grouped arrays; the segments are column format minor 21, which a 3.3 library cannot read.
+- **Advice:** Turn it on (one column, not in order_array_columns) for a table where a frequent, latency-sensitive query pins a column and orders by another (the last events of a device, the newest rows of a tenant) and no b-tree serves it, and 6 bytes a row is affordable; leave it out when the queries order by the column without pinning the group, which the ungrouped array answers.
+
 #### sift_col(hll_columns)
 
 `sift_col` · opt-in · since 3.4 · default ''
@@ -1932,7 +1946,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(order_array_group)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1947,6 +1961,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sif
 | `sift_col(key_cut_rows)` | new | 0 | minor 17, unreadable by 3.3 | New, 0: read only with key_cut, and applies to the units written afterwards. No REINDEX of an index without key_cut. |
 | `sift_col(order_columns)` | '' | '' | minor 18, unreadable by 3.3 | Run heads need no setting: every build, promotion and merge after the update writes them for an index with order_columns (column format minor 18, +0.6% to +2.4% of the index); the units already written keep minor 13 until a merge or REINDEX rewrites them, and both live in one index. A 3.3 library cannot read minor 18; sift.col_format_minor 14 or less writes the runs without heads. |
 | `sift_col(order_array_columns)` | new | '' | minor 21, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (order_array_columns = 'a, b') applies to the segments written afterwards and a REINDEX gives the older ones their array; a segment with arrays is column format minor 21, which a 3.3 library cannot read (ALTER INDEX .. RESET (order_array_columns) and REINDEX first). |
+| `sift_col(order_array_group)` | new | '' | minor 21, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (order_array_group = x) applies to the segments written afterwards and a REINDEX gives the older ones their grouped arrays; the segments are column format minor 21, which a 3.3 library cannot read. |
 | `sift_col(hll_columns)` | new | '' | minor 20, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (hll_columns) applies to the units written afterwards and a REINDEX gives the older ones their sketch; a segment with sketches is column format minor 20, which a 3.3 library cannot read (sift.upgrade_commands() lists it). |
 | `sift.maintenance_cost_delay` | 0 | 0 |  | The worker that rewrites a sift_col index by partitions now waits as long as the delay asks (it used to sleep less). Nothing to do. |
 | `sift.vis_page_cache` | new | on |  | New, on: it only affects a scan of an index with key_cut. Nothing to do. |

@@ -771,8 +771,9 @@ topn_same_scale(Oid a, Oid b)
 
 /*
  * The condition of the scan as the heap row is tested against it, when it is all comparisons of integer, date or time columns with constants of their type (an
- * operand that is NULL is no row: the units answer it). A column that is not the first sort key is read only where the first is pinned (an equality in the same
- * conjunction: the page after a key), or the scan would read the array from the bound to the end for rows that few of them pass; `pinned` says it is.
+ * operand that is NULL is no row: the units answer it). A column that is not the first sort key is tested on the heap row; the scan accepts it only where the first
+ * is pinned (an equality in the same conjunction: the page after a key) or an array grouped by the column answers it (sift_topn_gorder), or it would read the array from the
+ * bound to the end for rows that few of them pass; `pinned` says the first is.
  */
 static SiftTopGPred *
 topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
@@ -791,7 +792,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 				return NULL;
 		return g;
 	}
-	if (p->kind == SAP_CMP && p->level == 0 && !p->late && (p->leaf == keyleaf || pinned) && p->leaf < ex->nbase &&
+	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&
 		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{
 		bool		isnull;
@@ -805,6 +806,8 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->kind = STG_CMP;
 		g->op = p->op;
 		g->lead = p->leaf == keyleaf;
+		g->pinned = pinned;
+		g->leaf = p->leaf;
 		g->typid = ex->lay->leaf[p->leaf].typid;
 		g->val = sift_aggspec_operand_int(p->argtype, d);
 		return g;

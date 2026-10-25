@@ -1289,6 +1289,8 @@ sift_col_sel_idx(const SiftColSel *sel, uint32 *idx)
 typedef struct ColGOrdMem
 {
 	int			leaf;
+	int			gleaf;			/* the rows of the group gval of this leaf only (-1: all) */
+	int64		gval;
 	uint32		n;				/* entries: nvals with a value by (key, address), then those without by address */
 	uint32		nvals;
 	int64	   *key;
@@ -1312,7 +1314,7 @@ gord_pair_cmp(const void *a, const void *b)
 
 /* The rows of the write buffers sorted like a segment's entries; false when they are more than maxrows (sorting them whole costs more than reading them as units), or one holds an overflow value of the leaf or an address a block of the global order cannot name */
 static bool
-gord_mem(SiftColSource *src, int leaf, uint64 maxrows)
+gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval)
 {
 	ColGOrdMem *g = src->gmem;
 	uint64		n = 0;
@@ -1321,11 +1323,12 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows)
 	uint32		nv = 0,
 				nn = 0;
 
-	if (g != NULL && g->leaf == leaf)
+	if (g != NULL && g->leaf == leaf && g->gleaf == gleaf && (gleaf < 0 || g->gval == gval))
 		return true;
 	for (int i = 0; i < src->nmem; i++)
 		n += src->mem[i].b->nrows;
-	if (n > maxrows)
+	/* the rows of one group are the ones sorted: a buffer of many rows is looked through for them, up to 64 times what an ungrouped scan sorts */
+	if (n > (gleaf < 0 ? maxrows : 64 * maxrows))
 		return false;
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(GOrdPair));
@@ -1338,16 +1341,33 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows)
 		{
 			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 				return false;
+			if (gleaf >= 0)
+			{
+				const SiftCVals *gv = &b->col[gleaf];
+
+				if ((gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)) || (gv->nulls && (gv->nulls[r / 64] >> (r % 64) & 1)))
+				{
+					if (gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1))
+						return false;
+					continue;
+				}
+				if (gv->key[r] != gval)
+					continue;
+			}
 			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
 				pn[nn++] = (GOrdPair) {0, (uint64) b->keys[r]};
 			else
 				pv[nv++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
 		}
 	}
+	if ((uint64) nv + nn > maxrows)
+		return false;
 	qsort(pv, nv, sizeof(GOrdPair), gord_pair_cmp);
 	qsort(pn, nn, sizeof(GOrdPair), gord_pair_cmp);
 	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
 	g->leaf = leaf;
+	g->gleaf = gleaf;
+	g->gval = gval;
 	g->n = nv + nn;
 	g->nvals = nv;
 	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
@@ -1370,12 +1390,15 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows)
 
 /*
  * The sources of the global order of leaf col: one for each stored segment, then one for the write buffers when they hold rows. -1 when the order cannot
- * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value).
+ * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value, a block grouped by a leaf that none of the npin pins (leaf pinleaf[i]
+ * = pinval[i], conditions of the query) names). The rows of the group of a grouped block only are read: the sources are those of that group.
  */
 int
-sift_col_gorder_open(SiftColSource *src, int col, int rows)
+sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
 {
 	int			n = src->nseg;
+	int			gleaf = -1;
+	int64		gval = 0;
 
 	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
@@ -1383,15 +1406,31 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows)
 	{
 		uint32		entries,
 					values;
+		int			gc;
 
 		if (!sift_cseg_gorder(src->seg[i].seg, col, &entries, &values))
 			return -1;
+		gc = sift_cseg_gorder_group(src->seg[i].seg, col);
+		if (gc >= 0)
+		{
+			int			k = 0;
+
+			while (k < npin && pinleaf[k] != gc)
+				k++;
+			if (k == npin || (gleaf >= 0 && gleaf != gc))
+				return -1;
+			gleaf = gc;
+			gval = pinval[k];
+		}
 	}
+	src->gpin_leaf = gleaf;
+	src->gpin_val = gval;
+	*grouped = gleaf;
 	if (!src->mem_loaded)
 		load_wbuf(src);
 	if (src->nmem > 0)
 	{
-		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows)))
+		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows), gleaf, gval))
 			return -1;
 		if (src->gmem->n > 0)
 			n++;
@@ -1409,16 +1448,28 @@ sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32
 	return true;
 }
 
+void
+sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	if (i < src->nseg)
+		sift_cseg_gorder_range(src->seg[i].seg, col, src->gpin_val, vs, ve, ns, ne);
+	else
+	{
+		*vs = 0;
+		*ve = *ns = src->gmem->nvals;
+		*ne = src->gmem->n;
+	}
+}
+
 uint32
-sift_col_gorder_seek(SiftColSource *src, int i, int col, int64 key, bool after)
+sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after)
 {
 	const ColGOrdMem *g = src->gmem;
-	uint32		lo = 0,
-				hi;
+	uint32		lo = vs,
+				hi = ve;
 
 	if (i < src->nseg)
-		return sift_cseg_gorder_seek(src->seg[i].seg, col, key, after);
-	hi = g->nvals;
+		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after);
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;
