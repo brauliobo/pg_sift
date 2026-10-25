@@ -1,11 +1,6 @@
 # The bitmap scan of a sift_col index, and replacing a btree with one
 
-A `sift_col` index built with the operator classes `sift.col_*_ops` is a **bitmap index scan** for the planner: `WHERE id = 5`, `IN` lists,
-ranges, `IS [NOT] NULL`, `LIKE 'abc%'` on integer, date, timestamp, boolean, float, numeric(p <= 18, s), char(n), text and uuid columns return rows through
-`Bitmap Heap Scan` or `Index Scan` (and `Index Only Scan` for the fixed-width columns), for any subset of the columns of a multicolumn index, combined
-with `BitmapAnd` and `BitmapOr`. Without them (the default class `sift.col_ops`) the index serves only the
-column scans of SiftAgg (aggregates, `GROUP BY`, `DISTINCT`, `ORDER BY .. LIMIT`, [COL-PLAN.md](COL-PLAN.md)) and a query that returns rows
-reads the heap. Nothing stored changes: the classes are catalog entries over the same index, so an existing index keeps its class and its bytes.
+A `sift_col` index built with the operator classes `sift.col_*_ops` is a **bitmap index scan** for the planner: `WHERE id = 5`, `IN` lists, ranges, `IS [NOT] NULL`, `LIKE 'abc%'` on integer, date, timestamp, boolean, float, numeric(p <= 18, s), char(n), text and uuid columns return rows through `Bitmap Heap Scan` or `Index Scan` (and `Index Only Scan` for the fixed-width columns), for any subset of the columns of a multicolumn index, combined with `BitmapAnd` and `BitmapOr`. Without the classes (the default class `sift.col_ops`) the index serves only the column scans of SiftAgg (aggregates, `GROUP BY`, `DISTINCT`, `ORDER BY .. LIMIT`, [COL-PLAN.md](COL-PLAN.md)) and a query that returns rows reads the heap. Nothing stored changes: the classes are catalog entries over the same index, so an existing index keeps its class and its bytes.
 
 ```sql
 CREATE INDEX ON items USING sift_col (id sift.col_int4_ops, kind sift.col_text_ops, ts sift.col_timestamptz_ops);
@@ -22,62 +17,34 @@ SELECT * FROM items WHERE kind = 'cat_a' AND ts >= '2024-03-01' AND ts < '2024-0
 | `col_text_ops` | text, varchar (by binary coercion) | `=`, `LIKE` and `^@` with a literal prefix |
 | `col_bpchar_ops` (char(n) only), `col_uuid_ops` | char(n), uuid | `=` only |
 
-`= ANY (array)` is one scan (a set test per unit); `x < ANY (array)` is the test against the largest element. `IS NULL`/`IS NOT NULL` are index
-quals. A column of a multicolumn index may carry another class (or the default one: the scan then ignores it).
+`= ANY (array)` is one scan (a set test per unit); `x < ANY (array)` is the test against the largest element. `IS NULL`/`IS NOT NULL` are index quals. A column of a multicolumn index may carry another class (or the default one: the scan then ignores it).
 
 ## How it works
 
-`ambeginscan`/`amgetbitmap` (`src/col/amscan.c`) turn the scan keys into the predicates of the column source (`sift_col_begin`: the zone maps skip
-the units that cannot hold a match), filter the chunks of the units that remain, and give the TIDs of the rows that pass to the TID bitmap. The
-heap scan applies MVCC and does the recheck of the lossy pages, as for any bitmap scan. The write buffer is read like any unit, and a row the
-index holds for a dead tuple is dropped by the heap. The stored values are the heap's (an update that keeps the indexed columns is a HOT update and
-keeps the entry; any other update adds a new entry), so the scan sets no recheck, except for a key the leaf cannot test exactly: any key on a numeric column (a
-NaN is stored as a NULL with the overflow flag, a candidate of every test), a NaN constant, a numeric constant too large to scale and a `LIKE` pattern with a
-wildcard after its prefix are replaced by `IS NOT NULL` or a prefix test and the heap scan applies the clause. Text is compared bytewise: `CREATE INDEX` refuses
-`col_text_ops` on a column of a nondeterministic collation, and a query's collation must equal the index column's for the planner to use the index.
+`ambeginscan`/`amgetbitmap` (`src/col/amscan.c`) turn the scan keys into predicates of the column source (`sift_col_begin`: zone maps skip units that cannot hold a match), filter the chunks of the remaining units, and give the TIDs of passing rows to the TID bitmap. The heap scan applies MVCC and rechecks lossy pages as for any bitmap scan. The write buffer is read like any unit; a row held for a dead tuple is dropped by the heap. Stored values are the heap's (an update that keeps the indexed columns is HOT and keeps the entry; any other update adds an entry), so the scan sets no recheck, except for a key the leaf cannot test exactly: any key on a numeric column (a NaN is stored as a NULL with the overflow flag), a NaN constant, a numeric constant too large to scale, and a `LIKE` pattern with a wildcard after its prefix are replaced by `IS NOT NULL` or a prefix test and the heap applies the clause. Text is compared bytewise: `CREATE INDEX` refuses `col_text_ops` on a nondeterministic collation, and the query's collation must equal the index column's.
 
-**Cost** (`sift_col_amcostestimate`): the planner's cost units are about microseconds of a warm run, and the scan is priced in them: a start-up (24 for opening the
-index, the snapshot and the directory of the segment, plus 0.03 a unit for the zones and summaries of every unit, or 4 a key and 0.002 a unit when the point
-directory answers) which a `LIMIT` does not wait for, then, for each unit kept, 22 for reading its head and the pages of it, and 0.009 for each value of the
-columns of the quals that it filters. The units kept are the share whose zones can hold the constants of the quals, counted on the real zones of a sample of the
-units (`sift_col_zones`, the sample SiftAgg's planner uses; an `IN` list is bisected, so a list of 50,000 values adds about 3 ms to the planning, not seconds),
-and, for an equality or `IN` on a column named by `key_columns`, the share that the small-set summaries leave, as SiftAgg counts it (`1 - exp(-s * n)`
-for a test on the share `s` of a column's values and `n` keys in a unit). A column with a point directory (`point_columns`) keeps the units that hold the rows of its
-keys, `1 - exp(-rows / units)` of them for a random layout, and only those rows are filtered; the rows come from the selectivity of the clause, so a parameter
-(a generic plan) is priced as its constant is, and an `IN` list is answered by the directory up to 65,536 keys (past 64, while it names under a sixteenth of the rows): a key costs 1.2 to 2 microseconds, 100 keys 0.13 ms and 1,000 keys 1.0 ms at 800,000 rows (the list was answered by the units from the 65th key: 2.8 and 14 ms). The planner compares it with SiftAgg and the heap: 12 of 96 (query, size) picks in the table below were
-more than 1.3 times slower than the best of the other plans, none by more than 0.5 ms (the worst: a `count(*)` with an `IN` list of 100 values at 25,000
-rows, SiftAgg 0.27 ms against 0.74 ms). The one larger loss measured is `count(*) WHERE rnd IS NULL` on 1,000,000 rows with no NULL, where the
-planner keeps SiftAgg (2.45 ms) and the bitmap scan takes 0.06 ms (the zones hold no NULL). A range of rows at 0.1% to 80% of the table picks the
-bitmap scan up to 40% and the heap scan at 80%, where the plans are within 10% of each other.
+**Cost** (`sift_col_amcostestimate`; cost units are about microseconds of a warm run):
+- Start-up (a `LIMIT` does not wait for it): 24 for opening the index, snapshot and segment directory, plus 0.03 a unit for the zones and summaries of every unit, or 4 a key and 0.002 a unit when the point directory answers. Then, per unit kept, 22 for reading its head and pages and 0.009 per value of the quals' columns it filters.
+- Units kept = the share whose zones can hold the quals' constants, counted on the real zones of a sample of units (`sift_col_zones`, the sample SiftAgg's planner uses; an `IN` list is bisected, so 50,000 values add about 3 ms of planning). For an equality or `IN` on a `key_columns` column, the share the small-set summaries leave, as SiftAgg counts it (`1 - exp(-s * n)` for a test on the share `s` of a column's values and `n` keys in a unit).
+- A column with a point directory (`point_columns`) keeps the units that hold its keys' rows, `1 - exp(-rows / units)` of them for a random layout, and only those rows are filtered; rows come from the clause's selectivity, so a generic plan prices a parameter as its constant. An `IN` list is answered by the directory up to 65,536 keys (past 64, while it names under a sixteenth of the rows): a key costs 1.2 to 2 microseconds, 100 keys 0.13 ms, 1,000 keys 1.0 ms at 800,000 rows (the units answered the list from the 65th key: 2.8 and 14 ms).
+- Against SiftAgg and the heap: 12 of 96 (query, size) picks in the table below were more than 1.3 times slower than the best other plan, none by more than 0.5 ms (worst: `count(*)` with an `IN` list of 100 values at 25,000 rows, SiftAgg 0.27 ms against 0.74 ms). The one larger loss: `count(*) WHERE rnd IS NULL` on 1,000,000 rows with no NULL, where the planner keeps SiftAgg (2.45 ms) and the bitmap scan takes 0.06 ms (the zones hold no NULL). A range at 0.1% to 80% of the table picks the bitmap scan up to 40% and the heap scan at 80%, where the plans are within 10% of each other.
 
-**Setting** `sift.enable_col_scan` (default off): off, the planner builds no bitmap path on a `sift_col` index (it also holds when `enable_seqscan` is
-off). The index stays in the relation's index list, SiftAgg reads it as before.
+**Setting** `sift.enable_col_scan` (default off): off, the planner builds no bitmap path on a `sift_col` index (it also holds when `enable_seqscan` is off). The index stays in the relation's index list, SiftAgg reads it as before.
 
-**Tuple by tuple** (`amgettuple`, `amcanreturn`, also under `sift.enable_col_scan`): the index offers an `Index Scan` and an `Index Only Scan` in the order of the
-units (it has no order to give: `amcanorder` is off). A plan that stops early (`LIMIT 10` without `ORDER BY`), reads a few rows or runs on the inner side of a nested
-loop does not build a bitmap, and a query that needs only integer, date, timestamp, boolean, float and numeric columns of the index does not read the heap (the
-visibility map decides, as for a btree: `Heap Fetches` in `EXPLAIN`). Text, varchar and uuid columns are returnable only when the index names them in the reloption `return_columns = 's, u'` (default none; plain columns,
-not expressions; char(n) never): a string is read out of the dictionary of its segment one code at a time, without parsing the dictionary when few rows are read of a
-dictionary stored plain or for a lookup, and from the heap by the AM for a value the index could not keep (a leaf whose strings in a unit
-pass `unit_bytes`). It is off by default because it is not a gain when the heap is in memory: the executor asks for every returnable column of the index whether the query needs it or not,
-so the strings are read for a `SELECT id` too, and an Index Scan that fetches the rows is cheaper than reading their strings from the index. 300,000 rows (an int, a uuid and a text), warm, median of 10,
-`SELECT id, u, s` 100 rows 0.055 (Index Scan) / 0.155 ms (Index Only Scan), 10,000 rows 0.95 / 1.54 ms. The option is for a table much larger than memory, where the heap fetches are reads from disk
-(not measured here). It is a setting of the index, taken on the next scan. `pg_stat_user_indexes`
-counts the scans and `EXPLAIN` shows `Index Searches`.
+**Tuple by tuple** (`amgettuple`, `amcanreturn`, also under `sift.enable_col_scan`): the index offers an `Index Scan` and an `Index Only Scan` in the order of the units (it has no order to give: `amcanorder` is off). A plan that stops early (`LIMIT 10` without `ORDER BY`), reads a few rows or runs on the inner side of a nested loop does not build a bitmap. A query that needs only integer, date, timestamp, boolean, float and numeric columns of the index does not read the heap (the visibility map decides, as for a btree: `Heap Fetches` in `EXPLAIN`).
 
-**Limits** (measured below or by construction): no ordered scan (`amcanorder`, backward scans, `CLUSTER USING`) so `ORDER BY .. LIMIT` stays with the top-N of
-SiftAgg and an `ORDER BY` of all rows sorts; no `UNIQUE`, `PRIMARY KEY`, `EXCLUDE` or foreign key target (the AM has no `amcanunique`, and the design of
-one is in the study the research notes keep); no `INCLUDE`, `ASC`/`DESC`, `text_pattern_ops`; `LIKE` is indexed as a literal prefix (`starts_with(col, 'a')`
-is not rewritten by the planner: write `col ^@ 'a'`); no classes for money, interval, time, enums, arrays, ranges, wide numeric or jsonb paths; no parallel
-index scan (a parallel bitmap heap scan works). `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, partial and expression indexes, a nested loop with the
-index on the inner side, and the referential check of a foreign key on the referencing column use it. `pg_dump` writes the class.
+Text, varchar and uuid columns are returnable only when the index names them in the reloption `return_columns = 's, u'` (default none; plain columns, not expressions; char(n) never; a setting of the index, taken on the next scan). A string is read out of the dictionary of its segment one code at a time, without parsing the dictionary when few rows are read of a dictionary stored plain or for a lookup, and from the heap by the AM for a value the index could not keep (a leaf whose strings in a unit pass `unit_bytes`). The option is for a table much larger than memory, where the heap fetches are reads from disk (not measured). `pg_stat_user_indexes` counts the scans and `EXPLAIN` shows `Index Searches`.
+
+**Limits** (measured below or by construction):
+- No ordered scan (`amcanorder`, backward scans, `CLUSTER USING`): `ORDER BY .. LIMIT` stays with the top-N of SiftAgg and an `ORDER BY` of all rows sorts.
+- No `UNIQUE`, `PRIMARY KEY`, `EXCLUDE` or foreign key target (the AM has no `amcanunique`); no `INCLUDE`, `ASC`/`DESC`, `text_pattern_ops`.
+- `LIKE` is indexed as a literal prefix (`starts_with(col, 'a')` is not rewritten by the planner: write `col ^@ 'a'`).
+- No classes for money, interval, time, enums, arrays, ranges, wide numeric or jsonb paths; no parallel index scan (a parallel bitmap heap scan works).
+- `CREATE INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY`, partial and expression indexes, a nested loop with the index on the inner side, and the referential check of a foreign key on the referencing column use it. `pg_dump` writes the class.
 
 ## Replacing a btree
 
-threads) shared with other jobs, `shared_buffers` 256 MB, `jit` off, no parallel workers, tables `items_N` of the neutral
-byte payload; about 460 bytes a row), `EXPLAIN (ANALYZE)` execution time, median of 3 after a warm run, one backend. The btrees are one per query
-column (`id`, `rnd INCLUDE (id)`, `(grp, ts)`, `s_short`, `u`); the `sift_col` index is one index over the same columns. Planner pick unless
-noted.
+Btrees: one per query column (`id`, `rnd INCLUDE (id)`, `(grp, ts)`, `s_short`, `u`); `sift_col`: one index over the same columns. Planner pick unless noted.
 
 **Space and build** (index bytes per row, sift_col / btree; build time median of 3, serial, `maintenance_work_mem` default):
 
@@ -92,16 +59,11 @@ noted.
 | text, 240 distinct characters | 45.5 vs 331 (0.14x) |  |  |
 | text, 20 values / int, 100 values | 1.43 vs 7.05 / 2.09 vs 7.25 (0.2x / 0.29x) |  |  |
 
-One `sift_col` index over six columns (`id`, `rnd`, `grp`, `ts`, `s_short`, `u`) of the 1,000,000-row table is 25.9 MB, the five btrees on them (`id`, `rnd`, `(grp,
-ts)`, `s_short`, `u`) 139.4 MB (0.19x). The smallest index file is 280 kB (an ascending int column is that size from 25,000 to 200,000 rows). Churn at 100,000 rows (20,000 inserted, 10% updated in an indexed column, 10% updated elsewhere, 10% deleted, then `VACUUM`,
-then `REINDEX`): the index of a random int column is 440 kB built, 944 kB dirty and after `VACUUM`, 536 kB reindexed (btree 2,184, 4,360 and 2,272 kB):
-both grow to about 2x and `VACUUM` gives nothing back, so the absolute bloat is 4.6 times smaller. WAL of the same statements over a table without the
-index, kB: 20,000 inserted rows 1,580 (btree 4,247), 10,000 rows updated in the indexed column 955 (3,074), 10,000 rows updated in a column no index
-holds 114 (2,461); the statements ran 1% to 33% longer with `sift_col`, 39% to 76% longer with the btree. A checkpoint before each statement makes
-the first touch of each page a full page image in both.
+One `sift_col` index over six columns (`id`, `rnd`, `grp`, `ts`, `s_short`, `u`) of the 1,000,000-row table is 25.9 MB, the five btrees on them (`id`, `rnd`, `(grp, ts)`, `s_short`, `u`) 139.4 MB (0.19x). The smallest index file is 280 kB (an ascending int column is that size from 25,000 to 200,000 rows).
 
-**Verdicts**, execution time in ms at 100,000 and 1,000,000 rows (btree / sift_col with `sift.enable_col_scan` on; `sift_col` alone is the third
-figure where the scan is not used and the planner reads the heap or SiftAgg):
+Churn at 100,000 rows (20,000 inserted, 10% updated in an indexed column, 10% updated elsewhere, 10% deleted, then `VACUUM`, then `REINDEX`): a random int column's index is 440 kB built, 944 kB dirty and after `VACUUM`, 536 kB reindexed (btree 2,184, 4,360 and 2,272 kB). Both grow to about 2x and `VACUUM` gives nothing back; absolute bloat is 4.6 times smaller. WAL of the same statements without the index, kB: 20,000 inserted rows 1,580 (btree 4,247), 10,000 rows updated in the indexed column 955 (3,074), 10,000 rows updated in an unindexed column 114 (2,461); statements ran 1% to 33% longer with `sift_col`, 39% to 76% longer with the btree (a checkpoint before each statement makes the first touch of each page a full page image in both).
+
+**Verdicts**, execution time in ms at 100,000 and 1,000,000 rows (btree / sift_col with `sift.enable_col_scan` on; `sift_col` alone is the third figure where the scan is not used and the planner reads the heap or SiftAgg):
 
 | btree workload | btree | sift_col | verdict |
 |---|---|---|---|
@@ -131,31 +93,17 @@ figure where the scan is not used and the planner reads the heap or SiftAgg):
 | `UNIQUE`, `PRIMARY KEY`, `EXCLUDE`, foreign key target |  |  | cannot (stay btree) |
 | merge join order, `ORDER BY .. DESC NULLS LAST` index scans, `INCLUDE` |  |  | cannot |
 
-Cold shared buffers (relation evicted with `pg_buffercache_evict_relation`, the operating system cache warm), 200,000 rows, ms: `id = c` 1.2 (btree 1.1),
-`rnd = c` 1.9 (1.0), narrow range 1.5 (0.4), range of 20% 6.6 (13.6), `grp = c` rows 8.4 (5.7).
+Cold shared buffers (relation evicted with `pg_buffercache_evict_relation`, the operating system cache warm), 200,000 rows, ms: `id = c` 1.2 (btree 1.1), `rnd = c` 1.9 (1.0), narrow range 1.5 (0.4), range of 20% 6.6 (13.6), `grp = c` rows 8.4 (5.7).
 
-**What to replace.** A btree whose workload is analytical or mixed (ranges, many columns, `IN` lists, counts, `GROUP BY`, a `WHERE` on several
-columns in any combination) and not unique: one `sift_col` index replaces the btrees on those columns at 3% to 56% of the space, builds 1.1 to 3
-times faster, writes 0.3 to 0.4 times the WAL and answers the aggregates 4 to 80 times faster. **What not to replace**: unique constraints and
-primary keys; any index that serves single-row lookups of a high-cardinality key (a random int, text or uuid) on a table that grows past about
-100,000 rows, which is the point lookup of an OLTP table; ordered scans without a `LIMIT` and `ORDER BY .. LIMIT` where a few hundred
-microseconds count; covering indexes that avoid the heap; `LIKE 'abc%'` row lookups.
+**What to replace.** A btree whose workload is analytical or mixed (ranges, many columns, `IN` lists, counts, `GROUP BY`, a `WHERE` on several columns in any combination) and not unique: one `sift_col` index replaces the btrees on those columns at 3% to 56% of the space, builds 1.1 to 3 times faster, writes 0.3 to 0.4 times the WAL and answers the aggregates 4 to 80 times faster.
 
-**What would make it a drop-in for the rest.** The point lookup of a random int at 1,000,000 rows reads the one unit that holds the key (the summary of
-`key_columns = 'rnd'` leaves it; without one every unit is read), after the cost of opening the source: a lookup inside the unit (a sorted run or a hash per
-unit, a change of the format) is what is left, see the generated tables below. Text and uuid equality and `LIKE 'abc%'` go through the segment dictionary of
-the column: a backend parses it once (the cost is that of the distinct values, so a new connection pays it on its first query), and the dictionary it keeps
-(`dict_cache_kb`, docs/LIMITS.md) gets a table of its codes after 8 equalities and its codes in byte order after 16 prefix or range tests, so a repeated
-lookup is a probe and a prefix costs the matches (`key_columns` takes uuid columns since 3.3). What a new connection still pays needs the lookup structure to be
-stored with the dictionary (a change of the format). The classes could become the default ones for their types once this is done.
+**What not to replace**: unique constraints and primary keys; any index that serves single-row lookups of a high-cardinality key (a random int, text or uuid) on a table that grows past about 100,000 rows, which is the point lookup of an OLTP table; ordered scans without a `LIMIT` and `ORDER BY .. LIMIT` where a few hundred microseconds count; covering indexes that avoid the heap; `LIKE 'abc%'` row lookups.
+
+**What would make it a drop-in for the rest.** The point lookup of a random int at 1,000,000 rows reads the one unit holding the key (the `key_columns = 'rnd'` summary leaves it; without one every unit is read), after the cost of opening the source; what is left is a lookup inside the unit (a sorted run or hash per unit: a format change). Text and uuid equality and `LIKE 'abc%'` go through the segment dictionary: a backend parses it once (cost of the distinct values, so a new connection pays it on its first query), and the dictionary it keeps (`dict_cache_kb`, docs/LIMITS.md) gets a table of its codes after 8 equalities and its codes in byte order after 16 prefix or range tests, so a repeated lookup is a probe and a prefix costs the matches (`key_columns` takes uuid columns since 3.3). What a new connection still pays needs the lookup structure stored with the dictionary (a format change). The classes could become the default ones once this is done.
 
 ## Which of your btree indexes can be dropped
 
-18.6, release build of the 3.3 branch, the neutral generator of the tables above, `shared_buffers` 256 MB, `jit` off, no parallel workers, a host at a load
-average of 30 to 40, so a ratio under 1.5 is noise): the planner's pick on a `sift_col` index with the classes and `key_columns = 'id, rnd, s_short, u'`, against the
-btree on the column, `sift.enable_col_scan = on`. Two tables, because they answer different clients: one that opens a connection for each query (the first
-query of a backend parses what it reads), and one that keeps its connection (the same query after 24 runs). A btree that serves several rows of a table can go
-only if every one of them says drop.
+It compares the planner's pick on a `sift_col` index with the classes and `key_columns = 'id, rnd, s_short, u'` against the btree on the column, `sift.enable_col_scan = on`, for two clients: one that opens a connection per query (a backend's first query parses what it reads) and one that keeps its connection (the same query after 24 runs). A btree that serves several rows of a table can go only if every one of them says drop.
 
 <!-- col-scan-table:start -->
 **A client that connects for each query**: the first query of a new backend (median of three sessions), which parses the dictionaries of its string

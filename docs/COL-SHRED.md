@@ -1,8 +1,6 @@
 # sift_col shredder: jsonb to typed columns
 
-`src/col/shred.[ch]` (portable, `src/portable-col.list`) turns one JSON document into typed column values for a list of declared
-paths. `src/col/shred_pg.[ch]` drives it from a `JsonbContainer`. The shredder is the only code that knows JSON; the storage
- and the planner see typed arrays, element offsets and per-value states.
+The shredder turns a `jsonb` document into typed column values for a list of declared paths. `src/col/shred.[ch]` (portable, `src/portable-col.list`) is the only code that knows JSON; `src/col/shred_pg.[ch]` drives it from a `JsonbContainer`. The storage and the planner see typed arrays, element offsets and per-value states.
 
 ## Declaring paths (reloption `paths`)
 
@@ -31,9 +29,9 @@ prefix share the node (`a.b int4, a.c text`, `a[].x int4, a[].y text`). Errors n
 metrics.* float4, items[].category text, ...`), always with `.`; `fingerprint` is the `sift_term_hash64` of the canonical text; a segment stores both, so a
 changed spec is told from the one the segment was built with. Limits: 256 columns, 64 groups, 16 steps per path, 64 KiB of spec.
 
-`sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies): the documents come from 16 stretches of blocks evenly spaced over the table, a key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text), a map of more than 4 keys of one type a wildcard (it serves `jsonb_each` and every named key), an array of objects a group (the root of a document may be that array), and a key in fewer than 1% of the documents, without a single shape, or a text whose values average more than 64 bytes (free text is no filter or group key), is left out. It refuses a table the caller cannot read and one with row-level security.
+`sift.suggest_paths(table, column, sample => 2000)` writes this spec from the documents of a `jsonb` column (advice only; NULL when no key qualifies). The documents come from 16 stretches of blocks evenly spaced over the table. A key becomes a typed path when most of its values are one scalar type (`astext` for a mix of numbers, booleans and text); a map of more than 4 keys of one type becomes a wildcard (it serves `jsonb_each` and every named key); an array of objects becomes a group (the root of a document may be that array). A key in fewer than 1% of the documents, without a single shape, or a text whose values average more than 64 bytes (free text is no filter or group key) is left out. It refuses a table the caller cannot read and one with row-level security.
 
-An index with a `jsonb` column and no `paths` option (or `paths = 'auto'`) takes that answer at `CREATE INDEX`: the build reads the sample, writes the spec to the option as `auto: spec` (so the schema of the build, of its workers and of every later `REINDEX` is the same; `pg_dump` restores it as written) and says so in a NOTICE. Paths written by hand are never touched. When no key qualifies (an empty table, documents without a repeated scalar key) nothing is written and the column is refused as before; to read the documents again, `ALTER INDEX ... SET (paths = 'auto')` (or `RESET (paths)`) and `REINDEX` at once: as after any change of `paths` the index has no layout between the two, and a write to the table fails until the `REINDEX` (`col_paths_auto`).
+An index with a `jsonb` column and no `paths` option (or `paths = 'auto'`) takes that answer at `CREATE INDEX`: the build reads the sample, writes the spec to the option as `auto: spec` (so the build, its workers and every later `REINDEX` share one schema; `pg_dump` restores it as written) and says so in a NOTICE. Paths written by hand are never touched. When no key qualifies (an empty table, documents without a repeated scalar key) nothing is written and the column is refused. To read the documents again, `ALTER INDEX ... SET (paths = 'auto')` (or `RESET (paths)`) and `REINDEX` at once: as after any change of `paths` the index has no layout between the two, and a write to the table fails until the `REINDEX` (`col_paths_auto`).
 
 ## Output model (Dremel / DuckDB LIST)
 
@@ -97,18 +95,9 @@ incomplete or unrepresentable.
 | list position | an object / scalar (lax jsonpath would wrap it) | list `OVERFLOW` `SHAPE`, columns below flagged |
 | list over `max_elems` / `max_bytes` |  | the rest of the list is dropped, list `OVERFLOW` `TRUNC`, columns below flagged |
 
-**The type of an overflow value.** An `OVERFLOW` slot also keeps the JSON type of the value in `tag[i]` (`SIFT_COLTAG_STRING`, `NUMBER`,
-`BOOLEAN`, `OBJECT`, `ARRAY`: the event that delivered it, so a number out of range is a number and a string in a number column is a string).
-A leaf below the array that sits at an object position has `SIFT_COLTAG_NONE`: its path leads to no value, as for `->`. Where the leaf is not
-what the event delivered, and for what a writer cannot know (a heap column, a `sift_table` segment), the tag is `UNKNOWN` (0). The writers
-store the tags of the slots that overflow in the chunks of column format minor 4; `jsonb_typeof(path)` is
-answered from them (docs/COL-PLAN.md, "jsonb_typeof"). A `NULL` slot has `SIFT_COLTAG_JNULL` (7), a JSON null as against a missing key; the `VALUE`
-of an `ASTEXT` leaf has the tag of the value it was (`NUMBER`, `BOOLEAN`; a string and the other leaf types have 0); `ABSENT` has none.
+**The type of an overflow value.** An `OVERFLOW` slot also keeps the JSON type of the value in `tag[i]` (`SIFT_COLTAG_STRING`, `NUMBER`, `BOOLEAN`, `OBJECT`, `ARRAY`: the event that delivered it, so a number out of range is a number and a string in a number column is a string). A leaf below the array that sits at an object position has `SIFT_COLTAG_NONE`: its path leads to no value, as for `->`. Where the leaf is not what the event delivered, and for what a writer cannot know (a heap column, a `sift_table` segment), the tag is `UNKNOWN` (0). The writers store the tags of overflow slots in the chunks of column format minor 4; `jsonb_typeof(path)` is answered from them (docs/COL-PLAN.md, "jsonb_typeof"). A `NULL` slot has `SIFT_COLTAG_JNULL` (7), a JSON null as against a missing key; the `VALUE` of an `ASTEXT` leaf has the tag of the value it was (`NUMBER`, `BOOLEAN`; a string and the other leaf types have 0); `ABSENT` has none.
 
-A slot that is not `VALUE` has a zero value that means nothing: NULL is never a sentinel value, the states (or `state_bits`) say which
-slots are NULL, so a codec that takes the `int64` keys of a column plus a NULL bitmap needs nothing else from the shredder (integers
-are the keys as they are; floats are exact doubles for the engine's order keys; text is bytes for its dictionary; map key ids and
-the parent ordinals are plain integers, `end[]` is non-decreasing).
+A slot that is not `VALUE` has a zero value that means nothing: NULL is never a sentinel, the states (or `state_bits`) say which slots are NULL. A codec that takes the `int64` keys of a column plus a NULL bitmap needs nothing else from the shredder (integers are the keys as they are; floats are exact doubles for the engine's order keys; text is bytes for its dictionary; map key ids and parent ordinals are plain integers, `end[]` is non-decreasing).
 
 Negative zero is stored as `+0` (numeric has none), so no NaN and no `-0` is ever produced. Integer sums, `min`, `max`, `count` over
 `VALUE` slots are exact. Float aggregates equal plain SQL when the aggregator uses the same transition functions in the same
@@ -133,10 +122,7 @@ integers that are exact in the type.
 
 ## Memory
 
-A document never materializes: the jsonb iterator keeps one frame per nesting level, subtrees no declared path reaches are skipped
-without descending, and the output is bounded by `SiftShredLimits`: `max_elems` list elements per document (default 1 Mi) and
-`max_bytes` of text per document (default 16 MiB). The arrays of the `SiftShredDoc` are reused between documents and released when a
-document grew them past 64 Ki elements.
+A document never materializes: the jsonb iterator keeps one frame per nesting level, subtrees no declared path reaches are skipped, and output is bounded by `SiftShredLimits`: `max_elems` list elements per document (default 1 Mi) and `max_bytes` of text per document (default 16 MiB). The `SiftShredDoc` arrays are reused between documents and released when a document grew them past 64 Ki elements.
 
 ## C interface
 
@@ -164,31 +150,19 @@ void sift_shred_container(SiftShred *, JsonbContainer *);    /* one jsonb as the
 void sift_shred_group_range(doc, g, p, &lo, &hi);      void sift_shred_expand_parents(doc, g, parent);
 ```
 
-A driver contract: the keys of an object are unique; every value event follows a `key` that returned `TAKE` or `STOP`, or is an array
-element, or is the root; `leave` follows every `enter` that returned true. The shredder never reads ahead, so the events of a
-tuple can be wrapped by the caller: `sift_col` shreds the object `{attribute name: jsonb value, ...}` of a tuple (spec paths start
-with the index attribute name) with `begin`, `enter(object)`, `key(attname)`, `sift_shred_container(attribute's jsonb)`, `leave`,
-`finish`. A SQL NULL attribute is not sent (its columns stay `ABSENT`).
+Driver contract: object keys are unique; every value event follows a `key` that returned `TAKE` or `STOP`, or is an array element, or is the root; `leave` follows every `enter` that returned true. The shredder never reads ahead, so the caller can wrap a tuple's events: `sift_col` shreds the object `{attribute name: jsonb value, ...}` of a tuple (spec paths start with the index attribute name) with `begin`, `enter(object)`, `key(attname)`, `sift_shred_container(attribute's jsonb)`, `leave`, `finish`. A SQL NULL attribute is not sent (its columns stay `ABSENT`).
 
-The jsonb driver walks with `JsonbIteratorNext(skipNested)`: unwanted members are not entered, an object is left as soon as its last
-declared key was seen (`STOP`), a cut list stops the iteration. Numbers are rendered with `numeric_normalize` (no exponent, no
-trailing fraction zeros) only when the target is a numeric column (`wants_number`).
+The jsonb driver walks with `JsonbIteratorNext(skipNested)`: unwanted members are not entered, an object is left as soon as its last declared key was seen (`STOP`), a cut list stops the iteration. Numbers are rendered with `numeric_normalize` only when the target is a numeric column (`wants_number`).
 
 ## SIMD kernels
 
-`col/shred_kern_avx512.c` are bit-identical, dispatch through `sift_cpu_register` (`sift.simd`, registered by the first
-`sift_shred_create` or `sift_shred_init()`), `sift_shred_kernels_for(level)` for tests. Detection is at run time; the same library runs on
-any x86-64; on AArch64 `col/shred_kern_neon.c` is the NEON level (compiled in, nothing to detect); elsewhere the scalar table is used. Kernels: `state_counts` (histogram of the four states of a column),
-`state_bits` (the NULL and the overflow bitmaps of a column, for the engine's chunk header),
-`minmax_i64` / `minmax_f64` (zone map over the `VALUE` slots). The offsets to per-element parent ordinals (`sift_shred_expand_parents`)
-are the column table's `expand_parents`: one implementation for the shredder, the column scan
-and the aggregation executor. The parsing of a number is not dispatched: the digit runs are a few bytes, shorter than the cost of an
-indirect call.
+Dispatch goes through `sift_cpu_register` (`sift.simd`, registered by the first `sift_shred_create` or `sift_shred_init()`); `sift_shred_kernels_for(level)` is for tests. Detection is at run time, so one library runs on any x86-64. On AArch64 `col/shred_kern_neon.c` is the NEON level (compiled in, nothing to detect); elsewhere the scalar table is used.
+
+Kernels: `state_counts` (histogram of the four states of a column), `state_bits` (the NULL and overflow bitmaps of a column, for the engine's chunk header), `minmax_i64` / `minmax_f64` (zone map over the `VALUE` slots). The offsets to per-element parent ordinals (`sift_shred_expand_parents`) are the column table's `expand_parents`: one implementation for the shredder, the column scan and the aggregation executor. Number parsing is not dispatched: the digit runs are a few bytes, shorter than an indirect call.
 
 ## Measured
 
-`bench/bench shred`, one host (PostgreSQL 18, the testing build, `-march=x86-64` baseline with run-time dispatch), best of 3 rounds while
-other jobs were running on the machine: treat the figures as lower bounds and the ratios as indicative.
+`bench/bench shred`, one host (PostgreSQL 18, the testing build, `-march=x86-64` baseline with run-time dispatch), best of 3 rounds with other jobs running: the figures are lower bounds, the ratios indicative.
 
 | workload | shredder | plain SQL |
 |---|---|---|
@@ -206,8 +180,7 @@ Kernels, 10^9 elements/s, scalar / AVX2 / AVX-512, 4096 elements (cache) and 4 M
 | `minmax_f64` | 0.66 / 6.5 / 8.3 | 0.55 / 2.0 / 1.1 |
 | `expand_parents` (runs of 4; now `SiftColKernels.expand_parents`) | 2.46 / 2.24 / 3.04 | 2.37 / 2.27 / 1.32 |
 
-`expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast
-or faster than AVX-512 (memory bound on this host).
+`expand_parents` gains nothing from vectors on runs shorter than a register; on a column that does not fit the cache, AVX2 is as fast or faster than AVX-512 (memory bound on this host).
 
 On AArch64 (clang `-O2`, one thread, best of 300 batches and of three runs), 10^9 elements/s, scalar / NEON:
 
@@ -218,18 +191,11 @@ On AArch64 (clang `-O2`, one thread, best of 300 batches and of three runs), 10^
 | `minmax_i64` | 1.5 / 2.3 | 1.4 / 2.2 |
 | `minmax_f64` | 0.82 / 3.6 | 0.78 / 3.5 |
 
-The NEON kernels count with byte compares (a byte lane takes 255 vectors before it is added up), build the bitmaps with the pairwise-add
-movemask of `core/neon.h`, and select the `VALUE` lanes of the min / max with `BSL` (`FMIN`/`FMAX` for the doubles, which are never NaN; the
-integers compare and select, NEON has no 64-bit min).
+The NEON kernels count with byte compares (a byte lane takes 255 vectors before it is added up), build bitmaps with the pairwise-add movemask of `core/neon.h`, and select `VALUE` lanes of min / max with `BSL` (`FMIN`/`FMAX` for doubles, never NaN; integers compare and select, NEON has no 64-bit min).
 
 ### Arrays of objects, dynamic keys and nested objects (3.1)
 
-Historical 3.1 baseline: 100,000 synthetic documents (387,593 elements: `items[]{kind,sub,flag,score}`, `scores.*` with 2 to 7 of 20 dynamic keys,
-`attrs{channel, nested.a.b, tags[], mixed}`), PostgreSQL 18.6, one backend (`max_parallel_workers_per_gather = 0`), best of 5, warm, a busy host: the
-ratios are the finding. `bench/sql/jsonb/` has the generator, the index (`paths = 'attrs->channel text, attrs.nested.a.b int4, attrs.tags[] text,
-scores.* float8, items[]{kind text, sub text, flag text, score float8}'`) and the queries `j01` to `j23`; each query runs with `sift.enable_agg` on and off
-(the rows are equal), `index_typeof.sql` adds `attrs.mixed float8` for j16, and `bench/sql/jsonb/rollup/` measures the element rollups
-([COL-PREAGG.md](COL-PREAGG.md)).
+Historical 3.1 baseline: 100,000 synthetic documents (387,593 elements: `items[]{kind,sub,flag,score}`, `scores.*` with 2 to 7 of 20 dynamic keys, `attrs{channel, nested.a.b, tags[], mixed}`), PostgreSQL 18.6, one backend (`max_parallel_workers_per_gather = 0`), best of 5, warm, a busy host: the ratios are the finding. `bench/sql/jsonb/` has the generator, the index (`paths = 'attrs->channel text, attrs.nested.a.b int4, attrs.tags[] text, scores.* float8, items[]{kind text, sub text, flag text, score float8}'`) and the queries `j01` to `j23`; each runs with `sift.enable_agg` on and off (equal rows). `index_typeof.sql` adds `attrs.mixed float8` for j16, and `bench/sql/jsonb/rollup/` measures the element rollups ([COL-PREAGG.md](COL-PREAGG.md)).
 
 |  | size | build |
 |---|---:|---:|
@@ -259,33 +225,17 @@ scores.* float8, items[]{kind text, sub text, flag text, score float8}'`) and th
 | j17 | two keys, `HAVING count(*) > 100` | 233 | 5.1 |
 | j18 | element keys joined to a lookup table | 317 | 9.1 |
 
-The pushed shapes are 10 to 100 times faster than the normal plan. Against GIN on containment: 9 times at 10% of the documents (j06), level when the match is
-selective (three conditions: GIN 8.0, sift 8.7 ms), the case where GIN stays useful. ClickHouse `Array(Tuple(kind, sub, flag, score))` from the same documents
-(`clickhouse-local`, 2 threads) answers j01 to j04 in 0.6 to 0.8 ms, 4 to 6 times faster than `SiftAgg`: the gap is the per-tuple selection (80% of 88
-instructions per element in j01), not the decoding. Strings among the numbers (`strs = 0.05` of `gen.sql`) raise the overflow error of the pushdown for the aggregates
-that read a numeric path, except for the type filters of j16 (33 times faster than the normal plan at 1,000,000 documents: 396 against 11.9 ms).
+The pushed shapes are 10 to 100 times faster than the normal plan. Against GIN on containment: 9 times faster at 10% of the documents (j06), level when the match is selective (three conditions: GIN 8.0, sift 8.7 ms), where GIN stays useful. ClickHouse `Array(Tuple(kind, sub, flag, score))` from the same documents (`clickhouse-local`, 2 threads) answers j01 to j04 in 0.6 to 0.8 ms, 4 to 6 times faster than `SiftAgg`: the gap is the per-tuple selection (80% of 88 instructions per element in j01), not the decoding. Strings among the numbers (`strs = 0.05` of `gen.sql`) raise the overflow error of the pushdown for the aggregates that read a numeric path, except for the type filters of j16 (33 times faster than the normal plan at 1,000,000 documents: 396 against 11.9 ms).
 
 ## Integration notes
 
-- `expand_parents` is the column table's. `state_counts`, `state_bits` and `minmax_*` overlap with the engine's kernels only in what
-  they compute: they work on the shredder's `state` bytes before the engine has bitmaps. The composition from the generic kernels is
-  measured by `tools/kernels` (`make bench-shred`) as `sift_colk->range[SIFT_COLW_8]` on the bytes (`state_bits`: `range(state, VALUE + 1,
-  254)` for the NULL bitmap, `range(state, OVERFLOW, 0)` for the overflow one; `state_counts`: a range and a `bits_count` per state) and
-  `SiftAggKernels.minmax_*` under the bitmap of the `VALUE` slots, against the fused kernel. The ratios (composition / fused, 4096
-  scalar level for every kernel (`state_counts` on a column of `VALUE`s 6x, `minmax_f64` 2.1x, `minmax_i64` 1.5x, `state_bits` 1.09x), at
-  AVX2 for `state_bits`, `state_counts` and `minmax_f64` (1.5x, 1.4x, 1.14x) and at AVX-512 for `minmax_f64` (1.26x), and it needs the
-  value arrays to have `SIFT_AGG_PAD` readable bytes behind them (the shredder's arrays do not promise it), so the fused kernels stay.
-  The composition wins at AVX-512 for `state_bits` and `state_counts` (0.7x at 4096 elements) and for `minmax_i64` at AVX2 and AVX-512
-  at 4 Mi elements; a level that is better composed does not make the scalar level's loss go away, and a table that mixes the two would
-  keep both implementations. When the adapter has bitmaps anyway (`state_bits`), the engine's `minmax_*` apply as they are. The AVX2
-  `minmax_i64` here is the weak one (a single dependency chain): the aggregation kernel's four accumulator pairs would make it 1.8x faster.
+- `expand_parents` is the column table's. `state_counts`, `state_bits` and `minmax_*` overlap with the engine's kernels only in what they compute: they work on the shredder's `state` bytes before the engine has bitmaps.
+- Why the fused kernels stay: the composition from the generic kernels (measured by `tools/kernels`, `make bench-shred`, as `sift_colk->range[SIFT_COLW_8]` on the bytes (`state_bits`: `range(state, VALUE + 1, 254)` for the NULL bitmap, `range(state, OVERFLOW, 0)` for the overflow one; `state_counts`: a range and a `bits_count` per state) and `SiftAggKernels.minmax_*` under the bitmap of the `VALUE` slots) is compared with the fused kernel.
+  - The composition loses by more than 3 % at the scalar level for every kernel (`state_counts` on a column of `VALUE`s 6x, `minmax_f64` 2.1x, `minmax_i64` 1.5x, `state_bits` 1.09x), at AVX2 for `state_bits`, `state_counts` and `minmax_f64` (1.5x, 1.4x, 1.14x) and at AVX-512 for `minmax_f64` (1.26x); it also needs the value arrays to have `SIFT_AGG_PAD` readable bytes behind them (the shredder's arrays do not promise it).
+  - It wins at AVX-512 for `state_bits` and `state_counts` (0.7x at 4096 elements) and for `minmax_i64` at AVX2 and AVX-512 at 4 Mi elements; a level that is better composed does not make the scalar level's loss go away, and a table that mixes the two would keep both implementations.
+  - When the adapter has bitmaps anyway (`state_bits`), the engine's `minmax_*` apply as they are. The AVX2 `minmax_i64` here is the weak one (a single dependency chain): the aggregation kernel's four accumulator pairs would make it 1.8x faster.
 - Each module that owns a dispatch table registers one rebind with `sift_cpu_register` (`SIFT_MAX_REBINDS` is 8).
 
 ## Tests
 
-`sift._test_shred(jsonb, spec)` (testing build) returns one row per slot and per list; `test/sql/shred_*.sql` cover the grammar and the
-errors (`shred_spec`), the edge cases (`shred_values`: absent versus null, empty arrays, mixed types, nesting, huge numbers, unicode,
-duplicate keys, limits), a differential test on random documents (`shred_diff`: a plpgsql oracle over `jsonb_each`,
-`jsonb_array_elements` and the jsonb casts for every slot of clean and dirty documents; `jsonb_to_recordset`, `jsonb_path_query` and
-SQL aggregates for the clean ones; the kernel summaries against SQL aggregates) and the SIMD levels against scalar (`shred_kernels`).
-`bench/bench shred` measures documents per second (`bench/steps/shred.sh`, `bench/sql/shred.sql`).
+`sift._test_shred(jsonb, spec)` (testing build) returns one row per slot and per list. `test/sql/shred_*.sql` cover the grammar and the errors (`shred_spec`), the edge cases (`shred_values`: absent versus null, empty arrays, mixed types, nesting, huge numbers, unicode, duplicate keys, limits), a differential test on random documents (`shred_diff`: a plpgsql oracle over `jsonb_each`, `jsonb_array_elements` and the jsonb casts for every slot of clean and dirty documents; `jsonb_to_recordset`, `jsonb_path_query` and SQL aggregates for the clean ones; the kernel summaries against SQL aggregates) and the SIMD levels against scalar (`shred_kernels`). `bench/bench shred` measures documents per second (`bench/steps/shred.sh`, `bench/sql/shred.sql`).
