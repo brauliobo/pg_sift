@@ -3,6 +3,7 @@
 # from the verdict another backend made; two backends that plan the same new statement at once (one held at the gate between its lookup and its plan
 # in full) both succeed and leave one consistent entry, with the same plan; the table does not outlive a crash restart; a hot standby shares it among its
 # backends; the setting at 0 is the off switch. (A table that cannot be had is test/sql/agg_cte_verdict_cache.sql.)
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "$(dirname "$0")/lib.bash"
 
 plan 12
