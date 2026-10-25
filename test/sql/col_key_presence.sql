@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-SET statement_timeout = '60s';
+SET statement_timeout = '240s';
 
 -- 60,000 rows in about 8 units of 7,500 rows. k: 3,000 values scattered over every unit; kn: 1,500 values from -700, NULL for every 7th row; s: an int2 from -250;
 -- d: a date; ts: ascending with id (a window covers the middle units whole and cuts two); g: 5 groups; big: sparse values (no bitmap fits 3% of the unit)

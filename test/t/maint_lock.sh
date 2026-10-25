@@ -30,7 +30,7 @@ rc=$?
 secs=$((SECONDS - t0))
 diag "insert took $secs s, $(grep wait_ms "$(dir lock)/insert.out")"
 check "the insert of a hundred segments succeeds while the worker sleeps" test "$rc" == 0
-check "it does not wait for the merge (under 15 s of 20)" test "$secs" -lt 15
+# the wall time of the insert is the load of the runner (17 s of ASan lanes, wait_ms 0, in run 40201141496): what shows it did not wait for the merge is the server's own wait below
 check "no wait for the maintenance of others over 5 s" test "$(sed -n 's/^wait_ms //p' "$(dir lock)/insert.out")" -lt 5000
 
 sql lock "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'" >/dev/null
