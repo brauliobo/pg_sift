@@ -79,15 +79,21 @@ expect_rows() { # DESCRIPTION SQL WANT
 	if ((RC == 0)) && [[ $OUT == "$3" ]]; then pass "$1"; else fail "$1 (rc $RC, got [$OUT], want [$3], error [$ERR])"; fi
 }
 
-check() { # DATADIR PORT SOCKDIR
-	local data=$1 port=$2 sock=$3 root share lib log opts
-	root=$(build) || exit $?
+# old_start ROOT DATA PORT SOCKDIR LOG: the server on the files of DATA with the library of the older release in ROOT; OLD_PSQL is its client. 1 and the end of its log when it does not start
+old_start() {
+	local root=$1 data=$2 port=$3 sock=$4 log=$5 share lib opts
 	share=$root$(pg_config --sharedir)
 	lib=$root$(pg_config --pkglibdir)
-	log=$(dirname "$data")/old-lib.log
 	opts="-c port=$port -c listen_addresses='' -c unix_socket_directories='$sock' -c 'extension_control_path=$share:\$system' -c 'dynamic_library_path=$lib:\$libdir'"
-	pg_ctl -D "$data" -l "$log" -o "$opts" -w -t 120 start >/dev/null 2>&1 || { tail -20 "$log" >&2; fail "the server with the older library starts"; return; }
+	pg_ctl -D "$data" -l "$log" -o "$opts" -w -t 120 start >/dev/null 2>&1 || { tail -20 "$log" >&2; return 1; }
 	OLD_PSQL=(psql -X -At -q -h "$sock" -p "$port" -U postgres -d postgres -v ON_ERROR_STOP=1)
+}
+
+check() { # DATADIR PORT SOCKDIR
+	local data=$1 port=$2 sock=$3 root log
+	root=$(build) || exit $?
+	log=$(dirname "$data")/old-lib.log
+	old_start "$root" "$data" "$port" "$sock" "$log" || { fail "the server with the older library starts"; return; }
 	checks "$log"
 	pg_ctl -D "$data" -m fast -w stop >/dev/null 2>&1 || pg_ctl -D "$data" -m immediate stop >/dev/null 2>&1
 }
@@ -151,7 +157,7 @@ run() {
 # the older library under pressure (the release build has no lowered directory: 3.0.1 tags a write buffer once the directory of 128 entries is half
 # full, so the load is about 130 MB in write buffers of 2 MB), then this tree on the same files
 upgrade() {
-	local root share lib log opts rows=${UP_ROWS:-150000} want
+	local root log rows=${UP_ROWS:-150000} want
 	want="$rows:$((rows * (rows + 1) / 2))"
 	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-upgrade}
 	export SIFT_PORT=${SIFT_PORT:-56140}
@@ -159,12 +165,8 @@ upgrade() {
 	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
 	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
 	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
-	share=$root$(pg_config --sharedir)
-	lib=$root$(pg_config --pkglibdir)
 	log=$SIFT_TMP/old-lib-upgrade.log
-	opts="-c port=$SIFT_PORT -c listen_addresses='' -c unix_socket_directories='$SIFT_TMP/sock' -c 'extension_control_path=$share:\$system' -c 'dynamic_library_path=$lib:\$libdir'"
-	pg_ctl -D "$SIFT_TMP/data" -l "$log" -o "$opts" -w -t 120 start >/dev/null 2>&1 || { tail -20 "$log" >&2; fail "the server with the older library starts"; return; }
-	OLD_PSQL=(psql -X -At -q -h "$SIFT_TMP/sock" -p "$SIFT_PORT" -U postgres -d postgres -v ON_ERROR_STOP=1)
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
 	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" -c "SET sift.table_write_buffer_limit = 2048" -c "CREATE TABLE up_c (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
 		-c "CREATE TABLE up_a (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" -c "BEGIN" \
 		-c "INSERT INTO up_c SELECT g, repeat('x', 1000) || g FROM generate_series(1, $rows) g" -c "COMMIT" -c "BEGIN" \
