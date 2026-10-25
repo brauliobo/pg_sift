@@ -530,13 +530,18 @@ def render_latest(p):
     return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
 
 
+# a cast of a jsonb path that raises on a jsonb null, in a condition of the outer rows next to a condition on the sub-select: PostgreSQL may test the sub-select first and never
+# reach the cast, or the reverse (a join order), so the error is not the plan's to reproduce
+CAST_PATH = re.compile(r"metrics ->>? '\w+'\)::")
+
+
 def gen_decor(r, ctx):
     tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
     return dict(form=r.choice(['lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma', 'select', 'where']), tie=tie,
                 groups=r.sample(['f.kind', 'f.grp', 'f.flag', 'f.ts', 'f.a % 10', 'f.parent_id', 'f.grp % 4'], r.randrange(0, 3)), having=r.choice(['', '', 'count(*) > 1', 'min(f.amount) < 50']), aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
                                                                                       'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
                                                                                       'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
-                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), pick=r.randrange(4, 12),
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=[o for o in preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)) if CAST_PATH.search(o) is None], pick=r.randrange(4, 12),
                 test=r.choice(['', 'IS NULL', 'IS NOT NULL', '> 100', '= 0', 'IS NULL OR {c} > 100']), total=r.random() < 0.3)
 
 
