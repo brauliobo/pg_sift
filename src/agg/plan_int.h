@@ -395,6 +395,7 @@ extern double elems_of(AggCtx *c, int grp);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern double in_list_table_bytes(AggCtx *c, const SiftAggPred *p);
+extern double in_list_test_ns(AggCtx *c, const SiftAggPred *p);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);

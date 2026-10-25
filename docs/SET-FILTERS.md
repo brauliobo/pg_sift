@@ -65,6 +65,7 @@ keys per key column, generic plan, normal plan / pushed plan:
 | `text` | 18.4 / 24.0 ms | 28.7 / 29.6 ms | 45.7 / 27.4 ms | PostgreSQL evaluates `= ANY` once per distinct value, with a hash table of the array |
 | `uuid`, `bytea` |  |  |  | not supported: `CREATE INDEX ... USING sift_col` refuses these columns |
 
+- The planner prices the test of the list by the table that makes it: 1 ns a row for a byte table in the cache, 2 for a bit table, 10 for a byte table wider than the cache and 5 (200 values) to 10 (1,000) for a hash table of spread values, so a short list over a wide key keeps the btree plan that reads its few rows (a scan of 1,000,000 rows takes 8 to 11 ms for 300 to 1,000 spread values, the btree plan under 1 ms).
 - Integer, `int8` and date keys cost 3 to 6 ms at any size (a byte table: one byte read per row); `timestamp(tz)` 16 to 19 ms (a hash probe per row).
 - Before 3.2 an `int8`, `text` or `timestamp` key searched the array linearly for each distinct value of the column: 355 ms for 1,000 `int8` keys and
   3,099 ms for 1,000 `text` keys (1,664 and 18,403 ms for 5,000), 20 to 450 times slower than the normal plan.

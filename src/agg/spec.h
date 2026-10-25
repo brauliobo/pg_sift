@@ -761,6 +761,7 @@ extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 /* the bytes the scan allocates and clears to test an IN list of nv values over a range of span values (agg/pred_in.c; 0: a hash table), for the cost */
 extern double sift_agg_in_table_bytes(uint64 span, int nv);
+extern double sift_agg_in_test_ns(uint64 span, int nv);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 

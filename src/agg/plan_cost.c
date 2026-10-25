@@ -78,6 +78,8 @@
 #define AGG_SPARSE_MAX		0.125	/* the share of the rows a unit keeps up to which its leaves are decoded at the kept rows only */
 #define AGG_SPARSE_LEAF		1.5		/* a leaf read at the kept rows costs this many times the share of the rows it reads (the positions are gathered) */
 #define AGG_FILTER_VALUE	0.5		/* a predicate on a value */
+#define AGG_OP_NS			3.0		/* the nanoseconds an operator is counted at (AGG_SCAN_SPEED takes the share the scan really spends) */
+#define AGG_IN_TEST_BASE	1.0		/* the nanoseconds a row costs the test of a list in the cache, which AGG_FILTER_VALUE already counts */
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
 #define AGG_KEY_ROW			1.0		/* a group key id */
@@ -1494,6 +1496,20 @@ wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
 	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
 }
 
+/* The nanoseconds a row costs the tests of the IN lists of the predicate p beyond a small table in the cache: a list of spread values is a hash or bit table */
+static double
+in_tests_ns(AggCtx *c, const SiftAggPred *p)
+{
+	double		ns = 0;
+
+	if (p->kind == SAP_AND || p->kind == SAP_OR)
+		for (int i = 0; i < p->nchild; i++)
+			ns += in_tests_ns(c, p->child[i]);
+	else
+		ns = Max(in_list_test_ns(c, p) - AGG_IN_TEST_BASE, 0);
+	return ns;
+}
+
 /*
  * A key read as dictionary codes gives an id to every entry of the dictionary of each unit read, whether a row that passes the filters holds it
  * or not: a near-unique text column mapped over the units the zones leave costs its rows in entries, and the table of ids outgrows the groups
@@ -1551,6 +1567,8 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			(leaf_filtered(s, s->leaves[i]) ? 1.0 : sparse);
 	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
+	for (int i = 0; i < s->npred; i++)
+		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED);
 	for (int i = 0; i < s->nvleaf; i++)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);
