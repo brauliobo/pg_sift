@@ -159,15 +159,7 @@ jobs:
       # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
       - name: PGDG repository
         run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
-            sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
-          # the tests start their own clusters: no default cluster, no service on 5432
-          sudo apt-get install -y postgresql-common
-          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+          scripts/pgdg-repo.sh
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git && !matrix.cassert }}

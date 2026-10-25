@@ -95,14 +95,7 @@ jobs:
           finish_phase() { echo "dependencies $(( $(date +%s) - started ))" >> "$ARTIFACTS/workflow-phases.txt"; }
           trap finish_phase EXIT
           exec > >(tee "$ARTIFACTS/dependencies.log") 2>&1
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
-            sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
-          sudo apt-get install -y postgresql-common
-          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
+          scripts/pgdg-repo.sh
           sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev build-essential python3
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
 
