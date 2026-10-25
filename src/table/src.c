@@ -550,7 +550,7 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 			break;
 		case SCV_CODE:
 			memcpy(b->data, v.codes, n * sizeof(uint32));
-			t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes};
+			t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes, v.dict->order, v.dict->octx};
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
