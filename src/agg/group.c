@@ -89,6 +89,9 @@ float_key(double d)
 	return bits;
 }
 
+/* tuples ahead whose slot of a group or value table is prefetched: the tables outgrow the cache at millions of groups */
+#define GROUP_AHEAD 16
+
 AggAcc *
 acc_alloc(AggExec *ex, uint32 cap)
 {
@@ -108,6 +111,7 @@ acc_alloc(AggExec *ex, uint32 cap)
 			case SAA_SUM_NUM:
 			case SAA_AVG_NUM:
 				a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+				a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
 				a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
 				break;
 			case SAA_MIN:
@@ -135,6 +139,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 				break;
 			case SAA_X_SUM:
 			case SAA_X_AVG:
+				if (ex->lane_serial && ex->spec->agg[i].restype == FLOAT8OID)
+					a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
 				if (ex->spec->agg[i].restype == NUMERICOID)
 				{
 					a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
@@ -167,6 +173,8 @@ acc_alloc(AggExec *ex, uint32 cap)
 			default:
 				break;
 		}
+		if (ex->lanes && sift_aggkind_float_sum(&ex->spec->agg[i]))
+			a[i].lv = MemoryContextAllocZero(ex->tcxt, SIFT_AGG_LANES * sizeof(double *));
 	}
 	return a;
 }
@@ -176,8 +184,11 @@ acc_free(AggAcc *a, int naggs)
 {
 	for (int i = 0; i < naggs; i++)
 	{
-		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf, a[i].dt};
+		void	   *col[] = {a[i].n, a[i].i, a[i].w, a[i].d, a[i].v, a[i].r, a[i].last, a[i].nf, a[i].dt, a[i].lv};
 
+		for (int l = 0; a[i].lv && l < SIFT_AGG_LANES; l++)
+			if (a[i].lv[l])
+				pfree(a[i].lv[l]);
 		for (int c = 0; c < lengthof(col); c++)
 			if (col[c])
 				pfree(col[c]);
@@ -192,7 +203,41 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	AggAcc	   *na = acc_alloc(ex, newcap);
 	int64	   *nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
 
-	for (uint32 g = 0; g < oldcap; g++)
+	/* the groups keep their numbers: copy the arrays whole, an unseen slot holds what a new one does */
+	if (remap == NULL)
+	{
+		memcpy(nseen, ex->seen, oldcap * sizeof(int64));
+		for (int i = 0; i < ex->spec->naggs; i++)
+		{
+			AggAcc	   *o = &ex->acc[i],
+					   *n = &na[i];
+
+			memcpy(n->n, o->n, oldcap * sizeof(int64));
+			if (o->i)
+				memcpy(n->i, o->i, oldcap * sizeof(int64));
+			if (o->w)
+				memcpy(n->w, o->w, oldcap * sizeof(sift_i128));
+			if (o->d)
+				memcpy(n->d, o->d, oldcap * sizeof(double));
+			if (o->dt)
+				memcpy(n->dt, o->dt, oldcap * sizeof(double));
+			if (o->last)
+				memcpy(n->last, o->last, oldcap * sizeof(uint64));
+			if (o->nf)
+				memcpy(n->nf, o->nf, oldcap * sizeof(uint8));
+			if (o->v)
+				memcpy(n->v, o->v, oldcap * sizeof(Datum));
+			if (o->r)
+				memcpy(n->r, o->r, oldcap * sizeof(Datum));
+			for (int l = 0; o->lv && l < SIFT_AGG_LANES; l++)
+				if (o->lv[l])
+				{
+					n->lv[l] = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
+					memcpy(n->lv[l], o->lv[l], oldcap * sizeof(double));
+				}
+		}
+	}
+	for (uint32 g = 0; remap && g < oldcap; g++)
 	{
 		uint32		t = remap ? remap[g] : g;
 
@@ -218,6 +263,13 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 			}
 			if (o->dt)
 				n->dt[t] = o->dt[g];
+			for (int l = 0; o->lv && l < SIFT_AGG_LANES; l++)
+				if (o->lv[l])
+				{
+					if (n->lv[l] == NULL)
+						n->lv[l] = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
+					n->lv[l][t] = o->lv[l][g];
+				}
 			if (o->last)
 				n->last[t] = o->last[g];
 			if (o->nf)
@@ -400,8 +452,13 @@ direct_grow(AggExec *ex)
 	}
 	else
 	{
+		bool		same = true;
+
 		direct_layout(ex);
-		for (uint32 g = 0; g < oldcap; g++)
+		/* only the last key grew: every group keeps its number */
+		for (int j = 0; j < nk - 1; j++)
+			same &= ex->ks[j].cap == oldcaps[j];
+		for (uint32 g = 0; !same && g < oldcap; g++)
 		{
 			uint64		t = 0;
 
@@ -409,7 +466,7 @@ direct_grow(AggExec *ex)
 				t += (uint64) ((g / oldmult[j]) % oldcaps[j]) * ex->ks[j].mult;
 			remap[g] = (uint32) t;
 		}
-		groups_resize(ex, (uint32) total, remap, oldcap);
+		groups_resize(ex, (uint32) total, same ? NULL : remap, oldcap);
 	}
 	pfree(remap);
 }
@@ -427,6 +484,7 @@ ident_add(AggExec *ex, KeyState *k, int64 v)
 	k->idval[k->nident++] = v;
 	return k->nident;
 }
+
 
 static inline uint32
 wide_hash(int64 v, uint32 cap)
@@ -488,8 +546,9 @@ ident_go_wide(AggExec *ex, KeyState *k)
 {
 	uint32		n = k->nident;
 
+	/* a table after a spill starts with room for the keys of the one written, as its group arrays do (spill_keep) */
 	k->wcap = 1024;
-	while (k->wcap < 4 * n)
+	while (k->wcap < 4 * Max(n, spill_keep(ex)))
 		k->wcap *= 2;
 	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
@@ -513,11 +572,11 @@ key_range_fill(void *arg, int32 v, void *entry)
 		*(uint32 *) entry = key_value_id(f->ex, f->ki, leaf_datum(k->param->paramtype, v), false);
 }
 
-/* the id of a bucket of a timestamp key: the key's expression of the bucket's first microsecond (an infinity is a bucket of its own) */
+/* the id of a bucket of a timestamp key: the key's expression of the bucket's first microsecond, or an instant of a step of the zone's clock (an infinity is a bucket of its own) */
 static uint32
 bucket_id(AggExec *ex, KeyState *k, int64 bucket)
 {
-	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : bucket * k->bucket;
+	int64		us = bucket == PG_INT64_MAX || bucket == PG_INT64_MIN ? bucket : k->zcut ? k->witness : k->zone ? zone_instant(k->zone, bucket, k->bucket) : bucket * k->bucket;
 
 	return key_value_id(ex, (int) (k - ex->ks), Int64GetDatum(us), false);
 }
@@ -539,10 +598,11 @@ bucket_floor(int64 v, const int64 us)
 /*
  * The bucket numbers of the selected rows as int32 (a NULL row gets 0) and their range; false: an infinity or a range a table
  * cannot hold is among them. us is a constant at each call, so the division is an unsigned multiplication: adding a multiple of us
- * above 2^63 makes every timestamp positive, and the same multiple of buckets comes off the quotient.
+ * above 2^63 makes every timestamp positive, and the same multiple of buckets comes off the quotient. shift: the offset of the zone's clock (a valid timestamp
+ * is days short of the limits of int64, so the sum cannot overflow).
  */
 static pg_attribute_always_inline bool
-bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, const uint64 us, int32 *mn, int32 *mx)
+bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, const uint64 us, const int64 shift, int32 *mn, int32 *mx)
 {
 	const int64 *data = v->data;
 	const uint8 *isnull = v->isnull;
@@ -562,7 +622,7 @@ bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, co
 		}
 		lo = Min(lo, d);
 		hi = Max(hi, d);
-		out[i] = (uint32) (((uint64) d + off) / us - off_buckets);
+		out[i] = (uint32) (((uint64) (d + shift) + off) / us - off_buckets);
 	}
 	if (lo > hi)
 	{
@@ -571,11 +631,110 @@ bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, co
 	}
 	if (lo == PG_INT64_MIN || hi == PG_INT64_MAX)
 		return false;
-	lo = bucket_floor(lo, us);
-	hi = bucket_floor(hi, us);
+	lo = bucket_floor(lo + shift, us);
+	hi = bucket_floor(hi + shift, us);
 	*mn = (int32) lo;
 	*mx = (int32) hi;
 	return lo >= PG_INT32_MIN && hi <= PG_INT32_MAX && hi - lo < MAX_RANGE;
+}
+
+/* the zone's pieces cover the selected rows that are not an infinity or NULL (false: there are none) */
+static bool
+zone_rows(ZoneOff *z, const SiftSrcVec *v, const uint32 *idx, int nsel)
+{
+	const int64 *data = v->data;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]];
+
+		if ((v->isnull && v->isnull[idx[i]]) || d == PG_INT64_MAX || d == PG_INT64_MIN)
+			continue;
+		lo = Min(lo, d);
+		hi = Max(hi, d);
+	}
+	if (lo > hi)
+		return false;
+	zone_cover(z, lo, hi);
+	return true;
+}
+
+/*
+ * bucket_numbers for a key on the zone's clock: one piece of constant offset over the rows is a shift of the vector kernel, several are a lookup of the piece of each row.
+ * False as bucket_numbers: an infinity or a range a table cannot hold is among the rows.
+ */
+static bool
+bucket_numbers_zoned(KeyState *k, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, int32 *mn, int32 *mx)
+{
+	ZoneOff    *z = k->zone;
+	const int64 *data = v->data;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN,
+				us = k->bucket,
+				shift;
+	int64		blo = PG_INT64_MAX,
+				bhi = PG_INT64_MIN;
+	bool		inf = false;
+
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		d = data[idx[i]];
+
+		if (v->isnull && v->isnull[idx[i]])
+			continue;
+		inf |= d == PG_INT64_MAX || d == PG_INT64_MIN;
+		if (!inf)
+		{
+			lo = Min(lo, d);
+			hi = Max(hi, d);
+		}
+	}
+	if (inf)
+		return false;
+	if (lo > hi)
+	{
+		for (int i = 0; i < nsel; i++)
+			out[i] = 0;
+		*mn = *mx = 0;
+		return true;
+	}
+	zone_cover(z, lo, hi);
+	if (zone_piece(z, lo) == zone_piece(z, hi))
+	{
+		shift = z->off[zone_piece(z, lo)];
+		switch (us)
+		{
+			case USECS_PER_SEC:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC, shift, mn, mx);
+			case USECS_PER_SEC * 60:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC * 60, shift, mn, mx);
+			case USECS_PER_HOUR:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_HOUR, shift, mn, mx);
+			case USECS_PER_DAY:
+				return bucket_numbers(v, idx, nsel, out, USECS_PER_DAY, shift, mn, mx);
+			default:
+				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) us);
+		}
+	}
+	for (int i = 0; i < nsel; i++)
+	{
+		int64		b;
+
+		if (v->isnull && v->isnull[idx[i]])
+		{
+			out[i] = 0;
+			continue;
+		}
+		b = zone_bucket(z, data[idx[i]], us);
+		blo = Min(blo, b);
+		bhi = Max(bhi, b);
+		out[i] = (uint32) b;
+	}
+	*mn = (int32) blo;
+	*mx = (int32) bhi;
+	return blo >= PG_INT32_MIN && bhi <= PG_INT32_MAX && bhi - blo < MAX_RANGE;
 }
 
 /* the key ids of the selected rows by the hash table of bucket numbers: infinities and wide ranges */
@@ -586,10 +745,12 @@ bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx
 	int64		last = 0;
 	uint32		lastid = 0;
 
+	if (k->zone)
+		zone_rows(k->zone, v, idx, nsel);
 	for (int i = 0; i < nsel; i++)
 	{
 		int64		d = data[idx[i]],
-					b = d == PG_INT64_MAX || d == PG_INT64_MIN ? d : bucket_floor(d, k->bucket);
+					b = d == PG_INT64_MAX || d == PG_INT64_MIN ? d : k->zcut ? zone_cut(k->zone, d, k->bucket) : k->zone ? zone_bucket(k->zone, d, k->bucket) : bucket_floor(d, k->bucket);
 
 		if (v->isnull && v->isnull[idx[i]])
 			ids[i] = 0;			/* every function of a bucket key is strict: the key of a NULL is NULL */
@@ -597,6 +758,7 @@ bucket_hash_ids(AggExec *ex, KeyState *k, const SiftSrcVec *v, const uint32 *idx
 		{
 			if (b != last || lastid == 0)
 			{
+				k->witness = d;
 				lastid = ident_wide_id(ex, k, b);
 				last = b;
 			}
@@ -650,23 +812,32 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 				mx;
 	bool		table;
 
-	switch (k->bucket)
-	{
-		case USECS_PER_SEC:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, &mn, &mx);
-			break;
-		case USECS_PER_SEC * 60:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, &mn, &mx);
-			break;
-		case USECS_PER_HOUR:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, &mn, &mx);
-			break;
-		case USECS_PER_DAY:
-			table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, &mn, &mx);
-			break;
-		default:
-			SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
-	}
+	mn = mx = 0;
+	if (k->zcut)
+		table = false;
+	else if (k->zone)
+		table = bucket_numbers_zoned(k, v, idx, nsel, vals_out, &mn, &mx);
+	else
+		switch (k->bucket)
+		{
+			case USECS_PER_SEC:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, 0, &mn, &mx);
+				break;
+			case USECS_PER_SEC * 60:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, 0, &mn, &mx);
+				break;
+			case USECS_PER_HOUR:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, 0, &mn, &mx);
+				break;
+			case USECS_PER_DAY:
+				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, 0, &mn, &mx);
+				break;
+			case 1:				/* each value is a step of its own (init.c): the hash table of values */
+				table = false;
+				break;
+			default:
+				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
+		}
 	if (!table || rt_span(&k->rt, mn, mx) > MAX_RANGE)
 	{
 		bucket_hash_ids(ex, k, v, idx, nsel, vals_out);
@@ -778,6 +949,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 
 		if (v->isnull && key_nulls(ex, ki, v->isnull, idx, nsel))
 			key_nulls_set(ex, ki, nsel, vals_out, v->dict->n);
+		kmap_fill(ex, map, v->dict, ki, vals_out, nsel);
 		*map_out = map;
 		*base_out = 0;
 	}
@@ -799,7 +971,16 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 		if (!key_cover(ex, ki, any, mn, mx, nsel))
 		{
 			for (int i = 0; i < nsel; i++)
+			{
+				if (i + GROUP_AHEAD < nsel)
+				{
+					uint32		h = wide_hash((int32) vals_out[i + GROUP_AHEAD], k->wcap);
+
+					__builtin_prefetch(&k->wid[h]);
+					__builtin_prefetch(&k->wval[h]);
+				}
 				vals_out[i] = (v->isnull && v->isnull[idx[i]]) ? 0 : ident_wide_id(ex, k, (int32) vals_out[i]);
+			}
 			*map_out = NULL;		/* the values are the ids */
 			*base_out = 0;
 			return;
@@ -943,8 +1124,44 @@ compute_gids(AggExec *ex, int nsel)
 	{
 		uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
 
+		if (i + GROUP_AHEAD < nsel)
+		{
+			for (int j = 0; j < nk; j++)
+				ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i + GROUP_AHEAD];
+			__builtin_prefetch(&ex->hslot[ids_hash(ids, nk, ex->nhslot)]);
+		}
 		for (int j = 0; j < nk; j++)
 			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
+		ex->gid[i] = hash_group(ex, ids);
+	}
+	if (ex->ngroups > ex->gcap)
+		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
+}
+
+/*
+ * The group ids of the current grouping set in hash mode from the key ids of the chunk (kid: compute_kids with every key): a key outside the set is
+ * NULL (id 0) and the key of the sets is the set's number, as key_prepare gives them, so the sets that read the chunk's own tuples prepare the keys once.
+ */
+void
+compute_set_gids(AggExec *ex, int nsel, const uint32 *kid)
+{
+	int			nk = ex->spec->nkeys;
+	const uint32 *col[SIFT_AGG_MAX_KEYS];
+	uint32		fixed[SIFT_AGG_MAX_KEYS];
+
+	for (int j = 0; j < nk; j++)
+	{
+		bool		in = (ex->arm_mask >> j & 1) != 0;
+
+		col[j] = in && ex->spec->key[j].kind != SAK_SET ? kid + (Size) j * (VEC + PADW) : NULL;
+		fixed[j] = in ? ex->curset + 1 : 0;
+	}
+	for (int i = 0; i < nsel; i++)
+	{
+		uint32		ids[SIFT_AGG_MAX_KEYS];
+
+		for (int j = 0; j < nk; j++)
+			ids[j] = col[j] ? col[j][i] : fixed[j];
 		ex->gid[i] = hash_group(ex, ids);
 	}
 	if (ex->ngroups > ex->gcap)

@@ -66,7 +66,7 @@ CHARTS = [
     ('cases-speedup', 'How much faster is each benchmark case of a query shape than PostgreSQL on the same rows?', 'cases.tsv'),
     ('cases-ecdf', 'On what share of the cases and shapes is pg_sift how many times faster?', 'cases.tsv'),
     ('cases-scale', 'How does each case scale from 100,000 to 3,000,000 rows?', 'cases-scale.tsv'),
-    ('cases-workmem', 'Does the release work_mem (4GB) change the ranking?', 'cases-wm4g.tsv'),
+    ('cases-workmem', 'Does a large work_mem (4GB) change the ranking?', 'cases-wm4g.tsv'),
 ]
 
 
@@ -161,7 +161,7 @@ def dim_table(results, dim, label):
     ahead = [x for x in xs if x not in behind]
     take = (f'**Takeaway:** pg_sift is faster than PostgreSQL on {", ".join("Q" + q[1:] for q in agg)} at {ahead[0]:,} to {ahead[-1]:,} {label}' if ahead else '**Takeaway:** pg_sift is not faster than PostgreSQL at any value here')
     take += (f'; at {", ".join(f"{x:,}" for x in behind)} {label} it is slower on ' + ', '.join(f'Q{q[1:]} ({ms(get(x, f"{q}_sift"))} against {ms(get(x, f"{q}_pg"))} ms)' for x in behind[-1:] for q in agg if get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05) if behind else '') + '.'
-    return [f'{int(meta["orders"]):,} orders of the store benchmark ({meta.get("date", "?")}, {meta.get("cpu", "?")}, {meta.get("postgresql", "?")}, pg_sift {meta.get("sift", "?")}), one client, `psql \\timing` with planning, median of {rows[0]["n"]} runs in milliseconds.', ''] + md(head, body) + ['', take, '', '**Caveats**', '',
+    return [f'{int(meta["orders"]):,} orders of the orders benchmark ({meta.get("date", "?")}, {meta.get("cpu", "?")}, {meta.get("postgresql", "?")}, pg_sift {meta.get("sift", "?")}), one client, `psql \\timing` with planning, median of {rows[0]["n"]} runs in milliseconds.', ''] + md(head, body) + ['', take, '', '**Caveats**', '',
             ] + (['- † the planner kept the normal plan on the pg_sift arm (no `SiftAgg` node), so the cell is the same plan as PostgreSQL\'s.'] if any(plain(x, f'{q}_sift') for x in xs for q in qs) else []) + [
             '- Q01 (a lookup by id) is pruned to one partition and uses the primary key in both arms.'] + ([f'- RESULT DIFFERS: {", ".join(bad)}.'] if bad else []) + [
             '- A scratch cluster on a shared host with 4 CPUs (`bench/bench scaling`), ' + ('2 parallel workers per query' if dim == 'partitions' else 'one plain table') + '; every pg_sift result was compared with the normal plan\'s.', '',
@@ -204,7 +204,7 @@ def duckdb_scale_lines(results):
     cases = extras.duckdb_cases(rows)
     best = extras.duck_summary(rows, cases, 'warm_ms')
     return ['### Against pg_duckdb at 10,000,000 orders', '',
-            f'{int(meta["orders"]):,} orders of the store benchmark, one client (`psql` with `\\timing`), median of 3 warm runs in milliseconds, lower is better, the fastest of a row and anything within 5% of it in bold. {extras.footer(meta)} '
+            f'{int(meta["orders"]):,} orders of the orders benchmark, one client (`psql` with `\\timing`), median of 3 warm runs in milliseconds, lower is better, the fastest of a row and anything within 5% of it in bold. {extras.footer(meta)} '
             f'pg_duckdb {meta.get("pg_duckdb", "?").split(",")[0]}, {meta.get("duckdb", "?")}; 3 CPUs and 8g per server.', ''] + extras.duck_table(rows, cases, 'warm_ms') + [
             '', '**Takeaway:** ' + best[0][2:].replace('Fastest of the four: ', 'fastest system: ') + ' ' + best[2][2:], '', '**Caveats**', '',
             '- ' + best[1][2:],
@@ -253,7 +253,7 @@ def shapes_lines(results):
 
 
 def readme_shapes(results):
-    """the README's real query shapes: what they are, how many are faster and by how much, the chart by the size of the filter, and the same cases at the release work_mem"""
+    """the README's real query shapes: what they are, how many are faster and by how much, the chart by the size of the filter, and the same cases at a large work_mem"""
     found = shape_cases(results)
     if not found:
         return not_measured(SHAPES_CMD, 'bench/results/analytics.json with the sift_col arm')
@@ -262,7 +262,7 @@ def readme_shapes(results):
     faster, slower = [g for g, _, _ in gains if g >= 1.05], [(1 / g, v) for g, _, v in gains if g <= 0.95]
     rng = lambda vals: f'{min(vals):.1f}x to {max(vals):.0f}x' if max(vals) >= 9.5 else f'{min(vals):.1f}x to {max(vals):.1f}x'
     out = [f'{len(gains)} shapes of an analytics application on {meta.get("tier", "?")} orders, one backend: whole-table reports (counts, groups, distinct, percentiles) and reports of a set of tenants (mapping lookups, rollups at three levels, time series at four granularities, '
-           f'top 3 per store, notes by role) with 10, 400 and 4,000 tenants in the filter. pg_sift is faster than the PostgreSQL heap on {len(faster)} of them ({rng(faster)}, median {statistics.median(g for g, _, _ in gains):.1f}x)'
+           f'top 3 per tenant, notes by role) with 10, 400 and 4,000 tenants in the filter. pg_sift is faster than the PostgreSQL heap on {len(faster)} of them ({rng(faster)}, median {statistics.median(g for g, _, _ in gains):.1f}x)'
            + (f' and slower on {len(slower)} ({rng([r for r, _ in slower])}; {sum(1 for _, v in slower if v == "K10")} of them with the smallest filter set, where the whole query takes 1 to 5 ms)' if slower else '') + '.', '',
            picture('shapes-speedup', 'Speed-up of pg_sift over the PostgreSQL heap on 8 whole-table shapes and 7 shapes at three filter sizes', 'docs/img/'), '']
     ch = [(q, v, t['ch'] / t['col']) for q, v, t in cases if t['ch'] and t['col']]
@@ -280,7 +280,7 @@ def readme_shapes(results):
         ms_ = lambda path: {f['case'].id: f['native'] / f['sift'] for f in cases_render.collect(extras.read(path)[1], reg) if f['metric'] == 'ms' and f['native'] and f['sift'] and not f['kept']}
         a, b = ms_(os.path.join(results, 'cases.tsv')), ms_(os.path.join(results, 'cases-wm4g.tsv'))
         both = [i for i in b if i in a]
-        out += [f'The application-shaped cases of the table above again at the `work_mem` the release servers run ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
+        out += [f'The application-shaped cases of the table above again at a large `work_mem` ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
                 f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
     return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#shapes-of-real-queries); raw results [bench/results/analytics.json](bench/results/analytics.json).']
 

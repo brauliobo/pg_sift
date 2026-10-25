@@ -243,6 +243,20 @@ agk_minmax_f64_neon(double *mn, double *mx, const double *v, const uint64 *mask,
 	return true;
 }
 
+/* the scalar loop is faster than two 64-bit lanes on an arm64 core: both stay scalar */
+#define AKV_NO_ABSMAX
+#define AKV_VB 16
+#define AKV_WIDEN(a, b) vmull_s32(vmovn_s64((int64x2_t) (a)), vmovn_s64((int64x2_t) (b)))
+/* the lane masks of four int32 as bits: AND with the weight of the lane, add across */
+static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
+#define AKV_BITS32(m) ((uint64) vaddvq_u32(vandq_u32((uint32x4_t) (m), vld1q_u32(akv_lane_weight))))
+#define AKV_BITS64(m) ((uint64) (vgetq_lane_u64((uint64x2_t) (m), 0) & 1) | ((vgetq_lane_u64((uint64x2_t) (m), 1) & 1) << 1))
+#define AKV_NO_CMP2_I64
+#define AKV_FN(x) agk_##x##_neon
+#include "agg/kern_vec.h"
+
+#define agk_absmax_i64_neon		agk_absmax_i64_scalar
+#define agk_cmp2_i64_neon		agk_cmp2_i64_scalar
 #define agk_minmax_i64_neon		agk_minmax_i64_scalar
 #define agk_lut_i32_neon		agk_lut_i32_scalar
 #define agk_gather_bits_neon	agk_gather_bits_scalar
@@ -251,6 +265,7 @@ agk_minmax_f64_neon(double *mn, double *mx, const double *v, const uint64 *mask,
 #define agk_count_gid_neon		agk_count_gid_scalar
 #define agk_sum_gid_i32_neon	agk_sum_gid_i32_scalar
 #define agk_sum_gid_f64_neon	agk_sum_gid_f64_scalar
+#define agk_sum_gid_i64_neon	agk_sum_gid_i64_scalar
 
 #define AGK_INIT_NEON(s)	.s = agk_##s##_neon,
 

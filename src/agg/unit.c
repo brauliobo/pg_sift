@@ -162,15 +162,17 @@ topn_viable(AggExec *ex)
 static const SiftSrcVec *
 topn_leaf_vec(void *ex, int leaf)
 {
-	return get_vec(ex, leaf);
+	const SiftSrcVec *v = get_vec(ex, leaf);
+
+	if (v->dict)
+		sift_srcdict_whole(v->dict);	/* it compares the entries as bytes and keeps their order */
+	return v;
 }
 
 static void
 topn_unit(AggExec *ex, const uint64 *rmask, int nrow)
 {
-	int			leaf = sift_topn_leaf(ex->topn, 0);
-
-	sift_topn_unit(ex->topn, ex->src, &ex->unit, leaf >= 0 ? get_vec(ex, leaf) : NULL, rmask, nrow, topn_leaf_vec, ex);
+	sift_topn_unit(ex->topn, ex->src, &ex->unit, NULL, rmask, nrow, topn_leaf_vec, ex);
 }
 
 /* *rows gets the rows of the unit that hold a value the index cannot store in leaf (a numeric NaN aside: the readers evaluate it). An element of a child leaf counts for its row. */
@@ -344,8 +346,8 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 	check_overflow(ex, rv, true);
 }
 
-/* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit */
-#define SPARSE_RATIO	8
+/* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit: above about 3% the gather costs more than the decode it saves (1M rows, 6% kept: 66% more instructions at an eighth) */
+#define SPARSE_RATIO	32
 /* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 3% (ten keys of 300 parents) it costs what it saves */
 #define NARROW_RATIO	32
 
@@ -401,7 +403,7 @@ unit_begin(AggExec *ex)
 }
 
 /*
- * The source's filters left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
+ * The source's filters, or the rows a point directory lists, left a few rows of the unit (a key that is spread over every unit of the table, in a lookup of one key): the unit goes on
  * as those rows alone, so that the rest of the work (the leaves, the offsets and owners of the elements of a list) costs what they do, not
  * what the unit does. rmask becomes all of them, nrow their number.
  */
@@ -658,7 +660,7 @@ process_unit(AggExec *ex)
 		ex->row_base += nrow;
 		return;
 	}
-	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_narrow(ex->src) &&
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0 || ex->spec->npred > 0) && sift_colsrc_can_narrow(ex->src) &&
 		sift_colk->bits_count(rmask, (nrow + 63) / 64) * NARROW_RATIO < nrow)
 		unit_narrow(ex, &rmask, &nrow);
 	unit_conjuncts(ex, rmask, cand, nrow);

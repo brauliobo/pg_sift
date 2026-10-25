@@ -127,6 +127,13 @@ null_input_param(Node *n)
 		((Param *) n)->paramid == SIFT_AGG_NULL_INPUT && ((Param *) n)->location == SIFT_AGG_NULL_INPUT_LOC;
 }
 
+/* A condition's parameter that the scan reads from the executor when it starts: the rows an enclosing query level passes down set it (topn_level_params) */
+bool
+level_param(Node *n)
+{
+	return IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->location == SIFT_AGG_LEVEL_LOC;
+}
+
 /* `CASE WHEN <input absent> THEN NULL ELSE x END`, what a placeholder computed inside the nullable input becomes: x, else NULL */
 Node *
 null_guarded_arm(Node *n)
@@ -143,7 +150,7 @@ null_guarded_arm(Node *n)
 }
 
 /*
- * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context (the query's
+ * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter (but those level_param marked). A non-NULL context (the query's
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
  * compile_exists and array_initplan_ok proved the ones it kept.
  */
@@ -153,6 +160,8 @@ has_exec_param_walker(Node *node, void *context)
 	if (node == NULL)
 		return false;
 	if (IsA(node, SubPlan) && context)
+		return false;
+	if (level_param(node))
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
 		return !context || !array_initplan_ok(context, (Param *) node);
@@ -665,44 +674,58 @@ match_leaf(AggCtx *c, Node *e)
 }
 
 /*
- * `x->>'k' IS [NOT] NULL` on a path whose leaf has another type than text (`attributes->normalized bool`) is the null test of that
- * leaf (`->>` turns a JSON null into NULL, so both are NULL for a missing key and a JSON null, both not NULL for a value). The
- * argument becomes the typed access `(x->>'k')::bool`, which match_leaf knows; a value the leaf could not hold makes the scan raise
- * the overflow error instead of being a non-NULL text.
+ * `x->>'k'` of a path whose leaf has another type than text (`attributes->normalized bool`, the member `score float8` of the elements of
+ * `jsonb_array_elements`) as the typed access `(x->>'k')::bool`, which match_leaf knows; NULL when it is none. `->>` turns a JSON null into NULL, so
+ * the text and the leaf are both NULL for a missing key and a JSON null, both not NULL for a value (a value the leaf could not hold makes the scan
+ * raise the overflow error instead of being a non-NULL text, or keeps the normal plan: reads_overflow).
  */
+Node *
+typed_member(AggCtx *c, Node *arg)
+{
+	JsonRef		r = {0};
+
+	arg = strip_relabel(arg);
+	if (exprType(arg) != TEXTOID || (func_of(arg) != F_JSONB_OBJECT_FIELD_TEXT && func_of(arg) != F_JSONB_EXTRACT_PATH_TEXT) || !json_access(c, arg, &r) ||
+		!r.as_text)
+		return NULL;
+	if (r.att > 0 && scalar_leaf(c, r.att, r.path, TEXTOID) >= 0)
+		return NULL;
+	for (int i = 0; i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+		bool		hit = r.att > 0 ? l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, r.path) :
+			r.att == 0 && c->group >= 0 && c->func_kind == FK_ELEMENTS && r.fcol == 1 && list_length(r.path) == 1 && l->parent == c->group && !l->lossy &&
+			l->typid != TEXTOID && strcmp(l->name, strVal(linitial(r.path))) == 0;
+
+		if (hit)
+		{
+			CoerceViaIO *io = makeNode(CoerceViaIO);
+
+			io->arg = (Expr *) arg;
+			io->resulttype = l->typid;
+			io->coerceformat = COERCE_EXPLICIT_CAST;
+			io->location = -1;
+			return (Node *) io;
+		}
+	}
+	return NULL;
+}
+
+/* `x->>'k' IS [NOT] NULL` of such a member is the null test of the typed leaf */
 static Node *
 nulltest_mutator(Node *n, AggCtx *c)
 {
-	NullTest   *nt;
-	JsonRef		r = {0};
-	Node	   *arg;
+	Node	   *typed;
 
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && exprType(strip_relabel((Node *) ((NullTest *) n)->arg)) == TEXTOID)
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && (typed = typed_member(c, (Node *) ((NullTest *) n)->arg)) != NULL)
 	{
-		nt = (NullTest *) n;
-		arg = strip_relabel((Node *) nt->arg);
-		if ((func_of(arg) == F_JSONB_OBJECT_FIELD_TEXT || func_of(arg) == F_JSONB_EXTRACT_PATH_TEXT) && json_access(c, arg, &r) &&
-			r.as_text && r.att > 0 && scalar_leaf(c, r.att, r.path, TEXTOID) < 0)
-			for (int i = 0; i < c->lay->nleaves; i++)
-			{
-				SiftSrcLeaf *l = leaf_of(c, i);
+		NullTest   *out = makeNode(NullTest);
 
-				if (l->attno == r.att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && paths_equal(l->path, r.path))
-				{
-					CoerceViaIO *io = makeNode(CoerceViaIO);
-					NullTest   *out = makeNode(NullTest);
-
-					io->arg = (Expr *) arg;
-					io->resulttype = l->typid;
-					io->coerceformat = COERCE_EXPLICIT_CAST;
-					io->location = -1;
-					*out = *nt;
-					out->arg = (Expr *) io;
-					return (Node *) out;
-				}
-			}
+		*out = *(NullTest *) n;
+		out->arg = (Expr *) typed;
+		return (Node *) out;
 	}
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }
@@ -820,6 +843,48 @@ placeholder_nulling(AggCtx *c, PlaceHolderVar *ph)
 	if (bms_is_empty(own) && !reads_preserved_only(c, (Node *) ph->phexpr))
 		return c->nulling;
 	return own;
+}
+
+/*
+ * The expression a placeholder stands for when the scan reproduces the placeholder's NULLs: nulled by the scan's own outer joins only (the
+ * rows of the preserved side nothing matched are the scan's null input, where the expression is NULL too), or never nulled. NULL otherwise.
+ */
+Node *
+placeholder_expr(AggCtx *c, PlaceHolderVar *ph)
+{
+	Relids		nulling = placeholder_nulling(c, ph);
+
+	if (ph->phlevelsup != 0 || !bms_is_subset(nulling, c->nulling) || reads_full_lookup(c, (Node *) ph->phexpr))
+		return NULL;
+	return (Node *) ph->phexpr;
+}
+
+/*
+ * A placeholder that stands for a strict expression of the scanned table's columns (or of its unnested function's) is that expression: where the
+ * scan's outer join nulls the placeholder, those columns are NULL and so is the expression. A constant, a non-strict expression (coalesce, CASE)
+ * or a volatile one keeps the placeholder.
+ */
+static Node *
+strict_placeholders_mutator(Node *n, AggCtx *c)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, PlaceHolderVar))
+	{
+		Node	   *e = placeholder_expr(c, (PlaceHolderVar *) n);
+		Relids		rels = e ? pull_varnos(c->root, e) : NULL;
+
+		if (e != NULL && (bms_is_member(c->relid, rels) || (c->func_rti && bms_is_member(c->func_rti, rels))) &&
+			!contain_nonstrict_functions(e) && !contain_volatile_functions(e))
+			return strict_placeholders_mutator(e, c);
+	}
+	return expression_tree_mutator(n, strict_placeholders_mutator, c);
+}
+
+Node *
+strict_placeholders(AggCtx *c, Node *n)
+{
+	return strict_placeholders_mutator(n, c);
 }
 
 /* A placeholder computed inside the nullable input becomes NULL when that whole input is absent. */

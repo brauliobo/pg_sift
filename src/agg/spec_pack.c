@@ -57,6 +57,7 @@ put_num(Pack *p, const SiftAggNum *n)
 {
 	put_int(p, n->n);
 	put_int(p, n->scale);
+	put_int(p, n->dig);
 	for (int i = 0; i < n->n; i++)
 	{
 		const SiftAggNx *x = &n->step[i];
@@ -141,6 +142,7 @@ put_gen(Pack *p, const SiftAggGen *g)
 	put_int(p, g->first);
 	put_int(p, g->hyp);
 	put_int(p, g->parallel);
+	put_int(p, g->hll);
 }
 
 static void
@@ -148,6 +150,7 @@ put_agg(Pack *p, const SiftAggAgg *a)
 {
 	put_int(p, a->kind);
 	put_int(p, a->leaf);
+	put_int(p, a->wsum);
 	put_int(p, a->nvx);
 	for (int j = 0; j < a->nvx; j++)
 	{
@@ -372,6 +375,7 @@ sift_aggspec_pack(const SiftAggSpec *s)
 		put_int(p, k->slot);
 		put_node(p, k->expr);
 		put_int(p, k->bucket);
+		put_int(p, k->zoned);
 		put_num(p, &k->num);
 		put_int(p, (int) k->typid);
 		put_int(p, k->typmod);
@@ -419,6 +423,19 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_node(p, s->search);
 	put_node(p, s->topn);
 	put_str(p, s->desc_topn ? s->desc_topn : "");
+	put_int(p, s->gtopn_k);
+	put_int(p, s->gtopn_agg);
+	put_int(p, s->gtopn_desc);
+	put_int(p, s->gtopn_nulls_first);
+	put_int(p, s->nord);
+	for (int i = 0; i < s->nord; i++)
+	{
+		put_int(p, s->ord[i].key);
+		put_int(p, (int) s->ord[i].sortop);
+		put_int(p, (int) s->ord[i].collation);
+		put_int(p, s->ord[i].nulls_first);
+		put_node(p, (Node *) s->ord[i].subst);
+	}
 	return pk.items;
 }
 
@@ -458,6 +475,7 @@ get_num(Unpack *u, SiftAggNum *n)
 {
 	n->n = get_int(u);
 	n->scale = get_int(u);
+	n->dig = get_int(u);
 	n->step = palloc(Max(n->n, 1) * sizeof(SiftAggNx));
 	for (int i = 0; i < n->n; i++)
 	{
@@ -540,6 +558,7 @@ get_gen(Unpack *u)
 	g->first = get_int(u);
 	g->hyp = get_int(u);
 	g->parallel = get_int(u);
+	g->hll = get_int(u);
 	return g;
 }
 
@@ -548,6 +567,7 @@ get_agg(Unpack *u, SiftAggAgg *a)
 {
 	a->kind = get_int(u);
 	a->leaf = get_int(u);
+	a->wsum = get_int(u);
 	a->nvx = get_int(u);
 	a->vx = palloc(Max(a->nvx, 1) * sizeof(SiftAggVx));
 	for (int j = 0; j < a->nvx; j++)
@@ -791,6 +811,7 @@ sift_aggspec_unpack(const List *items)
 		k->slot = get_int(u);
 		k->expr = get_node(u);
 		k->bucket = get_int(u);
+		k->zoned = get_int(u);
 		get_num(u, &k->num);
 		k->typid = (Oid) get_int(u);
 		k->typmod = get_int(u);
@@ -848,5 +869,19 @@ sift_aggspec_unpack(const List *items)
 	s->search = get_node(u);
 	s->topn = get_node(u);
 	s->desc_topn = get_str(u);
+	s->gtopn_k = get_int(u);
+	s->gtopn_agg = get_int(u);
+	s->gtopn_desc = get_int(u);
+	s->gtopn_nulls_first = get_int(u);
+	s->nord = get_int(u);
+	s->ord = palloc0(Max(s->nord, 1) * sizeof(SiftAggOrd));
+	for (int i = 0; i < s->nord; i++)
+	{
+		s->ord[i].key = get_int(u);
+		s->ord[i].sortop = (Oid) get_int(u);
+		s->ord[i].collation = (Oid) get_int(u);
+		s->ord[i].nulls_first = get_int(u);
+		s->ord[i].subst = (Const *) get_node(u);
+	}
 	return s;
 }

@@ -2,7 +2,10 @@
 -- takes one of them, the one the churn left dirty, and the partitions it did not touch are not written at all; the small segments the promotions left over
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
+SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
+-- the overlays are cut by superblock here: the units a TID-range overlay (sift.col_unit_floor, col_unit_floor) lists are no fragmentation to fold
+SET sift.col_unit_floor = 0;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 

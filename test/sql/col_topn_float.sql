@@ -1,0 +1,76 @@
+-- ORDER BY a float4 or float8 column LIMIT n over units of 512 rows or more: the unit's rows go to the heap through the float min/max and compare
+-- kernels. Every value the order of float8 has a rule for (NaN, both infinities, +0 and -0 which tie, subnormals, the largest finite values, long
+-- ties), a column that follows the table, one that does not, one of few values and one with many NULLs, both directions, NULLS FIRST and LAST, under
+-- filters that leave most, some and few rows of a unit, compared with the plain plan; again after deletes, moved rows and rows in the write buffer.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+
+-- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks of about 1250 rows
+CREATE TABLE tf (id serial PRIMARY KEY, g int, f_clu float8, f_rand float8, f_edge float8, f_ties float8, f_nul float8, r_edge float4, r_rand float4, pad text DEFAULT repeat('x', 1500));
+ALTER TABLE tf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO tf (g, f_clu, f_rand, f_edge, f_ties, f_nul, r_edge, r_rand)
+SELECT i % 10, i / 7.0 - 1000, ((hashint4(i) & 2147483647) % 2000000 - 1000000) / 31.0,
+	   CASE i % 97 WHEN 0 THEN 'NaN'::float8 WHEN 1 THEN 'Infinity' WHEN 2 THEN '-Infinity' WHEN 3 THEN 0 WHEN 4 THEN '-0' WHEN 5 THEN 5e-324 WHEN 6 THEN -5e-324
+		WHEN 7 THEN 1.7976931348623157e308 WHEN 8 THEN -1.7976931348623157e308 ELSE ((hashint4(i + 1) & 2147483647) % 100000 - 50000) / 7.0 END,
+	   (hashint4(i + 2) & 2147483647) % 5,
+	   CASE WHEN i % 10 = 0 THEN ((hashint4(i + 3) & 2147483647) % 1000) / 3.0 END,
+	   CASE i % 89 WHEN 0 THEN 'NaN'::float4 WHEN 1 THEN 'Infinity' WHEN 2 THEN '-Infinity' WHEN 3 THEN 0 WHEN 4 THEN '-0' WHEN 5 THEN 1e-45 WHEN 6 THEN 3.4028235e38 WHEN 7 THEN -3.4028235e38
+		ELSE ((hashint4(i + 4) & 2147483647) % 100000 - 50000) / 7.0 END,
+	   ((hashint4(i + 5) & 2147483647) % 20000) / 11.0
+FROM generate_series(1, 30000) i;
+CREATE INDEX tf_col ON tf USING sift_col (id, g, f_clu, f_rand, f_edge, f_ties, f_nul, r_edge, r_rand);
+VACUUM (ANALYZE) tf;
+
+CREATE FUNCTION tf_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
+	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+END $$;
+
+-- one query in both plans: the md5 of its rows in order and whether the pushed plan is the top-N scan
+CREATE FUNCTION tf_run(q text, OUT pushed_md5 text, OUT plain_md5 text, OUT topn bool) LANGUAGE plpgsql AS $$
+DECLARE line text; plan text := '';
+BEGIN
+	PERFORM tf_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	topn := plan ~ 'Top-N: ';
+	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO pushed_md5;
+	PERFORM tf_mode(false);
+	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO plain_md5;
+END $$;
+
+CREATE FUNCTION tf_stage(OUT queries int, OUT differ int, OUT not_topn int) LANGUAGE plpgsql AS $$
+DECLARE q text; r record;
+BEGIN
+	queries := 0;
+	differ := 0;
+	not_topn := 0;
+	FOR q IN
+		SELECT format('SELECT id, %1$s FROM tf %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', k, f, d, nl, l)
+		FROM unnest(ARRAY['f_clu', 'f_rand', 'f_edge', 'f_ties', 'f_nul', 'r_edge', 'r_rand']) k,
+			 unnest(ARRAY['', 'WHERE g < 8', 'WHERE g = 3', 'WHERE id % 97 = 0']) f,
+			 unnest(ARRAY['', 'DESC']) d, unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[3, 100, 700]) l
+	LOOP
+		SELECT * INTO r FROM tf_run(q);
+		queries := queries + 1;
+		differ := differ + (r.pushed_md5 IS DISTINCT FROM r.plain_md5)::int;
+		not_topn := not_topn + (NOT r.topn)::int;
+	END LOOP;
+END $$;
+
+SELECT * FROM tf_stage();
+-- after deletes, updates that move rows and rows in the write buffer
+DELETE FROM tf WHERE id % 11 = 0;
+UPDATE tf SET f_rand = -f_rand, f_edge = 'NaN', r_edge = '-Infinity' WHERE id % 13 = 0;
+INSERT INTO tf (g, f_clu, f_rand, f_edge, f_ties, f_nul, r_edge, r_rand)
+SELECT i % 10, i * 7, i * 3 - 4000, CASE i % 4 WHEN 0 THEN '-0'::float8 WHEN 1 THEN 0 WHEN 2 THEN 'Infinity' ELSE 'NaN' END, i % 5, NULL, 'NaN'::float4, i / 3.0 FROM generate_series(1, 200) i;
+SELECT * FROM tf_stage();
+
+DROP FUNCTION tf_stage();
+DROP FUNCTION tf_run(text);
+DROP FUNCTION tf_mode(bool);
+DROP TABLE tf;
+DROP EXTENSION pg_sift;

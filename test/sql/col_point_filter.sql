@@ -1,0 +1,62 @@
+-- A lookup by the point directory of heap addresses (point_tid_columns) on a table written in (tenant, ts) order: (1) a covered query on an IN list or an equality is
+-- planned on the addresses (an index or bitmap scan and the heap), not through the index-only scan that reads every kept unit; (2) a key with a range on another column hands
+-- the heap only the rows of the range: a unit with many of the key's addresses is read and filtered, so the index scan has no row to recheck away.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE pf (id int, tenant int, ts timestamp, pad text);
+ALTER TABLE pf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO pf SELECT id, tenant, ts, repeat('x', 1000)
+FROM (SELECT i AS id, (i * 7919) % 40 AS tenant, timestamp '2024-01-01' + i * interval '10 minutes' AS ts FROM generate_series(1, 60000) i) s
+ORDER BY tenant, ts;
+CREATE INDEX pf_col ON pf USING sift_col (id sift.col_int4_ops, tenant sift.col_int4_ops, ts sift.col_timestamp_ops) WITH (point_tid_columns = 'id, tenant');
+VACUUM (ANALYZE, FREEZE) pf;
+SET sift.enable_col_scan = on;
+SET enable_seqscan = off;
+
+-- the node that reads the table, and the rows an index scan threw away after the recheck
+CREATE FUNCTION pf_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '(Index Only Scan|Index Scan|Bitmap Heap Scan|Seq Scan) ' THEN RETURN regexp_replace(trim(l), '^-> *', ''); END IF;
+	END LOOP;
+END $$;
+CREATE FUNCTION pf_rechecked(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
+		IF l ~ 'Rows Removed by Index Recheck' THEN n := n + regexp_replace(l, '\D', '', 'g')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION pf_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT md5(coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''')) FROM (%s) x', q) INTO a;
+	PERFORM set_config('sift.enable_col_scan', 'off', true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''')) FROM (%s) x', q) INTO b;
+	PERFORM set_config('sift.enable_col_scan', 'on', true);
+	RETURN a = b;
+END $$;
+
+-- (1) the covered lookups: one clause of the directory
+SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')'), ' on pf.*| using.*', '') AS id_in_60;
+SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id = 4242'), ' on pf.*| using.*', '') AS id_eq;
+SELECT pf_same('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')') AS id_in_same,
+       pf_same('SELECT id, tenant FROM pf WHERE id = 4242') AS id_eq_same;
+-- a key with thousands of rows stays on the index-only scan (a handful of units answer it)
+SELECT regexp_replace(pf_node('SELECT tenant FROM pf WHERE tenant = 7'), ' on pf.*| using.*', '') AS key_rows;
+
+-- (2) a key and a range: the heap fetches the rows of the range only
+SELECT pf_rechecked('SELECT id, pad FROM pf WHERE tenant = 7 AND ts >= timestamp ''2024-03-01'' AND ts < timestamp ''2024-03-08''') AS rechecked_away,
+       pf_same('SELECT id, pad FROM pf WHERE tenant = 7 AND ts >= timestamp ''2024-03-01'' AND ts < timestamp ''2024-03-08''') AS same_rows,
+       (SELECT count(*) FROM pf WHERE tenant = 7 AND ts >= timestamp '2024-03-01' AND ts < timestamp '2024-03-08') AS rows_in_range;
+-- the whole key, and a range that holds none of its rows
+SELECT pf_same('SELECT id, pad FROM pf WHERE tenant = 7') AS whole_key, pf_same('SELECT id, pad FROM pf WHERE tenant = 7 AND ts > timestamp ''2030-01-01''') AS empty_range;
+
+DROP FUNCTION pf_node(text), pf_rechecked(text), pf_same(text);
+DROP TABLE pf;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,42 @@
+-- A lookup table read whole costs the pages PostgreSQL's own sequential scan of it costs besides its rows: the scan that loads a table of many pages
+-- costs more as a page costs more, so a large table read for a small outer side does not win by pricing its rows alone.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 20000, i % 7 FROM generate_series(1, 40000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+-- twenty rows to a page: a table of a thousand pages
+CREATE TABLE dims (k int, label text, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO dims SELECT i, 'label' || i, repeat('x', 350) FROM generate_series(0, 19999) i;
+VACUUM (FREEZE, ANALYZE) ev, dims;
+
+CREATE TABLE page_costs (seq float8, cost float8);
+DO $$ DECLARE s float8; BEGIN
+	FOREACH s IN ARRAY ARRAY[1, 11]::float8[] LOOP
+		PERFORM set_config('seq_page_cost', s::text, false);
+		PERFORM set_config('random_page_cost', (s * 4)::text, false);
+		INSERT INTO page_costs SELECT s, scan_cost FROM sift.explain_why('SELECT d.label, count(*), sum(e.v) FROM ev e JOIN dims d ON d.k = e.k GROUP BY d.label');
+	END LOOP;
+END $$;
+RESET seq_page_cost;
+RESET random_page_cost;
+-- ten more for each page of the lookup table, nearly all of what the 11 add to the scan
+SELECT (SELECT cost FROM page_costs WHERE seq = 11) - (SELECT cost FROM page_costs WHERE seq = 1)
+	BETWEEN 0.9 * 10 * pg_relation_size('dims') / 8192 AND 1.1 * 10 * pg_relation_size('dims') / 8192 AS pages_priced;
+
+-- a page is never priced above a random fetch: sequential 100 with random 4 costs what sequential 4 with random 4 does
+CREATE TABLE capped (seq float8, cost float8);
+DO $$ DECLARE s float8; BEGIN
+	FOREACH s IN ARRAY ARRAY[4, 100]::float8[] LOOP
+		PERFORM set_config('seq_page_cost', s::text, false);
+		PERFORM set_config('random_page_cost', '4', false);
+		INSERT INTO capped SELECT s, scan_cost FROM sift.explain_why('SELECT d.label, count(*), sum(e.v) FROM ev e JOIN dims d ON d.k = e.k GROUP BY d.label');
+	END LOOP;
+END $$;
+RESET seq_page_cost;
+RESET random_page_cost;
+SELECT (SELECT cost FROM capped WHERE seq = 100) = (SELECT cost FROM capped WHERE seq = 4) AS capped_at_random;
+
+DROP TABLE page_costs, capped, ev, dims;
+DROP EXTENSION pg_sift;

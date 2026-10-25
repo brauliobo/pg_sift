@@ -52,11 +52,21 @@ typedef struct SpineMemo
 	uint32	   *count;
 } SpineMemo;
 
+/* the header of the spine's rows as the leader serializes them for the scan and its workers (spine_fetch) */
+typedef struct SpineHdr
+{
+	uint64		len;			/* the header and the rows */
+	uint32		nrow;
+	uint32		pad;
+} SpineHdr;
+
 /* the rows of the spine of a two level aggregate (SiftAggSpine), read when the scan starts */
 typedef struct SpineSt
 {
 	uint32		nrow;
 	uint32	   *oid;			/* [row * nout + o]: the id of the row's column outcol[o] in key outkey[o] */
+	Datum	   *odat;			/* ... and its value, to give the ids again when the key tables start again (spine_reset) */
+	bool	   *onull;
 	uint32	   *jid;			/* [row * npair + p]: the id of its value of pair p in jot[p], 0 for NULL */
 	bool	   *hit;			/* the row joined a cell */
 	OutTable	jot[SIFT_AGG_MAX_JKEYS];
@@ -82,6 +92,8 @@ void spine_tail(AggExec *ex);
 
 /* spine.c */
 void spine_load(AggExec *ex);
+void spine_fetch(AggExec *ex);
+void spine_reset(AggExec *ex);
 uint32 spine_rows(AggExec *ex, int k, const uint32 *ids, const uint32 **rows);
 
 #pragma GCC visibility pop

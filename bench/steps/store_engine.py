@@ -1,5 +1,6 @@
-"""The store benchmark's servers: the clients of PostgreSQL, Elasticsearch and ClickHouse, the containers, and the windows that tell how busy the host was (steps/store.py)."""
+"""The orders benchmark's servers: the clients of PostgreSQL, Elasticsearch and ClickHouse, the containers, and the windows that tell how busy the host was (steps/store.py)."""
 import benchlib
+import pgq
 import functools
 import http.client
 import json
@@ -11,45 +12,11 @@ import time
 from store_lib import CH_AUTH, LANES, NAME, NULL, PG_ENGINES, container, die, is_ch, is_es, log, port, quiet
 
 
-class Psql:
+class Psql(pgq.Backend):
     """one psql backend kept for the run, on the published port of the container; the end of a statement's output is a marker line"""
     def __init__(self, eid, timeout=600):
         db = LANES[eid][3] if eid in PG_ENGINES else 'postgres'
-        self.p = subprocess.Popen(['psql', '-X', '-q', '-At', '-F', '\t', '-P', f'null={NULL}', '-h', '127.0.0.1', '-p', str(port(eid)), '-U', 'postgres', '-d', db],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        try:
-            self.run(f'SET statement_timeout = {timeout * 1000}')
-            self.run('\\o /dev/null')
-        except BaseException:   # no backend (the server is starting): reap this psql
-            self.p.kill()
-            self.p.communicate()
-            raise
-
-    def run(self, sql, capture=False):
-        w = self.p.stdin.write
-        if capture:
-            w('\\o\n')
-        w(sql + ('' if sql.startswith('\\') else ';') + '\n')
-        if capture:
-            w('\\o /dev/null\n')
-        w('\\echo __DONE__\n')
-        self.p.stdin.flush()
-        out = []
-        while True:
-            line = self.p.stdout.readline()
-            if line == '':
-                raise RuntimeError('psql ended: ' + ' '.join(out[-3:]))
-            if line.strip() == '__DONE__':
-                break
-            out.append(line.rstrip('\n'))
-        bad = [l for l in out if l.startswith(('ERROR', 'FATAL'))]
-        if bad:
-            raise RuntimeError(bad[0][:300])
-        return out
-
-    def close(self):
-        self.p.stdin.close()
-        self.p.wait()
+        super().__init__(['psql', '-X', '-q', '-At', '-F', '\t', '-P', f'null={NULL}', '-h', '127.0.0.1', '-p', str(port(eid)), '-U', 'postgres', '-d', db], setup=[f'SET statement_timeout = {timeout * 1000}'])
 
 
 class Http:

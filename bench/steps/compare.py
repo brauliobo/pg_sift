@@ -91,12 +91,42 @@ def shape_pairs(results, what):
     return out
 
 
-def case_pairs(results):
+GENERIC = (('Generic suite, TPC-H-like (5 queries, 1,000,000 lineitem rows, generated)', 'tpch_'), ('Generic suite, ClickBench-like (10 queries, a generated wide table of 1,000,000 rows)', 'hits_'),
+           ('Generic suite, time series (4 queries, 1,000,000 readings)', 'ts_'), ('Write overhead of a `sift_col` index on a heap table (20,000 single-row INSERTs, 20,000 UPDATEs)', 'oltp_'))
+
+
+def case_pairs(results, prefix=None):
+    """([(case, PostgreSQL / pg_sift)], planner kept PostgreSQL's plan): the cases of one generic suite (prefix), or every other case"""
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
         return []
-    figs = [f for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
+    figs = [f for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']
+            and (f['case'].id.startswith(prefix) if prefix else not f['case'].id.startswith(tuple(p for _, p in GENERIC)))]
     return [(f['case'].id, f['native'] / f['sift']) for f in figs if not f['kept']], sum(1 for f in figs if f['kept'])
+
+
+def generic_rows(results):
+    """the rows of bench/results/generic.tsv (steps/generic.py), [] when the file is not there"""
+    gpath = os.path.join(results, 'generic.tsv')
+    return extras.read(gpath)[1] if os.path.exists(gpath) else []
+
+
+def engine_pairs(results, prefix, *arms, ids=None):
+    """[(case, engine / pg_sift)] of one generic suite: the engine's time (the faster of ARMS) is bench/results/generic.tsv (steps/generic.py, its own run and PostgreSQL build), pg_sift's that of cases.tsv"""
+    cpath = os.path.join(results, 'cases.tsv')
+    if not os.path.exists(cpath):
+        return []
+    sift = {f['case'].id: f['sift'] for f in cases_render.collect(extras.read(cpath)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['sift']}
+    other = {}
+    for r in generic_rows(results):
+        if r['arm'] in arms and r['metric'] == 'ms' and r['value'] not in ('NA', ''):
+            other[r['case']] = min(float(r['value']), other.get(r['case'], float('inf')))
+    return [(c, o / sift[c]) for c, o in other.items() if c.startswith(prefix) and c in sift and (ids is None or c in ids)]
+
+
+ARM_LABEL = {'pg': 'PostgreSQL 18 (the pg_duckdb image, its own plan)', 'pg_duckdb': 'pg_duckdb', 'duckdb': 'DuckDB (command line client, in-memory tables)', 'clickhouse': 'ClickHouse', 'citus': 'Citus (columnar tables)',
+             'citus_dist': 'Citus (heap tables distributed over 4 shards of the one node)', 'timescaledb': 'TimescaleDB (hypertable on the time column of the time series)', 'timescaledb_cagg': 'TimescaleDB (continuous aggregate, the cases that have one)',
+             'elasticsearch': 'Elasticsearch (SQL endpoint)'}
 
 
 def rate_pairs(S, tier, others, variant, metric, inverse=False):
@@ -141,6 +171,16 @@ def rows_of(results):
     if cp:
         pairs, kept = cp
         rows.append((f'Benchmark cases ({len(pairs) + kept} query shapes; the planner kept PostgreSQL\'s plan on {kept})', {'pg': cell(pairs), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+    for name, prefix in GENERIC:
+        gp = case_pairs(results, prefix)
+        if gp and (gp[0] or gp[1]):
+            pairs, kept = gp
+            rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': cell(engine_pairs(results, prefix, 'clickhouse')),
+                                'es': cell(engine_pairs(results, prefix, 'elasticsearch')), 'citus': cell(engine_pairs(results, prefix, 'citus', 'citus_dist')), 'duckdb': cell(engine_pairs(results, prefix, 'pg_duckdb', 'duckdb'))}))
+    ids = {c.id for c in cases_mod.read_registry() if c.dataset == 'orders'} & {r['case'] for r in generic_rows(results)}
+    if ids:
+        rows.append((f'Headline benchmark cases that only read the orders table ({len(ids)} of them)', {'pg': NOT, 'ch': cell(engine_pairs(results, '', 'clickhouse', ids=ids)), 'es': cell(engine_pairs(results, '', 'elasticsearch', ids=ids)),
+                     'citus': cell(engine_pairs(results, '', 'citus', 'citus_dist', ids=ids)), 'duckdb': cell(engine_pairs(results, '', 'pg_duckdb', 'duckdb', ids=ids))}))
     tier = t1
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
     for name, variant, metric, inv in (('Update 10% of the rows, rows per second (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),
@@ -266,6 +306,29 @@ def compare_block(results):
             f'Losses are in bold; `{NOT}` is a comparison no result file holds. The conditions of every number (engine and version, data size, host, settings, date) are under the table.', ''] + head + body
 
 
+def generic_block(results):
+    """docs/BENCHMARKS.md, block generic: per engine and arm of bench/results/generic.tsv what is compared with pg_sift and what is not, with the reason of each case an engine did not run"""
+    rows = generic_rows(results)
+    if not rows:
+        return ['Not measured at this build yet: `bench/bench generic --docs` writes bench/results/generic.tsv.']
+    suites = {c.id: c.dataset for c in cases_mod.read_registry() if c.dataset in {'tpch', 'hits', 'tseries'}}
+    head = ['| engine and arm | cases it ran | pg_sift against it | cases it did not run, and why |', '|---|---:|---|---|']
+    body = []
+    for arm in dict.fromkeys(r['arm'] for r in rows):
+        mine = [r for r in rows if r['arm'] == arm]
+        ran = [r for r in mine if r['value'] not in ('NA', '')]
+        why = {}
+        for r in mine:
+            if r['value'] in ('NA', ''):
+                why.setdefault(r['note'] or 'no reason recorded', []).append(r['case'])
+        pairs = engine_pairs(results, '', arm) if arm != 'pg' else []
+        body.append('| %s | %d of %d | %s | %s |' % (ARM_LABEL.get(arm, arm), len(ran), len(mine), cell(pairs) if pairs else 'the reference (see the cases)' if arm == 'pg' else NOT,
+                                                   '; '.join('%s (%s)' % (reason.replace('|', '\\|'), ', '.join('`%s`' % c for c in cs)) for reason, cs in why.items()) or '-'))
+    return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
+            'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
+            'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above).', ''] + head + body
+
+
 def sources_block(results):
     return ['<details>', '<summary>Conditions of every number: engine, version, data, host, settings, warm or cold, date</summary>', ''] + sources(results) + ['', '</details>']
 
@@ -309,6 +372,9 @@ def numbers_block(results):
 def render(results, readme_path):
     for name, fn in (('compare', compare_block), ('compare-sources', sources_block), ('compare-search', search_block), ('compare-ports', ports_block), ('numbers', numbers_block)):
         readme.replace_block(readme_path, name, fn(results))
+    benchmarks = os.path.join(os.path.dirname(readme_path), 'docs', 'BENCHMARKS.md')
+    if os.path.exists(benchmarks) and '<!-- bench:generic:begin' in open(benchmarks).read():
+        readme.replace_block(benchmarks, 'generic', generic_block(results))
 
 
 def main():

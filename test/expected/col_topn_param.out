@@ -1,0 +1,329 @@
+-- ORDER BY .. LIMIT n over the rows of one key that an enclosing query sets for each of its rows (LATERAL, a correlated sub-select): the scan starts
+-- over for each value of the key, and every query gives the rows of the plain plan (sift.enable_agg off): ties, NULL keys and NULL values, LIMIT 0, 1 and
+-- more than the key has, both directions, NULLS FIRST and LAST, keys that no row holds, repeated and descending keys, no outer row at all.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+CREATE TABLE tp (id serial PRIMARY KEY, dev int, dev8 bigint, ts timestamp, v int, g int, nm text, w numeric(30,4));
+INSERT INTO tp (dev, dev8, ts, v, g, nm, w)
+SELECT CASE WHEN i % 211 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) % 60 END,
+	   (hashint4(i) & 2147483647) % 60 + 4000000000,
+	   timestamp '2024-01-01' + ((hashint4(i + 1) & 2147483647) % 400000) * interval '1 second',
+	   CASE WHEN i % 7 = 0 THEN NULL ELSE (hashint4(i + 2) & 2147483647) % 25 END,
+	   i % 5, 'n' || (hashint4(i) & 2147483647) % 60, ((hashint4(i) & 2147483647) % 60) * 100000000000000::numeric + 0.25
+FROM generate_series(1, 15000) i;
+CREATE TABLE tp_dim (k int PRIMARY KEY, label text);
+INSERT INTO tp_dim SELECT i, 'g' || i FROM generate_series(0, 3) i;
+CREATE INDEX tp_col ON tp USING sift_col (id, dev, dev8, ts, v, g, nm, w);
+VACUUM (ANALYZE) tp, tp_dim;
+CREATE FUNCTION tp_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', pushed::text, true);
+	PERFORM set_config('enable_seqscan', (NOT pushed)::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', coalesce(nullif(current_setting('tp.workers', true), ''), '0'), true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_table_scan_size', '0', true);
+END $$;
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan has the top-N scan under a parameter, and the number of rows
+CREATE FUNCTION tp_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS tp_a, tp_b;
+	PERFORM tp_mode(true);
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE tp_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM tp_mode(false);
+	EXECUTE 'CREATE TEMP TABLE tp_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tp_a EXCEPT ALL SELECT pos, r FROM tp_b) UNION ALL (SELECT pos, r FROM tp_b EXCEPT ALL SELECT pos, r FROM tp_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' AND plan ~ 'Filters: [^\n]*\$' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM tp_b);
+END $$;
+-- the keys: present, repeated, out of order, absent (60 and above), NULL; and none at all
+CREATE TABLE tp_keys (tag text PRIMARY KEY, k text NOT NULL);
+INSERT INTO tp_keys VALUES
+	('present',  'unnest(ARRAY[5, 17, 42, 0, 59])'),
+	('repeated', 'unnest(ARRAY[5, 5, 3, 5, 1, 3, 5])'),
+	('absent',   'unnest(ARRAY[60, 61, 5, 200, -4, 33])'),
+	('null',     'unnest(ARRAY[NULL, 5, NULL, 7]::int[])'),
+	('none',     'generate_series(1, 0)'),
+	('many',     'generate_series(0, 70)');
+-- the shapes: lateral and correlated sub-selects, directions, NULL placement, ties (v has 25 values), limits of 0, 1 and past the rows of a key, extra conjuncts
+CREATE TABLE tp_q (tag text PRIMARY KEY, q text NOT NULL);
+INSERT INTO tp_q VALUES
+	('ts_desc',     $q$SELECT d.k, x.id, x.ts FROM %s d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('ts_asc',      $q$SELECT d.k, x.id, x.ts FROM %s d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts, id LIMIT 4) x$q$),
+	('limit_0',     $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 0) x$q$),
+	('limit_1',     $q$SELECT d.k, x.id, x.ts FROM %s d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 1) x$q$),
+	('limit_all',   $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY id DESC LIMIT 100000) x$q$),
+	('limit_900',   $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts, id LIMIT 900) x$q$),
+	('offset',      $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 5 OFFSET 7) x$q$),
+	('ties_desc',   $q$SELECT d.k, x.id, x.v FROM %s d(k) CROSS JOIN LATERAL (SELECT id, v FROM tp WHERE dev = d.k ORDER BY v DESC NULLS LAST, id LIMIT 6) x$q$),
+	('ties_first',  $q$SELECT d.k, x.id, x.v FROM %s d(k) CROSS JOIN LATERAL (SELECT id, v FROM tp WHERE dev = d.k ORDER BY v NULLS FIRST, id DESC LIMIT 6) x$q$),
+	('bigint_key',  $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev8 = d.k + 4000000000 ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('two_keys',    $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k AND g = d.k %% 5 ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('filtered',    $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k AND g < 2 AND v IS NOT NULL ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('range_param', $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE ts >= timestamp '2024-01-01' + d.k * interval '1 hour' ORDER BY ts, id LIMIT 3) x$q$),
+	('left',        $q$SELECT d.k, x.id, x.ts FROM %s d(k) LEFT JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 2) x ON true$q$),
+	('scalar',      $q$SELECT d.k, (SELECT ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 1) FROM %s d(k)$q$),
+	('scalar_asc',  $q$SELECT d.k, (SELECT id FROM tp WHERE dev = d.k ORDER BY v, id LIMIT 1) FROM %s d(k)$q$),
+	('exists_in',   $q$SELECT d.k FROM %s d(k) WHERE EXISTS (SELECT 1 FROM tp WHERE dev = d.k ORDER BY ts LIMIT 1) ORDER BY d.k$q$),
+	('grouped',     $q$SELECT d.k, count(*), sum(x.id), max(x.ts) FROM %s d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 5) x GROUP BY d.k ORDER BY d.k$q$),
+	('sorted',      $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x ORDER BY x.id DESC LIMIT 20$q$),
+	('text_key',    $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE nm = 'n' || d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('two_levels',  $q$SELECT d.k, (SELECT count(*) + sum(s.id) FROM (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) s) FROM %s d(k)$q$),
+	('sort_inside', $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 5) s ORDER BY id DESC) x$q$),
+	('hash_inside', $q$SELECT d.k, x.g, x.n FROM %s d(k) CROSS JOIN LATERAL (SELECT s.g, count(*) AS n FROM (SELECT g FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 7) s GROUP BY s.g) x ORDER BY d.k, x.g$q$),
+	('wide_key',    $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE w = d.k * 100000000000000::numeric + 0.25 ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('inner_join',  $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT t.id FROM tp t JOIN tp_dim u ON u.k = t.g WHERE t.dev = d.k ORDER BY t.ts DESC, t.id LIMIT 3) x$q$),
+	('window',      $q$SELECT d.k, x.id, x.n FROM %s d(k) CROSS JOIN LATERAL (SELECT id, count(*) OVER () AS n FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('param_out',   $q$SELECT d.k, x.id, x.kk FROM %s d(k) CROSS JOIN LATERAL (SELECT id, d.k * 2 AS kk FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x$q$),
+	('param_sort',  $q$SELECT d.k, x.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY abs(v - d.k), id LIMIT 3) x$q$),
+	('twice',       $q$SELECT d.k, a.id, b.id FROM %s d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 2) a CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k AND id < a.id ORDER BY id DESC LIMIT 1) b$q$);
+CREATE FUNCTION tp_stage() RETURNS TABLE (tag text, queries int, differ int, topn int) LANGUAGE plpgsql AS $$
+DECLARE r record; kk record; res text;
+BEGIN
+	FOR r IN SELECT * FROM tp_q ORDER BY tag LOOP
+		tag := r.tag; queries := 0; differ := 0; topn := 0;
+		FOR kk IN SELECT * FROM tp_keys ORDER BY tag LOOP
+			res := tp_check(format(r.q, kk.k));
+			queries := queries + 1;
+			differ := differ + (res LIKE 'DIFFERENT%')::int;
+			topn := topn + (res LIKE '%+topn%')::int;
+		END LOOP;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- the plan: the scan is the inner side of the nested loop, rescanned for each key; its condition is the key of the outer row
+SELECT tp_mode(true);
+ tp_mode 
+---------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT d.k, x.id FROM generate_series(1, 5) d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x;
+                 QUERY PLAN                 
+--------------------------------------------
+ Nested Loop
+   ->  Function Scan on generate_series d
+   ->  Limit
+         ->  Custom Scan (SiftAgg)
+               Index: tp_col
+               Filters: dev = $0
+               Top-N: ts DESC, id (limit 3)
+(7 rows)
+
+SELECT * FROM tp_stage();
+NOTICE:  table "tp_a" does not exist, skipping
+NOTICE:  table "tp_b" does not exist, skipping
+     tag     | queries | differ | topn 
+-------------+---------+--------+------
+ bigint_key  |       6 |      0 |    6
+ exists_in   |       6 |      0 |    0
+ filtered    |       6 |      0 |    6
+ grouped     |       6 |      0 |    6
+ hash_inside |       6 |      0 |    6
+ inner_join  |       6 |      0 |    0
+ left        |       6 |      0 |    6
+ limit_0     |       6 |      0 |    0
+ limit_1     |       6 |      0 |    6
+ limit_900   |       6 |      0 |    6
+ limit_all   |       6 |      0 |    0
+ offset      |       6 |      0 |    6
+ param_out   |       6 |      0 |    0
+ param_sort  |       6 |      0 |    0
+ range_param |       6 |      0 |    6
+ scalar      |       6 |      0 |    6
+ scalar_asc  |       6 |      0 |    6
+ sort_inside |       6 |      0 |    6
+ sorted      |       6 |      0 |    6
+ text_key    |       6 |      0 |    0
+ ties_desc   |       6 |      0 |    6
+ ties_first  |       6 |      0 |    6
+ ts_asc      |       6 |      0 |    6
+ ts_desc     |       6 |      0 |    6
+ twice       |       6 |      0 |    6
+ two_keys    |       6 |      0 |    6
+ two_levels  |       6 |      0 |    6
+ wide_key    |       6 |      0 |    6
+ window      |       6 |      0 |    0
+(29 rows)
+
+-- rows that moved, went and came, the write buffer and the vacuumed index
+UPDATE tp SET dev = 5 WHERE id % 40 = 0;
+UPDATE tp SET ts = ts + interval '30 day' WHERE id % 53 = 0;
+DELETE FROM tp WHERE id % 97 = 3;
+INSERT INTO tp (dev, dev8, ts, v, g, nm, w) SELECT 5, 4000000005, timestamp '2025-01-01' + i * interval '1 second', i % 3, 1, 'n5', 500000000000000.25 FROM generate_series(1, 50) i;
+SELECT * FROM tp_stage();
+     tag     | queries | differ | topn 
+-------------+---------+--------+------
+ bigint_key  |       6 |      0 |    6
+ exists_in   |       6 |      0 |    0
+ filtered    |       6 |      0 |    6
+ grouped     |       6 |      0 |    6
+ hash_inside |       6 |      0 |    6
+ inner_join  |       6 |      0 |    0
+ left        |       6 |      0 |    6
+ limit_0     |       6 |      0 |    0
+ limit_1     |       6 |      0 |    6
+ limit_900   |       6 |      0 |    6
+ limit_all   |       6 |      0 |    0
+ offset      |       6 |      0 |    6
+ param_out   |       6 |      0 |    0
+ param_sort  |       6 |      0 |    0
+ range_param |       6 |      0 |    6
+ scalar      |       6 |      0 |    6
+ scalar_asc  |       6 |      0 |    6
+ sort_inside |       6 |      0 |    6
+ sorted      |       6 |      0 |    6
+ text_key    |       6 |      0 |    0
+ ties_desc   |       6 |      0 |    6
+ ties_first  |       6 |      0 |    6
+ ts_asc      |       6 |      0 |    6
+ ts_desc     |       6 |      0 |    6
+ twice       |       6 |      0 |    6
+ two_keys    |       6 |      0 |    6
+ two_levels  |       6 |      0 |    6
+ wide_key    |       6 |      0 |    6
+ window      |       6 |      0 |    0
+(29 rows)
+
+VACUUM tp;
+SELECT * FROM tp_stage();
+     tag     | queries | differ | topn 
+-------------+---------+--------+------
+ bigint_key  |       6 |      0 |    6
+ exists_in   |       6 |      0 |    0
+ filtered    |       6 |      0 |    6
+ grouped     |       6 |      0 |    6
+ hash_inside |       6 |      0 |    6
+ inner_join  |       6 |      0 |    0
+ left        |       6 |      0 |    6
+ limit_0     |       6 |      0 |    0
+ limit_1     |       6 |      0 |    6
+ limit_900   |       6 |      0 |    6
+ limit_all   |       6 |      0 |    0
+ offset      |       6 |      0 |    6
+ param_out   |       6 |      0 |    0
+ param_sort  |       6 |      0 |    0
+ range_param |       6 |      0 |    6
+ scalar      |       6 |      0 |    6
+ scalar_asc  |       6 |      0 |    6
+ sort_inside |       6 |      0 |    6
+ sorted      |       6 |      0 |    6
+ text_key    |       6 |      0 |    0
+ ties_desc   |       6 |      0 |    6
+ ties_first  |       6 |      0 |    6
+ ts_asc      |       6 |      0 |    6
+ ts_desc     |       6 |      0 |    6
+ twice       |       6 |      0 |    6
+ two_keys    |       6 |      0 |    6
+ two_levels  |       6 |      0 |    6
+ wide_key    |       6 |      0 |    6
+ window      |       6 |      0 |    0
+(29 rows)
+
+-- workers allowed: the scan with a parameter of the enclosing query runs in the leader, the rest of the plan may use them
+SET tp.workers = 2;
+SELECT * FROM tp_stage();
+     tag     | queries | differ | topn 
+-------------+---------+--------+------
+ bigint_key  |       6 |      0 |    6
+ exists_in   |       6 |      0 |    0
+ filtered    |       6 |      0 |    6
+ grouped     |       6 |      0 |    6
+ hash_inside |       6 |      0 |    6
+ inner_join  |       6 |      0 |    0
+ left        |       6 |      0 |    6
+ limit_0     |       6 |      0 |    0
+ limit_1     |       6 |      0 |    6
+ limit_900   |       6 |      0 |    6
+ limit_all   |       6 |      0 |    0
+ offset      |       6 |      0 |    6
+ param_out   |       6 |      0 |    0
+ param_sort  |       6 |      0 |    0
+ range_param |       6 |      0 |    6
+ scalar      |       6 |      0 |    6
+ scalar_asc  |       6 |      0 |    6
+ sort_inside |       6 |      0 |    6
+ sorted      |       6 |      0 |    6
+ text_key    |       6 |      0 |    0
+ ties_desc   |       6 |      0 |    6
+ ties_first  |       6 |      0 |    6
+ ts_asc      |       6 |      0 |    6
+ ts_desc     |       6 |      0 |    6
+ twice       |       6 |      0 |    6
+ two_keys    |       6 |      0 |    6
+ two_levels  |       6 |      0 |    6
+ wide_key    |       6 |      0 |    6
+ window      |       6 |      0 |    0
+(29 rows)
+
+RESET tp.workers;
+-- a btree on the key and the order answers each probe in less time than the scan does (the price of the scan for a key is a scan of a unit): the plan keeps it
+CREATE INDEX tp_dev_ts ON tp (dev, ts);
+ANALYZE tp;
+SELECT tp_mode(true);
+ tp_mode 
+---------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT d.k, x.id FROM generate_series(1, 5) d(k) CROSS JOIN LATERAL (SELECT id FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT 3) x;
+                         QUERY PLAN                          
+-------------------------------------------------------------
+ Nested Loop
+   ->  Function Scan on generate_series d
+   ->  Limit
+         ->  Incremental Sort
+               Sort Key: tp.ts DESC, tp.id
+               Presorted Key: tp.ts
+               ->  Index Scan Backward using tp_dev_ts on tp
+                     Index Cond: (dev = d.k)
+(8 rows)
+
+DROP INDEX tp_dev_ts;
+ANALYZE tp;
+-- a generic plan: one plan for every key, the limit a parameter of the statement (plpgsql keeps the plan of its statement)
+CREATE FUNCTION tp_gen(keys int[], lim int) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN (SELECT md5(string_agg(d.k || ':' || x.id, ',' ORDER BY d.ord, x.ts DESC, x.id))
+			FROM unnest(keys) WITH ORDINALITY d(k, ord) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT lim) x);
+END $$;
+SET plan_cache_mode = force_generic_plan;
+SELECT tp_mode(true);
+ tp_mode 
+---------
+ 
+(1 row)
+
+PREPARE tp_p (int[], int) AS
+	SELECT d.k, x.id FROM unnest($1) d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT $2) x;
+EXPLAIN (COSTS OFF) EXECUTE tp_p(ARRAY[5, 3], 4);
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Nested Loop
+   ->  Function Scan on unnest d
+   ->  Limit
+         ->  Custom Scan (SiftAgg)
+               Index: tp_col
+               Filters: dev = $0
+               Top-N: ts DESC, id (limit by parameter)
+(7 rows)
+
+CREATE TEMP TABLE tp_gen_a AS SELECT tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) a, tp_gen(ARRAY[1, 2], 1) b, tp_gen(ARRAY[7], 100) c, tp_gen(ARRAY[7, 8, 9]::int[], 2) d;
+SELECT tp_mode(false);
+ tp_mode 
+---------
+ 
+(1 row)
+
+DISCARD PLANS;
+SELECT a = tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) AND b = tp_gen(ARRAY[1, 2], 1) AND c = tp_gen(ARRAY[7], 100) AND d = tp_gen(ARRAY[7, 8, 9]::int[], 2) AS same FROM tp_gen_a;
+ same 
+------
+ t
+(1 row)
+
+DEALLOCATE tp_p;
+DROP TABLE tp_q, tp_keys, tp, tp_dim;
+DROP FUNCTION tp_stage(), tp_check(text), tp_mode(bool), tp_gen(int[], int);
+DROP EXTENSION pg_sift;

@@ -24,13 +24,15 @@
 # JOB_MB) plus its own fits CI_BUDGET_MB (quick 1200, full 2000; the first job always runs), so the run stays at about 1 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
 # when everything passed (KEEP=1 keeps it; a failure keeps it for the logs); a job that passed leaves it at once. The ports are
-# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (twice the budget; full
+# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick 4096; full
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
 # SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one).
 # SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.
-# SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the pull request tier: lint runs three of them). Logs:
+# `affected --focus [--list] [BASE]` narrows the regression tests of a change in src/ to the ones that execute the functions the diff touched (scripts/focus.tsv, made by
+# scripts/focus-gen.sh with gcov): a function every test executes, or a change outside functions, runs the tests of the area as in the fast tier; the other jobs only run in CI.
+# SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the workflow sets it: its `lint` job runs them once for every run). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
@@ -44,7 +46,7 @@
 #
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
 # server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
-# recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
+# recorded when each one stopped. The harness checks (scripts/lint.sh, the span tests) run beside the lanes in shard 1; the leakcheck selftest in lint proves that the gate fails on each kind of leak.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }   # first: bash 3.2 (stock macOS) fails on the syntax below and exits 0
 set -uo pipefail
 
@@ -52,6 +54,11 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 MODE=${1:-quick}
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status
+# --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
+if [[ $MODE == --shards ]]; then
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	exit
+fi
 if [[ $MODE == --times ]]; then
 	R=${2:-$(ls -td "${TMPDIR:-/tmp}"/sift-ci-*/logs/results 2>/dev/null | head -1)}
 	sort -k4,4nr "$R" | awk 'BEGIN { printf "%-44s %7s %7s  %-6s %s\n", "job", "wall_s", "cpu_s", "lane", "status" }
@@ -68,34 +75,89 @@ if [[ $MODE == --areas-regex ]]; then
 	exit
 fi
 # --github prints the outputs of the workflow: jobs (the regex), the flags of its other jobs, nshards (a long queue is cut in two), full (it is all of it)
+# focus_regex TOKEN...: the jobs of `affected --focus`. A token is FILE or FILE:FUNCTION (FUNCTION * : a change outside any function); the regression tests that
+# execute the function (scripts/focus.tsv, made by scripts/focus-gen.sh), the tests of the area for a function every test executes (the =hot row) and for a
+# change outside functions, scripts/areas.tsv as ever for the other files. A function no row has is new or run by no test: its callers are the other tokens.
+focus_regex() {
+	local t f rest=() star=() sel names
+	for t; do
+		f=${t%%:*}
+		[[ $f =~ ^src/(agg|col|table|bm25)/[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }
+		[[ $t != *:'*' ]] || star+=("$f")
+	done
+	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
+		/^#/ { next }
+		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
+	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|')
+	star+=($(sed -n 's/^H //p' <<<"$sel" | sort -u))
+	{ echo '^(coverage|isolation-emulated)$'
+	  [[ -z $names ]] || echo "^installcheck-($names)\$"
+	  (( ! ${#star[@]} )) || areas_fast_regex "${star[@]}"
+	  (( ! ${#rest[@]} )) || areas_regex "${rest[@]}"
+	} | paste -sd'|'
+}
+# focus_tokens BASE: FILE:FUNCTION of every hunk of the diff against BASE in src/; the function is the last line at column 0 that starts like a definition before the hunk
+focus_tokens() {
+	local f l
+	for f in $(cd "$REPO" && git diff --name-only --no-renames "$1" -- src); do
+		[[ -f $REPO/$f ]] || continue
+		git -C "$REPO" diff -U0 --no-renames "$1" -- "$f" | sed -n '/^@@ -0,0 /d; s/^@@ [^+]*+\([0-9]*\).*/\1/p' | while read -r l; do
+			awk -v f="$f" -v l="$l" 'NR <= l && /^[A-Za-z_][A-Za-z0-9_]*\(/ { n = $0; sub(/\(.*/, "", n) } END { print f ":" (n == "" ? "*" : n) }' "$REPO/$f"
+		done
+	done | sort -u
+}
+# The assertions family of a pull request (the `cassert` output of `affected --github`, run on the PostgreSQL 18 built with --enable-cassert): a change of a source that starts
+# workers or handles snapshots or executor hooks (ASSERT_MARK, read from the file: no list to keep) runs the regression tests that run those paths. The `assertions` label
+# of a pull request runs the family for any change. A change reached the tip with green fast checks and failed an Assert of the server (GetActiveSnapshot) in a worker.
+# Measured (run 40164658605, 27 tests, 4 lanes): the job 8.0 min (cache 1 s, extension build 34 s, tests 7.2 min wall, scratch 435 MB); the slowest tests agg_preagg_elem_parallel 266 s,
+# agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
+ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
+ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
+# the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
+# 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
+ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
+	FOCUS=
+	[[ ${1:-} == --focus ]] && { FOCUS=1; shift; }
 	[[ ${1:-} == --list || ${1:-} == --github ]] && { OUT=${1#--}; shift; }
 	BASE=${1:-origin/main}
 	if [[ $BASE == all ]]; then RE=. FASTRE=.
-	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files
-		RE=$(areas_regex "${@:2}") || exit $?
-		FASTRE=$(areas_fast_regex "${@:2}") || exit $?
+	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files (--focus: FILE:FUNCTION tokens)
+		if [[ -n $FOCUS ]]; then RE=$(focus_regex "${@:2}") || exit $?; FASTRE=$RE
+		else
+			RE=$(areas_regex "${@:2}") || exit $?
+			FASTRE=$(areas_fast_regex "${@:2}") || exit $?
+		fi
 	else
 		MB=$(git -C "$REPO" merge-base "$BASE" HEAD) || exit 1
 		mapfile -t FILES < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard; } | sort -u)
 		RE=$(areas_regex "${FILES[@]}") || exit $?
 		FASTRE=$(areas_fast_regex "${FILES[@]}") || exit $?
+		if [[ -n $FOCUS ]]; then
+			# the functions of the changed files of src/ from the diff (a file with no tokens is new: its callers are the other tokens), the other files as themselves
+			mapfile -t TOK < <({ printf '%s\n' "${FILES[@]}" | grep -v '^src/'; focus_tokens "$MB"; } | sort -u)
+			RE=$(focus_regex ${TOK[@]+"${TOK[@]}"}) || exit $?
+			FASTRE=$RE
+		fi
 	fi
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
 	for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $RE ]] && BATCHES=1; done
 	for id in "${JOBS_ALL[@]}"; do [[ $id == installcheck-batch* && -n ${BATCHES:-} || $id =~ $RE ]] && PICK+=("$id"); done
 	flag() { [[ gh:$1 =~ $RE ]] && echo true || echo false; }
+	cassert=false
+	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
 	FAST='^(installcheck-|isolation-emulated$|coverage$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
-		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate$'
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz$'
-		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate$'; fi
+		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-table(-tuned)?)?$'
+		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-table(-tuned)?)?$'; fi
 	done
 	case $OUT in
 		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos; do echo "gh:$f $(flag $f)"; done ;;
@@ -103,6 +165,8 @@ if [[ $MODE == affected ]]; then
 			echo "jobs=$RE"
 			echo "fast=$FAST"
 			echo "fastjobs=$FASTRE"
+			echo "cassert=$cassert"
+			echo "cassertjobs=$ASSERT_JOBS"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
 			for f in sqlite mariadb replication macos; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 2 || echo 1)"
@@ -114,11 +178,39 @@ if [[ $MODE == affected ]]; then
 	esac
 	exit 0
 fi
-COL_SLICES=4   # slices of the column differential jobs of the full tier (below)
+STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_rows agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
+COL_SLICES_LEAN=4 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
+COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
+declare -A JOB_WEIGHT=(
+	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
+	[difftest-col-4]=849 [difftest-col-tbl-2]=800 [difftest-col-2]=789 [difftest-col-tbl-3]=675 [tap-shell-compat_matrix]=578 [fuzz]=558
+	[tap-001_crash]=504 [installcheck-col_key_presence]=30 [tap-shell-store_crash]=341 [tap-shell-col_index_crash]=283
+	[installcheck-col_topn_parallel]=252 [installcheck-agg_group_spill_fuzz]=248 [installcheck-tbl_writepath]=246 [difftest-nopos]=236 [difftest-fuzz]=204
+	[tap-shell-index_build_crash]=197 [soak]=195 [tap-shell-col_auto_merge_partition]=194 [installcheck-col_sorted_run]=186 [tap-014_tbl_writepath]=181
+	[tap-006_truncate]=178 [tap-shell-index_random_crash]=165 [installcheck-agg_preagg_rollup]=158 [installcheck-tbl_preagg_calendar]=154 [hardened]=152
+	[coverage-pct]=126 [installcheck-col_scan]=124 [soak-col]=123 [tap-003_wal_minimal]=117 [installcheck-tbl_preagg]=115 [isolation]=113
+	[tap-shell-maint_fanin]=112 [tap-shell-col_crash_matrix]=111 [installcheck-agg_set_array]=111 [installcheck-build_large_docs]=107
+	[tap-017_tbl_autodefrag]=102 [installcheck-agg_preagg_filter]=102 [tap-shell-col_wbuf_crash]=101 [tap-shell-compat_31_column]=99
+	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
+	[plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
+)
+JOB_WEIGHT_DEFAULT=10
+# the deep full tier is cut by the lane seconds each job took on its PostgreSQL major (run 40193282663; the other jobs weigh 10, a major from 19 on weighs like 18):
+# scripts/weights-deep.tsv, job, seconds on 17, seconds on 18
+declare -A JOB_WEIGHT_DEEP17 JOB_WEIGHT_DEEP18
+while IFS=$'\t' read -r job w17 w18; do
+	[[ $job == '#'* ]] || { JOB_WEIGHT_DEEP17[$job]=$w17; JOB_WEIGHT_DEEP18[$job]=$w18; }
+done <"$REPO/scripts/weights-deep.tsv"
+# weight_of JOB [deep [MAJOR]]: the weight in seconds of a lane
+weight_of() {
+	local -n deep_w=JOB_WEIGHT_DEEP$([[ ${3:-${PG_MAJOR:-18}} == 17 ]] && echo 17 || echo 18)
+	if [[ -n ${2:-} ]]; then echo "${deep_w[$1]:-$JOB_WEIGHT_DEFAULT}"; else echo "${JOB_WEIGHT[$1]:-$JOB_WEIGHT_DEFAULT}"; fi
+}
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
 	bad=0
+	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
 	for pg in 16 17 18; do
 		for m in quick full; do
 			plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan $m) || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
@@ -147,8 +239,36 @@ if [[ $MODE == --selftest ]]; then
 	for f in "$REPO"/test/sql/*.sql; do
 		[[ installcheck-$(basename "$f" .sql) =~ ${grouped%|} ]] || { echo "FAIL: areas: the test $(basename "$f") is in no group of scripts/areas.tsv"; bad=1; }
 	done
+	# a script of scripts/ selects every job that runs it, and a change of documentation, benchmarks or release notes selects none
+	for m in quick full; do
+		while read -r id _ _ cmd; do
+			eval "args=($cmd)"
+			for a in "${args[@]}"; do
+				[[ $a == "$REPO"/scripts/* ]] || continue
+				rx=$(areas_regex "${a#"$REPO"/}")
+				[[ -n $rx && $id =~ $rx ]] || { echo "FAIL: areas: ${a#"$REPO"/} runs the $m job $id and a change of it does not select the job"; bad=1; }
+			done
+		done < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan $m)
+	done
+	[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
+	# the focus table (scripts/focus.tsv, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
+	# tests that execute a function, the tests of the area for a hot function or a change outside functions
+	focus_rows=$(cut -f1 "$REPO/scripts/focus.tsv" | grep -v '^[#=]' | sort)
+	focus_missing=$(comm -23 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+	[[ -z $focus_missing ]] || { echo "FAIL: focus: no row in scripts/focus.tsv for $(echo $focus_missing) (scripts/focus-gen.sh NAME...)"; bad=1; }
+	focus_stale=$(comm -13 <(ls "$REPO/test/sql" | sed 's/\.sql$//' | sort) <(echo "$focus_rows"))
+	[[ -z $focus_stale ]] || { echo "FAIL: focus: scripts/focus.tsv has rows for $(echo $focus_stale), which are not tests"; bad=1; }
+	read -r focus_t focus_tok _ < <(awk -F'\t' '!/^[#=]/ && $2 != "" { split($2, a, " "); print $1, a[1]; exit }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_t || installcheck-$focus_t =~ $(focus_regex "$focus_tok") ]] || { echo "FAIL: focus: $focus_tok does not select its test $focus_t"; bad=1; }
+	focus_hot=$(awk -F'\t' '$1 == "=hot" { split($2, a, " "); print a[1] }' "$REPO/scripts/focus.tsv")
+	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
+	[[ $(focus_regex src/agg/cte.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
+	# the assertions family of a pull request: the tests that run workers exist, and the file that starts them is a trigger
+	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_JOBS ]] && n=$((n + 1)); done
+	(( n >= 20 )) || { echo "FAIL: the assertions family ASSERT_JOBS selects $n regression tests, want 20 or more"; bad=1; }
+	grep -qE "$ASSERT_MARK" "$REPO/src/agg/par.c" || { echo "FAIL: src/agg/par.c, which starts workers, is no trigger of the assertions family (ASSERT_MARK)"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
-	fast_agg=$(areas_fast_regex src/agg/x.c) fast_core=$(areas_fast_regex src/core/ops.c)
+	fast_agg=$(areas_fast_regex src/agg/agg.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	while read -r id _; do
 		[[ $id == installcheck-* ]] || continue
 		[[ $id =~ $fast_core ]] || { echo "FAIL: areas: src/core/ops.c does not select the fast job $id"; bad=1; }
@@ -159,44 +279,69 @@ if [[ $MODE == --selftest ]]; then
 		f=${f#"$REPO"/}
 		[[ $(areas_regex "$f") == *'|.' ]] || { echo "FAIL: areas: $f does not select every job"; bad=1; }
 	done
-	# the column differential jobs of the full tier are slices of one corpus: K/N for K = 1..N, nothing else different between them (no subset of the variants,
-	# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
-	plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=18 "$0" --plan full)
-	for prefix in difftest-col difftest-col-tbl; do
-		n=0 ks='' rest='' union='' cd=''
-		while read -r id _ _ cmd; do
-			[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
-			eval "args=($cmd)"
-			cd=${args[0]}; k=''; mine=()
-			for (( i = 1; i < ${#args[@]}; i++ )); do
-				if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
-			done
-			[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
-			[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
-				{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
-			[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
-			rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
-			[[ ${BASH_REMATCH[2]} == "$COL_SLICES" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $COL_SLICES"; bad=1; }
-			part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
-			[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
-			union+=$part$'\n'
-		done <<<"$plan"
-		(( n == COL_SLICES )) || { echo "FAIL: $n slices of $prefix in the full plan, want $COL_SLICES"; bad=1; }
-		[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$COL_SLICES") " ]] || { echo "FAIL: the slices of $prefix are not 1..$COL_SLICES:$ks"; bad=1; }
-		if [[ -n $cd ]]; then
-			whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
-			[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
-			[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
-		fi
+	for deep in '' 1; do
+		cs=$COL_SLICES_LEAN; [[ -z $deep ]] || cs=$COL_SLICES_DEEP
+		# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 8): K/N for K = 1..N, nothing else different between them (no subset of the variants,
+		# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
+		plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=18 "$0" --plan full)
+		for prefix in difftest-col difftest-col-tbl; do
+			n=0 ks='' rest='' union='' cd=''
+			while read -r id _ _ cmd; do
+				[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
+				eval "args=($cmd)"
+				cd=${args[0]}; k=''; mine=()
+				for (( i = 1; i < ${#args[@]}; i++ )); do
+					if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
+				done
+				[[ $k =~ ^([0-9]+)/([0-9]+)$ ]] || { echo "FAIL: $id has no --slice K/N"; bad=1; continue; }
+				[[ " ${mine[*]} " != *" --variants "* && " ${mine[*]} " != *" --scenarios "* && " ${mine[*]} " != *" --corpus "* ]] ||
+					{ echo "FAIL: $id runs a subset of the variants, scenarios or queries (--scenario-slices alone may differ from the deep run)"; bad=1; }
+				[[ -z $rest || $rest == "${mine[*]}" ]] || { echo "FAIL: the slices of $prefix differ in more than --slice ($id)"; bad=1; }
+				rest=${mine[*]} n=$((n + 1)) ks+=" ${BASH_REMATCH[1]}"
+				[[ ${BASH_REMATCH[2]} == "$cs" ]] || { echo "FAIL: $id is a slice of ${BASH_REMATCH[2]}, COL_SLICES is $cs"; bad=1; }
+				part=$("$cd" --list "${mine[@]}" --slice "$k") || { echo "FAIL: $id: coldiff.sh --list"; bad=1; continue; }
+				[[ -n $part ]] || { echo "FAIL: $id selects no query"; bad=1; }
+				union+=$part$'\n'
+			done <<<"$plan"
+			(( n == cs )) || { echo "FAIL: $n slices of $prefix in the full plan, want $cs"; bad=1; }
+			[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$cs") " ]] || { echo "FAIL: the slices of $prefix are not 1..$cs:$ks"; bad=1; }
+			if [[ -n $cd ]]; then
+				whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
+				[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
+				[[ $(sort <<<"$union" | grep .) == "$(sort <<<"$whole")" ]] || { echo "FAIL: the slices of $prefix are not the whole corpus ($(grep -c . <<<"$union") of $(grep -c . <<<"$whole") queries)"; bad=1; }
+			fi
+		done
+		grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan ${deep:+(deep) }lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	done
-	# the lean full tier before PostgreSQL 18 runs half of the slices (the first and second of 4), the deep one all of them
+	# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean), the first six of 12 (deep)
 	for pg in 16 17; do
 		for deep in '' 1; do
 			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
-			(( n == (deep ? COL_SLICES : COL_SLICES / 2) )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
+			(( n == (deep ? COL_SLICES_DEEP17 : COL_SLICES_LEAN) / 2 )) || { echo "FAIL: PostgreSQL $pg ${deep:+deep }full plan has $n slices of difftest-col"; bad=1; }
 		done
 	done
-	grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
+	# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
+	prod=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD -u SIFT_CI_DEEP SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep '^release-library-regress ')
+	for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress job (no test of that name, a slow or test-only one)"; bad=1; }; done
+	n=0; for f in "$REPO"/test/sql/*.sql; do [[ installcheck-$(basename "$f" .sql) =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
+	(( n == 3 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 3 it names"; bad=1; }
+	# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
+	for pg in 17 18; do
+	for deep in '' 1; do
+		ns=$("$0" --shards "$pg" "$deep")
+		all=$(env -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}' | sort)
+		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
+		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
+		lo='' hi=0
+		for (( k = 1; k <= ns - (pg < 18 ? 1 : 0); k++ )); do
+			l=0
+			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
+			(( l > hi )) && hi=$l
+			[[ -z $lo ]] || (( l < lo )) && lo=$l
+		done
+		(( hi * 100 <= lo * 115 )) || { echo "FAIL: the shards of the full tier on PostgreSQL $pg ${deep:+deep }are unbalanced by the weights of scripts/ci.sh (heaviest $hi s, lightest $lo s)"; bad=1; }
+	done
+	done
 	# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 	(cd "$REPO" && scripts/sha256.sh --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 	# scripts/leftovers.allow: a test that exists, an object and a reason on every line
@@ -240,12 +385,16 @@ CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
 # BUDGET_MB, the scratch the running jobs may need together (estimates below): quick 1200, full 2000, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the
-# run when the directory really exceeds it: twice the budget (full: 8192 up to four lanes, 512 more for each lane above)
+# run when the directory really exceeds it: quick 4096 (the quick tier peaks at 2.1 to 2.6 GB on PostgreSQL 18 shard 2 and 17 shard 1, runs 40145861942 and 40149214243), full 8192 up to four lanes, 512 more for each lane above
 if [[ $MODE == full ]]; then
 	export SANITIZE=1; BUDGET_MB=${CI_BUDGET_MB:-2000}; MAX_MB=${CI_MAX_MB:-$(( 8192 + 512 * (LANES > 4 ? LANES - 4 : 0) ))}; unset SIFT_QUICK
 else
-	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-$(( 2 * BUDGET_MB ))}
+	export SIFT_QUICK=1; BUDGET_MB=${CI_BUDGET_MB:-1200}; MAX_MB=${CI_MAX_MB:-4096}
 fi
+# CI_JOB_TIMEOUT: seconds a job may run before it is killed (quick 3000, full 7200; the slowest job of a shard takes 2100 and 4700 on a loaded runner), so that a
+# stuck test fails with the end of its log instead of holding the runner until the limit of the workflow. Not enforced where there is no timeout(1) (macOS)
+JOB_TIMEOUT=()
+for tm in timeout gtimeout; do command -v $tm >/dev/null && { JOB_TIMEOUT=($tm -k 20 "${CI_JOB_TIMEOUT:-$([[ $MODE == full ]] && echo 7200 || echo 3000)}"); break; }; done
 
 # ---------- the jobs ----------
 # job ID SUITE CLUSTER CMD...: queued in the order of the calls, so the longest come first (a job queued twice keeps its first
@@ -278,10 +427,11 @@ rest() {
 }
 # The scratch a job needs, in MB: the peak of its lane directory with the cluster of the lane in it (SIFT_CI_STATS=1 lists it per job). The
 # jobs below grow the store (the churn of the store tests, WAL of the WAL tests, spill of a large build) and are the only ones above JOB_MB.
-declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=950 [installcheck-tbl_writepath]=500 [tap-shell-old_lib_refusal]=150 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=500 [tap-006_truncate]=550 [tap-010_tbl_settings]=420
-	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [tap-shell-extension_lifecycle]=260 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
+declare -A EST_MB=([tap-013_tbl_bigtx]=820 [tap-014_tbl_writepath]=1130 [installcheck-tbl_writepath]=500 [tap-shell-old_lib_refusal]=470 [tap-shell-scaling_slope]=1400 [installcheck-tbl_bigtx]=700 [tap-004_wal_consistency]=690 [tap-shell-store_replica]=500 [tap-006_truncate]=550 [tap-010_tbl_settings]=420
+	[tap-006_tbl]=380 [tap-002_standby]=380 [tap-shell-maint_memory]=330 [tap-shell-extension_lifecycle]=360 [installcheck-batch5]=260 [installcheck-index_build_postings]=230
 	[tap-shell-replication]=200 [tap-shell-store_concurrency]=200 [tap-shell-index_build_crash]=180
-	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140)
+	[tap-shell-store_crash]=170 [tap-001_crash]=150 [installcheck-index_build_thresholds]=140
+	[release-library-regress]=900 [installcheck-agg_group_spill_fuzz]=800 [tap-shell-col_run_heads_replica]=480 [installcheck-tbl_cap]=480 [installcheck-col_approx]=350)
 JOB_MB=70
 
 tap_perl() { local f; for f in "$@"; do job "tap-$f" tap 0 "$S/tap.sh" "t/$f.pl"; done; }
@@ -296,6 +446,7 @@ installcheck_batches() {
 	shift
 	for t in "$@"; do
 		[[ installcheck-$t =~ ${SIFT_CI_AFFECTED:-.} ]] || continue
+		[[ -z ${SIFT_CI_ASSERT:-} || ! installcheck-$t =~ $ASSERT_SKIP ]] || continue
 		if grep -qiE 'using sift_table|\<vacuum\>' "$REPO/test/sql/$t.sql"; then installcheck "$t"; continue; fi
 		b+=("$t")
 		(( ${#b[@]} < n )) || { job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"; b=(); }
@@ -319,9 +470,21 @@ if [[ $MODE == full ]]; then
 	job soak soak 1 "$S/soak.sh" --duration "$(lean_or_deep 180 600)" --check-every 30
 	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
 	job soak-col soak-col 1 "$S/colsoak.sh" --duration "$(lean_or_deep 120 300)"
-	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs "$(lean_or_deep 4000 8000)" --queries 40 --rounds "$(lean_or_deep 1 2)" --minimize 1
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 4000 5000)" --queries "$(lean_or_deep 100 150)" --rounds "$(lean_or_deep 3 4)"
-	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 2500 3000)" --queries "$(lean_or_deep 40 60)" --rounds "$(lean_or_deep 1 2)"
+	# The deep tier keeps the differential families of the corpus on PostgreSQL 18 only (they are the half of its lane seconds, and 17 runs them in the lean tier and the
+	# quick tier), and cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
+		job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
+		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+		job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
+	elif (( PG_MAJOR >= 18 )); then
+		for k in 1 2 3; do
+			job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/3 --docs 8000 --queries 40 --rounds 2 --minimize 1
+		done
+		for k in 1 2 3 4; do
+			job difftest-$k difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed $k --docs 5000 --queries 100 --rounds 1
+		done
+		job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 3000 --queries 60 --rounds 2
+	fi
 	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
 	# the two differential tests of the column index take 160 minutes of one lane each on PostgreSQL 18, and more on 17, longer than the rest of the tier together
 	# in four lanes: they are cut into COL_SLICES disjoint slices of the corpus (coldiff.sh --slice K/N) that the lanes and the shards take like any other job. Every
@@ -329,18 +492,29 @@ if [[ $MODE == full ]]; then
 	# Lean: each scenario runs a third of the scenario queries (the slice moves from one heap state to the next, so every query meets several states and every state
 	# meets queries of every kind), and before PostgreSQL 18 half the corpus (slices 1 and 2 of 4, every other query in name order: the corpus is the same on every major,
 	# the other half runs on 18)
-	for (( k = 1; k <= COL_SLICES; k++ )); do
-		(( PG_MAJOR >= 18 || k <= COL_SLICES / 2 )) || [[ -n ${SIFT_CI_DEEP:-} ]] || continue
-		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
-		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --slice $k/$COL_SLICES --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+	slices=$COL_SLICES; (( PG_MAJOR >= 18 )) || [[ -z ${SIFT_CI_DEEP:-} ]] || slices=$COL_SLICES_DEEP17
+	for (( k = 1; k <= slices / (PG_MAJOR >= 18 ? 1 : 2); k++ )); do
+		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
-	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --suite analytics --rows 20000
+	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; a timing that loses only warns (hosted runners are noisy)
 	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 3 --warn-time
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 3 --warn-time
+	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 3 --warn-time
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
-	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on
+	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
+		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
+		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
+	elif (( PG_MAJOR >= 18 )); then
+		for k in 1 2; do
+			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+		done
+	fi
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"
@@ -360,12 +534,16 @@ else
 	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
 	# visit every stage, the write buffers, the promotion and the merge
 	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
-	# the regression tests that need no test-only function, against the release library
-	# (the quick tests only: the slow ones and the ones that need the test-only build, TESTING_REGRESS of the Makefile, are not run)
+	# the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
+	# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
+	# A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard: those
+	# run, with a smoke of STOCK_SMOKE, one test or more of each area, which loads and uses the library users get. The deep tier on 18 runs all of them (about 350 tests,
+	# 760 to 1170 s on one lane in run 40193282663, against about 25 tests); on 17 the smoke is enough
 	release_library_tests() {
 		local t p
 		for t in $(rest sql .sql $SLOW_REGRESS); do
 			for p in $(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile"); do [[ $t == ${p//%/*} ]] && continue 2; done
+			[[ ( -n ${SIFT_CI_DEEP:-} && $PG_MAJOR == 18 ) || " $STOCK_SMOKE " == *" $t "* ]] || grep -qE 'sift\.test_|sift\._test_|pg_sift_test' "$REPO/test/sql/$t.sql" || continue
 			echo "$t"
 		done
 	}
@@ -384,7 +562,11 @@ else
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
 	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
+	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
+	job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"
@@ -410,12 +592,31 @@ fi
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
 # SIFT_CI_SHARD=K/N: every Nth job of the queue from the Kth, so that N runners share the pool and each keeps the longest-first order; shard 1 runs
 # the checks of the harness. Before PostgreSQL 18 the jobs that run after the pool (flavor installs, serial) are all the last shard's
+# The full tier cuts the queue by weight instead (JOB_WEIGHT: seconds of a lane, the jobs of 90 s and more measured on PostgreSQL 18 in the lean run 40097165396 of
+# 2026-10-24, 13:12 UTC; the others weigh 10): the heaviest job goes to the shard with the least load so far, which put the three shards of PostgreSQL 18 at 98, 118 and
+# 164 lane-minutes by position and balances them to within a few percent (--selftest checks it, and that the shards are the plan exactly once). The deep sizes are
+# about 1.5 to 2.5 times the lean ones on the same jobs, the same order.
+# shard_loads N POOL: SHARD_OF[job] (0-based shard of the pool) and LOAD[k] for the jobs of the pool, heaviest first, ties in queue order
+declare -A SHARD_OF
+shard_loads() {
+	local pool=$1 line id k i
+	SHARD_OF=() LOAD=()
+	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
+	while read -r line; do
+		id=${line#* }; k=0
+		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
+		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || echo "$(weight_of "$id" "${SIFT_CI_DEEP:-}") $id"; done | sort -s -k1,1nr)
+}
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
+	POOL=$(( NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0) ))
+	[[ $MODE == full && $NSHARDS -gt 1 ]] && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue
-		else (( n++ % (NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0)) == SHARD - 1 )) || continue; fi
+		elif [[ $MODE == full && $NSHARDS -gt 1 ]]; then (( SHARD_OF[$id] == SHARD - 1 )) || continue
+		else (( n++ % POOL == SHARD - 1 )) || continue; fi
 		KEEP_IDS+=("$id")
 		[[ " ${SUITES[*]-} " == *" ${J_SUITE[$id]} "* ]] || SUITES+=("${J_SUITE[$id]}")
 	done
@@ -459,6 +660,7 @@ claim_locked() {
 		mkdir "$BASE/claims/$id"
 		echo "$est" >"$BASE/running/$id"
 		echo "$LANE" >"$BASE/claims/$id/lane"
+		echo "$SECONDS" >"$BASE/claims/$id/start"
 		CLAIMED=$id
 		return 0
 	done
@@ -514,10 +716,26 @@ watchdog() { # stops every postmaster under $BASE once the scratch directory pas
 }
 watchdog &
 WATCHDOG=$!
+# a job that runs long (difftest-col takes two to three hours in the full tier) is silent in the live log until it ends: every 5 minutes the jobs past
+# 10 minutes are listed with the last line of their own log, so that a long run is told from a hang by whether that line moves
+heartbeat() {
+	local f id s
+	while sleep 300; do
+		for f in "$BASE"/running/*; do
+			[[ -e $f ]] || continue
+			id=${f##*/}
+			[[ -f $BASE/claims/$id/start ]] || continue
+			s=$(<"$BASE/claims/$id/start")
+			(( SECONDS - s >= 600 )) && printf 'ci: running %s %s s (%s): %s\n' "$id" "$((SECONDS - s))" "$(<"$BASE/claims/$id/lane")" "$(tail -n 1 "$LOG/$id.log" 2>/dev/null | cut -c1-160)"
+		done
+	done
+}
+heartbeat &
+HEARTBEAT=$!
 # SIFT_CI_STATS=1: the footprint of the run by component, lane and memory (scripts/ci_stats.sh), printed after the summary
 [[ -z ${SIFT_CI_STATS:-} ]] || { "$S/ci_stats.sh" "$BASE" >"$LOG/stats.txt" 2>&1 & STATS=$!; }
 cleanup() {
-	kill "$WATCHDOG" ${STATS:-} 2>/dev/null
+	kill "$WATCHDOG" "$HEARTBEAT" ${STATS:-} 2>/dev/null
 	if [[ -z ${KEEP:-} && ${failed:-1} == 0 ]]; then rm -rf "$BASE"; else echo "scratch kept: $BASE"; fi
 }
 trap cleanup EXIT
@@ -531,13 +749,17 @@ lane_cpu() {
 # step ID SUITE CMD...: runs one job or stage with its output in logs/ID.log; appends "id suite status seconds skips lane start end cpu_seconds"
 # to the results and returns its status
 step() {
-	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1
+	local id=$1 suite=$2 t=$SECONDS status=PASS skips c0 c1 rc=0
 	shift 2
 	[[ -e $LOG/cap_exceeded ]] && return
 	c0=$(lane_cpu "$id")
-	"$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || status=FAIL
+	${JOB_TIMEOUT[@]+"${JOB_TIMEOUT[@]}"} "$S/cpu_time.py" "$LOG/$id.cpu" "$@" >"$LOG/$id.log" 2>&1 || { rc=$?; status=FAIL; }
+	if (( rc == 124 || rc == 137 )); then
+		{ echo "ci: $id stopped after $((SECONDS - t)) s (CI_JOB_TIMEOUT), the end of its log:"; tail -n 40 "$LOG/$id.log"; } | tee -a "$LOG/$id.log"
+	fi
 	c1=$(lane_cpu "$id")
 	skips=$(grep -ciE '\bskip' "$LOG/$id.log" || true)
+	echo "ci: $status $id $((SECONDS - t)) s ($LANE)"
 	printf '%s %s %s %s %s %s %s %s %s\n' "$id" "$suite" "$status" $((SECONDS - t)) "$skips" "$LANE" "$t" "$SECONDS" \
 		"$(awk -v a="$(cat "$LOG/$id.cpu" 2>/dev/null || echo 0)" -v c0="$c0" -v c1="$c1" 'BEGIN { printf "%.1f", a + c1 - c0 }')" >>"$LOG/results"
 	# the log of a run that is cut (a timeout, a hang) names the jobs that had finished: the results are in the logs artifact of a failed run only
@@ -549,40 +771,24 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors reference bench-fresh bench-cases options)
+HARNESS=(lint span-test)
 if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
-	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
-	selftest=$!
-	step plan-selftest plan-selftest "$S/ci.sh" --selftest &
-	plantest=$!
-	step portable-core portable-core "$S/check-portable.sh" &
-	portable=$!
-	step neutral neutral "$S/check-neutral.sh" &
-	neutral=$!
-	step errors errors bash -c "\"$S/check-errors.sh\" && \"$S/check-memory.sh\" && \"$S/check-memory.sh\" --selftest" &
-	errors=$!
-	step reference reference "$S/gen-reference.sh" --check &
-	reference=$!
-	step bench-fresh bench-fresh "$S/check-bench-fresh.sh" &
-	benchfresh=$!
-	step bench-cases bench-cases "$S/check-bench-cases.sh" &
-	benchcases=$!
-	step options options "$S/gen-options.sh" --check &
-	options=$!
+	step lint lint "$S/lint.sh" &
+	lint=$!
 	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
 	spantest=$!
 else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${lint:-} ${spantest:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}
+wait "${pids[@]}" ${lint:-} ${spantest:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
@@ -618,6 +824,18 @@ for s in "${ORDER[@]}" leakcheck; do
 	for id in ${bad:-}; do [[ $id != installcheck-batch* ]] || grep -h '^not ok' "$LOG/$id.log" | sed "s/^/$red    /; s/\$/$off/"; done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
-[[ -z ${STATS:-} ]] || { kill "$STATS"; wait "$STATS"; cat "$LOG/stats.txt"; }
+# a server that crashed: the log of its job says only that psql lost the connection; the signal and the statement the backend ran are in the server log
+if (( failed )); then
+	find "$BASE" -path "$LOG" -prune -o -name '*.log' -print 2>/dev/null | xargs -r grep -hE -A1 'was terminated by signal|^TRAP:|PANIC:' 2>/dev/null | cut -c1-300 | head -n 30 |
+		{ read -r first && { echo "${red}server crashes (signal, statement, assertion):$off"; echo "$first"; cat; }; }
+fi
+# the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
+if [[ -n ${STATS:-} ]]; then
+	kill "$STATS" 2>/dev/null
+	for _ in {1..20}; do kill -0 "$STATS" 2>/dev/null || break; sleep 1; done
+	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler ignored TERM for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
+	wait "$STATS" 2>/dev/null
+	cat "$LOG/stats.txt"
+fi
 printf 'wall %ss (%s lanes), peak scratch %s MB, logs %s\n' "$((SECONDS - t0))" "$LANES" "$(cat "$LOG/peak_mb" 2>/dev/null || echo '<2')" "$LOG"
 exit $failed

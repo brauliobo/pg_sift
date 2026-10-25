@@ -5,7 +5,7 @@
 # update, delete, promotion, merge, VACUUM), and then the way back: the release reads what this tree writes at the lowest column format minor
 # (3), at the newest minor it reads (and at 4), and with the options that are on by default switched off; and refuses with a format error and the
 # REINDEX hint, instead of a wrong answer, an index of every newer minor (7 cube_minmax, 8 calendar_columns, 9 rollup_dims, 10 key_columns (a summary), 12 superunit,
-# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
+# 13 order_columns, 14 a stored dictionary, 15 key_columns (a key list or bitmap), 16 point_tid_columns (heap addresses in the point directory), 17 key_cut (units cut by a key), 18 order_columns at the default setting (the runs with their heads), 19 a NULL-heavy integer leaf (the exceptions of its units), 20 hll_columns (a sketch of a column in every unit)), an index created at the defaults with no option, and the sift_table of the calendar cells (8)
 # and of the wide-row write buffer (11); an index with order_columns under the lowest setting writes no run and is read. The last release then gets the
 # documented downgrade (docs/UPGRADING.md section 4) of all of it: the setting, the rewrite of what the preflight lists, and the release serves the lot.
 # The older libraries are built from the tags by scripts/old-lib-check.sh (cached; PostgreSQL 18, two library roots).
@@ -183,16 +183,16 @@ sift.async_maintenance = off'
 	[[ $newest == 3 ]] || formats+=("hi $newest")
 	((newest > 4)) && formats+=("h4 4")
 	((newest >= 4)) && formats+=("ke 4")
-	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "df 12")
+	formats+=("cm 7" "ca 8" "rd 9" "sc 10" "su 12" "rn 13" "dk 14" "kp 15" "pt 16" "kc 17" "hd 18" "ex 19" "hl 20" "df 12")
 	declare -A OPT=([lo]=", order_columns = 'g, n'" [hi]=", order_columns = 'g, n'" [h4]=", order_columns = 'g, n'" [rn]=", order_columns = 'g, n'" [cm]=", cube_minmax = true"
-		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
-	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
-	declare -A COLS=([ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
-	docsonly=" h4 ke cm ca rd sc su rn dk kp pt df "
-	refused=" cm ca rd sc su rn dk kp pt df "
+		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
+	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [ex]="*, CASE WHEN id % 500 = 0 THEN id END AS z" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
+	declare -A COLS=([ex]="id, g, n, z" [ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
+	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex hl df "
+	refused=" cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	for f in "${formats[@]}"; do
 		read -r fmt minor <<<"$f"
-		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt ]] || set="SELECT 1"	# the option stamps 16 at the default setting (15)
+		set="SET sift.col_format_minor = $minor"; [[ $fmt != df && $fmt != pt && $fmt != kc && $fmt != hd && $fmt != ex && $fmt != hl ]] || set="SELECT 1"	# the option or the data stamps 16, 17, 18, 19 or 20 at the default setting (15)
 		q "$set" \
 			"CREATE TABLE docs_$fmt AS SELECT ${SRC[$fmt]:-*} FROM docs" "CREATE INDEX docs_${fmt}_col ON docs_$fmt USING sift_col (${COLS[$fmt]:-id, g, n}) WITH (write_buffer_limit = 2048${OPT[$fmt]:-})" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
@@ -213,14 +213,17 @@ sift.async_maintenance = off'
 				"INSERT INTO tbl_$fmt SELECT i, i % 9, i % 100 FROM generate_series(20001, 20300) i" >/dev/null || bail "$ref $fmt table"
 		fi
 	done
-	# point_tid_columns (minor 16): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
-	ptfmt() { q "SELECT max(format) || ':' || (SELECT coalesce(reloptions::text, '') ~ 'point_tid_columns=g' FROM pg_class WHERE relname = 'docs_pt_col') FROM sift.col_segments('docs_pt_col') WHERE kind = 'immutable'"; }
-	ptwant=$(q "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(id) FROM docs_pt WHERE g = 4")
-	for step in "SELECT sift.col_merge('docs_pt_col', true)" "SELECT sift.col_refresh('docs_pt_col')" "REINDEX INDEX docs_pt_col"; do
-		check "$ref: the pt clone: ${step%%(*}" q "$step"
-		same "$ref: the pt clone is minor 16 with its option after ${step%%(*}" "$(ptfmt)" "16:true"
-		check "$ref: the pt clone verifies after ${step%%(*}" q "SELECT sift.col_verify('docs_pt_col', true)"
-		same "$ref: the pt clone answers a lookup as the plain plan after ${step%%(*}" "$(q "SET sift.enable_col_scan = on" "SET enable_seqscan = off" "SELECT count(*), sum(id) FROM docs_pt WHERE g = 4")" "$ptwant"
+	# point_tid_columns (minor 16) and key_cut (minor 17): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
+	for opt in pt:point_tid_columns:16 kc:key_cut:17; do
+		IFS=: read -r fmt option minor <<<"$opt"
+		optfmt() { q "SELECT max(format) || ':' || (SELECT coalesce(reloptions::text, '') ~ '$option=g' FROM pg_class WHERE relname = 'docs_${fmt}_col') FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'"; }
+		optwant=$(q "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")
+		for step in "SELECT sift.col_merge('docs_${fmt}_col', true)" "SELECT sift.col_refresh('docs_${fmt}_col')" "REINDEX INDEX docs_${fmt}_col"; do
+			check "$ref: the $fmt clone: ${step%%(*}" q "$step"
+			same "$ref: the $fmt clone is minor $minor with its option after ${step%%(*}" "$(optfmt)" "$minor:true"
+			check "$ref: the $fmt clone verifies after ${step%%(*}" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
+			same "$ref: the $fmt clone answers a lookup as the plain plan after ${step%%(*}" "$(q "SET sift.enable_col_scan = on" "SET enable_seqscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")" "$optwant"
+		done
 	done
 	check "$ref: the clone with order_columns under the lowest setting holds no run" test "$(q "SELECT count(*) FROM sift.col_sections('docs_lo_col') WHERE section = 'runs'")" == 0
 	if [[ $hastbl == yes ]]; then
@@ -284,7 +287,7 @@ sift.async_maintenance = off'
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
 		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
 		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|pt|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 11
+		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|rn|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
 		check "3.2 downgrade: it lists no BM25 index" test "$(grep -c ' dgb_idx \| docs_idx ' <<<"$blockers")" == 0
 		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
 		q "ALTER SYSTEM SET sift.col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
@@ -328,7 +331,7 @@ sift.async_maintenance = off'
 			"CREATE TRIGGER t_dg BEFORE UPDATE ON dgb FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()" "DROP TRIGGER t_dg ON dgb"
 		err=$(q "ALTER EXTENSION pg_sift UPDATE TO '3.2'" 2>&1)
 		check "3.2 downgrade: there is no script back" grep -q 'no update path' <<<"$err"
-		check "3.2 downgrade: the catalog stays at 3.3" test "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.3
+		check "3.2 downgrade: the catalog stays at 3.4" test "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.4
 		# pg_dump writes CREATE EXTENSION without a version: a server that has the 3.2 files only restores the database at 3.2, and every index with an option of
 		# 3.3 fails to be created (the tables, the other indexes and the data come through)
 		qd() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir mx)/sock" -p "$(port mx)" -U postgres -d "$db" "${@/#/--command=}"; }
@@ -344,16 +347,16 @@ sift.async_maintenance = off'
 			"3.2 $(q "SELECT count(*) FROM docs_df") $(q "SELECT count(*) FROM tbl_ca") "
 		check "3.2 downgrade: the restored indexes without such an option verify" qd rst "SELECT sift.col_verify('docs_df_col', true)" "SELECT sift.col_verify('docs_su_col', true)" "SELECT sift.verify('dgb_idx', true)"
 		node_stop mx
-		# and forward again: the 3.3 library on the same files, the event triggers enabled, the setting reset
+		# and forward again: the 3.4 library on the same files, the event triggers enabled, the setting reset
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree after the downgrade"
-		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.3
+		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.4
 		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.col_format_minor" "SELECT pg_reload_conf()" >/dev/null
 		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT string_agg(evtenabled::text, '') FROM pg_event_trigger WHERE evtname IN ('sift_table_ddl_check', 'sift_table_repack_guard')")" == OO
 		check "3.2 downgrade: forward again: ALTER TABLE works with this tree's library" q "ALTER TABLE dgb DROP COLUMN extra"
 		check "3.2 downgrade: forward again: the indexes verify" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
-		check "3.2 downgrade: forward again: the restored database goes to 3.3 with ALTER EXTENSION UPDATE" test "$(qd rst "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.3
-		uc --to 3.3 postgres >/dev/null; rc=$?
+		check "3.2 downgrade: forward again: the restored database goes to 3.4 with ALTER EXTENSION UPDATE" test "$(qd rst "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.4
+		uc --to 3.4 postgres >/dev/null; rc=$?
 		check "3.2 downgrade: forward again: the preflight finds nothing to block" test $rc -eq 0
 		node_stop mx
 	fi

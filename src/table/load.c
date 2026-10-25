@@ -147,8 +147,6 @@ typedef struct Load
 	SealWriter	sw;
 	SiftColBatch *batch[LOAD_SBS];	/* the rows of each superblock of the run */
 	TupleDesc	desc;
-	Datum	   *values;
-	bool	   *isnull;
 	uint64		run;			/* the first vblock of the run */
 	int			units;			/* units of the run that are full */
 	uint32		n;				/* rows of the current unit */
@@ -215,6 +213,9 @@ publish_group(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->sum_dl += seg->sum_dl;
 }
 
+/* How many times a load settles a full directory again before it fails */
+#define LOAD_ROOM_TRIES 8
+
 /* A directory that is full (or past sift.table_backpressure) is made room in before the group is written, as a new write buffer does */
 static void
 make_room(Relation rel, SiftTblRel *st)
@@ -247,9 +248,16 @@ end_run(Load *ld, Relation rel, SiftTblRel *st)
 	ld->open = false;
 	if (!any)
 		return;
-	make_room(rel, st);
-	LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
-	sift_dir_read(rel, &st->dir);
+	/* the room made is taken by the writers that were waiting for it before the lock is: settle again, and give up only when it stays full */
+	for (int tries = 0;; tries++)
+	{
+		make_room(rel, st);
+		LockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+		sift_dir_read(rel, &st->dir);
+		if (st->dir.nsegs < sift_tbl_max_segments - 2 || tries == LOAD_ROOM_TRIES)
+			break;
+		UnlockPage(rel, SIFT_ACTIVE_LOCK_BLKNO, ExclusiveLock);
+	}
 	if (st->dir.nsegs >= sift_tbl_max_segments - 2)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -376,21 +384,19 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 		for (int i = 0; i < LOAD_SBS; i++)
 			ld->batch[i] = sift_cbatch_create(cxt, l->schema);
 		ld->rowcx = AllocSetContextCreate(cxt, "sift_table bulk load row", ALLOCSET_SMALL_SIZES);
-		ld->values = palloc(ld->desc->natts * sizeof(Datum));
-		ld->isnull = palloc(ld->desc->natts * sizeof(bool));
 	}
 	MemoryContextSwitchTo(old);
 	return !ld->refused;
 }
 
 void
-sift_tbl_load_row(Relation rel, SiftTblRel *st, MinimalTuple mtup, CommandId cid, ItemPointer tid)
+sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid)
 {
 	Load	   *ld = find_load(RelationGetRelid(rel));
 	MemoryContext old;
-	HeapTuple	tup;
 	SiftColRow	row;
 	uint64		unit;
+	Size		hoff = offsetof(MinimalTupleData, t_bits);
 
 	ld->sw.rel = rel;
 	ld->sw.l = layout_of(rel, st);
@@ -408,9 +414,7 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, MinimalTuple mtup, CommandId cid
 	unit = ld->run + (uint64) ld->units * SIFT_TBL_VBLOCKS_SB;
 	ItemPointerSet(tid, unit + ld->n / SIFT_TBL_MAX_OFF, ld->n % SIFT_TBL_MAX_OFF + 1);
 	old = MemoryContextSwitchTo(ld->rowcx);
-	tup = heap_tuple_from_minimal_tuple(mtup);
-	heap_deform_tuple(tup, ld->desc, ld->values, ld->isnull);
-	row_in(ld->sw.l, ld->desc, tid, ld->values, ld->isnull, &row);
+	row_in(ld->sw.l, ld->desc, tid, values, isnull, &row);
 	if (ld->vers)
 		sift_cbatch_add_ver(ld->batch[ld->units], &row, GetCurrentTransactionId(), cid);
 	else
@@ -418,7 +422,14 @@ sift_tbl_load_row(Relation rel, SiftTblRel *st, MinimalTuple mtup, CommandId cid
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(ld->rowcx);
 	ld->n++;
-	ld->bytes += mtup->t_len;
+	/* the bytes the row has as a minimal tuple (the write buffer limit counts them) */
+	for (int a = 0; a < ld->desc->natts; a++)
+		if (isnull[a])
+		{
+			hoff += BITMAPLEN(ld->desc->natts);
+			break;
+		}
+	ld->bytes += MAXALIGN(hoff) + heap_compute_data_size(ld->desc, (Datum *) values, (bool *) isnull);
 }
 
 void

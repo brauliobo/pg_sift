@@ -32,6 +32,8 @@
 #include "col/build.h"
 #include "col/seg.h"
 #include "col/point.h"
+#include "col/hll.h"
+#include "col/gorder.h"
 #include "col/runs.h"
 #include "col/setsum.h"
 #include "core/cpu.h"
@@ -188,6 +190,33 @@ sift_col_validate_order_columns(const char *value)
 }
 
 void
+sift_col_validate_order_array_group(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_order_array_columns(const char *value)
+{
+	const char *err = sift_crun_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option \"%s\": %s", value, err)));
+}
+
+void
+sift_col_validate_hll_columns(const char *value)
+{
+	const char *err = sift_hll_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_validate_point_columns(const char *value)
 {
 	const char *err = sift_cpoint_syntax(value);
@@ -223,8 +252,8 @@ sift_col_init(void)
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
-							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
-							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",
+							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
@@ -236,7 +265,7 @@ sift_col_init(void)
 							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.cluster_advice",
 							 "sift.cluster_advice() recommends a physical order for the tables of the sift_col indexes.",
-							 "Off: it answers 'not recommended' for every index. The index option cluster_advice switches one index off.",
+							 "Off: it answers 'not recommended' for every index, and CREATE INDEX does not suggest key_cut. The index option cluster_advice switches one index off.",
 							 &sift_cluster_advice, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.col_rollup_worker",
 							 "A request for a rollup refresh starts the background worker that makes it.",
@@ -282,6 +311,12 @@ sift_col_init(void)
 							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
 							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole.",
 							&sift_col_auto_merge_partition_kb, 0, 0, MAX_KILOBYTES, PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_unit_floor",
+							"Rows per unit below which the rows of a sift_col promotion or overlay merge are cut by TID range, not one unit per superblock; 0 keeps a unit per superblock.",
+							"Churn puts a few dozen rows in each of the superblocks it touches, and a unit costs a scan about as much as a thousand rows however few it holds, so a promotion that reaches "
+							"16 superblocks or more with under half this many rows each is written as units of this many rows in TID order, and a merge that stays that sparse does the same. "
+							"A merge that reaches this many rows per superblock cuts by superblock again. Needs a table of 16 superblocks (4,096 pages) or more.",
+							&sift_col_unit_floor, 2048, 0, 32768, PGC_SUSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_auto_merge_max_workers",
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
@@ -299,6 +334,9 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_merge_panic",
 							 "Testing: a column merge (promotion excepted) PANICs after it wrote the new segment, before it replaces the old ones.",
 							 NULL, &sift_test_col_merge_panic, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_floor_sbs",
+							"Testing: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16).",
+							NULL, &sift_test_col_floor_sbs, 0, 0, 1000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_refresh_sleep_ms",
 							"Testing: the refresh of a segment (sift.col_refresh, the rollup worker) sleeps this long after the new segment is written and before it replaces the old one (0 = no).",
 							NULL, &sift_test_col_refresh_sleep_ms, 0, 0, 60000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -347,7 +385,7 @@ sift_col_init(void)
 					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
-					   "sift.cluster_advice() may recommend a physical order for the table of this index (default on; maintenance only, not part of the format)",
+					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
 					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
@@ -365,9 +403,24 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "key_columns",
 						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4 and date foreign key columns and the columns named *_id that are not unique and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, and 15 for a key list or bitmap (default auto)",
 						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "key_cut",
+						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
+						 NULL, NULL, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "key_cut_rows",
+					  "Rows a key-cut unit aims at (0: as many as an average superblock of the table holds)",
+					  0, 0, 32768, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_columns",
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_array_columns",
+						 "the columns of order_columns (integer, date and timestamp) whose segments written from now on also keep every row's key and heap address sorted, so that ORDER BY column LIMIT n above 32 reads n entries whatever the number of units; 1 to 4 bytes a row for each column; the segments are column format minor 21 (default none)",
+						 "", sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "order_array_group",
+						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
+						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "hll_columns",
+						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
+						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
 						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
@@ -402,6 +455,11 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"return_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, return_columns)},
 	{"superunit", RELOPT_TYPE_INT, offsetof(SiftColOptions, superunit)},
 	{"order_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_columns)},
+	{"order_array_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_columns)},
+	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
+	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
+	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
+	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
@@ -439,11 +497,43 @@ sift_col_options(Relation index)
 }
 
 const char *
-sift_col_options_paths(Relation index)
+sift_col_options_paths_raw(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->paths ? (const char *) o + o->paths : "";
+}
+
+/* 'auto' (decided at the build) or 'auto: spec' (decided by an earlier build); a spec starts with a key and a type, so it never reads like this */
+/* the option is empty or a bare 'auto' on an index with a jsonb column: its paths are read from the documents at the next build */
+bool
+sift_col_paths_redecide(Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+
+	if (opt[0] != '\0' && !(sift_col_paths_auto(opt) && opt[4] == '\0'))
+		return false;
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid == JSONBOID)
+			return true;
+	return false;
+}
+
+bool
+sift_col_paths_auto(const char *opt)
+{
+	return strncmp(opt, "auto", 4) == 0 && (opt[4] == '\0' || opt[4] == ':');
+}
+
+/* The spec the shredder parses: the option, or what follows 'auto:' ("" while 'auto' has not been decided) */
+const char *
+sift_col_options_paths(Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+
+	if (!sift_col_paths_auto(opt))
+		return opt;
+	return opt[4] == ':' ? opt + 5 + strspn(opt + 5, " ") : "";
 }
 
 const char *
@@ -462,11 +552,18 @@ sift_col_options_preagg(Relation index)
 	return o->preagg ? (const char *) o + o->preagg : "";
 }
 
+/*
+ * An ALTER INDEX is checked by building the state the new options give. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
+ * again at the next REINDEX (col/keycols.c), and has no schema until then, as any change of paths leaves the segments on the old one: it is let through.
+ */
 void
 sift_col_alter_check(Relation index)
 {
-	if (sift_col_is_index(index))
-		(void) sift_col_rel(index);
+	if (!sift_col_is_index(index))
+		return;
+	if (sift_col_paths_redecide(index))
+		return;
+	(void) sift_col_rel(index);
 }
 
 const char *
@@ -493,12 +590,57 @@ sift_col_options_point_tid_columns(Relation index)
 	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
 }
 
+/* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
+const char *
+sift_col_options_key_cut(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+	const char *v = o->key_cut ? (const char *) o + o->key_cut : "";
+
+	if (strncmp(v, "auto:", 5) == 0)
+		return v + 5;
+	return strcmp(v, "auto") == 0 || strcmp(v, "off") == 0 ? "" : v;
+}
+
+/* whether a build decides key_cut: the option is not set, or holds a choice of an earlier build */
+bool
+sift_col_options_key_cut_auto(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->key_cut == 0 || strncmp((const char *) o + o->key_cut, "auto", 4) == 0;
+}
+
 const char *
 sift_col_options_order_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->order_columns ? (const char *) o + o->order_columns : "";
+}
+
+const char *
+sift_col_options_order_array_group(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_group ? (const char *) o + o->order_array_group : "";
+}
+
+const char *
+sift_col_options_order_array_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->order_array_columns ? (const char *) o + o->order_array_columns : "";
+}
+
+const char *
+sift_col_options_hll_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->hll_columns ? (const char *) o + o->hll_columns : "";
 }
 
 const char *
@@ -567,7 +709,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
-					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4')", NameStr(att->attname))));
+					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
 		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
@@ -630,6 +772,49 @@ build_rel(Relation index, MemoryContext mcxt)
 		r->pagg.super = sift_col_options(index)->superunit;
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
+		if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_columns(index), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
+										"not an integer, date or timestamp column")) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
+		if (sift_col_options_order_array_group(index)[0] != '\0')
+		{
+			bool		grp[SIFT_COL_MAX_COLS] = {false};
+			int			ng = 0;
+
+			if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_group(index), r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
+											"not an integer, date or timestamp column")) != NULL)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
+			for (int i = 0; i < n; i++)
+				if (grp[i])
+				{
+					if (r->pagg.gorder[i])
+						ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: column \"%s\" is in order_array_columns", names[i])));
+					r->pagg.gorder_group = i + 1;
+					ng++;
+				}
+			if (ng != 1)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
+		}
+		for (int i = 0; i < n; i++)
+			if (r->pagg.gorder[i] && !r->pagg.run[i])
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
+								errhint("The global order extends the sorted run of a column: add it to order_columns.")));
+		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			if (r->pagg.hll[i])
+			{
+				Oid			t = TupleDescAttr(desc, defs[i].attno - 1)->atttypid;
+
+				if (t != INT2OID && t != INT4OID && t != INT8OID && t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID && t != TEXTOID && t != VARCHAROID && t != UUIDOID)
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t))));
+				if ((t == TEXTOID || t == VARCHAROID) && !get_collation_isdeterministic(TupleDescAttr(desc, defs[i].attno - 1)->attcollation))
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i])));
+				/* a column the build chose for its key list (key_columns 'auto') gives it up: a leaf has one blob a unit in the set section, and the user asked for the sketch */
+				if (r->pagg.set[i] && r->pagg.keyauto)
+					r->pagg.set[i] = r->pagg.pres[i] = false;
+				else if (r->pagg.set[i])
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid hll_columns option: \"%s\" is in key_columns, which keeps its distinct keys exactly", names[i])));
+			}
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_columns(index), r->schema, (const char *const *) names, r->pagg.point)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
@@ -640,12 +825,40 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
 				r->pagg.lookup[r->first[a]] = true;
+		{
+			char	   *list = pstrdup(sift_col_options_key_cut(index)),
+					   *save = NULL;
+
+			for (char *tok = strtok_r(list, ", ", &save); tok != NULL; tok = strtok_r(NULL, ", ", &save))
+			{
+				int			id = -1;
+
+				for (int i = 0; i < n && id < 0; i++)
+					if (strcmp(names[i], tok) == 0)
+						id = i;
+				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !sift_crun_leaf_ok(r->schema, &r->schema->cols[id]))
+					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
+				r->cut[r->ncut++] = id;
+			}
+			r->cut_rows = sift_col_options(index)->key_cut_rows;
+		}
 	}
 	r->meta = (SiftColIndexMeta) {.indexoid = RelationGetRelid(index), .heapoid = index->rd_index->indrelid, .natts = natts,
 	.ncols = n,.cols = r->schema->cols};
 	r->rowcxt = AllocSetContextCreate(mcxt, "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(old);
 	return r;
+}
+
+/* Are the units of the sift_col index cut by the order key? (the planner keeps a ctid range, which selects units by heap superblock, on the normal plan for such an index) */
+bool
+sift_col_index_keyed(Oid indexoid)
+{
+	Relation	index = index_open(indexoid, NoLock);
+	bool		keyed = sift_col_is_index(index) && sift_col_rel(index)->ncut > 0;
+
+	index_close(index, NoLock);
+	return keyed;
 }
 
 SiftColRel *

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark (bench/bench duckdb, steps/duckdb.sh).
+"""pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (bench/bench duckdb, steps/duckdb.sh).
 
     python3 -I bench/steps/duckdb.py run --sift-port P --duck-port P --out FILE --data DIR [--rows N] [--runs 3] [--timeout 30] [--version V] [--meta KEY=VALUE ...]
 
@@ -27,7 +27,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 import extras  # noqa: E402
+import pgq  # noqa: E402  (steps/pgq.py)
 from store_lib import load_queries  # noqa: E402
 
 SQL = os.path.join(HERE, '..', 'sql', 'store')
@@ -42,8 +44,7 @@ TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', '
 ENV = {**os.environ, 'LC_ALL': 'C'}
 
 
-def log(msg):
-    print('[%s duckdb] %s' % (time.strftime('%T'), msg), file=sys.stderr, flush=True)
+log = benchlib.logger('duckdb')[0]
 
 
 def psql(port, db, *args, stdin=None):
@@ -79,36 +80,22 @@ def wait_quiet(limit=300):
     return True
 
 
-class Session:
+class Session(pgq.Backend):
     """one psql process kept open; run() returns (milliseconds as psql timed the statement, its rows, the error or warning)"""
 
     def __init__(self, port, timeout, setting, db='bench', host='127.0.0.1'):
-        env = {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout}
-        self.p = subprocess.Popen(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        self.p.stdin.write('\\set VERBOSITY terse\n')
+        super().__init__(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db], {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout},
+                         setup=['\\set VERBOSITY terse'], strict=False)
         if setting:
             self.run('SET duckdb.force_execution = %s' % setting)
 
     def run(self, sql):
-        self.p.stdin.write('\\timing on\n%s;\n\\timing off\nSELECT \'__END__\';\n' % sql.rstrip(';'))
-        self.p.stdin.flush()
-        lines = []
-        for line in self.p.stdout:
-            if line.strip() == '__END__':
-                break
-            lines.append(line.rstrip('\n'))
-        else:
-            sys.exit('duckdb: psql ended')
+        lines = super().run('\\timing on\n%s;\n\\timing off' % sql.rstrip(';'), capture=True)
         ms = next((float(m.group(1)) for l in reversed(lines) if (m := re.match(r'Time: ([0-9.]+) ms', l))), None)
         err = next((l[6:].strip() for l in lines if l.startswith('ERROR:')), '')
         warn = next((l[8:].strip() for l in lines if l.startswith('WARNING:')), '')
         rows = [l for l in lines if not l.startswith(('Time:', 'ERROR:', 'WARNING:', 'NOTICE:'))]
         return ms, rows, err, warn
-
-    def close(self):
-        self.p.stdin.close()
-        self.p.wait()
 
 
 def key(row):
@@ -286,7 +273,7 @@ def main():
 
     meta = dict(m.split('=', 1) for m in args.meta)
     meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings), host_load_before=load_before, host_load_after=extras.host_load())
-    extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark (%d orders).' % args.rows, meta, rows)
+    extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (%d orders).' % args.rows, meta, rows)
     log('wrote %s' % args.out)
 
 

@@ -1,0 +1,45 @@
+-- The statistics of a column index that a plan reads are kept by the backend between plans, as of the state of the index (its directory version, the
+-- pages of the table and those all-visible, the catalog entries of the index and the table). A plan after a change of any of these prices the scan
+-- with the new facts, and sift.plan_scale, applied to the copy a plan takes, changes the price without a change of the index.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = off;
+CREATE TABLE ev (id int, grp int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, i % 50, i % 7 FROM generate_series(1, 20000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, v);
+VACUUM (FREEZE, ANALYZE) ev;
+-- the price of the scan node of the grouped query, as the planner gives it with the normal paths off
+CREATE FUNCTION scan_price() RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text; p numeric;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	FOR l IN EXECUTE 'EXPLAIN SELECT grp, sum(v) FROM ev GROUP BY grp' LOOP
+		IF l ~ 'Custom Scan \(SiftAgg\)' THEN p := substring(l from '\.\.([0-9.]+) rows')::numeric; END IF;
+	END LOOP;
+	RETURN p;
+END $$;
+CREATE TABLE price (step text, p numeric);
+INSERT INTO price SELECT 'start', scan_price();
+INSERT INTO price SELECT 'same', scan_price();
+INSERT INTO ev SELECT i, i % 50, i % 7 FROM generate_series(20001, 400000) i;
+VACUUM (FREEZE, ANALYZE) ev;
+INSERT INTO price SELECT 'after growth', scan_price();
+SET sift.plan_scale = 10;
+INSERT INTO price SELECT 'scaled', scan_price();
+RESET sift.plan_scale;
+INSERT INTO price SELECT 'unscaled again', scan_price();
+REINDEX INDEX ev_col;
+INSERT INTO price SELECT 'after reindex', scan_price();
+SELECT (SELECT p FROM price WHERE step = 'start') = (SELECT p FROM price WHERE step = 'same') AS same_state_same_price,
+       (SELECT p FROM price WHERE step = 'after growth') > (SELECT p FROM price WHERE step = 'start') AS grows_with_the_index,
+       (SELECT p FROM price WHERE step = 'scaled') > (SELECT p FROM price WHERE step = 'after growth') AS scale_applies,
+       (SELECT p FROM price WHERE step = 'unscaled again') = (SELECT p FROM price WHERE step = 'after growth') AS scale_leaves_no_trace,
+       (SELECT p FROM price WHERE step = 'after reindex') > 0 AS priced_after_reindex;
+ same_state_same_price | grows_with_the_index | scale_applies | scale_leaves_no_trace | priced_after_reindex 
+-----------------------+----------------------+---------------+-----------------------+----------------------
+ t                     | t                    | t             | t                     | t
+(1 row)
+
+DROP FUNCTION scan_price();
+DROP TABLE price, ev;
+DROP EXTENSION pg_sift;

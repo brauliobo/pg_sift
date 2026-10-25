@@ -11,6 +11,12 @@ the pre-aggregates, the arms alone, parallel workers, ...); the results are comp
   test/fuzz/diff_fuzz.py --seeds 1-3 --queries 40 --rows 3000        the quick tier (scripts/ci.sh, job difftest-fuzz)
   test/fuzz/diff_fuzz.py --seeds 100-199 --queries 300 --out DIR     a long search: a reproducer per divergence in DIR (shrunk)
   test/fuzz/diff_fuzz.py --replay FILE                               runs a reproducer written by --out again
+  test/fuzz/diff_fuzz.py --table --seeds 1-3 --queries 40            the same on sift_tables (scripts/ci.sh, job difftest-fuzz-tbl)
+  test/fuzz/diff_fuzz.py --selftest                                  no server: every family generates and renders in both modes (the lint job)
+
+--table rewrites the fact tables USING sift_table (no sift_col index; the jsonb paths are declared with sift.table_set_paths) and runs the DML on them
+(updates, deletes, inserts, rolled back writes, VACUUM [FULL], sift.table_maintain: tombstones, write buffers, unfrozen groups); the reference is the
+normal plan on the same table. The families that need an option of the column index are skipped (TABLE_SKIP).
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT) installed and started. Exit 1 on a divergence or a query the generator got wrong.
 """
@@ -28,9 +34,24 @@ TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
            PGOPTIONS='-c client_min_messages=warning')
 
+TABLE = False  # --table: the fact tables are sift_tables
+# families not run on a sift_table, with the reason
+TABLE_SKIP = {
+    'point': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
+    'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
+    'keycut': 'key_cut is an option of the sift_col index',
+    'window': 'the sorted runs (order_columns) are an option of the sift_col index',
+    'trail': 'trf is read through a sift_col index of its own, which the mode drops',
+    'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
+    'zonekey': 'zkf is read through its sift_col index only',
+}
+
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
 REF = 'sift.enable_agg=off;max_parallel_workers_per_gather=0'
 
+
+# an f-string expression of Python before 3.12 cannot hold a backslash
+COLLATE_C = ' COLLATE "C"'
 
 # ---------- psql ----------
 def psql(db, text, check=True):
@@ -50,6 +71,11 @@ def create_db(name, template=None):
 
 def data_sql(seed, rows, parts):
     t = open(f'{HERE}/diff_fuzz_data.sql').read()
+    for mode, keep in (('table', TABLE), ('heap', not TABLE)):
+        t = re.sub(rf'^-- @{mode}\n(.*?)^-- @end\n', (lambda m: m.group(1)) if keep else '', t, flags=re.S | re.M)
+    if TABLE:
+        t = t.replace(') PARTITION BY HASH (id);', ') USING sift_table;')
+        t = re.sub(r'^CREATE INDEX \w+ ON \w+ USING sift_col.*?;\n', '', t, flags=re.S | re.M)
     return t.replace('@SEED@', str(seed)).replace('@ROWS@', str(rows)).replace('@PARTS@', str(parts))
 
 
@@ -279,6 +305,99 @@ def render_lookup(p):
     return grouped(p, frm), bool(p['keys'])
 
 
+
+# a spine of periods (one matches no row) joined from the left to the parsed rows under grouping sets: the aggregates' arguments and FILTERs reach
+# the scan as placeholders; a strict expression of the scanned columns is read as such, a constant or a non-strict one keeps the placeholder
+PH_STRICT = ['e.val', 'e.amount * 2', "(e.metrics ->> 'm1')::float8", 'e.val + e.amount', "(r.value #>> '{}')::float8", "(r.value #>> '{}')::float8 * 10 - e.grp"]
+PH_OTHER = ['coalesce(e.val, 0)', 'CASE WHEN e.val IS NULL THEN -1 ELSE e.val END', '1', 'greatest(e.amount, 500)', "coalesce((r.value #>> '{}')::float8, -1)",
+            '(e.val IS NULL)::int']
+
+
+def gen_placeholder(r, ctx):
+    expr = r.choice(PH_STRICT + PH_OTHER)
+    c = r.randrange(10)
+    return dict(expr=expr, unnest='r.' in expr or r.random() < 0.3, m3=r.random() < 0.15, key=r.choice(['x.kind', 'x.key', 'x.grp']),
+                sets=r.random() < 0.7, aggs=['count(*)'] + r.sample(['count(v)', 'sum(v)', 'avg(v)', 'min(v)', 'max(v)', f'count(*) FILTER (WHERE v > {c})',
+                                                                    f'count(DISTINCT x.id) FILTER (WHERE v >= {c})', f'sum(v) FILTER (WHERE v < {c})',
+                                                                    f'avg(v) FILTER (WHERE x.kind IS NOT NULL)'], r.randrange(1, 5)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)))
+
+
+def render_placeholder(p):
+    key = p['key'] if p['unnest'] or p['key'] != 'x.key' else 'x.kind'
+    fn = ', jsonb_each(e.metrics) r' if p['unnest'] else ''
+    cond = [] if not p['unnest'] or p['m3'] else ["r.key <> 'm3'"]
+    w = ' WHERE ' + ' AND '.join(p['where'] + cond) if p['where'] or cond else ''
+    rk = ', r.key' if p['unnest'] else ''
+    grp = f'GROUPING SETS ((p.period, {key}), (p.period))' if p['sets'] else f'p.period, {key}'
+    sql = (f"WITH periods(period, lo, hi) AS (VALUES ('a', date '2025-01-01', date '2025-06-30'), ('b', date '2025-07-01', date '2026-02-04'), "
+           f"('z', date '2030-01-01', date '2030-12-31')), parsed AS (SELECT e.id, e.kind, e.grp, e.ts{rk}, {p['expr']} AS v FROM events e{fn}{w}) "
+           f"SELECT p.period, {key} AS k, {', '.join(f'{a} AS a{i}' for i, a in enumerate(p['aggs']))} FROM periods p LEFT JOIN parsed x ON x.ts BETWEEN p.lo AND p.hi GROUP BY {grp}")
+    return sql, False
+ONELEAF = {'kind': 'ok_kind', 'big': 'ok_big', 'val': 'ok_val', 'grp': 'ok_grp', 'ts': 'ok_ts'}
+
+def gen_oneleaf(r, ctx):
+    col = r.choice(sorted(ONELEAF))
+    return dict(col=col, jointype=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']), lateral=r.random() < 0.3,
+                keys=r.sample(['d.tag', 'e.grp', 'e.kind', 'd.w % 3', f'e.{col}'], r.choice([0, 1, 1, 2])),
+                aggs=['count(*)'] + r.sample(['count(d.tag)', 'max(d.w)', 'sum(d.w)', 'sum(e.amount)', 'count(DISTINCT d.tag)',
+                                              'count(*) FILTER (WHERE d.w > 4)', 'avg(e.val) FILTER (WHERE d.tag IS NOT NULL)'], r.randrange(1, 4)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True)
+
+
+def oneleaf_from(p):
+    t, c = ONELEAF[p['col']], p['col']
+    if p['lateral']:
+        return f"events e {p['jointype']} LATERAL (SELECT x.tag, x.w FROM {t} x WHERE x.k = e.{c} ORDER BY x.w, x.tag LIMIT 1) d ON true"
+    return f"events e {p['jointype']} {t} d ON d.k = e.{c}"
+
+
+def render_oneleaf(p):
+    return grouped(p, oneleaf_from(p)), bool(p['keys'])
+
+
+# sums and averages of numeric programs (+ - * of numeric(12,2), int columns and constants: 38 digits and more, large and negative operands, NULLs, NaN-free): the int64 vector blocks and the int128 interpreter
+NUMSUM = ['sum(e.num * (100 - e.b) * (100 + e.a))', 'sum(e.num * (1 - e.b) * (1 + e.a))', 'sum(e.num * (1 - e.num) * (1 + e.num))', 'sum(e.num)', 'avg(e.num * e.amount)', 'sum(e.amount * e.amount * e.a)',
+          'sum(e.num * e.num * e.num)', 'sum(e.num - e.amount * 2)', 'sum(-e.num * 3)', 'avg(e.num + e.a - e.b)', 'sum(e.num * (e.amount + 1)) FILTER (WHERE e.a > 3)', 'sum(DISTINCT e.num * 2)',
+          'sum(e.num * 4294967296)', 'sum(e.amount * 2147483647 * e.a)', 'sum(e.wnum * e.a)', 'sum(e.wnum * 3 - e.num)']
+
+
+def gen_numsum(r, ctx):
+    return dict(table='events', keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])), aggs=['count(*)'] + r.sample(NUMSUM, r.randrange(1, 5)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True)
+
+
+# two columns of one row compared (`a < b`): the cmp2 kernels of every SIMD level; the int4 columns of the events table pair up (the int8 one is the generic expression's; the types are in test agg_leaf_cmp)
+COLCMP = ['e.a', 'e.b', 'e.amount', 'e.grp', 'e.parent_id', 'e.big']
+
+
+def gen_colcmp(r, ctx):
+    cmps = []
+    for _ in range(r.randrange(1, 4)):
+        x, y = r.sample(COLCMP, 2)
+        cmps.append(f"{x} {r.choice(['<', '<=', '=', '<>', '>=', '>'])} {y}" if r.random() < 0.8 else f"NOT ({x} {r.choice(['<', '>'])} {y})")
+    return dict(table='events', keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])), aggs=['count(*)'] + r.sample(['sum(e.amount)', 'max(e.a)', 'avg(e.val)', 'count(DISTINCT e.grp)'], r.randrange(0, 3)),
+                where=cmps + preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), having=[], ordered=True)
+
+
+# grouping sets over keys of many values (the group table is a hash table) and a lookup's column: the sets that read the same tuples share their key ids
+SETKEYS = ['e.kind', 'e.grp', 'e.a', 'e.b', 'd.tag', 'e.ts', 'e.a % 7']
+
+
+def gen_setkeys(r, ctx):
+    p = gen_oneleaf(r, ctx)
+    ks = r.sample(SETKEYS, r.randrange(3, 6))
+    sets = [r.sample(ks, r.randrange(0, len(ks) + 1)) for _ in range(r.randrange(2, 5))]
+    ks = [k for k in ks if any(k in st for st in sets)]
+    return dict(p, keys=ks, sets=sets, aggs=['count(*)'] + r.sample(['sum(e.amount)', 'count(d.tag)', 'avg(e.val)', 'max(d.w)', 'count(DISTINCT e.id)',
+                                                                     'count(*) FILTER (WHERE e.amount > 500)'], r.randrange(1, 4)))
+
+
+def render_setkeys(p):
+    sets = ', '.join('(' + ', '.join(sorted(st, key=p['keys'].index)) + ')' for st in p['sets'])
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    return f"SELECT {select_list(p)} FROM {oneleaf_from(p)}{w} GROUP BY GROUPING SETS ({sets})", False
+
 def gen_dirty(r, ctx):
     form = r.randrange(5)
     cols = EVENTS
@@ -371,6 +490,152 @@ def render_leftlateral(p):
     return f"SELECT count(s.id) AS ids, avg(s.amount) AS amount, avg(s.sc) AS sc FROM ({inner}) s", False
 
 
+def gen_lateralagg(r, ctx):
+    p = dict(func=r.choice(['jsonb_to_recordset', 'jsonb_array_elements']), cond=r.choice(['', '', 'o.score IS NOT NULL', 'o.score > %d' % r.randrange(9), "o.dir_a = 'p'"]),
+             aggs=r.sample(['avg(o.score)', 'sum(o.score)', 'min(o.score)', 'max(o.score)', 'count(o.score)', 'max(o.score * 2)', 'count(o.cat)', 'min(o.cat)'], r.randrange(1, 4)),
+             where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), keys=keys(r, 'e', EVENTS, r.randrange(0, 2)), outer=r.choice(['avg', 'sum', 'max', 'count']), ordered=True)
+    return p
+
+
+def render_lateralagg(p):
+    if p['func'] == 'jsonb_to_recordset':
+        lat = "jsonb_to_recordset(e.doc -> 'parts') AS o(cat text, dir_a text, score float8)"
+        sub = lambda t: t
+    else:
+        lat = "jsonb_array_elements(e.doc -> 'parts') AS o"
+        sub = lambda t: re.sub(r'o\.score', "(o ->> 'score')::float8", t).replace('o.dir_a', "(o ->> 'dir_a')").replace('o.cat', "(o ->> 'cat')")
+    cols = ', '.join(f"{sub(a)} AS a{i}" for i, a in enumerate(p['aggs']))
+    wh = (' WHERE ' + sub(p['cond'])) if p['cond'] else ''
+    inner = f"SELECT e.id, e.grp, e.kind, {', '.join(f't.a{i}' for i in range(len(p['aggs'])))} FROM events e LEFT JOIN LATERAL (SELECT {cols} FROM {lat}{wh}) t ON true"
+    if p['where']:
+        inner += ' WHERE ' + ' AND '.join(p['where'])
+    outer = ', '.join(f"{p['outer']}(s.a{i}) AS v{i}" for i in range(len(p['aggs'])) if not (p['outer'] in ('avg', 'sum') and 'cat' in p['aggs'][i]))
+    k = p['keys'] and [re.sub(r'\be\.', 's.', x) for x in p['keys'] if re.match(r'e\.(id|grp|kind)\b', x)]
+    if not outer:
+        outer = 'count(s.id) AS n'
+    else:
+        outer += ', count(s.id) AS n'
+    if k:
+        return f"SELECT {', '.join(k)}, {outer} FROM ({inner}) s GROUP BY {', '.join(k)} ORDER BY {', '.join(k)}", True
+    return f"SELECT {outer} FROM ({inner}) s", False
+
+
+def gen_latest(r, ctx):
+    orders = ['e.ts', 'e.amount', 'e.val', 'e.a', 'e.big', 'e.kind', 'e.num', 'e.parent_id']
+    n = r.choice([1, 1, 2, 3, 5, 12, 400])
+    forms = [f't.rn <= {n}', f't.rn < {n + 1}', f'{n} >= t.rn', f'{n + 1} > t.rn', f't.rn <= {n}::bigint AND t.rn <= {n + 3}'] + ([f't.rn = 1', '1 = t.rn'] if n == 1 else [])
+    return dict(parts=r.sample(['e.kind', 'e.grp', 'e.a', 'e.parent_id', 'e.flag'], r.randrange(1, 3)),
+                order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
+                filter=r.choice(forms), cte=r.random() < 0.3, extra=r.sample(['e.ts', 'e.val', 'e.num', 'e.title', 'e.amount * 2'], r.randrange(0, 3)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=r.choice([[], [], ['t.amount > %d' % r.randrange(20)]]),
+                shape=r.choice(['rows', 'rows', 'rn', 'count']))
+
+
+def render_latest(p):
+    # id last: the order has no ties, so the first rows of a group are the ones the normal plan keeps
+    win = f"row_number() OVER (PARTITION BY {', '.join(p['parts'])} ORDER BY {', '.join(p['order'])}, e.id) rn"
+    extra = ''.join(f', {x} AS x{i}' for i, x in enumerate(p['extra']))
+    sub = f"SELECT e.id, e.kind, e.grp, e.amount{extra}, {win} FROM events e {where(p)}"
+    frm, pre = (f"latest t", f"WITH latest AS ({sub}) ") if p['cte'] else (f"({sub}) t", '')
+    cond = ' AND '.join([p['filter']] + p['outer'])
+    sel = {'rows': 't.id, t.kind, t.amount' + ''.join(f', t.x{i}' for i in range(len(p['extra']))), 'rn': 't.id, t.rn, t.rn + 1 AS next', 'count': 'count(*) AS n, sum(t.amount) AS amount, max(t.rn) AS deepest'}[p['shape']]
+    return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
+
+
+def gen_toplat(r, ctx):
+    orders = ['f.ts', 'f.amount', 'f.val', 'f.a', 'f.big', 'f.kind', 'f.num', 'f.parent_id']
+    key = r.choice([['grp'], ['parent_id'], ['a'], ['flag'], ['big'], ['kind'], ['grp', 'a'], ['ts']])
+    ties = [f'f.{k} = e.{k}' for k in key]
+    if key == ['ts']:
+        ties = [r.choice(['f.ts >= e.ts', 'f.ts < e.ts', 'f.ts = e.ts'])]
+    elif key[0] in ('grp', 'parent_id', 'a', 'big') and r.random() < 0.15:
+        ties = [f'f.{key[0]} = e.{key[0]} + 0']
+    return dict(form=r.choice(['lateral', 'lateral', 'left', 'scalar', 'sum']), ties=ties,
+                order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
+                limit=r.choice([1, 1, 2, 3, 5, 12, 400]), offset=r.choice([0, 0, 0, 2, 7]), pick=r.choice([7, 11, 40]), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)),
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)))
+
+
+def render_toplat(p):
+    sub = lambda cols: (f"SELECT {cols} FROM events f WHERE {' AND '.join(p['ties'] + p['inner'])} ORDER BY {', '.join(p['order'])}, f.id "
+                        f"LIMIT {1 if p['form'] == 'scalar' else p['limit']}" + ('' if p['form'] == 'scalar' else ' OFFSET %d' % p['offset']))
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    if p['form'] == 'scalar':
+        return f"SELECT e.id, ({sub('f.id')}) AS top FROM events e WHERE {wh} ORDER BY e.id", True
+    if p['form'] == 'sum':
+        return f"SELECT e.id, (SELECT count(*) + coalesce(sum(s.amount), 0) FROM ({sub('f.id, f.amount')}) s) AS t FROM events e WHERE {wh} ORDER BY e.id", True
+    join = 'LEFT JOIN' if p['form'] == 'left' else 'JOIN'
+    return f"SELECT e.id, x.id AS xid, x.amount FROM events e {join} LATERAL ({sub('f.id, f.amount')}) x ON true WHERE {wh} ORDER BY e.id, x.id", True
+
+
+# a cast of a jsonb path that raises on a jsonb null, in a condition of the outer rows next to a condition on the sub-select: PostgreSQL may test the sub-select first and never
+# reach the cast, or the reverse (a join order), so the error is not the plan's to reproduce
+CAST_PATH = re.compile(r"metrics ->>? '\w+'\)::")
+
+
+def gen_decor(r, ctx):
+    tie = r.choice([['f.parent_id = e.parent_id'], ['f.grp = e.grp'], ["f.kind = e.kind"], ['f.parent_id = e.parent_id', 'f.grp = e.grp'], ['f.grp = e.grp', 'f.kind = e.kind']])
+    return dict(form=r.choice(['lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma', 'select', 'where']), tie=tie,
+                groups=r.sample(['f.kind', 'f.grp', 'f.flag', 'f.ts', 'f.a % 10', 'f.parent_id', 'f.grp % 4'], r.randrange(0, 3)), having=r.choice(['', '', 'count(*) > 1', 'min(f.amount) < 50']), aggs=r.sample(['count(*)', 'count(f.amount)', 'sum(f.amount)', 'min(f.ts)', 'max(f.kind)', 'avg(f.val)', 'bool_or(f.flag)',
+                                                                                      'count(DISTINCT f.grp)', "sum(f.amount) FILTER (WHERE f.grp > 5)", 'array_agg(f.a ORDER BY f.id)', 'coalesce(sum(f.amount), -1)',
+                                                                                      'sum(f.amount) / nullif(count(f.amount), 0)'], r.randrange(1, 4)),
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)), outer=[o for o in preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)) if CAST_PATH.search(o) is None], pick=r.randrange(4, 12),
+                test=r.choice(['', 'IS NULL', 'IS NOT NULL', '> 100', '= 0', 'IS NULL OR {c} > 100']), total=r.random() < 0.3)
+
+
+NUMERIC_AGG = re.compile(r'^(count|sum|avg|coalesce\(sum)')
+
+
+def render_decor(p):
+    if not NUMERIC_AGG.match(p['aggs'][0]) or 'sum(f.amount) / nullif' in p['aggs'][0]:
+        p = dict(p, test=p['test'] if p['test'] in ('', 'IS NULL', 'IS NOT NULL') else 'IS NULL')
+
+    # the outer rows are a few hundred: the normal plan looks up the group of each, the scan groups the table once
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    sub = lambda i: f"SELECT {p['aggs'][i]} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}"
+    n = len(p['aggs'])
+    if p['form'] in ('lateral', 'left', 'comma', 'glateral', 'gleft', 'gcomma'):
+        join = {'lateral': 'JOIN', 'left': 'LEFT JOIN', 'comma': ',', 'glateral': 'JOIN', 'gleft': 'LEFT JOIN', 'gcomma': ','}[p['form']]
+        grouped = p['form'][0] == 'g' and p['groups']
+        gcols = [f"{g} AS g{j}" for j, g in enumerate(p['groups'] if grouped else [])]
+        cols = ', '.join(gcols + [f"{p['aggs'][i]} AS v{i}" for i in range(n)])
+        tail = ' GROUP BY ' + ', '.join(p['groups']) + (' HAVING ' + p['having'] if p['having'] else '') if grouped else ''
+        frm = f"events e {join} LATERAL (SELECT {cols} FROM events f WHERE {' AND '.join(p['tie'] + p['inner'])}{tail}) x" + ('' if join == ',' else ' ON true')
+        outs = [f'x.v{i}' for i in range(n)] + [f'x.g{j}' for j in range(len(gcols))]
+    else:
+        frm = 'events e'
+        outs = [f'({sub(i)})' for i in range(n)]
+    cond = ''
+    if p['test']:
+        c = outs[0]
+        cond = ' AND (' + (c + ' ' + p['test']).replace('{c}', c) + ')' if '{c}' not in p['test'] else ' AND (' + c + ' ' + p['test'].replace('{c}', c) + ')'
+    if p['form'] == 'where':
+        cond = f" AND ({outs[0]} {p['test'] or 'IS NULL'})".replace('{c}', outs[0])
+    sel = 'count(*) AS n' if p['total'] else 'e.id, ' + ', '.join(f'{o} AS v{i}' for i, o in enumerate(outs))
+    if p['total'] and p['form'] != 'where':
+        sel = 'count(*) AS n, ' + ', '.join(f'count({o}) AS c{i}' for i, o in enumerate(outs))
+    return f"SELECT {sel} FROM {frm} WHERE {wh}{cond}", False
+
+
+def gen_exists(r, ctx):
+    ties = ['f.parent_id = e.parent_id', 'f.grp = e.grp', 'f.kind = e.kind', 'f.ts = e.ts', 'f.flag = e.flag', 'f.big = e.big']
+    inner = lambda: preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)) + (['f.id < 0'] if r.random() < 0.05 else [])
+    return dict(form=r.choice(['select', 'not', 'or', 'ornot', 'case', 'two', 'top', 'topnot']), tie=r.sample(ties, r.choice([1, 1, 2])), tie2=r.sample(ties, 1), inner=inner(), inner2=inner(),
+                outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)) + (['e.id < 0'] if r.random() < 0.03 else []), pick=r.randrange(3, 10), total=r.random() < 0.3)
+
+
+def render_exists(p):
+    ex = lambda tie, inner: f"EXISTS (SELECT 1 FROM events f WHERE {' AND '.join(tie + inner)})"
+    a, b = ex(p['tie'], p['inner']), ex(p['tie2'], p['inner2'])
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    sel = {'select': f'e.id, {a} AS v0', 'not': f'e.id, NOT {a} AS v0', 'case': f"e.id, CASE WHEN {a} THEN 1 WHEN e.grp > 5 THEN 2 ELSE 3 END AS v0",
+           'two': f'e.id, {a} AS v0, NOT {b} AS v1'}.get(p['form'], 'e.id')
+    cond = {'or': f' AND (e.grp < 4 OR {a})', 'ornot': f' AND (e.grp < 4 OR NOT {a})', 'top': f' AND {a}', 'topnot': f' AND NOT {a}'}.get(p['form'], '')
+    if p['total']:
+        sel = 'count(*) AS n' + (f', count(*) FILTER (WHERE {a}) AS hits' if p['form'] in ('select', 'not', 'case', 'two') else '')
+    return f'SELECT {sel} FROM events e WHERE {wh}{cond}', False
+
+
 def gen_union(r, ctx):
     cols = EVENTS
     t = 'events'
@@ -411,7 +676,7 @@ def gen_topn(r, ctx):
     two = {('parent_id', 'grp'): 'e.parent_id + e.grp', ('a', 'amount'): 'e.a * 2 + e.amount', ('grp', 'a'): 'e.grp - e.a', ('c', 'd'): 'coalesce(e.parent_id, e.grp, e.a)',
            ('e', 'f'): 'CASE WHEN e.a > e.b THEN e.a ELSE e.b END', ('g', 'h'): 'greatest(e.a, e.b, e.grp)', ('i', 'j'): 'coalesce(e.kind, e.id::text)',
            ('k', 'l'): 'e.a IS NULL OR e.b IS NULL', ('o', 'p'): 'abs(e.a - e.b)', ('q', 'r'): 'round(e.num, 1)', ('s', 't'): 'date_trunc(\'month\', e.ts)', ('u', 'v'): 'mod(e.id, 10) + e.grp', ('m', 'n'): 'least(e.ts, DATE \'2025-06-01\')'}
-    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}' + (' COLLATE \"C\"' if k == 'title' and r.random() < 0.8 else '')} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
+    order = [f"{xform[k](f'e.{k}') if k in xform and r.random() < 0.5 else f'e.{k}' + (COLLATE_C if k == 'title' and r.random() < 0.8 else '')} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for k in ks]
     if r.random() < 0.15:
         order[0] = f"{two[r.choice(list(two))]} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip()
     grouped_ = r.random() < 0.25
@@ -435,6 +700,44 @@ def render_topn(p):
     return sql, True
 
 
+# ---------- trailing sort keys (TOPN_TIES): ORDER BY leaves, then columns the index does not hold, the Sort above the scan puts the ties in order ----------
+TR_LEAD = ['k', 'd', 't']
+TR_TAIL = ['w', 'x', 's', 'w % 7', 'w * 3 - k', 'length(s)', 'x * w']
+
+
+def gen_trail(r, ctx):
+    order = [f"g.{c} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip() for c in r.sample(TR_LEAD, r.choice([1, 1, 2]))]
+    for c in r.sample(TR_TAIL, r.choice([1, 1, 2])):
+        e = c.replace('w', 'g.w').replace('x', 'g.x').replace('s', 'g.s').replace('k', 'g.k').replace('length(g.s)', 'length(g.s)')
+        order.append(f"{e} {r.choice(['', 'DESC'])} {r.choice(['', 'NULLS FIRST', 'NULLS LAST'])}".strip())
+    return dict(order=order, limit=r.choice([1, 5, 10, 33, 50, 300, 1500]), offset=r.choice([0, 0, 3, 40, 500]),
+                where=r.sample(['g.k > 20', 'g.d < DATE \'2024-03-01\'', 'g.t IS NOT NULL', 'g.id % 3 = 1', 'g.k BETWEEN 50 AND 250', 'g.w IS NOT NULL'], r.choice([0, 0, 1, 2])),
+                keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_trail(p):
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    return f"SELECT g.id, g.k, g.w, g.s FROM trf g{w} ORDER BY {', '.join(p['order'] + ['g.id'])} LIMIT {p['limit']} OFFSET {p['offset']}", True
+
+
+def dml_trail(r, ctx):
+    """Updates that make a tie group the statistics do not know, deletes, inserts, VACUUM, promotion and merges on trf."""
+    m = r.choice([7, 13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 4:
+        return r.choice([f'UPDATE trf SET k = {r.randrange(-3, 3)} WHERE {ids}', f'UPDATE trf SET t = timestamp \'2025-01-01\' WHERE {ids}', f'UPDATE trf SET w = w + 1, d = NULL WHERE {ids}'])
+    if e == 4:
+        return f'DELETE FROM trf WHERE {ids}'
+    if e in (5, 6, 7):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_tr']; ctx['next_tr'] += n
+        return f'INSERT INTO trf SELECT * FROM fz.gen_trf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 8:
+        return r.choice(['VACUUM trf', 'VACUUM (FREEZE) trf'])
+    return r.choice(["SELECT sift.col_promote('trf_idx')", "SELECT sift.col_merge('trf_idx', true)", "SELECT sift.col_merge('trf_idx', false)"])
+
+
 SPANS = ["('span_a', daterange('2025-07-01', '2026-01-31', '[]'))", "('span_b', daterange('2025-01-01', '2025-06-30', '[]'))",
          "('span_c', daterange('2025-04-01', '2025-09-30', '[]'))", "('span_d', daterange(NULL, '2025-03-01'))"]
 
@@ -446,7 +749,11 @@ def gen_twolevel(r, ctx):
                 spine=r.choice([None, None, 'JOIN', 'LEFT JOIN']), spinesrc=r.choice(['TABLE buckets', "VALUES ('k0', NULL::date, 'a'), ('k1', NULL, 'b'), (NULL, NULL, 'd'), ('k7', NULL, 'e')"]),
                 total=r.random() < 0.8, keys=[], aggs=[], having=[], ordered=True,
                 # a group key that holds a sub-select: each arm plans one of its own
-                dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]))
+                dim=r.choice([None, None, f"{r.choice(['', 'NOT '])}IN (SELECT id FROM items WHERE {r.choice(['enabled', 'grp < 5', 'kind <> ' + chr(39) + 'k1' + chr(39)])})"]),
+                # the total arm counts the rows the lookup has none for: its join is an outer one next to the inner joins of the arms with the NOT NULL test
+                unmatched=r.random() < 0.4,
+                # the lookup behind a lateral sub-select of its own, over the parts with a score: its WHERE sits at the inner join of the arms with the NOT NULL test
+                wrapped=r.random() < 0.4)
 
 
 def render_twolevel(p):
@@ -457,9 +764,16 @@ def render_twolevel(p):
               f"ON e.ts <@ p.range {p['parent']}{w}), ")
 
     def arm(cat):
+        if p['lookup'] and p['wrapped']:
+            c = 'mo.category' if cat else 'NULL::text'
+            g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (', s.dim' if dim else '') + (f', {c}' if cat else '')
+            return (f"SELECT s.id, s.parent_id, s.kind, s.span, {'s.dim, ' if dim else ''}{c} AS category, avg(mo.score) AS score, count(s.id) AS n FROM scoped s "
+                    f"INNER JOIN LATERAL (SELECT rm.derived_cat AS category, o.score FROM LATERAL (SELECT cat, dir_a, score FROM jsonb_to_recordset(s.doc -> 'parts') q(cat text, dir_a text, score float8) "
+                    f"WHERE q.score IS NOT NULL) o LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true) mo ON true "
+                    + ("" if p['unmatched'] and not cat else "WHERE mo.category IS NOT NULL ") + g)
         if p['lookup']:
             lk = (f"LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true "
-                  "WHERE rm.derived_cat IS NOT NULL")
+                  + ("" if p['unmatched'] and not cat else "WHERE rm.derived_cat IS NOT NULL"))
             c = 'rm.derived_cat' if cat else 'NULL::text'
         else:
             lk, c = '', 'o.cat' if cat else 'NULL::text'
@@ -478,6 +792,27 @@ def render_twolevel(p):
         sql = (scoped + flag_a + f"SELECT coalesce(category, 'all_cats') AS category, span{', dim' if dim else ''}, round(avg(score)::numeric, 6) AS value, sum(n)::int AS n, "
                f"count(DISTINCT id) AS ids, count(id) AS idn, count(DISTINCT parent_id) AS parents FROM flag_a GROUP BY category, span{', dim' if dim else ''} "
                f"ORDER BY 1, 2{', 3' if dim else ''}")
+    return sql, True
+
+
+# ---------- the distinct rows of a group: count(DISTINCT id) over the elements of a list, FILTERs, grouping sets, a spine joined from the left ----------
+def gen_distinctrows(r, ctx):
+    return dict(spans=r.sample(SPANS, r.randrange(1, 4)), where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), join=r.choice(['LEFT JOIN', 'LEFT JOIN', 'JOIN']),
+                sets=r.random() < 0.6, src=r.choice(['parts', 'parts', 'metrics']), filt=r.randrange(10), parents=r.random() < 0.5, key=r.choice(['x.cat', 'x.cat', 'left(x.cat, 4)']))
+
+
+def render_distinctrows(p):
+    w = ' WHERE ' + ' AND '.join(p['where']) if p['where'] else ''
+    if p['src'] == 'parts':
+        inner = f"SELECT e.id, e.parent_id, e.ts, o.cat, o.score FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, dir_a text, score float8){w}"
+        flt = f"x.score >= {p['filt']}"
+    else:
+        inner = f"SELECT e.id, e.parent_id, e.ts, m.key AS cat, NULL::float8 AS score FROM events e CROSS JOIN LATERAL jsonb_each(e.metrics) m{w}"
+        flt = f"x.cat = 'm{p['filt'] % 4}'"
+    g = f"GROUP BY GROUPING SETS ((p.span, {p['key']}), (p.span), ())" if p['sets'] else f"GROUP BY p.span, {p['key']}"
+    sql = (f"WITH p(span, range) AS (VALUES {', '.join(p['spans'])}) "
+           f"SELECT p.span, {p['key']} AS cat, count(DISTINCT x.id) AS ids, count(DISTINCT x.id) FILTER (WHERE {flt}) AS ids_f, count(x.id) AS n, count(*) AS all_rows"
+           f"{', count(DISTINCT x.parent_id) AS parents' if p['parents'] else ''} FROM p {p['join']} ({inner}) x ON x.ts <@ p.range {g} ORDER BY 1, 2, 3, 4, 5, 6")
     return sql, True
 
 
@@ -576,14 +911,16 @@ def render_same(p):
 
 
 def gen_point(r, ctx):
-    """Rows of ev_part by an equality or a short IN list on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
+    """Rows of ev_part by an equality or an IN list (short, or of 65 to 400 keys) on a column with a directory of heap addresses (ev_part_pt): the index scan and the bitmap scan of the
     access method must give the rows of the normal plan, across the DML of the run (dead rows, addresses a VACUUM frees, the write buffer)."""
     n = ctx['rows'] // 2
     col = r.choice(['id', 'id', 'parent_id', 'kind'])
     val = (lambda: f"'k{r.randrange(5)}'") if col == 'kind' else (lambda: str(r.randrange(1, n if col == 'id' else n // 4)))
-    form = r.randrange(5)
+    form = r.randrange(6)
     if form == 0:
         cond = f'e.{col} = {val()}'
+    elif form == 5:  # a list past 64 keys, which the directory answers up to a share of the rows (misses and repeats among the keys)
+        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(65, 400)))})'
     elif form == 1:
         cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(2, 9)))})'
     elif form == 2:
@@ -599,11 +936,371 @@ def render_point(p):
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
+def gen_pointagg(r, ctx):
+    """The same lists as gen_point, aggregated by Custom Scan (SiftAgg), which asks the directory too (and narrows each unit to the rows it lists): as a list, as the keys of a semi lookup
+    join to a few rows of the table, and with another conjunct; the reference is the normal plan, across the DML of the run."""
+    p = gen_point(r, ctx)
+    n = ctx['rows'] // 2
+    if r.randrange(3) == 0:
+        a = r.randrange(1, n)
+        col = r.choice(['parent_id', 'id'])
+        p['where'] = [f"e.{col} IN (SELECT m.{col} FROM ev_part m WHERE m.id BETWEEN {a} AND {a + r.randrange(0, 30)})"]
+    return p
+
+
+def render_pointagg(p):
+    return f"SELECT e.kind, count(*), sum(e.amount) FROM ev_part e WHERE {p['where'][0]} GROUP BY 1 ORDER BY 1", True
+
+
+# ---------- key_cut: units cut by a key, the rows of the normal plan after every kind of churn and every kind of merge ----------
+KCUT_LITERALS = {
+    'ki': lambda r: str(r.randrange(-6, 36)),
+    'kd': lambda r: r.choice(["'infinity'::date", "'-infinity'::date", f"date '2025-{r.randrange(1, 8):02d}-{r.randrange(1, 29):02d}'", "date '2025-01-01'", "date '2025-07-19'"]),
+    'kt': lambda r: r.choice(["'infinity'::timestamp", "'-infinity'::timestamp", f"timestamp '2025-{r.randrange(1, 6):02d}-{r.randrange(1, 29):02d} {r.randrange(24):02d}:00:00'",
+                              "timestamp '2025-01-01 00:00:00.25'"]),
+    'kn': lambda r: r.choice(["'NaN'::numeric", str(r.randrange(0, 250)), f'{r.randrange(0, 250)}.{r.randrange(0, 125) * 8:03d}', '1000000']),
+    'kf': lambda r: r.choice(["'NaN'::float8", "'Infinity'::float8", "'-Infinity'::float8", "'-0'::float8", "0::float8", f'{r.randrange(-50, 50)}.{r.randrange(0, 100):02d}']),
+}
+KCUT_KEYS = ['ki', 'kd', 'kt', 'kn', 'kf']
+
+
+def kcut_pred(r, e):
+    c = r.choice(KCUT_KEYS + KCUT_KEYS + ['amount', 'kind'])
+    if c == 'amount':
+        return f'{e}.amount {r.choice([">", "<", ">=", "<="])} {r.randrange(1000)}'
+    if c == 'kind':
+        return f"{e}.kind = 'k{r.randrange(6)}'"
+    lit = KCUT_LITERALS[c]
+    form = r.randrange(7)
+    if form == 0:
+        return f'{e}.{c} = {lit(r)}'
+    if form == 1:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)}'
+    if form == 2:
+        return f'{e}.{c} BETWEEN {lit(r)} AND {lit(r)}'
+    if form == 3:
+        return f'{e}.{c} IN ({", ".join(lit(r) for _ in range(r.randrange(1, 5)))})'
+    if form == 4:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'({e}.{c} = {lit(r)} OR {e}.{c} > {lit(r)})'
+    return f'{e}.{c} <> {lit(r)}'
+
+
+KCUT_KEY_EXPRS = ['{e}.kind', '{e}.ki', '{e}.ki % 5', '{e}.kd', "date_trunc('month', {e}.kd)::date", '{e}.kt', '({e}.kn IS NULL)', "({e}.kf = 'NaN')"]
+KCUT_AGGS = ['count(*)', 'count({e}.ki)', 'sum({e}.amount)', 'avg({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'sum({e}.val)', 'min({e}.ki)', 'max({e}.ki)', 'min({e}.kd)', 'max({e}.kd)',
+             'min({e}.kt)', 'max({e}.kt)', 'min({e}.kn)', 'max({e}.kn)', 'min({e}.kf)', 'max({e}.kf)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.ki)', 'count(DISTINCT {e}.kd)',
+             'count(*) FILTER (WHERE {e}.ki > 10)']
+
+
+def gen_keycut(r, ctx):
+    t = r.choice(['kcut_a', 'kcut_b', 'kcut_c'])
+    form = r.choice(['agg', 'agg', 'agg', 'topn', 'rows'])
+    where_ = [kcut_pred(r, 'e') for _ in range(r.randrange(0, 4))]
+    if len(where_) > 1 and r.random() < 0.25:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    if form == 'agg':
+        ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(KCUT_KEY_EXPRS, r.choice([0, 0, 1, 1, 2]))))
+        ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 6))))
+        return dict(table=t, form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    order = ', '.join(f'e.{k} {r.choice(["", "DESC"])} {r.choice(["", "NULLS FIRST", "NULLS LAST"])}'.strip() for k in r.sample(KCUT_KEYS, r.choice([1, 2, 3])))
+    return dict(table=t, form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order=order, limit=r.choice([1, 5, 20, 100, 400]), offset=r.choice([0, 0, 7]))
+
+
+def render_keycut(p):
+    if p['form'] == 'agg':
+        return grouped(p, f"{p['table']} e"), True
+    cols = 'e.id, e.ki, e.kd, e.kt, e.kn, e.kf, e.amount'
+    tail = f"ORDER BY {p['order']}, e.id LIMIT {p['limit']} OFFSET {p['offset']}" if p['form'] == 'topn' else 'ORDER BY e.id'
+    return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
+
+
+# ---------- units cut by TID range: the overlays of churn in a plain index, the rows of the normal plan after every kind of promotion and merge ----------
+def gen_floor(r, ctx):
+    p = gen_keycut(r, ctx)
+    p['table'] = 'ufl'
+    if r.random() < 0.4:
+        lo = r.randrange(0, 600)
+        p['where'].append(f"e.ctid >= '({lo},1)' AND e.ctid < '({lo + r.randrange(1, 900)},1)'")
+    return p
+
+
+# ---------- a unit with dead rows whose pages are all-visible answers net of them (docs/COL-PREAGG.md 12): the rows of the normal plan after deletes and VACUUM, with the share and without ----------
+DEAD_KEYS = ['{e}.kind', '{e}.ki', '{e}.kd', "date_trunc('month', {e}.kd)::date", "date_trunc('day', {e}.kt)::date", '({e}.kn IS NULL)', '{e}.ki % 5']
+DEAD_AGGS = ['count(*)', 'count({e}.ki)', 'count({e}.kn)', 'sum({e}.amount)', 'avg({e}.amount)', 'sum({e}.kn)', 'sum({e}.ki)', 'avg({e}.kn)', 'sum({e}.val)',
+             'min({e}.amount)', 'max({e}.kn)', 'count(DISTINCT {e}.kind)']
+
+
+def dead_pred(r, e):
+    return r.choice([f"{e}.kind = 'k{r.randrange(5)}'", f"{e}.kind IN ('k{r.randrange(5)}', 'k{r.randrange(5)}')", f'{e}.ki < {r.randrange(40)}', f'{e}.ki IS NULL', f'{e}.kn IS NOT NULL',
+                     f"{e}.kd >= date '2025-0{r.randrange(1, 8)}-15'", f'{e}.ki {r.choice(["=", "<>"])} {r.randrange(40)}',
+                     f"{e}.ctid >= '({r.randrange(600)},1)' AND {e}.ctid < '({r.randrange(600, 1500)},1)'"])
+
+
+def gen_dead(r, ctx):
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(DEAD_KEYS, r.choice([0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(DEAD_AGGS, r.randrange(1, 5)) if r.random() < 0.9 or len(ks) == 0))
+    if not ag:
+        ag = ['count(*)']
+    return dict(table='udd', form='agg', keys=ks, aggs=ag, where=[dead_pred(r, 'e') for _ in range(r.choice([0, 0, 1, 1, 2]))], having=[], ordered=True)
+
+
+# ---------- a range on a leaf with a sorted run (order_columns): a unit takes the rows of the range from the run, not from a test of every row ----------
+WINDOW_COLS = ['ki', 'kd', 'kt', 'kn']
+
+
+def window_pred(r, e):
+    c = r.choice(WINDOW_COLS + WINDOW_COLS + ['kf', 'amount'])
+    if c == 'amount':
+        return f'{e}.amount {r.choice([">", "<", ">=", "<="])} {r.randrange(1000)}'
+    lit = KCUT_LITERALS[c]
+    form = r.randrange(8)
+    if form < 3:
+        return f'{e}.{c} >= {lit(r)} AND {e}.{c} < {lit(r)}'
+    if form == 3:
+        return f'{e}.{c} BETWEEN {lit(r)} AND {lit(r)}'
+    if form == 4:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)} AND {e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)} AND {e}.{c} <> {lit(r)}'
+    if form == 5:
+        return f'{e}.{c} = {lit(r)}'
+    if form == 6:
+        return f'{e}.{c} {r.choice([">", "<", ">=", "<="])} {lit(r)}'
+    return f'{e}.{c} >= {lit(r)} AND {e}.{c} <= {lit(r)} AND {e}.ki IS NOT NULL'
+
+
+def gen_window(r, ctx):
+    form = r.choice(['agg', 'agg', 'agg', 'rows'])
+    where_ = [window_pred(r, 'e') for _ in range(r.choice([1, 1, 1, 2]))]
+    if form == 'agg':
+        ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(KCUT_KEY_EXPRS, r.choice([0, 0, 1, 2]))))
+        ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(KCUT_AGGS, r.randrange(1, 5))))
+        return dict(table='kcut_w', form=form, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    return dict(table='kcut_w', form=form, keys=[], aggs=[], where=where_, having=[], ordered=True, order='e.id', limit=r.choice([1, 5, 20, 100, 400]), offset=0)
+
+
+def render_window(p):
+    if p['form'] == 'agg':
+        return grouped(p, f"{p['table']} e"), True
+    return f"SELECT e.id, e.ki, e.kd, e.kt, e.kn, e.amount FROM {p['table']} e {where(p)} ORDER BY e.id", True
+
+
+# ---------- IS [NOT] NULL as a test of the NULL count of a unit's zone: units cut by it, answered from pre-aggregates, across soft deletes and restores ----------
+NZ_NULLABLE = ['deleted_at', 'seen_at', 'tag', 'score', 'kind', 'amount', 'val']
+
+
+def nz_pred(r, e):
+    c = r.choice(NZ_NULLABLE)
+    form = r.randrange(9)
+    if form < 5:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form == 5:
+        return f'{e}.org {r.choice(["=", "<", ">"])} {r.randrange(12)}'
+    if form == 6:
+        return f'{e}.amount {r.choice(["<", ">="])} {r.randrange(1000)}'
+    if form == 7:
+        return f'{e}.id {r.choice(["<", ">"])} {r.randrange(1, 4 * 256)}'
+    return f'({e}.{c} IS NULL OR {e}.org = {r.randrange(12)})'
+
+
+NZ_KEYS = ['{e}.org', '{e}.kind', '{e}.org % 3', '({e}.deleted_at IS NULL)', '{e}.seen_at', '{e}.tag']
+NZ_AGGS = ['count(*)', 'count({e}.deleted_at)', 'count({e}.seen_at)', 'count({e}.tag)', 'count({e}.score)', 'sum({e}.amount)', 'min({e}.amount)', 'max({e}.amount)', 'avg({e}.val)',
+           'sum({e}.val)', 'min({e}.id)', 'max({e}.id)', 'count(DISTINCT {e}.kind)', 'count(DISTINCT {e}.org)', 'sum({e}.score)', 'max({e}.seen_at)',
+           'count(*) FILTER (WHERE {e}.deleted_at IS NULL)', 'sum({e}.amount) FILTER (WHERE {e}.tag IS NOT NULL)']
+
+
+def gen_nullzone(r, ctx):
+    where_ = [nz_pred(r, 'e') for _ in range(r.choice([1, 1, 2, 3]))]
+    if len(where_) > 1 and r.random() < 0.2:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(NZ_KEYS, r.choice([0, 0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(NZ_AGGS, r.randrange(1, 5))))
+    return dict(table='nzf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
+# ---------- exceptions: IS NULL on a stamp that is set in a few rows of a unit, answered as the unit net of them (float sums within the tolerance of the others) ----------
+EX_WHERE = ['e.stamp IS NULL'] * 6 + ['e.stamp IS NOT NULL', 'e.stamp IS NULL AND e.org < {k}', 'e.stamp IS NULL AND e.id < {n}', 'e.stamp IS NULL AND e.id > {n}',
+                                       "e.stamp IS NULL AND e.kind = 'k{k4}'", 'e.stamp IS NULL AND e.amount >= {k}00', '(e.stamp IS NULL OR e.org = {k})']
+EX_KEYS = ['e.org', 'e.kind', 'e.org % 3', '(e.id / 256)']
+EX_AGGS = ['count(*)', 'count(e.val)', 'sum(e.amount)', 'avg(e.amount)', 'sum(e.val)', 'avg(e.val)', 'sum(e.dec)', 'avg(e.dec)', 'min(e.val)', 'max(e.dec)', 'count(e.stamp)',
+           'sum(e.val) FILTER (WHERE e.org = {k})', 'count(DISTINCT e.kind)']
+EX_ELEM_KEYS = ['r.key', "r.key || e.kind", 'e.org']
+EX_ELEM_AGGS = ['count(*)', "sum((r.value #>> '{{}}')::float8)", "avg((r.value #>> '{{}}')::float8)", "min((r.value #>> '{{}}')::float8)", "sum((r.value #>> '{{}}')::float8) FILTER (WHERE e.org = {k})"]
+EX_LIST_KEYS = ['p.cat', 'p.cat || e.kind', 'e.org']
+EX_LIST_AGGS = ['count(*)', 'sum(p.score)', 'avg(p.score)', 'max(p.score)', 'count(p.score)']
+
+
+def gen_exceptions(r, ctx):
+    form = r.choice(['rows', 'rows', 'map', 'map', 'list'])
+    fill = lambda t: t.format(k=r.randrange(1, 6), k4=r.randrange(5), n=r.randrange(100, max(ctx['rows'], 101)))
+    where_ = [fill(r.choice(EX_WHERE))]
+    if form == 'rows':
+        ks = list(dict.fromkeys(r.sample(EX_KEYS, r.choice([0, 1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a) for a in r.sample(EX_AGGS, r.randrange(1, 5))))
+        frm = 'exf e'
+    elif form == 'map':
+        ks = list(dict.fromkeys(r.sample(EX_ELEM_KEYS, r.choice([1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a).replace('{{}}', '{}') for a in r.sample(EX_ELEM_AGGS, r.randrange(1, 4))))
+        frm = 'exf e, jsonb_each(e.metrics_a) r'
+    else:
+        ks = list(dict.fromkeys(r.sample(EX_LIST_KEYS, r.choice([1, 1, 2]))))
+        ag = list(dict.fromkeys(fill(a) for a in r.sample(EX_LIST_AGGS, r.randrange(1, 4))))
+        frm = "exf e, jsonb_to_recordset(e.parts) p(cat text, score float8)"
+    return dict(table='exf', frm=frm, keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
+def render_exceptions(p):
+    return grouped(p, p['frm']), bool(p['keys'])
+
+
+def dml_exceptions(r, ctx):
+    """Stamps and restores (a stamped row makes its unit dirty: scanned until VACUUM and a merge write its exceptions again), inserts, deletes, VACUUM and merges on exf."""
+    m = r.choice([13, 40, 97, 211, 509])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 3:
+        return f"UPDATE exf SET stamp = timestamptz '2025-09-01' WHERE {ids}"
+    if e == 3:
+        return f'UPDATE exf SET stamp = NULL WHERE {ids}'
+    if e == 4:
+        return f'UPDATE exf SET val = val * 3 + 1 WHERE {ids}'
+    if e == 5:
+        return f'DELETE FROM exf WHERE {ids}'
+    if e in (6, 7):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_ex']; ctx['next_ex'] += n
+        return f'INSERT INTO exf SELECT * FROM fz.gen_exf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 8:
+        return r.choice(['VACUUM exf', 'VACUUM (FREEZE) exf'])
+    if TABLE:
+        return r.choice(["SELECT sift.table_maintain('exf')", "SELECT sift.table_maintain('exf')", 'VACUUM FULL exf', bulk_insert(r, ctx, 'exf'), bulk_insert(r, ctx, 'exf')])
+    return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
+
+
+# ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
+GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
+
+
+def go_const(r, col):
+    """A constant inside (and a little beyond) the domain of the column in fz.gen_gof, as a literal of its type."""
+    if col == 'id':
+        return str(r.randrange(0, 3000))
+    if col == 'a':
+        return str(r.randrange(-110, 110))
+    if col == 'b':
+        return str(r.randrange(-5, 710))
+    if col == 'c':
+        return str(r.randrange(-1000000000, 1100000000, 100000))
+    if col == 'd':
+        return f"DATE '2024-01-01' + {r.randrange(-5, 310)}"
+    ts = 'TIMESTAMP' if col == 't' else 'TIMESTAMPTZ'
+    return f"{ts} '2025-01-01{'' if col == 't' else '+00'}' + {r.randrange(-100, 60100)} * interval '1 second'"
+
+
+GG_COLS = ['b', 't']
+
+
+def gen_gorder_group(r, ctx):
+    """A group of gog (the arrays of b and t are grouped by a) pinned by an equality, with a range on the key or the page after one, and a second key: the entries of the group only."""
+    col = r.choice(GG_COLS)
+    cond = f"g.a = {r.choice([go_const(r, 'a'), go_const(r, 'a'), str(r.randrange(-5, 5)), 'NULL'])}"
+    kind = r.random()
+    if kind < 0.35:
+        cond += f" AND g.{col} {r.choice(['<', '<=', '>', '>='])} {go_const(r, col)}"
+    elif kind < 0.5:
+        cond += f" AND g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"
+    elif kind < 0.6:
+        cond += f" AND g.id {r.choice(['<', '>'])} {go_const(r, 'id')}"
+    return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300]), cond=cond, tbl='gog',
+                second=r.random() < 0.3, dir2=r.choice(['', ' DESC']), where=[], keys=[], aggs=[], having=[], ordered=True)
+
+
+def gen_gorder(r, ctx):
+    if r.random() < 0.3:
+        return gen_gorder_group(r, ctx)
+    col = r.choice(GO_COLS)
+    cond = ''
+    keyset = ''
+    if r.random() < 0.3:  # a second key (id, which is unique, so the order is total), with the page after a key as a row comparison or its expansion
+        keyset = r.choice(['', '', 'rc', 'rc', 'or'])
+    if keyset == 'rc':
+        cond = f"(g.{col}, g.id) {r.choice(['>', '>=', '<', '<='])} ({go_const(r, col)}, {go_const(r, 'id')})"
+    elif keyset == 'or':
+        op = r.choice(['>', '<'])
+        cond = f"g.{col} {op} {go_const(r, col)} OR (g.{col} = {go_const(r, col)} AND g.id {op} {go_const(r, 'id')})"
+    elif r.random() < 0.5:  # a condition on the key bounds the part of the array that is read
+        def cmp():
+            return f"g.{col} {r.choice(['<', '<=', '>', '>=', '=', '<>'])} {go_const(r, col)}"
+        cond = r.choice([cmp, lambda: f"{cmp()} AND {cmp()}", lambda: f"({cmp()} OR {cmp()})", lambda: f"g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"])()
+    return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
+                cond=cond, second=keyset != '' or (col != 'id' and r.random() < 0.15), dir2=r.choice(['', ' DESC']),
+                where=[], keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_gorder(p):
+    where = f" WHERE {p['cond']}" if p['cond'] else ''
+    tbl = p.get('tbl', 'gof')
+    if p['second'] and p['col'] != 'id':
+        return f"SELECT g.{p['col']}, g.id FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']}, g.id{p['dir2']} LIMIT {p['limit']}", True
+    return f"SELECT g.{p['col']} FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
+
+
+def dml_gorder(r, ctx):
+    """The same change to gof and to gog (the arrays grouped by a column)."""
+    st = dml_gorder_one(r, ctx)
+    return st + '; ' + st.replace('fz.gen_gof', '@gen@').replace('gof', 'gog').replace('@gen@', 'fz.gen_gof')
+
+
+def dml_gorder_one(r, ctx):
+    """Updates of an indexed key, deletes, inserts, VACUUM, promotion and merges on gof: the arrays of old segments keep dead rows, the write buffer holds the new ones."""
+    m = r.choice([13, 40, 97, 211, 509])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 3:
+        c = r.choice(['a', 'b', 'c', 'd', 't', 'z'])
+        return f"UPDATE gof SET {c} = NULL WHERE {ids}" if r.random() < 0.3 else f"UPDATE gof SET b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1 WHERE {ids}"
+    if e == 3:
+        return f'DELETE FROM gof WHERE {ids}'
+    if e in (4, 5, 6):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_go']; ctx['next_go'] += n
+        return f'INSERT INTO gof SELECT * FROM fz.gen_gof({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 7:
+        return r.choice(['VACUUM gof', 'VACUUM (FREEZE) gof'])
+    return r.choice(["SELECT sift.col_promote('gof_idx')", "SELECT sift.col_merge('gof_idx', true)", "SELECT sift.col_merge('gof_idx', false)"])
+
+
+# ---------- calendar keys of a timestamptz in the session's zone: the steps of the zone's clock, cut where its offset changes ----------
+ZK_ZONES = ['UTC', 'America/New_York', 'Europe/London', 'Asia/Kolkata', 'Asia/Kathmandu', 'Australia/Lord_Howe', 'Pacific/Chatham', 'America/Sao_Paulo', 'Europe/Amsterdam', 'UTC+3', '+05:45', 'PST8PDT']
+ZK_KEYS = ["date_trunc('{u}', {e}.z)" for u in ('second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium')] + \
+    ["extract({f} from {e}.z)" for f in ('hour', 'minute', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'year', 'isoyear', 'century')] + \
+    ['{e}.z::date', "date_trunc('day', {e}.z)::date", "extract(dow from date_trunc('week', {e}.z))", "date_trunc('hour', {e}.z)::time", "date_trunc('day', {e}.z, 'Etc/UTC')",
+     "date_trunc('day', {e}.z, 'UTC')", "date_trunc('hour', {e}.z AT TIME ZONE 'GMT')", "({e}.z AT TIME ZONE 'UTC')::date", "date_trunc('day', date_trunc('day', {e}.z) AT TIME ZONE 'UTC')"]
+
+
+def gen_zonekey(r, ctx):
+    ks = [(k.replace('{u}', r.choice(['second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium']))
+           .replace('{f}', r.choice(['hour', 'minute', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'year', 'isoyear', 'century']))).replace('{e}', 'e')
+          for k in r.sample(ZK_KEYS, r.choice([1, 1, 2]))]
+    where = [r.choice(['e.org = %d' % r.randrange(5), 'e.amount < %d' % r.randrange(10, 100), "e.z >= timestamptz '2024-03-10+00'", 'e.z IS NOT NULL', "e.z < timestamptz '2100-01-01+00'"])
+             for _ in range(r.choice([0, 0, 1, 2]))]
+    return dict(table='zkf', keys=ks, aggs=['count(*)', 'sum(e.amount)'] + r.sample(['min(e.z)', 'max(e.amount)', 'count(e.z)', 'count(DISTINCT e.org)'], r.choice([0, 1, 2])),
+                where=where, having=[], ordered=True, tz=r.choice(ZK_ZONES))
+
+
+def base_of(parts, nl):
+    return BASE + (';enable_nestloop=off' if nl else '') + (';TimeZone=%s' % parts['tz'] if parts.get('tz') else '')
+
+
 FAMILIES = {
     'preagg': (gen_preagg, render_preagg, 4), 'partition': (gen_partition, render_partition, 3), 'lookup': (gen_lookup, render_lookup, 3),
-    'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'twolevel': (gen_twolevel, render_twolevel, 3),
+    'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
-    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'point': (gen_point, render_point, 3),
+    'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'toplat': (gen_toplat, render_toplat, 4), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'placeholder': (gen_placeholder, render_placeholder, 3),
+    'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
+    'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
+    'zonekey': (gen_zonekey, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -613,16 +1310,43 @@ PAR = 'max_parallel_workers_per_gather=%d;parallel_setup_cost=0;parallel_tuple_c
 POINT = 'sift.enable_col_scan=on;sift.enable_agg=off;enable_seqscan=off;max_parallel_workers_per_gather=0;'
 
 
+def simd_levels():
+    """The levels of sift.simd below the top one this host runs, scalar first (the top is the default of every other variant); the host's CPU flags decide."""
+    flags = ''
+    try:
+        flags = re.search(r'^(?:flags|Features)\s*:(.*)$', open('/proc/cpuinfo').read(), re.M).group(1).split()
+    except (OSError, AttributeError):
+        pass
+    mid = ['avx2'] if 'avx512f' in flags and 'avx2' in flags else []
+    return ['scalar'] + mid
+
+
+SIMD_LEVELS = simd_levels()
+
+
 def variants(r, fam):
     if fam == 'point':  # the access method: an index scan, a bitmap scan; the reference is the normal plan
         return [('idx', POINT + 'enable_bitmapscan=off'), ('bmp', POINT + 'enable_indexscan=off;enable_indexonlyscan=off')]
     v = [('pre', 'sift.enable_agg=on;max_parallel_workers_per_gather=0'),
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
-    if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
+    # every SIMD level below the top one the host supports, on the scan: the answers are the same bit for bit
+    v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
+    if fam in ('topn', 'trail', 'toplat'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
+    if fam == 'dead':  # the dead rows scanned, and any share of them netted
+        v.append(('nodelta', 'sift.enable_agg=on;sift.agg_dead_delta=0;max_parallel_workers_per_gather=0'))
+        v.append(('alldead', 'sift.enable_agg=on;sift.agg_dead_delta=100;max_parallel_workers_per_gather=0'))
+    if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
+        v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
+    if fam == 'numsum':  # every SIMD level of the host (a level it lacks runs the next lower one): the sums must be the same bytes
+        v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
+    if fam == 'colcmp':  # every SIMD level of the host (a level it lacks runs the next lower one): the bitmaps must be the same
+        v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
+    if fam == 'gorder':  # the scan of the units, which the arrays stand for
+        v.append(('nogorder', 'sift.enable_agg=on;sift.test_topn_gorder=off;max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
-    if fam in ('twolevel', 'union', 'lookup'):
+    if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):
         v.append(('arms', 'sift.enable_agg=on;sift.agg_two_level=off;sift.agg_fuse=off;max_parallel_workers_per_gather=0'))
     extra = [
         ('par', 'sift.enable_agg=on;' + PAR % (r.choice([1, 2, 3, 4]), r.choice(LEADER))),
@@ -675,7 +1399,186 @@ def dml(r, ctx):
     if e == 14:
         return r.choice([f'UPDATE items SET enabled = NOT enabled WHERE {ids}', f'UPDATE dims SET score = score + 1 WHERE a % {m % 50 + 3} = 0',
                          'DELETE FROM dims WHERE a = %d' % r.randrange(200), "UPDATE lookup SET derived_cat = 'm9' WHERE kind = 'k%d'" % r.randrange(5)])
-    return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'])
+    return r.choice(['VACUUM events', 'VACUUM ev_part', 'VACUUM (FREEZE) events', 'ANALYZE events'] + (dml_table(r, ctx, t, ids) if TABLE else []))
+
+
+TABLE_GEN = {'events': ('gen_events', 'next_ev'), 'ev_part': ('gen_part', 'next_pt'), 'nzf': ('gen_nzf', 'next_nz'), 'exf': ('gen_exf', 'next_ex')}
+
+
+def bulk_insert(r, ctx, t):
+    """A COPY of a few rows: a table without a unique index takes it as an unfrozen group (the rows carry their transaction) and not in the write buffer."""
+    gen, counter = TABLE_GEN[t]
+    n = r.choice([5, 40, 200])
+    lo = ctx[counter]; ctx[counter] += n
+    return f"SELECT fz.bulk_insert('{t}', '{gen}', {lo}, {lo + n - 1}, {r.randrange(1, 9)})"
+
+
+def dml_table(r, ctx, t, ids):
+    """Statements that matter to the table only: the maintenance of its segments, a rewrite, COPY, and writes that roll back (their rows stay in the write buffers and the
+    tombstones until a VACUUM drops them) or half roll back."""
+    m = "sift.table_maintain('%s')" % r.choice(['events', 'events', 'kc', 'ev_part'])
+    n = r.choice([5, 40])
+    lo = ctx['next_ev'] if t == 'events' else ctx['next_pt']
+    ctx['next_ev' if t == 'events' else 'next_pt'] += n
+    ins = f"INSERT INTO {t} SELECT * FROM fz.{'gen_events' if t == 'events' else 'gen_part'}({lo}, {lo + n - 1}, {r.randrange(1, 9)})"
+    return [f'SELECT {m}', f'SELECT {m}', 'VACUUM FULL events', f'BEGIN; {ins}; ROLLBACK', f'BEGIN; UPDATE {t} SET amount = amount + 1 WHERE {ids}; ROLLBACK',
+            f'BEGIN; DELETE FROM {t} WHERE {ids}; ROLLBACK',
+            f'BEGIN; {ins}; SAVEPOINT s; UPDATE {t} SET grp = 3 WHERE {ids}; ROLLBACK TO s; DELETE FROM {t} WHERE {ids}; COMMIT',
+            bulk_insert(r, ctx, t), f'BEGIN; {bulk_insert(r, ctx, t)}; ROLLBACK']
+
+
+KCUT_COLS = {'ki': ['ki + 1', 'NULL', '39 - ki', '7'], 'kd': ["kd + {d}", "'infinity'", "'-infinity'", 'NULL', "date '2025-03-01'"],
+             'kt': ["kt + interval '{d} days'", "'infinity'", 'NULL', "timestamp '2025-02-02 02:02:02'"], 'kn': ['kn * 2', "'NaN'", 'NULL', '1.5'],
+             'kf': ['kf + 1', "'-0'", "'NaN'", 'NULL', "'Infinity'"]}
+KCUT_KEY_OF = {'a': 'ki, kd', 'b': 'kt, kn', 'c': 'kf, ki'}
+
+
+def dml_kcut(r, ctx):
+    """Statements on the key-cut tables: churn of the keys (rows move between units), deletes, inserts, VACUUM, and every way the units are written again: a promotion of the write
+    buffer, a merge, a refresh, a REINDEX, and a merge of units written before the key was declared (a key that is not in the order of the segments it merges)."""
+    x = r.choice('abc')
+    t, idx = f'kcut_{x}', f'kcut_{x}_idx'
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(16)
+    if e < 4:
+        c = r.choice(KCUT_KEYS)
+        return [f'UPDATE {t} SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 4:
+        return [f'UPDATE {t} SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}']
+    if e in (5, 6):
+        return [f'DELETE FROM {t} WHERE {ids}']
+    if e in (7, 8, 9):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 10:
+        return [f'VACUUM {t}']
+    if e == 11:
+        return [f"SELECT sift.col_promote('{idx}')"]
+    if e == 12:
+        return [r.choice([f"SELECT sift.col_merge('{idx}', true)", f"SELECT sift.col_merge('{idx}', true)", f"SELECT count(*) FROM sift.col_refresh('{idx}')", f'REINDEX INDEX {idx}'])]
+    if e == 13:
+        # segments written without the key, merged into units cut by it
+        lo = ctx['next_kc']; ctx['next_kc'] += 60
+        return [f'ALTER INDEX {idx} RESET (key_cut)', f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + 59}, {r.randrange(1, 9)})', f"SELECT sift.col_promote('{idx}')",
+                f"ALTER INDEX {idx} SET (key_cut = '{KCUT_KEY_OF[x]}')", f"SELECT sift.col_merge('{idx}', true)"]
+    if e == 14:
+        # another key: the segments cut by the old one stop a merge (the REINDEX hint of the error), so the index is built again
+        return [f"ALTER INDEX {idx} SET (key_cut = '{r.choice(['ki', 'kd', 'kt', 'kn', 'kf', 'ki, kd', 'kd, kt', 'kn, kf', KCUT_KEY_OF[x]])}')", f'REINDEX INDEX {idx}']
+    return [f'ANALYZE {t}']
+
+
+def dml_floor(r, ctx):
+    """Statements on ufl, a plain index whose promotions are cut by TID range once the least number of superblocks and the floor are lowered for the session (a testing-build setting): sparse
+    updates and deletes, inserts, VACUUM, every way the units are written again, and a promotion with the floor off between the others, so that both cuts are among the segments."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    st = ['SET sift.test_col_floor_sbs = 2', f'SET sift.col_unit_floor = {r.choice([64, 128, 256, 1024])}']
+    if e < 4:
+        c = r.choice(KCUT_KEYS)
+        return st + [f'UPDATE ufl SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 4:
+        return st + [f'UPDATE ufl SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}']
+    if e in (5, 6):
+        return st + [f'DELETE FROM ufl WHERE {ids}']
+    if e in (7, 8):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return st + [f'INSERT INTO ufl SELECT * FROM fz.gen_ufl({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 9:
+        return st + ['VACUUM ufl']
+    if e == 10:
+        return st + ["SELECT sift.col_promote('ufl_idx')"]
+    if e == 11:
+        return st + ["SET sift.col_unit_floor = 0", f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.col_promote('ufl_idx')"]
+    if e == 12:
+        return st + [r.choice(["SELECT sift.col_merge('ufl_idx', true)", "SELECT sift.col_merge('ufl_idx', false)", "SELECT count(*) FROM sift.col_refresh('ufl_idx')", 'REINDEX INDEX ufl_idx'])]
+    return st + ['ANALYZE ufl']
+
+
+def dml_dead(r, ctx):
+    """Statements on udd, a plain index with cubes and a rollup over rows of 3 kB (a dozen superblocks): deletes spread over the units and VACUUM with every page visible afterwards (the
+    units with dead rows), sparse updates, inserts, and the promotions and merges that clean them again."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    if e < 5:
+        return [f'DELETE FROM udd WHERE {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 5:
+        return [f'DELETE FROM udd WHERE kind = \'k{r.randrange(5)}\' AND id % {m} < {r.randrange(1, m)}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 6:
+        return [f'DELETE FROM udd WHERE ki IS NULL AND {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e == 7:
+        c = r.choice(KCUT_KEYS)
+        return [f'UPDATE udd SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 8:
+        return [f'UPDATE udd SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}', 'VACUUM (DISABLE_PAGE_SKIPPING) udd']
+    if e in (9, 10):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO udd SELECT * FROM fz.gen_ufl({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 11:
+        return ['VACUUM udd']
+    if e == 12:
+        return [r.choice(["SELECT sift.col_promote('udd_idx')", "SELECT sift.col_merge('udd_idx', true)", "SELECT sift.col_merge('udd_idx', false)"])]
+    return ['ANALYZE udd']
+
+
+def dml_window(r, ctx):
+    """Statements on kcut_w, whose units keep a sorted run of the range leaves: updates that move rows in and out of a range, deletes, inserts and every way the units are written again."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 4:
+        c = r.choice(WINDOW_COLS)
+        return [f'UPDATE kcut_w SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e in (4, 5):
+        return [f'DELETE FROM kcut_w WHERE {ids}']
+    if e in (6, 7):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return [f'INSERT INTO kcut_w SELECT * FROM fz.gen_kcut({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 8:
+        return ['VACUUM kcut_w']
+    if e == 9:
+        return ["SELECT sift.col_promote('kcut_w_idx')"]
+    if e == 10:
+        return [r.choice(["SELECT sift.col_merge('kcut_w_idx', true)", 'REINDEX INDEX kcut_w_idx'])]
+    return ['ANALYZE kcut_w']
+
+
+def dml_nullzone(r, ctx):
+    """Soft deletes and restores, NULLing and filling of the columns the family tests, inserts, deletes and VACUUM on nzf: units whose NULL count changes under the zones."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    if e < 3:
+        return f'UPDATE nzf SET deleted_at = now() WHERE {ids}'
+    if e == 3:
+        return f'UPDATE nzf SET deleted_at = NULL WHERE {ids}'
+    if e == 4:
+        return f'UPDATE nzf SET deleted_at = timestamptz \'2025-08-01\' WHERE id BETWEEN {r.randrange(1, 800)} AND {r.randrange(800, 2400)}'
+    if e == 5:
+        return f"UPDATE nzf SET seen_at = {r.choice(['NULL', 'date ' + chr(39) + '2025-05-05' + chr(39)])} WHERE {ids}"
+    if e == 6:
+        return f"UPDATE nzf SET tag = {r.choice(['NULL', chr(39) + 'zz' + chr(39)])} WHERE {ids}"
+    if e == 7:
+        return f"UPDATE nzf SET score = {r.choice(['NULL', chr(39) + 'NaN' + chr(39), '1.5'])} WHERE {ids}"
+    if e == 8:
+        return f'UPDATE nzf SET kind = NULL, amount = amount + 1 WHERE {ids}'
+    if e == 9:
+        return f'DELETE FROM nzf WHERE {ids}'
+    if e in (10, 11):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_nz']; ctx['next_nz'] += n
+        return f'INSERT INTO nzf SELECT * FROM fz.gen_nzf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 12:
+        return r.choice(['VACUUM nzf', 'VACUUM (FREEZE) nzf'])
+    if TABLE:
+        return r.choice(["SELECT sift.table_maintain('nzf')", "SELECT sift.table_maintain('nzf')", 'VACUUM FULL nzf', bulk_insert(r, ctx, 'nzf'), bulk_insert(r, ctx, 'nzf')])
+    return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
 
 
 # ---------- a run ----------
@@ -701,7 +1604,7 @@ def lines_of(out):
 
 def gen_query(seed, i, ctx, only):
     r = random.Random(seed * 1000003 + i)
-    names = [n for n in FAMILIES if not only or n in only]
+    names = [n for n in FAMILIES if (not only or n in only) and not (TABLE and n in TABLE_SKIP)]
     fam = r.choices(names, [FAMILIES[n][2] for n in names])[0]
     gen, render, _ = FAMILIES[fam]
     parts = gen(r, ctx)
@@ -711,9 +1614,33 @@ def gen_query(seed, i, ctx, only):
 def episodes(seed, nq, ctx, only, dmls=4):
     """[(dml statements, [query entries])]: 4-10 queries after 0-4 statements."""
     r = random.Random(seed * 7919 + 1)
+    rk = random.Random(seed * 104729 + 3)
+    rn = random.Random(seed * 1299709 + 5)
+    rx = random.Random(seed * 15485863 + 7)
+    rt = random.Random(seed * 32452843 + 17)
+    rw = random.Random(seed * 32452843 + 11)
+    ru = random.Random(seed * 49979687 + 13)
+    rd = random.Random(seed * 67867979 + 19)
+    rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
+        if not only or 'nullzone' in only:
+            st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
+        if not only or 'exceptions' in only:
+            st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
+        if not TABLE and (not only or 'trail' in only):
+            st += [dml_trail(rt, ctx) for _ in range(rt.randrange(dmls + 1))]
+        if not TABLE and (not only or 'gorder' in only):
+            st += [dml_gorder(rg, ctx) for _ in range(rg.randrange(dmls + 1))]
+        if not TABLE and (not only or 'keycut' in only):
+            st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
+        if not TABLE and (not only or 'window' in only):
+            st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
+        if not only or 'floor' in only:
+            st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
+        if not only or 'dead' in only:
+            st += [q for _ in range(rd.randrange(dmls + 1)) for q in dml_dead(rd, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)
@@ -830,7 +1757,7 @@ def handle(seed, rows, parts_n, qid, fam, parts, vs, nl, hist, res, out_dir, tag
     bad = diverged(res)
     # the variants that differ, the state replayed once
     vs_bad = [(n, s) for n, s in vs if n in bad]
-    base = BASE + (';enable_nestloop=off' if nl else '')
+    base = base_of(parts, nl)
     create_db(work, base_db)
     psql(work, ''.join(s + ';\n' for s in hist), check=False)
     p2 = shrink_parts(work, qid, fam, parts, vs_bad, nl, base)
@@ -872,15 +1799,43 @@ def main():
     ap.add_argument('--out', default='')
     ap.add_argument('--no-shrink', action='store_true')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--stop-after', type=int, default=0, help='stop after the seed in which this many queries crashed, diverged or failed to generate (0: all seeds); the full tier uses it so that a red job does not run the rest of its seeds')
     ap.add_argument('--dml', type=int, default=4, help='most DML statements before a group of queries')
     ap.add_argument('--leader-on', action='store_true', help='parallel_leader_participation stays on (a worker crash of leaderless parallel scans hides other findings)')
     ap.add_argument('--show', action='store_true', help='print every query')
+    ap.add_argument('--table', action='store_true', help='the fact tables are sift_tables (see above)')
+    ap.add_argument('--selftest', action='store_true', help='no server: every family generates and renders queries for seeds 0-19, with and without --table (the lint job)')
     a = ap.parse_args()
+    global TABLE
+    TABLE = a.table
+    if a.selftest:
+        for TABLE in (False, True):
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
+            sql = data_sql(1, a.rows, a.parts)
+            if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE or ('PARTITION BY' in sql) == TABLE:
+                sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
+            fams = {f: v for f, v in FAMILIES.items() if not (TABLE and f in TABLE_SKIP)}
+            for fam, (gen, render, _) in fams.items():
+                for seed in range(20):
+                    sql, _ = render(gen(random.Random(seed), dict(ctx)))
+                    if not sql.strip():
+                        sys.exit(f'diff_fuzz selftest: family {fam} rendered no query for seed {seed}')
+            for seed in range(20):
+                for st, qs in episodes(seed, 40, dict(ctx), set()):
+                    for qid, fam, parts, vs, nl in qs:
+                        render_query(fam, parts)
+            print(f"diff_fuzz selftest{' --table' if TABLE else ''}: {len(fams)} families, 20 queries each, 20 scripts of 40 queries")
+            for fam in FAMILIES if TABLE else ():
+                if fam in TABLE_SKIP:
+                    print(f'  skipped on a sift_table: {fam}: {TABLE_SKIP[fam]}')
+        return 0
     seeds = []
     for part in a.seeds.split(','):
         lo, _, hi = part.partition('-')
         seeds += range(int(lo), int(hi or lo) + 1)
     only = set(filter(None, a.families.split(',')))
+    if TABLE and only & set(TABLE_SKIP):
+        sys.exit('diff_fuzz: not run on a sift_table: ' + ', '.join(f'{f} ({TABLE_SKIP[f]})' for f in sorted(only & set(TABLE_SKIP))))
     if a.leader_on:
         LEADER[:] = ['on']
     total = {'CRASH': 0, 'ok': 0, 'DIFF': 0, 'GENERR': 0, 'timeout': 0, 'queries': 0}
@@ -888,10 +1843,10 @@ def main():
     found = []
     t0 = time.time()
     for seed in seeds:
-        tag = f'{seed}'
+        tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)
@@ -900,7 +1855,7 @@ def main():
             entries, qinfo = [], {}
             for qid, fam, parts, vs, nl in qs:
                 sql, ordered = render_query(fam, parts)
-                base = BASE + (';enable_nestloop=off' if nl else '')
+                base = base_of(parts, nl)
                 entries.append(query_script(qid, sql, ordered, base, vs))
                 qinfo[qid] = (fam, parts, vs, nl, sql)
                 if a.show:
@@ -960,6 +1915,9 @@ def main():
         psql('postgres', f'DROP DATABASE IF EXISTS {run_db} WITH (FORCE)')
         if not a.keep:
             psql('postgres', f'DROP DATABASE IF EXISTS {base_db} WITH (FORCE)')
+        if a.stop_after and total['CRASH'] + total['DIFF'] + total['GENERR'] >= a.stop_after:
+            print(f'diff_fuzz: {a.stop_after} bad queries by seed {seed}: the remaining seeds are not run')
+            break
     print('families, share of variant runs that used SiftAgg: ' + ', '.join(f'{f} {100 * p[0] // max(p[1], 1)}% of {p[1]}' for f, p in pushed.items() if p[1]))
     print(f"diff_fuzz: {total['queries']} queries in {time.time() - t0:.0f}s: {total['ok']} equal, {total['DIFF']} divergent, {total['GENERR']} generator errors, {total['CRASH']} crashes, "
           f"{total['timeout']} timeouts")

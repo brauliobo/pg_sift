@@ -1,0 +1,7 @@
+-- time series: a fortnight of readings grouped by day
+-- label: `count(*), avg(value), max(value)` over 14 days of `ts`, `GROUP BY date_trunc('day', ts)`, 1,000,000 readings
+-- ordered: yes
+--@ pg
+SELECT date_trunc('day', ts) AS d, count(*), avg(value), max(value) FROM metrics WHERE ts >= timestamp '2025-02-01' AND ts < timestamp '2025-02-15' GROUP BY 1 ORDER BY 1
+--@ timescaledb_cagg
+SELECT date_trunc('day', h) AS d, sum(c), sum(s) / sum(c), max(m) FROM metrics_hourly WHERE h >= timestamp '2025-02-01' AND h < timestamp '2025-02-15' GROUP BY 1 ORDER BY 1

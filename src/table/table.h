@@ -337,6 +337,7 @@ extern uint64 sift_tbl_tomb_rewrite(Relation rel, SiftTblRel *st, SiftTblTombKee
 extern const SiftTblTomb *sift_tbl_tomb_find(const SiftTblRel *st, uint64 key, int *n);
 
 extern bool sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv);
+extern bool sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key);
 /* The insertion of the version is visible; *dead set when no snapshot will ever see it */
 extern bool sift_tbl_inserted_visible(Snapshot snapshot, const SiftTblRowVer *rv, bool *dead);
 
@@ -569,7 +570,7 @@ extern const char *sift_tbl_bulk_refusal(Relation rel);
  */
 extern PGDLLIMPORT bool sift_tbl_bulk_groups;
 extern bool sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen);
-extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, MinimalTuple mtup, CommandId cid, ItemPointer tid);
+extern void sift_tbl_load_row(Relation rel, SiftTblRel *st, const Datum *values, const bool *isnull, CommandId cid, ItemPointer tid);
 extern void sift_tbl_load_finish(Relation rel);
 
 /* Registers sift.table_write_buffer_limit, sift.table_inline_promote and sift.table_compression (from sift_tbl_init) */

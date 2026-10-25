@@ -258,6 +258,8 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 			break;
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
+		case SAA_MAX:
+		case SAA_MIN:
 			if (ia->nvx)
 				memcpy(a->dx[ai], eval_vx(ex, ia, n), n * sizeof(double));
 			else
@@ -270,6 +272,8 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 			break;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
 			out = combo_outs(ex, ia->combo);
 			for (int j = 0; j < n; j++)
 			{
@@ -359,6 +363,16 @@ cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 					a->amax[ai] = Max(a->amax[ai], fabs(x));
 			}
 			break;
+		case SAA_MAX:
+		case SAA_X_MAX:
+			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) > 0)
+				a->d[ai][g] = a->dx[ai][j];
+			break;
+		case SAA_MIN:
+		case SAA_X_MIN:
+			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) < 0)
+				a->d[ai][g] = a->dx[ai][j];
+			break;
 		default:
 			break;
 	}
@@ -390,16 +404,31 @@ cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 				return false;
 			*dv = a->d[ai][g] / (double) a->n[ai][g];
 			return true;
+		case SAA_MAX:
+		case SAA_MIN:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
+			*dv = a->d[ai][g];
+			return a->n[ai][g] > 0;
 		default:
 			SIFT_INVARIANT(false, "sift: unexpected inner aggregate");
 	}
 	return false;
 }
 
-static bool
+/* float8_cmp_internal, inline: a NaN equals a NaN and is above every number */
+static pg_attribute_always_inline int
+cmp_f8(double a, double b)
+{
+	if (likely(!isnan(a) && !isnan(b)))
+		return a > b ? 1 : (a < b ? -1 : 0);
+	return isnan(a) ? (isnan(b) ? 0 : 1) : -1;
+}
+
+static pg_attribute_always_inline bool
 cond_holds(const SiftAggCond *c, double dv, int64 iv)
 {
-	int			cmp = c->isint ? pg_cmp_s64(iv, c->ci) : float8_cmp_internal(dv, c->cd);
+	int			cmp = c->isint ? pg_cmp_s64(iv, c->ci) : cmp_f8(dv, c->cd);
 
 	switch ((SiftCmpOp) c->op)
 	{
@@ -434,7 +463,7 @@ cell_having(AggExec *ex, int k, uint32 g)
 		int64		iv = 0;
 		bool		notnull = cell_value(&ex->arm[k], ia, sa->hsrc[j], g, &dv, &iv);
 
-		bind_param(ex, j, ia->kind == SAA_SUM_F64 || ia->kind == SAA_AVG_F64 ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
+		bind_param(ex, j, ia->restype == FLOAT8OID ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
 	}
 	d = ExecEvalExprSwitchContext(ex->arm[k].hstate, ex->lutcx, &isnull);
 	ResetExprContext(ex->lutcx);
@@ -452,17 +481,51 @@ cell_key(AggExec *ex, int k, uint32 g, int j)
 	return a->lpos[j] < 0 ? 0 : a->cid[(Size) g * a->nlk + a->lpos[j]];
 }
 
+/* The values of the inner aggregates of one cell, each asked of the cell once however many outer aggregates and conditions read it (and not before one does: a float sum that overflowed raises only when read). */
+#define CELL_VALS	32
+
+typedef struct CellVals
+{
+	uint32		have;
+	bool		ok[CELL_VALS];
+	double		dv[CELL_VALS];
+	int64		iv[CELL_VALS];
+} CellVals;
+
+static inline bool
+cell_get(CellVals *cv, ArmSt *a, SiftAggArm *sa, int src, uint32 g, double *dv, int64 *iv)
+{
+	if (src >= CELL_VALS)
+		return cell_value(a, &sa->inner[src], src, g, dv, iv);
+	if (!(cv->have >> src & 1))
+	{
+		cv->dv[src] = 0;
+		cv->iv[src] = 0;
+		cv->ok[src] = cell_value(a, &sa->inner[src], src, g, &cv->dv[src], &cv->iv[src]);
+		cv->have |= 1u << src;
+	}
+	*dv = cv->dv[src];
+	*iv = cv->iv[src];
+	return cv->ok[src];
+}
+
 /* the outer aggregates of group og take the cell (arm k, group g) of the row `row` */
 static void
 cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 {
-	SiftAggArm *sa = &ex->spec->arm[k];
+	SiftAggSpec *s = ex->spec;
+	SiftAggArm *sa = &s->arm[k];
 	ArmSt	   *a = &ex->arm[k];
+	SiftAggAgg *aggs = s->agg;
+	AggAcc	   *accs = ex->acc;
+	const int	naggs = s->naggs;
+	CellVals	cv;
 
-	for (int oi = 0; oi < ex->spec->naggs; oi++)
+	cv.have = 0;
+	for (int oi = 0; oi < naggs; oi++)
 	{
-		SiftAggAgg *o = &ex->spec->agg[oi];
-		AggAcc	   *acc = &ex->acc[oi];
+		SiftAggAgg *o = &aggs[oi];
+		AggAcc	   *acc = &accs[oi];
 		bool		pass = true;
 		double		dv = 0;
 		int64		iv = 0;
@@ -471,7 +534,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 		{
 			int			src = sa->colsrc[o->cond[c].col];
 
-			pass = cell_value(a, &sa->inner[src], src, g, &dv, &iv) && cond_holds(&o->cond[c], dv, iv);
+			pass = cell_get(&cv, a, sa, src, g, &dv, &iv) && cond_holds(&o->cond[c], dv, iv);
 		}
 		if (!pass || o->kind == SAA_GROUPING)
 			continue;
@@ -498,7 +561,7 @@ cell_into(AggExec *ex, int k, uint32 g, uint32 og, uint64 row)
 				acc->n[og]++;
 			continue;
 		}
-		if (!cell_value(a, &sa->inner[sa->colsrc[o->col]], sa->colsrc[o->col], g, &dv, &iv))
+		if (!cell_get(&cv, a, sa, sa->colsrc[o->col], g, &dv, &iv))
 			continue;
 		acc->n[og]++;
 		if (o->kind == SAA_O_SUM_I64)

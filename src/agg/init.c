@@ -38,7 +38,8 @@ find_param(Node *expr)
 
 /*
  * The output of an ARRAY sub-select (an InitPlan of the query, its Param offset by SIFT_AGG_INIT_PARAM) is the constant of the expression: the sub-select
- * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's.
+ * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's. A
+ * parameter an enclosing query level sets (level_param) is the constant it has now.
  */
 static Node *
 init_param_mutator(Node *n, AggExec *ex)
@@ -51,13 +52,20 @@ init_param_mutator(Node *n, AggExec *ex)
 
 	if (n == NULL)
 		return NULL;
-	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || p->paramid < SIFT_AGG_INIT_PARAM)
+	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || (p->paramid < SIFT_AGG_INIT_PARAM && !level_param(n)))
 		return expression_tree_mutator(n, init_param_mutator, ex);
-	prm = &estate->es_param_exec_vals[p->paramid - SIFT_AGG_INIT_PARAM];
+	prm = &estate->es_param_exec_vals[p->paramid - (level_param(n) ? 0 : SIFT_AGG_INIT_PARAM)];
 	if (prm->execPlan != NULL)
 		ExecSetParamPlan(prm->execPlan, GetPerTupleExprContext(estate));
 	get_typlenbyval(p->paramtype, &len, &byval);
 	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, len, prm->value, prm->isnull, byval);
+}
+
+/* the operand of a condition, evaluated when the scan starts */
+ExprState *
+operand_state(AggExec *ex, Node *expr)
+{
+	return ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
 }
 
 /*
@@ -271,7 +279,15 @@ register_key(AggExec *ex, int ki)
 	{
 		k->expr = init_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
-		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+		/* the steps were planned for the UTC clock: with another meaning of UTC in this session's zone each value of the leaf is a step of its own, on no zone's clock (a key can name UTC over a call of the session zone's clock) */
+		if (sk->bucket > 0 && sift_aggexpr_utc_shadowed(sk->expr))
+			k->bucket = 1;
+		else
+		{
+			k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+			k->zone = sk->zoned ? zone_open(ex->cxt, session_timezone) : NULL;
+			k->zcut = sk->zoned == SIFT_ZONE_CUT;
+		}
 		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
 	}
 	else if (sk->kind == SAK_NUM)
@@ -433,4 +449,6 @@ scan_buffers(AggExec *ex)
 	ex->tmpm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm2 = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpu32 = MemoryContextAlloc(ex->cxt, (Size) maxv * Max(s->nkeys, 1) * sizeof(uint32));
+	if (s->nsets > 1)
+		ex->setkid = MemoryContextAlloc(ex->cxt, (Size) maxv * s->nkeys * sizeof(uint32));
 }

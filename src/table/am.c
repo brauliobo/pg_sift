@@ -176,24 +176,38 @@ tbl_slot_callbacks(Relation rel)
 	return sift_tbl_slot_ops();
 }
 
-/* The row of slot as a MinimalTuple with every external TOAST value expanded (no TOAST table exists for this AM) */
+/* The values of slot: its own, or a copy with every external TOAST value expanded (no TOAST table exists for this AM) */
+static Datum *
+slot_values(TupleDesc desc, TupleTableSlot *slot)
+{
+	Datum	   *values;
+
+	slot_getallattrs(slot);
+	values = slot->tts_values;
+	for (int i = 0; i < desc->natts; i++)
+		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 &&
+			VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
+		{
+			if (values == slot->tts_values)
+			{
+				values = palloc(desc->natts * sizeof(Datum));
+				memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
+			}
+			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
+		}
+	return values;
+}
+
+/* The row of slot as a MinimalTuple */
 static MinimalTuple
 form_mtuple(Relation rel, TupleTableSlot *slot)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
-	int			natts = desc->natts;
-	Datum	   *values;
-	MinimalTuple mtup;
+	Datum	   *values = slot_values(desc, slot);
+	MinimalTuple mtup = sift_tbl_form_minimal_tuple(desc, values, slot->tts_isnull);
 
-	slot_getallattrs(slot);
-	values = palloc(natts * sizeof(Datum));
-	memcpy(values, slot->tts_values, natts * sizeof(Datum));
-	for (int i = 0; i < natts; i++)
-		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 &&
-			VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
-			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
-	mtup = sift_tbl_form_minimal_tuple(desc, values, slot->tts_isnull);
-	pfree(values);
+	if (values != slot->tts_values)
+		pfree(values);
 	return mtup;
 }
 
@@ -228,7 +242,7 @@ static bool
 insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
 	SiftTblRel *st;
-	MinimalTuple mtup;
+	Datum	   *values;
 
 	if (bistate == NULL || !sift_tbl_bulk_groups)
 		return false;
@@ -238,10 +252,11 @@ insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions op
 	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
 		return false;
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	mtup = form_mtuple(rel, slot);
-	sift_tbl_load_row(rel, st, mtup, cid, &slot->tts_tid);
+	values = slot_values(RelationGetDescr(rel), slot);
+	sift_tbl_load_row(rel, st, values, slot->tts_isnull, cid, &slot->tts_tid);
 	slot->tts_tableOid = RelationGetRelid(rel);
-	heap_free_minimal_tuple(mtup);
+	if (values != slot->tts_values)
+		pfree(values);
 	pgstat_count_heap_insert(rel, 1);
 	return true;
 }

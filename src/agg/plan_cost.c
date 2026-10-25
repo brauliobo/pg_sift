@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
@@ -60,10 +61,13 @@
 #include "agg/part.h"
 #include "agg/topn.h"
 #include "agg/spec.h"
+#include "col/point.h"
 #include "agg/colsrc.h"
 #include "agg/dist_int.h"
 #include "agg/search.h"
+#include "agg/lookup_int.h"
 #include "agg/plan_int.h"
+#include "agg/agg_int.h"
 
 /*
  * The executor's cost per value in units of cpu_operator_cost (about 3 ns: docs/COL-PLAN.md, "Cost", fitted on whole table runs of
@@ -74,6 +78,8 @@
 #define AGG_SPARSE_MAX		0.125	/* the share of the rows a unit keeps up to which its leaves are decoded at the kept rows only */
 #define AGG_SPARSE_LEAF		1.5		/* a leaf read at the kept rows costs this many times the share of the rows it reads (the positions are gathered) */
 #define AGG_FILTER_VALUE	0.5		/* a predicate on a value */
+#define AGG_OP_NS			3.0		/* the nanoseconds an operator is counted at (AGG_SCAN_SPEED takes the share the scan really spends) */
+#define AGG_IN_TEST_BASE	1.0		/* the nanoseconds a row costs the test of a list in the cache, which AGG_FILTER_VALUE already counts */
 #define AGG_TUPLE			2.5		/* a tuple that passes the filters: selection, ordinals, group ids */
 #define AGG_AGG_ROW			1.2		/* an aggregate update */
 #define AGG_KEY_ROW			1.0		/* a group key id */
@@ -94,16 +100,21 @@
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
 #define AGG_UNIT_COST		200.0
+#define AGG_PREAGG_HLL		40000.0	/* a unit's stored sketch merged into the aggregate's: up to 16,384 registers unpacked and maxed (about 60 us for a dense one) */
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
-#define AGG_START_COST		210000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units, charged 0.6 ms because the arms of a pass open them once, which a selective btree plan does not pay */
+#define AGG_START_COST		100000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units the first time a backend runs it, 0.07 to 0.3 ms from the second; charged 0.25 ms, which a selective btree plan does not pay and which put the scan above the btree plan for a lookup of 500 to 700 rows (the scan runs it in 60 to 100 us, the btree plan in 200 to 370) */
+#define AGG_RESTART_COST	60000.0	/* a scan an enclosing query restarts for each value: PostgreSQL's nested loop charges the price of the inner path for every row of the outer. A probe takes 74 us (1,000,000 rows) to 120 us (100,000) where a btree's takes 6 us, which PostgreSQL prices at about 12: the restart is priced at 150 so that a btree on the key and the order wins where there is one (the start over itself is 4.5 us) */
 #define AGG_PART_PAIR		4.0		/* times the square of the partitions the scan reads: opening them costs the scan 0.75 ms at 200, 9 ms at 800, 27 ms at 1,600 and 111 ms at 3,200 more than the normal plan's Append (11 ns for each pair, measured on partitions of a few rows) */
 #define AGG_ARM_TUPLE		150.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured) */
 #define AGG_ARM_HIDDEN		330.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
+#define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
+#define AGG_START_MS		500.0	/* a millisecond in this path's estimates, for starting workers: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
+#define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
-#define AGG_SETUP_FACTOR	22.0	/* times parallel_setup_cost: starting the workers and opening the source in each takes about 8 ms, which in this path's estimates (a unit is worth about 0.5 us there, the unnest excess below included) is 22 times the default 1000 */
+#define AGG_SETUP_FACTOR	2.0	/* times parallel_setup_cost: the least a scan is charged for workers; a scan the estimate puts under ~4,000 units (8 to 40 ms measured) stays in one process. 22 priced them at 215 ms for the median node: no replay statement took workers, and a shape of 3,200,000 rows that runs 2.5 times faster with them stayed serial */
 #define AGG_DEFAULT_ELEMS	3.0
 #define AGG_RECHECK_FRAC	0.02	/* share of the rows of a flagged unit the source reads again from the heap when no sample of the unit's overflow slots says (statistics: ovf_frac) */
 #define AGG_RECHECK_ROW		500.0	/* a row read again: the heap fetch by TID, the document walked again and the unit it makes, in the operators AGG_SCAN_SPEED scales: about 1.6 microseconds a row, which the normal plan's cost prices at 0.25: the two plans take the same time at about 14% of the rows read again */
@@ -112,7 +123,8 @@
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
-#define AGG_WIDE_IMAGE		300.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): the image is spelled as text and read back by numeric_in, 0.75 us measured */
+#define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
+#define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
 #define AGG_DIST_CHUNK_BYTES	512.0
@@ -223,16 +235,19 @@ joined_distinct(AggCtx *c, JoinCtx *jc, int col)
  * distinct value combinations of the inputs of a combo among `tuples`: what the statistics say of the columns, the tuples when an input is
  * not one; a column of an earlier lookup has at most as many values as the lookup has rows. The combo of a lookup per element is not
  * evaluated for the tuples but for the combinations of the values of the elements (the index counts those of each leaf) and of the column
- * of the lookup it reads.
+ * of the lookup it reads. `counted` prices the elements of an unscoped lookup by those counts too, not by PostgreSQL's default.
  */
 static double
-combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples)
+combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted)
 {
 	List	   *exprs = NIL;
 	double		entries = 1.0,
 				elem_nd = 1.0;
 	Bitmapset  *lookups = NULL;
 	bool		scoped = cb->join >= 0 && ((JoinCtx *) list_nth(c->joins, cb->join))->j.scoped;
+	int			parents[SIFT_AGG_MAX_CLEAVES],
+				nparents = 0;
+	double		parent_nd[SIFT_AGG_MAX_CLEAVES] = {0};
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
@@ -253,20 +268,30 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 						double		rows = Max(c->root->simple_rel_array[jc->rti]->rows, 1.0);
 
 						/* a correlated child gives its rows for each distinct input of its own combo */
-						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples) : rows;
+						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples, counted) : rows;
 					}
 					lookups = bms_add_member(lookups, jc->combo);
 				}
 			continue;
 		}
 		lf = leaf_of(c, cb->leaf[p]);
-		/* the values of a member or an element have no statistics: PostgreSQL's default number of distinct values, as for a column it knows nothing of */
+		/* the values of a member or an element have no statistics (but the counts of the index, where asked): PostgreSQL's default number of distinct values, as for a column it knows nothing of */
 		if (lf->parent >= 0 || lf->path != NIL)
 		{
-			nd = scoped && c->stats.ndistinct[cb->leaf[p]] > 0 ? c->stats.ndistinct[cb->leaf[p]] : DEFAULT_NUM_DISTINCT;
+			nd = (scoped || counted) && c->stats.ndistinct[cb->leaf[p]] > 0 ? c->stats.ndistinct[cb->leaf[p]] : DEFAULT_NUM_DISTINCT;
 			/* the fields of one element go together (a category and its kind): the combinations are about as many as the values of the widest */
 			if (scoped)
 				elem_nd = Max(elem_nd, nd);
+			else if (counted && lf->parent >= 0)
+			{
+				int			i = 0;
+
+				while (i < nparents && parents[i] != lf->parent)
+					i++;
+				if (i == nparents)
+					parents[nparents++] = lf->parent;
+				parent_nd[i] = Max(parent_nd[i], nd);
+			}
 			else
 				entries *= nd;
 			continue;
@@ -278,6 +303,8 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		else
 			exprs = lappend(exprs, e);
 	}
+	for (int i = 0; i < nparents; i++)
+		entries *= parent_nd[i];
 	if (exprs != NIL)
 		entries *= estimate_num_groups(c->root, exprs, tuples, NULL, NULL);
 	return Max(Min(entries * elem_nd, tuples), 1.0);
@@ -318,13 +345,36 @@ json_build_walker(Node *n, double *ops)
 	return expression_tree_walker(n, json_build_walker, ops);
 }
 
+/* the combo is only the argument of sums and averages that add the entries of their dictionary leaf (SiftAggAgg.wsum): no tuple is evaluated by it */
+static bool
+combo_wsum_only(const SiftAggSpec *s, int ci)
+{
+	const SiftAggCombo *cb = &s->combo[ci];
+	bool		only = cb->nslots > 0;
+
+	for (int sl = 0; sl < cb->nslots; sl++)
+	{
+		bool		used = false;
+
+		only &= cb->slot[sl].direct;
+		for (int ai = 0; ai < s->naggs; ai++)
+			if ((s->agg[ai].kind >= SAA_X_COUNT && s->agg[ai].kind <= SAA_X_AVG) && s->agg[ai].combo == ci && s->agg[ai].slot == sl)
+			{
+				only &= s->agg[ai].wsum != 0;
+				used = true;
+			}
+		only &= used;
+	}
+	return only;
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 static double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows)
 {
 	double		cost = 0;
 
@@ -333,7 +383,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		const SiftAggCombo *cb = &s->combo[ci];
 		int			wide = 0;
 		bool		direct = false,
-					filter = false;
+					filter = false,
+					lookup_ref = false;
 		double		tuples;
 
 		if (cb->join >= 0)
@@ -350,22 +401,39 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				/* agg_cost scales the scan by AGG_SCAN_SPEED, which the executor's jsonb builds do not get */
 				if (j->fslot >= 0)
 					json_build_walker((Node *) cb->slot[j->fslot].expr, &built);
-				cost += combo_entries(c, s, cb, scan_rows) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
+				cost += combo_entries(c, s, cb, scan_rows, false) * Max(candidates, 1.0) * (AGG_EVAL_SLOT + built / AGG_SCAN_SPEED);
 			}
 			continue;
 		}
 		for (int p = 0; p < cb->nleaves; p++)
+		{
 			if (cb->leaf[p] >= 0)
 				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+			else
+				lookup_ref = true;
+		}
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
 			direct |= cb->slot[sl].direct;
 			filter |= !cb->slot[sl].is_key && !cb->slot[sl].direct;
 		}
-		if (wide == 0 && !direct)
-			continue;
 		tuples = filter ? rows : agg_rows;
-		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples) * cb->nslots * AGG_EVAL_SLOT;
+		/*
+		 * A test between leaves (a column compared with a column) is evaluated by PostgreSQL once per distinct combination of the leaves: a few for
+		 * dictionary and small integer leaves, which keep the price they had, one per row for two dates that vary (545 instructions a row measured,
+		 * 124 ms for 400,000 rows, against the 36 of a test on a constant)
+		 */
+		if (wide == 0 && !direct)
+		{
+			double		entries = filter && !lookup_ref && cb->nleaves > 1 ? combo_entries(c, s, cb, kept_rows, false) : 0;
+
+			if (entries > AGG_KEY_IDS)
+				cost += entries * cb->nslots * AGG_EVAL_SLOT;
+			continue;
+		}
+		if (combo_wsum_only(s, ci))
+			continue;
+		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
 	}
 	return cost;
 }
@@ -499,7 +567,7 @@ parallel_divisor(int workers)
 }
 
 /* The correlation of the heap column a leaf is read from with the heap order (0: unknown, or the leaf is a jsonb path or an expression) */
-static double
+double
 leaf_correlation(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
@@ -571,11 +639,75 @@ lookup_rows(AggCtx *c, const JoinCtx *jc)
 	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
 }
 
+static bool lookup_counted(AggCtx *c, JoinCtx *jc);
+
+/*
+ * The share of the units that hold one of `keys` values of the leaf (nd distinct): a unit whose zone is the width w (as a share of the leaf's
+ * range) has one in it with the probability 1 - (1 - w)^keys, counted on the sample of the real zones, where the mean width (a few wide
+ * zones among narrow ones make a mean that keeps every unit) would say keys times it. The units that pass keep a summary of their values
+ * (set_cover of them): the n values of a unit, set_keys on average and in proportion to its zone's width (at least one, at most the
+ * values the zone spans), hold one of the keys with the probability 1 - exp(-keys * n / nd). A source with no sample has the mean width.
+ */
+static double
+zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
+{
+	const SiftSrcZones *z = c->stats.zones;
+	double		range = c->stats.max[leaf] - c->stats.min[leaf] + 1.0,
+				cover = c->stats.set_cover[leaf],
+				mean_w = 0,
+				kept = 0;
+
+	if (z == NULL || z->n == 0 || z->lo[leaf] == NULL || range <= 1.0)
+		return c->stats.zone_span[leaf] > 0 ? Min(keys * c->stats.zone_span[leaf], 1.0) : zone_overlap(c, leaf, Min(keys / nd, 1.0));
+	for (int i = 0; i < z->n; i++)
+		mean_w += Max(((double) z->hi[leaf][i] - (double) z->lo[leaf][i] + 1.0) / range, 0.0) / z->n;
+	for (int i = 0; i < z->n; i++)
+	{
+		double		w = ((double) z->hi[leaf][i] - (double) z->lo[leaf][i] + 1.0) / range,
+					in_zone,
+					n,
+					held = 1.0;
+
+		if (w <= 0)
+			continue;
+		in_zone = w >= 1.0 ? 1.0 : -expm1(keys * log1p(-w));
+		if (cover > 0)
+		{
+			n = Min(Max(c->stats.set_keys[leaf] * w / mean_w, 1.0), Max(w * nd, 1.0));
+			held = 1.0 - cover + cover * -expm1(-keys * n / nd);
+		}
+		kept += in_zone * held;
+	}
+	return z->covered * kept / z->n + (1.0 - z->covered);
+}
+
+/*
+ * The share of the units the point directory of a leaf leaves for a list of `keys` of its nd distinct values: the rows it lists (keys x the rows of a key)
+ * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/scan.c), and one without is not. A list the directory does not
+ * answer (col/point.h: too many keys or rows) or a leaf without one keeps every unit. SiftColSource asks the directory of each segment; the units of one
+ * that has none stay, as the share of the units that have one says (point_cover).
+ */
+static double
+point_kept(AggCtx *c, int leaf, double keys, double nd)
+{
+	double		cover = c->stats.point_cover[leaf],
+				rows,
+				units = Max(c->stats.nunits, 1.0);
+
+	if (cover <= 0 || nd <= 0 || keys > SIFT_CPOINT_MAX_KEYS || (keys > SIFT_CPOINT_MIN_KEYS && keys > c->stats.nrows / 16))
+		return 1.0;
+	rows = keys * Max(c->stats.nrows, 1.0) / nd;
+	if (rows > SIFT_CPOINT_MAX_ROWS || rows > Max((double) SIFT_CPOINT_DENSE_ROWS, c->stats.nrows / SIFT_CPOINT_DENSE_SHARE))
+		return 1.0;
+	return 1.0 - cover + cover * -expm1(-rows / units);
+}
+
 /*
  * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
- * a comparison. *n: the filters the scan applies.
+ * a comparison. A lookup whose count is a default guess (the output of a plan) has the keys lookup_set_ratio takes: the geometric mean
+ * of the count and the leaf's distinct values. *n: the filters the scan applies.
  */
 static double
 join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
@@ -600,14 +732,13 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 			double		nd,
-						f;
+						nkeys;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
-			f = Min(keys / nd, 1.0);
-			/* a key is a point of the range: it meets the zones that hold it, a zone's width a key */
-			kept = Min(kept, c->stats.zone_span[leaf] > 0 ? Min(keys * c->stats.zone_span[leaf], 1.0) : zone_overlap(c, leaf, f));
+			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
+			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
 			(*n)++;
 		}
 	}
@@ -663,17 +794,191 @@ lookup_counted(AggCtx *c, JoinCtx *jc)
 }
 
 /*
- * How many times more rows than PostgreSQL expects the table's own filters keep, for the groups the path reports: a filter without statistics
- * (a jsonb path, an expression) keeps a default guess of the rows, a few hundred of a large table, and the groups of that many rows are
- * fewer than the keys have. The rows are taken as the geometric mean of the guess and the table's rows, as child_rows does.
+ * How many times more rows than PostgreSQL expects the filters of a rel keep, when one of them has no statistics (a jsonb path, an expression,
+ * a column of a sub-select's output): its guess is a default, a few hundred of a large table, and the groups of that many rows are fewer
+ * than the keys have. The rows are taken as the geometric mean of the guess and the rel's rows, as child_rows does. A test for NULL keeps
+ * its default only on a rel that is not a table: a table's column has statistics once it is analyzed, so a table's plan is as it was.
  */
+static double
+rel_filter_ratio(PlannerInfo *root, RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	{
+		bool		known = filter_has_stats(root, ri);
+
+		if (known && rel->rtekind != RTE_RELATION && IsA(ri->clause, NullTest))
+		{
+			VariableStatData vardata;
+
+			examine_variable(root, (Node *) ((NullTest *) ri->clause)->arg, 0, &vardata);
+			known = HeapTupleIsValid(vardata.statsTuple);
+			ReleaseVariableStats(vardata);
+		}
+		if (!known)
+			return sqrt(Max(rel->tuples / Max(rel->rows, 1.0), 1.0));
+	}
+	return 1.0;
+}
+
 double
 filter_rows_ratio(AggCtx *c)
 {
-	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
-		if (!filter_has_stats(c->root, ri))
-			return sqrt(Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
-	return 1.0;
+	return rel_filter_ratio(c->root, c->rel);
+}
+
+static bool
+reads_column_index(Node *node, void *context)
+{
+	bool		found = false;
+
+	if (node != NULL && IsA(node, RangeTblEntry))
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) node;
+
+		found = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid);
+	}
+	else if (node != NULL && IsA(node, Query))
+		found = query_tree_walker((Query *) node, reads_column_index, context, QTW_EXAMINE_RTES_BEFORE);
+	else if (node != NULL)
+		found = expression_tree_walker(node, reads_column_index, context);
+	return found;
+}
+
+/*
+ * The rows of a sub-select or CTE scan whose filters PostgreSQL has no statistics for (a column of a window, an aggregate or a grouping
+ * sets output) are its default guesses multiplied: two of them keep a thousandth of the rows, and every join above reads that as one row and
+ * rescans an aggregate for each of the rows that come. In a statement that reads a table with a column index the rows are lifted to the geometric
+ * mean of the guess and the rows (rel_filter_ratio), never below PostgreSQL's own. This is a floor, not an estimate: a count carried through
+ * the levels from the column index would be one.
+ */
+void
+derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
+{
+	double		rows;
+	PlannerInfo *top = root;
+
+	if (rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
+		return;
+	rows = clamp_row_est(rel->rows * rel_filter_ratio(root, rel));
+	if (rows <= rel->rows)
+		return;
+	while (top->parent_root)
+		top = top->parent_root;
+	if (!reads_column_index((Node *) top->parse, NULL))
+		return;
+	elog(DEBUG1, "sift: rows of a scan whose filters have no statistics %.0f, not %.0f (of %.0f)", rows, rel->rows, rel->tuples);
+	rel->rows = rows;
+	foreach_ptr(Path, p, rel->pathlist)
+		p->rows = rows;
+}
+
+/*
+ * the most rows a node expects among those that read a table with a column index, in a plan; *reads: this node reads one. A node that
+ * keeps fewer rows than it reads (an aggregate, a grouping, a LIMIT, a set operation) ends the count: what comes out of it is its own
+ * estimate, not the rows of the table below, which a body that aggregates does not return.
+ */
+static double
+plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
+{
+	double		rows = 0;
+	bool		below = false;
+
+	if (plan == NULL)
+		return 0;
+	check_stack_depth();
+	switch (nodeTag(plan))
+	{
+		case T_Agg:
+		case T_Group:
+		case T_Unique:
+		case T_Limit:
+		case T_SetOp:
+			{
+				bool		r = false;
+
+				plan_leaf_rows(subroot, plan->lefttree, &r);
+				*reads = r;
+				return plan->plan_rows;
+			}
+		case T_SeqScan:
+		case T_IndexScan:
+		case T_IndexOnlyScan:
+		case T_BitmapHeapScan:
+			{
+				RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, subroot->parse->rtable);
+
+				below = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid);
+				break;
+			}
+		case T_Append:
+			foreach_ptr(Plan, c, ((Append *) plan)->appendplans)
+			{
+				bool		r = false;
+
+				rows = Max(rows, plan_leaf_rows(subroot, c, &r));
+				below |= r;
+			}
+			break;
+		default:
+			break;
+	}
+	for (int i = 0; i < 2; i++)
+	{
+		bool		r = false;
+
+		rows = Max(rows, plan_leaf_rows(subroot, i == 0 ? plan->lefttree : plan->righttree, &r));
+		below |= r;
+	}
+	*reads = below;
+	return below ? Max(rows, plan->plan_rows) : rows;
+}
+
+/*
+ * How many times derived_cte_rows raised the rows of a CTE scan in the plan being made (the largest ratio): plan_variants takes it after the
+ * shared plan and passes it on, so what is left here after an error or a nested plan is not read.
+ */
+double		agg_cte_lift = 1.0;
+
+/*
+ * A shared CTE whose body joins a table with a column index to filtered tables is estimated at a row or two (each join keeps the share of a
+ * default guess, and a dimension filter that owns all the rows of the table keeps a hundredth), and everything that reads it is priced from
+ * that: the shared plan costs the same at ten times the rows as at one, and the scans that replace it lose the comparison. The rows of the
+ * scan are lifted to the geometric mean of the estimate and the largest result the body builds from the table, as derived_rel_rows does for a
+ * filter; never fewer rows than PostgreSQL's own. This is a floor, not an estimate. It is made for the shared plan only: the inline plan
+ * (agg_variant) has no such CTE to price, and the aggregates the scans leave in it would be priced for more rows than the scans read.
+ */
+void
+derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
+{
+	RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	PlannerInfo *cteroot = root;
+	int			ndx = 0,
+				plan_id;
+	double		leaf,
+				rows;
+	bool		reads;
+
+	if (agg_variant != NULL || rte->self_reference)
+		return;
+	for (Index lv = rte->ctelevelsup; lv > 0; lv--)
+		cteroot = cteroot->parent_root;
+	foreach_node(CommonTableExpr, cte, cteroot->parse->cteList)
+	{
+		if (strcmp(cte->ctename, rte->ctename) == 0)
+			break;
+		ndx++;
+	}
+	if (ndx >= list_length(cteroot->cte_plan_ids) || (plan_id = list_nth_int(cteroot->cte_plan_ids, ndx)) <= 0)
+		return;
+	leaf = plan_leaf_rows(list_nth(root->glob->subroots, plan_id - 1), list_nth(root->glob->subplans, plan_id - 1), &reads);
+	rows = clamp_row_est(sqrt(rel->rows * leaf));
+	if (!reads || rows <= rel->rows)
+		return;
+	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (its body builds %.0f from a table with a column index)", rows, rel->rows, leaf);
+	agg_cte_lift = Max(agg_cte_lift, rows / rel->rows);
+	rel->rows = rows;
+	foreach_ptr(Path, p, rel->pathlist)
+		p->rows = rows;
 }
 
 /*
@@ -812,7 +1117,11 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 			c->stats.ndistinct[p->leaf] > 0)
 			share = st.nvals / c->stats.ndistinct[p->leaf];
 		else if ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0))
+		{
 			share = Min(Max(p->sel, 0.0), 1.0);
+			if (c->stats.ndistinct[p->leaf] > 0)
+				kept = Min(kept, point_kept(c, p->leaf, share * c->stats.ndistinct[p->leaf], c->stats.ndistinct[p->leaf]));
+		}
 		else
 			continue;
 		if (c->stats.set_cover[p->leaf] > 0)
@@ -950,7 +1259,13 @@ preagg_unit_ops(AggCtx *c, SiftAggSpec *s, double units, double rows, double row
 	SiftAggPaShape shape;
 
 	if (s->group < 0 && (!sift_aggspec_preagg(s, c->lay, c->lay->nleaves, &c->pa, &shape) || !shape.rows))
-		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP;
+	{
+		double		sketches = 0;
+
+		for (int i = 0; i < s->naggs; i++)
+			sketches += s->agg[i].kind == SAA_GEN && s->agg[i].gen->hll >= 0 ? AGG_PREAGG_HLL : 0.0;
+		return Min(rows_out, 256.0) * AGG_PREAGG_GROUP + sketches;
+	}
 	for (int r = 0; r < c->pa.nrollups; r++)
 		if (c->pa.rollup[r].list == s->group)
 			for (int d = 0; d < c->pa.rollup[r].ndims; d++)
@@ -1026,6 +1341,21 @@ rel_has_param_qual(RelOptInfo *rel)
 		if (extern_param_walker((Node *) ri->clause, NULL))
 			return true;
 	return false;
+}
+
+/*
+ * The rows of an unnest PostgreSQL expects of the aggregate fall to a default when a join is on a range or the rows come from a function (a row,
+ * or the 100 rows of a jsonb_each), though the table's own filters keep far more: the normal plan is priced for a few rows where the data has
+ * thousands, and the scan, which reads the table's rows whatever the join keeps, loses a comparison it wins. The paths of the grouping stage that
+ * are not the scan are charged the square root of the excess, as the normal plan of an unnest is on the other side of the same estimate (agg_cost).
+ * Rows without an unnest keep PostgreSQL's estimate: the statistics of the joined tables are the ones it counts them by.
+ */
+double
+input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	if (s->group < 0 || rel_has_param_qual(c->rel))
+		return 1.0;
+	return Max(sqrt(Max(c->rel->rows, 1.0) * elems_of(c, s->group) / Max(input_rel->rows, 1.0)), 1.0);
 }
 
 /* does a btree index of the joined table start with columns that the table's `column = value` conditions give (map_load picks the same) */
@@ -1117,12 +1447,36 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 }
 
 /* The rows read and tested, the zones kept and the units opened */
+/* is every reader of the leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum)? */
+bool
+leaf_wsum_only(const SiftAggSpec *s, int leaf)
+{
+	bool		sums = false,
+				other = false;
+
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+
+		sums |= a->wsum == leaf + 1;
+		other |= a->leaf == leaf || (a->filter != NULL && pred_uses_leaf(a->filter, leaf));
+	}
+	for (int i = 0; i < s->npred; i++)
+		other |= pred_uses_leaf(s->pred[i], leaf);
+	for (int k = 0; k < s->nkeys; k++)
+		other |= s->key[k].kind != SAK_COMBO && s->key[k].leaf == leaf;
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int p = 0; p < s->combo[ci].nleaves; p++)
+			other |= s->combo[ci].leaf[p] == leaf && !combo_wsum_only(s, ci);
+	return sums && !other;
+}
+
 /*
  * The dictionary entries a wide leaf builds for each row read, in operators: a unit has its own dictionary, so a column of 50,000 values read in
  * units of 10,000 rows builds about 9,500 entries a unit, not a fifth of its rows.
  */
 static double
-wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
+wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
 	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
@@ -1140,7 +1494,21 @@ wide_entry_cost(AggCtx *c, int leaf, const CostAcc *k)
 
 		image = typmod < 0 || precision > 38 || scale < 0 || scale > 38;
 	}
-	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? AGG_WIDE_IMAGE : AGG_WIDE_ENTRY);
+	return Min(entries * units / Max(k->rows, 1.0), 1.0) * (image ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
+}
+
+/* The nanoseconds a row costs the tests of the IN lists of the predicate p beyond a small table in the cache: a list of spread values is a hash or bit table */
+static double
+in_tests_ns(AggCtx *c, const SiftAggPred *p)
+{
+	double		ns = 0;
+
+	if (p->kind == SAP_AND || p->kind == SAP_OR)
+		for (int i = 0; i < p->nchild; i++)
+			ns += in_tests_ns(c, p->child[i]);
+	else
+		ns = Max(in_list_test_ns(c, p) - AGG_IN_TEST_BASE, 0);
+	return ns;
 }
 
 /*
@@ -1200,12 +1568,14 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			(leaf_filtered(s, s->leaves[i]) ? 1.0 : sparse);
 	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
+	for (int i = 0; i < s->npred; i++)
+		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED);
 	for (int i = 0; i < s->nvleaf; i++)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
-			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s->leaves[i], k));
+			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k));
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;
@@ -1230,12 +1600,114 @@ cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 	k->scan_cost += k->agg_rows * (Max(s->nsets, 1) * (AGG_TUPLE + s->nkeys * AGG_KEY_ROW + s->naggs * AGG_AGG_ROW) + s->ncombo * AGG_COMBO_ROW);
 }
 
-/* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities, the rest of a table is read whole */
-static double
-join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
+/*
+ * A lookup table that a dependent lookup keys is read by a btree probe for each of its `keys`: a descent each and a heap page for each of the `rows` they find (at most
+ * the table's pages), all random pages. It pays while that costs less than the pages of the table at the page cost of PostgreSQL's own scan of them (as join_load_rows
+ * prices a table read whole).
+ */
+bool
+sift_agg_probe_pays(double keys, double rows, double pages)
 {
+	return (keys + Min(rows, pages)) * random_page_cost < pages * Min(seq_page_cost, random_page_cost);
+}
+
+/* the rows a value of column att has: the rows of the table over the distinct values its statistics say; 0 when they say nothing */
+double
+sift_agg_rows_per_key(unsigned int relid, int att, double tuples)
+{
+	HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(relid), Int16GetDatum(att), BoolGetDatum(false));
+	double		nd;
+
+	if (!HeapTupleIsValid(tp))
+		return 0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+	ReleaseSysCache(tp);
+	if (nd < 0)
+		nd = -nd * tuples;
+	return nd > 0 && tuples > 0 ? Max(tuples / nd, 1.0) : 0;
+}
+
+/*
+ * The keys of a dependent lookup that the loader probes in a btree of the table (map_keyed_dependent and map_probe in agg/lookup.c): an inner or semi join keyed by a
+ * column of the table alone, or a child plan inner or semi joined on the same leaf of the scan, when a btree starts with the column and the probes cost less than its pages
+ * (sift_agg_probe_pays). 0: the table is read whole. The keys are the rows PostgreSQL expects of the dependent lookup, taken as the geometric mean with the table's rows
+ * when it has no statistics for them (join_key_zone).
+ */
+static double
+join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
+{
+	RelOptInfo *jrel = c->root->simple_rel_array[jc->rti];
+	const SiftAggCombo *cb = &s->combo[jc->combo];
+	const SiftAggJoin *j = &jc->j;
+	double		tuples = Max(jrel->tuples, 1.0),
+				best = 0;
+
+	*rows = 0;
+	if (!sift_agg_lookup_pushdown || (j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || j->nidx > 0 || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
+		return 0;
+	foreach_ptr(JoinCtx, dj, c->joins)
+	{
+		const SiftAggCombo *cc = &s->combo[dj->combo];
+		const SiftAggJoin *d = &dj->j;
+		int			att = 0;
+		Oid			typ = InvalidOid;
+		double		keys,
+					rpk;
+		bool		usable = false,
+					unique = false;
+
+		if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
+			continue;
+		if (dependent_join(c, s, jc) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
+		{
+			int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
+
+			if (col >= 0 && col < j->ncol)
+			{
+				att = j->colatt[col];
+				typ = j->coltype[col];
+			}
+		}
+		else if (dj->cpath != NULL && j->nkey == 1 && !j->keynull[0] && j->tkey[0] == NULL && j->keypos[0] >= 0 && d->keypos[0] >= 0 &&
+				 cc->leaf[d->keypos[0]] == cb->leaf[j->keypos[0]] && cb->leaf[j->keypos[0]] >= 0)
+		{
+			att = j->keyatt[0];
+			typ = j->keytype[0];
+		}
+		if (att <= 0 || (typ != INT4OID && typ != INT8OID))
+			continue;
+		foreach_node(IndexOptInfo, ii, jrel->indexlist)
+			if (ii->relam == BTREE_AM_OID && ii->indpred == NIL && !ii->hypothetical && ii->indexkeys[0] == att)
+			{
+				usable = true;
+				unique |= ii->unique && ii->nkeycolumns == 1;
+			}
+		if (!usable)
+			continue;
+		rpk = sift_agg_rows_per_key(planner_rt_fetch(jc->rti, c->root)->relid, att, tuples);
+		if (rpk <= 0 && !unique)
+			continue;
+		rpk = Max(rpk, 1.0);
+		keys = lookup_rows(c, dj);
+		keys = Min(!lookup_counted(c, dj) ? sqrt(keys * tuples) : keys, tuples);
+		if (sift_agg_probe_pays(keys, keys * rpk, jrel->pages) && (best == 0 || keys < best))
+		{
+			best = keys;
+			*rows = keys * rpk;
+		}
+	}
+	return best;
+}
+
+/* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities or the keys of a dependent lookup, the rest of a table is read whole */
+static double
+join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
+{
+	PlannerInfo *root = c->root;
 	RelOptInfo *jrel = root->simple_rel_array[jc->rti];
-	double		tuples = Max(jrel->tuples, 1.0);
+	double		tuples = Max(jrel->tuples, 1.0),
+				probes,
+				prows;
 
 	if (jc->cpath != NULL)
 	{
@@ -1247,13 +1719,27 @@ join_load_rows(JoinCtx *jc, PlannerInfo *root, double *row_cost)
 		*row_cost = AGG_IDX_ROW;
 		return Min(Max(jrel->rows, 1.0), tuples);
 	}
-	*row_cost = AGG_JOIN_ROW;
+	if ((probes = join_probe_keys(c, s, jc, &prows)) > 0)
+	{
+		/* the descents and the pages of the rows found, as sift_agg_probe_pays counts them: the price meets that of the whole table where the rule turns */
+		*row_cost = AGG_IDX_ROW + (probes + Min(prows, jrel->pages)) * random_page_cost / (Max(prows, 1.0) * cpu_operator_cost);
+		return Max(prows, 1.0);
+	}
+	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
+	{
+		Relation	rel = relation_open(root->simple_rte_array[jc->rti]->relid, NoLock);
+		bool		cols = map_load_cols_possible(rel, &jc->j);
+
+		relation_close(rel, NoLock);
+		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
+		*row_cost = cols ? AGG_LOAD_ROW_COLS : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+	}
 	return tuples;
 }
 
 /* the rows of the lookup tables a parallel scan has the leader write to the shared memory (agg/lookshare.c) */
 double
-agg_share_rows(AggCtx *c)
+agg_share_rows(AggCtx *c, SiftAggSpec *s)
 {
 	double		rows = 0;
 
@@ -1262,7 +1748,7 @@ agg_share_rows(AggCtx *c)
 		double		row_cost;
 
 		if (jc->j.params == NIL)
-			rows += join_load_rows(jc, c->root, &row_cost);
+			rows += join_load_rows(c, s, jc, &row_cost);
 	}
 	return rows;
 }
@@ -1281,10 +1767,15 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			const SiftAggCombo *cb = &s->combo[jc->combo];
 			SiftAggFirst *f = &s->join[foreach_current_index(jc)].first;
-			double		native = combo_entries(c, s, cb, k->agg_rows) * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		run = AGG_CHILD_RUN * (jc->cpath->total_cost + cpu_operator_cost * AGG_EVAL_SLOT);
+			double		native = combo_entries(c, s, cb, k->agg_rows, false) * run;
 
-			/* the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input */
-			f->use = f->ok && jc->frows * AGG_FIRST_ROW < native;
+			/*
+			 * the child that is a lookup of one row by unique key: the table's rows read once, if that costs less than the child for each input; the
+			 * inputs are counted by what the index holds of the elements and of the tuples the scan reads, as the rows PostgreSQL expects of the join
+			 * (a few for a filter it knows nothing of) are not what the child runs for
+			 */
+			f->use = f->ok && jc->frows * AGG_FIRST_ROW < combo_entries(c, s, cb, k->sel_rows * (s->group >= 0 ? k->elems : 1.0), true) * run;
 			if (f->use)
 			{
 				k->load_rows += jc->frows;
@@ -1294,7 +1785,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 				k->child_cost += native;
 			continue;
 		}
-		rows = join_load_rows(jc, c->root, &row_cost);
+		rows = join_load_rows(c, s, jc, &row_cost);
 		k->load_rows += rows;
 		k->load_cost += rows * row_cost;
 		if (jc->cpath != NULL)
@@ -1340,6 +1831,9 @@ distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
 	if (nd <= 0 || distinct_narrow(c, a))
 		return 0;
 	chunks = Max(ceil(nd / AGG_DIST_CHUNK_BITS), 1.0);
+	/* the integer set of a group that holds few rows starts as a hash set (dist_wide_mode in agg/dist.c): no chunk is allocated */
+	if (leaf_of(c, a->leaf)->vtype != SCV_CODE && k->agg_rows / groups < 16.0 * (2.0 + floor((c->stats.max[a->leaf] - c->stats.min[a->leaf]) / AGG_DIST_CHUNK_BITS)))
+		return 0;
 	touched = Min(groups * chunks * -expm1(-k->agg_rows / groups / chunks), k->agg_rows);
 	return touched * AGG_DIST_CHUNK_BYTES > (double) get_hash_memory_limit() ? 0 : touched;
 }
@@ -1362,7 +1856,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
-	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows) + bucket_eval_cost(c, s, k->agg_rows);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units)) + bucket_eval_cost(c, s, k->agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
@@ -1375,23 +1869,37 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 }
 
 /*
- * Each process aggregates its share into a table of its own (one per lane for float sums); the leader merges them. The lookup tables are
+ * Each process aggregates its share into a table of its own; the leader merges them. The lookup tables are
  * read once, by the leader, who writes them to the shared memory (agg/lookshare.c): the divisor is not theirs.
  */
 static void
 cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
-	double		tables = sift_aggspec_ordered(s) ? SIFT_AGG_LANES : s->nworkers + 1;
+	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
 	double		arm = k->arm_cost * AGG_SCAN_SPEED * cpu_operator_cost,
 				serial = k->scan_cost,
 				setup = parallel_setup_cost * AGG_SETUP_FACTOR;
+	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
+	/*
+	 * Starting the workers takes 3 ms and 0.35 ms for each, which a low parallel_setup_cost prices below the plans of a few milliseconds; the
+	 * leader merges the pairs of a count(DISTINCT) into its own sets one by one, so they do not scale with the workers (below)
+	 */
+	if (priced)
+		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
 	k->scan_cost = (k->scan_cost + arm - load) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
+	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
+			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+		/* the pairs of the sets of a joined column are at most one a row, and at most the values of each group: a column of few values sends few */
+		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
+			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+	}
 	if (arm > 0)
 	{
 		/*
@@ -1531,13 +2039,16 @@ vet_cost(AggCtx *c, double vis, double sel_rows, double zone_kept)
 				buffered = Min(NBuffers / pages, 1.0),
 				cached = Max(Min(effective_cache_size / pages, 1.0), buffered),
 				touched,
+				seq,
 				disk,
 				op = AGG_SCAN_SPEED * cpu_operator_cost;
 
 	if (vet_pages <= 0)
 		return 0;
 	touched = vet_pages * (1.0 - exp(-rows / vet_pages));
-	disk = seq_page_cost + (random_page_cost - seq_page_cost) * (1.0 - touched / vet_pages);
+	/* the pages are read in order and skip the all-visible ones: never dearer than the random fetch of the same pages, where a configuration prices a sequential page above a random one */
+	seq = Min(seq_page_cost, random_page_cost);
+	disk = seq + (random_page_cost - seq) * (1.0 - touched / vet_pages);
 	return touched * (buffered * AGG_VET_PAGE * op + (cached - buffered) * AGG_VET_OS_PAGE * op + (1.0 - cached) * disk) + rows * AGG_VET_ROW * op;
 }
 
@@ -1562,6 +2073,12 @@ agg_open_cost(int nparts)
 	return (AGG_START_COST + AGG_PART_PAIR * nparts * nparts) * cpu_operator_cost;
 }
 
+/*
+ * the most rows of elements a scan of the plan being made reads: what a plan that keeps the shared CTE has to produce (cte.c). A filter without
+ * statistics keeps a default guess of the table's rows: the rows are the geometric mean of the guess and the table's, as filter_rows_ratio has them.
+ */
+double		agg_read_rows;
+
 void
 agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out)
 {
@@ -1581,6 +2098,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
 	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
+	agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
 	k.rows_out = rows_out;
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
@@ -1616,11 +2134,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	exact = preagg_share(c, s);
 	if (exact > 0)
 	{
-		double		pre_cost = k.units * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * cpu_operator_cost;
+		double		pre_cost = k.units * Max(k.zone_kept, 1.0 / k.units) * (AGG_UNIT_COST + preagg_unit_ops(c, s, k.units, k.rows, k.rows_out)) * AGG_SCAN_SPEED * cpu_operator_cost;
 
 		k.scan_cost += exact * (Min(pre_cost, k.scan_cost) - k.scan_cost);
 	}
-	startup = agg_open_cost(c->nparts) + k.child_cost + c->subplan_cost;
+	startup = (c->level_params != NIL ? AGG_RESTART_COST * cpu_operator_cost : agg_open_cost(c->nparts)) + k.child_cost + c->subplan_cost;
 	for (int i = 0; i < s->npred; i++)
 		startup += in_tables_cost(c, s->pred[i]);
 	if (s->nworkers > 0)
@@ -1641,4 +2159,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		p->total_cost += c->topn_fetch * random_page_cost * 0.5;
 	/* the groups of the rows the lists pass (spec_finish) tell the plan above how many rows to expect; they are not part of the path's own price */
 	p->rows = s->topn ? k.rows_out : Max(k.rows_out, c->path_rows);
+	/*
+	 * The rows of a fused scan add the groups of every arm, though no arm has more groups than rows it reads: the node reports at most the rows
+	 * its arms aggregate. The plan above is priced for them (agg/cte.c weighs the inline plan of a shared CTE against the shared one), and the
+	 * sum of the arms' groups made the inline plan look 6 times dearer than it is.
+	 */
+	if (s->narms > 0 && !s->topn)
+		p->rows = Min(p->rows, Max(s->est_rows, 1.0));
 }

@@ -404,6 +404,16 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	g->sorted = !ordered && !hash && (a->aggorder != NIL || a->aggdistinct != NIL);
 	g->cost = AGG_GEN_ROW + fn_cost(c, fns.transfn) + cost + (g->distinct ? AGG_GEN_DISTINCT : 0) + (ordered ? AGG_GEN_ORDERED : 0) +
 		(g->sorted ? AGG_GEN_SORTED : 0) + (hyp ? AGG_GEN_HYP : 0);
+	g->hll = -1;
+	/* a nondeterministic collation hashes the sort key of a string, which a unit does not hold */
+	if (g->parallel && g->nargs == 1 && (!OidIsValid(a->inputcollid) || get_collation_isdeterministic(a->inputcollid)) && g->arg[0].nleaves == 1 && g->arg[0].expr == NULL && out->filter == NULL)
+	{
+		FmgrInfo	fi;
+
+		fmgr_info(fns.transfn, &fi);
+		if (fi.fn_addr == sift_approx_trans)
+			g->hll = g->arg[0].leaf[0];
+	}
 	out->kind = SAA_GEN;
 	out->gen = g;
 	out->restype = a->aggtype;

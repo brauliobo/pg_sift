@@ -120,7 +120,7 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 		k->desc = pstrdup(leaf_name(c, leaf));
 	}
 	else if (leaf < 0 && single_leaf(c, expr, &leaf, &ptype, &ptypmod, &pcoll) &&
-			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr)) > 0))
+			 (lut_expr_ok(c, leaf, expr) || (k->bucket = bucket_key_secs(c, leaf, expr, &k->zoned)) > 0))
 	{
 		k->kind = SAK_LUT;
 		k->leaf = leaf;
@@ -141,14 +141,19 @@ compile_key(AggCtx *c, SortGroupClause *sgc, Node *expr, SiftAggKey *k)
 	return true;
 }
 
-/* count(DISTINCT x) of a column that is unique per row: a unique single-column index on a NOT NULL attribute */
+/*
+ * count(DISTINCT x) of a column that is unique per row: a unique single-column index on a NOT NULL attribute. A grouping set over a preserved
+ * join hands the column as a placeholder, NULL where the join nulls it (which DISTINCT does not count) and the column elsewhere: the column.
+ */
 bool
 unique_row_column(AggCtx *c, Node *arg)
 {
 	Var		   *v;
 
 	arg = strip_relabel(arg);
-	if (!IsA(arg, Var))
+	if (IsA(arg, PlaceHolderVar) && (arg = placeholder_expr(c, (PlaceHolderVar *) arg)) != NULL)
+		arg = strip_relabel(arg);
+	if (arg == NULL || !IsA(arg, Var))
 		return false;
 	v = (Var *) arg;
 	if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0 || !bms_is_member(v->varattno, c->rel->notnullattnums))
@@ -240,44 +245,58 @@ compile_vx(AggCtx *c, Node *n, SiftAggAgg *out)
 }
 
 /*
- * percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
- * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4 or date leaf: the
- * executor keeps the values of a group exactly and picks the ranks as PostgreSQL's final functions do.
+ * mode() and percentile_cont / percentile_disc (frac) WITHIN GROUP (ORDER BY x) with a constant fraction in [0, 1] (others raise their
+ * errors in the normal plan) and x a float8 expression, or for percentile_disc also a float4, int2, int4, date, int8, timestamp or
+ * timestamptz leaf or a decimal of at most 18 digits: the executor keeps the values of a group exactly and picks the ranks as
+ * PostgreSQL's final functions do.
  */
 static bool
 compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 {
-	bool		is_cont = a->aggfnoid == F_PERCENTILE_CONT_FLOAT8_FLOAT8;
+	bool		is_cont = a->aggfnoid == F_PERCENTILE_CONT_FLOAT8_FLOAT8,
+				is_mode = a->aggfnoid == F_MODE;
 	Const	   *frac;
 	Node	   *arg;
 	TypeCacheEntry *tc;
 	SortGroupClause *sgc;
 	int			leaf;
 
-	if ((!is_cont && a->aggfnoid != F_PERCENTILE_DISC_FLOAT8_ANYELEMENT) || list_length(a->aggdirectargs) != 1 ||
+	if ((!is_cont && !is_mode && a->aggfnoid != F_PERCENTILE_DISC_FLOAT8_ANYELEMENT) || list_length(a->aggdirectargs) != (is_mode ? 0 : 1) ||
 		list_length(a->args) != 1 || list_length(a->aggorder) != 1 || a->aggdistinct != NIL)
 		return false;
-	frac = (Const *) strip_relabel(linitial(a->aggdirectargs));
-	if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
-		return false;
-	out->frac = DatumGetFloat8(frac->constvalue);
-	if (!(out->frac >= 0 && out->frac <= 1))
-		return false;
+	if (is_mode)
+		out->frac = -1;
+	else
+	{
+		frac = (Const *) strip_relabel(linitial(a->aggdirectargs));
+		if (!IsA(frac, Const) || frac->constisnull || frac->consttype != FLOAT8OID)
+			return false;
+		out->frac = DatumGetFloat8(frac->constvalue);
+		if (!(out->frac >= 0 && out->frac <= 1))
+			return false;
+	}
 	arg = strip_relabel((Node *) linitial_node(TargetEntry, a->args)->expr);
 	sgc = linitial_node(SortGroupClause, a->aggorder);
 	tc = lookup_type_cache(exprType(arg), TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
 	if (sgc->sortop != tc->lt_opr && sgc->sortop != tc->gt_opr)
 		return false;
 	out->desc_order = sgc->sortop == tc->gt_opr;
+	out->num.n = 0;
 	out->kind = is_cont ? SAA_PCT_CONT : SAA_PCT_DISC;
 	out->argtype = exprType(arg);
-	if ((leaf = match_leaf(c, arg)) >= 0)
+	if (!is_cont && out->argtype == NUMERICOID)
+	{
+		if (!compile_nx(c, arg, 18, &out->num))
+			return false;
+	}
+	else if ((leaf = match_leaf(c, arg)) >= 0)
 	{
 		SiftSrcLeaf *l = leaf_of(c, leaf);
 
 		if (l->kind != SCL_SCALAR ||
 			!((l->vtype == SCV_F64 && (l->typid == FLOAT8OID || l->typid == FLOAT4OID)) ||
-			  (l->vtype == SCV_I32 && (l->typid == INT4OID || l->typid == INT2OID || l->typid == DATEOID))))
+			  (l->vtype == SCV_I32 && (l->typid == INT4OID || l->typid == INT2OID || l->typid == DATEOID)) ||
+			  (!is_cont && !l->wide && l->vtype == SCV_I64 && (l->typid == INT8OID || l->typid == TIMESTAMPOID || l->typid == TIMESTAMPTZOID))))
 			return false;
 		out->leaf = leaf;
 		use_leaf(c, leaf);
@@ -289,8 +308,8 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 			return false;
 	}
 	out->share = -1;
-	out->desc = psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg),
-						 out->desc_order ? " DESC" : "");
+	out->desc = is_mode ? psprintf("mode() WITHIN GROUP (ORDER BY %s%s)", expr_text(c, arg), out->desc_order ? " DESC" : "") :
+		psprintf("%s(%g) WITHIN GROUP (ORDER BY %s%s)", get_func_name(a->aggfnoid), out->frac, expr_text(c, arg), out->desc_order ? " DESC" : "");
 	return true;
 }
 
@@ -298,8 +317,12 @@ compile_ordered(AggCtx *c, Aggref *a, SiftAggAgg *out)
 static bool
 same_sorted_input(const SiftAggAgg *a, const SiftAggAgg *b)
 {
-	if (a->filter || b->filter || a->leaf != b->leaf || a->nvx != b->nvx)
+	if (a->filter || b->filter || a->leaf != b->leaf || a->nvx != b->nvx || osa_int_key(a) != osa_int_key(b) || a->num.n != b->num.n ||
+		(a->num.n && a->num.scale != b->num.scale))
 		return false;
+	for (int k = 0; k < a->num.n; k++)
+		if (memcmp(&a->num.step[k], &b->num.step[k], sizeof(SiftAggNx)) != 0)
+			return false;
 	for (int k = 0; k < a->nvx; k++)
 		if (a->vx[k].op != b->vx[k].op || a->vx[k].leaf != b->vx[k].leaf || a->vx[k].c != b->vx[k].c)
 			return false;
@@ -430,6 +453,18 @@ compile_mapped(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	out->argtype = typ;
 	out->combo = ci;
 	out->slot = si;
+	out->wsum = 0;
+	if (direct && (kind == SAA_X_SUM || kind == SAA_X_AVG) && typ == NUMERICOID && (out->wsum = match_leaf(c, arg) + 1) > 0)
+	{
+		const SiftSrcLeaf *lf = leaf_of(c, out->wsum - 1);
+
+		if (lf->kind == SCL_SCALAR && lf->parent < 0 && lf->wide && lf->wtypid == NUMERICOID && lf->vtype == SCV_CODE)
+			use_leaf(c, out->wsum - 1);
+		else
+			out->wsum = 0;
+	}
+	if (kind == SAA_M_DISTINCT)
+		out->est_distinct = Max(estimate_num_groups(c->root, list_make1(arg), Max(c->rel->tuples, 1.0), NULL, NULL), 1.0);
 	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
 	return true;
 }
@@ -474,12 +509,12 @@ compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	Oid			fid = a->aggfnoid;
 	bool		sum = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC;
 
-	/* a sum of n values of D digits has D + log10(n) digits: 26 leave room for 10^12 rows in 128 bits */
-	if (!compile_nx(c, arg, sum ? 26 : SIFT_NUM_MAX_DIGITS, &out->num))
+	/* the sum of values of up to 38 digits is kept in 128 bits and the carries out of them (agg_sum_add): no bound on the rows */
+	if (!compile_nx(c, arg, SIFT_NUM_MAX_DIGITS, &out->num) && !(sum && a->aggdistinct == NIL && compile_nx_product(c, arg, &out->num)))
 		return compile_mapped(c, a, arg, out, ai);
 	out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
 		fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;
-	out->argtype = NUMERICOID;
+	out->argtype = exprType(arg);
 	out->distinct = sum && a->aggdistinct != NIL;
 	out->desc = psprintf("%s(%s%s)", get_func_name(fid), a->aggdistinct ? "DISTINCT " : "", expr_text(c, arg));
 	return true;
@@ -612,14 +647,27 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	if (list_length(a->args) != 1)
 		return false;
 	arg = (Node *) linitial_node(TargetEntry, a->args)->expr;
+	/* count(x->>'k') counts the values of the typed leaf of the member: both are NULL for a missing key and a JSON null */
+	if (fid == F_COUNT_ANY && a->aggdistinct == NIL)
+	{
+		Node	   *typed = typed_member(c, arg);
+
+		arg = typed != NULL ? typed : arg;
+	}
 	if (count_rows_kind(c, a, arg, out))
 	{
 		out->desc = pstrdup(get_func_name(fid));
 		return true;
 	}
+	/* the set of the values of each group stays: x is not proven unique per row, so the rows cannot be counted in its place */
+	if (fid == F_COUNT_ANY && a->aggdistinct != NIL)
+		agg_report("distinct", AGG_REFUSE_DISTINCT_SET, expr_text(c, arg), false, 0, 0);
 	if (exprType(arg) == NUMERICOID && (fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC || fid == F_MIN_NUMERIC ||
 										fid == F_MAX_NUMERIC || fid == F_COUNT_ANY))
 		return compile_numeric_agg(c, a, arg, out, ai);
+	/* the distinct values of a bigint are kept as those of a decimal: exact, and a partial state the leader can merge */
+	if (exprType(arg) == INT8OID && fid == F_COUNT_ANY && a->aggdistinct != NIL && compile_numeric_agg(c, a, arg, out, ai))
+		return true;
 	if ((fid == F_SUM_FLOAT8 || fid == F_AVG_FLOAT8) && match_leaf(c, arg) < 0)
 		return compile_float_agg(c, a, arg, out, ai);
 	if ((fid == F_SUM_INT8 || fid == F_AVG_INT8) && a->aggdistinct == NIL && compile_int8_agg(c, a, arg, out))
@@ -641,6 +689,7 @@ compile_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 
 	if (a->agglevelsup != 0 || contain_volatile_functions((Node *) a))
 		return false;
+	a = (Aggref *) strict_placeholders(c, (Node *) a);
 	out->leaf = -1;
 	out->restype = a->aggtype;
 	out->collid = a->inputcollid;

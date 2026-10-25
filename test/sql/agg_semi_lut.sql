@@ -116,14 +116,16 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM
 RESET sift.agg_semi_lut;
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS lut_on;
 
--- from workers: each builds its table
+-- from workers: each builds its table (the join key filters left out, so that the scan reads every unit and the workers share a scan that pays for them)
 ALTER TABLE ev SET (parallel_workers = 2);
+SET sift.agg_join_filter = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 8) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.country < 30) GROUP BY kind$$);
+RESET sift.agg_join_filter;
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;

@@ -75,6 +75,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "col/hll.h"
 
 static Datum
 gen_eval_once(AggExec *ex, ExprState *e, Oid typid, bool *isnull)
@@ -380,12 +381,14 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 				Float8GetDatum(((const double *) v->data)[i]);
 		case SCV_CODE:
 			{
-				uint32		code = ((const uint32 *) v->data)[i];
+				uint32		code = ((const uint32 *) v->data)[i],
+							len;
+				char		buf[SIFT_SRC_DICT_ENTRY];
+				const char *str = sift_srcdict_str(v->dict, code, &len, buf);
 
 				if (l->wide)
-					return sift_aggwide_datum(l->typid, v->dict->bytes + v->dict->off[code], v->dict->off[code + 1] - v->dict->off[code]);
-				return PointerGetDatum(cstring_to_text_with_len(v->dict->bytes + v->dict->off[code],
-																v->dict->off[code + 1] - v->dict->off[code]));
+					return sift_aggwide_datum(l->typid, str, len);
+				return PointerGetDatum(cstring_to_text_with_len(str, len));
 			}
 	}
 	return (Datum) 0;
@@ -550,6 +553,17 @@ gen_combine(AggExec *ex, GenSt *st, AggAcc *acc, uint32 g, Datum nv)
 	res = FunctionCallInvoke(fc);
 	MemoryContextSwitchTo(old);
 	gen_keep_state(st, acc, g, f, ov, res, fc->isnull);
+}
+
+/* a unit's stored sketch joins the state of sift.approx_count_distinct (group 0) through its combine function, as a worker's partial state would */
+void
+gen_merge_hll(AggExec *ex, int ai, const uint8 *blob)
+{
+	SiftHll    *h = MemoryContextAlloc(ex->ucxt, sizeof(SiftHll));
+
+	sift_hll_init(h, ex->ucxt);
+	sift_hll_merge_blob(h, blob);
+	gen_combine(ex, ex->gst[ai], &ex->acc[ai], 0, PointerGetDatum(h));
 }
 
 /* a worker's partial state of group g, appended to vb as a length (0: none) and bytes: the serial function's, else the datum's */

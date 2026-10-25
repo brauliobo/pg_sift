@@ -19,6 +19,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import pgq  # noqa: E402  (steps/pgq.py)
 import store_lib  # noqa: E402  (the queries and their statements)
 import store_render  # noqa: E402  (the tables and the stored results)
 
@@ -102,27 +103,11 @@ def hook_cost(q, n, reps=400):
     return out
 
 
-class Session:
+class Session(pgq.Backend):
     """one psql backend, so that perf can attach to its pid"""
     def __init__(self, options=''):
-        self.p = subprocess.Popen(['psql', '-X', '-q', '-At', '-U', 'postgres', '-d', DB], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
-                                  env=dict(os.environ, PGOPTIONS=options))
-        self.pid = int(self.run('SELECT pg_backend_pid()')[0])
-        self.run('\\o /dev/null')
-
-    def run(self, sql, capture=False):
-        self.p.stdin.write(('\\o\n' if capture else '') + sql + ('' if sql.startswith('\\') else ';') + '\n' + ('\\o /dev/null\n' if capture else '') + '\\echo __DONE__\n')
-        self.p.stdin.flush()
-        out = []
-        while (line := self.p.stdout.readline().rstrip('\n')) != '__DONE__':
-            if line == '' and self.p.poll() is not None:
-                raise RuntimeError('psql ended')
-            out.append(line)
-        return out
-
-    def close(self):
-        self.p.stdin.close()
-        self.p.wait()
+        super().__init__(['psql', '-X', '-q', '-At', '-U', 'postgres', '-d', DB], dict(os.environ, PGOPTIONS=options), strict=False, stderr=None)
+        self.pid = int(self.run('SELECT pg_backend_pid()', capture=True)[0])
 
 
 def perf_profile(sql, runs, top=14):

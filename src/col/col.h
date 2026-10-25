@@ -35,7 +35,12 @@
 #define SIFT_COL_FORMAT_DICTIDX	14			/* 3.3: the segment has a dictionary stored in blocks that are read in place (DICT_BLOCKS), and for the leaves that ask for it with the codes in byte order to search the strings in place (DICT_LOOKUP); written for the dictionaries of CDICT_LOOKUP_MIN strings or more under sift.col_format_minor 14 where the blocks add at most 3% to the segment, for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_PRESENCE	15		/* 3.3: the segment has the key list or bitmap (every distinct key) of some leaf in some unit; written only for an index whose key_columns keep a key list or bitmap, and then for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_POINTTID	16		/* 3.3: the segment has a point directory whose slots list the heap addresses of the rows, not their numbers in the segment; written only for an index with the reloption point_tid_columns, for a schema that has no shredded leaves or whose every kind is known */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_POINTTID	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_KEYED	17			/* 3.4: the segment's units are cut by the range of the declared key (the reloption key_cut), not by superblock, and list their TIDs; written only for an index with the reloption key_cut and sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_HEADS	18			/* 3.4: the sorted runs of the segment also hold their heads, the first and last keys with the heap addresses of their rows; written for an index with the reloption order_columns whose segment is not key-cut, under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_EXCEPT	19		/* 3.4: a unit also holds the cube and the element rollups of its few rows where one NULL-heavy leaf is not NULL (the exceptions), so that a filter IS NULL on it is answered as the unit minus them; written when a unit has exceptions, under a sift.col_format_minor of 15 or more (docs/COL-PREAGG.md 11) */
+#define SIFT_COL_FORMAT_HLL		20			/* 3.4: the segment has the HyperLogLog sketch of some leaf in some unit; written only for an index with the reloption hll_columns, and then for a schema that has no shredded leaves or whose every kind is known */
+#define SIFT_COL_FORMAT_GORDER	21		/* 3.4: the segment has the global order of some leaf: every row's key and heap address sorted, in chunks; written for a leaf of the option order_columns under sift.col_order_array */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_GORDER	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -310,6 +315,8 @@ typedef struct SiftColLeafStats
 	double		point_keys;		/* ... the distinct keys of those lists ... */
 	double		point_rows;		/* ... and the rows they list */
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
+	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
+	double		gord_bytes;		/* ... and their bytes */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;
@@ -389,6 +396,13 @@ typedef struct SiftColPred
 	const SiftColValue *vals;
 } SiftColPred;
 
+/* A bound of a range: the two of one leaf are tested together (a range found in a sorted run, scan_filter.c) */
+static inline bool
+sift_col_pred_is_bound(const SiftColPred *p)
+{
+	return p->op == SIFT_COLOP_LT || p->op == SIFT_COLOP_LE || p->op == SIFT_COLOP_GT || p->op == SIFT_COLOP_GE;
+}
+
 /* Same-element predicates: a row is selected when some element of the group satisfies every predicate (preds are on children of group); negate: when none does */
 typedef struct SiftColGroupPred
 {
@@ -410,7 +424,12 @@ typedef struct SiftColDict
 	 * hash (cdict_find); octx is its argument */
 	const uint32 *(*order) (const void *octx, uint64 rows);
 	const void *octx;
+	/* A dictionary of many strings that the segment stores in blocks and the backend has not loaded (sift_col_read_lane): off and bytes are NULL, get gives the string of a code (into buf of
+	 * SIFT_COL_DICT_MAX_ENTRY bytes, valid until the next call) by decompressing its block, and sift_col_dict_full(gctx, &d) sets the arrays of the whole dictionary in d (its id stays), loaded now */
+	const char *(*get) (const void *gctx, uint32 code, uint32 *len, char *buf);
+	const void *gctx;
 } SiftColDict;
+extern void sift_col_dict_full(const void *gctx, SiftColDict *self);
 
 #define SIFT_COL_DICT_LEN(d, c)		((d)->off[(c) + 1] - (d)->off[(c)])
 #define SIFT_COL_DICT_STR(d, c)		((d)->bytes + (d)->off[c])
@@ -456,6 +475,7 @@ typedef struct SiftColZone
 #define SIFT_COLO_NOCHECKS		0x0002	/* skip the privilege / RLS checks (internal callers that did them) */
 #define SIFT_COLO_NOACL		0x0008	/* skip the table privilege check only (the RLS check stays): the executor of the query checked the privileges of the role, or of the view owner, on the columns it reads */
 #define SIFT_COLO_POINT_TIDS	0x0020	/* ... and the heap addresses of a directory that lists them are returned as they are, without reading a unit (sift_col_point_tids): the caller wants no values of the rows, only the addresses, and has the heap check the condition again */
+#define SIFT_COLO_POINT_ROWS	0x0040	/* ... and a unit comes narrowed to the rows the directory lists (sift_col_point_narrow): the caller tests every predicate again on them, as it does on the rows of a unit */
 #define SIFT_COLO_POINTS		0x0010	/* the scan may answer an equality or a short IN list from the point directory of a segment, whose rows are the fingerprint's: the caller has the heap check the condition again (sift_col_filter_points) */
 #define SIFT_COLO_SNAP_HELD		0x0004	/* the caller keeps the snapshot registered while the source is open: one registration for the thousands of sources of a partitioned table's scan (a resource owner holding that many registrations of one snapshot takes quadratic time to add and forget them) */
 
@@ -468,6 +488,9 @@ typedef struct SiftColCounters
 	int64		units_pruned;	/* skipped by their zone maps or small-set summaries */
 	int64		units_set;		/* of those, the ones only a small-set summary could skip */
 	int64		rows_scanned;	/* rows of the units visited */
+	int64		point_units;	/* units narrowed to the rows a point directory lists (SIFT_COLO_POINT_ROWS) */
+	int64		point_rows;		/* and the rows they were narrowed to */
+	int64		run_windows;	/* units whose range on a leaf with a sorted run was answered by the run (sift_col_filter) */
 	int64		rows_vetted;	/* rows checked against the heap (page not all-visible) */
 	int64		heap_pages;
 	int64		bytes_decoded;
@@ -487,8 +510,12 @@ typedef struct SiftColUnit
 	uint32		nrows;
 	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
 	uint32		nsu;			/* a superunit (sift_col_super): the units it stands for, whose merged pre-aggregates are all it has; 0 for a unit */
+	int			except;			/* sift_col_unit_except: the leaf whose NULL rows the histograms and rollups of the unit answer for; -1: the unit's own rows */
 	void	   *priv;
 } SiftColUnit;
+
+/* Whether the next sift_col_read and sift_col_read_idx of the unit may give a STR leaf a dictionary that stays in the segment (get, no off and bytes): for a reader that asks for the strings of a few codes */
+extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
 
 /*
  * Superunits (docs/COL-PREAGG.md section 10). With sift_col_super(src, true), a source whose next unit starts a group of units of a segment that
@@ -533,6 +560,8 @@ extern const SiftColDef *sift_col_def(const SiftColSource *src, int col);
 
 /* Superblocks of the heap now: the range [0, heap_sbs) for a morsel counter (a later insert may add rows past it: they are not visible to the snapshot) */
 extern uint32 sift_col_heap_sbs(const SiftColSource *src);
+/* Is the number of each stored unit the heap superblock of its rows? Not once a segment cuts its units by key or TID range */
+extern bool sift_col_sb_heap(const SiftColSource *src);
 
 /*
  * Starts (or restarts) the iteration over the units of superblocks [sb_lo, sb_hi) (sb_hi exclusive, PG_UINT32_MAX = to the end). Units whose
@@ -590,10 +619,21 @@ extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, i
 /* The heap addresses the point directories of heap addresses answered at the last begin (SIFT_COLO_POINT_TIDS), ascending: their units are not read; the caller has the heap check the conditions */
 extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
 /*
+ * The global order of leaf col (col/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
+ * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _chunk: the entries
+ * [c * SIFT_CGORD_ROWS, + the count returned) as keys and heap addresses, each SIFT_CGORD_CAP slots.
+ */
+extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
+extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
+extern uint32 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr);
+extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
+extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after);
+/*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap
  * check the condition again. A unit without such rows (a write buffer, a segment without a directory) is filtered by every predicate, *used false.
  */
+extern void sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel);
 extern bool sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used);
 
 /*
@@ -748,6 +788,15 @@ extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint3
  * rows ascending, the rest those of the rows whose value overflowed the leaf, ascending. sift_col_run_read gives the entries [pos, pos + cnt), each a row of the unit.
  * *id names the unit among those of the scan (the generation of its segment and its place in it), so that a scan can come back to it.
  */
+/* One entry of the head of a sorted run (col/runs.h): the key of a row and its heap address (block << 16 | offset) */
+typedef struct SiftCHeadEnt
+{
+	int64		key;
+	uint64		addr;
+} SiftCHeadEnt;
+/* The head of the run found by sift_col_run_info: its H (0: the run has none), then nlo entries from the low end and nhi from the high end into out (2 H entries) */
+extern bool sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
+extern int	sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
 extern bool sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
 extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords);
 
@@ -758,6 +807,14 @@ extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint
 extern void sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone);
 /* The zone of leaf col over every unit of the superblocks [sb_lo, sb_hi) as stored (a write buffer unit in the range makes it unbounded), from the segment headers: no unit is opened. Returns the units counted */
 extern uint32 sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+extern uint32 sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone);
+typedef struct SiftColWalkStamp
+{
+	Oid			index;
+	uint32		file;
+	uint32		version;
+} SiftColWalkStamp;
+extern bool sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem);
 extern bool sift_col_unit_exact(const SiftColUnit *unit);
 /* Is every page of the unit all-visible: sift_col_vet has nothing to check */
 extern bool sift_col_unit_allvisible(const SiftColUnit *unit);

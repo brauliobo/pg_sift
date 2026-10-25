@@ -12,6 +12,7 @@
 
 #include "col/col.h"
 #include "core/filter.h"
+#include "agg/colsrc.h"
 
 typedef struct SiftAggSel
 {
@@ -38,6 +39,17 @@ extern void sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColU
 
 /* The unit's operations, in the numbering the executor sees (a.keep NULL: the unit as stored) */
 extern void sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec);
+
+/*
+ * Column col of the unit as stored decoded by the engine into the caller's storage (SiftSrcBuf), in the lane of the layout leaf l's vector type; the
+ * dictionary of a code leaf is set in *dict. For a unit that is not compacted (a.compact): the rows of a compacted unit are read with sift_aggsel_read.
+ * tol: the values the column cannot hold read as NULL, else they are flagged in buf->ovf (an error without it).
+ */
+/* The values of a read of the rows idx[0..v->n) of a unit of nrow rows, at their rows in the caller's storage (nrow + SIFT_AGG_PAD values); the other rows are zero */
+extern void sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
+/* A dictionary of the engine as the source's: the strings in place, or (a read that stayed in the segment) fetched by code and loaded whole on demand */
+extern SiftSrcDict sift_aggsel_src_dict(const SiftColDict *d);
+extern void sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 extern void sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits);
 extern bool sift_aggsel_vet_needed(const SiftColUnit *cu);
 extern void sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits);

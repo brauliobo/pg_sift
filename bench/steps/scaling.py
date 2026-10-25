@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregates by number of partitions and parallel workers: the orders of the store benchmark on a scratch cluster (bench/steps/scaling.sh runs it).
+"""Aggregates by number of partitions and parallel workers: the orders of the orders benchmark on a scratch cluster (bench/steps/scaling.sh runs it).
 
     scaling.py run --db DB --out FILE [--rows N] [--partitions 1,16,...] [--workers 0,1,2,3] [--reps 7] [--meta KEY=VALUE ...]
 
@@ -20,6 +20,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import pgq  # noqa: E402  (steps/pgq.py)
 import extras  # noqa: E402
 
 BENCH = os.path.dirname(HERE)
@@ -37,12 +38,7 @@ def sql_of(q, rows):
 
 def psql(db, sqls, timed=True, timeout=1800):
     """the statements run in one session, the last one timed: (ms, stdout)"""
-    script = ''.join(s + ';\n' for s in ['set jit = off', 'set statement_timeout = 0'] + sqls[:-1]) + ('\\timing on\n' if timed else '') + sqls[-1] + ('\n' if sqls[-1].endswith('\\gexec') else ';\n')
-    p = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-d', db], input=script, capture_output=True, text=True, timeout=timeout, env=dict(os.environ, LC_ALL='C'))
-    if p.returncode:
-        raise RuntimeError(p.stderr.strip()[:300] + ' :: ' + sqls[-1][:120])
-    t = re.findall(r'Time: ([0-9.]+) ms', p.stdout)
-    return (float(t[-1]) if t else None), re.sub(r'Time: [0-9.]+ ms( \([0-9:.]+\))?\n?', '', p.stdout)
+    return pgq.timed(db, sqls, ['set jit = off', 'set statement_timeout = 0'], timed, timeout)
 
 
 def build(db, parts):
@@ -110,7 +106,7 @@ def run(a):
                  'method': 'psql \\timing of one statement, planning included, one client, %d timed runs after one untimed, cells interleaved in random order; jit off; partitions: 2 workers' % a.reps})
     for r in rows:
         r['version'] = version
-    extras.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the store benchmark (bench/steps/scaling.sh).', meta, rows)
+    extras.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the orders benchmark (bench/steps/scaling.sh).', meta, rows)
 
 
 def main():

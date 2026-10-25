@@ -186,6 +186,44 @@ group_has_partition_key(AggCtx *c, List *keys)
 	return ok;
 }
 
+/* is a column of table a equal to a column of table b in the query (an equivalence class holds both)? */
+static bool
+eq_joined(PlannerInfo *root, int a, int b)
+{
+	foreach_node(EquivalenceClass, ec, root->eq_classes)
+	{
+		bool		ina = false,
+					inb = false;
+
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+		{
+			ina |= bms_is_member(a, em->em_relids);
+			inb |= bms_is_member(b, em->em_relids);
+		}
+		if (ina && inb)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The tables joined to the scan, those joined to the scanned table itself first: a table keyed by a column of another lookup is loaded after the
+ * one it takes its keys from (a customer listed before the orders that name it is read whole, row by row, by every row of the scan).
+ */
+static List *
+joined_in_order(PlannerInfo *root, int scanned, List *joined)
+{
+	List	   *direct = NIL,
+			   *rest = NIL;
+
+	foreach_int(rti, joined)
+		if (eq_joined(root, scanned, rti))
+			direct = lappend_int(direct, rti);
+		else
+			rest = lappend_int(rest, rti);
+	return list_concat(direct, rest);
+}
+
 bool
 agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
@@ -279,6 +317,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
 	if (c->rel == NULL || !find_source(c, &ii))
 		return agg_refuse(NO_SOURCE);
+	if (list_length(joined) > 1 && list_length(joined) == list_length(fs->rtis) - 1 && fs->lefts == NIL)
+		joined = joined_in_order(root, c->relid, joined);
 	c->nsiblings = list_length(joined) + (c->func_rti != 0);
 	foreach_int(rti, joined)
 		if (!add_join(c, fs, rti))
@@ -575,24 +615,44 @@ set_groups(AggCtx *c, PlannerInfo *root, SiftAggSpec *s, List *keys, double rows
 	return n;
 }
 
+static bool
+fn_unsafe(Oid funcid, void *context)
+{
+	return func_parallel(funcid) != PROPARALLEL_SAFE;
+}
+
+/* does a function of the packed spec (its expressions are Nodes among Integers and Strings), or of a query, run only in the leader? */
+static bool
+unsafe_in_worker(Node *n, void *context)
+{
+	if (n == NULL || IsA(n, Integer) || IsA(n, String) || IsA(n, IntList) || IsA(n, OidList))
+		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, unsafe_in_worker, context, 0);
+	return check_functions_in_node(n, fn_unsafe, NULL) || expression_tree_walker(n, unsafe_in_worker, context);
+}
+
 /*
- * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the whole
- * query is safe to run in a worker (the workers evaluate the spec's expressions) and the spec's tables can be merged
- * (sift_aggspec_parallel_ok).
+ * Workers for the scan, as PostgreSQL decides them for a parallel seq scan of the table (size, reloption, the GUCs), when the spec's
+ * expressions are safe to run in a worker and its tables can be merged (sift_aggspec_parallel_ok). The relations of the joins are not
+ * asked: the leader reads them (a CTE, a sub-select) and shares the lookup tables; the plan of a correlated join runs in each worker.
  */
 int
-parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
+parallel_workers(AggCtx *c, SiftAggSpec *s)
 {
-	/* the relations' own flags, as PostgreSQL's grouping does: the query-wide hazard counts the sub-selects it pulled up into semi joins as restricted */
-	if (!sift_aggspec_parallel_ok(s) || c->nsubplan > 0 || !c->root->glob->parallelModeOK || !output_rel->consider_parallel ||
-		!input_rel->consider_parallel || !c->rel->consider_parallel || max_parallel_workers_per_gather <= 0)
+	if (!sift_aggspec_parallel_ok(s) || c->sub_serial || !c->root->glob->parallelModeOK || !c->rel->consider_parallel ||
+		max_parallel_workers_per_gather <= 0 || unsafe_in_worker((Node *) sift_aggspec_pack(s), NULL))
 		return 0;
-	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order */
+	/* a worker runs the plan of a correlated join itself (its own executor state, from the statement the leader sends) */
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->j.params != NIL && (jc->subroot == NULL || unsafe_in_worker((Node *) jc->subroot->parse, NULL)))
+			return 0;
+	/* of the equal keys 1.0 and 1.00 the group shows the one of the first row, which the workers' tables merge in no order: not so for a wide leaf that only sums and averages add */
 	for (int i = 0; s->nkeys > 0 && i < s->nleaves; i++)
-		if (leaf_of(c, s->leaves[i])->wide)
+		if (leaf_of(c, s->leaves[i])->wide && !leaf_wsum_only(s, s->leaves[i]))
 			return 0;
 	/* the leader writes the lookup tables to the shared memory and each worker maps them: a scan of fewer rows than AGG_SHARE_RATIO for each of their rows does not pay for it */
-	if (agg_share_rows(c) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
+	if (agg_share_rows(c, s) * AGG_SHARE_RATIO > Max(c->stats.nrows, c->rel->tuples))
 		return 0;
 	return compute_parallel_worker(c->rel, rel_pages(c), -1, max_parallel_workers_per_gather);
 }
@@ -783,16 +843,27 @@ param_set_ratio(AggCtx *c)
 	return Min(f, Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
 }
 
-/* the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers, or the probes a nested loop makes of one per key */
+/* is the path a scan of the table the node scans (the plan has other ranges of it: a CTE read twice, an inlined copy)? */
+static bool
+scans_table(AggCtx *c, const Path *p)
+{
+	return p->parent->reloptkind == RELOPT_BASEREL &&
+		planner_rt_fetch(p->parent->relid, c->root)->relid == planner_rt_fetch(c->relid, c->root)->relid;
+}
+
+/*
+ * the scan of the rows of the table a plan reads them with, when it is an index or bitmap scan under aggregation, sorts and gathers,
+ * or the probes a join makes of one per key (a nested loop, or the input of a merge or hash join above it)
+ */
 static Path *
-row_scan_of(Path *p)
+row_scan_of(Path *p, AggCtx *c)
 {
 	for (;;)
 		switch (nodeTag(p))
 		{
 			case T_IndexPath:
 			case T_BitmapHeapPath:
-				return p;
+				return scans_table(c, p) ? p : NULL;
 			case T_AggPath:
 				p = ((AggPath *) p)->subpath;
 				break;
@@ -814,14 +885,24 @@ row_scan_of(Path *p)
 			case T_ProjectionPath:
 				p = ((ProjectionPath *) p)->subpath;
 				break;
+			case T_MaterialPath:
+				p = ((MaterialPath *) p)->subpath;
+				break;
 			case T_NestPath:
+			case T_MergePath:
+			case T_HashPath:
 				{
 					/* the keys of a lookup drive the probes of an index or bitmap scan of the table: the plan costs a probe a key */
-					Path	   *inner = ((NestPath *) p)->jpath.innerjoinpath;
+					JoinPath   *jp = (JoinPath *) p;
+					Path	   *inner = jp->innerjoinpath,
+							   *found;
 
 					if (IsA(inner, MemoizePath))
 						inner = ((MemoizePath *) inner)->subpath;
-					return (IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL ? inner : NULL;
+					if ((IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL && scans_table(c, inner))
+						return inner;
+					found = row_scan_of(jp->outerjoinpath, c);
+					return found ? found : row_scan_of(jp->innerjoinpath, c);
 				}
 			default:
 				return NULL;
@@ -832,16 +913,18 @@ row_scan_of(Path *p)
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false);
+	double		f = param_set_ratio(c) * lookup_set_ratio(c, s, input_rel, false),
+				rows = input_rows_ratio(c, s, input_rel);
 
-	if (f <= 1.0)
+	if (f <= 1.0 && rows <= 1.0)
 		return;
 	foreach_ptr(Path, p, output_rel->pathlist)
-		if (row_scan_of(p) != NULL)
-		{
-			p->startup_cost *= f;
-			p->total_cost *= f;
-		}
+	{
+		double		g = (row_scan_of(p, c) != NULL ? f : 1.0) * (IsA(p, CustomPath) ? 1.0 : rows);
+
+		p->startup_cost *= g;
+		p->total_cost *= g;
+	}
 }
 
 /* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
@@ -861,7 +944,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!spec_finish(c, s, root, input_rel, keys))
 		return;
 	/* only a count(DISTINCT) carries a set per group, which is what makes the table of a partition's groups worth finishing early: the tuples of the others cost more than the table */
-	if (c->part_key && sift_aggspec_spillable(s) && !sift_aggspec_ordered(s))
+	if (c->part_key && sift_aggspec_spillable(s) && !(sift_aggspec_float_sums(s) && !sift_aggspec_workers_only(s)))
 		for (int i = 0; i < s->naggs; i++)
 			s->part_final |= s->agg[i].kind == SAA_COUNT_DISTINCT;
 	if (!first_fits(s))
@@ -881,13 +964,14 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
-	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
-	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s, input_rel, output_rel);
+	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
+	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
 	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
 		nworkers = 0;
 	if (nworkers > 0)
-		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
+		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);
 }
 
 /* the index among the group columns of the one with the sortgroupref ref */
@@ -959,11 +1043,56 @@ groupClause_has_nonconst(PlannerInfo *root, List *groupClause)
 }
 
 /*
+ * ORDER BY an aggregate LIMIT n of a plain GROUP BY (no HAVING, window, DISTINCT or grouping sets above the groups): the first sort key is an
+ * aggregate of the scan whose value the executor ranks without making the group a tuple, so the groups after the n-th (+ OFFSET) are not emitted.
+ * The sort and the limit stay in PostgreSQL's plan: it ranks the ties by the other keys.
+ */
+static void
+group_topn(PlannerInfo *root, SiftAggSpec *s, List *aggs, List *groupClause, GroupPathExtraData *gextra)
+{
+	Query	   *parse = root->parse;
+	SortGroupClause *sgc;
+	Node	   *e;
+	TypeCacheEntry *tc;
+	Const	   *lim,
+			   *off = NULL;
+	int64		k;
+	int			ai = -1;
+
+	if (parse->sortClause == NIL || parse->limitCount == NULL || parse->limitOption != LIMIT_OPTION_COUNT || groupClause != parse->groupClause ||
+		parse->groupClause == NIL || parse->groupingSets != NIL || parse->hasWindowFuncs || parse->hasDistinctOn || parse->distinctClause != NIL ||
+		parse->hasTargetSRFs || parse->havingQual != NULL || (gextra && gextra->havingQual))
+		return;
+	lim = (Const *) parse->limitCount;
+	if (!IsA(lim, Const) || lim->constisnull || (parse->limitOffset && (!IsA(parse->limitOffset, Const) || ((Const *) parse->limitOffset)->constisnull)))
+		return;
+	if (parse->limitOffset)
+		off = (Const *) parse->limitOffset;
+	k = DatumGetInt64(lim->constvalue) + (off ? DatumGetInt64(off->constvalue) : 0);
+	if (k <= 0 || k > 1000000)
+		return;
+	sgc = linitial_node(SortGroupClause, parse->sortClause);
+	e = strip_relabel((Node *) get_sortgroupclause_expr(sgc, root->processed_tlist));
+	foreach_ptr(Node, a, aggs)
+		if (IsA(a, Aggref) && equal(strip_relabel(a), e))
+			ai = foreach_current_index(a);
+	if (ai < 0 || !sift_aggspec_gtopn_kind(&s->agg[ai]))
+		return;
+	tc = lookup_type_cache(exprType(e), TYPECACHE_LT_OPR | TYPECACHE_GT_OPR);
+	if (sgc->sortop != tc->lt_opr && sgc->sortop != tc->gt_opr)
+		return;
+	s->gtopn_k = (int) k;
+	s->gtopn_agg = ai;
+	s->gtopn_desc = sgc->sortop == tc->gt_opr;
+	s->gtopn_nulls_first = sgc->nulls_first;
+}
+
+/*
  * The rows of one scan grouped by `groupClause` (the GROUP BY of the query, or the columns of its SELECT DISTINCT, which is a grouping with no
  * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
  */
 static void
-group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
+group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others)
 {
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
@@ -976,8 +1105,20 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 			   *firsts = NIL;
 	bool		lead = true;
 
-	if (!agg_base_either(c, root, input_rel, &fs))
-		return;
+	if (skip == 0)
+	{
+		if (!agg_base_either(c, root, input_rel, &fs))
+			return;
+		/* the tables of an inner join may each be the scanned one, the others its lookups: the first in the FROM list is not the only way (group_paths) */
+		*others = fs.skip == 0 && !fs.flippable && fs.lefts == NIL && !c->joinless && !fs.flip &&
+			input_rel->cheapest_total_path->total_cost >= AGG_ORDER_MIN_COST ? fs.ntables - 1 : 0;
+	}
+	else
+	{
+		fs.skip = skip;
+		if (!agg_base(c, root, input_rel, &fs))
+			return;
+	}
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
@@ -1056,7 +1197,41 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 														 list_length(scan_tlist) + 1, NULL, false));
 		s->naggs++;
 	}
+	group_topn(root, s, ow.aggs, groupClause, gextra);
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
+}
+
+/*
+ * The spec of a path, as it is when the path is made (the next path of the pair, with workers, changes the one the planner holds): packed when the path
+ * becomes a plan (agg_plan_path). A path that loses is most of them, and packing a spec costs more than building the path.
+ */
+SiftAggSpec *
+agg_spec_keep(const SiftAggSpec *s)
+{
+	SiftAggSpec *keep = palloc(sizeof(SiftAggSpec));
+
+	*keep = *s;
+	return keep;
+}
+
+/*
+ * The scan of the first table of the FROM list with the others as its lookups, and, for inner joins, the scan of each of the others in turn: PostgreSQL
+ * does not depend on the order of the FROM list and the price of the scan does (a table read whole as a lookup against one read by its keys), so each
+ * order gets its path and the cheaper wins. The paths of the other orders do not report: the arm tells why the first had none.
+ */
+static void
+group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
+{
+	int			others = 0;
+
+	group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, 0, &others);
+	for (int skip = 1; skip <= others; skip++)
+	{
+		bool		quiet = agg_quiet_reports(true);
+
+		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, skip, &others);
+		agg_quiet_reports(quiet);
+	}
 }
 
 int			agg_index_pick;
@@ -1128,16 +1303,7 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 	agg_arm_end();
 }
 
-static bool
-has_agg_path(RelOptInfo *rel)
-{
-	foreach_ptr(Path, p, rel->pathlist)
-		if (IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods)
-			return true;
-	return false;
-}
-
-/* a table with several column indexes is scanned through the first of them that gives a plan: each may hold other columns and paths */
+/* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
@@ -1155,10 +1321,12 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	for (agg_index_pick = 0;; agg_index_pick++)
 	{
 		upper_paths_on(root, stage, input_rel, output_rel, extra);
-		if (has_agg_path(output_rel) || agg_index_pick + 1 >= agg_index_usable)
+		if (agg_index_pick + 1 >= agg_index_usable)
 			break;
 	}
 	agg_stage_end(&st);
+	if (stage == UPPERREL_FINAL)
+		agg_final_paths(root, output_rel);
 	agg_index_pick = outer_pick;
 	agg_index_usable = outer_usable;
 	agg_stage_normal = outer_normal;
@@ -1232,7 +1400,7 @@ static Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
-	List	   *pack = linitial(best->custom_private);
+	List	   *pack = sift_aggspec_pack(linitial(best->custom_private));
 	List	   *scan_tlist = lsecond(best->custom_private);
 	SiftAggSpec *spec = sift_aggspec_unpack(pack);
 	GroupPathExtraData *gextra = NULL;
@@ -1246,6 +1414,9 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 		const_keys_as_columns(root, cs);
 #endif
 	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
+	/* declared, so that PostgreSQL knows the plan depends on them and rescans it when the enclosing level sets new values (agg_rescan) */
+	if (list_length(best->custom_private) > 2)
+		cs->custom_exprs = copyObject(lthird(best->custom_private));
 	cs->methods = &sift_agg_plan_methods;
 	if (root->hasHavingQual && root->parse->havingQual)
 		cs->scan.plan.qual = (List *) copyObject(root->parse->havingQual);

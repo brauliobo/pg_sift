@@ -501,6 +501,97 @@ unit_put_directory(StringInfo out, const SiftKey *keys, uint32 nrows, uint32 sb)
 	pfree(sparse.data);
 }
 
+/* Appends the n values of v, bits each, LSB first, padded to a byte */
+static void
+put_packed(StringInfo out, const uint32 *v, uint32 n, int bits)
+{
+	uint64		acc = 0;
+	int			nb = 0;
+
+	for (uint32 i = 0; i < n && bits > 0; i++)
+	{
+		acc |= (uint64) v[i] << nb;
+		for (nb += bits; nb >= 8; nb -= 8, acc >>= 8)
+			appendStringInfoChar(out, (char) (acc & 0xFF));
+	}
+	if (nb > 0)
+		appendStringInfoChar(out, (char) (acc & 0xFF));
+}
+
+static int
+bits_for(uint32 v)
+{
+	return v == 0 ? 0 : 32 - __builtin_clz(v);
+}
+
+/*
+ * The row directory of a key-cut unit: the TIDs of its rows (ascending) as pages and offsets, not as a window of one superblock. The distances
+ * between the blocks, the rows of a page and the offsets are bit-packed to the width of their largest.
+ */
+static void
+unit_put_directory_keyed(StringInfo out, const SiftKey *keys, uint32 nrows)
+{
+	uint32	   *delta = palloc(Max(nrows, 1) * sizeof(uint32));
+	uint32	   *cnt = palloc(Max(nrows, 1) * sizeof(uint32));
+	uint32	   *off = palloc(Max(nrows, 1) * sizeof(uint32));
+	uint32		np = 0,
+				blk0 = 0,
+				prev = 0,
+				w[3] = {0, 0, 0},
+				head[6];
+
+	for (uint32 r = 0, j; r < nrows; r = j)
+	{
+		uint32		blk = sift_key_block(keys[r]);
+
+		for (j = r; j < nrows && sift_key_block(keys[j]) == blk; j++)
+			off[j] = (uint32) (keys[j] & 0xFFFF) - 1;
+		if (np == 0)
+			blk0 = blk;
+		else
+			delta[np - 1] = blk - prev - 1;
+		cnt[np++] = j - r - 1;
+		prev = blk;
+	}
+	for (uint32 i = 0; i + 1 < np; i++)
+		w[0] = Max(w[0], bits_for(delta[i]));
+	for (uint32 i = 0; i < np; i++)
+		w[1] = Max(w[1], bits_for(cnt[i]));
+	for (uint32 i = 0; i < nrows; i++)
+		w[2] = Max(w[2], bits_for(off[i]));
+	head[0] = COLK_MAGIC;
+	head[1] = nrows;
+	head[2] = np;
+	head[3] = w[0] | (w[1] << 8) | (w[2] << 16);
+	head[4] = blk0;
+	head[5] = prev;			/* the last block: a scan that finds no page of [blk0, prev] unclean needs no more of the directory */
+	put_bytes(out, head, sizeof(head));
+	put_packed(out, delta, np > 0 ? np - 1 : 0, w[0]);
+	put_packed(out, cnt, np, w[1]);
+	put_packed(out, off, nrows, w[2]);
+	put_pad(out, 4);
+	pfree(delta);
+	pfree(cnt);
+	pfree(off);
+}
+
+Size
+sift_cunit_directory_bytes(const SiftKey *keys, uint32 nrows, bool keyed, uint32 sb, uint32 *pages)
+{
+	StringInfoData out;
+	Size		len;
+
+	initStringInfo(&out);
+	if (keyed)
+		unit_put_directory_keyed(&out, keys, nrows);
+	else
+		unit_put_directory(&out, keys, nrows, sb);
+	len = out.len;
+	*pages = ((const uint32 *) out.data)[2];	/* the third word of both heads */
+	pfree(out.data);
+	return len;
+}
+
 void
 sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
 				  Size *start, SiftCZone *zones)
@@ -510,7 +601,10 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl
 
 	put_pad(out, 8);
 	*start = out->len;
-	unit_put_directory(out, b->keys, b->nrows, b->sb);
+	if (b->keyed)
+		unit_put_directory_keyed(out, b->keys, b->nrows);
+	else
+		unit_put_directory(out, b->keys, b->nrows, b->sb);
 	tab = out->len;
 	put_zero(out, 2 * s->ncols * sizeof(uint32));
 	for (int col = 0; col < s->ncols; col++)

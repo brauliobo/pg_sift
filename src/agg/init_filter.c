@@ -140,7 +140,7 @@ and_zone(List *tests, const SiftSrcPrune *z)
 	SiftSrcPrune *t = NULL;
 
 	foreach_ptr(SiftSrcPrune, e, tests)
-		if (e->nkids == 0 && e->leaf == z->leaf)
+		if (e->nkids == 0 && !e->nulltest && e->leaf == z->leaf)
 			t = e;
 	if (t == NULL)
 		return lappend(tests, memcpy(palloc(sizeof(SiftSrcPrune)), z, sizeof(SiftSrcPrune)));
@@ -165,6 +165,16 @@ and_zone(List *tests, const SiftSrcPrune *z)
 }
 
 static List *zone_tests(AggExec *ex, SiftAggPred *p, List *tests);
+
+/* the zone test of x IS [NOT] NULL (sift_aggspec_null_zone): a unit whose zone counts no NULL, or only NULLs, holds no row the test keeps */
+static bool
+null_zone(AggExec *ex, const SiftAggPred *p, SiftSrcPrune *z)
+{
+	if (!sift_aggspec_null_zone(p, ex->lay, ex->nbase))
+		return false;
+	*z = (SiftSrcPrune) {.leaf = p->leaf, .nulltest = p->op ? SSN_NOTNULL : SSN_ISNULL};
+	return true;
+}
 
 /* the entry of tests (one, or an AND of them) that holds for p, NULL when p refuses no unit */
 static SiftSrcPrune *
@@ -219,6 +229,8 @@ zone_tests(AggExec *ex, SiftAggPred *p, List *tests)
 		tests = or_zone(ex, p, tests);
 	else if (sift_aggspec_zone_cmp(p, ex->lay, ex->nbase) && cmp_zone(ex, p, &z))
 		tests = and_zone(tests, &z);
+	else if (null_zone(ex, p, &z))
+		tests = lappend(tests, memcpy(palloc(sizeof(SiftSrcPrune)), &z, sizeof(SiftSrcPrune)));
 	return tests;
 }
 
@@ -440,7 +452,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 
 	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL)
 		return;
-	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+	e = operand_state(ex, p->expr);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	get_typlenbyvalalign(p->argtype, &len, &byval, &align);
 	t->nvals = 1;
@@ -482,6 +494,7 @@ tid_init(AggExec *ex, Snapshot snapshot)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
+	ex->sb_heap = sift_colsrc_sb_heap(ex->src);
 	ex->tid_pred = -1;
 	ex->tid_sb_hi = PG_UINT32_MAX;
 	for (int i = 0; i < s->npred && ex->tid_pred < 0; i++)
@@ -499,6 +512,12 @@ tid_init(AggExec *ex, Snapshot snapshot)
 			ex->tid_bhi = (ex->tid_hi - 1) >> 16;
 			ex->tid_sb_lo = ex->tid_blo / SIFT_SB_PAGES;
 			ex->tid_sb_hi = ex->tid_bhi / SIFT_SB_PAGES + 1;
+		}
+		/* units cut by TID range hold rows of any block: they are all read, and the rows tested */
+		if (!ex->sb_heap)
+		{
+			ex->tid_sb_lo = 0;
+			ex->tid_sb_hi = PG_UINT32_MAX;
 		}
 		if (!ex->lay->is_table)
 		{

@@ -1,0 +1,44 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s3o s1b s1i s2r s3m s1j s1c s2q s2c s3p s3v
+step s3o: SELECT coalesce(reloptions::text, '') AS before FROM pg_class WHERE relname = 'iso_mk_idx';
+before            
+------------------
+{key_columns=auto}
+(1 row)
+
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM generate_series(30001, 30400) g;
+step s2r: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows_seen FROM iso_mk;
+rows_seen
+---------
+    30000
+(1 row)
+
+step s3m: SELECT sift.col_merge('iso_mk_idx', true) > 0 AS merged;
+merged
+------
+t     
+(1 row)
+
+step s1j: INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM generate_series(30401, 30800) g;
+step s1c: COMMIT;
+step s2q: SELECT agree FROM iso_mk_q();
+agree
+-----
+t    
+(1 row)
+
+step s2c: COMMIT;
+step s3p: SELECT reloptions::text AS after FROM pg_class WHERE relname = 'iso_mk_idx';
+after                         
+------------------------------
+{"key_columns=auto: set_id"}
+(1 row)
+
+step s3v: SELECT 1 AS verified FROM (SELECT sift.col_verify('iso_mk_idx', true)) v;
+verified
+--------
+       1
+(1 row)
+

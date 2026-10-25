@@ -13,6 +13,7 @@
 #ifndef SIFT_AGGSPEC_H
 #define SIFT_AGGSPEC_H
 
+#include "catalog/pg_type_d.h"
 #include "nodes/pg_list.h"
 #include "nodes/primnodes.h"
 
@@ -28,11 +29,13 @@
 #define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */
 #define SIFT_AGG_NULL_INPUT	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_NULL_INPUT_LOC (-0x51F7)
+#define SIFT_AGG_LEVEL_LOC (-0x51F8)	/* location of a Param an enclosing query level sets for each row it passes down (a LATERAL or correlated reference): the scan reads the executor's value */
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_NULL_INPUT + 1)
 #define SIFT_AGG_INIT_PARAM	(1 << 24)	/* added to the id of an ARRAY sub-select's output Param in a lookup table expression (Param 0 is the leaf's value) */
 #define SIFT_AGG_MAX_COMBOS	128
 #define SIFT_AGG_MAX_JOINS	32
 #define SIFT_AGG_MAX_VLEAVES	16
+#define SIFT_NUM_PRODUCT_DIGITS	48	/* digits of a product of two decimal expressions that a sum adds in 256 bits (agg_sum_add_product) */
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
 /* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */
@@ -78,6 +81,7 @@ typedef struct SiftAggNum
 	int			n;				/* steps; 0: no program */
 	SiftAggNx  *step;
 	int			scale;			/* digits after the point of the result: the dscale PostgreSQL gives it */
+	int			dig;			/* digits the proof gave the result: a sum of it adds up exactly (agg_sum_add), the pre-aggregates take only 26 */
 } SiftAggNum;
 
 #define SIFT_AGG_MAX_WIDE	8		/* conjuncts on wide leaves (SAP_WIDE) of one scan: what a column source takes in set_wide */
@@ -102,6 +106,7 @@ typedef enum SiftAggPredKind
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
 	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
+	SAP_LEAFCMP,				/* leaf op leaf2: two scalar leaves of one row (int2/int4, int8, date, timestamp or float columns of one type class and width); NULL on either side is not true */
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
@@ -140,6 +145,9 @@ typedef enum SiftAggKeyKind
 	SAK_SPINE					/* a column of the spine of a two level aggregate: no arm computes it, the spine rows give its ids */
 } SiftAggKeyKind;
 
+#define SIFT_ZONE_STEP	1
+#define SIFT_ZONE_CUT	2
+
 typedef struct SiftAggKey
 {
 	SiftAggKeyKind kind;
@@ -147,6 +155,8 @@ typedef struct SiftAggKey
 	int			slot;			/* SAK_COMBO */
 	Node	   *expr;			/* SAK_LUT: expression of Param 0 */
 	int			bucket;			/* SAK_LUT of a timestamp leaf: the expression is the same within this many seconds, so it is evaluated once per bucket of rows */
+	int			zoned;			/* bucket of a timestamptz leaf on the clock of the session's time zone when the scan starts, not of UTC: SIFT_ZONE_STEP the bucket is a step of that clock, SIFT_ZONE_CUT
+								 * date_trunc to a second, minute or hour, which keeps the offset of the row: the bucket is the instant it cuts to; 0: UTC */
 	SiftAggNum	num;			/* SAK_NUM */
 	Oid			typid;			/* of the key as the query outputs it */
 	int32		typmod;
@@ -260,6 +270,7 @@ typedef struct SiftAggGen
 	bool		hyp;			/* hypothetical-set (ordered): the arguments are the sort columns and every row counts, NULLs included */
 	bool		sorted;			/* ORDER BY in the call: the arguments of a group go through a tuplesort on the sort keys, then through the transition function */
 	bool		first;			/* DISTINCT ON: only the first row of a group by the ORDER BY of the call goes through the transition function, kept as the rows pass (no sort) */
+	int			hll;			/* sift.approx_count_distinct of a plain leaf: the leaf whose units' stored sketches the aggregate merges (agg/approx.c), else -1 */
 	double		cost;			/* planner only, not packed: a tuple's cost in units of cpu_operator_cost */
 } SiftAggGen;
 
@@ -273,6 +284,7 @@ typedef struct SiftAggAgg
 	bool		distinct;		/* SUM_NUM, AVG_NUM: of the distinct values */
 	SiftAggPred *filter;		/* NULL: none */
 	Bitmapset  *reads;			/* planner only, not packed: the leaves its arguments read */
+	double		est_distinct;	/* planner only, not packed, SAA_M_DISTINCT: the distinct values of the argument, as PostgreSQL estimates them */
 	Oid			restype;		/* result type of the Aggref */
 	Oid			argtype;		/* type of the leaf's SQL values (output type of min/max) */
 	Oid			collid;			/* input collation: count(DISTINCT) of dictionary values */
@@ -289,6 +301,7 @@ typedef struct SiftAggAgg
 	int			share;			/* SAA_PCT_*: the aggregate whose sorted values this one reads (itself, or an earlier one on the same argument) */
 	SiftAggGen *gen;			/* SAA_GEN */
 	Oid			aggfn;			/* SAA_M_PG: the aggregate function */
+	int			wsum;			/* SAA_X_SUM, SAA_X_AVG of a numeric leaf read as a dictionary (wide): the leaf + 1, whose entries the sum adds without the combo; 0 none */
 } SiftAggAgg;
 
 /*
@@ -480,6 +493,32 @@ is_ordered_agg(const SiftAggAgg *a)
 	return a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC;
 }
 
+/* mode() WITHIN GROUP (ORDER BY x) is a SAA_PCT_DISC with the fraction -1 (the fractions of a percentile are in [0, 1]): the value of most rows, the first of them in the order of the sort on a tie */
+bool sift_aggspec_gtopn_kind(const SiftAggAgg *a);
+
+static inline bool
+osa_is_mode(const SiftAggAgg *a)
+{
+	return a->kind == SAA_PCT_DISC && a->frac < 0;
+}
+
+/* percentile_disc over a 64-bit integer, a timestamp or a decimal (the integer over 10^scale): its values are kept as the integers, a double holds only 53 bits */
+static inline bool
+osa_int_key(const SiftAggAgg *a)
+{
+	return a->kind == SAA_PCT_DISC && (a->argtype == INT8OID || a->argtype == TIMESTAMPOID || a->argtype == TIMESTAMPTZOID || a->argtype == NUMERICOID);
+}
+
+/* a key of the order the groups are emitted in: the sort operator, collation and nulls order of the parent's pathkey */
+typedef struct SiftAggOrd
+{
+	int			key;
+	Oid			sortop;
+	Oid			collation;
+	bool		nulls_first;
+	Const	   *subst;			/* COALESCE(key, subst) is the sort value: a NULL key sorts as this constant; NULL: the key itself */
+} SiftAggOrd;
+
 typedef struct SiftAggSpec
 {
 	Oid			indexoid;		/* the column index; InvalidOid: the table itself. A partitioned table: that of its first partition */
@@ -527,6 +566,12 @@ typedef struct SiftAggSpec
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
 	Node	   *topn;			/* ORDER BY .. LIMIT n from the units: an integer list (agg/topn.h), the scan emits the heap rows of the n best instead of groups; NULL: none */
 	char	   *desc_topn;		/* EXPLAIN: the sort columns */
+	int			gtopn_k;		/* ORDER BY an aggregate LIMIT n (+ OFFSET): the groups that rank after the n-th of aggregate gtopn_agg are not emitted (agg/gtopn.c); 0: none */
+	int			gtopn_agg;
+	bool		gtopn_desc;
+	bool		gtopn_nulls_first;
+	int			nord;			/* > 0: the groups are emitted in the order of these keys (agg/gorder.c), which the path's pathkeys promise to the parent */
+	SiftAggOrd *ord;
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */
@@ -556,25 +601,50 @@ extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist.c), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
 
+/* a float sum: the order of its additions is part of its result */
 static inline bool
-sift_aggspec_ordered(const SiftAggSpec *s)
+sift_aggkind_float_sum(const SiftAggAgg *a)
+{
+	return a->kind == SAA_SUM_F64 || a->kind == SAA_AVG_F64 || a->kind == SAA_O_SUM_F64 || a->kind == SAA_O_AVG_F64 ||
+		((a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == FLOAT8OID);
+}
+
+/* a scan with a spine or a correlated child plan: workers were added for them after the release that scanned the others in lanes */
+extern bool sift_aggspec_workers_only(const SiftAggSpec *s);
+
+/* a scan with a float sum, in the specs whose scan can be split in lanes */
+static inline bool
+sift_aggspec_float_sums(const SiftAggSpec *s)
 {
 	if (!sift_aggspec_parallel_ok(s))
 		return false;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].kind == SAA_SUM_F64 || s->agg[i].kind == SAA_AVG_F64 || s->agg[i].kind == SAA_O_SUM_F64 || s->agg[i].kind == SAA_O_AVG_F64)
+		if (sift_aggkind_float_sum(&s->agg[i]))
 			return true;
 	return false;
+}
+
+/*
+ * The float sums are added in lane order, whoever scans: in a plan with workers (launched or not), and in the scans that were always added so, with
+ * or without workers. The scans that gained workers later (sift_aggspec_workers_only) add in the order of the rows when the plan has none, as they did.
+ */
+static inline bool
+sift_aggspec_ordered(const SiftAggSpec *s)
+{
+	return sift_aggspec_float_sums(s) && (s->nworkers > 0 || !sift_aggspec_workers_only(s));
 }
 
 /* the types sift_aggspec_operand_int reads */
 extern bool sift_aggspec_integer_type(Oid t);
 
 /* The comparisons among the conjuncts that bound an integer leaf of the rows (= < <= > >= against an integer operand): what a zone map can prune. nbase: the leaves of the source (not the spec's virtual ones) */
-extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase);
+extern List *sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nulls);
 
 /* ... and whether one predicate is such a comparison; the zone tests of an OR are those of its disjuncts */
 extern bool sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+/* a test built of AND, OR and zone comparisons: the span of a calendar cell decides it (every row passes, none does, or the cell is cut) */
+extern bool sift_aggspec_span_pred(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
+extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase);
 
 /*
  * The TIDs the SAP_TID conjuncts keep together, as the keys (block << 16 | offset) [*lo, *hi) (empty when *lo >= *hi); false when the scan
@@ -590,9 +660,12 @@ typedef struct SiftAggPaShape
 	bool		cal;				/* dim >= 0: the cube's calendar dim of that date or timestamp leaf (the cells of a unit), not the leaf's own dim */
 	uint8		calmask;			/* cal: the grains (1 << SIFT_CAL_*) of the cells that hold one value of the key and the tests; a unit with other cells scans */
 	bool		hcal;				/* hdim is the calendar dim of the leaf */
+	bool		hcalalt;			/* hdim is the leaf's own dim, and a unit with no histogram of it (too many days) answers from the calendar dim of the leaf, with calmask */
+	bool		calalt;				/* dim is the leaf's own dim, tested by comparisons the span of a cell decides: a unit with no histogram of it answers from the calendar dim of the leaf, with calmask */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */
+	bool		nullz;				/* the IS [NOT] NULL conjuncts of columns that are no dim are decided by the zone of a unit, like the comparisons: a unit whose zone does not hold them for all its rows is scanned */
 	int			ndims;				/* rollup: the leaves a unit's rollup must hold as dims: the keys, then the others the conjuncts read */
 	int			rdim[SIFT_SRC_MAX_RDIMS];
 	int			nmeas;				/* ... and as measures */
@@ -622,6 +695,7 @@ typedef struct SiftAggPaShape
  */
 enum {SAC_NOT, SAC_OK, SAC_ZONE, SAC_FINE};
 extern int	sift_aggexpr_cal(Node *e, uint8 *mask);
+extern bool sift_aggexpr_utc_shadowed(Node *e);
 extern int	sift_aggkey_cal(const SiftAggKey *k, uint8 *mask);
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 
@@ -650,6 +724,7 @@ typedef enum SiftPaWhy
 	SPW_AGG_KIND,				/* an aggregate the tuples cannot add up */
 	SPW_AGG_ARG,				/* its argument is not a plain leaf of the list */
 	SPW_AGG_TYPE,				/* ... or has a type the rollup does not sum */
+	SPW_AGG_APPROX,				/* sift.approx_count_distinct of a leaf without stored sketches (hll_columns), or of the groups of a histogram */
 	SPW_DIM_NOT_STORED,			/* a dim or count(leaf) the rollup of the list does not hold */
 	SPW_MEAS_NOT_STORED,		/* a measure it does not hold */
 	SPW_ROW_KEYS,				/* rows: more than one group key */
@@ -675,6 +750,7 @@ extern bool sift_pawhy_fixable(SiftPaWhy why);
 extern void sift_aggspec_unit_costs(const SiftAggSpec *s, const SiftSrcLayout *lay, double *elem, double *tuple);
 extern double sift_agg_rollup_cost;
 extern PGDLLIMPORT bool sift_agg_preagg_distinct;	/* sift.agg_preagg_distinct */
+extern Datum sift_approx_trans(struct FunctionCallInfoBaseData *fcinfo);	/* agg/approx.c: the transition function of sift.approx_count_distinct */
 #define SIFT_AGG_INSTR_PER_OP	4.4		/* user instructions of one operator of the planner's cost model (plan_cost.c) */
 
 /* The one leaf a predicate of the rows (group -1) or of the elements of the array leaf group reads (-1: none), -2 if it is not a test of a plain leaf of that level (a combo, a late expression) */
@@ -688,6 +764,7 @@ extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 /* the bytes the scan allocates and clears to test an IN list of nv values over a range of span values (agg/pred_in.c; 0: a hash table), for the cost */
 extern double sift_agg_in_table_bytes(uint64 span, int nv);
+extern double sift_agg_in_test_ns(uint64 span, int nv);
 
 extern List *sift_aggspec_pack(const SiftAggSpec *spec);
 

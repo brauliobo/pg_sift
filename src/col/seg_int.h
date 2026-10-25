@@ -6,6 +6,7 @@
 
 #include "core/host.h"
 
+#include "col/gorder.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/ver.h"
@@ -19,9 +20,14 @@
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
 #define PAGG_SUPER_MINOR	SIFT_COL_FORMAT_SUPER	/* the column format minor that adds the superunit summaries: directory version 4 */
+#define PAGG_HLL_MINOR		SIFT_COL_FORMAT_HLL	/* the column format minor that adds the HyperLogLog sketches: directory version 7 */
 #define PAGG_RUNS_MINOR		SIFT_COL_FORMAT_RUNS	/* the column format minor that adds the sorted runs: directory version 5 */
-#define PAGG_VERSION(minor)	((minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
+#define PAGG_EXCEPT_MINOR	SIFT_COL_FORMAT_EXCEPT	/* the column format minor that adds the exception cubes: directory version 6 */
+#define PAGG_VERSION(minor)	((minor) >= PAGG_HLL_MINOR ? 7 : (minor) >= PAGG_EXCEPT_MINOR ? 6 : (minor) >= PAGG_RUNS_MINOR ? 5 : (minor) >= PAGG_SUPER_MINOR ? 4 : (minor) >= PAGG_SETS_MINOR ? 3 : (minor) >= PAGG_ECUBE_MINOR ? 2 : 1)
 #define SETS_MAGIC		0x544C4F43		/* "COLT": the small-set summaries, at the end of the pre-aggregates */
+#define HLL_LIST		0x1				/* SetsLeaf.flags of the sketches: SIFT_HLL_LIST, SIFT_HLL_DENSE (col/hll.h) */
+#define HLL_DENSE		0x2
+#define HLL_MAGIC		0x484C4F43		/* "COLH": the HyperLogLog sketches, after the sorted runs */
 #define RUNS_MAGIC		0x524C4F43		/* "COLR": the sorted runs, after the small-set summaries */
 
 #define VERS_MAGIC		0x564C4F43		/* "COLV": the version section, at the end of the DOCMAP section (docs/COL-TAM.md section 7) */
@@ -83,7 +89,7 @@ typedef struct PaggHeader
 	uint64		lagg_off[FLEXIBLE_ARRAY_MEMBER];	/* [ncols], 0: the leaf has none */
 } PaggHeader;
 
-#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0)) * sizeof(uint64))
+#define PAGG_HDR_SIZE(ver, ncols)	ALIGN8(offsetof(PaggHeader, lagg_off) + ((ncols) + ((ver) > 1 ? 2 : 0) + ((ver) > 2 ? 2 : 0) + ((ver) > 3 ? 2 : 0) + ((ver) > 4 ? 2 : 0) + ((ver) > 5 ? 4 : 0) + ((ver) > 6 ? 2 : 0)) * sizeof(uint64))
 #define PAGG_ECUBEDIR(h)		((h)->lagg_off[(h)->ncols])
 #define PAGG_ECUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 1])
 #define PAGG_SETS(h)			((h)->lagg_off[(h)->ncols + 2])
@@ -117,6 +123,14 @@ StaticAssertDecl(sizeof(SetsHeader) == 16 && sizeof(SetsLeaf) == 24, "the small-
 /* Version 5 (column format minor 13) adds two more: the offset of the sorted runs and their bytes (0: none), the section laid out like the small-set summaries */
 #define PAGG_RUNS(h)			((h)->lagg_off[(h)->ncols + 6])
 #define PAGG_RUNS_BYTES(h)		((h)->lagg_off[(h)->ncols + 7])
+/* Version 6 (column format minor 19) adds four: the directory and bytes of the exception cubes and of the exception element blobs, laid out like the cubes (0: none) */
+#define PAGG_XCUBEDIR(h)		((h)->lagg_off[(h)->ncols + 8])
+#define PAGG_XCUBE_BYTES(h)		((h)->lagg_off[(h)->ncols + 9])
+#define PAGG_XECUBEDIR(h)		((h)->lagg_off[(h)->ncols + 10])
+#define PAGG_XECUBE_BYTES(h)	((h)->lagg_off[(h)->ncols + 11])
+/* Version 7 (column format minor 20) adds two more: the offset of the HyperLogLog sketches and their bytes (0: none), the section laid out like the small-set summaries (HLL_LIST, HLL_DENSE: the forms of sketch some unit has) */
+#define PAGG_HLL(h)				((h)->lagg_off[(h)->ncols + 12])
+#define PAGG_HLL_BYTES(h)		((h)->lagg_off[(h)->ncols + 13])
 
 /*
  * The superunit block (docs/COL-PREAGG.md section 10): the units of the segment in groups of `fan` consecutive ones (the last group may be shorter,
@@ -197,6 +211,7 @@ typedef struct DictLook
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
+	uint32		loads;			/* blocks decompressed for the strings of sift_cseg_dict_view_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
@@ -211,6 +226,16 @@ typedef struct PointLeaf
 	uint32		words;
 	bool		tids;			/* the slots list heap addresses (column format minor 16), not rows of the segment */
 } PointLeaf;
+
+/* The global order block of a leaf (col/gorder.h): stream offset and bytes, the directory read on first use */
+typedef struct GOrdLeaf
+{
+	uint64		at;
+	uint64		bytes;
+	SiftCGOrdHdr hdr;
+	uint8	   *dir;			/* the header and the directory bytes, read on first use and checked entry by entry as they are used (verify checks them all) */
+	uint64		gat;			/* a grouped block: where its groups start in the block */
+} GOrdLeaf;
 
 typedef struct SegPriv
 {
@@ -235,11 +260,21 @@ typedef struct SegPriv
 	uint64	   *ecubedir;		/* the same for the element blobs */
 	uint8	   *ecubebuf;
 	Size		ecubecap;
+	uint64	   *xcubedir;		/* the same for the exception cubes and element blobs (version 6) */
+	uint8	   *xcubebuf;
+	Size		xcubecap;
+	uint64	   *xecubedir;
+	uint8	   *xecubebuf;
+	Size		xecubecap;
 	const uint64 **lagg;		/* [ncols] sums of the INT leaves, read on first use: slo, shi, qlo, qhi, then flags */
 	SetsLeaf   *sets;			/* [ncols] the small-set record of each leaf (dir_off 0: none), read on first use */
 	uint64    **setdir;			/* [ncols] its directory, once read */
 	uint8	   *setbuf;
 	Size		setcap;
+	SetsLeaf   *hlls;			/* [ncols] the sketch record of each leaf (dir_off 0: none), read on first use */
+	uint64    **hlldir;			/* [ncols] its directory, once read */
+	uint8	   *hllbuf;
+	Size		hllcap;
 	RunsLeaf   *runs;			/* [ncols] the sorted-run record of each leaf (dir_off 0: none), read on first use */
 	uint64    **rundir;			/* [ncols] its directory, once read */
 	Size		vers_at;		/* offset of the version section in the DOCMAP section; vers_len 0: there is none */
@@ -252,6 +287,9 @@ typedef struct SegPriv
 	bool		pt_checked;		/* the point directories at the end of the DICT section were looked for */
 	uint64		dict_end;		/* where the dictionaries end in the DICT section (before the point directories, if any) */
 	PointLeaf  *pt;				/* [ncols] (nslots 0: none) */
+	SiftCSbSpan *spans;			/* the superblocks the units have rows of, once asked (sift_cseg_sb_spans) */
+	uint32		nspans;
+	GOrdLeaf   *go;				/* [ncols] (bytes 0: none) */
 } SegPriv;
 
 #define PRIV(seg)	((SegPriv *) (seg)->priv)
@@ -278,7 +316,7 @@ extern const SegHead *sift_cseg_head_find(Relation index, const SiftSegEntry *en
 extern void sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt);
 
 /* The zone arrays of leaf col of seg from the cache (pinned for the segment's context), else NULL; keep takes the ones made in cx, a child of the segment's context */
-extern const ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
+extern ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
 extern void sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z);
 
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
@@ -288,5 +326,6 @@ extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictL
 extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);
 /* Counts one more test of the dictionary of leaf col that was searched in the stream, and says how many the backend made */
 extern uint32 sift_cseg_dict_asked(SiftColSegment *seg, int col);
+extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);
 
 #endif

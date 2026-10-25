@@ -18,6 +18,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "core/cmp.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
 #include "col/pagg.h"
@@ -116,9 +117,39 @@ segments_current(SiftColSource *src)
 	return src->dir_current;
 }
 
+/* A key-cut unit's pages are anywhere in the heap: the all-visible bit of each is read from the map by block, in the order of the unit's pages (same rules as unit_allvisible) */
+static const uint64 *
+unit_allvisible_keyed(ColUnit *cu)
+{
+	if (!cu->av_ready)
+	{
+		uint32		nw;
+
+		/* no page between the first and the last of the unit is unclean (the list of those pages is made once per scan): the directory is not needed */
+		if (!cu->lane && sift_vis_range_allvisible(&cu->src->vis, cu->v.kblk0, cu->v.kblk1) &&
+			!(cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src)))
+		{
+			cu->avk = NULL;
+			cu->av_ready = true;
+			return NULL;
+		}
+		sift_cunit_keyed_load(&cu->v);
+		nw = (cu->v.npages + 63) / 64;
+		cu->avk = MemoryContextAllocZero(cu->src->arena, Max(nw, 1) * sizeof(uint64));
+		if (!cu->lane && cu->src->vis.heap != NULL)
+			sift_vis_blocks_allvisible(&cu->src->vis, cu->v.blocks, cu->v.npages, cu->avk);
+		if (cu->seg && !(cu->src->flags & COLO_TABLE) && !segments_current(cu->src))
+			memset(cu->avk, 0, Max(nw, 1) * sizeof(uint64));
+		cu->av_ready = true;
+	}
+	return cu->avk;
+}
+
 const uint64 *
 unit_allvisible(ColUnit *cu)
 {
+	if (cu->v.keyed)
+		return unit_allvisible_keyed(cu);
 	if (!cu->av_ready)
 	{
 		/* A lane batch is a copy of the records as they were when the source began, and a VACUUM since then may have flagged records deleted
@@ -212,6 +243,72 @@ sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull
 	return cu->run.found;
 }
 
+/*
+ * The head of the sorted run of col in the unit of superblock sb, when the unit need not be opened to know that every row of it is live and visible to the
+ * snapshot: the only unit of the superblock (a write buffer holding rows of it is the caller's to rule out), of a segment with superunit summaries (the page
+ * masks are there), with its pages all-visible and no dead row, in the order of col_super_take. False otherwise, then the unit is read.
+ */
+bool
+sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
+{
+	SiftColSegment *seg = NULL;
+	uint32		u = 0;
+	uint64		av[SIFT_PAGEMASK_WORDS];
+	SiftCSbHead h;
+
+	if (src->flags & COLO_TABLE)
+		return false;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *s = src->seg[i].seg;
+		uint32		k;
+
+		/* a segment cut by key or TID range numbers its units by sequence: the blocks its units reach say whether it holds rows of the superblock, and then it is not the only unit */
+		if (sift_cseg_keyed(&s->entry))
+		{
+			if (sift_cseg_sb_in_spans(s, sb))
+				return false;
+			continue;
+		}
+		k = sift_cseg_find_unit(s, sb);
+		if (k >= s->nsb || s->sbdir[k].sb != sb)
+			continue;
+		if (seg != NULL)
+			return false;
+		seg = s;
+		u = k;
+	}
+	if (seg == NULL || !sift_cseg_sbhead(seg, u, col, &h))
+		return false;
+	src->visibility.sb_mask(src->visibility.arg, sb, av);
+	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+		if (h.pm[w] & ~av[w])
+			return false;
+	if (!segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	if (!h.has || sift_cseg_dirty(seg, u))
+		return false;
+	*nlo = h.nlo;
+	*nhi = h.nhi;
+	memcpy(out, h.ent, (h.nlo + h.nhi) * sizeof(SiftCHeadEnt));
+	return true;
+}
+
+int
+sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
+{
+	ColUnit    *cu = unit->priv;
+
+	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: a sorted run head read without its info");
+	*nlo = *nhi = 0;
+	if (cu->run.r.heads == 0)
+		return 0;
+	sift_crun_head_counts(cu->run.r.heads, cu->run.r.n, nlo, nhi);
+	sift_cseg_run_heads(cu->seg, cu->run.at, &cu->run.r, out);
+	return cu->run.r.heads;
+}
+
 void
 sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords)
 {
@@ -243,8 +340,8 @@ sift_col_zone(const SiftColUnit *unit, int col, SiftColZone *zone)
 	zone->has_ovf = (z.flags & SIFT_COLZ_OVERFLOW) != 0;
 }
 
-uint32
-sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+static uint32
+zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone, bool wbuf)
 {
 	uint32		units = 0;
 
@@ -270,6 +367,8 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 			zone->max = Max(zone->max, z.flags & SIFT_COLZ_INLINE ? PG_INT64_MAX : z.max);
 		}
 	}
+	if (!wbuf)
+		return units;
 	/* the units of the write buffers are encoded when read, and not loaded before a begin: they are read */
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		zone->has_ovf = true;
@@ -282,18 +381,82 @@ sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, Sif
 	return units;
 }
 
-bool
-sift_col_unit_allvisible(const SiftColUnit *unit)
+uint32
+sift_col_zone_range(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
 {
-	ColUnit    *cu = unit->priv;
+	return zone_range(src, col, sb_lo, sb_hi, zone, true);
+}
+
+/* The same over the segments alone, the units of the write buffers left out (sift_col_walk_stamp lists their superblocks) */
+uint32
+sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi, SiftColZone *zone)
+{
+	return zone_range(src, col, sb_lo, sb_hi, zone, false);
+}
+
+static int
+sb_cmp(const void *a, const void *b)
+{
+	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
+}
+
+/*
+ * What the zones of the segments of an index source depend on: its file and the version of the directory it read. The superblocks that hold rows of the
+ * write buffers are listed in mem (ascending, nmem of them); false when the source is not that of an index, its buffers are not loaded, or more than cap
+ * superblocks hold such rows.
+ */
+bool
+sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	int			n = 0;
+
+	if ((src->flags & COLO_TABLE) || !src->mem_loaded)
+		return false;
+	for (int i = 0; i < src->nmem; i++)
+		if (src->mem[i].b->nrows > 0)
+		{
+			if (n == cap)
+				return false;
+			mem[n++] = src->mem[i].b->sb;
+		}
+	qsort(mem, n, sizeof(uint32), sb_cmp);
+	*nmem = 0;
+	for (int i = 0; i < n; i++)
+		if (i == 0 || mem[i] != mem[i - 1])
+			mem[(*nmem)++] = mem[i];
+	st->index = RelationGetRelid(src->index);
+	st->file = src->index->rd_locator.relNumber;
+	st->version = src->dir.version;
+	return true;
+}
+
+/* Every page the unit has rows on is all-visible: the mask is read first, as unit_clean does, and the unit's liveness after it */
+bool
+unit_pages_allvisible(ColUnit *cu)
+{
 	const uint64 *av = unit_allvisible(cu);
 
-	if (!unit_clean(cu))
-		return false;
+	if (cu->v.keyed)
+	{
+		if (av == NULL)			/* every page of the table is all-visible */
+			return true;
+		for (uint32 p = 0; p < cu->v.npages; p++)
+			if (!sift_col_bit_test(av, p))
+				return false;
+		return true;
+	}
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
 		if (cu->v.pagemask[w] & ~av[w])
 			return false;
 	return true;
+}
+
+bool
+sift_col_unit_allvisible(const SiftColUnit *unit)
+{
+	ColUnit    *cu = unit->priv;
+
+	return unit_clean(cu) && unit_pages_allvisible(cu);
 }
 
 bool
@@ -326,13 +489,25 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		if (!sift_col_bit_test(c->keep, c->cur + i))
 			return false;
 	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
-	for (uint32 i = 0; i < n; i++)
+	if (sift_cseg_keyed(&seg->entry))
 	{
-		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
-		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+		/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
+		for (uint32 i = 0; i < n; i++)
+		{
+			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
+
+			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
 				return false;
+		}
 	}
+	else
+		for (uint32 i = 0; i < n; i++)
+		{
+			src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
+			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+				if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+					return false;
+		}
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();

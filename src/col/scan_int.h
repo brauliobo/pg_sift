@@ -34,9 +34,17 @@ typedef struct ColCursor
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
-	uint32		pat;			/* the first of them not yet handed to a unit */
 	int			ppred;
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
+	bool		others;			/* the scan has predicates besides the directory's: a unit with many of its addresses is read and filtered, not handed to the heap */
+	SiftKey    *ptidv;			/* ... and, for a source that narrows its units (SIFT_COLO_POINT_ROWS), the addresses of the segment, ascending */
+	uint32		nptidv;
+	uint64		pc_gen;			/* of the segment */
+	int			pc_col;			/* the last list of addresses the directory gave for a leaf and these keys (pc_nkeys of pc_keys), kept for the next begin of the source */
+	int			pc_nkeys;
+	int64	   *pc_keys;
+	SiftKey    *pc_tids;
+	uint32		pc_n;
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
@@ -101,16 +109,24 @@ typedef struct ColUnit
 	SiftCUnitView v;
 	SiftCZone  *mzones;			/* in-memory units: the encoder's zones */
 	bool		codes_only;		/* sift_col_read_text: a STR leaf is read as codes, without its dictionary */
+	bool		dict_lazy;		/* sift_col_unit_lazy_dict: a STR leaf may be read with a dictionary that stays in the segment (SiftColDict.get) */
 	const uint32 *prow;			/* the rows of this unit the point directory lists (segment rows), when the cursor has one: ppred is its predicate */
 	uint32		nprow;
 	int			ppred;
+	const SiftKey *ptid;		/* the addresses of ptidv that lie in this unit's superblock, when the cursor has some (nptid may be 0 only for a unit the directory lists nothing in) */
+	uint32		nptid;
 	bool		lane;			/* a batch of the write buffer: no all-visible page (unit_allvisible) */
 	bool		clean;			/* no dead row: valid once clean_ready (unit_clean) */
 	bool		clean_ready;
+	struct ColDelta *delta;		/* a dirty unit net of its dead rows (col/delta.c): NULL until asked; delta_on while a consumer reads the unit that way */
+	bool		delta_on;
+	bool		delta_bounds;	/* delta_on, but only the unit's zone may be read */
+	uint64	   *live;			/* the liveness bits of the unit, when col/delta.c has read them (SIFT_COL_NWORDS(nrows) words): the selection of its rows copies them */
 	SiftKey    *keys;
 	uint8		sparse;			/* 0 not looked at, 1 no page has a sparse offset bitmap, 2 some has */
 	bool		av_ready;
 	uint64		av[SIFT_PAGEMASK_WORDS];
+	uint64	   *avk;			/* a key-cut unit: the all-visible bit of its p-th page (unit_allvisible_keyed) */
 	ColGroup   *grp;
 	ColSelCache selc;
 	struct
@@ -170,8 +186,12 @@ struct SiftColSource
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */
 	SiftColCounters cnt;
 	SiftKey    *ptid;			/* the heap addresses the point directories answered since the last begin, in sift_col_begin's memory (SIFT_COLO_POINT_TIDS) */
+	bool		ptid_unsorted;	/* a segment's run of addresses started below the last address of the segments before it: sorted at the end of the begin */
 	uint32		nptid;
 	uint32		capptid;
+	int			gpin_leaf;		/* the leaf the global order blocks are grouped by and the group the scan pinned (sift_col_gorder_open), -1: none */
+	int64		gpin_val;
+	struct ColGOrdMem *gmem;	/* the rows of the write buffers sorted for the global order (sift_col_gorder_open), in mcxt */
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	SiftDirSnapshot dir;
@@ -253,5 +273,9 @@ unit_clean(ColUnit *cu)
 	}
 	return cu->clean;
 }
+
+
+/* col/delta.c */
+extern bool unit_pages_allvisible(ColUnit *cu);
 
 #endif

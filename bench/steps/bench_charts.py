@@ -11,7 +11,7 @@ marker of store_charts.SYSTEMS in every chart (pg_duckdb is one more system amon
   cases-ecdf       the share of cases (and of the real query shapes) that are at least as fast as x times PostgreSQL
   shapes-speedup   the real query shapes by the size of the filter set (analytics.json)
   cases-scale      time against rows for the case families, with the log-log slope of pg_sift and of PostgreSQL (cases-scale.tsv)
-  cases-workmem    pg_sift and PostgreSQL at work_mem 64MB and at the 4GB of release (cases-wm4g.tsv)
+  cases-workmem    pg_sift and PostgreSQL at work_mem 64MB and at a large 4GB (cases-wm4g.tsv)
   cost-per-row     index bytes per row, load time per row and update rate (store.json)
 """
 import json
@@ -417,7 +417,9 @@ def case_ratios(results):
         if f['case'].id in seen:
             continue
         seen.add(f['case'].id)
-        out.append((f['case'].id, f['native'] / f['sift'] if f['native'] and f['sift'] else None, f['kept'], f['native'], f['sift'], f['metric']))
+        g = cases_render.gap(f) if f['kept'] else ''   # a case that runs PostgreSQL's plan has no ratio of its own: the bar is the lane with the scan forced
+        scan = f['sift'] if not g else f['forced'] if g in ('cost', 'declined') else None
+        out.append((f['case'].id, f['native'] / scan if scan else None, g, f['native'], scan, f['metric']))
     return meta, out
 
 
@@ -425,7 +427,7 @@ def cases_speedup(results, theme):
     meta, cs = case_ratios(results)
     c = Wide(theme)
     c.head(f'{len(cs)} cases of query shapes: pg_sift against PostgreSQL on the same rows',
-           f'PostgreSQL\'s median time over pg_sift\'s, {int(meta["orders"]):,} orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the planner kept PostgreSQL\'s plan (the bar shows the cost of deciding, if any).')
+           f'PostgreSQL\'s median time over pg_sift\'s, {int(meta["orders"]):,} orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the planner kept PostgreSQL\'s plan, the bar is the scan forced (`sift.agg_force`); no bar: the scan cannot run the case.')
     groups = {}
     for case in cs:
         groups.setdefault(family(case[0]), []).append(case)
@@ -449,13 +451,15 @@ def cases_speedup(results, theme):
         for cid, r, kept, nat, sf, metric in sorted(groups[name], key=lambda t: -(t[1] or 0)):
             cy = y + rowh / 2
             c.text(34, cy + 4, cid, 12)
+            if r is None and kept:
+                c.text(X(1) + 6, cy + 4, 'the scan cannot run it' if kept == 'feature' else 'forced scan not measured', 12, fill=c.t['ink'])
             if r is not None:
                 fill = c.t['neutral'] if kept or 0.95 < r < 1.05 else c.t['up'] if r >= 1 else c.t['down']
                 x0, x1 = X(1), X(r)
-                c.rect(min(x0, x1), y + 3, abs(x1 - x0) or 2, rowh - 6, fill, 2, f'{cid}: PostgreSQL {ms_text(nat)} ms, pg_sift {ms_text(sf)} ms ({factor_text(r)})' + (' (same plan)' if kept else ''))
+                c.rect(min(x0, x1), y + 3, abs(x1 - x0) or 2, rowh - 6, fill, 2, f'{cid}: PostgreSQL {ms_text(nat)} ms, pg_sift {ms_text(sf)} ms ({factor_text(r)})' + (' (scan forced; the planner runs PostgreSQL\'s plan)' if kept else ''))
                 label = (factor_text(r) + (' less WAL' if metric == 'wal_bytes' else '')) if r >= 1 else f'{factor_text(1 / r)} slower'
                 if kept:
-                    label = 'same plan' + ('' if abs(math.log10(r)) < math.log10(1.05) else f', {label}')
+                    label = f'forced scan {label}'
                 if r >= 1:
                     c.text(x1 + 6, cy + 4, label, 12, fill=c.t['ink'], weight=None if kept else 'bold')
                 else:
@@ -487,7 +491,7 @@ def shapes_tier(results):
 
 def cases_ecdf(results, theme):
     meta, cs = case_ratios(results)
-    cvals = [r for _, r, kept, _, _, metric in cs if r and metric == 'ms']
+    cvals = [r for _, r, kept, _, _, metric in cs if r and not kept and metric == 'ms']
     svals = [r for _, _, r in shape_ratios(results)]
     c = Wide(theme)
     c.head('How many cases get how much faster',
@@ -689,7 +693,7 @@ def cases_workmem(results, theme):
     ids = [i for i in f2 if i in f1]
     ids.sort(key=lambda i: -f2[i]['native'] / f2[i]['sift'])
     c = Wide(theme)
-    c.head('The same cases at work_mem = 4GB, the release setting',
+    c.head('The same cases at work_mem = 4GB, a large setting',
            f'Speed-up of pg_sift over PostgreSQL at the {m1.get("work_mem", "64MB")} of the benchmark cluster (gray square) and at {m2.get("work_mem", "4GB")} (blue dot). Logarithmic axis; the plans of both engines can change with work_mem.')
     left, right, rowh, top = 250, 60, 30, 112
     pw = W - left - right
@@ -714,7 +718,7 @@ def cases_workmem(results, theme):
     c.marker(180, y, 'sift')
     c.text(192, y + 4, f'work_mem {m2.get("work_mem", "4GB")}', 12)
     end = c.foot(y + 30, [f'Data: bench/results/cases.tsv and cases-wm4g.tsv, {m2.get("date", "?")}, {m2.get("cpu", "?").split(",")[0]}; {int(m2["orders"]):,} orders, one backend.'])
-    return c.render(end + 8, 'Speed-up at the default and at the release work_mem', 'Speed-up of pg_sift over PostgreSQL for the API-shaped cases at two work_mem settings.')
+    return c.render(end + 8, 'Speed-up at the default and at a large work_mem', 'Speed-up of pg_sift over PostgreSQL for the analytics-shaped cases at two work_mem settings.')
 
 
 def cost_per_row(d, theme):

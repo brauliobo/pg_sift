@@ -245,7 +245,7 @@ table_init(AggExec *ex)
 	uint64		total = 1;
 
 	ex->hash = false;
-	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : DIRECT_MAX;
+	ex->direct_max = spill_started(ex) ? 0 : ex->lanes || ex->lane_serial ? LANE_DIRECT_MAX : s->nkeys == 1 ? SINGLE_DIRECT_MAX : DIRECT_MAX;
 	/*
 	 * The arrays of the direct table are allocated for every slot of the product of the key ranges, whether a group falls in it or not: a
 	 * statement of 28 aggregates over keys that fill 1,200 of a million slots holds 218 MB. Past twice hash memory the groups go to the hash
@@ -262,7 +262,7 @@ table_init(AggExec *ex)
 	for (int j = 0; j < s->nkeys; j++)
 	{
 		KeyState   *k = &ex->ks[j];
-		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .cal = k->cal};
+		KeyState	keep = {.expr = k->expr, .param = k->param, .ident = k->ident, .numk = k->numk, .bucket = k->bucket, .zone = k->zone, .zcut = k->zcut, .cal = k->cal};
 
 		*k = keep;
 		ot_init(&k->ot, s->key[j].eqop, s->key[j].typid, s->key[j].collid);
@@ -304,7 +304,7 @@ table_init(AggExec *ex)
 	ex->amax = palloc0(Max(s->naggs, 1) * sizeof(double));
 	ex->amap = palloc0(Max(s->naggs, 1) * sizeof(IdMap));
 	ex->osa = palloc0(Max(s->naggs, 1) * sizeof(Osa *));
-	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(double *));
+	ex->oval = palloc0(Max(s->naggs, 1) * sizeof(OsaVal *));
 	ex->xcmp = palloc0(Max(s->naggs, 1) * sizeof(FmgrInfo *));
 	ex->xlen = palloc0(Max(s->naggs, 1) * sizeof(int16));
 	ex->xbyval = palloc0(Max(s->naggs, 1) * sizeof(bool));
@@ -366,13 +366,25 @@ table_reset(AggExec *ex)
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
 		ComboSt    *cs = &ex->cs[ci];
-
+		/* the ids it gave to the values of an earlier lookup's output rows are keyed by rows that start again: that memo goes with them (the value ids stay) */
+		for (int p = 0; p < ex->spec->combo[ci].nleaves; p++)
+			if (ex->spec->combo[ci].leaf[p] < 0)
+			{
+				if (cs->pv[p].memo)
+					pfree(cs->pv[p].memo);
+				if (cs->pv[p].rep)
+					pfree(cs->pv[p].rep);
+				memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+			}
 		/* the direct table forgets the ids of the entries only: it can be megabytes */
 		for (uint32 x = 0; cs->dir && x < cs->nent; x++)
 			if (!cs->null_input[x] && cs->vid[x] < cs->dircap)
 				cs->dir[cs->vid[x]] = 0;
 		cs->nent = cs->nout = 0;
 		memset(cs->ht, 0, cs->nht * sizeof(uint32));
+		combo_forget_priors(ex, ci);
 	}
 	table_init(ex);
+	if (ex->spine)
+		spine_reset(ex);
 }

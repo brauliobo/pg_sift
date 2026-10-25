@@ -11,6 +11,7 @@
 #   --suite S           fixtures: the small orders table of test/col/fixture.sql, the corpus test/col/fixtures/*.sql and the scenarios
 #                       (the DML heap states); analytics: the corpus of bench/sql/analytics (SIFT_ANALYTICS_DIR, queries --queries GLOB)
 #                       on its generator (--rows orders, default 20000, --stores N); all (default) runs both
+#   --fail-fast         a stage that failed ends the run after its own report (the full tier: a red slice does not run the scenarios after it)
 #   --corpus REGEX      only the queries whose file name matches (name@K400 is the query on the set K400)
 #   --variants LIST     comma separated: off-par on on-par on-scalar on-par-scalar (the reference "off" always runs; default all five)
 #   --scenarios LIST    fixtures: insert update delete abort vacuum hot recycle held maint, or all (default) or none; dml (the inserts, updates and
@@ -49,7 +50,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST=
+VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -62,7 +63,7 @@ while (( $# )); do
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
 		*) sed -n '2,40p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -151,6 +152,8 @@ run_corpus() {
 			fi
 			echo "SELECT coldiff.run_query(:'scen', '$name', :'f', :'variants'::text[], :runs, nullif(:'mutate', ''), :'rel'::float8, :'abs'::float8);"
 			[[ -n ${HELD:-} ]] || echo "COMMIT;"
+			# the output of the queries goes to /dev/null: a line on stderr every 50 files says how far the session is
+			(( ${#names[@]} % 50 )) || echo "\\! date +'[coldiff %T] $scen: ${#names[@]} files done' >&2"
 		done
 		[[ -z ${HELD:-} ]] || echo "COMMIT;"
 	} >"$script"
@@ -317,6 +320,9 @@ scenario_files() { local f; for f in "$@"; do grep -q '^-- scenario: yes' "$f" &
 # wait_for FILE: until a script of this harness announces itself (60 s)
 wait_for() { local i; for (( i = 0; i < 600; i++ )); do [[ -e $1 ]] && return 0; sleep 0.1; done; log "FAIL: timeout waiting for $1"; FAILED=1; return 1; }
 
+# --fail-fast: a stage that failed ends the run after its own report (the stages after it only repeat the same failure on more states of the heap)
+stop_early() { [[ -n $FAILFAST ]] && (( FAILED )) && { log "fail fast: the next stages are not run"; return 0; }; return 1; }
+
 # the scenarios: DML into the heap states that the column index must still answer for, each compared on the scenario subset
 scenarios() {
 	local list=$SCENARIOS names f turn=0
@@ -329,24 +335,27 @@ scenarios() {
 	if named dml; then
 		log "scenario dml: 20% new orders, indexed updates, hard and soft deletes, no VACUUM"
 		sql -c "SELECT coldiff.sc_insert(0.2)" -c "SELECT coldiff.sc_update_indexed(0.03)" -c "SELECT coldiff.sc_delete(0.03)" >/dev/null
-		slice; check scenario-dml "${SLICED[@]}"
+		slice; check scenario-dml "${SLICED[@]}"; stop_early && return 0
 	fi
-	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; slice; check scenario-insert "${SLICED[@]}"; fi
-	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; slice; check scenario-update "${SLICED[@]}"; fi
-	if want delete; then log "scenario delete: hard and soft deletes"; sql -c "SELECT coldiff.sc_delete(0.03)" >/dev/null; slice; check scenario-delete "${SLICED[@]}"; fi
+	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; slice; check scenario-insert "${SLICED[@]}"; stop_early && return 0; fi
+	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; slice; check scenario-update "${SLICED[@]}"; stop_early && return 0; fi
+	if want delete; then log "scenario delete: hard and soft deletes"; sql -c "SELECT coldiff.sc_delete(0.03)" >/dev/null; slice; check scenario-delete "${SLICED[@]}"; stop_early && return 0; fi
 	if want abort; then
 		log "scenario abort: rolled-back insert, update and delete"
 		sql >/dev/null <<-'SQL'
 			BEGIN; SELECT coldiff.sc_insert(0.1); SELECT coldiff.sc_update_indexed(0.05); SELECT coldiff.sc_delete(0.05); ROLLBACK;
 		SQL
-		slice; check scenario-abort "${SLICED[@]}"
+		slice; check scenario-abort "${SLICED[@]}"; stop_early && return 0
 	fi
+	stop_early && return 0
 	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders" -c "VACUUM (ANALYZE) t_part"; slice; check scenario-vacuum "${SLICED[@]}"; fi
+	stop_early && return 0
 	if want hot && [[ -z $TBL ]]; then
 		sql -c "SELECT coldiff.sc_hot(0.05)" >/dev/null
 		log "scenario hot: HOT updates of columns no index holds: $(sql -c "SELECT n_tup_hot_upd FROM pg_stat_user_tables WHERE relname = 'orders'")"
 		slice; check scenario-hot "${SLICED[@]}"
 	fi
+	stop_early && return 0
 	if want recycle && [[ -z $TBL ]]; then
 		sql -c "DROP TABLE IF EXISTS coldiff_gone" -c "CREATE TABLE coldiff_gone AS SELECT ctid AS tid, id FROM orders WHERE coldiff.sample(id, 906, 0.05)" \
 			-c "DELETE FROM orders WHERE id IN (SELECT id FROM coldiff_gone)" -c "DELETE FROM t_part WHERE id IN (SELECT id FROM coldiff_gone)" \
@@ -354,7 +363,9 @@ scenarios() {
 		log "scenario recycle: new orders on recycled TIDs: $(sql -c "SELECT count(*) FROM orders WHERE ctid = ANY (ARRAY(SELECT tid FROM coldiff_gone))")"
 		slice; check scenario-recycle "${SLICED[@]}"
 	fi
+	stop_early && return 0
 	if want held || named held-lite; then slice; scenario_held "${SLICED[@]}"; fi
+	stop_early && return 0
 	if want maint && [[ -n ${AM:-} ]]; then slice; scenario_maint "${SLICED[@]}"; fi
 }
 
@@ -410,6 +421,7 @@ fixtures_suite() {
 	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql)
 	(( ${#fl[@]} )) || { log "fixtures: no query matches --corpus"; return 0; }
 	REPORT_FULL=full check fixtures "${fl[@]}"
+	stop_early && return 0
 	[[ -n $BENCH ]] || scenarios "${fl[@]}"
 }
 
@@ -465,5 +477,5 @@ selftest() {
 if [[ -n $LIST ]]; then files "$REPO"/test/col/fixtures/*.sql | xargs -r -n1 basename; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
-[[ $SUITE == fixtures ]] || analytics_suite
+[[ $SUITE == fixtures ]] || { stop_early && exit $FAILED; analytics_suite; }
 exit $FAILED

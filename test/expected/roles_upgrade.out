@@ -68,10 +68,10 @@ SET client_min_messages = warning;
 SELECT extversion FROM pg_extension WHERE extname = 'pg_sift';
  extversion 
 ------------
- 3.3
+ 3.4
 (1 row)
 
--- at 3.3: the same statements work and so does everything that was there
+-- at 3.4: the same statements work and so does everything that was there
 SELECT * FROM rr_run($$
 ru_own | DROP TABLE ru.plain
 ru_own | DROP INDEX ru.docs_col
@@ -106,7 +106,7 @@ $$);
  10 | ru_own | SELECT sift.promote('ru.docs_idx')                                                           | ok
  11 | ru_own | SELECT sift.col_verify('ru.docs_col', true)                                                  | ok
  12 | ru_rd  | SELECT * FROM sift.workers                                                                   | ok
- 13 | ru_new | SELECT sift.version()                                                                        | ok: (3.3)
+ 13 | ru_new | SELECT sift.version()                                                                        | ok: (3.4)
  14 | ru_rd  | DROP TABLE ru.docs                                                                           | ERROR: must be owner of table docs
  15 | ru_own | INSERT INTO ru.docs SELECT i + 300, 'alpha gamma ' || i, i % 3 FROM generate_series(1, 20) i | ok (20)
  16 | ru_own | SELECT count(*) FROM ru.docs WHERE body @@> 'alpha'                                          | ok: (320)

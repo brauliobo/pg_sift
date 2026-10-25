@@ -34,6 +34,7 @@
  * (the collation of a text key must be deterministic: the planner checks it)
  */
 extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
+extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
 
 /*
  * The spec the plan carries (SiftAggSpec.topn): a List of the keys (an integer list: keys: leaf, descending, nulls first, sort operator,
@@ -46,11 +47,18 @@ extern bool sift_topn_key_ok(const SiftSrcLeaf *lf);
  * of the whole set of rows that pass (the window functions over (), SiftAggSpec.agg), after the columns of the heap in the scan tuple: no unit
  * is left out for the sort key's zone, and the scan is serial. TOPN_RAWKEY: the first key is a uuid or bytea leaf that nothing else of the scan reads: the
  * source reads it as the codes of the dictionary it stores (SiftSrcProvider.set_raw), not through the per-unit dictionary of datums.
+ * TOPN_TIES: the keys of the spec are a prefix of the query's ORDER BY and the Sort above puts the rest in order: the scan gives the rows in the order
+ * of the prefix, up to the last row that ties with the LIMIT + OFFSET-th on it. The heap holds LIMIT + OFFSET + slack rows (the slack is flags >> TOPN_SLACK_SHIFT, the
+ * planner's estimate of the rows that tie), and when the last of them ties with the one that counts, the scan starts again with a heap 16 times
+ * larger, twice, then keeps every row (sift_topn_incomplete).
  */
 #define TOPN_SKIP_OFFSET	1
 #define TOPN_SORT			2
 #define TOPN_TOTALS			4
 #define TOPN_RAWKEY			8
+#define TOPN_TIES			16
+#define TOPN_SLACK_SHIFT	8
+#define TOPN_WIDEN_MAX		2
 /*
  * What a sort key does to the value of its leaf before it is compared (a sort expression the scan evaluates for every row that passes, which cannot
  * raise): TXK_COALESCE: NULL is the constant c (an integer, date or timestamp leaf and a constant of its type); TXK_LOWER, TXK_UPPER: the string of the
@@ -71,7 +79,7 @@ typedef struct SiftTopXform
 } SiftTopXform;
 
 /* exprs: the sort expressions of the TXK_EXPR keys (Vars of varno 1, varattno the leaf + 1), each a list member in the order of the keys; nout the number of output attributes */
-extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, int flags, Node *count, Node *offset);
+extern Node *sift_topn_spec(int nkey, const int *leaf, const bool *desc, const bool *nulls_first, const Oid *sortop, const Oid *cmp, const Oid *collid, const SiftTopXform *xf, List *exprs, int nout, const int *attno, const int *oleaf, int flags, Node *count, Node *offset);
 
 /* The rows of the heap for EXPLAIN: LIMIT + OFFSET when they are constants */
 extern char *sift_topn_limit_text(Node *spec);
@@ -86,11 +94,41 @@ typedef struct SiftTopN SiftTopN;
  * are kept in a heap; NULL (all rows), more rows, more keys or an overflow keep every row that passes in a sort of keys and TIDs
  * (work_mem, then disk), which still fetches from the heap only the rows the Limit takes; nothing wanted (zero or negative) reads nothing.
  */
-extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt);
+extern SiftTopN *sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relation heap, Snapshot snapshot, ExprContext *econtext, PlanState *parent, MemoryContext cxt, int widen);
 extern void sift_topn_close(SiftTopN *t);
 extern bool sift_topn_empty(const SiftTopN *t);
+/*
+ * A condition of the query on the key that the global order answers: AND / OR of comparisons (SiftCmpOp) of the key with a constant, tested on the key of each
+ * entry and bounding the part of the array that is read
+ */
+typedef enum SiftTopGKind
+{
+	STG_AND,
+	STG_OR,
+	STG_CMP
+} SiftTopGKind;
+
+typedef struct SiftTopGPred
+{
+	SiftTopGKind kind;
+	int			op;				/* STG_CMP: SiftCmpOp */
+	bool		lead;			/* STG_CMP: the column is the first sort key, whose range the condition bounds */
+	bool		pinned;			/* STG_CMP: ... or the first key is pinned by an equality in the same conjunction, so the rows that fail are few in the part of the array read */
+	int			leaf;			/* STG_CMP: the leaf of the column */
+	int			attno;			/* STG_CMP: the heap column and its type */
+	Oid			typid;
+	int64		val;
+	int			nchild;
+	struct SiftTopGPred **child;
+} SiftTopGPred;
+
+/* The scan reads the global order of the key (the part of it that the condition keeps): false when the source or the query cannot (the units are read as before) */
+extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond);
+extern bool sift_topn_gordered(const SiftTopN *t);
 
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
+/* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
+extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
 
 /*
  * The order the superblocks are visited in. Before the scan the zones of the sort column's first key in a few superblocks, spread over the
@@ -110,17 +148,20 @@ extern bool sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
 extern void sift_topn_skip(SiftTopN *t);
 
 /*
- * The walk, for a first sort column that does not follow the table: the zone of every superblock is added (sift_topn_walk_add, its number of
- * units), the superblocks are sorted by the best row they can hold, and sift_topn_walk_next gives them in that order until the next
+ * The walk, for a first sort column that does not follow the table: the zone of every superblock is read (sift_topn_walk_setup) and the superblocks are sorted by the best row they can hold, and sift_topn_walk_next gives them in that order until the next
  * cannot beat the n-th best so far; the units of the rest count as skipped.
  */
 extern bool sift_topn_follows(const SiftTopN *t);
 extern PGDLLIMPORT bool sift_topn_zone_keys;	/* sift.topn_zone_keys */
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT bool sift_topn_heads;	/* sift.test_topn_heads: answer a unit of which every row passes from the head of its sorted run */
+#else
+#define sift_topn_heads true
+#endif
+extern PGDLLIMPORT bool sift_topn_gorder_on;	/* sift.test_topn_gorder */
 extern PGDLLIMPORT bool sift_topn_runs;	/* sift.topn_runs: read a unit through its sorted run when it has one */
-extern void sift_topn_walk_begin(SiftTopN *t, uint32 nsb);
+extern void sift_topn_walk_setup(SiftTopN *t);	/* after sift_topn_start: reads the zones of the leading keys of every superblock and orders them, or takes the order the backend kept */
 extern int	sift_topn_walk_keys(const SiftTopN *t);	/* sort keys whose zones bound the walk: the first, and the integer keys that follow it */
-extern void sift_topn_walk_add(SiftTopN *t, uint32 sb, uint32 units, const SiftSrcZone *z);	/* z: one zone for each of those keys */
-extern void sift_topn_walk_sort(SiftTopN *t);
 extern bool sift_topn_walk_next(SiftTopN *t, uint32 *sb);
 extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);	/* parallel scan: a participant's test of the superblock it takes, by the same zones */
 
@@ -142,9 +183,11 @@ extern bool sift_topn_parallel_ok(const SiftTopN *t);
 extern void sift_topn_bound_init(pg_atomic_uint64 *bound);
 extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
 extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
-extern const uint32 *sift_topn_walk_order(const SiftTopN *t);
+extern const uint32 *sift_topn_walk_order(SiftTopN *t);
 extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
 extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
+extern bool sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb);
+extern int64 sift_topn_heads_used(const SiftTopN *t);	/* units answered from the head of their sorted run */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);
 extern void sift_topn_import(SiftTopN *t, const char *data, Size len);
@@ -161,6 +204,8 @@ extern void sift_topn_rewind(SiftTopN *t);
 
 extern int64 sift_topn_skipped(const SiftTopN *t);
 extern int64 sift_topn_fetched(const SiftTopN *t);
+extern bool sift_topn_incomplete(const SiftTopN *t);	/* TOPN_TIES: after the scan, the rows that tie with the last one wanted are not all in the heap */
+extern int	sift_topn_candidates(const SiftTopN *t);	/* TOPN_TIES: the rows the heap held; 0 otherwise */
 extern int64 sift_topn_sorted(const SiftTopN *t);	/* rows that went to the sort; -1: the heap holds the rows */
 
 #endif							/* SIFT_TOPN_H */

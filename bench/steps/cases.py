@@ -7,7 +7,7 @@
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
-or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `--@ prepare` / `--@ load` for a case that times a load). `run` builds
+or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load). `run` builds
 each case's table in a schema of its own on the server named by PGHOST / PGPORT (steps/cases.sh starts it), asserts the plan of the sift lane from
 EXPLAIN (a case that falls back to the normal plan fails), then times the lanes interleaved in rounds and compares every answer with the native one:
 
@@ -29,6 +29,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 from duckdb import Session, same, wait_quiet, busy  # noqa: E402  (a persistent psql session, the comparison of rows, the quiet gate)
 from store_lib import sections  # noqa: E402  (`--@ name` sections)
 
@@ -36,7 +37,10 @@ BENCH = os.path.dirname(HERE)
 REPO = os.path.dirname(BENCH)
 GEN = os.path.join(BENCH, 'sql', 'store', 'gen.sql')
 EVENTS_GEN = os.path.join(REPO, 'test', 'plan', 'gen.sql')   # the events dataset of the plan-choice gate: one schema, c_events, for every case of the dataset
-DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql'))}   # the datasets a case shares: schema and generator
+DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql')),
+            'tpch': ('c_tpch', os.path.join(BENCH, 'sql', 'tpch', 'gen.sql')),
+            'hits': ('c_hits', os.path.join(BENCH, 'sql', 'hits', 'gen.sql')),
+            'tseries': ('c_tseries', os.path.join(BENCH, 'sql', 'tseries', 'gen.sql'))}   # the datasets a case shares: schema and generator
 BUILT = set()
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']
@@ -45,14 +49,14 @@ INDEX_COLUMNS = ', '.join(COLUMNS[1:8] + DERIVED)
 DB = 'cases'
 FIELDS = ['id', 'changelog', 'dataset', 'index', 'plan', 'baselines', 'variants', 'metric', 'block', 'headline']
 TIMEOUT = 60
+LANE_BUDGET = 20.0   # seconds of timed runs after which a lane stops repeating (it has MIN_RUNS or more); --lane-budget
+MIN_RUNS = 3
+SCAN = re.compile(r'Custom Scan \(Sift')
+FORCED = ('agg_forced', 'sift.agg_force = on')   # the lane of a fallback case: what the scan can do where the planner declines it
+TIMES = {}   # case id -> [build seconds, run seconds] of the last point
 
 
-def die(msg):
-    sys.exit('cases: ' + msg)
-
-
-def log(msg):
-    print('[%s cases] %s' % (time.strftime('%T'), msg), file=sys.stderr, flush=True)
+log, die = benchlib.logger('cases')
 
 
 # --- the registry
@@ -64,12 +68,17 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh): ', m))
         self.load = 'load' in self.sec
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
+        self.fallback = self.plan.startswith('fallback:')   # the planner is expected to keep PostgreSQL's plan: `plan` is that plan, and a lane with the scan forced is measured beside it
+        if self.fallback:
+            self.plan = self.plan[len('fallback:'):]
+            self.variants = [v for v in self.variants if v[0] != FORCED[0]] + [list(FORCED)]
         self.metrics = self.metric.split(',')
         self.headline = self.headline == 'yes'
+        self.share = None   # read_registry: the name of the table that cases with the same index and setup read together
 
     def statement(self, lane):
         if lane == 'pg_duckdb':
@@ -77,7 +86,7 @@ class Case:
         return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
 
     def schema(self):
-        return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + self.id
+        return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + (self.share or self.id)
 
     def table_index(self):
         m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
@@ -94,7 +103,24 @@ def read_registry(root=REPO):
         if not os.path.exists(path):
             die('bench/cases.tsv: %s has no file bench/cases/%s.sql' % (r[0], r[0]))
         cases.append(Case(r, open(path).read()))
+    share_builds(cases)
     return cases
+
+
+READ_ONLY = re.compile(r'\b(insert|update|delete|alter|create|drop|truncate|copy)\b', re.I)
+
+
+def share_builds(cases):
+    """the cases on `orders` that only read it and have the same index and setup are one build: `orders` is made, indexed and vacuumed once (the build is most of the time of a case at 1M
+    rows), in a schema named after the first case of the group; a case that writes, loads or has its own dataset keeps a table of its own"""
+    groups = {}
+    for c in cases:
+        if c.dataset == 'orders' and not c.load and not any(READ_ONLY.search(c.sec.get(k, '')) for k in ('pg', 'sift', 'duck')):
+            groups.setdefault((c.index, c.sec.get('setup', ''), c.opt.get('vacuum', 'yes')), []).append(c)
+    for g in groups.values():
+        if len(g) > 1:
+            for c in g:
+                c.share = 's_' + g[0].id
 
 
 # --- the server
@@ -147,33 +173,60 @@ def build(case, rows):
         if case.sec.get('setup'):
             psql('SET search_path = %s, public;\n' % schema + case.sec['setup'] + ';\n')
         return
-    ddl = ['DROP SCHEMA IF EXISTS c_{0} CASCADE', 'CREATE SCHEMA c_{0}', 'SET search_path = c_{0}, public',
+    if case.share and (case.schema(), rows) in BUILT:
+        return
+    ddl = ['DROP SCHEMA IF EXISTS {0} CASCADE', 'CREATE SCHEMA {0}', 'SET search_path = {0}, public',
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
-    sql = ';\n'.join(d.format(case.id) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
+    sql = ';\n'.join(d.format(case.schema()) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
     if case.opt.get('vacuum', 'yes') == 'yes':
         sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
     psql(sql)
     psql('CHECKPOINT')
+    BUILT.add((case.schema(), rows))
 
 
 def server_session(timeout):
     return Session(os.environ['PGPORT'], timeout, None, db=DB, host=os.environ['PGHOST'])
 
 
+class Fresh:
+    """a lane whose every statement is the first of a new backend (`-- fresh: yes`): a pooled connection that was reset, a script, the first connection of the day. The library is
+    loaded by the server at its start (the cases cluster preloads it), so the plan of the first statement is the one of any other"""
+
+    def __init__(self, setup):
+        self.setup = setup
+
+    def run(self, sql):
+        s = server_session(TIMEOUT)
+        try:
+            for st in self.setup:
+                s.run(st)
+            return s.run(sql)
+        finally:
+            s.close()
+
+    def close(self):
+        pass
+
+
 def lane_sessions(case, engines, duck_port):
     """lane -> Session: sift and native always, then the variants of the registry and the engines the run asked for (the registry lists the ones a case may use)"""
-    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off']}
+    # a case that turns the access-method scan on (-- set: sift.enable_col_scan = on) compares it with the plan PostgreSQL makes without it
+    lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])}
     for name, settings in case.variants:
         lanes[name] = ['SET %s' % s for s in settings.split(';')]
     out = {}
-    wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # release runs 4GB; the cluster default is 64MB
+    wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # a large work_mem is 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
-        s = server_session(TIMEOUT)
-        for st in ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets:
-            s.run(st)
-        out[lane] = s
+        setup = ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets
+        if case.opt.get('fresh') == 'yes' and not lane.startswith('warm'):   # a lane named warm... keeps its backend: the same statement as the second of a backend
+            out[lane] = Fresh(setup)
+            continue
+        out[lane] = server_session(TIMEOUT)
+        for st in setup:
+            out[lane].run(st)
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
         s = Session(duck_port, TIMEOUT, None)
         s.run('SET duckdb.force_execution = on')
@@ -243,14 +296,20 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         if err:
             errors.setdefault(lane, err[:110])
         if lane == 'sift':
-            # the plan of the runs that are timed is the one after the first: in a backend that has not loaded the library (it needs no shared_preload_libraries) the
-            # first statement is planned without it, and the note says so
+            # the plan of the runs that are timed is the one after the first: where the first statement of a backend is planned another way (the cases cluster loads the
+            # library at its start, so it is rare), the note says so
             again = plan_text(s, sql[lane])
             if plan_shape(again) != plan_shape(text):
                 notes[lane] = '%s (the first plan of a backend was %s)' % (plan_note(again), notes[lane])
                 text = texts[lane] = again
             if keep_plan and not re.search(case.plan, text, re.S):
                 errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
+            elif keep_plan and case.fallback and SCAN.search(text):
+                errors[lane] = 'PLAN CHANGED: the planner chooses the scan now (%s): drop the fallback: of the plan column' % notes[lane]
+            if case.fallback:
+                notes['why'] = why(s, sql[lane])
+    if FORCED[0] in texts and not SCAN.search(texts[FORCED[0]]) and FORCED[0] not in errors:
+        notes[FORCED[0]] = 'no scan: ' + why(lanes[FORCED[0]], sql[FORCED[0]])   # the shape the scan cannot run: a feature gap, not a cost
     if 'native' in texts and 'sift' in texts and notes['sift'] == notes['native'] and plan_shape(texts['sift']) != plan_shape(texts['native']):
         notes['sift'] += ' (a different plan below it)'   # the first scan is the same: a block must not call two different plans "the same plan"
     ref = answers.get('native')
@@ -262,8 +321,29 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         order = order[r % len(order):] + order[:r % len(order)] if order else order
         for lane in order:
             for _ in range(runs):
+                if sum(times[lane]) / 1000 > LANE_BUDGET and len(times[lane]) >= MIN_RUNS:   # a lane of seconds a run: the median of a few runs, not of fifteen
+                    break
                 times[lane].append(lanes[lane].run(sql[lane])[0])
-    return times, notes, errors
+    return times, notes, errors, texts
+
+
+INDEX_IN_PLAN = re.compile(r'(?:Index(?: Only)? Scan(?: Backward)? using|Bitmap Index Scan on) (\w+)|Index: (\w+)')
+
+
+def pages_read(session, sql, text):
+    """what a lane touches, whatever the storage: the shared buffers of one run (hit + read of the top node of EXPLAIN (ANALYZE, BUFFERS)) and the bytes of the indexes its plan reads
+    (a btree, the column index of a scan); (None, None, '') when the plan has no buffers line"""
+    plan = session.run('EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) %s' % sql.rstrip(';'))[1]
+    m = next((re.search(r'shared hit=(\d+)(?: read=(\d+))?', l) for l in plan if 'Buffers:' in l and 'shared' in l), None)
+    names = sorted({a or b for a, b in INDEX_IN_PLAN.findall(text)})
+    size = sum(int(session.run("SELECT pg_relation_size('%s')" % n)[1][0]) for n in names) if names else 0
+    return (int(m.group(1)) + int(m.group(2) or 0), int(m.group(2) or 0), names, size) if m else (None, None, names, size)
+
+
+def why(session, sql):
+    """sift.explain_why of the statement (planned, not run): the first reason each arm of the aggregate pushdown gave up"""
+    out = session.run("SELECT arm || ' ' || slug || ': ' || reason FROM sift.explain_why($q$%s$q$) WHERE NOT used" % sql.rstrip(';'))[1]
+    return '; '.join(out)[:300] or 'sift.explain_why names no reason'
 
 
 def stats(ms):
@@ -280,7 +360,7 @@ def cpu_ns(pid):
 
 
 def measure_load(case, csv, rounds, rows):
-    """a load case: per lane and round one fresh table, the statement of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms"""
+    """a load case: per lane and round one fresh table (`--@ prepare`, untimed, with {am} and {csv}), the statements of `--@ load` timed with its WAL and the backend's CPU; metrics wal_bytes (per row), ms, cpu_ms"""
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
@@ -292,8 +372,10 @@ def measure_load(case, csv, rounds, rows):
             s = server_session(600)
             for st in ['SET search_path = c_%s, public' % case.id] + sets:
                 s.run(st)
-            prep = case.sec['prepare'].replace('{am}', am)
-            s.run(prep)
+            for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv)):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
+                err = s.run(stmt)[2]
+                if err:
+                    die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
             pid = s.run('SELECT pg_backend_pid()')[1][0]
             s.run('CHECKPOINT')
             lsn, cpu = wal_lsn(s), cpu_ns(pid)
@@ -331,10 +413,15 @@ def summarize(results, cases):
         if not (n and s and 'NA' not in (n['value'], s['value']) and 'error' not in (n['value'], s['value'])):
             lines.append('%-26s %-10s %10s %10s %8s  %s' % (c.id, m, n['value'] if n else '-', s['value'] if s else '-', '-', (s or {}).get('note', '')[:60]))
             continue
+        if c.fallback:   # PostgreSQL's plan against itself has no ratio: the lane with the scan forced is the comparison
+            f = cell(FORCED[0])
+            ok = f and f['value'] not in ('NA', 'error', '')
+            lines.append('%-26s %-10s %10s %10s %8s  %s' % (c.id, m, n['value'], f['value'] if ok else '-', '%.1fx' % (float(n['value']) / float(f['value'])) if ok and float(f['value']) else '-', 'scan forced: ' + f['note'][:46] if f else ''))
+            continue
         speed = float(n['value']) / float(s['value']) if float(s['value']) else float('inf')
         lines.append('%-26s %-10s %10s %10s %7.1fx  %s' % (c.id, m, n['value'], s['value'], speed, s['note'][:60]))
         if speed < 0.95:
-            losses.append('%s: sift %s %s against native %s (%.1fx slower%s)' % (c.id, s['value'], m, n['value'], 1 / speed, ', the same plan' * (n['note'].replace(' NOISY', '') == s['note'].replace(' NOISY', ''))))
+            losses.append('%s: sift %s %s against native %s (%.1fx slower)' % (c.id, s['value'], m, n['value'], 1 / speed))
     if losses:
         lines += ['', 'slower than native on %d of %d numbers:' % (len(losses), sum(len(c.metrics) for c in cases))] + ['  ' + l for l in losses]
     return '\n'.join(lines)
@@ -344,26 +431,40 @@ def run_point(args, cases, rows, engines, results, failed):
     """every case at ROWS orders: the rows of `results` (a case id with its size when the run has scales), the failures in `failed`; the scale points keep the planner's plan"""
     scaled = bool(args.scales)
     tag = '@%d' % rows if scaled else ''
+    t0 = time.time()
     csv = dataset(rows)
+    TIMES['(dataset)' + tag] = [round(time.time() - t0, 1), 0]
     if args.duck_port:
+        t0 = time.time()
         load_duck(args.duck_port, csv)
+        TIMES['(pg_duckdb load)' + tag] = [round(time.time() - t0, 1), 0]
     point = []
+    left = {}   # the cases still to read each shared table: it is dropped after the last
+    for c in cases:
+        if c.share:
+            left[c.schema()] = left.get(c.schema(), 0) + 1
     for c in cases:
         log('%s%s: %s' % (c.id, ' at %s rows' % format(rows, ',') if scaled else '', c.label))
+        t0 = time.time()
         build(c, rows)
+        built = time.time() - t0
         if not args.no_wait:
             wait_quiet(args.wait)
         noisy = busy()
         load = server_load()
         if c.load:
+            t1 = time.time()
             out, plans, errors = measure_load(c, csv, args.rounds, rows)
+            TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
-                    point.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
+                    point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
-        times, notes, errors = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not scaled)
+        t1 = time.time()
+        times, notes, errors, texts = measure_query(c, lanes, args.rounds, args.runs, keep_plan=not (scaled or args.any_plan))
+        TIMES[c.id + tag] = [round(built, 1), round(time.time() - t1, 1)]
         for lane in lanes:
             if lane in errors:
                 if lane in ('sift', 'native') or errors[lane].startswith(('PLAN', 'RESULT')):
@@ -371,24 +472,41 @@ def run_point(args, cases, rows, engines, results, failed):
                 point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                if lane != 'pg_duckdb' and not c.load:
+                    got, read, names, size = pages_read(lanes[lane], expand(c.statement(lane), c), texts.get(lane, ''))
+                    if got is not None:
+                        point.append(dict(case=c.id, arm=lane, metric='buffers', value=str(got), note='shared hit + read of one run, read=%d' % read, load=load))
+                    if names:
+                        point.append(dict(case=c.id, arm=lane, metric='index_bytes', value=str(size), note=', '.join(names), load=load))
             lanes[lane].close()
-        if scaled and c.dataset not in DATASETS:   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
+        if 'why' in notes:
+            point.append(dict(case=c.id, arm='why', metric='ms', value='', note=notes['why'], load=load))
+        if c.share:
+            left[c.schema()] -= 1
+        if c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
             psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
+            BUILT.discard((c.schema(), rows))
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
 
 
 def cmd_run(args):
-    global TIMEOUT
+    global TIMEOUT, LANE_BUDGET
+    LANE_BUDGET = args.lane_budget
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     if not cases:
         die('no case matches %s' % ','.join(args.cases))
+    if args.no_share:
+        for c in cases:
+            c.share = None
     TIMEOUT = args.timeout
     engines = args.engines.split(',')
     load_before = host_load()
     results, failed = [], []
     for scale in [int(x) for x in args.scales.split(',')] if args.scales else [1]:
         run_point(args, cases, args.rows * scale, engines, results, failed)
+    log('time: %.0f s of builds (the dataset and the copy in pg_duckdb included), %.0f s of timed runs, %d cases, %d tables built for them' % (
+        sum(b for b, _ in TIMES.values()), sum(r for _, r in TIMES.values()), len(cases), len({c.schema() for c in cases if c.dataset not in DATASETS})))
     for f in failed:
         print('FAILED ' + f, file=sys.stderr)
     write_results(args, cases, results, load_before)
@@ -400,7 +518,7 @@ def cmd_run(args):
 
 
 def cmd_plan(args):
-    """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates from the 200,000-row trials: linear in the rows, a floor on a loaded host)"""
+    """what a run would do, no server: the points, the builds, the disk and the time it needs (estimates fitted to the 1,000,000-row run of 2026-10-24, 86 cases in 17 min with shared tables: linear in the rows, a floor on a loaded host)"""
     cases = [c for c in read_registry() if not args.cases or c.id in args.cases]
     scales = [int(x) for x in args.scales.split(',')] if args.scales else [1]
     events = sum(c.dataset in DATASETS for c in cases)
@@ -414,7 +532,7 @@ def cmd_plan(args):
         len(cases), len(cases) - events, events, len(scales), 's' * (len(scales) > 1), ' x '.join([format(args.rows, ','), str(scales)]), args.rounds, args.runs, args.timeout))
     for sc in scales:
         n = args.rows * sc
-        t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 10e-6 + 5.0 * sc)
+        t = n * 25e-6 + (n * 50e-6 if events else 0) + len(cases) * (n * 8e-6 + 4.0 * sc)
         gb = (n * (120 + 85 + 350) + (n * 1000 if events else 0)) / 2**30 + 4
         seconds, peak = seconds + t, max(peak, gb)
         print('  %14s orders (%dx): generate%s, %d builds and measures, about %4.0f min, up to %4.0f GB of scratch' % (format(n, ','), sc, ' orders and events' if events else ' orders', len(cases), t / 60, gb))
@@ -455,7 +573,29 @@ def write_results(args, cases, results, load_before):
             results = [r for r in old if r['case'] not in ran and str(args.rows) == old_meta.get('orders')] + results   # a run of every case at another size replaces the file
     if args.scales:
         meta['scales'] = args.scales
-    extras.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the store benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
+    extras.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the orders benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
+    log('wrote %s' % path)
+    if args.docs or args.times:
+        write_times(args, cases)
+
+
+def write_times(args, cases):
+    """bench/results/cases-time.tsv: the seconds each case took (its build: the table, indexes and setup, zero for a case that reads a table another one built; its timed runs on every lane),
+    which the budget table of bench/README.md is made from; the rows of the cases that ran replace theirs"""
+    path = args.times or os.path.join(REPO, 'bench', 'results', 'cases-time-scale.tsv' if args.scales else 'cases-time.tsv')
+    old = {}
+    if os.path.exists(path):
+        for l in open(path):
+            f = l.rstrip('\n').split('\t')
+            if not l.startswith('#') and f[0] != 'case' and len(f) == 4:
+                old[f[0]] = f
+    for k, (b, r) in TIMES.items():
+        old[k] = [k, str(args.rows), str(b), str(r)]
+    lines = ['# Seconds of each case of bench/cases.tsv (steps/cases.py, bench/bench cases --docs): build (the table, its indexes and setup; 0 for a case that reads the table of an earlier one), run (the timed runs of every lane,',
+             '# %d rounds of %d runs, a lane stops repeating after %g s), at the orders of the row. (dataset): generating the orders; (pg_duckdb load): the copy in the container.' % (args.rounds, args.runs, args.lane_budget),
+             '# measured %s on %s, host load before %s.' % (datetime.date.today().isoformat(), host(), host_load()),
+             'case\torders\tbuild_s\trun_s'] + ['\t'.join(v) for v in old.values()]
+    open(path, 'w').write('\n'.join(lines) + '\n')
     log('wrote %s' % path)
 
 
@@ -480,10 +620,11 @@ def changelog_lines(root):
     return out
 
 
-def claims(line):
-    """a bullet that gives a before and after, a ratio or a count of instructions: a measured speed"""
+def needs_case(line):
+    """a bullet that adds or changes something (an optimization, a default, a feature: each is measured by a case or waived with its reason), or a fix or an improvement that gives
+    a before and after, a ratio or a count of instructions (a measured speed)"""
     kind = line[2:].split(':', 1)[0]
-    return kind in ('Added', 'Changed', 'Fixed') and bool(CLAIM.search(line))
+    return kind in ('Added', 'Changed') or kind in ('Improved', 'Fixed') and bool(CLAIM.search(line))
 
 
 def allow_list(root):
@@ -513,6 +654,8 @@ def cmd_check(args):
     for c in cases:
         if ids.count(c.id) > 1:
             errors.append('%s: the id is in bench/cases.tsv twice' % c.id)
+        if c.plan in ('', '.') or (c.fallback and c.load):
+            errors.append('%s: the plan column must name the plan (a case that compares pg_sift has its scan in it; fallback:REGEX names the plan PostgreSQL keeps), not %r' % (c.id, c.plan))
         try:
             re.compile(c.plan)
         except re.error as e:
@@ -530,7 +673,7 @@ def cmd_check(args):
     unmeasured = 0
     used = set()
     for line in lines:
-        if not claims(line):
+        if not needs_case(line):
             continue
         covered = next((c.id for c in cases if c.changelog in line), None)
         waived = next((a for a in allowed if a in line), None)
@@ -539,22 +682,24 @@ def cmd_check(args):
             continue
         unmeasured += 1
         if changed is None or line in changed:
-            errors.append('CHANGELOG claims a speed with no case: "%s ..." (add bench/cases/ID.sql and a row in bench/cases.tsv whose changelog column is a phrase of the line, or a reasoned line in scripts/bench-cases.allow)' % line[:110])
+            errors.append('CHANGELOG line has no case: "%s ..." (add bench/cases/ID.sql and a row in bench/cases.tsv whose changelog column is a phrase of the line; or a line in scripts/bench-cases.allow: `case ID` when a case measures it, else why no query can)' % line[:110])
     for a in allowed:
         if a not in used:
-            errors.append('scripts/bench-cases.allow: "%s" matches no speed claim of the Unreleased section (remove it)' % a)
+            errors.append('scripts/bench-cases.allow: "%s" matches no Added, Changed or measured line of the Unreleased section (remove it)' % a)
         elif not allowed[a]:
             errors.append('scripts/bench-cases.allow: "%s" has no reason' % a)
-    total = sum(1 for l in lines if claims(l))
+        elif allowed[a].startswith('case ') and allowed[a].split()[1].rstrip(':,;') not in ids:
+            errors.append('scripts/bench-cases.allow: "%s" names the case %s, which bench/cases.tsv does not have' % (a, allowed[a].split()[1]))
+    total = sum(1 for l in lines if needs_case(l))
     if changed is not None and unmeasured:
-        notes.append('%d of the %d speed claims of Unreleased have no case yet (only the lines this change adds fail; --strict fails on all)' % (unmeasured, total))
+        notes.append('%d of the %d Added, Changed and measured lines of Unreleased have no case yet (only the lines this change adds fail; --strict fails on all)' % (unmeasured, total))
     for e in errors:
         print('bench-cases: ' + e)
     for n in notes:
         print('bench-cases: ' + n)
     if errors:
         return 1
-    print('bench-cases: %d cases, each with an anchor in CHANGELOG.md, a block and result rows; %d of %d speed claims of Unreleased covered' % (len(cases), total - unmeasured, total))
+    print('bench-cases: %d cases, each with an anchor in CHANGELOG.md, a block and result rows; %d of %d Added, Changed and measured lines of Unreleased covered' % (len(cases), total - unmeasured, total))
     return 0
 
 
@@ -570,7 +715,11 @@ def main():
     ap.add_argument('--out', default=os.path.join(BENCH, 'out', 'cases-%s.tsv' % time.strftime('%Y%m%dT%H%M%S')))
     ap.add_argument('--scales', help='run every case at ROWS times each of these (1,10,100): the curve of bench/results/cases-scale.tsv, the planner\'s plan at each size')
     ap.add_argument('--timeout', type=int, default=TIMEOUT, help='seconds a statement may run (the large points need more)')
-    ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; release 4GB): written to the file as the work_mem meta')
+    ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large setting is 4GB): written to the file as the work_mem meta')
+    ap.add_argument('--lane-budget', type=float, default=LANE_BUDGET, help='seconds of timed runs after which a lane stops repeating, with at least %d runs (0: always the full rounds x runs); a case whose statement takes seconds is not run fifteen times' % MIN_RUNS)
+    ap.add_argument('--any-plan', action='store_true', help='the planner\'s plan at this size is what the rows show, not a failure (a smoke run: at a few thousand rows it keeps PostgreSQL\'s plan)')
+    ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
+    ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')
     ap.add_argument('--no-wait', action='store_true')
     ap.add_argument('--wait', type=int, default=300)

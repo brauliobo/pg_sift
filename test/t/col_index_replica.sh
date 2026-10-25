@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
-plan 12
+plan 15
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
@@ -37,11 +37,21 @@ sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 			END LOOP;
 			RETURN true;
 		END \$\$" \
-	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, doc jsonb)" \
-	"INSERT INTO orders (tenant_id, status, qty, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i,
+	"CREATE FUNCTION gone_same() RETURNS bool LANGUAGE plpgsql AS \$\$
+		DECLARE q text := \$q\$SELECT coalesce(string_agg(status || ':' || n || ':' || s, ',' ORDER BY status), '') FROM (SELECT status, count(*) AS n, sum(qty) AS s FROM orders WHERE gone IS NULL GROUP BY 1) x\$q\$; a text; b text;
+		BEGIN
+			SET LOCAL seq_page_cost = 10000;
+			SET LOCAL sift.enable_agg = on;
+			EXECUTE q INTO a;
+			SET LOCAL sift.enable_agg = off;
+			EXECUTE q INTO b;
+			RETURN a IS NOT DISTINCT FROM b;
+		END \$\$" \
+	"CREATE TABLE orders (id bigserial PRIMARY KEY, tenant_id int, status text, qty bigint, gone bigint, doc jsonb)" \
+	"INSERT INTO orders (tenant_id, status, qty, gone, doc) SELECT i % 50, (ARRAY['new','paid','void'])[1 + i % 3], i, CASE WHEN i % 500 = 0 THEN i END,
 		jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc(i) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
-	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)')" \
+	"CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, gone, doc) WITH (write_buffer_limit = 64, paths = 'doc.items[]{category text, qty int4}, doc.weight float8',
+	preagg = 'cube(tenant_id: qty; status: qty) rollup(doc.items[].category: doc.items[].qty)', hll_columns = 'tenant_id, status, qty')" \
 	>/dev/null || bail "setup failed"
 
 node_clone primary standby 3 "hot_standby_feedback = on
@@ -57,6 +67,7 @@ EOF
 cat >"$P/upd.sql" <<'EOF'
 \set id random(1, 100000)
 UPDATE orders SET tenant_id = coalesce(tenant_id, 0) + 1 WHERE id BETWEEN :id AND :id + 200;
+UPDATE orders SET gone = id WHERE id = :id;
 DELETE FROM orders WHERE id BETWEEN :id + 1000 AND :id + 1020;
 EOF
 echo "VACUUM orders;" >"$P/vac.sql"
@@ -68,6 +79,7 @@ cat >"$P/read.sql" <<'EOF'
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 SELECT count(*) FROM sift._test_col_tids('o_col', '0:lt:10;1:eq:paid');
 SELECT typeof_same();
+SELECT gone_same();
 COMMIT;
 EOF
 pgbench_bg primary 6 "$SECS" -f "$P/ins.sql@40" -f "$P/upd.sql@10" -f "$P/vac.sql@1" -f "$P/maint.sql@2"
@@ -85,6 +97,17 @@ CHECKS="SELECT (SELECT count(*) FROM sift._test_col_tids('o_col', '')) || ' ' ||
 check "standby answers the column source as the primary does" test "$(sql standby "$CHECKS")" == "$(sql primary "$CHECKS")"
 check "the standby computes the groups of the elements from the element cubes as the primary does" \
 	test "$(elem_groups standby on)" == "$(elem_groups primary off)"
+sleep 2   # the standby's feedback (wal_receiver_status_interval) no longer holds the horizon of its finished readers
+sql primary "VACUUM (disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" >/dev/null
+catchup primary standby
+GONE="SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1 ORDER BY 1"
+check "the standby answers the soft-delete filter as the primary and the heap do" \
+	test "$(sql standby "SET seq_page_cost = 10000" "$GONE")" == "$(sql primary "SET sift.enable_agg = off" "$GONE")" -a "$(sql standby "SELECT gone_same()")" == t
+check "the standby answers units of the merged segment from the exceptions" \
+	grep -qE "Units Net Of Exceptions: [1-9]" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE")"
+APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_distinct(status) || ' ' || sift.approx_count_distinct(tenant_id) FROM orders"
+check "the standby merges the sketches of its units to the number the primary's heap gives" \
+	test "$(sql standby "SET sift.agg_force = on" "$APPROX")" == "$(sql primary "SET sift.enable_agg = off" "$APPROX")"
 check "the index verifies on the standby" test -z "$(sql standby "SELECT sift.col_verify('o_col', true)" 2>&1)"
 TYPED="SELECT count(*) || ' ' || sum((doc->>'weight')::float8) FROM orders WHERE jsonb_typeof(doc->'weight') = 'number'"
 check "a type filter plans as an aggregate scan on the standby" \

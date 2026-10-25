@@ -39,6 +39,7 @@
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
+#include "utils/uuid.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
@@ -63,7 +64,7 @@ att_store(Form_pg_attribute att, uint8 *scale)
 	*scale = 0;
 	if (typid == NUMERICOID)
 		return sift_col_numeric_scale(att, scale) ? SIFT_COLS_INT : SIFT_COLS_VAR;
-	if (typid == BPCHAROID)
+	if (typid == BPCHAROID || typid == UUIDOID)	/* a uuid is a dictionary of 16-byte images: its top-N reads the codes (set_raw) */
 		return SIFT_COLS_STR;
 	if (sift_col_leaf_store(typid, &store))
 		return store;
@@ -427,6 +428,12 @@ value_in(const SiftColDef *def, Form_pg_attribute att, Datum d, SiftColValue *v,
 			fits = f8_exact(DatumGetFloat8(d));
 			break;
 		case SIFT_COLS_STR:
+			if (att->atttypid == UUIDOID)
+			{
+				v->v.s = DatumGetPointer(d);
+				v->len = UUID_LEN;
+				break;
+			}
 			{
 				text	   *t = DatumGetTextPP(d);
 
@@ -459,6 +466,8 @@ value_out(const SiftColDef *def, Form_pg_attribute att, const SiftColVec *vec, u
 		case SIFT_COLS_F8:
 			return Float8GetDatum(vec->f[i]);
 		case SIFT_COLS_STR:
+			if (att->atttypid == UUIDOID)
+				return image_datum(att, SIFT_COL_DICT_STR(vec->dict, vec->codes[i]), UUID_LEN);
 			{
 				uint32		code = vec->codes[i],
 							len = SIFT_COL_DICT_LEN(vec->dict, code);

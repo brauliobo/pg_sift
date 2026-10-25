@@ -499,13 +499,16 @@ exc_find(const SiftColVec *ev, uint32 i, int attno, const char **p, uint32 *len)
 
 /* The text of a code of a leaf read as codes (sift_col_read_codes): its string is read from the dictionary of the segment in place */
 static Datum
-code_text(SiftTblGroupScan *g, int leaf, uint32 code)
+code_text(SiftTblGroupScan *g, Form_pg_attribute att, int leaf, uint32 code)
 {
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];
 	uint32		len;
 	const char *s = sift_col_code_str(&g->unit, leaf, code, &len, buf);
-	text	   *t = palloc(VARHDRSZ + len);
+	text	   *t;
 
+	if (att->atttypid == UUIDOID)
+		return image_datum(att, s, len);
+	t = palloc(VARHDRSZ + len);
 	SET_VARSIZE(t, VARHDRSZ + len);
 	memcpy(VARDATA(t), s, len);
 	return PointerGetDatum(t);
@@ -541,7 +544,7 @@ fill_attr(SiftTblGroupScan *g, uint32 pos, int a, Datum *value, bool *isnull)
 			*isnull = true;
 	}
 	else if (vec->store == SIFT_COLS_STR && vec->dict == NULL)
-		*value = code_text(g, leaf, vec->codes[pos]);
+		*value = code_text(g, att, leaf, vec->codes[pos]);
 	else
 		*value = value_out(&gs->schema->cols[leaf], att, vec, pos);
 }
@@ -741,16 +744,39 @@ fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 	return true;
 }
 
+/* The slot of a new fetch scan: an empty one, else the least recently used; the scans are dropped, oldest first, while they hold more than SIFT_TBL_FETCH_BYTES */
+static int
+fetch_victim(struct SiftTblGroupCache *c)
+{
+	for (;;)
+	{
+		Size		bytes = 0;
+		int			lru = -1;
+
+		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
+		{
+			if (c->fetch[i] == NULL)
+				return i;
+			bytes += MemoryContextMemAllocated(c->fetch[i]->cxt, true);
+			if (lru < 0 || c->fetch_used[i] < c->fetch_used[lru])
+				lru = i;
+		}
+		if (bytes <= SIFT_TBL_FETCH_BYTES)
+			return lru;
+		sift_tbl_gscan_end(c->fetch[lru]);
+		c->fetch[lru] = NULL;
+	}
+}
+
 /*
  * The fetch scan serving the TID fetches into superblock sb while the directory stays, and the xmin of the backend keeps the segments from
- * being recycled: the one that holds sb, else a new one, else the least recently used is replaced
+ * being recycled: the one that holds sb, else a new one
  */
 static SiftTblGroupScan *
 fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
-	int			pick = -1,
-				spare = 0;
+	int			pick = -1;
 
 	if (!fetch_kept(rel, st, c))
 		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
@@ -760,17 +786,13 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 				c->fetch[i] = NULL;
 			}
 	for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
-	{
 		if (c->fetch[i] && c->fetch[i]->cache_sb == sb)
 			pick = i;
-		if (c->fetch[spare] && (c->fetch[i] == NULL || c->fetch_used[i] < c->fetch_used[spare]))
-			spare = i;
-	}
 	if (pick < 0)
 	{
 		MemoryContext old = MemoryContextSwitchTo(st->cxt);
 
-		pick = spare;
+		pick = fetch_victim(c);
 		if (c->fetch[pick])
 			sift_tbl_gscan_end(c->fetch[pick]);
 		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);

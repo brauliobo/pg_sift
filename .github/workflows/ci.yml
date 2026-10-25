@@ -7,10 +7,13 @@ name: ci
 # The nightly run and a dispatch (of main, or of a branch before the merge of a risky change) run every job of the quick tier ("Full scope" in the first job is
 # the mark the release tool looks for); the nightly run, and a dispatch with heavy set, add the full tier (sanitizers, long soaks and fuzz runs). Only the full tier installs pg_repack (PGDG ships 1.5.3 for 17, 18 and 19), so test/t/col_pg_repack.sh runs there and skips elsewhere.
 # PostgreSQL 19 (a server built from the git tree, cached: .github/actions/pg19) runs whatever PostgreSQL 17 and 18 run, in the same shards, and fails the run like them.
-# The full tier is three shards on PostgreSQL 18 and five on 17 (the last one runs the jobs that install a library flavor): in one it took 92 minutes of tests on a 4-core runner and PostgreSQL 17 ran past the 150-minute limit.
+# The full tier is three shards on PostgreSQL 18 and five on 17 (the deep one nine and ten, cut by the weights of scripts/ci.sh, the full entries first so that the account's concurrent jobs go to the long ones) (the last one runs the jobs that install a library flavor): in one it took 92 minutes of tests on a 4-core runner and PostgreSQL 17 ran past the 150-minute limit.
+# A deep run does not repeat the x86 quick shards on 17 and 18: its full tier has the same jobs at full scale; the quick shards of AArch64 and 19 stay, with the release-library list on 18.
 # Linux on AArch64 (`arm: true` entries, a hosted ubuntu-24.04-arm runner) runs the PostgreSQL 18 entries again: the fast tier of a labeled pull request, the quick tier
 # of a push, the nightly run and a dispatch.
 # The memory-debugging lanes (assert, valgrind) are assert.yml, weekly.
+# A pull request of any kind runs one more job, PostgreSQL 18 with assertions (`cassert: true`), on the regression tests that run workers (`ASSERT_JOBS` of scripts/ci.sh), when it
+# changes a source that starts workers or handles snapshots (`ASSERT_MARK`) or carries the label `assertions`; the push, nightly and dispatch cassert entry runs the family too.
 # No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:
   push:
@@ -38,15 +41,17 @@ permissions:
 # a pull request run is cancelled by the next push to the same pull request. A push to main never cancels the run of the one before it: that run finishes, and of the
 # runs waiting behind it GitHub keeps the newest, which scopes its diff from the last green run (see `changes`), so every batch of merges gets one complete run and
 # the head of main is tested. A nightly or dispatch run has a group of its own, so a push never cancels it (main-verify.yml dispatches one when the head of main has none).
+# A dispatch with heavy has a group of its own per run, so it never waits behind another run of the same ref (a long deep run held a lean one pending for six minutes); two
+# heavy dispatches of one ref can therefore run together, so check `gh run list` before dispatching. No dispatch is cancelled by another.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || '' }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'ci' && format('-label-{0}', github.run_id) || github.event_name == 'workflow_dispatch' && inputs.heavy && format('-run-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # `changes` and `lint` start the work and carry the condition; the other jobs skip through `needs`. Any label other than `ci` starts a run of its own that skips
 # everything, in a group of its own, so it does not cancel the run of the pull request.
 jobs:
   changes:
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'labeled' || github.event.label.name == 'ci') && (startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci')) }}
+    if: ${{ github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'ci' || github.event.label.name == 'assertions' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -66,6 +71,7 @@ jobs:
       - id: scope
         env:
           GH_TOKEN: ${{ github.token }}
+          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci') }}
         run: |
           base=all
           case "$GITHUB_EVENT_NAME" in
@@ -78,7 +84,12 @@ jobs:
           esac
           echo "base: $base"
           scripts/ci.sh affected --list "$base" | tee -a "$GITHUB_STEP_SUMMARY"
-          scripts/ci.sh affected --github "$base" | tee -a "$GITHUB_OUTPUT"
+          # a pull request that is neither into an integration branch nor labeled `ci` runs the assertions family and nothing else (below)
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$CIPR" != true ]; then
+            scripts/ci.sh affected --github "$base" | grep -E '^cassert(jobs)?=' | tee -a "$GITHUB_OUTPUT"
+          else
+            scripts/ci.sh affected --github "$base" | tee -a "$GITHUB_OUTPUT"
+          fi
 
       # the mark of a run that covered everything (the release tool reads it from the API)
       - name: Full scope
@@ -94,16 +105,25 @@ jobs:
           FASTJOBS: ${{ steps.scope.outputs.fastjobs }}
           VERSIONS: ${{ inputs.versions }}
           EVENT: ${{ github.event_name }}
+          CIPR: ${{ startsWith(github.head_ref, 'integration/') || contains(github.event.pull_request.labels.*.name, 'ci') }}
+          CASSERT: ${{ steps.scope.outputs.cassert }}
+          CASSERTJOBS: ${{ steps.scope.outputs.cassertjobs }}
+          LABEL_ASSERTIONS: ${{ contains(github.event.pull_request.labels.*.name, 'assertions') }}
           HEAVY: ${{ github.event_name == 'schedule' || inputs.heavy == true }}
+          DEEP: ${{ github.event_name == 'schedule' || inputs.deep == true }}
         run: |
           # a pull request: one PostgreSQL 18 job, the regression tests of the areas the diff touches (`jobs`, narrower than the push's: scripts/areas.tsv `fast:` rows) and the tests it touches (`only`, SIFT_CI_JOBS)
           # PostgreSQL 17 has a shard more: its jobs that install a library flavor run one after the other, apart from the pool (scripts/ci.sh)
-          jq -nc --argjson n "$NSHARDS" --argjson heavy "$HEAVY" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
-            if $event == "pull_request" then (if $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end) else
-            (if $pg == "true" then [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}]
+          set -o pipefail   # a jq error must fail the step: an empty matrix skips every test job and the gate passes
+          d=; [ "$DEEP" = true ] && d=1
+          jq -nc --argjson full17 "$(scripts/ci.sh --shards 17 $d)" --argjson full18 "$(scripts/ci.sh --shards 18 $d)" --argjson n "${NSHARDS:-1}" --arg cipr "$CIPR" --arg cassert "$CASSERT" --arg cassertjobs "$CASSERTJOBS" --arg label "$LABEL_ASSERTIONS" --argjson heavy "$HEAVY" --argjson deep "$DEEP" --arg pg "$PG" --arg jobs "$JOBS" --arg fast "$FAST" --arg fastjobs "$FASTJOBS" --arg event "$EVENT" --arg versions "$VERSIONS" '
+            if $event == "pull_request" then (if $cipr == "true" and $pg == "true" then [false, true] | map({pg: 18, shard: 1, n: 1, tier: "fast", jobs: $fastjobs, only: $fast, arm: .}) else [] end)
+              + (if $cassert == "true" or $label == "true" then [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: $cassertjobs, cassert: true}] else [] end) else
+            (if $heavy then [(17, 18) as $v | (if $v == 17 then $full17 else $full18 end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end)
+            + (if $pg == "true" then (if $deep then [] else [(17, 18) as $v | (if $v == 17 and $n > 1 then $n + 1 else $n end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "quick", jobs: $jobs}] end)
               + [range(1; $n + 1) as $s | {pg: 19, shard: $s, n: $n, tier: "quick", jobs: $jobs, git: true}]
-              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}] else [] end)
-            + if $heavy then [(17, 18) as $v | (if $v == 17 then 5 else 3 end) as $m | range(1; $m + 1) as $s | {pg: $v, shard: $s, n: $m, tier: "full", jobs: "."}] else [] end end
+              + [range(1; $n + 1) as $s | {pg: 18, shard: $s, n: $n, tier: "quick", jobs: $jobs, arm: true}]
+              + [{pg: 18, shard: 1, n: 1, tier: "quick", jobs: ("^installcheck-agg_(cte_|.*_cost$|.*_scope$|.*lateral|.*subplan|plan_|nested_ctes|.*placeholder|statement_cte)|" + $cassertjobs), cassert: true}] else [] end) end
             | map(select($versions == "" or ((.pg | tostring) as $p | ($versions | split(" ") | index($p)) != null)))' |
             sed 's/^/matrix=/' | tee -a "$GITHUB_OUTPUT"
 
@@ -115,29 +135,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - run: for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f"; done
-      - run: scripts/check-portable.sh
-      - run: scripts/check-neutral.sh
-      - run: scripts/gen-limits.sh --check
-      - run: scripts/gen-reference.sh --check
-      - run: scripts/gen-options.sh --check
-      - run: scripts/check-errors.sh
-      - run: scripts/check-memory.sh && scripts/check-memory.sh --selftest
-      - run: scripts/check-bench-fresh.sh
-      - run: git fetch -q --depth=1 origin integration/3.3-batch-1:refs/remotes/origin/integration/3.3-batch-1 || true; scripts/check-bench-cases.sh
-      - run: scripts/gen-refusals.sh --check
-      - run: scripts/coverage.sh --docs
-      - run: scripts/gen-docs.py --check
-      - run: scripts/ci.sh --selftest
+      - run: scripts/lint.sh
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 
   postgresql:
-    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}
+    name: PostgreSQL ${{ matrix.pg }}${{ matrix.arm && ' arm64' || '' }}${{ matrix.tier == 'full' && ' full tier' || matrix.tier == 'fast' && ' (fast)' || '' }}${{ matrix.n > 1 && format(' ({0}/{1})', matrix.shard, matrix.n) || '' }}${{ matrix.git && ' (git)' || '' }}${{ matrix.cassert && ' (assertions)' || '' }}
     needs: changes
     if: ${{ needs.changes.outputs.matrix != '[]' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 350 || 90 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -150,19 +157,15 @@ jobs:
 
       - uses: ./.github/actions/apt-limits
 
-      - name: Install PostgreSQL ${{ matrix.pg }}
-        if: ${{ !matrix.git }}
+      # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
+      - name: PGDG repository
         run: |
-          sudo install -d /usr/share/postgresql-common/pgdg
-          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          . /etc/os-release
-          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" |
-            sudo tee /etc/apt/sources.list.d/pgdg.list
-          sudo apt-get update
-          # the tests start their own clusters: no default cluster, no service on 5432
-          sudo apt-get install -y postgresql-common
-          sudo sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-          sudo apt-get install -y --no-install-recommends postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev
+          scripts/pgdg-repo.sh
+
+      - name: Install PostgreSQL ${{ matrix.pg }}
+        if: ${{ !matrix.git && !matrix.cassert }}
+        run: |
+          scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
 
       # the cached build of the newest commit of the branch (the nightly and dispatch runs build the head of it when the cache lacks it)
@@ -172,11 +175,43 @@ jobs:
         with:
           exact: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
 
+      # the planner asserts of the server (a foreach_node cast of the wrong node type is an Assert) exist only in a build with --enable-cassert, which the
+      # distribution packages lack: the aggregate planner tests run on a PostgreSQL 18 built from source with it (scripts/pg-assert.sh, cached with the build of assert.yml)
+      - name: Cache PostgreSQL ${{ matrix.pg }} with assertions
+        if: ${{ matrix.cassert }}
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/sift/pg
+          key: pg-assert-${{ matrix.pg }}-${{ hashFiles('scripts/pg-assert.sh') }}
+
+      - name: Build PostgreSQL ${{ matrix.pg }} with assertions
+        if: ${{ matrix.cassert }}
+        run: |
+          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl liblz4-dev libzstd-dev
+          prefix=$(PG_ASSERT_MAJOR=${{ matrix.pg }} scripts/pg-assert.sh)
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
       - name: Use PostgreSQL 19
         if: ${{ matrix.git }}
         run: |
           sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
+
+      # test/t/pg_upgrade.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
+      # pg_sift for it, so it needs the server and its headers. Only the entries whose share of the queue has the job install them; a major PGDG lacks
+      # is a warning, and the test then upgrades within one major
+      - name: Install the previous PostgreSQL major (pg_upgrade)
+        if: ${{ matrix.pg > 17 }}
+        env:
+          SIFT_CI_AFFECTED: ${{ matrix.jobs }}
+          SIFT_CI_JOBS: ${{ matrix.only }}
+          SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
+        run: |
+          plan=$(scripts/ci.sh --plan ${{ matrix.tier == 'full' && 'full' || 'quick' }})
+          grep -q '^tap-shell-pg_upgrade ' <<<"$plan" || { echo "no pg_upgrade job in this entry"; exit 0; }
+          prev=$(( ${{ matrix.pg }} - 1 ))
+          scripts/apt-install.sh postgresql-$prev postgresql-server-dev-$prev ||
+            echo "::warning::PostgreSQL $prev is not available from PGDG: pg_upgrade runs within one major"
 
       # PostgreSQL 17 has no extension_control_path: the tests install sift into the server's own directories
       - name: Install into the server (PostgreSQL 17)
@@ -189,7 +224,7 @@ jobs:
       # last cache and builds only what it lacks. The cache is saved after a failed run as well: the builds are the cost, not the tests
       - name: Key of the older releases
         id: oldlib
-        if: ${{ matrix.pg != 17 && !matrix.git }}
+        if: ${{ matrix.pg != 17 && !matrix.git && !matrix.cassert }}
         run: |
           prefix="old-lib-$RUNNER_OS-$RUNNER_ARCH-pg${{ matrix.pg }}-gcc$(gcc -dumpfullversion)-shard${{ matrix.shard }}-"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
@@ -197,7 +232,7 @@ jobs:
 
       - name: Cache the older releases
         id: oldlib-cache
-        if: ${{ matrix.pg != 17 && !matrix.git }}
+        if: ${{ matrix.pg != 17 && !matrix.git && !matrix.cassert }}
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/sift/old-lib/*/root
@@ -213,13 +248,16 @@ jobs:
       # reports in the server logs of every suite, and the cluster checks recorded at each shutdown
       # includes the regression tests against the release library (SIFT_TESTING off, stage release-library-regress), with its own leak gate
       # the jobs: the ones scripts/areas.tsv picks for the diff (all of them in the nightly entries), and this runner's share of them (shard k of n)
+      # the checks of the harness (lint's scripts, the selftests) run in `lint`, once for every run, not in a shard
       - name: ${{ matrix.tier == 'full' && 'Full test tier (make check-full)' || 'Quick test tier (make check, with the leak gate)' }}
         run: make ${{ matrix.tier == 'full' && 'check-full' || 'check' }}
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
           SIFT_CI_AFFECTED: ${{ matrix.jobs }}
           SIFT_CI_JOBS: ${{ matrix.only }}
-          SIFT_CI_NO_HARNESS: ${{ matrix.tier == 'fast' && '1' || '' }}
+          SIFT_CI_NO_HARNESS: 1
+          SIFT_CI_STATS: ${{ matrix.tier == 'quick' && '1' || '' }}
+          SIFT_CI_ASSERT: ${{ matrix.cassert && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
 
@@ -234,7 +272,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
+          name: pg_sift-test-logs-pg${{ matrix.pg }}${{ matrix.arm && '-arm64' || '' }}${{ matrix.cassert && '-cassert' || '' }}-${{ matrix.tier }}-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/lane*/**/tap/**/*.log

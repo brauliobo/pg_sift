@@ -123,7 +123,7 @@ def lit(col):
 def topn_key_types():
     """the type names sift_topn_key_ok (src/agg/topn.c) lists, in the order of the source"""
     src = open(f'{REPO}/src/agg/topn.c').read()
-    body = src[src.index('sift_topn_key_ok'):]
+    body = src[src.index('\nsift_topn_key_ok('):]   # the definition, not the first caller
     body = body[:body.index('\n}\n')]
     return list(dict.fromkeys(m.lower() for m in re.findall(r'case ([A-Z0-9]+)OID:', body)))
 

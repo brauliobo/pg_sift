@@ -103,7 +103,7 @@ SELECT n, mode, same FROM p_compare();
  14 | parallel | same
  15 | parallel | same
  16 | parallel | same
- 17 | serial   | same
+ 17 | parallel | same
  18 | parallel | same
  19 | parallel | same
  20 | parallel | same

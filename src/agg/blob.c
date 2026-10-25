@@ -93,6 +93,13 @@ br_get(const char **p, Size n)
 	return r;
 }
 
+/* a sum or average of numerics added as 38-digit integers until one does not fit (numeric_sum_add) */
+static bool
+numeric_sum_agg(const SiftAggAgg *a)
+{
+	return (a->kind == SAA_X_SUM || a->kind == SAA_X_AVG) && a->restype == NUMERICOID;
+}
+
 /* the aggregate arrays a state holds per group, besides the count: what acc_alloc made */
 static void
 bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
@@ -111,6 +118,55 @@ bw_acc(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
 		for (uint32 r = 0; r < ng; r++)
 			memcpy(tmp + (Size) r * col[c].esize, (const char *) col[c].src + (Size) gl[r] * col[c].esize, col[c].esize);
 		bw_put(b, tmp, (Size) ng * col[c].esize);
+	}
+	pfree(tmp);
+}
+
+/* the numeric sums that left the integer form (nf): their numeric values, as (position, length, bytes) after a count; the sums of the others are in the columns */
+static void
+bw_numeric_sums(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
+{
+	uint32		hd[2] = {0, 0};
+
+	for (uint32 r = 0; r < ng; r++)
+		hd[0] += acc->nf[gl[r]] != 0 && acc->n[gl[r]] > 0;
+	bw_put(b, hd, sizeof(hd));
+	for (uint32 r = 0; r < ng; r++)
+	{
+		struct
+		{
+			uint32		pos;
+			uint32		len;
+		}			rec;
+		Pointer		v;
+
+		if (!acc->nf[gl[r]] || acc->n[gl[r]] == 0)
+			continue;
+		v = DatumGetPointer(acc->v[gl[r]]);
+		rec.pos = r;
+		rec.len = VARSIZE_ANY(v);
+		bw_put(b, &rec, sizeof(rec));
+		bw_put(b, v, rec.len);
+	}
+}
+
+/* the float sums each lane kept (lane_keep): a bit mask of the lanes, then the sums of the groups of each */
+static void
+bw_lanes(StringInfo b, const AggAcc *acc, const uint32 *gl, uint32 ng)
+{
+	uint64		mask = 0;
+	double	   *tmp = palloc(Max(ng, 1) * sizeof(double));
+
+	for (int l = 0; l < SIFT_AGG_LANES; l++)
+		mask |= (uint64) (acc->lv[l] != NULL) << l;
+	bw_put(b, &mask, sizeof(mask));
+	for (int l = 0; l < SIFT_AGG_LANES; l++)
+	{
+		if (acc->lv[l] == NULL)
+			continue;
+		for (uint32 r = 0; r < ng; r++)
+			tmp[r] = acc->lv[l][gl[r]];
+		bw_put(b, tmp, (Size) ng * sizeof(double));
 	}
 	pfree(tmp);
 }
@@ -228,6 +284,40 @@ blob_key_set(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
 	bw_put(b, pv, (Size) np * sizeof(uint32));
 	pfree(pg);
 	pfree(pv);
+}
+
+/* the table of the values a combo slot gives ids to for aggregate ai (combo.c slot_ot) */
+static OutTable *
+mset_table(AggExec *ex, int ai)
+{
+	const SiftAggAgg *a = &ex->spec->agg[ai];
+
+	return &ex->aot[ex->spec->combo[a->combo].slot[a->slot].agg];
+}
+
+/* the pairs (group of the blob, id) of a count(DISTINCT) of a column of a joined table, with the values of the ids: the leader gives them its own */
+static void
+blob_mset(AggExec *ex, int ai, const uint32 *cidx, StringInfo b)
+{
+	OutTable   *t = mset_table(ex, ai);
+	uint32		np,
+			   *pg,
+			   *pv,
+			   *old,
+				nused,
+				hd[2];
+
+	dset_pairs(ex, ai, cidx, &pg, &pv, &np);
+	old = renumber(pv, np, t->n, &nused);
+	hd[0] = np;
+	hd[1] = 0;
+	bw_put(b, hd, sizeof(hd));
+	bw_put(b, pg, (Size) np * sizeof(uint32));
+	bw_values(b, t, old, nused);
+	bw_put(b, pv, (Size) np * sizeof(uint32));
+	pfree(pg);
+	pfree(pv);
+	pfree(old);
 }
 
 /* count(DISTINCT x), and the sum and average over distinct numbers: their partial state is a set of (group, value) pairs, not an accumulator */
@@ -529,10 +619,14 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 	for (int i = 0; i < s->naggs; i++)
 	{
 		bw_acc(b, &ex->acc[i], gl, ng);
+		if (numeric_sum_agg(&s->agg[i]))
+			bw_numeric_sums(b, &ex->acc[i], gl, ng);
 		if (set_agg(&s->agg[i]))
 			blob_set(ex, i, gl, ng, cidx, pairs ? &pairs[i] : NULL, b);
 		if (s->agg[i].kind == SAA_O_COUNT_KEY)
 			blob_key_set(ex, i, cidx, b);
+		if (s->agg[i].kind == SAA_M_DISTINCT)
+			blob_mset(ex, i, cidx, b);
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			blob_osa(ex, i, cidx, n, b);
 		if (s->agg[i].kind == SAA_GEN)
@@ -541,6 +635,9 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 	bw_put(b, ex->amax, Max(s->naggs, 1) * sizeof(double));
 	for (int k = 0; k < s->narms; k++)
 		bw_put(b, ex->arm[k].amax, Max(s->arm[k].ninner, 1) * sizeof(double));
+	for (int i = 0; i < s->naggs; i++)
+		if (ex->acc[i].lv)
+			bw_lanes(b, &ex->acc[i], gl, ng);
 }
 
 void
@@ -730,6 +827,7 @@ typedef struct BlobAgg
 	const uint32 *wg;
 	const uint64 *wrows;
 	uint32	   *xv;				/* dictionary values: the ids in the table */
+	const struct varlena **nv;			/* numeric sums out of the integer form: the value of each group that has one */
 	uint32		nrec;			/* ordered sets: the runs of the values */
 	const OsaRec *rec;
 	const char *gcur;			/* generic aggregates: the next partial state */
@@ -783,6 +881,7 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 			case SAA_COUNT_ROWS:
 			case SAA_O_COUNT_STAR:
 			case SAA_O_COUNT_ROWS:
+			case SAA_M_COUNT:
 				acc->n[t] += ba->a.n[r];
 				break;
 			case SAA_O_SUM_I64:
@@ -800,11 +899,28 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				acc->n[t] += ba->a.n[r];
 				acc->i[t] += ba->a.i[r];
 				break;
+			case SAA_X_SUM:
+			case SAA_X_AVG:
+				if (a->restype == NUMERICOID)
+				{
+					DNum		m = {.m = ba->a.w[r], .scale = (int16) ba->a.i[r], .ok = !ba->a.nf[r]};
+					MemoryContext old = MemoryContextSwitchTo(g->tcxt);
+
+					if (ba->a.n[r] > 0)
+						numeric_sum_add(acc, t, m.ok ? (Datum) 0 : PointerGetDatum(ba->nv[r]), &m);
+					MemoryContextSwitchTo(old);
+					acc->n[t] += ba->a.n[r];
+					break;
+				}
+				sift_fallthrough;
 			case SAA_SUM_F64:
 			case SAA_AVG_F64:
 				acc->n[t] += ba->a.n[r];
 				acc->d[t] += ba->a.d[r];
 				acc->nf[t] |= ba->a.nf[r];
+				break;
+			case SAA_X_COUNT:
+				acc->n[t] += ba->a.n[r];
 				break;
 			case SAA_MIN:
 			case SAA_MAX:
@@ -815,11 +931,12 @@ merge_agg(AggExec *g, int ai, BlobAgg *ba, const uint32 *gids, uint32 r0, uint32
 				if (a->distinct)
 					break;
 				acc->n[t] += ba->a.n[r];
-				acc->w[t] += ba->a.w[r];
+				agg_sum_merge(acc, t, ba->a.w[r], ba->a.i[r]);
 				acc->nf[t] |= ba->a.nf[r];
 				break;
 			case SAA_COUNT_DISTINCT:
 			case SAA_O_COUNT_KEY:
+			case SAA_M_DISTINCT:
 			case SAA_GROUPING:
 				break;
 			case SAA_PCT_CONT:
@@ -850,6 +967,18 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 		ba->a.nf = (uint8 *) br_get(p, ng);
 	if (acc->w)
 		ba->a.w = (sift_i128 *) br_get(p, (Size) ng * sizeof(sift_i128));
+	if (numeric_sum_agg(&g->spec->agg[ai]))
+	{
+		const uint32 *hd = br_get(p, 8);
+
+		ba->nv = palloc0(Max(ng, 1) * sizeof(*ba->nv));
+		for (uint32 i = 0; i < hd[0]; i++)
+		{
+			const uint32 *rec = br_get(p, 8);
+
+			ba->nv[rec[0]] = br_get(p, rec[1]);
+		}
+	}
 	if (set_agg(&g->spec->agg[ai]))
 	{
 		const SiftAggAgg *a = &g->spec->agg[ai];
@@ -886,6 +1015,14 @@ merge_read_agg(AggExec *g, int ai, const char **p, uint32 ng, BlobAgg *ba)
 			for (uint32 i = 0; i < vh[0]; i++)
 				ba->xv[i + 1] = idmap_id(&g->amap[ai], nv[i]);
 		}
+	}
+	if (g->spec->agg[ai].kind == SAA_M_DISTINCT)
+	{
+		ba->npairs = ((const uint32 *) br_get(p, 8))[0];
+		ba->pg = br_get(p, (Size) ba->npairs * 4);
+		ba->xv = palloc0((((const uint32 *) *p)[0] + 1) * sizeof(uint32));
+		merge_values(g, mset_table(g, ai), p, ba->xv);
+		ba->pv = br_get(p, (Size) ba->npairs * 4);
 	}
 	if (g->spec->agg[ai].kind == SAA_O_COUNT_KEY)
 	{
@@ -976,13 +1113,29 @@ merge_set(AggExec *g, int ai, const BlobAgg *ba, const uint32 *gids)
 						id = ba->xv[ba->pv[i]];
 			sift_i128	v = g->amap[ai].val[id - 1];
 
+			if (i + DSET_AHEAD < ba->npairs)
+				dset_prefetch(&g->dset[ai], gids[ba->pg[i + DSET_AHEAD]], ba->xv[ba->pv[i + DSET_AHEAD]]);
 			if (!dset_add(g, &g->dset[ai], t, id))
 				continue;
 			if (v == SIFT_NX_NAN)
 				acc->nf[t] = 1;
 			else
-				acc->w[t] += v;
+				agg_sum_add(acc, t, v);
 			acc->n[t]++;
+		}
+		return;
+	}
+	if (g->spec->agg[ai].kind == SAA_M_DISTINCT)
+	{
+		/* a value the leader has not counted in the group is counted */
+		for (uint32 i = 0; i < ba->npairs; i++)
+		{
+			uint32		t = gids[ba->pg[i]];
+
+			if (i + DSET_AHEAD < ba->npairs)
+				dset_prefetch(&g->dset[ai], gids[ba->pg[i + DSET_AHEAD]], ba->xv[ba->pv[i + DSET_AHEAD]]);
+			if (dset_add(g, &g->dset[ai], t, ba->xv[ba->pv[i]]))
+				g->acc[ai].n[t]++;
 		}
 		return;
 	}
@@ -1031,6 +1184,7 @@ blob_merge(AggExec *g, const char *p)
 	const uint32 *lid[SIFT_AGG_MAX_KEYS];
 	const int64 *seen;
 	BlobAgg    *ba = palloc0(Max(s->naggs, 1) * sizeof(BlobAgg));
+	const double **lvec = palloc0(Max(s->naggs, 1) * SIFT_AGG_LANES * sizeof(double *));
 	bool		grow = false;
 
 	SIFT_INVARIANT(h->magic == BLOB_MAGIC, "sift: bad partial aggregate");
@@ -1055,6 +1209,15 @@ blob_merge(AggExec *g, const char *p)
 		for (int i = 0; i < s->arm[k].ninner; i++)
 			g->arm[k].amax[i] = Max(g->arm[k].amax[i], am[i]);
 	}
+	for (int i = 0; i < s->naggs; i++)
+		if (g->acc[i].lv)
+		{
+			uint64		mask = *(const uint64 *) br_get(&p, sizeof(uint64));
+
+			for (int l = 0; l < SIFT_AGG_LANES; l++)
+				if (mask >> l & 1)
+					lvec[i * SIFT_AGG_LANES + l] = br_get(&p, (Size) ng * sizeof(double));
+		}
 	if (!g->hash)
 		for (int j = 0; j < s->nkeys; j++)
 			grow |= key_used(&g->ks[j]) > g->ks[j].cap;
@@ -1087,10 +1250,24 @@ blob_merge(AggExec *g, const char *p)
 			merge_agg(g, i, &ba[i], gids, r0, n);
 	}
 	for (int i = 0; i < s->naggs; i++)
-		if (set_agg(&s->agg[i]) || s->agg[i].kind == SAA_O_COUNT_KEY)
+		if (set_agg(&s->agg[i]) || s->agg[i].kind == SAA_O_COUNT_KEY || s->agg[i].kind == SAA_M_DISTINCT)
 			merge_set(g, i, &ba[i], gids);
 		else if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			merge_osa(g, i, &ba[i], gids);
+	/* the lanes a process scanned are its own: their sums are put in place, the leader adds them in lane order (lanes_sum) */
+	for (int i = 0; i < s->naggs; i++)
+		for (int l = 0; g->acc[i].lv && l < SIFT_AGG_LANES; l++)
+		{
+			const double *v = lvec[i * SIFT_AGG_LANES + l];
+
+			if (v == NULL)
+				continue;
+			if (g->acc[i].lv[l] == NULL)
+				g->acc[i].lv[l] = MemoryContextAllocZero(g->tcxt, g->gcap * sizeof(double));
+			for (uint32 r = 0; r < ng; r++)
+				g->acc[i].lv[l][gids[r]] = v[r];
+		}
 	pfree(gids);
 	pfree(ba);
+	pfree(lvec);
 }

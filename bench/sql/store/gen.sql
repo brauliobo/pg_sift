@@ -1,4 +1,4 @@
--- The online-store dataset of the analytics benchmark (bench/steps/store.sh): `orders_src`, one row per order, in the order of id.
+-- The orders dataset of the analytics benchmark (bench/steps/store.sh): `orders_src`, one row per order, in the order of id.
 --
 --   psql -v n=1000000 -f gen.sql
 --

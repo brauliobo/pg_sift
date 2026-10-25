@@ -20,6 +20,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/point.h"
 #include "core/popcount.h"
 #include "col/gpu.h"
@@ -155,6 +156,10 @@ sift_col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	SIFT_COL_JITTER();
 	src->visibility = (SiftColVisibility) {vis_sb_mask, vis_filter_page, vis_counters, &src->vis};
 	src->heap_sbs = nblocks == 0 ? 0 : sift_block_sb(nblocks - 1) + 1;
+	/* the units of a key-cut segment are numbered 0.. in key order, and a parallel scan hands out the numbers up to this one */
+	for (int i = 0; i < src->nseg; i++)
+		if (sift_cseg_keyed(&src->seg[i].seg->entry))
+			src->heap_sbs = Max(src->heap_sbs, src->seg[i].seg->sbdir[src->seg[i].seg->nsb - 1].sb + 1);
 	src->cnt.segments = src->nseg;
 	MemoryContextSwitchTo(old);
 	return src;
@@ -192,6 +197,15 @@ const SiftColDef *
 sift_col_def(const SiftColSource *src, int col)
 {
 	return &src->schema->cols[col];
+}
+
+bool
+sift_col_sb_heap(const SiftColSource *src)
+{
+	for (int i = 0; i < src->nseg; i++)
+		if (sift_cseg_keyed(&src->seg[i].seg->entry))
+			return false;
+	return true;
 }
 
 uint32
@@ -356,43 +370,66 @@ window_empty(const uint64 *keep, const PruneRange *pr)
 	return true;
 }
 
-/* The keys a test can match, when they are few: the keys of the point directory to probe */
-static bool
-point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
+/* The keys a test can match, when they are few (palloc'd, *nkeys of them): the keys of the point directory to probe. NULL: the units answer */
+static int64 *
+point_keys(const SiftCTest *t, int *nkeys)
 {
+	int64	   *keys;
 	int			n = 0;
 
 	switch (t->kind)
 	{
 		case SIFT_CT_SET:
 			if (t->nset == 0 || t->nset > SIFT_CPOINT_MAX_KEYS)
-				return false;
+				return NULL;
+			keys = palloc(t->nset * sizeof(int64));
 			memcpy(keys, t->set, t->nset * sizeof(int64));
 			n = t->nset;
 			break;
 		case SIFT_CT_RANGE:
-			if (t->lo > t->hi || (uint64) t->hi - (uint64) t->lo >= SIFT_CPOINT_MAX_KEYS)
-				return false;
+			if (t->lo > t->hi || (uint64) t->hi - (uint64) t->lo >= SIFT_CPOINT_MAX_RANGE)
+				return NULL;
 			n = (int) ((uint64) t->hi - (uint64) t->lo) + 1;
+			keys = palloc(n * sizeof(int64));
 			for (int i = 0; i < n; i++)
 				keys[i] = (int64) ((uint64) t->lo + i);
 			break;
 		case SIFT_CT_LUT:
-			for (int64 k = Max(t->lo, 0); k <= t->hi && k < t->lutbits; k++)
-				if (sift_col_bit_test(t->lut, (uint32) k))
+			{
+				/* by words: a table of the codes of a large dictionary costs its words, not a test of every code */
+				uint32		w0,
+							w1;
+
+				if (t->hi < 0 || t->lo >= t->lutbits)
+					return NULL;
+				w0 = (uint32) Max(t->lo, 0) / 64;
+				w1 = (uint32) Min(t->hi, t->lutbits - 1) / 64 + 1;
+				for (uint32 w = w0; w < w1; w++)
+					n += pg_popcount64(t->lut[w]);
+				if (n == 0 || n > SIFT_CPOINT_MAX_KEYS)
+					return NULL;
+				keys = palloc(n * sizeof(int64));
+				n = 0;
+				for (uint32 w = w0; w < w1; w++)
+					for (uint64 bits = t->lut[w]; bits; bits &= bits - 1)
+					{
+						int64		k = (int64) w * 64 + pg_rightmost_one_pos64(bits);
+
+						if (k >= Max(t->lo, 0) && k <= t->hi)
+							keys[n++] = k;
+					}
+				if (n == 0)
 				{
-					if (n == SIFT_CPOINT_MAX_KEYS)
-						return false;
-					keys[n++] = k;
+					pfree(keys);
+					return NULL;
 				}
-			if (n == 0)
-				return false;
+			}
 			break;
 		default:
-			return false;
+			return NULL;
 	}
 	*nkeys = n;
-	return true;
+	return keys;
 }
 
 /*
@@ -404,6 +441,8 @@ point_keys(const SiftCTest *t, int64 *keys, int *nkeys)
  * source, and those units are done. A unit with a dead row is read instead, as if no directory were there (the address of a dead row may be used again), and
  * so is every unit when the caller wants the values (an index-only scan): the directory only cuts the units, whose rows the predicate then selects.
  */
+#define SIFT_CTID_FILTER 64
+
 static bool
 prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
@@ -417,47 +456,83 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 	uint64	   *has,
 			   *done;
 
-	if (!sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n))
-		return false;
+	if (c->pc_tids != NULL && c->pc_gen == seg->entry.gen && c->pc_col == col && c->pc_nkeys == nkeys && memcmp(c->pc_keys, keys, nkeys * sizeof(int64)) == 0)
+	{
+		tids = c->pc_tids;
+		n = c->pc_n;
+	}
+	else
+	{
+		/* the begins of a scan ask the same keys again (the zones of the top-N bar change between them) and the list is decoded entry by entry */
+		MemoryContext old = MemoryContextSwitchTo(src->mcxt);
+		bool		found = sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n);
+
+		if (found)
+		{
+			if (c->pc_tids)
+				pfree(c->pc_tids);
+			if (c->pc_keys)
+				pfree(c->pc_keys);
+			c->pc_keys = palloc(Max(nkeys, 1) * sizeof(int64));
+			memcpy(c->pc_keys, keys, nkeys * sizeof(int64));
+			c->pc_gen = seg->entry.gen;
+			c->pc_col = col;
+			c->pc_nkeys = nkeys;
+			c->pc_tids = tids ? tids : palloc(sizeof(SiftKey));
+			c->pc_n = n;
+		}
+		MemoryContextSwitchTo(old);
+		if (!found)
+			return false;
+	}
 	has = palloc0(2 * nw * sizeof(uint64));
 	done = has + nw;
-	for (uint32 k = 0; k < n; k++)
+	/* the addresses ascend, so a unit repeats, and the run of a segment follows the runs of the segments before it unless their blocks interleave */
+	if (n > 0 && src->nptid > 0 && tids[0] < src->ptid[src->nptid - 1])
+		src->ptid_unsorted = true;
+	for (uint32 k = 0, e; k < n; k = e)
 	{
-		uint32		u = sift_cseg_find_unit(seg, (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT);
+		uint32		sb = (uint32) (tids[k] >> 16) >> SIFT_SB_SHIFT,
+					u = last != PG_UINT32_MAX && sb == seg->sbdir[last].sb ? last : sift_cseg_find_unit(seg, sb);
 
+		for (e = k + 1; e < n && ((uint32) (tids[e] >> 16) >> SIFT_SB_SHIFT) == sb; e++)
+			;
 		sift_col_bit_set(has, u);
-		if (u != last)
-			clean = emit && sift_col_bit_test(keep, u) && !sift_cseg_dirty(seg, u);
 		last = u;
+		/* past SIFT_CTID_FILTER addresses, the heap fetches cost more than reading the unit and testing the other predicates on its rows */
+		clean = emit && sift_col_bit_test(keep, u) && !sift_cseg_dirty(seg, u) && !(c->others && e - k > SIFT_CTID_FILTER);
 		if (!clean)
 			continue;
-		if (src->nptid == src->capptid)
-			src->ptid = src->ptid ? repalloc_huge(src->ptid, (src->capptid *= 2) * sizeof(SiftKey)) : palloc((src->capptid = 64) * sizeof(SiftKey));
-		src->ptid[src->nptid++] = tids[k];
+		if (src->nptid + (e - k) > src->capptid)
+		{
+			src->capptid = Max(64, Max(src->capptid * 2, src->nptid + (e - k)));
+			src->ptid = src->ptid ? repalloc_huge(src->ptid, src->capptid * sizeof(SiftKey)) : palloc(src->capptid * sizeof(SiftKey));
+		}
+		memcpy(src->ptid + src->nptid, tids + k, (e - k) * sizeof(SiftKey));
+		src->nptid += e - k;
 		sift_col_bit_set(done, u);
 	}
 	for (uint32 w = 0; w < nw; w++)
 		keep[w] &= has[w] & ~done[w];
 	pfree(has);
-	if (tids)
-		pfree(tids);
+	if (src->flags & SIFT_COLO_POINT_ROWS)
+	{
+		c->ptidv = tids;
+		c->nptidv = n;
+	}
 	c->ptids = true;
 	c->ppred = i;
 	return true;
 }
 
 static bool
-prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
-	int64		keys[SIFT_CPOINT_MAX_KEYS];
-	int			nkeys;
 	uint32	   *rows,
 				nrows,
 				u = 0;
 	uint64	   *has;
 
-	if (c->prow != NULL || c->ptids || !point_keys(t, keys, &nkeys))
-		return false;
 	if (sift_cseg_point_is_tid(seg, col))
 		return prune_point_tids(src, c, i, col, keys, nkeys, keep);
 	if (!sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
@@ -475,9 +550,34 @@ prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int co
 	pfree(has);
 	c->prow = rows;
 	c->nprow = nrows;
-	c->pat = 0;
 	c->ppred = i;
 	return true;
+}
+
+static bool
+prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
+{
+	int			nkeys;
+	int64	   *keys;
+	bool		ok;
+
+	if (c->prow != NULL || c->ptids || (keys = point_keys(t, &nkeys)) == NULL)
+		return false;
+	/*
+	 * A list that names a good share of the rows is no lookup: the zones and the units answer it as well. So does one whose keys have many rows
+	 * on average: reading them costs about what scanning the units that hold them does (a row of a list is read at some ten times a row of a unit).
+	 * A scan that hands the addresses to the heap has no units to scan, and the directory is its answer.
+	 */
+	if (nkeys > SIFT_CPOINT_MIN_KEYS && (uint64) nkeys > ((uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / 16)
+		ok = false;
+	else if ((src->flags & SIFT_COLO_POINT_TIDS) == 0 && sift_cseg_point_nkeys(seg, col) > 0 &&
+			 (double) nkeys * sift_cseg_point_count(seg, col) / sift_cseg_point_nkeys(seg, col) >
+			 Max((double) SIFT_CPOINT_DENSE_ROWS, ((double) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows) / SIFT_CPOINT_DENSE_SHARE))
+		ok = false;
+	else
+		ok = prune_keys(src, seg, c, i, col, keys, nkeys, keep);
+	pfree(keys);
+	return ok;
 }
 
 static void
@@ -487,29 +587,40 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
 
-	for (int i = 0; i < npreds; i++)
-	{
-		const SiftColDef *def = &seg->schema->cols[preds[i].col];
-		SiftCTest	t;
+	if (pr->top != NULL)
+		pr->top->others = npreds > 1;
 
-		if (window_empty(keep, pr))
-			break;
-		if (sift_colw_is_wide_int(def))
+	/*
+	 * The predicates of leaves without a point directory first (their zones and summaries), those of leaves with one after them: a directory of heap
+	 * addresses hands the addresses of the units the other predicates keep to the source and marks those units done, so a key that is in every unit (a
+	 * group, a tenant) with a range on another column (a date) costs the heap the rows of the range, not every row of the key.
+	 */
+	for (int pass = 0; pass < 2; pass++)
+		for (int i = 0; i < npreds; i++)
 		{
-			sift_colw_prune(seg, &preds[i], keep);
-			continue;
+			const SiftColDef *def = &seg->schema->cols[preds[i].col];
+			SiftCTest	t;
+
+			if ((pr->top != NULL && sift_cseg_point_count(seg, preds[i].col) > 0) != (pass == 1))
+				continue;
+			if (window_empty(keep, pr))
+				break;
+			if (sift_colw_is_wide_int(def))
+			{
+				sift_colw_prune(seg, &preds[i], keep);
+				continue;
+			}
+			if (def->store == SIFT_COLS_STR)
+				seg_test(src, seg, def, &preds[i], &t);
+			else
+				make_test(src, def, NULL, &preds[i], &t);
+			/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
+			if (pass == 0 || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
+				sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+			range[i] = t.kind == SIFT_CT_RANGE;
+			lo[i] = t.lo;
+			hi[i] = t.hi;
 		}
-		if (def->store == SIFT_COLS_STR)
-			seg_test(src, seg, def, &preds[i], &t);
-		else
-			make_test(src, def, NULL, &preds[i], &t);
-		/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
-		if (pr->top == NULL || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
-			sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
-		range[i] = t.kind == SIFT_CT_RANGE;
-		lo[i] = t.lo;
-		hi[i] = t.hi;
-	}
 	/* the ranges on one leaf together: BETWEEN is two tests, each too wide for a small set to answer alone */
 	for (int i = 0; i < npreds; i++)
 	{
@@ -602,11 +713,16 @@ sig_same(const SiftColSource *src, const SiftColPred *p, int n)
 static bool
 keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones)
 {
-	if (nzones > 0 || (src->flags & SIFT_COLO_POINTS))
+	if (nzones > 0)
 		return false;
 	for (int i = 0; i < npreds; i++)
+	{
 		if (sift_colw_is_wide_int(&src->schema->cols[preds[i].col]))
 			return false;
+		/* the access method asks the directory at every begin; a source that narrows its units asks once, for the segment (prune_points_once) */
+		if ((src->flags & SIFT_COLO_POINTS) && !(src->flags & SIFT_COLO_POINT_ROWS))
+			return false;
+	}
 	if (src->sig_gen > 0 && sig_same(src, preds, npreds))
 		return true;
 	if (src->sigcx == NULL)
@@ -636,6 +752,32 @@ keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones
 	return true;
 }
 
+/*
+ * The point directory answers once for the segment, whatever the units of a begin: the rows it lists stay with the cursor while the cache holds, in the
+ * cache's memory, and the units no row of them is in are cleared from the kept ones.
+ */
+static void
+prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const SiftColPred *preds, int npreds)
+{
+	MemoryContext old = MemoryContextSwitchTo(src->sigcx);
+
+	for (int i = 0; i < npreds; i++)
+	{
+		const SiftColDef *def = &seg->schema->cols[preds[i].col];
+		SiftCTest	t;
+
+		if (sift_cseg_point_count(seg, preds[i].col) == 0 || sift_colw_is_wide_int(def))
+			continue;
+		if (def->store == SIFT_COLS_STR)
+			seg_test(src, seg, def, &preds[i], &t);
+		else
+			make_test(src, def, NULL, &preds[i], &t);
+		if (prune_point(src, seg, c, i, preds[i].col, &t, c->ckeep))
+			break;
+	}
+	MemoryContextSwitchTo(old);
+}
+
 static void
 prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached)
 {
@@ -645,11 +787,16 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	(src->flags & SIFT_COLO_POINTS) ? c : NULL};
 	PruneRange	zr = pr;
 
-	c->prow = NULL;
-	c->ptids = false;
 	c->nosuper_to = 0;
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
+	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
+	{
+		c->prow = NULL;
+		c->ptids = false;
+		c->ptidv = NULL;
+		c->nptidv = 0;
+	}
 	if (cached)
 	{
 		if (c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
@@ -663,6 +810,8 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 			c->cgen = src->sig_gen;
 			c->cseg = seg;
 			c->cseg_gen = seg->entry.gen;
+			if (src->flags & SIFT_COLO_POINT_ROWS)
+				prune_points_once(src, seg, c, preds, npreds);
 		}
 		/* the words of units the range holds that no begin has tested yet, each run of them at once */
 		for (uint32 w = pr.ulo / 64, w1 = (pr.uhi + 63) / 64, e; w < w1; w = e)
@@ -696,13 +845,51 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->setcut = pr.setcut;
 }
 
-static int
-ptid_cmp(const void *a, const void *b)
+/* The lists of the segments are ascending runs: merging the runs takes a few passes over the addresses where a sort takes n log n comparisons */
+static void
+ptid_merge_runs(SiftKey *a, uint32 n)
 {
-	SiftKey		x = *(const SiftKey *) a,
-				y = *(const SiftKey *) b;
+	SiftKey    *buf = palloc(n * sizeof(SiftKey)),
+			   *from = a,
+			   *to = buf,
+			   *tmp;
+	uint32	   *edge = palloc((n + 1) * sizeof(uint32));
+	uint32		runs = 0;
 
-	return (x > y) - (x < y);
+	for (uint32 k = 0; k < n; k++)
+		if (k == 0 || a[k] < a[k - 1])
+			edge[runs++] = k;
+	edge[runs] = n;
+	while (runs > 1)
+	{
+		uint32		out = 0;
+
+		for (uint32 r = 0; r < runs; r += 2)
+		{
+			uint32		i = edge[r],
+						mid = edge[r + 1],
+						j = mid,
+						end = r + 1 < runs ? edge[r + 2] : mid,
+						o = i;
+
+			while (i < mid && j < end)
+				to[o++] = from[i] <= from[j] ? from[i++] : from[j++];
+			while (i < mid)
+				to[o++] = from[i++];
+			while (j < end)
+				to[o++] = from[j++];
+			edge[out++] = edge[r];
+		}
+		edge[out] = n;
+		runs = out;
+		tmp = from;
+		from = to;
+		to = tmp;
+	}
+	if (from != a)
+		memcpy(a, from, n * sizeof(SiftKey));
+	pfree(buf);
+	pfree(edge);
 }
 
 const SiftKey *
@@ -726,10 +913,11 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	cached = keep_cached(src, preds, npreds, nzones);
 	src->ptid = NULL;
 	src->nptid = src->capptid = 0;
+	src->ptid_unsorted = false;
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
-	if (src->nseg > 1 && src->nptid > 1)
-		qsort(src->ptid, src->nptid, sizeof(SiftKey), ptid_cmp);
+	if (src->ptid_unsorted)
+		ptid_merge_runs(src->ptid, src->nptid);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
 		load_wbuf(src);
 	src->order = palloc(Max(src->nmem, 1) * sizeof(ColMem *));
@@ -898,13 +1086,27 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		{
 			const SiftColSBRef *r = &best->seg->sbdir[best->cur];
 
-			while (best->pat < best->nprow && best->prow[best->pat] < r->rank_base)
-				best->pat++;
-			cu->prow = best->prow + best->pat;
-			while (best->pat < best->nprow && best->prow[best->pat] < r->rank_base + r->nrows)
-				best->pat++;
-			cu->nprow = best->pat - (uint32) (cu->prow - best->prow);
+			uint32		lo = 0,
+						hi = best->nprow;
+
+			SIFT_BISECT(uint32, m, lo, hi, best->prow[m] < r->rank_base);
+			cu->prow = best->prow + lo;
+			for (hi = lo; hi < best->nprow && best->prow[hi] < r->rank_base + r->nrows;)
+				hi++;
+			cu->nprow = hi - lo;
 			cu->ppred = best->ppred;
+		}
+		else if (best->ptidv != NULL)
+		{
+			/* the units of a segment of heap addresses are its superblocks, so the addresses of a unit are those of its superblock */
+			uint32		lo = 0,
+						hi = best->nptidv;
+
+			SIFT_BISECT(uint32, m, lo, hi, (uint32) (best->ptidv[m] >> 16 >> SIFT_SB_SHIFT) < cu->sb);
+			cu->ptid = best->ptidv + lo;
+			for (hi = lo; hi < best->nptidv && (uint32) (best->ptidv[hi] >> 16 >> SIFT_SB_SHIFT) == cu->sb;)
+				hi++;
+			cu->nptid = hi - lo;
 		}
 		best->cur++;
 	}
@@ -920,6 +1122,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = mem;
 	unit->nsu = cu->nsu;
+	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -945,6 +1148,7 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = true;
 	unit->nsu = 0;
+	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
 }
@@ -1019,6 +1223,41 @@ sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel)
 }
 
 void
+sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel)
+{
+	ColUnit    *cu = unit->priv;
+	uint64	   *keep;
+
+	if (cu->prow == NULL && cu->ptid == NULL)
+		return;
+	keep = MemoryContextAllocZero(cu->src->arena, sel->nwords * sizeof(uint64));
+	if (cu->prow != NULL)
+	{
+		uint64		base = cu->seg->sbdir[cu->u].rank_base;
+
+		for (uint32 k = 0; k < cu->nprow; k++)
+		{
+			uint32		r = (uint32) (cu->prow[k] - base);
+
+			if (r < sel->n && sift_col_bit_test(sel->bits, r))
+				sift_col_bit_set(keep, r);
+		}
+	}
+	else
+	{
+		uint32	   *rows = palloc(Max(cu->nptid, 1) * sizeof(uint32));
+		uint32		n = sift_cunit_find_rows(&cu->v, cu->sb, cu->ptid, cu->nptid, rows);
+
+		for (uint32 k = 0; k < n; k++)
+			if (rows[k] < sel->n && sift_col_bit_test(sel->bits, rows[k]))
+				sift_col_bit_set(keep, rows[k]);
+	}
+	memcpy(sel->bits, keep, sel->nwords * sizeof(uint64));
+	cu->src->cnt.point_units++;
+	cu->src->cnt.point_rows += sift_col_sel_count(sel);
+}
+
+void
 sift_col_sel_all(const SiftColUnit *unit, SiftColSel *sel)
 {
 	ColUnit    *cu = unit->priv;
@@ -1026,6 +1265,8 @@ sift_col_sel_all(const SiftColUnit *unit, SiftColSel *sel)
 	sift_col_sel_alloc(unit->src, cu->v.nrows, sel);
 	if (unit_clean(cu))
 		set_ones(sel->bits, sel->n);
+	else if (cu->live)
+		memcpy(sel->bits, cu->live, sel->nwords * sizeof(uint64));
 	else
 		sift_cseg_live(cu->seg, cu->u, sel->bits);
 	sift_col_sel_count(sel);
@@ -1041,4 +1282,219 @@ uint32
 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx)
 {
 	return sift_colk->bits_to_idx(sel->bits, sel->nwords, 0, idx);
+}
+
+/* ---- the global order of a leaf as a source of sorted entries (col/gorder.h): the stored segments and the rows of the write buffers ---- */
+
+typedef struct ColGOrdMem
+{
+	int			leaf;
+	int			gleaf;			/* the rows of the group gval of this leaf only (-1: all) */
+	int64		gval;
+	uint32		n;				/* entries: nvals with a value by (key, address), then those without by address */
+	uint32		nvals;
+	int64	   *key;
+	uint64	   *tid;
+} ColGOrdMem;
+
+typedef struct GOrdPair
+{
+	int64		key;
+	uint64		tid;
+} GOrdPair;
+
+static int
+gord_pair_cmp(const void *a, const void *b)
+{
+	const GOrdPair *x = a,
+			   *y = b;
+
+	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->tid, y->tid);
+}
+
+/* The rows of the write buffers sorted like a segment's entries; false when they are more than maxrows (sorting them whole costs more than reading them as units), or one holds an overflow value of the leaf or an address a block of the global order cannot name */
+static bool
+gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval)
+{
+	ColGOrdMem *g = src->gmem;
+	uint64		n = 0;
+	GOrdPair   *pv,
+			   *pn;
+	uint32		nv = 0,
+				nn = 0;
+
+	if (g != NULL && g->leaf == leaf && g->gleaf == gleaf && (gleaf < 0 || g->gval == gval))
+		return true;
+	for (int i = 0; i < src->nmem; i++)
+		n += src->mem[i].b->nrows;
+	/* the rows of one group are the ones sorted: a buffer of many rows is looked through for them, up to 64 times what an ungrouped scan sorts */
+	if (n > (gleaf < 0 ? maxrows : 64 * maxrows))
+		return false;
+	pv = palloc((n + 1) * sizeof(GOrdPair));
+	pn = palloc((n + 1) * sizeof(GOrdPair));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf];
+
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+				return false;
+			if (gleaf >= 0)
+			{
+				const SiftCVals *gv = &b->col[gleaf];
+
+				if ((gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1)) || (gv->nulls && (gv->nulls[r / 64] >> (r % 64) & 1)))
+				{
+					if (gv->ovf && (gv->ovf[r / 64] >> (r % 64) & 1))
+						return false;
+					continue;
+				}
+				if (gv->key[r] != gval)
+					continue;
+			}
+			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+				pn[nn++] = (GOrdPair) {0, (uint64) b->keys[r]};
+			else
+				pv[nv++] = (GOrdPair) {v->key[r], (uint64) b->keys[r]};
+		}
+	}
+	if ((uint64) nv + nn > maxrows)
+		return false;
+	qsort(pv, nv, sizeof(GOrdPair), gord_pair_cmp);
+	qsort(pn, nn, sizeof(GOrdPair), gord_pair_cmp);
+	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
+	g->leaf = leaf;
+	g->gleaf = gleaf;
+	g->gval = gval;
+	g->n = nv + nn;
+	g->nvals = nv;
+	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
+	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
+	for (uint32 i = 0; i < nv; i++)
+	{
+		g->key[i] = pv[i].key;
+		g->tid[i] = pv[i].tid;
+	}
+	for (uint32 i = 0; i < nn; i++)
+	{
+		g->key[nv + i] = 0;
+		g->tid[nv + i] = pn[i].tid;
+	}
+	src->gmem = g;
+	pfree(pv);
+	pfree(pn);
+	return true;
+}
+
+/*
+ * The sources of the global order of leaf col: one for each stored segment, then one for the write buffers when they hold rows. -1 when the order cannot
+ * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value, a block grouped by a leaf that none of the npin pins (leaf pinleaf[i]
+ * = pinval[i], conditions of the query) names). The rows of the group of a grouped block only are read: the sources are those of that group.
+ */
+int
+sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
+{
+	int			n = src->nseg;
+	int			gleaf = -1;
+	int64		gval = 0;
+
+	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
+		return -1;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		uint32		entries,
+					values;
+		int			gc;
+
+		if (!sift_cseg_gorder(src->seg[i].seg, col, &entries, &values))
+			return -1;
+		gc = sift_cseg_gorder_group(src->seg[i].seg, col);
+		if (gc >= 0)
+		{
+			int			k = 0;
+
+			while (k < npin && pinleaf[k] != gc)
+				k++;
+			if (k == npin || (gleaf >= 0 && gleaf != gc))
+				return -1;
+			gleaf = gc;
+			gval = pinval[k];
+		}
+	}
+	src->gpin_leaf = gleaf;
+	src->gpin_val = gval;
+	*grouped = gleaf;
+	if (!src->mem_loaded)
+		load_wbuf(src);
+	if (src->nmem > 0)
+	{
+		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows), gleaf, gval))
+			return -1;
+		if (src->gmem->n > 0)
+			n++;
+	}
+	return n;
+}
+
+bool
+sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values)
+{
+	if (i < src->nseg)
+		return sift_cseg_gorder(src->seg[i].seg, col, entries, values);
+	*entries = src->gmem->n;
+	*values = src->gmem->nvals;
+	return true;
+}
+
+void
+sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	if (i < src->nseg)
+		sift_cseg_gorder_range(src->seg[i].seg, col, src->gpin_val, vs, ve, ns, ne);
+	else
+	{
+		*vs = 0;
+		*ve = *ns = src->gmem->nvals;
+		*ne = src->gmem->n;
+	}
+}
+
+uint32
+sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	const ColGOrdMem *g = src->gmem;
+	uint32		lo = vs,
+				hi = ve;
+
+	if (i < src->nseg)
+		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after);
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (after ? g->key[mid] <= key : g->key[mid] < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+uint32
+sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr)
+{
+	const ColGOrdMem *g = src->gmem;
+	uint32		from,
+				m;
+
+	if (i < src->nseg)
+		return sift_cseg_gorder_chunk(src->seg[i].seg, col, c, key, addr);
+	from = c * SIFT_CGORD_ROWS;
+	m = Min(g->n - from, (uint32) SIFT_CGORD_ROWS);
+	memcpy(key, g->key + from, m * sizeof(int64));
+	for (uint32 k = 0; k < m; k++)
+		addr[k] = g->tid[from + k];
+	return m;
 }

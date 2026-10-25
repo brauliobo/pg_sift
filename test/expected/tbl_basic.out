@@ -375,4 +375,35 @@ SELECT count(*) FROM orders;
 (1 row)
 
 DROP TABLE orders, uq, copy_h, p, tmp_t, heap_t;
+-- numeric(p, s) columns keep every value of their scaled integer domain through the write buffer and the sealed column groups: zero, negatives, trailing
+-- zeros of a digit, one to five base-10000 digits, the limits of the scale and of 18 digits
+CREATE TABLE nk (id int, a numeric(12,2), b numeric(18,6), c numeric(10,0), d numeric(6,3)) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE nh (LIKE nk);
+INSERT INTO nk SELECT g, round(((g * 7919) % 2000003 - 1000000) / 7.0, 2), round(((g * 104729) % 2000000011 - 1000000000) / 3.0, 6),
+                  (g * 31) % 20001 - 10000, round(((g * 13) % 200001 - 100000) / 1000.0, 3) FROM generate_series(1, 20000) g;
+INSERT INTO nk VALUES (20001, 0, 0, 0, 0), (20002, 9999999999.99, 999999999999.999999, 9999999999, 999.999), (20003, -9999999999.99, -999999999999.999999, -9999999999, -999.999),
+                      (20004, 0.01, 0.000001, 1, 0.001), (20005, -0.01, -0.000001, -1, -0.001), (20006, 100.00, 1000000.000000, 10000, 100.000), (20007, 10000.50, 100000000.500000, 100000000, 10.500),
+                      (20008, NULL, NULL, NULL, NULL);
+INSERT INTO nh SELECT * FROM nk;
+SELECT (SELECT count(*) FROM (SELECT * FROM nk EXCEPT SELECT * FROM nh) x) AS only_in_buffer, (SELECT count(*) FROM (SELECT * FROM nh EXCEPT SELECT * FROM nk) y) AS only_in_twin;
+ only_in_buffer | only_in_twin 
+----------------+--------------
+              0 |            0
+(1 row)
+
+VACUUM nk;
+SELECT sift.table_maintain('nk') IS NOT NULL AS sealed;
+ sealed 
+--------
+ t
+(1 row)
+
+SELECT (SELECT count(*) FROM (SELECT * FROM nk EXCEPT SELECT * FROM nh) x) AS only_in_table, (SELECT count(*) FROM (SELECT * FROM nh EXCEPT SELECT * FROM nk) y) AS only_in_twin,
+       (SELECT sum(a + b + c + d) FROM nk) = (SELECT sum(a + b + c + d) FROM nh) AS same_sum;
+ only_in_table | only_in_twin | same_sum 
+---------------+--------------+----------
+             0 |            0 | t
+(1 row)
+
+DROP TABLE nk, nh;
 DROP EXTENSION pg_sift;

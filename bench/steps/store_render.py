@@ -1,4 +1,4 @@
-"""The store benchmark's result files and their Markdown: the tables of README.md and docs/BENCHMARKS.md, table, gap, compare (steps/store.py render)."""
+"""The orders benchmark's result files and their Markdown: the tables of README.md and docs/BENCHMARKS.md, table, gap, compare (steps/store.py render)."""
 import benchlib
 import json
 import os
@@ -348,7 +348,7 @@ def readme_block(R):
            picture('agg-latency', f'Median time per question and system on a logarithmic axis, {t["rows"]:,} orders'), '', takeaway(R, tier, engines), '',
            picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold'), '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels, brief=True)]
-    out += ['', 'Every table, the cold runs, sizes and the configuration: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#aggregates-an-online-store); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
+    out += ['', 'Every table, the cold runs, sizes and the configuration: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#aggregates-an-orders-dataset); raw results [bench/results/store.json](bench/results/store.json); reproduce with `bench/bench store all`.', '',
             f'[^store]: Each system alone in a docker container with {cpu_name(R.cpus(tier))} (a quota, no pinning) and {host.get("memory", "?")} of memory and the same thread budget ([method](docs/BENCHMARKS.md#configuration)), '
             f'a local connection; median of {t["runs"]} warm runs; the first run after the server\'s memory was emptied is "cold". Measured {t["parts"]["warm"]["date"][:10]} on {host.get("cpu", "?")} ({host.get("threads", "?")} threads), '
             f'PostgreSQL {s["pg"].split()[0]}, pg_sift {s["sift_sift"]}' + (f', Citus {s["citus_columnar"]} columnar' if 'citus' in engines else '') + f', Elasticsearch {s["es"]}, ClickHouse {s["ch"]}; host at the start of the warm runs: {host_noise(t["parts"]["warm"])}. '

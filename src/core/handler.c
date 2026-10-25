@@ -92,6 +92,7 @@ bool		sift_enable_count = true;
 bool		sift_parallel_scan = false;
 bool		sift_rls_scores = false;
 bool		sift_prefetch = true;
+bool		sift_vis_page_cache = true;
 bool		sift_async_maintenance = true;
 int			sift_maintenance_naptime = 2000;
 int			sift_maintenance_cost_delay = 0;
@@ -134,6 +135,10 @@ define_gucs(void)
 	DefineCustomBoolVariable("sift.prefetch",
 							 "Reads ahead the heap pages an unordered scan is about to visit.",
 							 NULL, &sift_prefetch, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.vis_page_cache",
+							 "Keeps, for the rest of a scan, the visibility of the rows of a heap page the scan reads twice.",
+							 NULL, &sift_vis_page_cache, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.standby_conflicts",
 							 "Logs the reuse of released blocks as a recovery conflict, so a standby without hot_standby_feedback waits for or cancels the queries that may still read them.",

@@ -205,7 +205,7 @@ arm_base(PlannerInfo *arm, ArmIn *in)
 /*
  * Two arms that read their own copy of one scan (a common table expression that PostgreSQL inlined into each): the same tables and joins.
  * Their WHERE may differ (see TwoLevel.drop). The entries of pulled up subqueries and of the grouping belong to their arm, and the column
- * names a plan prunes differ: none counts.
+ * names a plan prunes differ: none counts. The join entries are the jointree's, which is compared as well.
  */
 static bool
 arm_private_rte(RTEKind kind)
@@ -214,19 +214,122 @@ arm_private_rte(RTEKind kind)
 	if (kind == RTE_GROUP)
 		return true;
 #endif
-	return kind == RTE_SUBQUERY;
+	return kind == RTE_SUBQUERY || kind == RTE_JOIN;
+}
+
+/*
+ * The FROM trees of two arms are the same but for the type of the join of a lateral LIMIT 1 child: a NOT NULL test of what the child returns makes
+ * its outer join an inner one in the arms that have the test (which rejects the tuple of NULLs a row without a child row is). The arms are still
+ * one scan, which keeps the outer join for the arm that needs it and tests the NOT NULL for the others: *outer gets the children that b joins by
+ * an outer join where a joins them by an inner one.
+ */
+/*
+ * The conditions of a tree of joins that filter its tables as one WHERE does: those of the FROM lists and the inner joins, wherever they sit in the
+ * tree (PostgreSQL leaves a condition at the join that makes it evaluable, which an outer join made inner changes), but not those of a nullable side.
+ */
+static List *
+from_conds(Node *n, List *acc)
+{
+	if (n == NULL)
+		return acc;
+	if (IsA(n, List))
+		foreach_ptr(Node, x, (List *) n)
+			acc = from_conds(x, acc);
+	else if (IsA(n, FromExpr))
+	{
+		acc = from_conds((Node *) ((FromExpr *) n)->fromlist, acc);
+		acc = list_concat(acc, list_copy((List *) ((FromExpr *) n)->quals));
+	}
+	else if (IsA(n, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+
+		acc = from_conds(j->larg, acc);
+		if (j->jointype == JOIN_INNER)
+		{
+			acc = from_conds(j->rarg, acc);
+			if (j->quals != NULL)
+				acc = list_concat(acc, IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals));
+		}
+	}
+	return acc;
 }
 
 static bool
-same_scan(PlannerInfo *a, PlannerInfo *b)
+from_same(PlannerInfo *pa, Node *a, Node *b, Relids *outer, bool nullable)
+{
+	if (a == NULL || b == NULL)
+		return a == b;
+	if (IsA(a, List))
+	{
+		ListCell   *la,
+				   *lb;
+
+		if (!IsA(b, List) || list_length((List *) a) != list_length((List *) b))
+			return false;
+		forboth(la, (List *) a, lb, (List *) b)
+			if (!from_same(pa, lfirst(la), lfirst(lb), outer, nullable))
+				return false;
+		return true;
+	}
+	if (IsA(a, FromExpr))
+		return IsA(b, FromExpr) && (!nullable || equal(((FromExpr *) a)->quals, ((FromExpr *) b)->quals)) &&
+			from_same(pa, (Node *) ((FromExpr *) a)->fromlist, (Node *) ((FromExpr *) b)->fromlist, outer, nullable);
+	if (IsA(a, JoinExpr))
+	{
+		JoinExpr   *ja = (JoinExpr *) a,
+				   *jb;
+
+		if (!IsA(b, JoinExpr))
+			return false;
+		jb = (JoinExpr *) b;
+		if (ja->jointype != jb->jointype)
+		{
+			RangeTblEntry *child;
+
+			if (!((ja->jointype == JOIN_LEFT && jb->jointype == JOIN_INNER) || (ja->jointype == JOIN_INNER && jb->jointype == JOIN_LEFT)) ||
+				!IsA(ja->rarg, RangeTblRef))
+				return false;
+			child = rt_fetch(((RangeTblRef *) ja->rarg)->rtindex, pa->parse->rtable);
+			if (child->rtekind != RTE_SUBQUERY || !child->lateral || child->subquery->limitCount == NULL)
+				return false;
+			if (jb->jointype == JOIN_LEFT)
+				*outer = bms_add_member(*outer, ((RangeTblRef *) ja->rarg)->rtindex);
+		}
+		/* the conditions of inner joins are compared as one WHERE (same_scan); an outer join's ON is its own, and one that the other has inner has none */
+		return ja->isNatural == jb->isNatural && ja->rtindex == jb->rtindex && equal(ja->usingClause, jb->usingClause) &&
+			(ja->jointype == JOIN_INNER && jb->jointype == JOIN_INNER && !nullable ? true :
+			 ja->jointype == JOIN_INNER && !nullable ? jb->quals == NULL :
+			 jb->jointype == JOIN_INNER && !nullable ? ja->quals == NULL : equal(ja->quals, jb->quals)) &&
+			equal(ja->alias, jb->alias) &&
+			from_same(pa, ja->larg, jb->larg, outer, nullable) &&
+			from_same(pa, ja->rarg, jb->rarg, outer, nullable || ja->jointype != JOIN_INNER || jb->jointype != JOIN_INNER);
+	}
+	return equal(a, b);
+}
+
+static bool
+same_scan(PlannerInfo *a, PlannerInfo *b, Relids *outer)
 {
 	ListCell   *la,
 			   *lb;
 	Relids		live;
 	Index		rti = 0;
 
-	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) || !equal(a->parse->jointree->fromlist, b->parse->jointree->fromlist))
+	List	   *ca,
+			   *cb;
+
+	if (list_length(a->parse->rtable) != list_length(b->parse->rtable) ||
+		!from_same(a, (Node *) a->parse->jointree->fromlist, (Node *) b->parse->jointree->fromlist, outer, false))
 		return false;
+	ca = from_conds((Node *) a->parse->jointree->fromlist, NIL);
+	cb = from_conds((Node *) b->parse->jointree->fromlist, NIL);
+	foreach_ptr(Node, q, ca)
+		if (!list_member(cb, q))
+			return false;
+	foreach_ptr(Node, q, cb)
+		if (!list_member(ca, q))
+			return false;
 	live = get_relids_in_jointree((Node *) a->parse->jointree, false, false);
 	forboth(la, a->parse->rtable, lb, b->parse->rtable)
 	{
@@ -340,8 +443,16 @@ arm_inner_agg(AggCtx *c, ArmIn *in, Node *e, Oid want_type)
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
 			break;
+		case SAA_MAX:
+		case SAA_MIN:
+			/* the float8 leaf of the arm's table: the larger or smaller of a cell's values, a NaN the largest */
+			if (ia->restype != FLOAT8OID || ia->num.n || ia->nvx || ia->leaf < 0)
+				return -1;
+			break;
 		case SAA_X_SUM:
 		case SAA_X_AVG:
+		case SAA_X_MAX:
+		case SAA_X_MIN:
 			/* the expression is evaluated for every tuple of the scan: an arm's own WHERE or a FILTER would keep it off the tuples they drop */
 			if (ia->restype != FLOAT8OID || in->quals != NIL || ia->filter != NULL)
 				return -1;
@@ -642,6 +753,7 @@ typedef struct TwoLevel
 	SiftAggSpec *s;
 	OutWalk		ow;
 	List	   *scan_tlist;
+	Relids		outer;			/* children the arms join by an inner join where another arm keeps them in an outer one (see from_same) */
 } TwoLevel;
 
 /*
@@ -677,7 +789,7 @@ two_arms(TwoLevel *t)
 			base = b;
 			own = b == ar;
 		}
-		if ((b == ar) != own || (!own && b != base) || (own && b != base && !same_scan(base, b)))
+		if ((b == ar) != own || (!own && b != base) || (own && b != base && !same_scan(base, b, &t->outer)))
 		{
 			agg_refused_f(TWO_ARMS, "arm %d does not read the scan of arm 1: its tables or joins differ", t->narms + 1);
 			return NULL;
@@ -1241,6 +1353,7 @@ sift_agg_two_level(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		return;
 	}
 	c->detached = true;
+	fs.outer = t.outer;
 	if (!agg_base(c, base, arm_input(base), &fs) || c->nparts > 0)
 		return;
 	t.s = agg_spec_new(c);

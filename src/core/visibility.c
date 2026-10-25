@@ -12,6 +12,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/smgr.h"
+#include "utils/hsearch.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -130,6 +131,8 @@ sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uin
 	v->dir_version = dir_version;
 	v->use_vm = IsMVCCSnapshot(snapshot);
 	v->vmbuf = InvalidBuffer;
+	v->ndirty = -1;
+	v->mcxt = CurrentMemoryContext;
 	v->fetch = sift_table_index_fetch_begin(heap);
 	v->heap_nblocks = sift_vis_nblocks(heap);
 	v->vm_nblocks = smgrexists(RelationGetSmgr(heap), VISIBILITYMAP_FORKNUM) ?
@@ -207,7 +210,8 @@ dir_current(SiftVis *v)
 void
 sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 {
-	uint8		bytes[VM_BYTES_PER_SB] pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	/* the kernels read 16 bytes for each mask word, which a superblock of fewer than 64 pages (the 8-page test flavour) does not have: zeros */
+	uint8		bytes[SIFT_PAGEMASK_WORDS * 16] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	uint64		first = (uint64) sb * VM_BYTES_PER_SB;
 	uint32		off = first % VM_MAPSIZE,
 				head = Min(VM_BYTES_PER_SB, VM_MAPSIZE - off);
@@ -218,12 +222,129 @@ sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 		return;
 	}
 	TEST_PAUSE();
+	memset(bytes + VM_BYTES_PER_SB, 0, sizeof(bytes) - VM_BYTES_PER_SB);
 	vm_read(v, first / VM_MAPSIZE, off, head, bytes);
 	if (head < VM_BYTES_PER_SB)
 		vm_read(v, first / VM_MAPSIZE + 1, 0, VM_BYTES_PER_SB - head, bytes + head);
 	sift_kern->vm_allvisible(pagemask, bytes);
 	if (any_page(pagemask) && !dir_current(v))
 		memset(pagemask, 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
+}
+
+/* The pages of the table (first heap_nblocks) that are not all-visible, once per scan, from the map bytes */
+static void
+dirty_scan(SiftVis *v)
+{
+	uint64		nb = v->heap_nblocks,
+				bytes = (nb + 3) / 4;
+
+	v->ndirty = 0;
+	v->dirty = MemoryContextAlloc(v->mcxt, SIFT_VIS_DIRTY_MAX * sizeof(BlockNumber));
+	if (!v->use_vm || nb == 0)
+	{
+		v->ndirty = -2;
+		return;
+	}
+	for (uint64 mapblk = 0; mapblk * VM_MAPSIZE < bytes; mapblk++)
+	{
+		const uint8 *map = NULL;
+		Buffer		buf = InvalidBuffer;
+		uint64		len = Min(bytes - mapblk * VM_MAPSIZE, VM_MAPSIZE);
+
+		if (mapblk < v->vm_nblocks)
+		{
+			buf = ReadBufferExtended(v->heap, VISIBILITYMAP_FORKNUM, (BlockNumber) mapblk, RBM_ZERO_ON_ERROR, NULL);
+			map = (const uint8 *) PageGetContents(BufferGetPage(buf));
+		}
+		for (uint64 i = 0; i < len; i++)
+		{
+			uint8		b = map ? map[i] : 0;
+
+			if ((b & 0x55) == 0x55)
+				continue;
+			for (int k = 0; k < 4; k++)
+			{
+				uint64		x = (mapblk * VM_MAPSIZE + i) * 4 + k;
+
+				if (x >= nb || ((b >> (2 * k)) & 1))
+					continue;
+				if (v->ndirty == SIFT_VIS_DIRTY_MAX)
+				{
+					if (BufferIsValid(buf))
+						ReleaseBuffer(buf);
+					v->ndirty = -2;
+					return;
+				}
+				v->dirty[v->ndirty++] = (BlockNumber) x;
+			}
+		}
+		if (BufferIsValid(buf))
+			ReleaseBuffer(buf);
+	}
+}
+
+bool
+sift_vis_range_allvisible(SiftVis *v, BlockNumber lo, BlockNumber hi)
+{
+	uint32		a = 0,
+				b;
+
+	if (v->ndirty == -1)
+		dirty_scan(v);
+	if (v->ndirty < 0)
+		return false;
+	b = v->ndirty;
+	while (a < b)				/* the first dirty page >= lo */
+	{
+		uint32		mid = (a + b) / 2;
+
+		if (v->dirty[mid] < lo)
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	return (a == (uint32) v->ndirty || v->dirty[a] > hi) && dir_current(v);
+}
+
+/* The all-visible bit of each of the n blocks (ascending, as a key-cut unit lists its pages) in bits, one bit per block; the same directory rule as sift_vis_sb_mask */
+void
+sift_vis_blocks_allvisible(SiftVis *v, const BlockNumber *blocks, uint32 n, uint64 *bits)
+{
+	uint64		any = 0;
+	BlockNumber curmap = InvalidBlockNumber;
+	const uint8 *map = NULL;
+
+	memset(bits, 0, ((n + 63) / 64) * sizeof(uint64));
+	if (!v->use_vm)
+		return;
+	TEST_PAUSE();
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		byteno = blocks[i] / 4;
+		BlockNumber mapblk = byteno / VM_MAPSIZE;
+
+		if (mapblk != curmap)
+		{
+			curmap = mapblk;
+			map = NULL;
+			if (mapblk < v->vm_nblocks)
+			{
+				if (!BufferIsValid(v->vmbuf) || BufferGetBlockNumber(v->vmbuf) != mapblk)
+				{
+					if (BufferIsValid(v->vmbuf))
+						ReleaseBuffer(v->vmbuf);
+					v->vmbuf = ReadBufferExtended(v->heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
+				}
+				map = (const uint8 *) PageGetContents(BufferGetPage(v->vmbuf));
+			}
+		}
+		if (map != NULL && (map[byteno % VM_MAPSIZE] >> ((blocks[i] % 4) * 2)) & 1)
+			bits[i / 64] |= UINT64CONST(1) << (i % 64);
+	}
+	for (uint32 w = 0; w < (n + 63) / 64; w++)
+		any |= bits[w];
+	if (any && !dir_current(v))
+		memset(bits, 0, ((n + 63) / 64) * sizeof(uint64));
 }
 
 int
@@ -288,11 +409,42 @@ heap_tid_visible(void *arg, ItemPointer tid)
 	return quick_visible(p, tid) || heap_hot_search_buffer(tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
 }
 
+/*
+ * A page the scan asks about again (units cut by a key, not by the heap, take a few rows of each page): the second visit computes the
+ * visibility of every row of the page once and the later ones are a mask. A snapshot does not change its mind about a tuple, so the mask
+ * holds for the rest of the scan. Entries are capped; a page past the cap is read every time, as before.
+ */
+#define SIFT_VIS_PAGE_CACHE_MAX	(1 << 20)
+
+typedef struct PageVis
+{
+	BlockNumber blk;
+	bool		full;			/* vis holds every row of the page; else the page was visited once */
+	uint64		vis[SIFT_OFFMASK_WORDS];
+} PageVis;
+
+static PageVis *
+page_cache_entry(SiftVis *v, BlockNumber blk, bool *found)
+{
+	if (v->pagevis == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(BlockNumber), .entrysize = sizeof(PageVis), .hcxt = v->mcxt};
+
+		v->pagevis = hash_create("sift page visibility", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	if (hash_get_num_entries(v->pagevis) >= SIFT_VIS_PAGE_CACHE_MAX)
+		return hash_search(v->pagevis, &blk, HASH_FIND, found);
+	return hash_search(v->pagevis, &blk, HASH_ENTER, found);
+}
+
 int
 sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 {
 	HeapPage	page = {.v = v};
-	int			left;
+	PageVis    *e = NULL;
+	bool		found = false,
+				full = false;
+	int			left = 0;
 
 	if (blk >= v->heap_nblocks)
 		v->heap_nblocks = sift_vis_nblocks(v->heap);
@@ -303,13 +455,48 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	}
 	if (sift_tbl_is_table(v->heap))
 		return sift_tbl_filter_page(v->heap, v->snapshot, blk, offmask);
+	if (sift_vis_page_cache)
+	{
+		e = page_cache_entry(v, blk, &found);
+		if (e != NULL && !found)
+			e->full = false;
+		else if (e != NULL && e->full)
+		{
+			for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			{
+				offmask[wd] &= e->vis[wd];
+				left += sift_pc64(offmask[wd]);
+			}
+			return left;
+		}
+		full = e != NULL && found;
+	}
 	page.buf = ReadBuffer(v->heap, blk);
 	LockBuffer(page.buf, BUFFER_LOCK_SHARE);
 	page.page = BufferGetPage(page.buf);
 	page.maxoff = PageGetMaxOffsetNumber(page.page);
 	page.quick = IsMVCCSnapshot(v->snapshot) && !IsolationIsSerializable();
 	v->heap_pages++;
-	left = sift_vis_filter_mask(blk, offmask, heap_tid_visible, &page);
+	if (full)
+	{
+		memset(e->vis, 0, sizeof(e->vis));
+		for (OffsetNumber off = FirstOffsetNumber; off <= page.maxoff && off <= SIFT_OFFMASK_WORDS * 64; off++)
+		{
+			ItemPointerData tid;
+
+			ItemPointerSet(&tid, blk, off);
+			if (heap_tid_visible(&page, &tid))
+				e->vis[(off - 1) / 64] |= UINT64CONST(1) << ((off - 1) % 64);
+		}
+		e->full = true;
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+		{
+			offmask[wd] &= e->vis[wd];
+			left += sift_pc64(offmask[wd]);
+		}
+	}
+	else
+		left = sift_vis_filter_mask(blk, offmask, heap_tid_visible, &page);
 	UnlockReleaseBuffer(page.buf);
 	return left;
 }

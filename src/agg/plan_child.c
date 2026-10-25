@@ -308,6 +308,30 @@ member_arg(AggCtx *c, Node *arg)
 }
 
 /* The parameters of a child and what the scan gives for each. */
+int			agg_child_planning;
+
+/*
+ * The planner of the sub-select a scan reads as a lookup table: its own paths (a top-N started over for each row, topn_paths) are not offered, the
+ * scan calls the child plan for each row it passes and a btree on the key answers that better
+ */
+static PlannerInfo *
+child_planner(PlannerInfo *parent, Query *q, const char *name)
+{
+	PlannerInfo *sub;
+
+	agg_child_planning++;
+	PG_TRY();
+	{
+		sub = sift_subquery_planner(parent->glob, q, parent, name);
+	}
+	PG_FINALLY();
+	{
+		agg_child_planning--;
+	}
+	PG_END_TRY();
+	return sub;
+}
+
 static void
 child_params(AggCtx *c, JoinCtx *jc, List *items)
 {
@@ -505,9 +529,20 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		atts[k] = f->keyatt[k];
 	for (int k = 0; k < f->nord; k++)
 		atts[f->nkey + k] = f->ordatt[k];
-	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts))
+	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts, NULL))
 	{
-		agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT, NULL, false);
+		if (sift_explain_refusals)
+		{
+			StringInfoData cols;
+
+			initStringInfo(&cols);
+			for (int k = 0; k < f->nkey + f->nord; k++)
+				appendStringInfo(&cols, "%s%s", k ? ", " : "", get_attname(rte->relid, atts[k], false));
+			agg_report("lookup", AGG_REFUSE_LATERAL_LIMIT,
+					   psprintf("no unique index on %s: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE col IS NOT NULL for a "
+								"sub-select with that condition (an index on an expression of them does not count); CLUSTER on it and VACUUM keep the lookups on adjacent pages", cols.data),
+					   false, 0, 0);
+		}
 		return;
 	}
 	foreach_node(TargetEntry, te, q->targetList)
@@ -571,7 +606,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		item->paramId = list_nth_int(x.params, i);
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
-	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
+	jc->subroot = child_planner(c->root, q, e->eref->aliasname);
 	child_params(c, jc, c->root->plan_params);
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
@@ -693,7 +728,7 @@ scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args)
 	}
 	jc->j.params = x.params;
 	jc->j.sig = sift_agg_child_sig((Node *) lifted, x.params);
-	jc->subroot = sift_subquery_planner(c->root->glob, lifted, c->root, jc->j.desc);
+	jc->subroot = child_planner(c->root, lifted, jc->j.desc);
 	c->root->plan_params = saved;
 	child_scan_path(c->rel, jc);
 	*args = x.args;

@@ -1,7 +1,6 @@
 # Format numbers
 
-The one table of every number that is written to disk or checked on upgrade, and who claims it. A new feature takes the next free number here
-before it takes one in the code; two features never share a number or a flag.
+Every number written to disk or checked on upgrade, and who claims it. A new feature takes the next free number here before one in the code; two features never share a number or a flag.
 
 ## 1. Extension script
 
@@ -11,16 +10,13 @@ before it takes one in the code; two features never share a number or a flag.
 | 3.1 | `sql/pg_sift--3.1.sql` | `sql/pg_sift--3.0--3.1.sql` (3.0.x, every patch release, update to 3.1 with `ALTER EXTENSION pg_sift UPDATE`) |
 | 3.2 | `sql/pg_sift--3.2.sql` | `sql/pg_sift--3.1--3.2.sql` |
 | 3.3 | `sql/pg_sift--3.3.sql` | `sql/pg_sift--3.2--3.3.sql` |
+| 3.4 | `sql/pg_sift--3.4.sql` | `sql/pg_sift--3.3--3.4.sql` |
 
-`sql/pg_sift--3.3.sql` is the complete script and `sql/pg_sift--3.2--3.3.sql` adds the same objects to a 3.2 install (`test/t/extension_lifecycle.sh`
-compares the two). The scripts of a released version never change, so that an install updated in place gets what a fresh one does: the objects added
-after a release go into the next version's two scripts, and `scripts/ci.sh --selftest` checks the released ones against `scripts/released-sql.sha256`. The on-disk formats below do not depend on the script: the library reads whatever the files hold.
+`sql/pg_sift--3.4.sql` is the complete script and `sql/pg_sift--3.3--3.4.sql` adds the same objects to a 3.3 install (`test/t/extension_lifecycle.sh` compares them). Released scripts never change, so an in-place update equals a fresh install: later objects go into the next version's two scripts, and `scripts/ci.sh --selftest` checks released ones against `scripts/released-sql.sha256`. The on-disk formats below do not depend on the script: the library reads whatever the files hold.
 
 ## 2. Metapage (`SiftMetaPageData`, `src/core/sift.h`)
 
-Format major 1. The minor is what a build must read to understand an index or table; a build refuses a larger one with a REINDEX hint
-(`check_meta`). A metapage starts at `SIFT_FORMAT_MINOR_BASE` (2) and only the first segment that needs more raises it, nothing lowers it, so an
-index that never got a newer structure stays readable by 3.0.
+Format major 1. The minor is what a build must read to understand an index or table; a build refuses a larger one with a REINDEX hint (`check_meta`). A metapage starts at `SIFT_FORMAT_MINOR_BASE` (2); only the first segment that needs more raises it and nothing lowers it, so an index without newer structures stays readable by 3.0.
 
 | minor | meaning | raised by |
 |---|---|---|
@@ -62,13 +58,18 @@ A 3.1 build reads 1, 2 and 3 side by side; a merge writes the current format. 3.
 | 14 | 3.3: a string dictionary of 1,024 strings or more is stored in blocks of 64 strings that are read in place where that adds at most 3% to the segment, and with the codes in byte order too (form 2) for the columns of `key_columns`, `point_columns` and `return_columns`, with `dict_lookup = on` for every column, and in a `sift_table` with `sift.table_dict_lookup = on`; also the point directory of the leaves of `point_columns` at the end of the `DICT` section, only for an index with the option | 3.3 default (setting 14), for a dictionary of that size that is stored in blocks or asks for the order, or an index with the option |
 | 15 | 3.3: the key list or bitmap of the leaves of `key_columns` in a unit; written by default for the int2, int4 and date foreign key columns and `*_id` columns that fit | 3.3 default (setting 15) |
 | 16 | 3.3: the point directory of the leaves of `point_tid_columns` lists the heap addresses of the rows, not their numbers in the segment; only for an index with the option | 3.3 default (setting 15), only for an index with the option (the option stamps it; the setting stays 15) |
+| 17 | 3.4: the units of the segment are cut by the range of the declared key (`key_cut`), not by superblock, and each lists its heap addresses; only for an index with the option | 3.4 default (setting 15), only for an index with the option (the option stamps it; the setting stays 15) |
+| 18 | 3.4: the sorted runs of the segment also hold their heads, the first and last `n / 128` (at most 32) keys of a leaf with no NULL or overflow value with the heap address of each row; not for a key-cut segment | 3.4 default (setting 15), for an index with `order_columns` (the option stamps it; the setting stays 15) |
+| 19 | 3.4: a unit also holds the cube and the element rollups of its few rows where one NULL-heavy integer leaf is not NULL (the exceptions), so that a filter `leaf IS NULL` is answered from the pre-aggregates ([COL-PREAGG.md](COL-PREAGG.md) section 11) | 3.4 default (setting 15), for a `sift_col` index with a leaf NULL in 99% of the rows of a unit (the data stamps it; the setting stays 15) |
+| 20 | 3.4: the HyperLogLog sketch of the leaves of `hll_columns` in a unit; only for an index with the option | 3.4 default (setting 15), only for an index with the option (the option stamps it; the setting stays 15) |
 
-`SIFT_COL_FORMAT_MIN_READ` is 3; 3.0 reads only 3 and refuses 4 with a REINDEX hint. 3.2 reads 3 through 6, 3.3 3 through 15 (`SIFT_COL_FORMAT_MAX_READ`). A 3.1 library refuses minors 5 and 6, and a 3.2 library minors 7 to 15, with a format error and a REINDEX hint; `sift.col_format_minor = 7` or less writes a `sift_table` without the month dims, 8 or less ignores `rollup_dims`, and 9 or less the summaries of `key_columns`, 11 or less `superunit`, 12 or less `order_columns`, 13 or less the stored form of the dictionaries, 14 or less the key lists and bitmaps of `key_columns`, which every one of them reads. Old segments remain readable; predicates needing unavailable kinds use the normal plan. REINDEX and a table VACUUM FULL rebuild from the original documents and restore complete kinds. `sift.col_format_minor` accepts 3 to 15 (default 15, the newest 3.3 writes; 3.2 defaulted to 6); 5 is selected only by a wide schema. Schemas without JSON paths stay at 4 (or 5 for wide leaves). Minor 6 guarantees complete JSON kinds, including element leaves. Its chunk bytes are the minor-4 layout; the new number distinguishes them from a minor-4 merge that lost the kinds of older inputs. New column write buffers carry format 6 in their directory entry; an older unmarked buffer is decoded with uncertainty for untagged NULL/astext slots and promotion never labels those slots complete.
+`SIFT_COL_FORMAT_MIN_READ` is 3. 3.0 reads only 3 and refuses 4 with a REINDEX hint; 3.2 reads 3 through 6, 3.3 3 through 16, 3.4 3 through 20 (`SIFT_COL_FORMAT_MAX_READ`). A 3.1 library refuses minors 5 and 6, and a 3.2 library minors 7 to 20, with a format error and a REINDEX hint. Old segments remain readable; predicates needing unavailable kinds use the normal plan. REINDEX and a table VACUUM FULL rebuild from the original documents and restore complete kinds.
 
-The default (15) allows every section, and a segment is stamped with the lowest minor that describes what it holds. A `sift_col` index created with `cube_minmax = false`, `superunit = 0` and `calendar_columns = 'off'` stays at 4 or 6 and a 3.2 library reads it. With the defaults a 3.3-built index is no longer readable by a 3.2 library (it carries minors 7 and 12 at least), nor is a `sift_table` with a `date`, `timestamp` or `timestamptz` column (8), nor an index with `rollup_dims`, `key_columns`, `order_columns`, nor an index with a dictionary of 1,024 strings or more that is stored for a lookup (14, not the default): the 3.2 library refuses it with the REINDEX hint unless `sift.col_format_minor` was lowered to 6 before it was written. UPGRADING.md section 4 lists the setting that keeps each minor and the sequence that takes a 3.3 database back to a 3.2 library.
+`sift.col_format_minor` accepts 3 to 15 (default 15, the newest 3.3 writes; 3.2 defaulted to 6); 5 is selected only by a wide schema. A lower setting limits what is written: 7 or less writes a `sift_table` without the month dims, 8 or less ignores `rollup_dims`, 9 or less the summaries of `key_columns`, 11 or less `superunit`, 12 or less `order_columns`, 13 or less the stored form of the dictionaries, 14 or less the key lists and bitmaps of `key_columns`, all of which are still read. Schemas without JSON paths stay at 4 (or 5 for wide leaves). Minor 6 guarantees complete JSON kinds, including element leaves; its chunk bytes are the minor-4 layout, and the new number distinguishes them from a minor-4 merge that lost the kinds of older inputs. New column write buffers carry format 6 in their directory entry; an older unmarked buffer is decoded with uncertainty for untagged NULL/astext slots, and promotion never labels those slots complete.
 
-A `sift_table` follows `sift.col_format_minor` too,
-except that a group with a version section (unfrozen rows) is at least `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. A `sift_col` index goes back to 3.0.x by `REINDEX` there; a `sift_table`, which cannot be reindexed, stays readable by 3.0.x (a standby on 3.0.x included) when `sift.col_format_minor = 3` (superuser) is set before its first write or before an `ALTER TABLE ... SET ACCESS METHOD` rewrite. `pg_upgrade` copies the files as they are. The chunk
+The default (15) allows every section, and a segment is stamped with the lowest minor that describes what it holds. A `sift_col` index created with `cube_minmax = false`, `superunit = 0` and `calendar_columns = 'off'` stays at 4 or 6 and a 3.2 library reads it. With the defaults a 3.3-built index is no longer readable by a 3.2 library (it carries minors 7 and 12 at least), nor is a `sift_table` with a `date`, `timestamp` or `timestamptz` column (8), an index with `rollup_dims`, `key_columns` or `order_columns`, or an index with a dictionary of 1,024 strings or more that is stored for a lookup (14, not the default). The 3.2 library refuses it with the REINDEX hint unless `sift.col_format_minor` was lowered to 6 before it was written. UPGRADING.md section 4 lists the setting that keeps each minor and the sequence that takes a 3.3 database back to a 3.2 library.
+
+A `sift_table` follows `sift.col_format_minor` too, except that a group with a version section (unfrozen rows) is at least `SIFT_COL_FORMAT_VERS` (4). Minors 0 to 2 were never released. A `sift_col` index goes back to 3.0.x by `REINDEX` there; a `sift_table`, which cannot be reindexed, stays readable by 3.0.x (a standby on 3.0.x included) when `sift.col_format_minor = 3` (superuser) is set before its first write or before an `ALTER TABLE ... SET ACCESS METHOD` rewrite. `pg_upgrade` copies the files as they are. The chunk
 flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIFT_COLC_KINDS` 0x8 (`src/col/enc.h`).
 
 ## 5. Segment entry flags (`SiftSegEntry.flags`)
@@ -81,9 +82,9 @@ flags are `SIFT_COLC_NULLS` 0x1, `SIFT_COLC_OVF` 0x2, `SIFT_COLC_TAGS` 0x4, `SIF
 | `SIFT_TBL_SEG_TOMB` | 0x0200 | `sift_table` tombstone segment |
 | `SIFT_SEG_VERS` | 0x0400 | column segment with unfrozen rows (`reserved` is the smallest xid); cleared when the rows are frozen |
 
-`SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of the leaves that hold a JSON null; 3.2 only.
-`SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment and the smallest xid when `SIFT_SEG_VERS` is set.
-A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
+- `SiftSegEntry.sum_dl` of a `sift_col` write buffer is the mask of leaves holding a JSON null; 3.2 only.
+- `SiftSegEntry.reserved` is the owner's tag for an immutable `sift_col` segment and the smallest xid when `SIFT_SEG_VERS` is set.
+- A group written by 3.0.1 under pressure with a tag but no version section is read as a constant version vector.
 
 Zone flags: `SIFT_COLZ_NOSUM` 0x1, `SIFT_COLZ_NAN` 0x2,
 `SIFT_COLZ_CONST` 0x4, `SIFT_COLZ_OVERFLOW` 0x8, `SIFT_COLZ_INLINE` 0x10, `SIFT_COLZ_JNULL` 0x20 (3.2, segment format 6: a NULL slot of the leaf is

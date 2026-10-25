@@ -378,6 +378,40 @@ exact_at(const SiftCSet *s, uint32 i)
 	return d;
 }
 
+/* does the list start at 0 and ascend strictly? one loop for each width, so that a load is one instruction (the check is made for every set a statement prunes with) */
+#define EXACT_ASCENDING(T) \
+	do { \
+		T			prev, \
+					cur; \
+		memcpy(&prev, s->data, sizeof(T)); \
+		if (prev != 0) \
+			return false; \
+		for (uint32 i = 1; i < s->n; i++) \
+		{ \
+			memcpy(&cur, s->data + (Size) i * sizeof(T), sizeof(T)); \
+			if (cur <= prev) \
+				return false; \
+			prev = cur; \
+		} \
+		return true; \
+	} while (0)
+
+static bool
+exact_ascending(const SiftCSet *s)
+{
+	switch (s->aux)
+	{
+		case 1:
+			EXACT_ASCENDING(uint8);
+		case 2:
+			EXACT_ASCENDING(uint16);
+		case 4:
+			EXACT_ASCENDING(uint32);
+		default:
+			EXACT_ASCENDING(uint64);
+	}
+}
+
 bool
 sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s)
 {
@@ -416,12 +450,7 @@ sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s)
 			(uint64) s->n * s->aux != len - SIFT_CSET_HDR)
 			return false;
 		s->base = (int64) v;
-		if (exact_at(s, 0) != 0)
-			return false;
-		for (uint32 i = 1; i < s->n; i++)
-			if (exact_at(s, i) <= exact_at(s, i - 1))
-				return false;
-		return true;
+		return exact_ascending(s);
 	}
 	if (s->kind == SIFT_CSET_BLOOM)
 	{

@@ -149,6 +149,62 @@ w128_numeric(sift_w128 v, int scale, uint8 *out)
 	return VARSIZE(out);
 }
 
+/* the digits of a finite number an image holds that the short format below takes in; more are spelled through the text */
+#define IMG_DIGITS_MAX	64
+
+/*
+ * The numeric of an image and its display scale in the short format numeric_in gives it, without spelling the number as text. 0 when the number
+ * is NaN or an infinity, has more than IMG_DIGITS_MAX digits, more fraction digits than dscale, or a weight or scale the short format lacks.
+ */
+static uint32
+image_numeric(const uint8 *img, uint32 len, int32 dscale, uint8 *out)
+{
+	uint8		dig[IMG_DIGITS_MAX];
+	uint16		grp[IMG_DIGITS_MAX / 4 + 4];
+	int32		exp10 = 0,
+				p,
+				weight,
+				top,
+				last;
+	uint32		nd = 0,
+				ng = 0;
+	bool		neg = false;
+	int			kind = sift_col_numimg_digits(img, len, &neg, &exp10, dig, IMG_DIGITS_MAX, &nd);
+	uint16		hdr;
+
+	if (kind == 0 || dscale < 0 || dscale > 63)
+		return 0;
+	if (kind == 1)
+	{
+		SET_VARSIZE(out, VARHDRSZ + sizeof(uint16));
+		hdr = (uint16) (0x8000 | dscale << 7);
+		memcpy(out + VARHDRSZ, &hdr, sizeof(hdr));
+		return VARSIZE(out);
+	}
+	/* digit k sits at the power 10^(p - k); NBASE digit g spans the powers 10^(top - 4g) .. 10^(top - 4g - 3) */
+	p = exp10 - 1;
+	weight = p >= 0 ? p / 4 : -((-p + 3) / 4);
+	top = 4 * weight + 3;
+	last = p - (int32) nd + 1;
+	if (last < -dscale || weight < -64 || weight > 63)
+		return 0;
+	ng = (uint32) ((top - last) / 4) + 1;
+	memset(grp, 0, ng * sizeof(uint16));
+	for (uint32 k = 0; k < nd; k++)
+	{
+		int32		at = top - (p - (int32) k);
+
+		grp[at / 4] += dig[k] * (uint16) pow10_pad[3 - at % 4];
+	}
+	while (ng > 0 && grp[ng - 1] == 0)
+		ng--;
+	hdr = (uint16) (0x8000 | (neg ? 0x2000 : 0) | dscale << 7 | (weight < 0 ? 0x0040 : 0) | (weight & 0x003F));
+	SET_VARSIZE(out, VARHDRSZ + sizeof(uint16) + ng * sizeof(uint16));
+	memcpy(out + VARHDRSZ, &hdr, sizeof(hdr));
+	memcpy(out + VARHDRSZ + sizeof(uint16), grp, ng * sizeof(uint16));
+	return VARSIZE(out);
+}
+
 /* the varlena of the numeric of a decimal text */
 static uint32
 text_numeric(const char *txt, uint8 *out)
@@ -238,10 +294,14 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 			{
 				const char *img = SIFT_COL_DICT_STR(lanes[0].dict, lanes[0].codes[i]);
 
-				if (sift_col_numimg_to_text((const uint8 *) img, SIFT_COL_DICT_LEN(lanes[0].dict, lanes[0].codes[i]), (int32) lanes[1].i[i], w->txt,
-											SIFT_NIMG_TEXT_MAX) == 0)
-					ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: a numeric image is damaged")));
-				len = text_numeric(w->txt, b);
+				uint32		ilen = SIFT_COL_DICT_LEN(lanes[0].dict, lanes[0].codes[i]);
+
+				if ((len = image_numeric((const uint8 *) img, ilen, (int32) lanes[1].i[i], b)) == 0)
+				{
+					if (sift_col_numimg_to_text((const uint8 *) img, ilen, (int32) lanes[1].i[i], w->txt, SIFT_NIMG_TEXT_MAX) == 0)
+						ereport(ERROR, (errcode(ERRCODE_DATA_CORRUPTED), errmsg("sift_col: a numeric image is damaged")));
+					len = text_numeric(w->txt, b);
+				}
 			}
 			else if ((len = w128_numeric(sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), def->scale, b)) == 0)
 			{

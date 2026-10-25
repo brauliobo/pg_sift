@@ -3,6 +3,8 @@
  * (8 double rows per instruction), selections are applied as merging masked min/max and masked loads, lookups are masked
  * VPGATHER. Results are bit-identical to the scalar table (agg/kern.c). Slots that a per-group scatter does not speed up
  * (count_gid, sum_gid_*) are the scalar functions.
+ * Not executed by the author's hosts: the level is kept as a build-checked variant only while the release-pass host reports AVX-512 in its CPU
+ * flags, where it runs once under diff_fuzz sift.simd=avx512 and the kernel harness; otherwise it is dropped from the tree.
  */
 #include "core/host.h"
 
@@ -339,15 +341,35 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")
+#endif
+#define AKV_VB 64
+#define AKV_WIDEN(a, b) _mm512_mul_epi32((__m512i) (a), (__m512i) (b))
+#define AKV_BITS32(m) ((uint64) _mm512_movepi32_mask((__m512i) (m)))
+#define AKV_BITS64(m) ((uint64) _mm512_movepi64_mask((__m512i) (m)))
+#define AKV_FN(x) x##_avx512
+#include "agg/kern_vec.h"
+#if defined(__clang__)
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+
 #define AGK_INIT5(s)	.s = s##_avx512,
 
 const SiftAggKernels sift_aggkern_avx512 = {
-	AGK_INIT5(cmp_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
+	AGK_INIT5(cmp_f64) AGK_INIT5(cmp2_i32) AGK_INIT5(cmp2_i64) AGK_INIT5(cmp2_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
 	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
-	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(absmax_i64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(lin_i64) AGK_INIT5(mulw_i64)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
+	.sum_gid_i64 = agk_sum_gid_i64_scalar,
 };
 
 #endif							/* __x86_64__ */

@@ -45,6 +45,7 @@
 #define DIRECT_MAX	(1 << 20)		/* groups of the direct arrays */
 #define DIRECT_SPARSE	16			/* the direct arrays (above PRESIZE_MIN slots, and 4 slots for each group expected) hold at most this many slots for each group in use, else the hash table: their size multiplies the capacity of the keys, not the groups */
 #define PRESIZE_MIN		4096		/* groups the planner expects above which a single key starts with room for them */
+#define SINGLE_DIRECT_MAX	(1 << 28)	/* a single key's ids are consecutive, so its arrays have no unused slots: only the memory limit caps them */
 #define LANE_DIRECT_MAX	(1 << 15)	/* a lane is built and folded or dumped sixteen times: sparse group spaces go to the hash table */
 #define NDICT_SLOTS	8
 
@@ -94,6 +95,11 @@ typedef struct AggExec
 	MemoryContext comcxt;			/* temporaries of one combo entry */
 	ArmSt	   *arm;
 	SpineSt    *spine;			/* the rows of the arms' spine (SiftAggSpec.spine) */
+	struct QueryDesc **wchild;	/* a worker: the executor state of the plan of each correlated join (the leader's is in the EState it runs in) */
+	struct QueryDesc *wsub;		/* a worker: the executor state whose sub-plans the expressions of the spec start (the leader's is the node's EState) */
+	struct ChildMemo **cmemo;	/* per join: the rows of its correlated child by parameter values, shared with the other processes of the scan (NULL: none) */
+	TupleTableSlot **cmslot;	/* per join: a slot of the child's row type that reads the minimal tuples of the memo */
+	const char *spine_buf;		/* the spine's plan rows, serialized by the leader before the scan (spine_fetch): a worker reads them from the shared memory */
 	uint32		arm_mask;		/* the keys the tuples are grouped by: all, or an arm's, or a grouping set's */
 	int			curset;			/* the grouping set being aggregated */
 	uint32		gen;			/* changes when the group indexes are renumbered */
@@ -107,6 +113,10 @@ typedef struct AggExec
 	DictSlot	dslot[NDICT_SLOTS];
 	int			dnext;
 	bool		started;
+	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
+	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
+	int			widen;			/* TOPN_TIES: the scan this engine runs is the widen-th start again (topn_widen) */
+	List	   *retries;		/* ... the engines of the earlier starts' successors, closed with the node */
 	/* groups */
 	bool		hash;
 	uint32		direct_max;		/* groups above which the table is a hash table */
@@ -125,8 +135,9 @@ typedef struct AggExec
 	double	   *amax;			/* avg(float8): the largest absolute input */
 	IdMap	   *amap;			/* count(DISTINCT numeric): the ids of the values */
 	Osa		  **osa;			/* ordered-set aggregates: the values of the aggregate (shared by those on one argument) */
-	double	  **oval;			/* ... and their results by sorted-values id */
+	OsaVal	  **oval;			/* ... and their results by sorted-values id */
 	int			n_osa_spilled;
+	uint32		n_gpruned;		/* groups dropped by the top-N of the aggregate (agg/gtopn.c) */
 	struct GenSt **gst;			/* generic aggregates (SAA_GEN), per aggregate */
 	uint8	   *fwin;			/* DISTINCT ON: per tuple of the chunk, its row became the best of its group (decided by the first of the aggregates, which the others follow) */
 	AggState   *gas;			/* the AggState their functions are called with */
@@ -144,11 +155,8 @@ typedef struct AggExec
 	bool	   *total_null;
 	/* items of work, lanes and workers (run_scan) */
 	struct ScanShared *shared;
-	struct AggExec *gtab;		/* the table of the result: this one, or (lanes) its own view */
-	bool		lanes;			/* this table is one of the lanes */
+	bool		lanes;			/* a process of a parallel scan with float sums: each lane keeps its own sums (AggAcc.lv) */
 	bool		lane_serial;	/* the lanes are scanned in turn into this table: the float sums of a lane are added to dt when it is done */
-	char	  **pending;		/* lanes: the partial tables that wait for the lanes before them */
-	uint32		next_lane;		/* lanes: the next one to combine */
 	struct AggPar *par;			/* workers launched by the leader */
 	uint32	   *vorder;			/* a parallel top-N: the superblocks in the order of the walk (nvorder of them), NULL when they are visited in windows */
 	uint32		nvorder;
@@ -170,6 +178,8 @@ typedef struct AggExec
 	bool		recheck_late;	/* ... and a row that holds one raises where it reaches the aggregate, after the lookups (SRK_CAST), not after its own conjuncts */
 	bool		recheck_after_late;	/* ... a row whose list SQL cannot read (SRK_RECORDSET) raises after the conjuncts that may raise, which drop or fail it first (check_overflow_after_late) */
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
+	bool		sb_heap;		/* the unit numbers are heap superblocks (sift_colsrc_sb_heap): a range of them is a range of the heap, for a TID range and for a match set */
+	const SiftFilter *search_all;	/* the match set of every unit (not sb_heap), made on first use */
 	int			tid_pred;		/* the first SAP_TID conjunct, which tests the range of all of them (tid_init); -1: none */
 	uint64		tid_lo;			/* the TID keys [tid_lo, tid_hi) of the range (sift_aggspec_tid_range) */
 	uint64		tid_hi;
@@ -191,6 +201,7 @@ typedef struct AggExec
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
 	uint64		lookup_loaded;
 	int			lookup_index;
+	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
 	uint64		lookup_us;
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
 	const char **pmaps;			/* in a worker: per combo, the table of its join in the shared memory, NULL when it has none (map_load) */
@@ -251,14 +262,23 @@ typedef struct AggExec
 	double	   *vstk;			/* float8 aggregate arguments: SIFT_AGG_MAX_VX vectors */
 	sift_i128  *nstk;			/* numeric programs: SIFT_AGG_MAX_VX vectors */
 	uint8	   *nflag;			/* ... and the NaN flag of each of their values */
+	struct VnCache *vn;			/* the leaves of the chunk as int64 vectors for the numeric sums (agg/vnum.c) */
 	uint32	   *pix;			/* the data index of the rows a predicate evaluates: start + i */
 	uint64	   *okm;
 	uint64	   *tmpm;
 	uint64	   *tmpm2;
 	uint32	   *tmpu32;
+	uint32	   *setkid;			/* grouping sets in hash mode: the key ids of the chunk's tuples, shared by the sets that read them (compute_set_gids) */
 	/* pre-aggregates (preagg_init) */
 	bool		pa_on;			/* a unit that is exact may be answered from what the index stored with it */
+	int			pa_dead_miss;	/* its dirty units that read their dead rows and were scanned all the same */
+	bool		pa_dead;		/* ... and one with dead rows from what it stored minus theirs (sift.agg_dead_delta): the aggregates are counts and integer sums */
 	SiftPaWhy	pa_why;			/* why not, when pa_on is false */
+	int			pa_xleaf;		/* the conjunct IS NULL on this leaf is answered as the unit net of its exceptions (-1: none; hist_net) */
+	int64		n_exc_units;	/* units answered net of their exceptions, and the units with some that were scanned (a missing dim, a float sum that cancels) */
+	int64		n_exc_scan;
+	int64		n_dead_units;	/* units answered net of their dead rows, and the units with dead rows that were scanned instead (col/delta.c) */
+	int64		n_dead_scan;
 	bool		pa_miss;		/* the last preagg_rollup failed for lack of a rollup, a dim or a measure (not for the values in the unit) */
 	SiftSrcRollupNeed pa_need;	/* the columns of a unit's rollup the query reads (pa.list >= 0) */
 	SiftAggPaShape pa;			/* pa.dim: the leaf of the histograms that answer it, -1: the sums of the leaves; pa.list >= 0: the rollup of that list */
@@ -302,16 +322,24 @@ extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
+extern bool		sift_agg_lookup_columns;
 extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;
 extern int		sift_agg_lookup_shared_kb;
+extern int		sift_verdict_cache_kb;
+#ifdef SIFT_TESTING
+extern bool		sift_test_verdict_fail;
+extern bool		sift_test_verdict_gate;
+#endif
 extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
+void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);
+void groups_order(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
 Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);
@@ -390,6 +418,58 @@ leaf_wide(const SiftSrcLeaf *lf)
 {
 	return lf->vtype == SCV_I64 || lf->vtype == SCV_F64;
 }
+
+/*
+ * The sum of a numeric aggregate (SAA_SUM_NUM, SAA_AVG_NUM) of a group is acc->w + acc->i * 2^128: w wraps, acc->i counts the wraps, so a sum of values of up to 38 digits
+ * is exact whatever the number of rows (agg_sum_datum builds the numeric when a group has wrapped).
+ */
+static inline void
+agg_sum_add(AggAcc *acc, uint32 g, sift_i128 v)
+{
+	if (__builtin_add_overflow(acc->w[g], v, &acc->w[g]))
+		acc->i[g] += v > 0 ? 1 : -1;
+}
+
+/*
+ * The product of two 38-digit integers (a sum of a decimal product of up to 76 digits) added to the sum of group g: the 256-bit product is hi * 2^128 + lo,
+ * lo taken as a signed 128-bit value (so that agg_sum_add counts its wraps) and the high word, corrected by the sign of lo, added to the carries.
+ */
+static inline void
+agg_sum_add_product(AggAcc *acc, uint32 g, sift_i128 a, sift_i128 b)
+{
+	typedef unsigned __int128 u128;
+	u128		ua = a < 0 ? -(u128) a : (u128) a,
+				ub = b < 0 ? -(u128) b : (u128) b;
+	uint64		a0 = (uint64) ua,
+				a1 = (uint64) (ua >> 64),
+				b0 = (uint64) ub,
+				b1 = (uint64) (ub >> 64);
+	u128		p01 = (u128) a0 * b1,
+				p10 = (u128) a1 * b0,
+				p00 = (u128) a0 * b0,
+				mid = (p00 >> 64) + (uint64) p01 + (uint64) p10,
+				lo = (p00 & UINT64_MAX) | (mid << 64),
+				hi = (u128) a1 * b1 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+
+	if ((a < 0) != (b < 0))
+	{
+		lo = ~lo + 1;
+		hi = ~hi + (lo == 0);
+	}
+	agg_sum_add(acc, g, (sift_i128) lo);
+	if (unlikely(__builtin_add_overflow(acc->i[g], (int64) (sift_i128) hi + (int64) (lo >> 127), &acc->i[g])))
+		ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("value overflows numeric format")));
+}
+
+/* the sum (w, carry) of a partial state added to group g */
+static inline void
+agg_sum_merge(AggAcc *acc, uint32 g, sift_i128 w, int64 carry)
+{
+	acc->i[g] += carry;
+	agg_sum_add(acc, g, w);
+}
+
+extern Datum agg_sum_datum(const AggAcc *acc, uint32 g, int scale);
 
 static inline const sift_i128 *
 pow10_tab(void)

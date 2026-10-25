@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench store [all|plan|setup|run|cold|updates|finish|report|clean|...]   (bench/steps/store.sh, called by bench/bench)
-# The store benchmark: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift, Citus (columnar, one node),
+# The orders benchmark: ten questions about the orders of an e-commerce dataset on PostgreSQL, PostgreSQL with pg_sift, Citus (columnar, one node),
 # Elasticsearch and ClickHouse (bench/sql/store/, bench/steps/store.py). Every server runs alone in a docker container with the same CPU and memory limits,
 # one node, on a port of 127.0.0.1; the same seeded CSV is loaded into all of them; one client times every request.
 # A fair comparison when the engines start different numbers of threads: the container only has the `--cpus N` quota (no pinning) and every

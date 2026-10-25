@@ -69,6 +69,20 @@ SELECT count(*) AS floats, count(*) FILTER (WHERE sift._test_cc_unkey(k) IS DIST
 FROM (SELECT unnest(sift._test_cc_decode(sift._test_cc_encode(keys, kind, 'alp'))) AS k, unnest(keys) AS o
 	  FROM shapes WHERE name = 'mixed floats') t;
 
+-- odd byte widths (3, 5, 6 and 7 bytes a value: the plain-bytes node of a range of 2^17 to 2^56 that no other node beats) at the lengths around the 8-byte loads
+-- of the decoder: the decode, a range test and its sum against the values
+CREATE TEMP TABLE odd AS
+SELECT bits, n, array_agg(v ORDER BY g) AS keys
+FROM (VALUES (20), (36), (44), (52)) b(bits), (VALUES (1), (2), (3), (7), (8), (9), (10), (15), (16), (17), (100), (1000)) l(n),
+	 LATERAL (SELECT g, (hashint8extended(g * 1000 + bits + n, 3) & ((1::int8 << bits) - 1)) - (1::int8 << (bits - 1)) AS v FROM generate_series(1, n) g) x
+GROUP BY bits, n;
+CREATE TEMP TABLE odd_blob AS SELECT bits, n, keys, sift._test_cc_encode(keys, 0, 'for+delta+rle+dict+alp+scale') AS b FROM odd;
+SELECT bits, count(*) AS chunks, count(*) FILTER (WHERE (sift._test_cc_info(b)).tag = 3) AS plain_bytes,
+	   count(*) FILTER (WHERE sift._test_cc_decode(b) <> keys) AS decode_wrong,
+	   count(*) FILTER (WHERE (f).sum IS DISTINCT FROM (SELECT coalesce(sum(k) FILTER (WHERE k BETWEEN -(1::int8 << (bits - 3)) AND (1::int8 << (bits - 2))), 0) FROM unnest(keys) k)) AS sum_wrong,
+	   count(*) FILTER (WHERE cardinality((f).rows) <> (SELECT count(*) FILTER (WHERE k BETWEEN -(1::int8 << (bits - 3)) AND (1::int8 << (bits - 2))) FROM unnest(keys) k)) AS rows_wrong
+FROM odd_blob, LATERAL sift._test_cc_filter(b, -(1::int8 << (bits - 3)), (1::int8 << (bits - 2))) f GROUP BY bits ORDER BY bits;
+
 -- errors of the policy option
 SELECT sift._test_cc_encode('{1,2}', 0, 'gzip');
 SELECT sift._test_cc_encode('{1,2}', 0, 'zstd:23');

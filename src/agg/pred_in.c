@@ -22,6 +22,7 @@ dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
 
 	if (lut)
 		return lut;
+	d = sift_srcdict_whole(d);
 	lut = MemoryContextAllocZero(ex->cxt, ((d->n + 64) / 64) * sizeof(uint64));
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	for (uint32 c = 0; c < d->n; c++)
@@ -78,6 +79,7 @@ in_hash_has(const PredState *st, int64 x)
 }
 
 #define MAX_BITS_RANGE	(1 << 28)	/* values a bit table covers (32 MB) */
+#define MAX_CACHED_RANGE	(1 << 16)	/* values a byte table covers within the first cache level */
 #define MIN_BITS_VALUES	1024		/* members of an IN list from which a range wider than a byte table is a bit table, not a hash table */
 
 static inline bool
@@ -111,6 +113,24 @@ sift_agg_in_table_bytes(uint64 span, int nv)
 			return (double) span;
 		default:
 			return 0;
+	}
+}
+
+/*
+ * the nanoseconds a row costs the test of such a list (measured with the cache the tables of that kind leave: a byte table in the cache 1, a bit table 2,
+ * a byte table wider than the cache 10, a hash table 5 for a short list and up to 60 for a long one)
+ */
+double
+sift_agg_in_test_ns(uint64 span, int nv)
+{
+	switch (in_kind(span, nv))
+	{
+		case IN_BITS:
+			return 2.0;
+		case IN_BYTES:
+			return span > MAX_CACHED_RANGE ? 10.0 : 1.0;
+		default:
+			return Min(5.0 + nv / 200.0, 60.0);
 	}
 }
 

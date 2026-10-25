@@ -114,10 +114,15 @@ typedef struct SiftColOptions
 	bool		rollup_on_demand;	/* a SELECT that scans a unit for lack of its rollup asks for a refresh (docs/COL-PREAGG.md section 7) */
 	int			return_columns;	/* offset of the "return_columns" string (the text, varchar and uuid columns an index-only scan returns), 0 = none */
 	int			key_columns;	/* offset of the "key_columns" string, 0 = not set */
+	int			key_cut;		/* offset of the "key_cut" string, 0 = none */
+	int			key_cut_rows;	/* rows a key-cut unit aims at, 0 = as many as an average superblock holds */
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
+	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
+	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
+	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
 	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
@@ -138,7 +143,11 @@ extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_order_array_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
+extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);

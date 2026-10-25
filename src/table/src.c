@@ -242,7 +242,8 @@ part_col(const TblPart *p, const SiftColDef *want)
 				return j;
 			continue;
 		}
-		SIFT_INVARIANT(have->store == want->store, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		/* a uuid written before it was a dictionary is a VAR leaf of images: the segment is read through the datum, the next rewrite makes it a dictionary */
+		SIFT_INVARIANT(have->store == want->store || (have->store == SIFT_COLS_VAR && want->store == SIFT_COLS_STR), "sift_table: a segment holds column %d in another storage than the table's", want->attno);
 		return j;
 	}
 	return -1;
@@ -304,6 +305,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->buf = palloc0(sizeof(TblLeafBuf) * t->lay->nleaves);
 	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
+	t->raw = palloc0(sizeof(bool) * t->lay->nleaves);
 	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
 	cur = sift_tbl_layout_schema(heap, st);
@@ -374,8 +376,14 @@ tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	add_wbuf(t, sb_lo, sb_hi);
 	for (int k = 0; k < t->nparts; k++)
 	{
-		sift_col_begin(t->part[k].src, NULL, 0, sb_lo, sb_hi);
-		t->part[k].have = sift_col_next(t->part[k].src, &t->part[k].unit);
+		TblPart    *p = &t->part[k];
+		SiftColPred preds[SIFT_AGGZONE_MAX + SIFT_COLSRC_MAX_FILTERS];
+		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, prune, nprune, preds);
+
+		for (int i = 0; i < p->flt.n; i++)
+			preds[n++] = p->flt.pred[i];
+		sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
+		p->have = sift_col_next(p->src, &p->unit);
 	}
 	t->last = -1;
 }
@@ -386,6 +394,7 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 {
 	TblSource  *t = impl;
 
+	t->sel.compact = false;
 	for (;;)
 	{
 		TblPart    *best = NULL;
@@ -407,6 +416,41 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 		unit->priv = best;
 		return true;
 	}
+}
+
+/* A filter is the source's when every segment layout holds its column as an integer leaf: a segment without the column would need the catalog's default tested */
+static uint64
+tbl_set_filters(void *impl, const SiftSrcFilter *f, int nf)
+{
+	TblSource  *t = impl;
+	uint64		ok = 0;
+
+	for (int k = 0; k < t->nparts; k++)
+		t->part[k].flt = (SiftAggFilters) {0};
+	for (int i = 0; i < nf; i++)
+	{
+		bool		all = true;
+
+		for (int k = 0; k < t->nparts; k++)
+			all &= t->part[k].col[f[i].leaf] >= 0 && sift_aggfilt_int(&t->part[k].schema->cols[t->part[k].col[f[i].leaf]]);
+		if (!all)
+			continue;
+		for (int k = 0; k < t->nparts; k++)
+			sift_aggfilt_add(&t->part[k].flt, t->cxt, t->part[k].col[f[i].leaf], &f[i]);
+		ok |= UINT64CONST(1) << i;
+	}
+	return ok;
+}
+
+static bool
+tbl_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftAggFiltRun run = {&p->flt, t->lay, t->tol};
+
+	sift_aggsel_stored(&t->sel, p->src, &p->unit, bits, sift_aggfilt_op, &run);
+	return sift_aggsel_rows_left(bits, unit->nrow);
 }
 
 static void
@@ -442,22 +486,24 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 	return b;
 }
 
-/* The one-entry dictionary of the text default of a column that older segments lack; its id is stable for the life of the source */
+/* The dictionary of the text default of a column that older segments lack (one entry; none when the default is NULL); its id is stable for the life of the source */
 static const SiftSrcDict *
-absent_dict(TblSource *t, int leaf, Datum d)
+absent_dict(TblSource *t, int leaf, Datum d, bool isnull)
 {
 	SiftSrcDict *dict = &t->adict[leaf];
 
 	if (dict->id == NULL)
 	{
-		text	   *tx = DatumGetTextPP(d);
-		uint32	   *off = MemoryContextAlloc(t->cxt, 2 * sizeof(uint32));
-		char	   *bytes = MemoryContextAlloc(t->cxt, VARSIZE_ANY_EXHDR(tx) + 1);
+		text	   *tx = isnull ? NULL : DatumGetTextPP(d);
+		uint32	   *off = MemoryContextAllocZero(t->cxt, 2 * sizeof(uint32));
+		char	   *bytes = MemoryContextAlloc(t->cxt, (tx ? VARSIZE_ANY_EXHDR(tx) : 0) + 1);
 
-		off[0] = 0;
-		off[1] = VARSIZE_ANY_EXHDR(tx);
-		memcpy(bytes, VARDATA_ANY(tx), off[1]);
-		*dict = (SiftSrcDict) {dict, 1, off, bytes};
+		if (tx)
+		{
+			off[1] = VARSIZE_ANY_EXHDR(tx);
+			memcpy(bytes, VARDATA_ANY(tx), off[1]);
+		}
+		*dict = (SiftSrcDict) {dict, tx != NULL, off, bytes};
 	}
 	return dict;
 }
@@ -483,6 +529,8 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 	{
 		memset(b->isnull, 1, n);
 		vec->isnull = b->isnull;
+		if (l->vtype == SCV_CODE)
+			vec->dict = absent_dict(t, leaf, d, true);
 		return;
 	}
 	for (size_t i = 0; i < n; i++)
@@ -519,7 +567,7 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 					((int32 *) b->data)[i] = (int32) DatumGetObjectId(d);
 		}
 	if (l->vtype == SCV_CODE)
-		vec->dict = absent_dict(t, leaf, d);
+		vec->dict = absent_dict(t, leaf, d, false);
 }
 
 /* The engine's vector of a leaf as the executor's, in the leaf's buffers */
@@ -546,7 +594,7 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 			break;
 		case SCV_CODE:
 			memcpy(b->data, v.codes, n * sizeof(uint32));
-			t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes};
+			t->dict[leaf] = sift_aggsel_src_dict(v.dict);
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
@@ -565,6 +613,16 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
+/* A wide leaf is read through a dictionary of its datum images, unless the executor wants the codes of the stored dictionary (set_raw) and the segment has one (an older layout holds the images inline) */
+static void
+read_vec(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, SiftSrcVec *vec)
+{
+	if (t->lay->leaf[leaf].wide && !(t->raw[leaf] && v->dict != NULL))
+		wide_read(t, leaf, p, v, v->n, (Datum) 0, false, vec);
+	else
+		fill_vec(t, leaf, v, vec);
+}
+
 static void
 tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
@@ -577,11 +635,16 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 		read_absent(t, leaf, unit->nrow, vec);
 		return;
 	}
+	if (!t->lay->leaf[leaf].wide && !t->sel.compact)
+	{
+		/* decoded into the leaf's buffer in its own vector type, with no vector of keys to convert and copy */
+		TblLeafBuf *b = leaf_buf(t, leaf, t->lay->leaf[leaf].vtype, sift_col_lane_n(&p->unit, p->col[leaf]));
+
+		sift_aggsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], t->tol[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+		return;
+	}
 	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
-	if (t->lay->leaf[leaf].wide)
-		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
-	else
-		fill_vec(t, leaf, &v, vec);
+	read_vec(t, leaf, p, &v, vec);
 }
 
 /* ---- the values of a path of another JSON type than its leaf's: the engine sets them aside as overflow, with the tag of their type ---- */
@@ -596,6 +659,12 @@ tbl_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 		return false;
 	sift_col_zone(&p->unit, p->col[leaf], &cz);
 	return cz.has_ovf;
+}
+
+static void
+tbl_set_raw(void *impl, int leaf)
+{
+	((TblSource *) impl)->raw[leaf] = true;
 }
 
 static void
@@ -631,7 +700,7 @@ tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 {
 	TblSource  *t = impl;
 	TblPart    *p = unit->priv;
-	bool		compact = t->sel.keep && t->sel.compact,
+	bool		compact = t->sel.compact,
 				known;
 
 	sift_col_jnull_bits(&p->unit, p->col[leaf], compact ? t->sel.idx : NULL, t->sel.sel.count, bits, &known);
@@ -647,7 +716,7 @@ stored_ords(TblSource *t, const uint32 *rows, int n)
 	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
 
 	for (int i = 0; i < n; i++)
-		ords[i] = t->sel.keep && t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
+		ords[i] = t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
 	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
 	return ords;
 }
@@ -722,11 +791,50 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	}
 	ords = stored_ords(t, rows, n);
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
-	if (t->lay->leaf[leaf].wide)
-		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
-	else
-		fill_vec(t, leaf, &v, vec);
+	read_vec(t, leaf, p, &v, vec);
 	pfree(ords);
+}
+
+/* Only the rows of bits, at their rows in the leaf's buffer; the unit as stored, a column the segment lacks and a wide leaf are read whole */
+static void
+tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftColSel	sel;
+	SiftColVec	v;
+	uint32	   *idx;
+	TblLeafBuf *b;
+
+	if (t->sel.compact || p->col[leaf] < 0 || t->lay->leaf[leaf].wide)
+	{
+		tbl_read(impl, unit, leaf, vec);
+		return;
+	}
+	sift_col_sel_alloc(p->src, unit->nrow, &sel);
+	memcpy(sel.bits, bits, sel.nwords * sizeof(uint64));
+	sift_col_sel_count(&sel);
+	idx = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_sel_idx(&sel, idx);
+	sift_col_read(&p->unit, p->col[leaf], &sel, &v);
+	b = leaf_buf(t, leaf, t->lay->leaf[leaf].vtype, unit->nrow);
+	sift_aggsel_scatter(&t->lay->leaf[leaf], t->tol[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+	pfree(idx);
+}
+
+/* The rows of bits are few: the unit goes on as them alone, renumbered as in a unit of a match set */
+static bool
+tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	uint32		nrow;
+
+	if (t->sel.compact)
+		return false;
+	sift_aggsel_narrow(&t->sel, p->src, &p->unit, bits, &nrow);
+	unit->nrow = nrow;
+	return true;
 }
 
 static void
@@ -840,10 +948,15 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.read_sel = tbl_read_sel,
+	.narrow = tbl_narrow,
+	.set_filters = tbl_set_filters,
+	.filter = tbl_filter,
 	.set_wide = tbl_set_wide,
 	.filter_wide = tbl_filter_wide,
 	.overflow = tbl_overflow,
 	.tolerate_ovf = tbl_tolerate_ovf,
+	.set_raw = tbl_set_raw,
 	.filter_types = tbl_filter_types,
 	.read_types = tbl_read_types,
 	.read_jnull = tbl_read_jnull,

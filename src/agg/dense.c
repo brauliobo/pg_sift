@@ -115,7 +115,10 @@ dense_gids(AggExec *ex, int start, int n)
 					own[i] = v->dict->n;
 			codes[j] = own;
 		}
-		maps[j] = dict_kmap(ex, dict_slot(ex, v->dict), v->dict, j);
+		uint32	   *km = dict_kmap(ex, dict_slot(ex, v->dict), v->dict, j);
+
+		kmap_fill(ex, km, v->dict, j, codes[j], n);
+		maps[j] = km;
 		grow |= key_used(&ex->ks[j]) > ex->ks[j].cap;
 	}
 	if (grow)

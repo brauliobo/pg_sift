@@ -1,7 +1,7 @@
 # Quickstart: pg_sift in five minutes
 
-You need Docker. Nothing else is installed on your machine and everything below is removed at the end. The image is built from this repository on the official
-`postgres` image ([CONTAINERS.md](CONTAINERS.md)); the build takes a few minutes the first time.
+You need only Docker; everything below is removed at the end. The image is built from this repository on the official
+`postgres` image ([CONTAINERS.md](CONTAINERS.md)) and takes a few minutes the first time.
 
 ## 1. Start PostgreSQL with pg_sift
 
@@ -11,11 +11,11 @@ docker run -d --name sift-try -e POSTGRES_PASSWORD=example pg_sift:pg18
 docker exec -it sift-try psql -U postgres
 ```
 
-`CREATE EXTENSION pg_sift` has already been run for the `postgres` database and for `template1`, so `\dx` lists it and every database you create has it.
+`CREATE EXTENSION pg_sift` has already run for the `postgres` database and `template1`, so `\dx` lists it and every new database has it.
 
 ## 2. Load a small data set
 
-A hundred thousand orders, built in SQL, with the two indexes pg_sift adds: `sift_col` for the aggregates over the columns it lists, `sift` for BM25 search on the title.
+100,000 orders built in SQL, with the two indexes pg_sift adds: `sift_col` for aggregates over the columns it lists, `sift` for BM25 search on the title.
 
 ```sql
 CREATE TABLE orders AS
@@ -70,8 +70,8 @@ WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;
 --    Buffers: shared hit=75
 ```
 
-The aggregate ran inside the column index (`Custom Scan (SiftAgg)`), and `Units Pruned: 1` is a unit skipped without being read. Switch the pushdown off and the same query
-takes the plan PostgreSQL has without pg_sift, with the same answer:
+The aggregate ran inside the column index (`Custom Scan (SiftAgg)`); `Units Pruned: 1` is a unit skipped unread. With the pushdown off the same query
+takes the plain PostgreSQL plan and returns the same answer:
 
 ```sql
 SET sift.enable_agg = off;
@@ -79,13 +79,12 @@ SET sift.enable_agg = off;
 RESET sift.enable_agg;
 ```
 
-(`EXPLAIN` lines are shortened here; the figures are from PostgreSQL 18.6 with `shared_buffers` at its default.) When a query keeps the normal plan, `SET sift.explain_refusals = on`
+(`EXPLAIN` lines are shortened; figures are from PostgreSQL 18.6 with default `shared_buffers`.) When a query keeps the normal plan, `SET sift.explain_refusals = on`
 says why ([USAGE.md](USAGE.md#why-a-query-kept-the-normal-plan)).
 
 ## 5. The opt-in switches
 
-Everything the quickstart used is on by default. These are off (a `SHOW` in a session that has used the extension prints the default) and each changes behaviour or
-disk format, so they are yours to turn on ([USAGE.md](USAGE.md#maintenance-and-operations) has the full list):
+The quickstart used only defaults. These settings change behaviour or disk format, so you turn them on yourself (`SHOW` in a session that has used the extension prints the default) ([USAGE.md](USAGE.md#maintenance-and-operations) has the full list):
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -107,9 +106,9 @@ bench/bench kit                      # docker only; builds the image if needed
 bench/bench kit --rows 200000 --cpus 2 --runs 3
 ```
 
-It starts a throwaway container, loads the online-store data of the benchmark (100,000 orders by default), runs the ten questions with and without the pushdown, compares every
-answer, and prints a table (exit status 3 when an answer differs). It took about 25 seconds after the image existed (100,000 orders); the
-absolute times of a laptop with fewer and slower cores differ, and so do the ratios. Only 100,000 orders were run here.
+It starts a throwaway container, loads the orders data of the benchmark (100,000 orders by default), runs the ten questions with and without the pushdown, compares every
+answer, and prints a table (exit status 3 when an answer differs). It took about 25 seconds once the image existed (100,000 orders, the only size run);
+a laptop with fewer, slower cores differs in times and ratios.
 Citus, Elasticsearch and ClickHouse (about an hour).
 
 ## Clean up

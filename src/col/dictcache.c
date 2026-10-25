@@ -231,7 +231,7 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
  */
 #define ZONES_UNIT	(UINT32_MAX - 1)
 
-const ZoneArrays *
+ZoneArrays *
 sift_cseg_zones_find(SiftColSegment *seg, int col)
 {
 	DictKey		k;
@@ -268,12 +268,13 @@ typedef struct AskEnt
 {
 	DictKey		key;
 	uint32		asks;
+	bool		nokeep;			/* the parsed dictionary did not fit the cache: parsing it again for every query would cost more than all the searches of the stream */
 } AskEnt;
 
 static HTAB *asks;
 
-uint32
-sift_cseg_dict_asked(SiftColSegment *seg, int col)
+static AskEnt *
+ask_ent(SiftColSegment *seg, int col)
 {
 	DictKey		k;
 	AskEnt	   *e;
@@ -292,13 +293,28 @@ sift_cseg_dict_asked(SiftColSegment *seg, int col)
 	{
 		hash_destroy(asks);
 		asks = NULL;
-		return sift_cseg_dict_asked(seg, col);
+		return ask_ent(seg, col);
 	}
 	dict_key(&k, seg, col, UINT32_MAX);
 	e = hash_search(asks, &k, HASH_ENTER, &found);
 	if (!found)
+	{
 		e->asks = 0;
-	return ++e->asks;
+		e->nokeep = false;
+	}
+	return e;
+}
+
+uint32
+sift_cseg_dict_asked(SiftColSegment *seg, int col)
+{
+	return ++ask_ent(seg, col)->asks;
+}
+
+bool
+sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
+{
+	return ask_ent(seg, col)->nokeep;
 }
 
 SiftCDict *
@@ -341,7 +357,10 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
 	CDICT_STAT(loads);
 	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	{
+		ask_ent(seg, col)->nokeep = true;
 		return d;
+	}
 	MemoryContextSetParent(cx, cache_cx);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);
 	e->cx = cx;
@@ -403,4 +422,48 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 	e->pins = 0;
 	dlist_push_tail(&lru, &e->node);
 	cache_bytes += size;
+}
+
+/* a unit's page mask and run head are kept under the unit number with this bit: the lengths of the unit are under the number alone */
+#define SBHEAD_UNIT		0x80000000u
+
+bool
+sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
+{
+	DictKey		k;
+	DictEnt    *e;
+	MemoryContext cx;
+	SiftCRun	r;
+	uint64		at;
+
+	dict_key(&k, seg, col, u | SBHEAD_UNIT);
+	if (cache != NULL && (e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		dlist_move_tail(&lru, &e->node);
+		*out = *(SiftCSbHead *) e->obj;
+		return true;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!sift_cseg_unit_pagemask(seg, u, out->pm))
+		return false;
+	if (sift_cseg_run(seg, col, u, &r, &at) && r.heads > 0)
+	{
+		out->has = true;
+		sift_crun_head_counts(r.heads, r.n, &out->nlo, &out->nhi);
+		sift_cseg_run_heads(seg, at, &r, out->ent);
+	}
+	if (cache == NULL)
+		cache_init();
+	if (!dict_room(sizeof(*out)))
+		return true;
+	cx = AllocSetContextCreate(cache_cx, "sift cache segment run head", ALLOCSET_SMALL_SIZES);
+	e = hash_search(cache, &k, HASH_ENTER, NULL);
+	e->cx = cx;
+	e->obj = MemoryContextAlloc(cx, sizeof(*out));
+	memcpy(e->obj, out, sizeof(*out));
+	e->size = sizeof(*out);
+	e->pins = 0;
+	dlist_push_tail(&lru, &e->node);
+	cache_bytes += sizeof(*out);
+	return true;
 }

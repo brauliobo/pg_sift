@@ -138,6 +138,7 @@ typedef struct AggCtx
 	List	   *rtable;			/* the range table expr_text resolves Vars in; NIL: the query's */
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
 	List	   *oparams;		/* OuterParam of the EXISTS sub-plan whose test is being compiled */
+	List	   *level_params;	/* top-N: the Params of the scanned table's conditions that an enclosing query level sets (the scan starts over for each value) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
@@ -151,13 +152,16 @@ typedef struct AggCtx
 	bool		topn_xserial;	/* a sort expression the workers cannot evaluate: a parameter of the statement, a function that is not parallel safe */
 	double		topn_keybytes;	/* ... the bytes the entries of those keys take in a row of the heap or the sort */
 	int			nwide;			/* the conjuncts on wide leaves (SAP_WIDE) of the spec */
-	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate: the leader runs them (a worker has no plan state to start them in) */
+	int			nsubplan;		/* the hashed sub-plans its lookup tables evaluate (once each, at the start of the scan) */
+	bool		sub_serial;		/* one of them cannot run in a worker: a sub-plan that is not parallel safe, or the output of an ARRAY sub-select (a parameter the leader sets) */
 	Cost		subplan_cost;	/* their start-up: the sub-selects run once, as in the normal plan */
 	bool		joinless;		/* the caller takes no join: the sub-selects are not planned */
 	int			nsiblings;		/* the plans and the unnest joined to the scanned table: the order PostgreSQL runs them in is its own */
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 	bool		detached;		/* root is a query level below the one being planned (the arms of a two level aggregate): its paths are planned there */
 	Path	   *spine;			/* the plan of the spine's rows (SiftAggSpine): the only child of the path */
+	List	   *parent_pathkeys;	/* the pathkeys of the parent query that the ordered path being added satisfies, and the entry of the sub-select there (agg/plan_ord.c) */
+	Index		parent_rti;
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -166,6 +170,8 @@ typedef struct SiftAggPath
 	CustomPath path;
 	List       *correlated;		/* the native path of each child planned in its own query level (correlated, or of a detached scan), NULL for the other joins */
 	List       *subroots;		/* and the query level it belongs to */
+	List       *parent_pathkeys;	/* an ordered path: the pathkeys of the parent query it satisfies (also on columns the sub-select gives as constants) ... */
+	Index		parent_rti;		/* ... on the entry of the parent that reads this level */
 } SiftAggPath;
 
 typedef struct JsonRef
@@ -244,6 +250,7 @@ typedef struct FromScan
 	int			ntables;		/* the tables the FROM list has */
 	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
 	Bitmapset  *hidden;			/* the tables of the trees on the right of semi and anti joins besides the one the join reads: their plan is the child's */
+	Bitmapset  *outer;			/* the tables an inner join joins that the scan joins as an outer one: another arm of the two-level scan keeps the rows that have no match */
 } FromScan;
 
 /* Aggrefs of the output, each once; false if a column is used outside the keys and aggregates */
@@ -263,12 +270,17 @@ extern int	agg_index_usable;	/* ... and how many of them the stage has met (a ta
 extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
 extern int leaf_level(AggCtx *c, int id);
 extern const char *leaf_name(AggCtx *c, int id);
+extern int	agg_child_planning;
 extern bool null_input_param(Node *n);
+extern bool level_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
-#define AGG_FIRST_ROW		1.0		/* a row of a table read as the first-row lookup of a child (agg/first.c): its hash costs 0.2 us a row where a run of the child costs 1.6 us, which the model counts as 8.5 */
+#define AGG_ORDER_MIN_COST	1000.0	/* the cost of the normal join under which the other tables of an inner join are not tried as the scanned one: the order saves less than the 60 to 90 us the extra paths take to plan (about 2 ms of the normal plan) */
+#define AGG_LOAD_ROW		20.0	/* ... of a table read whole from its heap, not kept from an earlier query: the visibility test, the key hashed and the row stored (66 ns a row measured on a 500,000-row read, 100 ns with the first touches), beyond the pages */
+#define AGG_LOAD_ROW_COLS	8.0	/* ... of a table read whole from the leaves of a column index that holds its columns (map_load_cols): the units are decoded a unit at a time and a tuple of the columns is made for the rows that are visible (65 ns a row against 160 ns from the heap, measured) */
+#define AGG_FIRST_ROW		0.1		/* a row of a table read as the first-row lookup of a child (agg/first.c): 0.3 us to load and hash (33 ms for 108,000 rows), a model unit being 2.9 us */
 #define AGG_FUSED_ARM		0.1		/* the share of its price an arm pays that runs in the pass of another one (agg/fuse.c) */
 #define AGG_SHARE_RATIO		4.0		/* rows of the scan for each row of the lookup tables from which workers pay: the leader writes the tables to the shared memory and each worker maps them (4 workers, measured at 1, 2, 5 and 12) */
 #define AGG_IDX_ROW			12.0	/* a row of the joined table read through an index: the btree descent and the heap fetch */
@@ -283,7 +295,11 @@ extern bool path_keys(Node *n, List **keys);
 extern bool json_access(AggCtx *c, Node *e, JsonRef *r);
 extern Oid json_cast_target(Oid fid);
 extern int match_leaf(AggCtx *c, Node *e);
+extern Node *typed_member(AggCtx *c, Node *arg);
+extern double leaf_correlation(AggCtx *c, int leaf);
 extern Node *normalize_expr(AggCtx *c, Node *n);
+extern Node *placeholder_expr(AggCtx *c, PlaceHolderVar *ph);
+extern Node *strict_placeholders(AggCtx *c, Node *n);
 
 extern bool outer_ref_walker(Node *n, OuterRef *o);
 extern bool reads_outer(AggCtx *c, RangeTblEntry *e, int skip);
@@ -301,11 +317,12 @@ extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
 extern const char *bucket_text(int secs);
-extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr);
+extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned);
 extern int leaf_digits(Oid typid, int32 typmod);
 extern bool nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2);
 extern bool nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig);
 extern bool compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o);
+extern bool compile_nx_product(AggCtx *c, Node *e, SiftAggNum *o);
 extern bool compile_int8_arith(AggCtx *c, Node *e, SiftAggNum *o);
 extern int nx_level(AggCtx *c, const SiftAggNum *o);
 extern bool nx_raises(const SiftAggNum *o);
@@ -382,25 +399,38 @@ extern double elems_of(AggCtx *c, int grp);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern double in_list_table_bytes(AggCtx *c, const SiftAggPred *p);
+extern double in_list_test_ns(AggCtx *c, const SiftAggPred *p);
 extern bool extern_param_walker(Node *node, void *context);
 extern double rel_pages(AggCtx *c);
 extern Cost agg_open_cost(int nparts);
+extern bool leaf_wsum_only(const SiftAggSpec *s, int leaf);
 extern double agg_stage_normal;
+extern double agg_read_rows;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
+extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double filter_rows_ratio(AggCtx *c);
+extern void derived_rel_rows(PlannerInfo *root, RelOptInfo *rel);
+extern void derived_cte_rows(PlannerInfo *root, RelOptInfo *rel);
+extern double agg_cte_lift;
+extern bool has_column_source(Oid relid);
 extern double column_distinct(AggCtx *c, Var *v);
 extern void agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out);
 extern double group_count(AggCtx *c, const SiftAggSpec *s);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
-extern double agg_share_rows(AggCtx *c);
+extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
 extern bool preserved_join(AggCtx *c);
 extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan_post);
-extern int	parallel_workers(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel);
+extern int	parallel_workers(AggCtx *c, SiftAggSpec *s);
+extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
-						 List *scan_tlist, int nworkers);
+						 List *scan_tlist, int nworkers, List *pathkeys);
+extern void agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
+							  List *scan_tlist, List *keys, double table, int nworkers);
+extern Cost agg_order_cost(AggCtx *c, const SiftAggSpec *s, double groups);
+extern void agg_subquery_ordered(PlannerInfo *root, RelOptInfo *rel, Index rti);
 extern bool child_paths(AggCtx *c, SiftAggSpec *s);
 extern Node *sift_agg_child_sig(Node *n, List *params);
 
@@ -421,5 +451,37 @@ extern void agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo 
 					   PathTarget *target, List *keys, List *scan_tlist);
 extern bool compile_grouping(Query *parse, GroupingFunc *g, SiftAggAgg *out);
 extern void add_sets(Query *parse, SiftAggSpec *s, List **scan_tlist);
+
+/* agg/verdict.c: the choice between a shared CTE and its inline plan, kept for the statements of a backend */
+#define VERDICT_RELS 16
+
+typedef struct CteVerdict
+{
+	uint64		key;
+	bool		cacheable,		/* the statement has a key */
+				known,			/* the cache has the verdict (won, and the totals of the plan it was made from) */
+				from_shared,	/* another backend made it */
+				won,
+				prior_seen,		/* the plan in full that follows a read that ended an entry's checks: the choice that entry had (prior_won) and how often the plans in full confirmed it (streak) */
+				prior_won;
+	int			streak;
+	double		scans,
+				shared,
+				inl,			/* the total cost of the inline plan and of the plan with the shared CTEs, as they were planned in full; 0: not known */
+				pln;
+	int			nrels;
+	Oid			rels[VERDICT_RELS];
+}			CteVerdict;
+
+#define VERDICT_CTE		0		/* inline or shared CTE (cte.c plan_cte) */
+#define VERDICT_FLAT	1		/* the flattened form of the statement or the one as written (cte.c plan_flat) */
+
+extern void verdict_new_planning(void);
+extern void verdict_lookup(Query *q, int kind, CteVerdict *vd);
+#define VERDICT_TAKE	0
+#define VERDICT_SWITCH	1
+#define VERDICT_FULL	2
+extern int verdict_accept(CteVerdict *vd, double cost);
+extern void verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double inl, double pln);
 
 #endif							/* SIFT_AGG_PLAN_INT_H */

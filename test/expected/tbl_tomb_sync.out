@@ -47,5 +47,49 @@ SELECT id, v FROM th WHERE id IN (5, 10, 94, 95, 96, 29999, 30000) ORDER BY id;
  29999 | 30000
 (3 rows)
 
+-- a key updated many times in one transaction: the versions the transaction deleted are no rows for its unique check and its scans, the one it updated
+-- last is; a rolled back savepoint keeps its updates out, and a key it deleted can be inserted again
+CREATE TABLE su (id int PRIMARY KEY, v int) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE sh (id int PRIMARY KEY, v int) WITH (autovacuum_enabled = false);
+INSERT INTO su SELECT g, g FROM generate_series(1, 200) g;
+INSERT INTO sh SELECT g, g FROM generate_series(1, 200) g;
+VACUUM su;
+DO $$
+DECLARE
+	t text;
+	dup int;
+BEGIN
+	FOREACH t IN ARRAY ARRAY['su', 'sh'] LOOP
+		FOR i IN 1..6 LOOP
+			EXECUTE format('UPDATE %I SET v = v + 1 WHERE id <= 20', t);
+		END LOOP;
+		BEGIN
+			EXECUTE format('UPDATE %I SET v = v + 100 WHERE id <= 20', t);
+			RAISE EXCEPTION 'undo';
+		EXCEPTION WHEN raise_exception THEN
+			NULL;
+		END;
+		dup := 0;
+		BEGIN
+			EXECUTE format('INSERT INTO %I VALUES (7, 0)', t);
+		EXCEPTION WHEN unique_violation THEN
+			dup := 1;
+		END;
+		RAISE NOTICE '% duplicate refused: %, rows of 7: %, sum of 1..20: %', t, dup, (SELECT count(*) FROM su WHERE t = 'su' AND id = 7) + (SELECT count(*) FROM sh WHERE t = 'sh' AND id = 7), CASE t WHEN 'su' THEN (SELECT sum(v) FROM su WHERE id <= 20) ELSE (SELECT sum(v) FROM sh WHERE id <= 20) END;
+		EXECUTE format('DELETE FROM %I WHERE id = 9', t);
+		EXECUTE format('INSERT INTO %I VALUES (9, -1)', t);
+	END LOOP;
+END $$;
+NOTICE:  su duplicate refused: 1, rows of 7: 1, sum of 1..20: 330
+NOTICE:  sh duplicate refused: 1, rows of 7: 1, sum of 1..20: 330
+SELECT (SELECT count(*) FROM (SELECT * FROM su EXCEPT SELECT * FROM sh) a) AS only_in_table,
+       (SELECT count(*) FROM (SELECT * FROM sh EXCEPT SELECT * FROM su) b) AS only_in_twin,
+       (SELECT v FROM su WHERE id = 9) AS reinserted;
+ only_in_table | only_in_twin | reinserted 
+---------------+--------------+------------
+             0 |            0 |         -1
+(1 row)
+
+DROP TABLE su, sh;
 DROP TABLE th, tm;
 DROP EXTENSION pg_sift;

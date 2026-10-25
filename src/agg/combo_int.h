@@ -52,6 +52,9 @@ typedef struct DNum
 	bool		ok;
 } DNum;
 
+extern void numeric_decode(Datum d, DNum *out);
+extern void numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m);
+
 /* a leaf that is a column of an earlier lookup: its values are known by id, not by the rows of that table that hold them */
 typedef struct PriorVal
 {
@@ -123,6 +126,7 @@ ComboEnt combo_unmatched(AggExec *ex, int ci, const uint32 *prior);
 bool combo_prior_keyed(AggExec *ex, int ci, int prior);
 bool combo_prior_matches(AggExec *ex, int ci, int prior, uint32 row);
 void combo_reset(AggExec *ex, int ci);
+void combo_forget_priors(AggExec *ex, int ci);
 void combo_trim(AggExec *ex);
 uint64 combo_prior_vid(AggExec *ex, int ci, int p, uint32 out);
 void combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples);

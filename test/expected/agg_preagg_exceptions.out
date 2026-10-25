@@ -1,0 +1,266 @@
+-- Exceptions (column format minor 19, docs/COL-PREAGG.md section 11): a unit in which a leaf is NULL in nearly every row (a soft-delete stamp) also keeps the cube and
+-- the element rollups of the few rows where it is not, with the dims and measures of its own, and a scan with `WHERE stamp IS NULL` answers the unit as its pre-aggregates minus
+-- those. Every query runs three ways, which must give the same rows (text): with the pre-aggregates, without (sift.agg_preagg off), by the plain plan (sift.enable_agg off).
+-- `pre` says how many units the first one answered from metadata, `net` how many of them net of exceptions and `scan` how many units with exceptions it had to scan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+-- workers lay the rows out in other units from run to run: every build is serial
+SET max_parallel_maintenance_workers = 0;
+CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.agg_preagg', pre::text, true);
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT net int, OUT scan int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_preagg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		net := coalesce(substring(l from 'Units Net Of Exceptions: (\d+)')::int, net);
+		scan := coalesce(substring(l from 'Units With Exceptions Scanned: (\d+)')::int, scan);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL; net := NULL; scan := NULL;
+END $$;
+-- kind: 6 values, grp: 30 values and NULLs, val near +-2^62 for two kinds (the sum of a group leaves int8 when exceptions are added back wrongly), flt: floats of
+-- a wide spread, scores: a map of float8 values per row; the stamp is set on 1 row in 200 (about 5 a unit of 1,024 rows)
+CREATE TABLE ex (id int, kind int, grp text, val bigint, small int, amt numeric(10, 2), flt float8, d date, metrics_a jsonb, stamp timestamptz, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE ex ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ex
+SELECT g, g % 6, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END,
+       CASE g % 6 WHEN 0 THEN 4611686018427387904 - g % 1000 WHEN 1 THEN -4611686018427387904 + g % 1000 WHEN 3 THEN NULL ELSE (g % 997) * 3 - 1000 END,
+       CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 37) % 1000 - 400 END,
+       CASE WHEN g % 13 = 0 THEN NULL ELSE ((g * 91) % 20000) / 100.0 - 50 END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE ((g % 71) - 35) * power(10, (g % 5) - 2)::float8 END,
+       date '2025-01-01' + g / 100,
+       jsonb_build_object('a', (g % 10) + 1, 'b', ((g * 7) % 10) + 1, 'w', ((g % 41) - 20) * power(2, (g % 9) - 3)::float8 / 4) || CASE WHEN g % 3 = 0 THEN jsonb_build_object('c', (g % 7) / 2.0) ELSE '{}' END,
+       CASE WHEN g % 200 = 0 THEN timestamptz '2025-06-01 00:00:00+00' + (g % 50) * interval '1 day' END,
+       repeat('p', 1500)
+FROM generate_series(1, 24000) g;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex;
+CREATE TABLE pa_q (n int, shape text, q text);
+INSERT INTO pa_q VALUES
+	(1, 'by kind: counts, int sums',   'SELECT kind, count(*), count(val), sum(val), sum(small), sum(amt) FROM %s WHERE stamp IS NULL GROUP BY kind'),
+	(2, 'by text key',                 'SELECT grp, count(*), avg(amt), sum(small) FROM %s WHERE stamp IS NULL GROUP BY grp'),
+	(3, 'map unnest: float sums',      'SELECT r.key, count(*), sum((r.value #>> ''{}'')::float8) FROM %s, jsonb_each(metrics_a) r WHERE stamp IS NULL GROUP BY 1'),
+	(4, 'min and max: scanned',        'SELECT kind, min(val), max(val) FROM %s WHERE stamp IS NULL GROUP BY kind'),
+	(5, 'map unnest: count, float avg', 'SELECT r.key, count(*), round(avg((r.value #>> ''{}'')::float8)::numeric, 6) FROM %s, jsonb_each(metrics_a) r WHERE stamp IS NULL GROUP BY 1'),
+	(6, 'a range of days',             'SELECT kind, count(*), sum(amt) FROM %s WHERE stamp IS NULL AND d BETWEEN date ''2025-01-20'' AND date ''2025-03-20'' GROUP BY kind'),
+	(7, 'no key: the sums',            'SELECT count(*), sum(val), sum(amt) FROM %s WHERE stamp IS NULL'),
+	(8, 'IS NOT NULL',                 'SELECT kind, count(*), sum(small) FROM %s WHERE stamp IS NOT NULL GROUP BY kind'),
+	(9, 'FILTER on the key',           'SELECT sum(amt) FILTER (WHERE kind = 1), count(*) FILTER (WHERE kind = 2) FROM %s WHERE stamp IS NULL'),
+	(10, 'a test of the stamp',        'SELECT kind, count(*) FROM %s WHERE stamp IS NULL AND stamp > timestamptz ''2025-06-10'' GROUP BY kind'),
+	(11, 'count distinct: scanned',    'SELECT kind, count(DISTINCT grp) FROM %s WHERE stamp IS NULL GROUP BY kind'),
+	(13, 'map unnest: float min: scanned', 'SELECT r.key, min((r.value #>> ''{}'')::float8), max((r.value #>> ''{}'')::float8) FROM %s, jsonb_each(metrics_a) r WHERE stamp IS NULL GROUP BY 1'),
+	(12, 'without the test',           'SELECT kind, count(*), sum(amt) FROM %s GROUP BY kind');
+CREATE FUNCTION pa_check(tbl text) RETURNS TABLE (n int, shape text, pre text, net text, scan text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
+	       CASE WHEN u.net IS NULL THEN '-' WHEN u.net = 0 THEN 'none' ELSE 'yes' END,
+	       CASE WHEN u.scan IS NULL THEN '-' WHEN u.scan = 0 THEN 'none' ELSE 'yes' END,
+	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
+	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q) z, LATERAL pa_units(z.q) u ORDER BY z.n
+$$;
+CREATE PROCEDURE pa_settle() LANGUAGE plpgsql AS $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '120 seconds';
+BEGIN
+	WHILE EXISTS (SELECT 1 FROM sift.col_rollup_queue())
+	   OR EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL) LOOP
+		IF clock_timestamp() > deadline THEN
+			RAISE EXCEPTION 'not settled';
+		END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+CREATE INDEX ex_col ON ex USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_col') WHERE kind = 'immutable';
+ minors 
+--------
+ {19}
+(1 row)
+
+SELECT sift.col_verify('ex_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- 1. as built: the units that have exceptions are answered net of them
+SELECT * FROM pa_check('ex');
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | all  | yes  | none | t
+  2 | by text key                    | all  | yes  | none | t
+  3 | map unnest: float sums         | all  | yes  | none | t
+  4 | min and max: scanned           | none | none | yes  | t
+  5 | map unnest: count, float avg   | all  | yes  | none | t
+  6 | a range of days                | some | yes  | yes  | t
+  7 | no key: the sums               | all  | -    | -    | t
+  8 | IS NOT NULL                    | none | -    | -    | t
+  9 | FILTER on the key              | all  | yes  | none | t
+ 10 | a test of the stamp            | none | -    | -    | t
+ 11 | count distinct: scanned        | -    | -    | -    | t
+ 12 | without the test               | all  | -    | -    | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(13 rows)
+
+-- 2. rows stamped since the last VACUUM make their units scanned (a unit is exact only when it has no dead row); the others still answer
+UPDATE ex SET stamp = timestamptz '2025-07-01' WHERE id < 3000 AND id % 97 = 0;
+SELECT * FROM pa_check('ex');
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | some | yes  | none | t
+  2 | by text key                    | some | yes  | none | t
+  3 | map unnest: float sums         | some | yes  | none | t
+  4 | min and max: scanned           | none | none | yes  | t
+  5 | map unnest: count, float avg   | some | yes  | none | t
+  6 | a range of days                | some | yes  | yes  | t
+  7 | no key: the sums               | some | -    | -    | t
+  8 | IS NOT NULL                    | none | -    | -    | t
+  9 | FILTER on the key              | some | yes  | none | t
+ 10 | a test of the stamp            | none | -    | -    | t
+ 11 | count distinct: scanned        | -    | -    | -    | t
+ 12 | without the test               | some | -    | -    | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(13 rows)
+
+-- 3. after VACUUM and a merge the units are written again, their exceptions with them
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ex;
+SELECT sift.col_promote('ex_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('ex_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ex;
+CALL pa_settle();
+SELECT * FROM pa_check('ex');
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | some | yes  | yes  | t
+  2 | by text key                    | some | yes  | yes  | t
+  3 | map unnest: float sums         | some | yes  | yes  | t
+  4 | min and max: scanned           | none | none | yes  | t
+  5 | map unnest: count, float avg   | some | yes  | yes  | t
+  6 | a range of days                | some | yes  | yes  | t
+  7 | no key: the sums               | some | -    | -    | t
+  8 | IS NOT NULL                    | none | -    | -    | t
+  9 | FILTER on the key              | some | yes  | yes  | t
+ 10 | a test of the stamp            | none | none | yes  | t
+ 11 | count distinct: scanned        | -    | -    | -    | t
+ 12 | without the test               | some | -    | -    | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(13 rows)
+
+SELECT sift.col_verify('ex_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- 4. an index built under column format minor 14 has no exceptions: the same answers, the units with a stamp scanned; a REINDEX writes them
+CREATE TABLE ex_old (LIKE ex) WITH (autovacuum_enabled = off);
+ALTER TABLE ex_old ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ex_old SELECT * FROM ex;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_old;
+SET sift.col_format_minor = 14;
+CREATE INDEX ex_old_col ON ex_old USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
+RESET sift.col_format_minor;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_old_col') WHERE kind = 'immutable';
+ minors 
+--------
+ {7}
+(1 row)
+
+SELECT * FROM pa_check('ex_old');
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | none | none | yes  | t
+  2 | by text key                    | none | none | yes  | t
+  3 | map unnest: float sums         | none | none | yes  | t
+  4 | min and max: scanned           | none | none | yes  | t
+  5 | map unnest: count, float avg   | none | none | yes  | t
+  6 | a range of days                | none | none | yes  | t
+  7 | no key: the sums               | all  | -    | -    | t
+  8 | IS NOT NULL                    | none | -    | -    | t
+  9 | FILTER on the key              | none | none | yes  | t
+ 10 | a test of the stamp            | none | none | yes  | t
+ 11 | count distinct: scanned        | -    | -    | -    | t
+ 12 | without the test               | all  | -    | -    | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(13 rows)
+
+REINDEX INDEX ex_old_col;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_old_col') WHERE kind = 'immutable';
+ minors 
+--------
+ {19}
+(1 row)
+
+SELECT * FROM pa_check('ex_old');
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | some | yes  | yes  | t
+  2 | by text key                    | some | yes  | yes  | t
+  3 | map unnest: float sums         | some | yes  | yes  | t
+  4 | min and max: scanned           | none | none | yes  | t
+  5 | map unnest: count, float avg   | some | yes  | yes  | t
+  6 | a range of days                | some | yes  | yes  | t
+  7 | no key: the sums               | all  | -    | -    | t
+  8 | IS NOT NULL                    | none | -    | -    | t
+  9 | FILTER on the key              | some | yes  | yes  | t
+ 10 | a test of the stamp            | none | none | yes  | t
+ 11 | count distinct: scanned        | -    | -    | -    | t
+ 12 | without the test               | all  | -    | -    | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(13 rows)
+
+-- 5. a unit with more than 1 row in 100 stamped keeps no exceptions: it is scanned
+CREATE TABLE ex_many (LIKE ex) WITH (autovacuum_enabled = off);
+ALTER TABLE ex_many ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ex_many SELECT id, kind, grp, val, small, amt, flt, d, metrics_a, CASE WHEN id % 40 = 0 THEN timestamptz '2025-06-01' END, pad FROM ex;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_many;
+CREATE INDEX ex_many_col ON ex_many USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
+SELECT * FROM pa_check('ex_many') WHERE n IN (1, 5);
+ n |            shape             | pre  | net  | scan | same 
+---+------------------------------+------+------+------+------
+ 1 | by kind: counts, int sums    | none | none | yes  | t
+ 5 | map unnest: count, float avg | none | none | yes  | t
+(2 rows)
+
+-- 6. a float sum is the unit's minus the exceptions' only when the difference keeps 6 bits of the unit's: rows stamped with values a thousand times the others make it
+-- cancel, and the unit is scanned (counted as such); the same stamps with values of the others' size are subtracted. Integer and numeric sums have no such test.
+CREATE TABLE ex_out (LIKE ex) WITH (autovacuum_enabled = off);
+ALTER TABLE ex_out ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ex_out SELECT id, kind, grp, val, small, amt, flt, d,
+       CASE WHEN stamp IS NOT NULL THEN jsonb_build_object('a', 1000000.0, 'b', 2000000.5, 'w', -3000000.25) ELSE metrics_a END, stamp, pad FROM ex;
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_out;
+CREATE INDEX ex_out_col ON ex_out USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
+SELECT * FROM pa_check('ex_out') WHERE n IN (1, 3, 5, 13);
+ n  |             shape              | pre  | net  | scan | same 
+----+--------------------------------+------+------+------+------
+  1 | by kind: counts, int sums      | some | yes  | yes  | t
+  3 | map unnest: float sums         | none | none | yes  | t
+  5 | map unnest: count, float avg   | none | none | yes  | t
+ 13 | map unnest: float min: scanned | none | none | yes  | t
+(4 rows)
+
+DROP TABLE ex, ex_old, ex_many, ex_out, pa_q;
+DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text);
+DROP PROCEDURE pa_settle();
+DROP EXTENSION pg_sift;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--no-wait] [--keep]
+# Usage: bench/bench cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--work-mem 4GB] [--timeout S] [--rounds R] [--runs N] [--cpus N] [--docs] [--out FILE] [--times FILE] [--lane-budget S] [--no-share] [--any-plan] [--no-wait] [--keep]
 #        bench/bench cases --list | --plan [--rows N] [--scales L] [--cases ID,ID]   (the points, builds, disk and time a run needs, nothing started)
 #        bench/bench cases --discover [--shapes FILE] [--fuzz SEEDS] [--results FILE] [--min-gain 2] [--out FILE]   candidate cases from the corpora (steps/cases_discover.py)                                                                       (bench/steps/cases.sh, called by bench/bench)
 # The benchmark cases (bench/cases.tsv, bench/cases/*.sql, steps/cases.py): each case is timed on pg_sift (the planner's own choice, the plan asserted from
@@ -29,8 +29,8 @@ while (( $# )); do
     --engines) ENGINES=$2; shift ;;
     --docs) DOCS=1 ;;
     --keep) KEEP=1 ;;
-    --cases|--out|--wait|--scales|--timeout|--work-mem) PY+=("$1" "$2"); shift ;;
-    --no-wait) PY+=("$1") ;;
+    --cases|--out|--wait|--scales|--timeout|--work-mem|--times|--lane-budget) PY+=("$1" "$2"); shift ;;
+    --no-wait|--no-share|--any-plan) PY+=("$1") ;;
     *) sed -n '2,11p' "$0"; exit 1 ;;
   esac
   shift
@@ -43,7 +43,8 @@ export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
 # fsync and autovacuum are off in the test cluster; wal_level and full_page_writes stay as they are: bulk_copy_wal measures the WAL a COPY writes
-SETTINGS=(max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
+# the library is loaded when the server starts: the first statement of a backend is planned with it, and the shared table of verdicts (sift.verdict_cache_kb) exists
+SETTINGS=(shared_preload_libraries=pg_sift max_locks_per_transaction=16384 shared_buffers=1GB effective_cache_size=3GB work_mem=64MB maintenance_work_mem=256MB max_wal_size=4GB jit=off max_worker_processes=16 max_parallel_workers=16
           parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB checkpoint_timeout=30min)
 
 cleanup() {
@@ -67,10 +68,7 @@ if [[ ,$ENGINES, == *,pg_duckdb,* ]]; then
   ports_free "$DUCK_PORT" 1 || exit 1
   pull_missing "$STORE_DUCKDB_IMAGE"
   mapfile -t CAPS < <(docker_caps "$CPUS" 8g)
-  docker rm -fv "$DUCK" >/dev/null 2>&1 || true
-  docker run -d --name "$DUCK" "${CAPS[@]}" --shm-size 1g -p "127.0.0.1:$DUCK_PORT:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$STORE_DUCKDB_IMAGE" postgres "${PG_FLAGS[@]}" \
-    -c max_parallel_workers_per_gather=$((CPUS - 1)) -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1)) >/dev/null
-  for _ in $(seq 60); do psql -X -qAt -h 127.0.0.1 -p "$DUCK_PORT" -U postgres -d postgres -c 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
+  pg_container "$DUCK" "$DUCK_PORT" "$STORE_DUCKDB_IMAGE" "${PG_FLAGS[@]}" -c max_parallel_workers_per_gather=$((CPUS - 1)) -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
   psql -X -q -h 127.0.0.1 -p "$DUCK_PORT" -U postgres -d postgres -c "DROP DATABASE IF EXISTS bench WITH (FORCE)" -c "CREATE DATABASE bench"
   PY+=(--duck-port "$DUCK_PORT" --engines "$ENGINES")
 fi

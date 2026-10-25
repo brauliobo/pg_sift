@@ -21,13 +21,11 @@ CREATE TABLE ad (d1 date, d2 date, d3 date, d4 date, d5 date, d6 date, d7 date, 
 INSERT INTO ad SELECT date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i,
                       date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i, date '2024-01-01' + i FROM generate_series(1, 100) i;
 CREATE INDEX ad_dates ON ad USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17) WITH (calendar_columns = 'off');
--- an index with paths: calendar cells need a schema without them
+-- an index with paths takes calendar cells too (3.4; 3.3 refused them)
 \c
 ALTER INDEX ao_paths SET (calendar_columns = 'd');
-ERROR:  invalid calendar_columns option: needs a schema without paths or kinds
 \c
 ALTER INDEX ao_paths SET (calendar_columns = 'all');
-ERROR:  invalid calendar_columns option: needs a schema without paths or kinds
 -- a column that is not in the index, and one of a type the option does not take
 \c
 ALTER INDEX ao_paths SET (key_columns = 'nope');
@@ -73,10 +71,10 @@ ERROR:  invalid calendar_columns option: too many dimensions
 -- the refused options changed nothing (aw_wide took its list), and the table still takes statements
 \c
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain', 'aw_wide', 'ad_dates') ORDER BY 1;
- relname  |                   reloptions                   
-----------+------------------------------------------------
+ relname  |                             reloptions                              
+----------+---------------------------------------------------------------------
  ad_dates | {calendar_columns=off}
- ao_paths | {"paths=metrics.* float8, parts[]{kind text}"}
+ ao_paths | {"paths=metrics.* float8, parts[]{kind text}",calendar_columns=all}
  ap_plain | 
  aw_wide  | {"calendar_columns=d1, d2"}
 (4 rows)

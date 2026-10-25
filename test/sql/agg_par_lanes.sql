@@ -1,0 +1,113 @@
+-- The float sums of a plan with workers are added in lane order (SIFT_AGG_LANES lanes of superblocks), so that the result does not depend on how many processes scan.
+-- Each process keeps the sums of the lanes it scanned apart, in the table it scans into, and the leader adds the lanes in order once every process is done:
+-- the bits of a sum are the same for 1, 2, 3 workers, with the leader in the scan or out of it, with a group table that grows while the lanes are scanned.
+-- The scans that were always added in lanes (no spine, no correlated child plan) add so with no worker too, so that the plan does not change a bit.
+-- A correlated child plan (workers came later) is added in the order of the rows by a plan without workers, as the normal plan does, and in lanes by a plan with workers;
+-- the two differ by the rounding of reordered additions, within the bound checked below.
+CREATE EXTENSION pg_sift;
+
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET seq_page_cost = 10000;
+SET sift.agg_preagg = off;
+SET extra_float_digits = 3;
+
+-- values of very different sizes: the sum of a group depends on the order of its additions
+CREATE TABLE fl (id int, g int, h int, v float8, w float8) WITH (fillfactor = 10);
+INSERT INTO fl SELECT i, i % 6000, i % 7, CASE WHEN i % 5 = 0 THEN 1e16 * (1 + i % 3) WHEN i % 5 = 1 THEN -1e16 * (1 + i % 3) ELSE (i % 97) * 0.1 + 1.0 / (1 + i % 13) END,
+                     CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 53) * 1e-3 + 1e8 END
+FROM generate_series(1, 60000) i;
+CREATE INDEX fl_col ON fl USING sift_col (id, g, h, v, w);
+VACUUM ANALYZE fl;
+
+CREATE FUNCTION l_rows(q text, push bool, workers int, leader bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	PERFORM set_config('parallel_leader_participation', leader::text, true);
+	EXECUTE format('SELECT md5(string_agg(x::text, E''\n'' ORDER BY x::text)) FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+
+-- workers launched by the scan (a launch can fail when the other sessions hold the workers: tried again)
+CREATE FUNCTION l_launched(q text, workers int) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; n int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	FOR i IN 1..20 LOOP
+		n := 0;
+		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+			n := n + coalesce(substring(l from 'Workers Launched: (\d+)')::int, 0);
+		END LOOP;
+		IF n > 0 THEN RETURN true; END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE l_d (h int PRIMARY KEY, tag text);
+INSERT INTO l_d SELECT i, 't' || (i % 3) FROM generate_series(0, 6) i;
+ANALYZE l_d;
+
+CREATE TABLE l_q (n int, q text);
+INSERT INTO l_q VALUES
+	(1, 'SELECT g, sum(v) AS s, avg(v) AS a, count(*) AS c FROM fl GROUP BY g'),
+	(2, 'SELECT g, h, sum(v) AS s, sum(w) AS t FROM fl GROUP BY g, h'),
+	(3, 'SELECT h, sum(v) AS s, avg(w) AS a FROM fl GROUP BY h'),
+	(4, 'SELECT sum(v) AS s, avg(v) AS a, sum(w) AS t FROM fl'),
+	(6, 'SELECT sum(v) FILTER (WHERE h = 3) AS s, avg(w) FILTER (WHERE g < 3000) AS a FROM fl'),
+	(5, 'SELECT g, sum(v) FILTER (WHERE h = 3) AS s, count(DISTINCT h) AS d FROM fl GROUP BY g');
+
+-- the number of workers (none included) and the lanes of the scan do not change a bit
+SELECT n, l_launched(q, 3) AS parallel,
+       l_rows(q, true, 0, true) = l_rows(q, true, 3, true) AS none_three,
+       l_rows(q, true, 1, true) = l_rows(q, true, 3, true) AS one_three,
+       l_rows(q, true, 2, true) = l_rows(q, true, 3, true) AS two_three,
+       l_rows(q, true, 3, false) = l_rows(q, true, 3, true) AS leader_out
+FROM l_q ORDER BY n;
+
+-- a child plan run for each combination of the leaves: the workers are the same for any number of them, a plan without workers is the normal plan's (ungrouped: no sort in it)
+CREATE TABLE l_c (n int, q text);
+INSERT INTO l_c VALUES
+	(1, 'SELECT f.h, sum(f.v) AS s, avg(f.w) AS a FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true GROUP BY f.h, c.tag'),
+	(2, 'SELECT sum(f.v) AS s, avg(f.w) AS a FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true');
+SELECT n, l_launched(q, 3) AS parallel,
+       l_rows(q, true, 1, true) = l_rows(q, true, 3, true) AS one_three,
+       l_rows(q, true, 2, true) = l_rows(q, true, 3, true) AS two_three,
+       l_rows(q, true, 3, false) = l_rows(q, true, 3, true) AS leader_out
+FROM l_c ORDER BY n;
+SELECT n, l_rows(q, true, 0, true) = l_rows(q, false, 0, true) AS none_is_normal FROM l_c WHERE q NOT LIKE '%GROUP BY%' ORDER BY n;
+
+-- a plan with workers differs from the normal plan by reordered additions: at most 2 (n - 1) 2^-53 of the sum of the absolute values (terms of 1e16 that cancel here)
+CREATE TABLE l_b (n int, q text);
+INSERT INTO l_b VALUES
+	(1, 'SELECT g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY g'),
+	(2, 'SELECT g * 10 + h AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY g, h'),
+	(3, 'SELECT h AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl GROUP BY h'),
+	(4, 'SELECT 0 AS g, sum(v) AS s, sum(abs(v)) AS sa, sum(w) AS t, sum(abs(w)) AS ta, count(*) AS c FROM fl'),
+	(5, 'SELECT f.h AS g, sum(f.v) AS s, sum(abs(f.v)) AS sa, sum(f.w) AS t, sum(abs(f.w)) AS ta, count(*) AS c FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true GROUP BY f.h');
+
+CREATE FUNCTION l_dev(q text, workers int) RETURNS TABLE (same_groups bool, within_bound bool, reordered bool) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'false', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	EXECUTE 'CREATE TEMP TABLE l_n AS ' || q;
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
+	EXECUTE 'CREATE TEMP TABLE l_p AS ' || q;
+	RETURN QUERY SELECT (SELECT count(*) FROM l_n) = (SELECT count(*) FROM l_p) AND (SELECT count(*) FROM l_n n JOIN l_p p USING (g)) = (SELECT count(*) FROM l_n),
+		coalesce(bool_and(abs(n.s - p.s) <= 2 * n.c * pow(2, -53) * n.sa AND abs(n.t - p.t) <= 2 * n.c * pow(2, -53) * n.ta), false),
+		coalesce(bool_or(n.s IS DISTINCT FROM p.s OR n.t IS DISTINCT FROM p.t), false)
+		FROM l_n n JOIN l_p p USING (g);
+	DROP TABLE l_n, l_p;
+END $$;
+
+SELECT n, l_launched(q, 3) AS parallel, d.* FROM l_b, LATERAL l_dev(q, 3) d ORDER BY n;
+
+DROP TABLE l_q, l_c, l_b, l_d, fl;
+DROP FUNCTION l_rows(text, bool, int, bool), l_launched(text, int), l_dev(text, int);
+DROP EXTENSION pg_sift;

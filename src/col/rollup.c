@@ -581,8 +581,9 @@ sift_col_report_caps(Relation index)
 							 errhint("Name fewer columns, or columns with fewer values per unit.")));
 	if (nleft > 0)
 		ereport(NOTICE, (errmsg("sift_col index %s: the cube holds %d dimensions and left out the histograms of %d column%s: %s", name, SIFT_PAGG_MAX_DIMS, nleft, nleft == 1 ? "" : "s", left.data),
-						 errdetail("The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units."),
-						 errhint("Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify).")));
+						 errdetail("The calendar cells of the date and timestamp columns come first and then %s; a query that groups or filters by those columns scans the units.",
+								   strncmp(sift_col_options_preagg(index), "auto:", 5) == 0 ? "the columns in the order chosen at CREATE INDEX, those whose histograms fit first" : "the columns in their order"),
+						 errhint("Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.")));
 	if (spec->cal_all)
 	{
 		int			missing[SIFT_COL_MAX_COLS];

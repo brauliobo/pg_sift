@@ -6,13 +6,19 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/index.h"
+#include "catalog/pg_constraint.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "commands/progress.h"
+#include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -45,7 +51,10 @@ struct ColBuild
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
 	SiftColBatch *batch;		/* the rows of the current superblock, flushed at the next one */
+	MemoryContext heldcxt;		/* the batches in held */
+	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
 	SiftColSegWriter *w;
+	MemoryContext wcxt;			/* the writer of the current segment: freed with it */
 	SiftColRow *rows;			/* the current page, deep copies */
 	int			nrows;
 	int			maxrows;
@@ -84,6 +93,7 @@ end_segment(ColBuild *b)
 						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
 	sift_colw_finish(b->w, &b->segs[b->nsegs++]);
 	b->w = NULL;
+	MemoryContextDelete(b->wcxt);
 }
 
 /* A parallel build reserves the generation in the metapage, the serial one numbers its segments */
@@ -93,14 +103,54 @@ next_gen(ColBuild *b)
 	return b->shared ? sift_store_new_gen(b->index) : b->nsegs + 1;
 }
 
+/*
+ * An index with key_cut: the rows held since the last run are sorted by the key and written as a segment of their own (col/order.c), so the build holds
+ * about its budget however large the table is. The segments of the runs overlap in the key, a merge of them (sift_colk_merge) streams them into one.
+ */
+static void
+write_run(ColBuild *b, bool last)
+{
+	int			n = list_length(b->held);
+	SiftColBatch **in = palloc_array(SiftColBatch *, n);
+	int			i = 0;
+	uint32		aim;
+	ListCell   *lc;
+
+	if (!last && b->nsegs + 1 >= b->maxsegs)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift_col build with key_cut needs more than %d segments", b->maxsegs),
+						errhint("Raise maintenance_work_mem: each segment holds up to half of it.")));
+	foreach(lc, b->held)
+		in[i++] = lfirst(lc);
+	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+	b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+	sift_colw_set_preagg(b->w, &b->r->pagg);
+	aim = sift_colk_run_rows(b->index, in, n);
+	sift_colw_set_keyed(b->w, aim);
+	sift_colk_write(b->w, in, n, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(aim), b->wcxt);
+	end_segment(b);
+	pfree(in);
+	list_free(b->held);
+	b->held = NIL;
+	MemoryContextReset(b->heldcxt);
+}
+
 static void
 flush_batch(ColBuild *b)
 {
 	if (b->batch == NULL || b->batch->nrows == 0)
 		return;
+	if (sift_col_key_cut(b->r))
+	{
+		b->held = lappend(b->held, b->batch);
+		if (MemoryContextMemAllocated(b->heldcxt, true) > b->budget)
+			write_run(b, false);
+		b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);
+		return;
+	}
 	if (b->w == NULL)
 	{
-		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->cxt);
+		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
+		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
@@ -236,7 +286,9 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	if (sift_test_col_segment_kb > 0)
 		b->budget = (Size) sift_test_col_segment_kb * 1024;
 #endif
-	b->batch = sift_cbatch_create(cxt, b->r->schema);
+	if (sift_col_key_cut(b->r))
+		b->heldcxt = AllocSetContextCreate(cxt, "sift_col build rows", ALLOCSET_DEFAULT_SIZES);
+	b->batch = sift_cbatch_create(b->heldcxt ? b->heldcxt : cxt, b->r->schema);
 	b->maxrows = 512;
 	b->rows = MemoryContextAlloc(cxt, b->maxrows * sizeof(SiftColRow));
 	b->page = InvalidBlockNumber;
@@ -283,6 +335,8 @@ sift_colb_end(ColBuild *b)
 {
 	flush_page(b);
 	flush_batch(b);
+	if (b->held != NIL)
+		write_run(b, true);
 	end_segment(b);
 	report_rows(b);
 	return b->nsegs;
@@ -407,6 +461,13 @@ notice_point_tid(Relation index)
 
 	if (sift_col_options_point_tid_columns(index)[0] == '\0')
 		return;
+	if (sift_col_options_key_cut(index)[0] != '\0')
+	{
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": point_tid_columns lists the rows of the segment on a key-cut index", RelationGetRelationName(index)),
+				 errdetail("The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.")));
+		return;
+	}
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	for (int c = 0; c < d->ncols; c++)
@@ -419,11 +480,202 @@ notice_point_tid(Relation index)
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
+/* The option keeps a sorted array of every row of an order_columns column: its bytes are said once, where they are paid */
+static void
+notice_order_array(Relation index)
+{
+	const SiftColLeafStats *ls;
+	const SiftColIndexMeta *d;
+	double		rows = 0,
+				bytes = 0;
+	int			n = 0;
+
+	if (sift_col_options_order_array_columns(index)[0] == '\0')
+		return;
+	d = sift_col_index_defs(index);
+	ls = sift_col_leaf_stats(index);
+	for (int c = 0; c < d->ncols; c++)
+		if (ls[c].gord_rows > 0)
+		{
+			rows += ls[c].gord_rows;
+			bytes += ls[c].gord_bytes;
+			n++;
+		}
+	if (n == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
+			 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
+			 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
+}
+
+/*
+ * The primary key of a table that other tables reference is the key a join to it reads. When it is not a column of the index, an aggregate scan of two
+ * sift tables joined on it keeps the normal plan (join_condition), and the column costs a few bytes a row (3.4 on 353,029 rows with ids up to 15.5 million;
+ * +19% to +131% of the index), more than a default may add, so the build says it once.
+ */
+static void
+notice_pkey(Relation heap, Relation index)
+{
+	Oid			pkoid;
+	Bitmapset  *pk = get_primary_key_attnos(RelationGetRelid(heap), false, &pkoid);
+	int			member;
+	AttrNumber	attno;
+	Relation	conrel;
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tup;
+	Oid			from = InvalidOid;
+	int			nfrom = 0;
+
+	if (!bms_get_singleton_member(pk, &member))
+		return;
+	attno = (AttrNumber) (member + FirstLowInvalidHeapAttributeNumber);
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+		if (index->rd_index->indkey.values[i] == attno)
+			return;
+	conrel = table_open(ConstraintRelationId, AccessShareLock);
+	ScanKeyInit(&key, Anum_pg_constraint_confrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(heap)));
+	scan = systable_beginscan(conrel, InvalidOid, false, NULL, 1, &key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
+
+		if (con->contype == CONSTRAINT_FOREIGN && con->conrelid != RelationGetRelid(heap))
+		{
+			from = OidIsValid(from) ? from : con->conrelid;
+			nfrom++;
+		}
+	}
+	systable_endscan(scan);
+	table_close(conrel, AccessShareLock);
+	if (nfrom == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the primary key \"%s\" of \"%s\" is not a column of the index", RelationGetRelationName(index),
+					get_attname(RelationGetRelid(heap), attno, false), RelationGetRelationName(heap)),
+			 errdetail("%d table%s (\"%s\"%s) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.",
+					   nfrom, nfrom == 1 ? "" : "s", get_rel_name(from), nfrom > 1 ? " and others" : ""),
+			 errhint("Add the column to the index if queries join on it.")));
+}
+
+/*
+ * The columns of the foreign keys of the table are the keys a join from it reads (a fact table's keys to its dimensions). When one is not a column of the index, an
+ * aggregate scan that joins the table to the referenced one keeps the normal plan (join_condition) and a lookup join cannot filter the table by the keys of the
+ * rows its filters keep. The column adds a few bytes a row, more than a default may add, so the build says it once, as it does for a primary key.
+ */
+static void
+notice_fk(Relation heap, Relation index)
+{
+	Relation	conrel = table_open(ConstraintRelationId, AccessShareLock);
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tup;
+	StringInfoData names;
+	Oid			to = InvalidOid;
+	Bitmapset  *seen = NULL;
+
+	initStringInfo(&names);
+	ScanKeyInit(&key, Anum_pg_constraint_conrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(heap)));
+	scan = systable_beginscan(conrel, InvalidOid, false, NULL, 1, &key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
+		bool		isnull;
+		Datum		d;
+		ArrayType  *arr;
+		int16	   *att;
+
+		if (con->contype != CONSTRAINT_FOREIGN)
+			continue;
+		d = heap_getattr(tup, Anum_pg_constraint_conkey, RelationGetDescr(conrel), &isnull);
+		if (isnull)
+			continue;
+		arr = DatumGetArrayTypeP(d);
+		att = (int16 *) ARR_DATA_PTR(arr);
+		for (int k = 0; k < ARR_DIMS(arr)[0]; k++)
+		{
+			bool		listed = false;
+
+			for (int i = 0; i < index->rd_index->indnatts; i++)
+				listed |= index->rd_index->indkey.values[i] == att[k];
+			if (listed || bms_is_member(att[k], seen))
+				continue;
+			seen = bms_add_member(seen, att[k]);
+			to = OidIsValid(to) ? to : con->confrelid;
+			if (names.len > 0)
+				appendStringInfoString(&names, ", ");
+			appendStringInfoString(&names, quote_identifier(get_attname(RelationGetRelid(heap), att[k], false)));
+		}
+	}
+	systable_endscan(scan);
+	table_close(conrel, AccessShareLock);
+	if (names.len == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the foreign key columns %s of \"%s\" are not columns of the index", RelationGetRelationName(index), names.data,
+					RelationGetRelationName(heap)),
+			 errdetail("A join to \"%s\" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.",
+					   get_rel_name(to)),
+			 errhint("Add the columns to the index if queries join on them.")));
+}
+
+/*
+ * A column the index covers cannot be changed by a HOT update: every UPDATE of it writes a new row version into every index of the table, and the index keeps the
+ * old one until the next merge. Measured on the 13-column index of the web API (updated_at and a counter covered): 0% HOT updates against 28% without the index,
+ * 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update. The columns that look rewritten often (a timestamp of the last change, a
+ * counter, a version) are named once; leaving one out is the choice that keeps updates HOT, covering it the choice that keeps its aggregates.
+ */
+bool
+sift_col_volatile_name(const char *name)
+{
+	static const char *const suffix[] = {"updated_at", "updated_on", "modified_at", "modified_on", "touched_at", "synced_at", "checked_at", "_count", "_counter", "_version"};
+	static const char *const exact[] = {"version", "likes", "views", "hits", "counter", "count"};
+	size_t		n = strlen(name);
+
+	for (int i = 0; i < lengthof(exact); i++)
+		if (pg_strcasecmp(name, exact[i]) == 0)
+			return true;
+	for (int i = 0; i < lengthof(suffix); i++)
+	{
+		size_t		m = strlen(suffix[i]);
+
+		if (n >= m && pg_strcasecmp(name + n - m, suffix[i]) == 0)
+			return true;
+	}
+	return false;
+}
+
+static void
+notice_volatile(Relation heap, Relation index)
+{
+	StringInfoData cols;
+	int			n = 0;
+
+	initStringInfo(&cols);
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+	{
+		AttrNumber	attno = index->rd_index->indkey.values[i];
+		const char *name = attno > 0 ? get_attname(RelationGetRelid(heap), attno, true) : NULL;
+
+		if (name != NULL && sift_col_volatile_name(name))
+			appendStringInfo(&cols, "%s%s", n++ ? ", " : "", name);
+	}
+	if (n == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": an UPDATE of %s is not a HOT update, since the index covers %s", RelationGetRelationName(index), cols.data,
+					n == 1 ? "it" : "them"),
+			 errdetail("Each such update writes a new row version into every index of the table (measured on a 13-column index: 0%% HOT updates against 28%%, 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update), and the index keeps the old one until a merge or a REINDEX."),
+			 errhint("Leave the column out of the index if it is rewritten far more often than it is aggregated; keep it if its aggregates are the reason for the index.")));
+}
+
 IndexBuildResult *
 sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
 	IndexBuildResult *res = NULL;
 	bool		chosen;
+	SiftAutoCut autocut;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
@@ -449,17 +701,27 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 #ifdef SIFT_TESTING
 	sift_test_col_workers = 0;
 #endif
+	sift_col_auto_paths(heap, index);
+	sift_col_auto_cube(heap, index);
+	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
-	if (info->ii_ParallelWorkers > 0)
+	autocut = sift_col_auto_cut(heap, index);
+	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
 	notice_key_overflow(index);
 	notice_point_tid(index);
+	notice_order_array(index);
+	notice_pkey(heap, index);
+	notice_fk(heap, index);
+	notice_volatile(heap, index);
 	sift_col_report_caps(index);
 	sift_col_vacuum_notice(heap, index);
 	if (chosen)
 		sift_col_auto_keys_report(index);
+	if (autocut != SIFT_AUTOCUT_ADVISED)
+		sift_col_report_key_cut(index);
 	return res;
 }
 

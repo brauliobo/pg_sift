@@ -13,13 +13,19 @@
 
 #define SIFT_CPOINT_MAGIC	0x4B4C4F43		/* "COLK" */
 #define SIFT_CPOINT_VERSION_ROWS	2		/* the frame of a segment whose tables all list rows (minor 14) */
+#define SIFT_CPOINT_VERSION_ORD	4			/* the frame of a segment that also has global order blocks (minor 21): the header's last word counts their records, which follow those of the tables */
 #define SIFT_CPOINT_VERSION	3			/* the frame of a segment with a table of heap addresses (minor 16): its records carry the mode of the table */
 #define SIFT_CPOINT_MODE_ROWS	0		/* record word 5: the slots list the rows of the segment (the other modes of the frame) */
+#define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/gorder.h): chunks, entries, values, 0, words of 8 bytes */
 #define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows */
 #define SIFT_CPOINT_TID_LIST	UINT64CONST(0x8000)	/* in a table of addresses, in the low 16 bits of a slot's payload: the high 32 are the word offset of a list, not a block (no offset number has this bit) */
 #define SIFT_CPOINT_TID_MAXOFF	512		/* an offset number of the address codes below this, which every heap page of 8 kB does (MaxHeapTuplesPerPage is 291) */
 #define SIFT_CPOINT_EMPTY	UINT64_MAX
-#define SIFT_CPOINT_MAX_KEYS	64			/* an IN list or a range of more keys is answered by the units */
+#define SIFT_CPOINT_MAX_KEYS	65536		/* an IN list of more keys is answered by the units (a lookup that finds more rows is too, below) */
+#define SIFT_CPOINT_MIN_KEYS	64			/* up to this many keys a lookup is made whatever the segment's rows */
+#define SIFT_CPOINT_MAX_RANGE	64			/* so is a range of more keys: the zones cut a range of values by their order */
+#define SIFT_CPOINT_DENSE_ROWS	4096		/* a list that expects more rows than this and a 64th of the segment's rows reads them for nothing: the units hold them as well */
+#define SIFT_CPOINT_DENSE_SHARE	64
 #define SIFT_CPOINT_MAX_ROWS	65536		/* a lookup that finds more rows is not a point lookup: the units answer it */
 #define SIFT_CPOINT_SEG_ROWS	(UINT32_C(1) << 30)	/* a segment of this many rows or more has no tables: a slot keeps a list offset in 31 bits */
 #define SIFT_CPOINT_LIST		(UINT32_C(1) << 31)	/* in a slot, the low 32 bits are this flag and the word offset of a list of rows, not the only row of the key */

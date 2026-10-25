@@ -98,7 +98,7 @@ default_meas(const SiftColSchema *s, int dim, int16 *meas)
 	int			nm = 0;
 
 	for (int pass = 0; pass < 2; pass++)
-		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_MORE_MEAS; c++)
+		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_DEF_MEAS; c++)
 		{
 			const SiftColDef *d = &s->cols[c];
 			bool		first = d->type == SIFT_COLT_NUMERIC || d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
@@ -136,6 +136,17 @@ rollup_default(const SiftColSchema *s, int list, SiftCPaggRollup *ru)
 	rollup_measures(s, list, ru);
 }
 
+/* leaf c as the next dimension of the default cube (a calendar cell when cal) */
+static void
+add_dim(const SiftColSchema *s, SiftCPaggSpec *spec, int c, bool cal)
+{
+	SiftCPaggDim *sd = &spec->dim[spec->ndims++];
+
+	sd->leaf = c;
+	sd->cal = cal;
+	sd->nmeas = default_meas(s, c, sd->meas);
+}
+
 void
 sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 {
@@ -143,16 +154,8 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 	spec->max_groups = SIFT_PAGG_DEF_GROUPS;
 	spec->permille = SIFT_PAGG_DEF_PERMILLE;
 	for (int c = 0; c < s->ncols; c++)
-	{
-		SiftCPaggDim *sd;
-
-		if (!sift_cpagg_dim_ok(s, &s->cols[c]) || s->cols[c].parent >= 0 || spec->ndims == SIFT_PAGG_MAX_DIMS)
-			continue;
-		sd = &spec->dim[spec->ndims++];
-		sd->leaf = c;
-		sd->nmeas = default_meas(s, c, sd->meas);
-		sd->lean = SIFT_PAGG_DEF_MEAS;
-	}
+		if (sift_cpagg_dim_ok(s, &s->cols[c]) && s->cols[c].parent < 0 && spec->ndims < SIFT_PAGG_MAX_DIMS)
+			add_dim(s, spec, c, false);
 	for (int c = 0; c < s->ncols && spec->nrollups < SIFT_PAGG_MAX_ROLLUPS; c++)
 		if (is_list(s, c))
 		{
@@ -180,26 +183,23 @@ make_room(const SiftColSchema *s, SiftCPaggSpec *spec, int n)
 		}
 }
 
+int
+sift_cpagg_cal_count(const SiftColSchema *s)
+{
+	int			n = 0;
+
+	for (int c = 0; c < s->ncols; c++)
+		n += sift_cpagg_cal_type(s, c) && depth1(s, &s->cols[c]) && plain_type(&s->cols[c]);
+	return n;
+}
+
 void
 sift_cpagg_spec_calendar(const SiftColSchema *s, SiftCPaggSpec *spec)
 {
-	int			ncal = 0;
-
+	make_room(s, spec, sift_cpagg_cal_count(s));
 	for (int c = 0; c < s->ncols; c++)
-		ncal += sift_cpagg_cal_type(s, c) && depth1(s, &s->cols[c]) && plain_type(&s->cols[c]);
-	make_room(s, spec, ncal);
-	for (int c = 0; c < s->ncols; c++)
-	{
-		SiftCPaggDim *sd;
-
-		if (!sift_cpagg_cal_type(s, c) || !depth1(s, &s->cols[c]) || !plain_type(&s->cols[c]) || spec->ndims == SIFT_PAGG_MAX_DIMS)
-			continue;
-		sd = &spec->dim[spec->ndims++];
-		sd->leaf = c;
-		sd->cal = true;
-		sd->nmeas = default_meas(s, c, sd->meas);
-		sd->lean = SIFT_PAGG_DEF_MEAS;
-	}
+		if (sift_cpagg_cal_type(s, c) && depth1(s, &s->cols[c]) && plain_type(&s->cols[c]) && spec->ndims < SIFT_PAGG_MAX_DIMS)
+			add_dim(s, spec, c, true);
 }
 
 int
@@ -437,6 +437,35 @@ parse_cube(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPag
 	return NULL;
 }
 
+/* "auto: a, b" was read: the default cube with these plain dimensions only, in this order (what CREATE INDEX chose, col/cubecols.c) */
+static const char *
+parse_auto(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
+{
+	if (s)
+		spec->ndims = 0;
+	do
+	{
+		char	   *dn = take_name(c);
+		int			leaf;
+
+		if (*dn == '\0')
+			return "a column name is missing";
+		if (!s)
+			continue;
+		if ((leaf = find_scalar(s, names, dn)) < 0)
+			return psprintf("\"%s\" is not a column of the index", dn);
+		if (s->cols[leaf].parent >= 0 || !sift_cpagg_dim_ok(s, &s->cols[leaf]))
+			return psprintf("\"%s\" must be a top-level integer, date, timestamp, bool or text column", dn);
+		for (int j = 0; j < spec->ndims; j++)
+			if (spec->dim[j].leaf == leaf)
+				return psprintf("\"%s\" is named twice", dn);
+		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
+			return "too many dimensions";
+		add_dim(s, spec, leaf, false);
+	} while (eat(c, ','));
+	return *c->p ? psprintf("unexpected \"%s\"", c->p) : NULL;
+}
+
 /*
  * One parser for both the syntax check (s == NULL: names are not resolved) and the real thing.
  */
@@ -448,7 +477,7 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 
 	if (s)
 		sift_cpagg_spec_default(s, spec);
-	if (opt == NULL || rest_blank(opt) || is_word(opt, "default"))
+	if (opt == NULL || rest_blank(opt) || is_word(opt, "default") || is_word(opt, "auto"))
 		return NULL;
 	if (is_word(opt, "off"))
 	{
@@ -460,6 +489,11 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 		return NULL;
 	}
 	skip_ws(c);
+	if (has_prefix(c->p, "auto:"))
+	{
+		c->p += 5;
+		return parse_auto(c, s, names, spec);
+	}
 	do
 	{
 		const char *err;
@@ -467,7 +501,7 @@ parse_option(const char *opt, const SiftColSchema *s, const char *const *names, 
 					rollup = !cube && has_prefix(c->p, "rollup");
 
 		if (!cube && !rollup)
-			return psprintf("expected default, off, cube(...) or rollup(...), got \"%s\"", c->p);
+			return psprintf("expected default, auto, off, cube(...) or rollup(...), got \"%s\"", c->p);
 		c->p += cube ? 4 : 6;
 		if (!eat(c, '('))
 			return cube ? "expected ( after cube" : "expected ( after rollup";
@@ -563,8 +597,11 @@ parse_rows(const char *opt, const SiftColSchema *s, const char *const *names, Si
 	SiftCPaggRollup ru = {.list = -1};
 	int			nrows = 0;
 
-	if (is_word(opt, "off"))
+	if (is_word(opt, "off") || is_word(opt, "auto"))
 		return NULL;
+	skip_ws(c);
+	if (has_prefix(c->p, "auto:"))
+		c->p += 5;
 	do
 	{
 		char	   *dn = take_name(c);
@@ -659,8 +696,6 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 
 	if (is_word(opt, "off"))
 		return NULL;
-	if (s && s->kinds)
-		return "needs a schema without paths or kinds";
 	if (all)
 	{
 		if (s)
@@ -689,7 +724,7 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 		make_room(s, spec, 1);
 		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
 			return "too many dimensions";
-		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true, .lean = SIFT_PAGG_DEF_MEAS};
+		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true};
 		spec->dim[spec->ndims].nmeas = default_meas(s, leaf, spec->dim[spec->ndims].meas);
 		spec->ndims++;
 	} while (eat(c, ','));
@@ -701,7 +736,8 @@ sift_cpagg_calendar_apply(const char *opt, const SiftColSchema *s, const char *c
 {
 	if (opt == NULL || rest_blank(opt))
 	{
-		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (minor 8 has no kinds) */
+		/* the default is every date, timestamp and timestamptz column, as for a sift_table; not with preagg = 'off', a cube given dim by dim, or JSON path leaves (their cells
+		 * grew the index of a wide API table by 12%: calendar_columns names them) */
 		if (!spec->off && !spec->fixed && !s->kinds)
 		{
 			sift_cpagg_spec_calendar(s, spec);

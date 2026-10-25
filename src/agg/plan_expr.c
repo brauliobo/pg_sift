@@ -290,6 +290,7 @@ subst_mutator(Node *n, SubstCtx *s)
 	if (IsA(n, SubPlan))
 	{
 		s->c->nsubplan++;
+		s->c->sub_serial |= !((SubPlan *) n)->parallel_safe;
 		s->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
 	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && !null_input_param(n))
@@ -299,6 +300,7 @@ subst_mutator(Node *n, SubstCtx *s)
 				Param	   *init = copyObject((Param *) n);
 
 				s->c->nsubplan++;
+				s->c->sub_serial = true;
 				s->c->subplan_cost += sp->startup_cost;
 				init->paramid += SIFT_AGG_INIT_PARAM;
 				return (Node *) init;
@@ -483,9 +485,17 @@ static const BucketUnit field_units[] = {{"minute", 60, 60, 60}, {"hour", 3600, 
 
 static bool utc_name(Node *e);
 
-/* the unit of a date_trunc, date_part or extract of a timestamp; NULL for another call, or a unit this does not know */
+/* date_trunc, date_part, extract and date() of a timestamptz read the clock of the session's time zone */
+static bool
+session_zone_call(Oid funcid)
+{
+	return funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ || funcid == F_DATE_PART_TEXT_TIMESTAMPTZ || funcid == F_EXTRACT_TEXT_TIMESTAMPTZ ||
+		funcid == F_DATE_TIMESTAMPTZ;
+}
+
+/* the unit of a date_trunc, date_part or extract of a timestamp (of a timestamptz in the session's zone with `session`); NULL for another call, or a unit this does not know */
 static const BucketUnit *
-bucket_unit(Node *e)
+bucket_unit(Node *e, bool session)
 {
 	FuncExpr   *f;
 	Const	   *k;
@@ -495,10 +505,19 @@ bucket_unit(Node *e)
 	if (!IsA(e, FuncExpr))
 		return NULL;
 	f = (FuncExpr *) e;
-	/* date_trunc(unit, timestamptz, 'UTC') cuts the UTC clock, the same in every session */
-	trunc = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP || (f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT && utc_name(lthird(f->args)));
-	if (!trunc && f->funcid != F_DATE_PART_TEXT_TIMESTAMP && f->funcid != F_EXTRACT_TEXT_TIMESTAMP)
-		return NULL;
+	if (session)
+	{
+		if (!session_zone_call(f->funcid) || f->funcid == F_DATE_TIMESTAMPTZ)
+			return NULL;
+		trunc = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ;
+	}
+	else
+	{
+		/* date_trunc(unit, timestamptz, 'UTC') cuts the UTC clock, the same in every session */
+		trunc = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP || (f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT && utc_name(lthird(f->args)));
+		if (!trunc && f->funcid != F_DATE_PART_TEXT_TIMESTAMP && f->funcid != F_EXTRACT_TEXT_TIMESTAMP)
+			return NULL;
+	}
 	k = linitial(f->args);
 	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID)
 		return NULL;
@@ -525,33 +544,54 @@ bucket_leaf(AggCtx *c, Node *e)
  * else, and the key is a combo.
  */
 static int
-bucket_step(AggCtx *c, Node *e)
+bucket_step(AggCtx *c, Node *e, bool session)
 {
 	const BucketUnit *u;
 	int			arg;
 
+	/* in the session's zone the leaf is read only by the calendar call right above it: a function of the UTC clock below it would cut the day on another clock */
 	if (bucket_leaf(c, e))
-		return 1;
+		return session ? 0 : 1;
 	if (IsA(e, RelabelType))
-		return bucket_step(c, (Node *) ((RelabelType *) e)->arg);
+		return bucket_step(c, (Node *) ((RelabelType *) e)->arg, session);
 	if (!IsA(e, FuncExpr))
 		return 0;
-	if (is_utc_conversion(e))
-		return bucket_step(c, lsecond(((FuncExpr *) e)->args));
-	if (is_num_cast(e))
-		return bucket_step(c, linitial(((FuncExpr *) e)->args));
-	if ((u = bucket_unit(e)) != NULL)
+	if (session && session_zone_call(((FuncExpr *) e)->funcid))
 	{
-		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args));
+		FuncExpr   *f = (FuncExpr *) e;
+		Node	   *x = (Node *) llast(f->args);
+		int			own;
+
+		if (list_length(f->args) > 2)
+			return 0;
+		if (f->funcid == F_DATE_TIMESTAMPTZ)
+			own = DAY_SECS;
+		else if ((u = bucket_unit(e, true)) != NULL)
+			own = u->secs;
+		else
+			return 0;
+		/* over the call of a coarser step (date(date_trunc('day', ts))) the value is a function of that step */
+		if (bucket_leaf(c, x))
+			return own;
+		arg = bucket_step(c, x, true);
+		return arg ? Max(arg, own) : 0;
+	}
+	if (is_utc_conversion(e))
+		return bucket_step(c, lsecond(((FuncExpr *) e)->args), session);
+	if (is_num_cast(e))
+		return bucket_step(c, linitial(((FuncExpr *) e)->args), session);
+	if ((u = bucket_unit(e, false)) != NULL)
+	{
+		arg = bucket_step(c, lsecond(((FuncExpr *) e)->args), session);
 		return arg ? Max(arg, u->secs) : 0;
 	}
 	switch (((FuncExpr *) e)->funcid)
 	{
 		case F_DATE_TIMESTAMP:
-			arg = bucket_step(c, linitial(((FuncExpr *) e)->args));
+			arg = bucket_step(c, linitial(((FuncExpr *) e)->args), session);
 			return arg ? Max(arg, DAY_SECS) : 0;
 		case F_TIMESTAMP_DATE:
-			return bucket_step(c, linitial(((FuncExpr *) e)->args));
+			return bucket_step(c, linitial(((FuncExpr *) e)->args), session);
 		default:
 			return 0;
 	}
@@ -572,19 +612,19 @@ bucket_groups(AggCtx *c, Node *e, double span)
 		return bucket_groups(c, lsecond(((FuncExpr *) e)->args), span);
 	if (is_num_cast(e))
 		return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
-	if ((u = bucket_unit(e)) != NULL)
+	if ((u = bucket_unit(e, false)) != NULL || (u = bucket_unit(e, true)) != NULL)
 	{
 		n = Min(bucket_groups(c, lsecond(((FuncExpr *) e)->args), span), span / u->len + 1);
 		return u->cycle ? Min(n, u->cycle) : n;
 	}
-	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP)
+	if (((FuncExpr *) e)->funcid == F_DATE_TIMESTAMP || ((FuncExpr *) e)->funcid == F_DATE_TIMESTAMPTZ)
 		return Min(bucket_groups(c, linitial(((FuncExpr *) e)->args), span), span / DAY_SECS + 1);
 	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
 }
 
-/* a time zone name of UTC: the three-argument date_trunc and AT TIME ZONE with it give the same value in every session */
+/* a time zone name of UTC (the three-argument date_trunc and AT TIME ZONE with it give the same value in every session, but for a session zone that defines the bare name) */
 static bool
-utc_name(Node *e)
+utc_spelling(Node *e, char **name)
 {
 	static const char *const names[] = {"UTC", "Etc/UTC", "GMT", "Etc/GMT", "UCT", "Etc/UCT", "Zulu", "Etc/Zulu"};
 	Const	   *k;
@@ -596,8 +636,56 @@ utc_name(Node *e)
 	z = TextDatumGetCString(k->constvalue);
 	for (int i = 0; i < lengthof(names); i++)
 		ok |= pg_strcasecmp(z, names[i]) == 0;
-	pfree(z);
+	if (name != NULL && ok)
+		*name = z;
+	else
+		pfree(z);
 	return ok;
+}
+
+static bool
+utc_name(Node *e)
+{
+	char	   *z;
+	bool		ok = utc_spelling(e, &z);
+
+	if (ok)
+	{
+		ok = strchr(z, '/') != NULL || !sift_session_abbrev_not_utc(z);
+		pfree(z);
+	}
+	return ok;
+}
+
+static bool
+utc_shadowed_walker(Node *e, void *arg)
+{
+	char	   *z;
+
+	if (e == NULL)
+		return false;
+	if (IsA(e, FuncExpr))
+	{
+		FuncExpr   *f = (FuncExpr *) e;
+		Node	   *n = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT ? lthird(f->args) : f->funcid == F_TIMEZONE_TEXT_TIMESTAMPTZ ? linitial(f->args) : NULL;
+
+		if (n != NULL && utc_spelling(n, &z))
+		{
+			bool		shadowed = strchr(z, '/') == NULL && sift_session_abbrev_not_utc(z);
+
+			pfree(z);
+			if (shadowed)
+				return true;
+		}
+	}
+	return expression_tree_walker(e, utc_shadowed_walker, arg);
+}
+
+/* the key's expression names UTC or GMT and the session zone gives the name another meaning: it is no step of the UTC clock in this session (a plan made in another zone) */
+bool
+sift_aggexpr_utc_shadowed(Node *e)
+{
+	return utc_shadowed_walker(e, NULL);
 }
 
 /* the integer, float or numeric cast of the number a field of a date was turned into: its value is a function of that number */
@@ -963,20 +1051,61 @@ bucket_text(int secs)
 	return secs == 1 ? " (per second)" : secs == 60 ? " (per minute)" : secs == 3600 ? " (per hour)" : " (per day)";
 }
 
-/* the seconds a key on the timestamp leaf is evaluated once for, 0 when it is not a calendar expression */
+/*
+ * date_trunc of a timestamptz to a second, minute or hour keeps the offset of the instant it cuts (the other units read the offset of the zone at the start of the day): the two
+ * instants of a repeated hour are two values. Is there such a call in the chain of calls down to the leaf: 0 no, 1 it is the top call, -1 it has another call above it.
+ */
+static int
+cut_trunc(Node *e)
+{
+	bool		top = true;
+
+	for (;;)
+	{
+		FuncExpr   *f;
+		const BucketUnit *u;
+
+		if (IsA(e, RelabelType))
+		{
+			e = (Node *) ((RelabelType *) e)->arg;
+			continue;
+		}
+		if (!IsA(e, FuncExpr))
+			return 0;
+		f = (FuncExpr *) e;
+		if (f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ && (u = bucket_unit(e, true)) != NULL && u->secs <= 3600)
+			return top ? 1 : -1;
+		top = false;
+		e = (Node *) llast(f->args);
+	}
+}
+
+/*
+ * The seconds a key on the timestamp leaf is evaluated once for, 0 when it is not a calendar expression. A timestamptz key is the same in every session only if it reads
+ * the UTC clock (AT TIME ZONE 'UTC'); one that reads the session's zone (date_trunc('day', ts), extract(hour FROM ts), ts::date) is cut on the local clock of the zone the
+ * executor finds when it starts (*zoned).
+ */
 int
-bucket_key_secs(AggCtx *c, int leaf, Node *expr)
+bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned)
 {
 	SiftSrcLeaf *l = leaf_of(c, leaf);
-
 	uint8		mask;
 
+	*zoned = 0;
 	if (l->kind != SCL_SCALAR || l->vtype != SCV_I64 || (l->typid != TIMESTAMPOID && l->typid != TIMESTAMPTZOID) || contain_volatile_functions(expr))
 		return 0;
-	/* a timestamptz key is the same in every session only if it reads the UTC clock (AT TIME ZONE 'UTC'): the others have no bucket */
 	if (l->typid == TIMESTAMPTZOID && sift_aggexpr_cal(expr, &mask) != SAC_OK)
-		return 0;
-	return bucket_step(c, expr);
+	{
+		int			secs = bucket_step(c, expr, true),
+					cut = cut_trunc(expr);
+
+		/* a cut to the second, minute or hour under another call is not a function of the step */
+		if (secs <= 0 || cut < 0)
+			return 0;
+		*zoned = cut > 0 ? SIFT_ZONE_CUT : SIFT_ZONE_STEP;
+		return secs;
+	}
+	return bucket_step(c, expr, false);
 }
 
 /* digits an integer or numeric(p, s) column may hold: from the type modifier of its reference, else what the storage holds */
@@ -1133,7 +1262,27 @@ compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 
 	o->n = 0;
 	o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
-	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig;
+	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig && (o->dig = dig, true);
+}
+
+/*
+ * The product of two numeric expressions of at most SIFT_NUM_MAX_DIGITS digits each whose digits together exceed them (a price times one minus a discount
+ * times one plus a tax, 47 digits for three decimal(15,2)): the program leaves the two factors on the stack and no multiplication, the sum multiplies
+ * each pair in 256 bits (agg_sum_add_product). The digits proven are those of the product, up to SIFT_NUM_PRODUCT_DIGITS: the carries of the sum, in 64 bits, hold 2^31 rows of the largest such value.
+ */
+bool
+compile_nx_product(AggCtx *c, Node *e, SiftAggNum *o)
+{
+	Node	   *n = strip_relabel(e);
+	int			s1,
+				d1,
+				s2,
+				d2;
+
+	o->n = 0;
+	o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
+	return func_of(n) == F_NUMERIC_MUL && nx_walk(c, linitial(func_args(n)), o, &s1, &d1) && nx_walk(c, lsecond(func_args(n)), o, &s2, &d2) &&
+		d1 + d2 > SIFT_NUM_MAX_DIGITS && d1 + d2 <= SIFT_NUM_PRODUCT_DIGITS && (o->scale = s1 + s2, o->dig = d1 + d2, true);
 }
 
 /* + - * of int8, int4 and int2 operands (int8pl, int84pl, int48pl ...): the SNX op of the function, -1 for any other */

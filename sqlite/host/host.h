@@ -44,6 +44,7 @@ typedef struct { uint64 value; } FullTransactionId;
 
 #define InvalidOid				((Oid) 0)
 #define InvalidBlockNumber		((BlockNumber) 0xFFFFFFFF)
+#define MaxBlockNumber			((BlockNumber) 0xFFFFFFFE)
 #define InvalidOffsetNumber		((OffsetNumber) 0)
 #define PG_UINT16_MAX			(0xFFFF)
 #define PG_UINT32_MAX			(0xFFFFFFFFU)
@@ -115,6 +116,8 @@ static inline unsigned char pg_ascii_toupper(unsigned char c) { return (c >= 'a'
 extern int pg_strcasecmp(const char *s1, const char *s2);
 extern int pg_strncasecmp(const char *s1, const char *s2, size_t n);
 extern uint32 hash_bytes(const unsigned char *k, int keylen);
+extern uint64 hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed);
+extern uint64 hash_bytes_uint32_extended(uint32 k, uint64 seed);
 
 /* ---------- memory contexts ---------- */
 

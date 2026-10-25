@@ -356,6 +356,7 @@ combo_walker(Node *n, ComboWalk *w)
 	{
 		w->subparams = list_concat_copy(w->subparams, ((SubPlan *) n)->paramIds);
 		w->c->nsubplan++;
+		w->c->sub_serial |= !((SubPlan *) n)->parallel_safe;
 		w->c->subplan_cost += ((SubPlan *) n)->startup_cost;
 	}
 	else if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && list_member_int(w->subparams, ((Param *) n)->paramid))

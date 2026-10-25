@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Vulkan aggregate path (docs/GPU.md) against the CPU one, inside PostgreSQL, on the online-store table of bench/sql/store.
+# The Vulkan aggregate path (docs/GPU.md) against the CPU one, inside PostgreSQL, on the orders table of bench/sql/store.
 #
 #   bench/gpu/bench-pg.sh ROWS [REPS]       ROWS: 1000000, 10000000; REPS: runs after the first one (default 7)
 #

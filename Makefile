@@ -43,17 +43,23 @@ endif
 # Switching it needs `make clean`.
 TESTING_REGRESS = shred_% index_parts segfmt_% col_index_% store_% kernels_% col_kernels_% aggkern_% col_enc col_wbuf colcodec_% verify_% analyzer_version index_build_postings index_build_thresholds build_runs read_% build_memory build_limits build_pool build_page_text build_parallel aggstub_% maint_% tbl_cap tbl_bulk_eligible tbl_bulk_groups tbl_vblocks tbl_bigtx tbl_writepath tbl_page_corrupt col_format4 col_format5 col_tags agg_jsonb_typeof agg_jsonpath_kinds
 TESTING_REGRESS += limits_registry tbl_limits_lowered agg_combo_cap agg_limit_refusals
-TESTING_REGRESS += errors_hints
+TESTING_REGRESS += errors_hints agg_cte_verdict_cache
 TESTING_REGRESS += col_wide_values
 TESTING_REGRESS += tbl_wide_rows col_wildcard_keys
-TESTING_REGRESS += col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func
+TESTING_REGRESS += col_topn_deep_limits col_topn_text col_topn_raw col_topn_numeric col_topn_enum col_topn_interval col_topn_code col_topn_expr col_topn_arith col_topn_case col_topn_func col_topn_trail
 TESTING_REGRESS += agg_numeric_in_list agg_shape_widths
-TESTING_REGRESS += col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir col_point_tid col_zone_window col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_suggest_paths agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build agg_row_compare col_skip_map
-TESTING_REGRESS += col_census_sample
+TESTING_REGRESS += col_merge_keys col_vacuum_parallel_keys col_volatile_notice col_pkey_notice agg_cal_paths col_rollup_auto col_cube_rank col_dict_cache col_seg_head col_vis_count col_zone_jnull col_dict_lookup col_dict_stored tbl_fetch_dict col_point_dir agg_lookup_keyed col_point_dense col_point_tid col_run_heads col_zone_window col_key_cut col_key_cut_units col_run_window col_point_filter agg_index_pick col_key_cut_advice col_damage col_preagg_elem col_preagg_minmax col_preagg_calendar col_calendar_columns tbl_preagg_calendar col_preagg_rows col_set_summary col_sorted_run col_key_presence col_key_columns_auto agg_key_cube_fallback col_cube_priority col_paths_auto col_suggest_paths agg_preagg_elem agg_preagg_elem_parallel agg_preagg_rollup col_rollup_refresh col_refresh parallel_build agg_row_compare col_skip_map col_topn_walk_cache col_approx col_gorder col_topn_gorder col_gorder_group
+TESTING_REGRESS += col_census_sample col_unit_floor col_key_cut_auto agg_dict_blocks_lazy
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow
 TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure
+ifdef SIFT_SB_SHIFT
+ifndef SIFT_TESTING
+$(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
+endif
+PG_CPPFLAGS += -DSIFT_SB_SHIFT=$(SIFT_SB_SHIFT)
+endif
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
 DATA += sql/pg_sift_test--1.0.sql
@@ -93,11 +99,13 @@ include $(dir $(SIFT_MK))scripts/harden.mk
 # claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
 # and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
 ifneq ($(filter check check-full pg-assert pg-valgrind,$(MAKECMDGOALS)),)
-.PHONY: check check-full pg-assert pg-valgrind
+.PHONY: check check-full lint pg-assert pg-valgrind
 check:
 	scripts/ci.sh quick
 check-full:
 	scripts/ci.sh full
+lint:
+	scripts/lint.sh
 pg-assert:
 	nice scripts/pg-assert.sh $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 pg-valgrind:

@@ -33,6 +33,7 @@ typedef struct AggAcc
 	Datum	   *v;				/* aggregates over distinct values (SAA_M_*): the result, made by mapped_finish; SAA_GEN: the state */
 	Datum	   *r;				/* SAA_GEN: the result */
 	double	   *dt;				/* float sums of a scan that goes through the lanes in one table: the sum of the lanes done */
+	double	  **lv;				/* float sums of a parallel scan: the sums of each lane this process scanned (lane_keep), added in lane order by the leader */
 } AggAcc;
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */

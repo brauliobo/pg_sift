@@ -56,6 +56,13 @@ SELECT same($$SELECT count(*), sum(n) FROM f_t WHERE n > 100.005 AND n <= 480.5 
 SELECT same($$SELECT g, count(*) AS c, sum(v) AS sv, sum(n) AS sn FROM f_t WHERE id < 40 AND k = 'delivered' GROUP BY g$$) AS sparse_rows;
 SELECT same($$SELECT g, count(v) AS cv, count(k) AS ck, min(t) AS mt, sum(n) AS sn FROM f_t WHERE id > 19900 GROUP BY g$$) AS sparse_nulls;
 SELECT same($$SELECT k, count(*) FROM f_t WHERE k = 'delivered' AND id IN (5, 6, 7, 8, 9, 10, 11, 12, 13) GROUP BY k$$) AS one_unit_few_rows;
+-- runs of consecutive members of an IN list are one range of the chunk test: a run at either end, runs split by one missing member, a member twice, one member
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE v IN (7, 8, 9, 10, 11, 12, 13, 14) GROUP BY g$$) AS in_run_of_eight;
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE v IN (3, 4, 6, 7, 8, 10) GROUP BY g$$) AS in_runs_split;
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE v IN (0, 1, 2, 10005, 10006) GROUP BY g$$) AS in_runs_at_the_ends;
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE v IN (9, 8, 7, 8, 5, 6) GROUP BY g$$) AS in_unordered_and_repeated;
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE v IN (1000) GROUP BY g$$) AS in_one_member;
+SELECT same($$SELECT g, count(*), sum(v) FROM f_t WHERE g IN (2, 3, 4) AND v IN (500, 501, 502, 503) GROUP BY g$$) AS in_runs_two_columns;
 
 -- generic plans: the constants are read when the scan starts
 PREPARE gen(text, numeric, int[]) AS SELECT count(*), sum(v) FROM f_t WHERE k = $1 AND n > $2 AND g = ANY ($3);

@@ -2,6 +2,7 @@
 -- stored with it, so after DELETE and UPDATE traffic the units are exact again only when a rewrite drops the dead rows. VACUUM and the
 -- normal maintenance (promote, the merge policy) have to do it, without REINDEX and without a forced merge.
 CREATE EXTENSION pg_sift;
+SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE pm (id int, grp text, amt numeric(10,2), qty int);

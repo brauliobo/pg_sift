@@ -24,6 +24,7 @@
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "utils/array.h"
@@ -50,7 +51,7 @@
 #define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
 #define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
 
-bool		sift_enable_col_scan = false;
+bool		sift_enable_col_scan = true;
 double		sift_plan_scale = 1.0;
 
 /*
@@ -1012,9 +1013,26 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 	return kept;
 }
 
+
+/* A LIKE or ^@ whose pattern starts with a literal prefix (like_pred): the dictionary names the keys with it, and the point directory can look them up */
+static bool
+prefix_clause(const OpExpr *op, int strategy)
+{
+	const Const *c = list_length(op->args) == 2 && IsA(lsecond(op->args), Const) ? (const Const *) lsecond(op->args) : NULL;
+	const char *s;
+	int			len;
+
+	if ((strategy != COL_STRAT_LIKE && strategy != COL_STRAT_STARTS_WITH) || c == NULL || c->constisnull || c->consttype != TEXTOID)
+		return false;
+	s = VARDATA_ANY(DatumGetTextPP(c->constvalue));
+	len = VARSIZE_ANY_EXHDR(DatumGetTextPP(c->constvalue));
+	if (strategy == COL_STRAT_STARTS_WITH)
+		return len > 0;
+	return len > 0 && s[0] != '%' && s[0] != '_' && s[0] != '\\';
+}
 /*
  * The share of the units that hold the rows a point directory (point_columns) lists for the equalities and short IN lists of the quals, and whether it answers
- * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS), the rows of the keys the selectivity of the clause (misses and the keys with many rows
+ * at all: the keys are the clause's own (at most SIFT_CPOINT_MAX_KEYS, and past SIFT_CPOINT_MIN_KEYS a sixteenth of the rows), the rows of the keys the selectivity of the clause (misses and the keys with many rows
  * included), and a lookup finds the units of a random layout, 1 - exp(-rows / units) of them; the segments without a directory stay whole. *tid is the
  * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).
  */
@@ -1037,18 +1055,22 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 		{
 			Oid			opno = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->opno :
 				IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->opno : InvalidOid;
+			int			strategy = OidIsValid(opno) ? get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) : 0;
 			double		nkeys = 1.0,
 						cover = Min(l->point_units / l->nunits, 1.0),
 						rows,
 						share;
 
-			if (!OidIsValid(opno) || get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) != BTEqualStrategyNumber)
+			if (strategy != BTEqualStrategyNumber && !(IsA(ri->clause, OpExpr) && prefix_clause((OpExpr *) ri->clause, strategy)))
 				continue;
 			if (IsA(ri->clause, ScalarArrayOpExpr))
 				nkeys = estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
-			if (nkeys > SIFT_CPOINT_MAX_KEYS)
-				continue;
 			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
+			/* a prefix names the keys of the dictionary that start with it: the directory probes one key each (the rows the directory lists per key say how many) */
+			if (strategy != BTEqualStrategyNumber)
+				nkeys = Max(1.0, ceil(rows * (l->point_rows > 0 ? l->point_keys / l->point_rows : 1.0)));
+			if (nkeys > SIFT_CPOINT_MAX_KEYS || (nkeys > SIFT_CPOINT_MIN_KEYS && nkeys > index->rel->tuples / 16))
+				continue;
 			share = 1.0 - exp(-rows / units);
 			if (1.0 - cover + cover * share < kept)
 			{
@@ -1105,14 +1127,61 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	*indexPages = Max(1.0, kept * index->pages);
 }
 
+/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
+static void
+col_scale_rel(RelOptInfo *rel)
+{
+	if (sift_plan_scale <= 1.0)
+		return;
+	rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+	rel->tuples *= sift_plan_scale;
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+	{
+		ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
+		ii->tuples *= sift_plan_scale;
+	}
+}
+
 /* ---- off means off ---- */
 
 /*
  * With sift.enable_col_scan off the planner must build no bitmap path on a sift_col index: a path with a bad cost still beats one that
  * enable_seqscan = off disabled (PostgreSQL counts the disabled nodes before the cost). The index stays in the list, SiftAgg reads it there.
  * Up to PostgreSQL 18 get_relation_info_hook clears amhasgetbitmap of the index; 19 has no such hook, so the bitmap paths that use one are
- * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off.
+ * disabled in the pathlist of the relation, one node more than a sequential scan that enable_seqscan turned off. sift.plan_scale is applied by
+ * get_relation_info_hook up to 18 and by build_simple_rel_hook, which replaces it, in 19.
  */
+static set_rel_pathlist_hook_type prev_pathlist_hook;
+
+/*
+ * A query the index covers gets an index-only path, and the bitmap path PostgreSQL builds beside it carries the price of that one: a read of every kept unit (the
+ * lookup of a key in the point directory returns the addresses and reads none, when the directory lists them). A lookup by one clause of the directory therefore
+ * reads its units through the index-only path, 20 to 50 times slower than the bitmap path on the addresses. The bitmap path is added priced as what it does.
+ */
+static void
+add_address_paths(PlannerInfo *root, RelOptInfo *rel)
+{
+	List	   *added = NIL;
+
+	foreach_ptr(Path, p, rel->pathlist)
+	{
+		IndexPath  *ip = (IndexPath *) p;
+		IndexPath  *bp;
+
+		if (!IsA(p, IndexPath) || p->pathtype != T_IndexOnlyScan || ip->indexinfo->relam != sift_col_am_oid() || list_length(ip->indexclauses) != 1 ||
+			ip->indexorderbys != NIL)
+			continue;
+		bp = create_index_path(root, ip->indexinfo, ip->indexclauses, ip->indexorderbys, ip->indexorderbycols, ip->path.pathkeys, ip->indexscandir, false,
+							   PATH_REQ_OUTER(&ip->path), 1.0, false);
+		if (bp->path.total_cost >= ip->path.total_cost)
+			continue;
+		added = lappend(added, bp);
+		added = lappend(added, create_bitmap_heap_path(root, rel, (Path *) bp, rel->lateral_relids, 1.0, 0));
+	}
+	foreach_ptr(Path, p, added)
+		add_path(rel, p);
+}
+
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 
@@ -1130,17 +1199,17 @@ col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *
 			if (!sift_enable_col_scan)
 				ii->amhasgetbitmap = ii->amhasgettuple = false;
 		}
-	/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
-	if (indexed && sift_plan_scale > 1.0)
-	{
-		rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-		rel->tuples *= sift_plan_scale;
-		foreach_node(IndexOptInfo, ii, rel->indexlist)
-		{
-			ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-			ii->tuples *= sift_plan_scale;
-		}
-	}
+	if (indexed)
+		col_scale_rel(rel);
+}
+
+static void
+col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	if (prev_pathlist_hook)
+		prev_pathlist_hook(root, rel, rti, rte);
+	if (sift_enable_col_scan)
+		add_address_paths(root, rel);
 }
 
 void
@@ -1148,10 +1217,10 @@ sift_col_scan_init(void)
 {
 	prev_info_hook = get_relation_info_hook;
 	get_relation_info_hook = col_get_relation_info;
+	prev_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = col_set_rel_pathlist;
 }
 #else
-static set_rel_pathlist_hook_type prev_pathlist_hook;
-
 static bool
 bitmap_uses_col(Path *path)
 {
@@ -1183,13 +1252,31 @@ disable_col_bitmaps(List *paths)
 			p->disabled_nodes = Max(p->disabled_nodes, 1) + 1;
 }
 
+static build_simple_rel_hook_type prev_simple_rel_hook;
+
+static void
+col_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (prev_simple_rel_hook)
+		prev_simple_rel_hook(root, rel, rte);
+	foreach_node(IndexOptInfo, ii, rel->indexlist)
+		if (ii->relam == sift_col_am_oid())
+		{
+			col_scale_rel(rel);
+			return;
+		}
+}
+
 static void
 col_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (sift_enable_col_scan)
+	{
+		add_address_paths(root, rel);
 		return;
+	}
 	disable_col_bitmaps(rel->pathlist);
 	disable_col_bitmaps(rel->partial_pathlist);
 }
@@ -1199,5 +1286,7 @@ sift_col_scan_init(void)
 {
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = col_set_rel_pathlist;
+	prev_simple_rel_hook = build_simple_rel_hook;
+	build_simple_rel_hook = col_build_simple_rel;
 }
 #endif

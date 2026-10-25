@@ -13,6 +13,16 @@ import hashlib, json, math, os, random, statistics, sys, tempfile, time
 EPOCH = 1    # bumped when the way a cell is measured changes so that older entries no longer describe what is measured now
 
 
+def logger(tag, stamp_tag=True):
+    """(log, die) of a step: log prints `[HH:MM:SS TAG] message` to stderr (`[HH:MM:SS]` when stamp_tag is false), die exits with `TAG: message`"""
+    def log(msg):
+        print('[%s%s] %s' % (time.strftime('%T'), ' ' + tag if stamp_tag else '', msg), file=sys.stderr, flush=True)
+
+    def die(msg):
+        sys.exit('%s: %s' % (tag, msg))
+    return log, die
+
+
 class ForeignHost(Exception):
     """cached cells that were measured on another host than the one that publishes them"""
 

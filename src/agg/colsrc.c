@@ -70,7 +70,11 @@ sift_colsrc_stats(Relation rel, SiftSrcStats *st)
 void
 sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp)
 {
-	provider_of_rel(index)->stamp(index, stamp);
+	const SiftSrcProvider *prov = provider_of_rel(index);
+
+	memset(stamp, 0, sizeof(*stamp));
+	if (prov->stamp)
+		prov->stamp(index, stamp);
 }
 
 void
@@ -261,6 +265,12 @@ sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows
 	src->prov->tids(src->impl, unit, rows, n, tids);
 }
 
+bool
+sift_colsrc_sb_heap(SiftSrcSource *src)
+{
+	return src->prov->sb_heap == NULL || src->prov->sb_heap(src->impl);
+}
+
 void
 sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 {
@@ -271,6 +281,18 @@ uint32
 sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 {
 	return src->prov->zone_range(src->impl, lo, hi, leaf, z);
+}
+
+uint32
+sift_colsrc_zone_range_segs(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	return src->prov->zone_range_segs(src->impl, lo, hi, leaf, z);
+}
+
+bool
+sift_colsrc_walk_stamp(SiftSrcSource *src, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	return src->prov->walk_stamp != NULL && src->prov->walk_stamp(src->impl, st, mem, cap, nmem);
 }
 
 bool
@@ -293,9 +315,52 @@ sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 }
 
 bool
+sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	return src->prov->sb_heads && src->prov->sb_heads(src->impl, sb, leaf, lo, nlo, hi, nhi);
+}
+
+int
+sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	return src->prov->run_heads ? src->prov->run_heads(src->impl, unit, leaf, lo, nlo, hi, nhi) : 0;
+}
+
+bool
 sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
 {
 	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
+}
+
+int
+sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
+{
+	*grouped = -1;
+	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped) : -1;
+}
+
+bool
+sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values)
+{
+	return src->prov->gorder_info(src->impl, i, leaf, entries, values);
+}
+
+void
+sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	src->prov->gorder_range(src->impl, i, leaf, vs, ve, ns, ne);
+}
+
+uint32
+sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	return src->prov->gorder_seek(src->impl, i, leaf, vs, ve, key, after);
+}
+
+uint32
+sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+{
+	return src->prov->gorder_chunk(src->impl, i, leaf, c, key, addr);
 }
 
 void

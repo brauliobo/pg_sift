@@ -135,6 +135,12 @@ extern uint32 sift_col_numimg_from_text(const char *txt, uint8 *out, int32 *dsca
  */
 extern uint32 sift_col_numimg_to_text(const uint8 *img, uint32 len, int32 dscale, char *buf, uint32 cap);
 
+/*
+ * The decimal digits of a finite image: 1 for zero (no digits), 2 for a non-zero number with *neg its sign, *exp10 its exponent (value = 0.DIGITS x 10^exp10)
+ * and *nd digits (0..9, no leading or trailing zero) in dig, 0 for NaN, an infinity, a damaged image or more than cap digits.
+ */
+extern int	sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, uint8 *dig, uint32 cap, uint32 *nd);
+
 /* Is img a canonical image (the one thing sift.col_verify and the readers need) */
 extern bool sift_col_numimg_valid(const uint8 *img, uint32 len);
 

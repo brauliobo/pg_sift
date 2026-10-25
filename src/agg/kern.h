@@ -64,6 +64,13 @@ typedef struct SiftAggKernels
 	/* ---- predicates: bit i of out = (v[i] op c) ---- */
 	/* doubles in PostgreSQL's order, not the integer keys of the column kernels */
 	void		(*cmp_f64) (uint64 *out, const double *v, int n, SiftCmpOp op, double c);
+	/*
+	 * Two columns of one row: bit i of out = (a[i] op b[i]), signed integers, or doubles in PostgreSQL's order (as cmp_f64). NULLs are the caller's.
+	 * The NEON table keeps the scalar loop for the 64-bit lanes: two lanes do not beat it on an arm64 core.
+	 */
+	void		(*cmp2_i32) (uint64 *out, const int32 *a, const int32 *b, int n, SiftCmpOp op);
+	void		(*cmp2_i64) (uint64 *out, const int64 *a, const int64 *b, int n, SiftCmpOp op);
+	void		(*cmp2_f64) (uint64 *out, const double *a, const double *b, int n, SiftCmpOp op);
 	/* bit i = (uint32) (v[i] - base) < nlut && lut[v[i] - base] != 0 (wrapping subtraction in uint32); a bound check fused with a byte LUT */
 	void		(*lut_i32) (uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut);
 
@@ -85,10 +92,22 @@ typedef struct SiftAggKernels
 	 * row is not finite (NaN, +-Inf). The float guard of a sum (sum_gid_f64): only a finite input may overflow it.
 	 */
 	bool		(*absmax_f64) (const double *v, const uint64 *mask, int n, double *mx);
+	/* the largest |v[i]| of the n values (2^63 for INT64_MIN), 0 when n == 0: the range proof of an integer program (agg/vnum.c) */
+	uint64		(*absmax_i64) (const int64 *v, int n);
 	/* false (outputs untouched) when no row is selected */
 	bool		(*minmax_i32) (int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n);
 	bool		(*minmax_i64) (int64 *mn, int64 *mx, const int64 *v, const uint64 *mask, int n);
 	bool		(*minmax_f64) (double *mn, double *mx, const double *v, const uint64 *mask, int n);
+
+	/*
+	 * ---- integer arithmetic of the numeric programs (agg/vnum.c), wrapping modulo 2^64; dst may be a or b ----
+	 * The caller proves that its operands fit int32 wherever a vector is multiplied (no 64-bit vector multiply exists on NEON, nor on AVX2): a
+	 * multiplication takes the low 32 bits of its operands, as a signed 32 x 32 -> 64 product, whatever the upper bits hold.
+	 * lin_i64: dst[i] = t(a[i], ka) + t(b[i], kb) with t(x, 1) = x, t(x, -1) = -x and t(x, k) = (int32) x * k otherwise.
+	 * mulw_i64: dst[i] = (int32) a[i] * (int32) b[i].
+	 */
+	void		(*lin_i64) (int64 *dst, const int64 *a, int32 ka, const int64 *b, int32 kb, int n);
+	void		(*mulw_i64) (int64 *dst, const int64 *a, const int64 *b, int n);
 
 	/*
 	 * ---- per group accumulation over the rows of mask (NULL: all n rows) ----
@@ -98,6 +117,11 @@ typedef struct SiftAggKernels
 	void		(*count_gid) (int64 *cnt, const uint32 *gid, const uint64 *mask, int n);		/* cnt[gid[i]] += 1 */
 	void		(*sum_gid_i32) (int64 *acc, const uint32 *gid, const int32 *v, const uint64 *mask, int n);
 	void		(*sum_gid_f64) (double *acc, const uint32 *gid, const double *v, const uint64 *mask, int n);
+	/*
+	 * Integer sums in four independent copies of the accumulators, so that consecutive rows of one group do not wait for each other's
+	 * store: row i adds to acc[(i & 3) * stride + gid[i]] (wrapping); the caller adds the copies up.
+	 */
+	void		(*sum_gid_i64) (int64 *acc, uint32 stride, const uint32 *gid, const int64 *v, const uint64 *mask, int n);
 } SiftAggKernels;
 
 /* Active table; never NULL after _PG_init */

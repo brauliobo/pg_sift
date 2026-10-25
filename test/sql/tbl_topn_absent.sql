@@ -1,0 +1,27 @@
+-- A text column added after the column groups were written has no dictionary in them: the top-N of its values, and a filter on them, read the column as all NULL
+-- (or the constant of ADD COLUMN .. DEFAULT) without a dictionary of the segment.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE absent_t USING sift_table AS SELECT g AS id FROM generate_series(1, 20000) g;
+ALTER TABLE absent_t ADD COLUMN sku text;
+ALTER TABLE absent_t ADD COLUMN tag text DEFAULT 'none';
+VACUUM (FREEZE, ANALYZE) absent_t;
+\ir test/agg_rows_helpers.sql
+
+CREATE TABLE absent_q (q text);
+INSERT INTO absent_q VALUES
+	('SELECT id, sku FROM absent_t ORDER BY sku COLLATE "C", id LIMIT 5'),
+	('SELECT id, tag FROM absent_t ORDER BY tag COLLATE "C", id DESC LIMIT 5'),
+	('SELECT count(*), count(sku), count(DISTINCT tag) FROM absent_t'),
+	('SELECT tag, count(*) FROM absent_t WHERE sku IS NULL GROUP BY tag');
+SELECT agg_pushed(q) AS pushed, agg_rows(q, true) = agg_rows(q, false) AS same FROM absent_q ORDER BY q;
+
+-- rows written after the column was added carry a dictionary: the segments mix
+INSERT INTO absent_t SELECT 20000 + g, 'sku' || g, 'tag' || g % 3 FROM generate_series(1, 5000) g;
+VACUUM absent_t;
+SELECT agg_pushed(q) AS pushed, agg_rows(q, true) = agg_rows(q, false) AS same FROM absent_q ORDER BY q;
+
+DROP TABLE absent_q, absent_t;
+DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
+DROP EXTENSION pg_sift;

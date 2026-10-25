@@ -6,7 +6,7 @@
 # lower bound set by the pages it writes); and with the maintenance lock held (a VACUUM stopped at its cleanup gate, a testing build) it is skipped while queries and inserts go on.
 . "$(dirname "$0")/lib.bash"
 
-plan 16
+plan 17
 node_init am 20 "autovacuum = off
 sift.log_min_duration = 0
 sift.maintenance_naptime = 200"
@@ -101,4 +101,19 @@ check "quiet again: the worker rewrote it, one clean segment" await_rewrite
 check "and the answers are the heap's" test "$(groups on)" == "$(groups off)"
 wait
 sql am "ALTER DATABASE postgres RESET sift.col_auto_merge_max_active" >/dev/null
+# 6. the same with partitions: a rewrite by partitions opens a write target for each, and the pages under 16 of each must still add up to the delays
+sql am "ALTER DATABASE postgres SET sift.maintenance_cost_delay = 100" "ALTER DATABASE postgres SET sift.col_auto_merge_partition_kb = 64" >/dev/null
+LINES=$(wc -l <"$D/postgres.log")
+BEFORE=$(grep -c "$REWROTE" "$D/postgres.log")
+churn 6
+sql am "VACUUM facts" >/dev/null
+await_rewrite
+for _ in $(seq 400); do [[ $(grep -c "$REWROTE" "$D/postgres.log") -gt $BEFORE ]] && break; sleep 0.05; done
+MS=$(grep "$REWROTE" "$D/postgres.log" | tail -1 | grep -o '[0-9]* ms' | grep -o '[0-9]*')
+PAGES=$(tail -n +$((LINES + 1)) "$D/postgres.log" | sed -n 's/.*sift: merged .* of index "facts_idx" in [0-9]* ms, [0-9]* documents, \([0-9]*\) bytes.*/\1/p' | awk '{ s += $1 } END { print int(s / 8192) }')
+BOUND=$(( (PAGES / 16 - 2) * 100 ))
+diag "the last rewrite took ${MS:-?} ms for $PAGES pages at 100 ms for every 16 pages (at least $BOUND ms)"
+sql am "ALTER DATABASE postgres RESET sift.maintenance_cost_delay" "ALTER DATABASE postgres RESET sift.col_auto_merge_partition_kb" >/dev/null
+check "partitions: the worker slept while it wrote" test "${MS:-0}" -ge "$BOUND" -a "$BOUND" -ge 200
+
 finish

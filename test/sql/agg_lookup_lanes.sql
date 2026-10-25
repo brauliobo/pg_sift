@@ -1,0 +1,37 @@
+-- A float sum is added in the order of the scan, so a parallel scan has lanes (superblocks l, l + n, ...), and the groups of each lane are sent on before the next
+-- lane starts: the output rows of the lookup start again with them, and so must the ids of the lookup's values that an expression over its columns (the FILTER
+-- below) was given. The rows are the normal plan's, with a worker and with the leader alone.
+CREATE EXTENSION pg_sift;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
+
+CREATE TABLE ev (id int PRIMARY KEY, ent_id int8, val float8) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE abs(hashint4(i)) % 5000 END, (hashint4(i + 5) % 1000) / 7.0 FROM generate_series(1, 120000) i;
+CREATE INDEX ev_col ON ev USING sift_col (ent_id, val);
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE ents (id int8, tag text) WITH (autovacuum_enabled = false);
+INSERT INTO ents SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE 't' || i % 3 END FROM generate_series(0, 1999) i;
+VACUUM (FREEZE, ANALYZE) ents;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM (TABLE r_on EXCEPT TABLE r_off) x) + (SELECT count(*) FROM (TABLE r_off EXCEPT TABLE r_on) x);
+	RETURN NEXT;
+END $$;
+
+\set q 'SELECT d.tag, count(*) AS n, round((avg(e.val) FILTER (WHERE d.tag IS NOT NULL))::numeric, 6) AS a, count(DISTINCT d.tag) AS t FROM ev e LEFT JOIN ents d ON d.id = e.ent_id GROUP BY 1'
+SET max_parallel_workers_per_gather = 1; SET parallel_leader_participation = on;
+SELECT * FROM same(:'q');
+SET max_parallel_workers_per_gather = 2; SET parallel_leader_participation = off;
+SELECT * FROM same(:'q');
+SET max_parallel_workers_per_gather = 0;
+SELECT * FROM same(:'q');
+
+DROP FUNCTION same(text);
+DROP TABLE ev, ents;
+DROP EXTENSION pg_sift;

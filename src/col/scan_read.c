@@ -122,7 +122,10 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 				{
 					SiftColDict *d = MemoryContextAlloc(arena, sizeof(SiftColDict));
 
-					sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
+					if (cu->dict_lazy && cu->seg != NULL && !unit_inline(cu, col) && sift_cseg_dict_view_lazy(cu->seg, col, d))
+						d->id = dict_id(cu, col);
+					else
+						sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
 					sift_ccodes_below(codes, m, d->n + 1);
 					vec->dict = d;
 				}
@@ -242,6 +245,12 @@ sift_col_read(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVe
 		return;
 	}
 	sift_col_read_idx(unit, col, idx, m, vec);
+}
+
+void
+sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on)
+{
+	((ColUnit *) unit->priv)->dict_lazy = on;
 }
 
 void
@@ -413,9 +422,14 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 				   "sift_col: leaf %d (storage class %d) cannot be read as lane %d", col, def->store, lane);
 	if (lane == SIFT_COLL_CODE)
 	{
-		SiftCDict  *dict = unit_dict(cu, col);	/* first: an inline chunk's dictionary and its id exist once the chunk is read */
+		if (cu->seg != NULL && !unit_inline(cu, col) && sift_cseg_dict_view_lazy(cu->seg, col, &info->dict))
+			info->dict.id = dict_id(cu, col);
+		else
+		{
+			SiftCDict  *dict = unit_dict(cu, col);	/* first: an inline chunk's dictionary and its id exist once the chunk is read */
 
-		sift_cdict_view(dict, dict_id(cu, col), &info->dict);
+			sift_cdict_view(dict, dict_id(cu, col), &info->dict);
+		}
 	}
 	if (def->kind == SIFT_COLK_GROUP)
 	{

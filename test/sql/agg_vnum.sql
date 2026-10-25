@@ -1,0 +1,71 @@
+-- Sums and averages of numeric programs (+ - * of numeric, int2, int4 columns and constants) run on int64 vectors in blocks of 512 tuples when a bound from
+-- the data proves no value leaves int64 and every multiplied operand fits int32; any other block goes through the int128 interpreter. Each query is run
+-- by Custom Scan (SiftAgg) and with sift.enable_agg off, and the rows must be the same: 38-digit programs (three factors of numeric(12,2)), few groups
+-- (private accumulators) and many (direct), NULLs, negatives, a NaN, FILTER, values on both sides of the int32 and 2^62 bounds inside one chunk.
+CREATE EXTENSION pg_sift;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE v (id int PRIMARY KEY, g6 int NOT NULL, g200 int NOT NULL, a numeric(12,2), b numeric(12,2), c numeric(12,2), i4 int, i2 int2, d numeric(10,2), e numeric(10,2));
+INSERT INTO v
+SELECT g, g % 6, g % 200,
+       CASE WHEN g % 53 = 0 THEN NULL ELSE round((900 + (g * 7919) % 100000)::numeric / 1, 2) END,
+       CASE WHEN g % 47 = 0 THEN NULL ELSE ((g * 31) % 11)::numeric / 100 END,
+       CASE WHEN g % 43 = 0 THEN NULL ELSE ((g * 17) % 9)::numeric / 100 END,
+       CASE WHEN g % 41 = 0 THEN NULL ELSE (g * 13) % 2000 - 1000 END,
+       ((g * 3) % 200 - 100)::int2,
+       CASE WHEN g % 37 = 0 THEN NULL ELSE ((g * 7919) % 2000001 - 1000000)::numeric / 100 END,
+       CASE WHEN g % 29 = 0 THEN NULL ELSE ((g * 104729) % 200001 - 100000)::numeric / 100 END
+FROM generate_series(1, 6000) g;
+-- values past int32 (scaled by 100: 21474836.48 and up) in one block, negatives, a NaN, and the largest the type holds
+INSERT INTO v VALUES (6001, 1, 1, 9999999999.99, 0.05, 0.03, 1, 1), (6002, 1, 1, -9999999999.99, 0.05, 0.03, 1, 1), (6003, 2, 2, 21474836.47, 0.00, 0.00, 1, 1),
+       (6004, 2, 2, 21474836.48, 0.00, 0.00, 1, 1), (6005, 3, 3, -21474836.48, 0.10, 0.08, 1, 1), (6006, 3, 3, -21474836.49, 0.10, 0.08, 1, 1),
+       (6007, 4, 4, 'NaN', 0.01, 0.01, 1, 1), (6008, 5, 5, 0.01, 0.00, 0.00, 2147483647, 32767), (6009, 5, 5, 0.01, 0.00, 0.00, -2147483648, -32768);
+-- a whole block (512 tuples) at the limits: the int32 operands of three factors multiply past 2^62 and the proof fails for it, next to blocks that pass
+INSERT INTO v SELECT 7000 + g, 6 + g % 2, 6 + g % 2, 1, 0.01, 0.01, CASE g % 2 WHEN 0 THEN 2147483647 ELSE -2147483648 END, 32767, 99999999.99, -99999999.99 FROM generate_series(1, 1024) g;
+CREATE INDEX v_col ON v USING sift_col (id, g6, g200, a, b, c, i4, i2, d, e);
+VACUUM (ANALYZE) v;
+
+EXPLAIN (COSTS OFF) SELECT g6, sum(a * (1 - b) * (1 + c)) FROM v WHERE id <= 6000 GROUP BY g6;
+
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE n int;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_sift ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_pg ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SELECT count(*) INTO n FROM ((TABLE r_sift EXCEPT ALL TABLE r_pg) UNION ALL (TABLE r_pg EXCEPT ALL TABLE r_sift)) d;
+	DROP TABLE r_sift, r_pg;
+	RETURN n = 0;
+END $$;
+
+-- the rows are compared as JSON text: the digits and the display scale of every sum, a NaN included
+CREATE TABLE cases (name text PRIMARY KEY, q text NOT NULL);
+INSERT INTO cases VALUES
+('q1_shape', $$SELECT g6, sum(a * (1 - b) * (1 + c)), sum(a * (1 - b)), sum(a), avg(a * (1 - b) * (1 + c)), count(*) FROM v WHERE id <= 6000 GROUP BY g6$$),
+('many_groups', $$SELECT g200, sum(a * (1 - b) * (1 + c)), avg(a) FROM v WHERE id <= 6000 GROUP BY g200$$),
+('wide_block_nan_and_limits', $$SELECT g6, sum(a * (1 - b) * (1 + c)), avg(a * b) FROM v GROUP BY g6$$),
+('tail_block', $$SELECT sum(a * (1 - b) * (1 + c)), sum(a * b * c) FROM v WHERE id > 5990$$),
+('filter_neg_add', $$SELECT g6, sum(a * (1 - b) * (1 + c)) FILTER (WHERE c > 0.04), sum(a - b * c), sum(-a * 2) FROM v WHERE id <= 6000 GROUP BY g6$$),
+('int_leaves', $$SELECT g6, sum(i4::numeric * (i4 + 1) * (i4 + 2)), sum(i2::numeric * i2 * i2), sum(i4::numeric * 0.01 * a) FROM v WHERE id <= 6000 GROUP BY g6$$),
+('int_limits', $$SELECT g6, sum(i4::numeric * i4), sum(i2::numeric * i4) FROM v GROUP BY g6$$),
+('distinct_stays', $$SELECT g6, sum(DISTINCT a * b), sum(a * b) FROM v WHERE id <= 6000 GROUP BY g6$$),
+('nulls_no_groups', $$SELECT sum(a * (1 - b) * (1 + c)), sum(a), avg(c) FROM v WHERE a IS NULL OR id % 7 = 0$$),
+('scale_10_2', $$SELECT g6, sum(d), sum(e), sum(d * e), avg(d * e), sum(d * e * (1 + e)), sum(d - e * 2), count(d) FROM v WHERE id <= 6000 GROUP BY g6$$),
+('scale_10_2_sign_filter', $$SELECT g200 % 9 AS k, sum(d * e) FILTER (WHERE d < 0), sum(-d * e), sum(d * 100), min(d) FROM v WHERE id <= 6000 GROUP BY 1$$),
+('scale_10_2_nulls_only', $$SELECT sum(d * e), avg(d), sum(e) FROM v WHERE d IS NULL OR e IS NULL$$),
+('proof_fails_by_block', $$SELECT id / 512 AS blk, sum(i4::numeric * i4 * i4), sum(i2::numeric * i4 * (i2 + 1)), sum(d * e * a) FROM v GROUP BY 1$$),
+('proof_fails_in_a_group', $$SELECT g6, sum(i4::numeric * i4 * i4), avg(i4::numeric * i2 * i2), sum(d * e) FROM v GROUP BY g6$$),
+('expression_keys', $$SELECT g6 % 2 AS k, g200 % 70 AS k2, sum(a * (1 - b)), count(*) FROM v WHERE id <= 6000 GROUP BY 1, 2$$);
+
+-- the vector level the CPU has, then the scalar kernels
+SELECT name, same(q) FROM cases ORDER BY name;
+SET sift.simd = 'scalar';
+SELECT name, same(q) FROM cases ORDER BY name;
+
+DROP TABLE cases, v;
+DROP FUNCTION same(text);
+DROP EXTENSION pg_sift;

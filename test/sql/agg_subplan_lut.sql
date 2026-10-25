@@ -143,12 +143,22 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (S
 SELECT * FROM same($$WITH s AS MATERIALIZED (SELECT id FROM tenants WHERE id < 20) SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT id FROM s) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE big_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
 
--- parallel workers: the sub-plan is the leader's, the node asks for none (and without the sub-select the same query has workers)
+-- parallel workers: each worker starts the sub-plan in an executor state of the statement
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS with_subplan;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (1, 2, 3, 4, 5, 6) GROUP BY kind$$) AS constants;
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
 RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;
+
+-- a worker runs the sub-plan with the snapshot of the statement active: a stable SQL function in it reads a row this transaction wrote, under REPEATABLE READ
+CREATE FUNCTION blocked_count() RETURNS bigint LANGUAGE sql STABLE PARALLEL SAFE AS $$ SELECT count(*) FROM blocked $$;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+INSERT INTO blocked VALUES (1), (2), (3);
+SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_table_scan_size = 0;
+SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$) AS with_subplan;
+SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$);
+ROLLBACK;
+DROP FUNCTION blocked_count();
 
 -- a rescan: the node is the inner side of a nested loop and runs again for each row of the outer side (the groups are replayed)
 SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;

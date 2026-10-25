@@ -120,7 +120,7 @@ SELECT same($$SELECT i.category, count((o.metrics->>'m_total')::float8) AS c, ro
  t
 (1 row)
 
-SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, avg((metrics->>'m_total')::float8) AS a
+SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >= 2) AS good, round(avg((metrics->>'m_total')::float8)::numeric, 9) AS a
 			  FROM o WHERE (metrics->>'m_total')::float8 IS NOT NULL GROUP BY 1$$) AS metric_key_rows;
  metric_key_rows 
 -----------------

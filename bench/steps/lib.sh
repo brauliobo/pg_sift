@@ -4,12 +4,12 @@ export LC_ALL=C
 
 STEPS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # the internal steps that bench/bench runs
 BENCH=$(dirname "$STEPS")
-registry() { awk -F'\t' -v col="$1" -v want="${2:-}" '!/^#/ && NF && (want == "" || $col == want) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv"; }   # ids whose column COL is WANT (any when empty), table order
-ALL_ENGINES=$(registry 1)                    # every engine of bench/engines.tsv
+registry() { awk -F'\t' -v col="$1" -v want="${2:-}" '!/^#/ && NF && $8 != "analytic" && (want == "" || $col == want) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv"; }   # ids of the text engines whose column COL is WANT (any when empty), table order
+ALL_ENGINES=$(registry 1)                    # every text engine of bench/engines.tsv (the analytic ones are the generic suites': steps/generic.py)
 DEFAULT_ENGINES=$(registry 6 yes)            # what `bench run` measures without --engines
 REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.tsv" | sort -u | paste -sd' ')   # the engines that are references for `bench regress`
-PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
-SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
+PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
+SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
 REPO=$(dirname "$BENCH")
 . "$REPO/scripts/quiet.sh"                   # quiet_wait, quiet_batch, quiet_report: host noise by pressure stall information
 . "$BENCH/versions.env"
@@ -262,6 +262,13 @@ perf_hold() { # one run at a time on the machine: the run holds the perf lock un
   exec 8>>"$LOCK"
   flock -n 8 || { echo "waiting for the perf lock (another benchmark is timing)"; flock 8; }
   export PERF_LOCK_HELD=1
+}
+pg_container() { # NAME PORT IMAGE [SERVER SETTINGS...]: a PostgreSQL container on 127.0.0.1:PORT (trust authentication, the caps of CAPS, a PG_LABEL if set), started again if it exists, ready when it returns
+  local n=$1 p=$2 i=$3 t; shift 3
+  docker rm -fv "$n" >/dev/null 2>&1 || true
+  docker run -d --name "$n" ${PG_LABEL:+--label "$PG_LABEL"} "${CAPS[@]}" --shm-size 1g -p "127.0.0.1:$p:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$i" postgres "$@" >/dev/null
+  for (( t = 0; t < 300; t++ )); do pg_isready -q -h 127.0.0.1 -p "$p" && return 0; sleep 1; done
+  die "the server on port $p did not start (docker logs $n)"
 }
 # capped CMD...: the standing caps of the work on a PostgreSQL that is not in a container: a memory cap with no swap (a runaway query dies alone), nice, and a CPU quota when CAP_CPU is set
 capped() { systemd-run --user --scope -q -p MemoryMax="${CAP_MEM:-${GAP_MEM:-12G}}" -p MemorySwapMax=0 -p OOMPolicy=continue ${CAP_CPU:+-p CPUQuota="$CAP_CPU"} nice "$@"; }

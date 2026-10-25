@@ -123,6 +123,9 @@ extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 f
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
+extern SiftCDict *sift_cdict_plain_begin(MemoryContext mcxt, uint32 n);
+extern bool sift_cdict_plain_bytes(SiftCDict *d, MemoryContext mcxt, uint64 room);
+extern bool sift_cdict_plain_valid(const SiftCDict *d);
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
 
@@ -150,7 +153,9 @@ typedef struct SiftColBatch
 	uint32		sb;
 	uint32		nrows;
 	uint32		rowcap;
-	SiftKey    *keys;			/* ascending, all in superblock sb */
+	SiftKey    *keys;			/* ascending, all in superblock sb (a keyed batch: any blocks, sb is the sequence number of the unit) */
+	bool		keyed;			/* a key-cut unit: the rows are those of a range of the declared order key, whatever their pages */
+	bool		unsorted;		/* the rows are in any order (the window of the cut of a key-cut merge, col/order.c): not a unit to encode */
 	bool		hasver;			/* xmin and cmin are set for every row (0 = frozen); false: every row is frozen and the arrays mean nothing */
 	uint32	   *xmin;			/* [rowcap]: the transaction that inserted the row of a sift_table group (docs/COL-TAM.md section 7) */
 	uint32	   *cmin;
@@ -337,6 +342,9 @@ extern void sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits
 extern void sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl, const SiftCcPolicy *pol, bool tags, StringInfo out,
 							  Size *start, SiftCZone *zones);
 
+/* The bytes of the row directory of the sorted keys of a unit: of superblock sb, or of a key-cut unit (keyed); *pages is the number of heap pages the keys fall in */
+extern Size sift_cunit_directory_bytes(const SiftKey *keys, uint32 nrows, bool keyed, uint32 sb, uint32 *pages);
+
 /*
  * Must the STR leaf col of the batch be stored inline in a segment whose dictionary of the leaf is seg: some string is over
  * SIFT_COL_DICT_MAX_ENTRY bytes, or the dictionary would exceed maxbytes with the strings the batch adds.
@@ -352,6 +360,13 @@ typedef struct SiftCUnitView
 	uint32		npages;
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
 	uint8		page[SIFT_SB_PAGES];	/* page within the superblock of the p-th page of the unit: the set bits of pagemask, in order */
+	bool		keyed;			/* explicit TIDs: blocks[p] is the heap block of the p-th page, koff[r] the offset of row r (pagemask, page, maxoff, sparse unused) */
+	const BlockNumber *blocks;	/* [npages] ascending; NULL until sift_cunit_keyed_load (a scan that needs no TID never decodes the directory) */
+	const uint16 *koff;			/* [nrows] */
+	const uint8 *kdir;			/* the packed directory (keyed) */
+	uint32		kwidths;		/* bit widths of the block distances, the rows of a page and the offsets */
+	uint32		kblk0;			/* the first block */
+	uint32		kblk1;			/* the last block */
 	const uint32 *rowstart;		/* npages + 1 (unaligned access is avoided by the parser copying when needed) */
 	const uint16 *maxoff;
 	const uint8 *sparse;
@@ -363,6 +378,10 @@ _Static_assert(SIFT_SB_PAGES <= 256, "SiftCUnitView.page holds page numbers in a
 
 /* false when inconsistent (the caller raises ERRCODE_INDEX_CORRUPTED); rec must stay valid and be 8-byte aligned */
 extern bool sift_cunit_parse(const uint8 *rec, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);
+extern uint32 sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols);
+
+/* Decodes the TID directory of a key-cut unit parsed by sift_cunit_parse_head (errors on a damaged one); a no-op when it is decoded or the unit is not keyed */
+extern void sift_cunit_keyed_load(const SiftCUnitView *v);
 
 /*
  * The same for a unit whose record is read lazily: only its first avail bytes (the row directory and the chunk table, which a bound of
@@ -377,6 +396,7 @@ extern bool sift_cunit_chunk(const SiftCUnitView *v, int col, SiftCChunk *c);
 
 /* Keys (blk << 16 | off) of rows [0, nrows) of the unit for superblock sb */
 extern void sift_cunit_keys(const SiftCUnitView *v, uint32 sb, SiftKey *keys);
+extern uint32 sift_cunit_find_rows(const SiftCUnitView *v, uint32 sb, const SiftKey *keys, uint32 n, uint32 *rows);
 extern void sift_cunit_row_keys(const SiftCUnitView *v, uint32 sb, const uint32 *ords, uint32 n, SiftKey *out);
 /* Pages: index p in 0..npages-1 -> heap block sb * 256 + page, its row range and the 512-bit mask of its offsets */
 extern BlockNumber sift_cunit_page_block(const SiftCUnitView *v, uint32 sb, uint32 p);

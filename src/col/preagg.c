@@ -109,11 +109,7 @@ typedef struct DimBuild
 {
 	int			spec;				/* index into spec->dim */
 	StringInfoData blob;
-	Size		bytes;				/* what the byte budget counts: the blob with the first spec dim lean measures only (all of them without a lean) */
 	int			nm;					/* measures in the blob */
-	Size		cut[SIFT_PAGG_MAX_MEAS + 1];	/* offset in the blob after the first i measure leaves (cut[0]: after the flags) */
-	Size		tail[SIFT_PAGG_MAX_MEAS + 1];	/* offset after the counts (tail[0]) and after each measure's sums */
-	Size		mmb[SIFT_PAGG_MAX_MEAS + 1];	/* bytes of the minima and maxima in the first i measures (cube_minmax): the byte budget does not count them, or the option would cost the dims it makes room for */
 	bool		ok;
 	bool		keep;
 	int			grain;				/* a calendar dim: the grain of its cells (SIFT_CAL_*), else 0 */
@@ -295,6 +291,18 @@ cal_cells(const SiftCPaggCol *c, uint32 nrows, int grain, const int64 *days, int
 	}
 }
 
+bool
+sift_cpagg_cal_rows(const SiftColSchema *s, int leaf, int grain, const SiftCPaggCol *c, int64 *cells)
+{
+	int64	   *days = palloc(Max(c->n, 1) * sizeof(int64));
+	bool		ok = cal_days(c, s->cols[leaf].type == SIFT_COLT_DATE, c->n, days);
+
+	if (ok)
+		cal_cells(c, c->n, grain, days, cells);
+	pfree(days);
+	return ok;
+}
+
 /* Builds the histogram of dim sd over the unit; false when it has more than maxg groups or the dim cannot be used (overflow values, inline text) */
 static bool
 build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc, const SiftCPaggCol *cols, uint32 nrows, uint32 maxg,
@@ -365,12 +373,8 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 	appendStringInfoChar(out, (char) nm);
 	put_u(out, ng);
 	appendStringInfoChar(out, (nullg == UINT32_MAX ? 0 : PAGG_NULLGROUP) | (sc->minmax ? PAGG_MINMAX : 0));
-	b->cut[0] = out->len;
 	for (int i = 0; i < nm; i++)
-	{
 		put_u(out, mm[i]);
-		b->cut[i + 1] = out->len;
-	}
 	b->nm = nm;
 	{
 		int64		prev = 0;
@@ -387,13 +391,8 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 	}
 	for (uint32 i = 0; i < ng; i++)
 		put_u(out, cnt[ord[i].g]);
-	b->tail[0] = out->len;
-	b->mmb[0] = 0;
 	for (int m = 0; m < nm; m++)
 	{
-		Size		mm_at,
-					mm_bytes = 0;
-
 		const SiftCPaggCol *mc = &cols[mm[m]];
 		bool		fl = s->cols[mm[m]].store == SIFT_COLS_F4 || s->cols[mm[m]].store == SIFT_COLS_F8;
 		double	   *sf = sc->sf;
@@ -445,15 +444,11 @@ build_dim(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *dc
 				put_u(out, nn[ord[i].g]);
 			for (uint32 i = 0; i < ng; i++)
 				put_zz128(out, si[ord[i].g]);
-			mm_at = out->len;
 			for (int pass = 0; sc->minmax && pass < 2; pass++)
 				for (uint32 i = 0; i < ng; i++)
 					if (nn[ord[i].g] > 0)
 						put_zz(out, pass ? mx[ord[i].g] : mn[ord[i].g]);
-			mm_bytes = out->len - mm_at;
 		}
-		b->mmb[m + 1] = b->mmb[m] + mm_bytes;
-		b->tail[m + 1] = out->len;
 	}
 	return true;
 }
@@ -478,15 +473,6 @@ emit_cube(const SiftCPaggSpec *spec, const DimBuild *db, int nd, StringInfo out)
 	for (int d = 0; d < nd; d++)
 		if (db[d].keep)
 			appendBinaryStringInfo(out, db[d].blob.data, db[d].blob.len);
-}
-
-/* the bytes a dim counts against the byte budget: the blob with the first measures only (all of them without a lean) */
-static Size
-dim_bytes(const SiftCPaggDim *sd, const DimBuild *b)
-{
-	int			lean = sd->lean > 0 ? Min(sd->lean, b->nm) : b->nm;
-
-	return (b->ok && lean < b->nm ? b->cut[lean] + b->tail[lean] - b->cut[b->nm] : b->blob.len) - (b->ok ? b->mmb[lean] : 0);
 }
 
 /*
@@ -515,14 +501,13 @@ build_cal(const SiftColSchema *s, const SiftCPaggDim *sd, const SiftCPaggCol *co
 			resetStringInfo(&b->blob);
 			b->grain = g;
 			b->ok = build_dim(s, sd, &mc, cols, nrows, SIFT_PAGG_CAL_GROUPS, sc, b);
-			b->bytes = dim_bytes(sd, b);
 			if (!sd->grain)
-				b->ok = b->ok && (uint64) b->ngroups * SIFT_PAGG_CAL_ROWS <= nrows && (!budget || b->bytes + 1 <= *left);
+				b->ok = b->ok && (uint64) b->ngroups * SIFT_PAGG_CAL_ROWS <= nrows && (!budget || b->blob.len + 1 <= *left);
 		}
 	if (b->ok)
 	{
 		b->keep = true;
-		*left -= budget ? b->bytes : 0;
+		*left -= budget ? b->blob.len : 0;
 	}
 	pfree(days);
 	pfree(cells);
@@ -565,8 +550,6 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 			continue;
 		}
 		db[d].ok = build_dim(s, &spec->dim[d], &cols[spec->dim[d].leaf], cols, nrows, cubeg, &sc, &db[d]);
-		/* the dims are chosen by the size they have with the first measures: the others come with a dim that is kept, as the planner expects */
-		db[d].bytes = dim_bytes(&spec->dim[d], &db[d]);
 	}
 	pfree(sc.gid);
 	pfree(sc.hk);
@@ -1041,34 +1024,154 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
 		return;
 	if (spec->permille > 0)
 	{
-		budget = Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
-		cal_budget = Max((Size) SIFT_PAGG_MIN_BUDGET * 2, unit_bytes / 1000 * SIFT_PAGG_CAL_PERMILLE);
+		budget = Max((Size) SIFT_PAGG_CUBE_MIN_BUDGET, unit_bytes / 1000 * spec->permille);
+		cal_budget = Max((Size) SIFT_PAGG_CUBE_MIN_BUDGET, unit_bytes / 1000 * SIFT_PAGG_CAL_PERMILLE);
 	}
 	if (spec->ndims > 0)
 	{
 		build_dims(s, spec, cols, nrows, Min(spec->max_groups, SIFT_PAGG_CUBE_GROUPS), cal_budget, db);
-		/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte */
+		/* smallest dims first under the budget: the cheapest histograms answer the most questions per byte; sizes within an eighth of each other count as equal and keep the order of the spec, or dims of alike cardinality would be kept in other units each and none in all */
 		for (int round = 0; round < spec->ndims; round++)
 		{
 			int			best = -1;
 
 			for (int d = 0; d < spec->ndims; d++)
-				if (db[d].ok && !db[d].keep && (best < 0 || db[d].bytes < db[best].bytes))
+				if (db[d].ok && !db[d].keep && (best < 0 || db[d].blob.len + db[d].blob.len / 8 < db[best].blob.len))
 					best = d;
 			if (best < 0)
 				break;
-			if (budget > 0 && used + db[best].bytes + 1 > budget)
+			if (budget > 0 && used + db[best].blob.len + 1 > budget)
 			{
 				db[best].ok = false;
 				continue;
 			}
 			db[best].keep = true;
-			used += db[best].bytes;
+			used += db[best].blob.len;
 		}
 		emit_cube(spec, db, spec->ndims, out);
 		for (int d = 0; d < spec->ndims; d++)
 			pfree(db[d].blob.data);
 	}
 	if (eout && spec->nrollups > 0)
-		emit_rollups(s, spec, cols, nrows, !spec->rfixed, Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * SIFT_PAGG_DEF_PERMILLE), eout);
+		emit_rollups(s, spec, cols, nrows, !spec->rfixed, Max((Size) SIFT_PAGG_MIN_BUDGET, unit_bytes / 1000 * SIFT_PAGG_ROLLUP_PERMILLE), eout);
+}
+
+/*
+ * The exceptions of a unit: when exactly one INT leaf of the top level has at most 1 row in SIFT_PAGG_EXC_DIV not NULL (the fewest, the first of equals), the cube and the
+ * element rollups of those rows, built with the dims, measures and calendar grains of the unit's own blobs and appended to xcube (after the leaf, as a varint) and xcube's
+ * element blob xecube. eoff[c] is the element offset of each row for a leaf c of a list, NULL for the others. Nothing is appended, and false returned, when no leaf
+ * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own. Deterministic: the verifier calls it again and compares the bytes.
+ */
+bool
+sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+				   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube)
+{
+	int			ncols = s->ncols,
+				xleaf = -1;
+	uint32		limit = Max(1, nrows / SIFT_PAGG_EXC_DIV),
+				nx = 0,
+				best = UINT32_MAX,
+			   *xrow;
+	SiftCPaggSpec mirror;
+	SiftCPaggCol *xc;
+	StringInfoData xb,
+				xe;
+	int64	  **tk;
+	uint64	  **tn,
+			  **to;
+	bool		made = false;
+
+	bool	   *need = palloc0(ncols * sizeof(bool));
+
+	if (clen + elen == 0 || !sift_cpagg_leaves(s, cube, clen, ecube, elen, need))
+	{
+		pfree(need);
+		return false;
+	}
+	for (int c = 0; c < ncols; c++)
+	{
+		uint32		k = 0;
+
+		if (s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !cols[c].ready || cols[c].n != nrows || cols[c].nulls == NULL || cols[c].ovf != NULL)
+			continue;
+		for (uint32 i = 0; i < nrows; i++)
+			k += !((cols[c].nulls[i / 64] >> (i % 64)) & 1);
+		if (k > 0 && k <= limit && k < best)
+		{
+			best = k;
+			xleaf = c;
+		}
+	}
+	if (xleaf < 0 || !sift_cpagg_mirror(s, spec, cube, clen, ecube, elen, &mirror))
+	{
+		pfree(need);
+		return false;
+	}
+	xrow = palloc(best * sizeof(uint32));
+	for (uint32 i = 0; i < nrows; i++)
+		if (!((cols[xleaf].nulls[i / 64] >> (i % 64)) & 1))
+			xrow[nx++] = i;
+	xc = palloc(ncols * sizeof(SiftCPaggCol));
+	tk = palloc0(ncols * sizeof(int64 *));
+	tn = palloc0(ncols * sizeof(uint64 *));
+	to = palloc0(ncols * sizeof(uint64 *));
+	for (int c = 0; c < ncols; c++)
+	{
+		const SiftCPaggCol *src = &cols[c];
+		const uint32 *off = eoff[c];
+		uint32		n = 0;
+
+		xc[c] = (SiftCPaggCol) {NULL, NULL, NULL, 0, false};
+		if (!need[c] || !src->ready || src->key == NULL || (s->cols[c].parent >= 0 && off == NULL))
+			continue;
+		for (uint32 j = 0; j < nx; j++)
+			n += off ? off[xrow[j] + 1] - off[xrow[j]] : 1;
+		tk[c] = palloc(Max(n, 1) * sizeof(int64));
+		tn[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+		if (src->ovf)
+			to[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+		n = 0;
+		for (uint32 j = 0; j < nx; j++)
+			for (uint32 e = off ? off[xrow[j]] : xrow[j], end = off ? off[xrow[j] + 1] : xrow[j] + 1; e < end; e++, n++)
+			{
+				tk[c][n] = src->key[e];
+				if (src->nulls && ((src->nulls[e / 64] >> (e % 64)) & 1))
+					tn[c][n / 64] |= UINT64CONST(1) << (n % 64);
+				if (src->ovf && ((src->ovf[e / 64] >> (e % 64)) & 1))
+					to[c][n / 64] |= UINT64CONST(1) << (n % 64);
+			}
+		xc[c] = (SiftCPaggCol) {tk[c], src->nulls ? tn[c] : NULL, src->ovf ? to[c] : NULL, n, true};
+	}
+	initStringInfo(&xb);
+	initStringInfo(&xe);
+	sift_cpagg_cube(s, &mirror, xc, nx, 0, &xb, &xe);
+	if (xb.len + xe.len > 0 && xb.len + xe.len <= (clen + elen) / SIFT_PAGG_EXC_SHARE)
+	{
+		uint32		v = xleaf;
+
+		for (; v >= 0x80; v >>= 7)
+			appendStringInfoChar(xcube, (char) (v | 0x80));
+		appendStringInfoChar(xcube, (char) v);
+		appendBinaryStringInfo(xcube, xb.data, xb.len);
+		appendBinaryStringInfo(xecube, xe.data, xe.len);
+		made = true;
+	}
+	for (int c = 0; c < ncols; c++)
+	{
+		if (tk[c])
+			pfree(tk[c]);
+		if (tn[c])
+			pfree(tn[c]);
+		if (to[c])
+			pfree(to[c]);
+	}
+	pfree(tk);
+	pfree(tn);
+	pfree(to);
+	pfree(xb.data);
+	pfree(xe.data);
+	pfree(xc);
+	pfree(xrow);
+	pfree(need);
+	return made;
 }

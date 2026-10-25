@@ -11,7 +11,7 @@
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
 #   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines: one commit, after a check that every place agrees
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
-# A step that passed is in $RELEASE_STATE/VERSION/manifest (default ~/.local/state/pg_sift-release): --resume skips it. --dry-run does it all
+# A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # Environment: RELEASE_TMP (scratch, default ~/.cache), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail
@@ -73,7 +73,6 @@ preflight() {
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	[[ $(control_version) == "$MM" ]] || die "pg_sift.control default_version is $(control_version), not $MM"
 	[[ -f $R/sql/pg_sift--$MM.sql ]] || die "sql/pg_sift--$MM.sql is missing"
-	# every speed claim of Unreleased has a case in bench/cases.tsv, or a reasoned line in scripts/bench-cases.allow: the number of lines left is the one to watch
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version)
 	pm=$(g show "$PREV:pg_sift.control" | sed -n "s/^default_version *= *'\(.*\)'/\1/p")

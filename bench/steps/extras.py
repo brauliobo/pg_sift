@@ -378,7 +378,7 @@ def gpu_section(meta, rows):
         c, d = float(r['median_ms']), float(g['median_ms'])
         body.append(['{:,}'.format(int(r['rows'])), '`%s`' % r['query'], ms(float(r['first_ms'])), ms(c), ms(float(g['first_ms'])), ms(d), times(d, c)])
     lines = [meta.get('title', '').lstrip('# '), '',
-             'Queries on the table of the online-store benchmark, with one sift_col index over the columns they read: ' + '; '.join('`%s` `%s`' % (k, v) for k, v in qs.items()) + '.', '']
+             'Queries on the table of the orders benchmark, with one sift_col index over the columns they read: ' + '; '.join('`%s` `%s`' % (k, v) for k, v in qs.items()) + '.', '']
     lines += table(['rows', 'query', 'CPU, first (ms)', 'CPU, median (ms)', 'device, first (ms)', 'device, median, resident (ms)', 'resident vs CPU'], body, ['---', '---', '---:', '---:', '---:', '---:', '---:'])
     return lines + ['', 'Reproduce: `bench/bench extras gpu` (a Vulkan device and `VULKAN=1`; results: [results/gpu.tsv](results/gpu.tsv)).']
 
@@ -471,7 +471,7 @@ def duckdb_section(meta, rows):
         (any('RESULT DIFFERS' in n for n in notes), '! the rows differ from those of PostgreSQL.')) if flag]
     best = duck_summary(rows, cases, 'warm_ms')
     lines = [
-        '%s orders of the store benchmark (the same CSV in both servers) and its ten questions, one client (`psql` with `\\timing`), median of 3 warm runs in milliseconds, lower is better, the fastest of a row and anything within 5%% of it in bold. '
+        '%s orders of the orders benchmark (the same CSV in both servers) and its ten questions, one client (`psql` with `\\timing`), median of 3 warm runs in milliseconds, lower is better, the fastest of a row and anything within 5%% of it in bold. '
         '%s PostgreSQL 18 with the same CPU quota (3), memory limit (8g) and flags in every container; pg_duckdb %s (the official image, unmodified), DuckDB %s.' % (
             '{:,}'.format(int(meta.get('orders', 0))), footer(meta), meta.get('pg_duckdb', '?'), meta.get('duckdb', '?')),
         '', '"pg_duckdb heap" is `duckdb.force_execution = on` reading the same heap; "pg_duckdb Parquet" a view over `read_parquet()` of a file pg_duckdb wrote from that table.', ''] + duck_table(rows, cases, 'warm_ms') + [

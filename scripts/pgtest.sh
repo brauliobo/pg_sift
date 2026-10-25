@@ -2,7 +2,8 @@
 # Throwaway PostgreSQL cluster that loads sift from the repo build output, without a
 # system-wide install (extension_control_path, dynamic_library_path). PostgreSQL 17 has no
 # extension_control_path: install then copies sift into the server's own directories, as
-# SIFT_SUDO (e.g. sudo) when those are not writable.
+# SIFT_SUDO (e.g. sudo) when those are not writable. Two checkouts that install for PostgreSQL 17 on one machine overwrite each other's library there (a test then fails with an
+# option or a behavior of the other checkout): use PostgreSQL 18 when several work on a machine, or install, start and run in one go.
 #
 #   scripts/pgtest.sh install    build + install into $SIFT_TMP/root
 #   scripts/pgtest.sh start      initdb (first time) + start, without autovacuum (see start)
@@ -40,6 +41,8 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+# macOS: the postmaster dies with "became multithreaded" unless LC_ALL names a valid locale (the default C of a non-login shell does not count)
+[[ $(uname) != Darwin ]] || export LC_ALL=en_US.UTF-8
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 PORT=${SIFT_PORT:-56100}
 DB=${SIFT_DB:-sift}
@@ -109,6 +112,9 @@ new_data() {
 # No autovacuum in the cluster: a worker holds a snapshot while it analyzes a table, a catalog too, and VACUUM removes only the rows older
 # than every snapshot of the database, so the rows a test deleted stay and its plan or its dead-document count differs now and then (the
 # reloption autovacuum_enabled cannot switch off the workers' catalogs). The one job that needs it (scripts/soak.sh) turns it on for its run.
+# max_wal_size 512MB: with 48MB a test that writes 30 MB of WAL in 14 s (col_sorted_run) checkpointed all the time, and on a runner disk that wrote
+# 0.1 MB/s a backend waited 100 to 250 s for a dirty buffer (33 to 255 "checkpoints are occurring too frequently" per lane in a PostgreSQL 19 quick shard).
+# The WAL a lane keeps is at most this, 1 MB segments, no recycling.
 start() {
 	mkdir -p "$SOCK"
 	if [[ ! -f $DATA/PG_VERSION ]]; then
@@ -119,8 +125,8 @@ start() {
 			unix_socket_directories = '$SOCK'
 			$(conf)
 			fsync = off
-			max_wal_size = 48MB
-			min_wal_size = 32MB
+			max_wal_size = 512MB
+			min_wal_size = 80MB
 			wal_recycle = off
 			shared_buffers = 64MB
 			max_worker_processes = 16

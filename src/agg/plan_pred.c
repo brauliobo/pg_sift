@@ -182,7 +182,10 @@ short_array_const(Const *k)
 	return (Node *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(psprintf("%s,...} (%d elements)", txt, ARR_DIMS(a)[0])), false, false);
 }
 
-/* a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows) */
+/*
+ * a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows); a
+ * parameter of an enclosing query level shows as `$n`, as an external one does (the deparser asserts on an executor parameter no plan node sets)
+ */
 static Node *
 display_expr_mutator(Node *n, void *context)
 {
@@ -196,6 +199,13 @@ display_expr_mutator(Node *n, void *context)
 		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
 	if ((arm = null_guarded_arm(n)) != NULL)
 		return display_expr_mutator(arm, context);
+	if (level_param(n))
+	{
+		Param	   *shown = copyObject((Param *) n);
+
+		shown->paramkind = PARAM_EXTERN;
+		return (Node *) shown;
+	}
 	return expression_tree_mutator(n, display_expr_mutator, context);
 }
 
@@ -373,6 +383,32 @@ compile_elem_row(AggCtx *c, int cmp, Node *l, Node *r, Oid lt, Oid rt)
 	return p;
 }
 
+/*
+ * `column op column` of the row: two scalar leaves of one type class stored in the same vector type (an int4 against an int2 or a date against a date; an
+ * int4 against an int8 or a numeric column is the generic expression's), compared by the cmp2 kernels. The 64-bit float order and the NULL rule are those of
+ * the comparison with a constant.
+ */
+static SiftAggPred *
+compile_leaf_cmp(AggCtx *c, int cmp, Node *op, Node *l, Node *r, Oid lt, Oid rt)
+{
+	SiftAggPred *p;
+	TypeClass	tc = type_class(lt);
+	int			a = match_leaf(c, l),
+				b = match_leaf(c, r);
+
+	if (a < 0 || b < 0 || a == b || (tc != TC_INT && tc != TC_DATE && tc != TC_TS && tc != TC_TSTZ && tc != TC_FLOAT) || type_class(rt) != tc ||
+		leaf_of(c, a)->parent >= 0 || leaf_of(c, b)->parent >= 0 || !elem_row_leaf(c, a, tc) || !elem_row_leaf(c, b, tc) ||
+		leaf_of(c, a)->vtype != leaf_of(c, b)->vtype)
+		return NULL;
+	p = make_leaf_pred(c, SAP_LEAFCMP, a);
+	p->leaf2 = b;
+	use_leaf(c, b);
+	p->op = cmp;
+	p->desc = psprintf("%s %s %s", leaf_name(c, a), cmp_text(cmp), leaf_name(c, b));
+	p->sel = clause_selectivity(c->root, op, c->relid, JOIN_INNER, NULL);
+	return p;
+}
+
 /* leaf op operand, for a leaf the comparison kernels read */
 static SiftAggPred *
 compile_cmp(AggCtx *c, OpExpr *op)
@@ -390,7 +426,7 @@ compile_cmp(AggCtx *c, OpExpr *op)
 		return NULL;
 	l = strip_relabel(linitial(op->args));
 	r = strip_relabel(lsecond(op->args));
-	if ((p = compile_elem_row(c, cmp, l, r, lt, rt)) != NULL)
+	if ((p = compile_elem_row(c, cmp, l, r, lt, rt)) != NULL || (p = compile_leaf_cmp(c, cmp, (Node *) op, l, r, lt, rt)) != NULL)
 		return p;
 	if ((leaf = match_leaf(c, l)) >= 0 && pseudo_const(r))
 		;
@@ -616,6 +652,7 @@ false_on_absent(SiftAggPred *p)
 	{
 		case SAP_FALSE:
 		case SAP_CMP:
+		case SAP_LEAFCMP:
 		case SAP_IN:
 		case SAP_NCMP:
 			return true;

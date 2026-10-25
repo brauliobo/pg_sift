@@ -1,0 +1,57 @@
+-- The primary key of a table that foreign keys reference, left out of the index: the aggregate scan of two sift tables joined on it keeps the normal plan, so the
+-- build says so once. Nothing is said when the key is a column of the index, when no table references it, or when the key has two columns.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = notice;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE pk_dim (id int PRIMARY KEY, name text);
+CREATE TABLE pk_fact (id int PRIMARY KEY, dim_id int REFERENCES pk_dim (id), amt int);
+CREATE TABLE pk_fact2 (id int PRIMARY KEY, dim_id int REFERENCES pk_dim (id));
+CREATE TABLE pk_free (id int PRIMARY KEY, name text);
+CREATE TABLE pk_two (a int, b int, name text, PRIMARY KEY (a, b));
+CREATE TABLE pk_two_f (a int, b int, FOREIGN KEY (a, b) REFERENCES pk_two (a, b));
+INSERT INTO pk_dim SELECT i, 'n' || i % 7 FROM generate_series(1, 2000) i;
+INSERT INTO pk_fact SELECT i, 1 + i % 2000, i FROM generate_series(1, 2000) i;
+INSERT INTO pk_free SELECT i, 'n' || i FROM generate_series(1, 2000) i;
+INSERT INTO pk_two SELECT i, i % 3, 'n' FROM generate_series(1, 2000) i;
+-- referenced, key not in the index: said; a second referencing table is counted
+CREATE INDEX pk_dim_name ON pk_dim USING sift_col (name);
+NOTICE:  sift_col index "pk_dim_name": the primary key "id" of "pk_dim" is not a column of the index
+DETAIL:  2 tables ("pk_fact" and others) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.
+HINT:  Add the column to the index if queries join on it.
+CREATE INDEX pk_fact_ix ON pk_fact USING sift_col (id, dim_id, amt);
+CREATE INDEX pk_dim_name2 ON pk_dim USING sift_col (name);
+NOTICE:  sift_col index "pk_dim_name2": the primary key "id" of "pk_dim" is not a column of the index
+DETAIL:  2 tables ("pk_fact" and others) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.
+HINT:  Add the column to the index if queries join on it.
+-- the key is a column (first or later): silent
+CREATE INDEX pk_dim_id ON pk_dim USING sift_col (id, name);
+CREATE INDEX pk_dim_id2 ON pk_dim USING sift_col (name, id);
+-- not referenced, and a key of two columns: silent
+CREATE INDEX pk_free_ix ON pk_free USING sift_col (name);
+CREATE INDEX pk_two_ix ON pk_two USING sift_col (name);
+-- REINDEX runs the build again
+REINDEX INDEX pk_dim_name;
+NOTICE:  sift_col index "pk_dim_name": the primary key "id" of "pk_dim" is not a column of the index
+DETAIL:  2 tables ("pk_fact" and others) reference it with a foreign key. The aggregate scan of two sift tables joined on a key that is not a column of both indexes keeps the normal plan (join_condition), and the column adds a few bytes a row.
+HINT:  Add the column to the index if queries join on it.
+-- the join the NOTICE is about: with the key a column the two sift tables are joined by the aggregate scan, the answer is the plain plan's
+SET client_min_messages = warning;
+DROP INDEX pk_dim_name, pk_dim_name2, pk_dim_id2;
+CREATE FUNCTION pk_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+END $$;
+SELECT pk_rows(q, true) = pk_rows(q, false) AS same
+FROM (VALUES ('SELECT d.name, count(*), sum(f.amt) FROM pk_fact f JOIN pk_dim d ON d.id = f.dim_id GROUP BY 1')) t(q);
+ same 
+------
+ t
+(1 row)
+
+DROP FUNCTION pk_rows(text, bool);
+DROP TABLE pk_fact, pk_fact2, pk_dim, pk_free, pk_two_f, pk_two;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

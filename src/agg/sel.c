@@ -5,6 +5,7 @@
 
 #include "catalog/pg_type.h"
 
+#include "agg/kern.h"
 #include "agg/sel.h"
 #include "core/popcount.h"
 #include "agg/colsrc.h"
@@ -96,6 +97,7 @@ sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
 		return;
 	}
 	sift_col_sel_all(cu, &all);
+	sift_col_point_narrow(cu, &all);
 	memcpy(bits, all.bits, all.nwords * sizeof(uint64));
 }
 
@@ -143,6 +145,107 @@ sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64
 {
 	if (sift_aggsel_vet_needed(cu))
 		sift_aggsel_stored(a, src, cu, bits, vet_op, NULL);
+}
+
+/* The dictionary of a read that stayed in the segment, loaded whole */
+static void
+dict_full(const void *gctx, SiftSrcDict *self)
+{
+	SiftColDict d = {.id = (uint64) (uintptr_t) self->id};
+
+	sift_col_dict_full(gctx, &d);
+	*self = (SiftSrcDict) {self->id, d.n, d.off, d.bytes, d.order, d.octx};
+}
+
+SiftSrcDict
+sift_aggsel_src_dict(const SiftColDict *d)
+{
+	if (d->off == NULL)
+		return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, .get = d->get, .full = dict_full, .gctx = d->gctx};
+	return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes, d->order, d->octx};
+}
+
+static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
+
+void
+sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+{
+	SiftColLaneInfo info;
+
+	sift_col_read_lane(cu, col, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
+	vec->ovf = NULL;
+	info.ovf &= !tol;
+	if (info.ovf && buf->ovf)
+	{
+		SiftColVec	v;
+
+		sift_col_read(cu, col, NULL, &v);
+		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(info.n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
+	}
+	else if (info.ovf)
+		sift_aggsel_overflow_error(a->heapoid);
+	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->n = info.n;
+	vec->isnull = info.nulls ? buf->isnull : NULL;
+	vec->dict = NULL;
+	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
+	if (l->vtype == SCV_CODE)
+	{
+		*dict = sift_aggsel_src_dict(&info.dict);
+		vec->dict = dict;
+	}
+}
+
+void
+sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *b, SiftSrcDict *dict, SiftSrcVec *vec)
+{
+	size_t		m = v->n;
+
+	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
+	switch (l->vtype)
+	{
+		case SCV_I32:
+			for (size_t k = 0; k < m; k++)
+				((int32 *) b->data)[idx[k]] = (int32) v->i[k];
+			break;
+		case SCV_I64:
+			for (size_t k = 0; k < m; k++)
+				((int64 *) b->data)[idx[k]] = v->i[k];
+			break;
+		case SCV_F64:
+			for (size_t k = 0; k < m; k++)
+				((double *) b->data)[idx[k]] = v->f[k];
+			break;
+		case SCV_CODE:
+			for (size_t k = 0; k < m; k++)
+				((uint32 *) b->data)[idx[k]] = v->codes[k];
+			*dict = sift_aggsel_src_dict(v->dict);
+			break;
+	}
+	vec->data = b->data;
+	vec->dict = l->vtype == SCV_CODE ? dict : NULL;
+	vec->n = nrow;
+	vec->isnull = NULL;
+	vec->ovf = NULL;
+	if (v->ovf && !tol)
+	{
+		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
+		for (size_t k = 0; k < m; k++)
+			if (sift_colsrc_bit(v->ovf, k))
+				b->ovf[idx[k] >> 6] |= UINT64CONST(1) << (idx[k] & 63);
+		vec->ovf = b->ovf;
+	}
+	if (v->nulls)
+	{
+		memset(b->isnull, 0, nrow);
+		for (size_t k = 0; k < m; k++)
+			b->isnull[idx[k]] = sift_colsrc_bit(v->nulls, k);
+		vec->isnull = b->isnull;
+	}
+	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
 void

@@ -21,8 +21,11 @@ typedef struct AgkCase
 	int			n;
 	int			nw;
 	int32	   *i32;
+	int32	   *i32b;			/* a second column of the same row: cmp2_* */
 	int64	   *i64;
+	int64	   *i64b;
 	double	   *f64;
+	double	   *f64b;
 	uint32	   *code;			/* < ncode */
 	uint64	   *mask;			/* n bits */
 	int			ncode;
@@ -258,8 +261,11 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 	c->nw = AGK_NW(n);
 
 	c->i32 = AGK_ARR(c, r, int32, n);
+	c->i32b = AGK_ARR(c, r, int32, n);
 	c->i64 = AGK_ARR(c, r, int64, n);
+	c->i64b = AGK_ARR(c, r, int64, n);
 	c->f64 = AGK_ARR(c, r, double, n);
+	c->f64b = AGK_ARR(c, r, double, n);
 	c->code = AGK_ARR(c, r, uint32, n);
 	c->parent = AGK_ARR(c, r, uint32, n);
 	c->gid = AGK_ARR(c, r, uint32, n);
@@ -287,6 +293,24 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 		c->i32[i] = agk_i32(r, m32);
 		c->i64[i] = agk_i64(r, m64);
 		c->f64[i] = agk_f64(r, mf);
+		/* the second column equals the first in about a third of the rows (ties), is near it or is another draw */
+		switch (sift_rng_below(r, 3))
+		{
+			case 0:
+				c->i32b[i] = c->i32[i];
+				c->i64b[i] = c->i64[i];
+				c->f64b[i] = c->f64[i];
+				break;
+			case 1:
+				c->i32b[i] = (int32) ((uint32) c->i32[i] + (uint32) (int) sift_rng_below(r, 3) - 1);
+				c->i64b[i] = (int64) ((uint64) c->i64[i] + (uint64) (int) sift_rng_below(r, 3) - 1);
+				c->f64b[i] = sift_rng_below(r, 2) ? -c->f64[i] : agk_special(r);
+				break;
+			default:
+				c->i32b[i] = agk_i32(r, m32);
+				c->i64b[i] = agk_i64(r, m64);
+				c->f64b[i] = agk_f64(r, mf);
+		}
 	}
 
 	/* dictionary codes: uniform, runs, near the top of the LUT, sorted */
@@ -410,6 +434,14 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		BM("cmp_f64", k->cmp_f64(bm, c->f64, n, ops[o], c->cf));
 		BM("cmp_f64 special", k->cmp_f64(bm, c->f64, n, ops[o], c->cf2));
 	}
+	for (int o = 0; o < lengthof(ops); o++)
+	{
+		BM("cmp2_i32", k->cmp2_i32(bm, c->i32, c->i32b, n, ops[o]));
+		BM("cmp2_i64", k->cmp2_i64(bm, c->i64, c->i64b, n, ops[o]));
+		BM("cmp2_f64", k->cmp2_f64(bm, c->f64, c->f64b, n, ops[o]));
+		/* the same column twice (a = a: NaN, -0 and the ends of the range) */
+		BM("cmp2_f64 same", k->cmp2_f64(bm, c->f64, c->f64, n, ops[o]));
+	}
 	BM("lut_i32", k->lut_i32(bm, c->v2, n, c->gbase, c->nlut, c->lut2));
 	BM("gather_bits", k->gather_bits(bm, c->rowmask, c->parent, n));
 
@@ -460,6 +492,33 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		agk_step(res, "minmax_f64");
 	}
 
+	{
+		/* unaligned starts (the kernels load through unaligned pointers) and the ± 1 and power of ten multipliers of the numeric programs */
+		static const int32 ks[] = {1, -1, 100, -10000, 1000000000, INT32_MIN, INT32_MAX};
+		int64	   *d = AGK_ALLOC((size_t) (n > 0 ? n : 1) * 8);
+
+		for (int off = 0; off < 2 && off <= n; off++)
+		{
+			AGK_HV(res, k->absmax_i64(c->i64 + off, n - off));
+			agk_step(res, "absmax_i64");
+			for (int q = 0; q < lengthof(ks) * 2; q++)
+			{
+				const int32 ka = ks[q % lengthof(ks)],
+							kb = q < lengthof(ks) ? 1 : ks[(q + 3) % lengthof(ks)];
+
+				memset(d, 0xA5, (size_t) n * 8);
+				k->lin_i64(d + off, c->i64 + off, ka, c->i64, kb, n - off);
+				agk_hash(res, d + off, (size_t) (n - off) * 8);
+				agk_step(res, "lin_i64");
+			}
+			memset(d, 0xA5, (size_t) n * 8);
+			k->mulw_i64(d + off, c->i64 + off, c->i64, n - off);
+			agk_hash(res, d + off, (size_t) (n - off) * 8);
+			agk_step(res, "mulw_i64");
+		}
+		AGK_FREE(d);
+	}
+
 	for (int m = 0; m < 2; m++)
 	{
 		const uint64 *mm = masks[m];
@@ -482,6 +541,16 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 			facc[g] = facc[g] != facc[g] ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : facc[g];
 		agk_hash(res, facc, (size_t) c->ngrp * 8);
 		agk_step(res, "sum_gid_f64");
+		{
+			int64	   *q = AGK_ALLOC((size_t) c->ngrp * 4 * 8);
+
+			for (int g = 0; g < 4; g++)
+				memcpy(q + (size_t) g * c->ngrp, c->iacc0, (size_t) c->ngrp * 8);
+			k->sum_gid_i64(q, c->ngrp, c->gid, c->i64, mm, n);
+			agk_hash(res, q, (size_t) c->ngrp * 4 * 8);
+			agk_step(res, "sum_gid_i64");
+			AGK_FREE(q);
+		}
 		AGK_FREE(cnt);
 		AGK_FREE(iacc);
 		AGK_FREE(facc);

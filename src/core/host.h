@@ -10,6 +10,7 @@
  *   memory       palloc/palloc0/repalloc/pfree/pstrdup, MemoryContext (AllocSet*, MemoryContextReset/Delete/SwitchTo),
  *                everything allocated in a context goes away with it
  *   errors       ereport(ERROR, ...)/elog never return; the host unwinds to its caller (longjmp, exception, ...)
+ *   hashing      hash_bytes_extended, hash_bytes_uint32_extended (PostgreSQL's own functions: a stored sketch of col/hll.c must hash as the SQL aggregate does; the embedded hosts write no sketch and refuse)
  *   strings      StringInfo, List (pointers), HTAB (fixed-size keys), text/varlena (len + bytes), UTF-8 helpers (pg_mb*)
  *   regex        pg_regcomp/pg_regexec/pg_regfree over pg_wchar
  *   bits, atomics, spin locks, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements

@@ -1,0 +1,31 @@
+-- The planner prices the test of an IN list by the structure that makes it (docs/AGG.md): a small table in the cache costs a row next to nothing, a hash
+-- table of values spread over a wide range costs it several nanoseconds, so a short list of spread values keeps the btree plan that reads its few rows.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ev (id int PRIMARY KEY, wid int NOT NULL, kind int, score float8);
+INSERT INTO ev SELECT i, 1 + (hashint8extended(i, 5) & 33554431) % 50000000, i % 20, i % 10 FROM generate_series(1, 300000) i;
+CREATE INDEX ev_wid ON ev (wid);
+CREATE INDEX ev_col ON ev USING sift_col (wid, kind, score);
+VACUUM (FREEZE, ANALYZE) ev;
+
+-- 200 values: spread over the whole range (a hash table) and packed in the lowest 10,000 (a byte table in the cache); some of each are in the table
+CREATE FUNCTION in_query(kind text, n int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE ids text;
+BEGIN
+	IF kind = 'spread' THEN
+		SELECT string_agg(wid::text, ',') INTO ids FROM (SELECT wid FROM ev WHERE id % 1500 = 0 LIMIT n) t;
+	ELSE
+		SELECT string_agg(x::text, ',') INTO ids FROM generate_series(1, n) x;
+	END IF;
+	RETURN format('SELECT kind, count(*), avg(score) FROM ev WHERE wid IN (%s) GROUP BY kind', ids);
+END $$;
+
+CREATE TABLE costs AS
+SELECT k, (SELECT scan_cost FROM sift.explain_why(in_query(k, 200))) AS scan_cost
+FROM unnest(ARRAY['spread', 'packed']) k;
+SELECT (SELECT scan_cost FROM costs WHERE k = 'spread') > 1.3 * (SELECT scan_cost FROM costs WHERE k = 'packed') AS spread_costs_more;
+SELECT used, slug FROM sift.explain_why(in_query('spread', 200));
+DROP FUNCTION in_query(text, int);
+DROP TABLE costs, ev;
+DROP EXTENSION pg_sift;

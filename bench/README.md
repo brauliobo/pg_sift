@@ -32,7 +32,7 @@ Scale: the default is the slim tier (50,000 articles, 34,165 places of cities150
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus.
 
-**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "updates search store"`: the update, delete and VACUUM section, articles and places, the online store; about 75 minutes
+**Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "updates search store"`: the update, delete and VACUUM section, articles and places, the orders dataset; about 75 minutes
 at the published size) and rewrites their blocks. It is resumable (a stage that finished with the same code, settings and host is skipped; `bench resume` continues an interrupted run), holds `SIFT_BENCH_HOST_LOCK` (a lock shared with the
 other benchmarks of the host) for the run, and says in the header of each block the version, date, host and load it was measured at. `--calm` is for a timer: it measures only when the pressure of the host stays below the quiet gate
 `bench/refresh.service` and `bench/refresh.timer` are a
@@ -232,7 +232,7 @@ bench/steps/cpu_gate.sh --build before=/tmp/x-before --build after=/tmp/x-after 
     [--index-opts LABEL='vacuum_truncate = false'] [--guc LABEL=sift.maintenance_cost_delay=0]
 ```
 
-The first `--build` is the baseline. `--index-opts` gives the indexes of one build a reloption list and `--guc` a setting of its cluster, so the same checkout under two labels compares two configurations of one build (`merge_fanin = 32` against the default).
+The first `--build` is the baseline. `--index-opts` gives the indexes of one build a reloption list and `--guc` a setting of its cluster, so the same checkout under two labels compares two configurations of one build (`merge_fanin = 32` against the default). Each build gets a release-build cluster under `/tmp/sift-gate-LABEL` (ports `SIFT_PORT`, default 56120, and up); nothing else is touched, and clusters and scratch files are removed
 at the end. The data are deterministic (`setseed`), made once per build into template databases and copied per run, and the heap's md5 must be equal on all builds. Cells: `insert1 bulk copy update
 delete promote merge create` (writes on a fresh copy), `vacuum_backlog vacuum_dead vacuum_clean vacuum_nofree` (the last is the second VACUUM in a row, which costs less than a session, so it is compared raw, session included: what the check for a free tail to give back costs), and the query classes `count rank and or phrase` on 61 segments (`idle60_*`), on one (`idle1_*`) and
 on the index after VACUUM and more rows (`vac_*`), plus `session` (connect, load sift, one query on an empty index), whose cost is subtracted from every other cell, which is divided by its operations.
@@ -252,7 +252,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
 | `engines/*.sh` | one adapter per engine (see below) |
-| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries); `sql/store/`: the online-store data generator, the layout of each system and the ten queries |
+| `sql/` | schema, tier load + query trace, harness (rendering), oracle, places schema; `sql/analytics/`: the analytics corpus (generator, layouts, queries); `sql/store/`: the orders data generator, the layout of each system and the ten queries |
 | `xbench/` | Rust load generator (HTTP keep-alive) and in-process Tantivy driver |
 
 | `steps/` | role |
@@ -262,6 +262,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `footprint.sh` | `du`, `clean`, the peak footprint of a session and the pruning of the cache of lanes |
 | `readme.py` |  |
 | `compare.py` | the README's comparison with the other systems (run by `highlights.py`): the matrix of workload classes against PostgreSQL, ClickHouse, Elasticsearch, Citus columnar and pg_duckdb (on how many questions pg_sift is faster, by how much, the losses in bold, `not measured` where no result file holds a figure), the conditions of every number, the search and port tables, and the warm milliseconds of every question at 1M and 10M orders. |
+| `limits.py` |  |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |
@@ -355,7 +356,7 @@ a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), th
 whole-table scans G1-G8, as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
 against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 43 queries of ClickBench. It uses a cluster of its own
 
-## Analytics for everyone: the online store (`bench/bench store`)
+## Analytics for everyone: the orders dataset (`bench/bench store`)
 
 amount, quantity, created_at, title`), ten questions anyone can ask of it (an order by id, orders per country, revenue per month, the top 10 categories,
 an average, distinct customers per month, a filtered count, and three after a full-text search: a count, counts per category, the 10 newest), and five
@@ -459,7 +460,9 @@ its own activity (`metric_log`, `trace_log` and the like; `query_log` stays) bec
 The benchmarks above measure fixed questions; an optimization that adds a query shape appears in no number until someone writes a case for it. `bench/cases.tsv` is the registry (one row per case: the CHANGELOG
 phrase it measures, the dataset and index, the plan the scan must show, the baselines, the README block it feeds, whether it is a headline) and `bench/cases/ID.sql` holds the statement in the layout of
 `sql/store/queries` (`--@ pg` for every lane, `--@ sift` or `--@ duck` to replace it, `--@ setup` DDL after the index, `--@ prepare` / `--@ load` / `--@ check` for a case that times a load). The data is
-the `orders` table of the store benchmark with two derived columns (`segment_id`, 6,313 values; `order_date`), its btrees and a `sift_col` index with the options of the row.
+the `orders` table of the orders benchmark with two derived columns (`segment_id`, 6,313 values; `order_date`), its btrees and a `sift_col` index with the options of the row.
+
+The cluster of the cases is scratch on tmpfs (`CASES_TMP`, default `/dev/shm/sift-cases`; data and WAL in memory, `fsync = off`) and the timings are warm medians, so a case says nothing about reads from a device. The tmpfs data counts against `CASES_MEM`: 1,000,000 orders left 14 GB in the directory by the end of the run, so `CASES_MEM=16G` kills the checkpointer (signal 9) and `CASES_MEM=40G` does not.
 
 ```sh
 bench/bench cases                          # every case at 200,000 orders: one backend, interleaved rounds, a table with the speed-ups and the losses (about 30 s once the build is done)
@@ -472,7 +475,48 @@ the same table and statement with `sift.enable_agg = off`); variants are further
 a container with a plain copy of the rows (`NA` when DuckDB does not run the statement). `--cpus 1` (the default) is one backend, how the CHANGELOG numbers were taken; with `--cpus 3`, the budget of the
 store benchmark, a parallel normal plan can beat the scan on the planner's cost and the case then fails its plan check.
 
+**The generic suites on every analytic engine.** `bench/bench generic` (`steps/generic.py`, stage `generic`) runs the 35 queries of the TPC-H-like, ClickBench-like and time-series suites and of the 16 headline cases that only read the orders table (the suite `orders`: `bench/sql/store/gen.sql` plus the two derived columns of `bench/sql/orders/gen.sql`) on the engines of `bench/engines.tsv` with kind `analytic` (or `both`), one at a time over the same generated rows. An engine is one registry line (id, labels, `default`, `section`: the `--@ SECTION` of a case that holds its dialect, `pg` when it speaks PostgreSQL's) and one adapter `bench/engines/ID.py` over `steps/suite_engine.py`: `up`, `load`, `runner`, `down`. pg_duckdb is the source: its image generates the suite (`bench/sql/SUITE/gen.sql` without its pg_sift index), answers with PostgreSQL's plans (the arm `pg`, the reference) and with DuckDB's (`pg_duckdb`), and exports the tables as CSV and their schema as JSON; the others load that. Citus runs its columnar tables and the same rows distributed over 4 shards of the one node (`citus_dist`, `bench/sql/SUITE/citus.sql`); TimescaleDB makes `metrics` a hypertable (`timescaledb.sql`) and runs the cases that have a `--@ timescaledb_cagg` section on a continuous aggregate (`timescaledb_cagg.sql`); Elasticsearch runs the statements through its SQL endpoint with the typed literals rewritten (no joins: the three TPC-H-like joins are listed as not run, with its error); DuckDB itself is the pinned command line client (`DUCKDB_CLI_*` of `bench/versions.env`) over in-memory tables.
+
+**Time of a run.** A case at 1,000,000 orders spends its seconds in two places: the build (`orders` from the generator, its btrees, the `sift_col` index, the case's setup, VACUUM FREEZE) and its timed runs (rounds of 1 untimed and 5 timed runs on every lane: 3 by default, 2 in the release pass, `--rounds`). Cases that only read `orders` and have the same index and setup are one build (`share_builds` in `steps/cases.py`: the first case of the group names the schema, `c_s_ID`; it is dropped after the last of the group, `--no-share` gives every case a table of its own), and a lane stops repeating after `--lane-budget` seconds (20; 10 in the release pass) of timed runs, with at least 3 runs, so a statement of seconds is not run fifteen times (the rows say how many runs they have: `n`). Measured on 2026-10-24: without sharing (`--no-share --lane-budget 0`) the builds took 839 s and 73 tables, with sharing 377 s and 35. The seconds of the timed runs of the three runs of that day were 660 (3 rounds, 20 s cap), 431 (2 rounds, 10 s cap) and 319 (3 rounds, no cap): they follow the load of the host, not the settings, so this data shows the saving of the sharing and not that of the cap or the rounds. `bench/bench cases --plan` prints an estimate before a run.
+
+**Writing a case.** `created_at` of the generator is random per row, so a range on it prunes no unit: a case that needs zones to cut takes its range on `id`, which follows the heap. A `sift_col` index created without explicit operator classes (`id sift.col_int4_ops`, ...) has no indexable clause, and the plan check fails with the plan lost.
+
+**The first statement of a backend.** `-- fresh: yes` in the header of a case makes every timed statement of every lane the first of a new backend (a pooled connection that was reset, a script): the cases cluster loads `pg_sift` with `shared_preload_libraries`, so the shared table of planner verdicts (`sift.verdict_cache_kb`) exists, and a lane of the registry named `warm...` keeps its backend for the same statement as the second of one. `verdict_shared_report` (a report of 21 CTEs and 16 lateral sub-selects; lane `no_shared` is `sift.verdict_cache_kb = 0`) and `dict_first_scan` (a dictionary read from a compressed segment) is the case that uses it.
+
 **Finding the cases nobody wrote.** `bench/bench cases --discover` (`steps/cases_discover.py`) measures the statements of a corpus on PostgreSQL (`sift.enable_agg = off`) and on pg_sift, one backend, answers compared, and lists the shapes that the scan answers at least `--min-gain` (2) times faster and that no case of the registry has, ranked by weight times median gain, into `bench/out/cases-proposed.tsv`: a proposal with a draft registry row, for a person to accept (write `bench/cases/ID.sql` and the row, then `bench/bench cases --cases ID --docs`), never a case added by itself. A shape is the set of features of the SQL (aggregates, `DISTINCT`, group-by forms, top-N and its sort expressions, window, join kinds, `UNION ALL`, CTE, lateral, grouping sets, calendar), not its tables or literals. Sources: `--shapes FILE` (the layout of `test/plan/shapes.sql`, the default corpus of the plan gate, with an optional `-- weight: n`), `--fuzz SEEDS` (the query families of `test/fuzz/diff_fuzz.py`, weighted by the family), `--results FILE` (TSV `id native_ms sift_ms [weight [shape]]` or the JSONL of an application's corpus run, measured elsewhere, so a private corpus is ranked without its SQL being copied). A statement whose answer differs between the two plans is printed first and fails the run, and the losses (the scan slower than native) are listed too.
+
+## Release run
+
+The numbers of a release are one pass on the release host, 100 minutes in all. Nothing of it runs before the release commit exists. `bench/bench final --size standard --dry-run` prints the plan and the preconditions and starts nothing; on a host without docker it ends with `MISSING docker works`, and this is what the plan prints today:
+
+```
+Release pass, size standard (bench/presets.env), stages one after another:
+  store 22, updates 18, compression 3, stats 1, gap 1, search 14, cases 16, duckdb 6, generic 3 min
+Total about 95 min, budget 96 min.
+```
+
+**Ahead, the day before** (nothing is timed, `nice`, the host may be in use; the data and the images do not depend on the commit, they are reused while their hash and the sources match):
+
+```sh
+git switch main && git pull --ff-only                            # the release checkout; the same one for every step below
+bench/bench setup                                                # the search datasets, rum, pg_textsearch, pg_search, pgx-bm25 (what is up to date is skipped)
+nice bench/bench store prepare --sizes 200000,1000000,10000000   # the pg_sift image and the CSV of each size (`bench refresh --prepare` does the first two)
+. bench/versions.env && for i in $STORE_ES_IMAGE $STORE_CH_IMAGE $STORE_CITUS_IMAGE $STORE_DUCKDB_IMAGE; do docker pull "$i"; done
+bench/bench final --size standard --dry-run                      # every precondition `ok`, the total under the budget
+```
+
+**The window** (one engine at a time, on a host nothing else uses; `bench refresh --calm` exits 75 at once when the host is not calm):
+
+```sh
+export SIFT_BENCH_HOST_LOCK=/tmp/sift-bench-host.lock CASES_MEM=40G CASES_TMP=/dev/shm/sift-cases   # tmpfs for the scratch of the cases only: 14 GB at 1,000,000 orders, counted in CASES_MEM
+bench/bench final --size standard --docs --remeasure-all                                      # 95 min: the nine stages; `bench resume` continues an interrupted run
+bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-small                      # 2 min
+bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none --run-id sizes-big   # 6 min
+```
+
+It was rehearsed on the benchmark host with 5,000 to 20,000 orders (all nine lanes of the store, one run of 5,000 and 10,000 orders in 181 s with the image build, one of 20,000 in 115 s; the merged file holds the six sizes and the containers are gone). The pg_duckdb time at 10M is an estimate; if either big run takes more than twice its minutes, stop and look (`bench/bench store clean` removes the containers of a stopped run).
+
+**Rehearsal of the whole pass.** `bench final --size smoke --budget 0` (50,000 orders, 10,000 articles, every engine, answers checked, no number kept) ran end to end on the benchmark host in 29 minutes of fixed costs: store 7 (the cold part is 5: 18 s a question on Elasticsearch, again when the host was busy), updates 15 (the smoke preset did not shrink that stage: 200,000 and 1,000,000 orders, 5 and 3 repetitions; it now sets 20,000 and 50,000 orders and one repetition), search 3, cases 2, stats 0.5, gap 0.4, pg_duckdb 0.7, generic suites 0.1. It found two defects, both fixed: the pg_duckdb stage waited two hours for the perf lock that the pass itself holds (`bench final` holds it, the stage now takes it through `locked` like the others), and `cases` failed on plans at 50,000 rows, where the planner keeps PostgreSQL's plan (`--any-plan`, set by the smoke preset: the plan is what the rows show). A fixed cost is a floor of the stage budgets above, not a part of them to subtract.
 
 ## Remote host
 

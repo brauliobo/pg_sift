@@ -17,7 +17,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bench_charts  # noqa: E402  (steps/bench_charts.py: the scale points and slopes)
 import cases as cases_mod  # noqa: E402  (steps/cases.py: the registry)
+import budget  # noqa: E402  (steps/budget.py: the time budget of the release pass)
 import compare  # noqa: E402  (steps/compare.py: the comparison blocks)
+import limits  # noqa: E402  (steps/limits.py: the limitations and trade-offs)
 import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
@@ -116,24 +118,26 @@ def plain(bullets):
 
 
 def cases_summary(results):
-    """one sentence on the cases of bench/results/cases.tsv (bench/results/cases-wm4g.tsv at the release work_mem): how many are faster than PostgreSQL on the same rows, by how much, and the ones that are not"""
+    """one sentence on the cases of bench/results/cases.tsv (bench/results/cases-wm4g.tsv at a large work_mem): how many are faster than PostgreSQL on the same rows, by how much, and the ones that are not"""
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
         return ''
     meta, rows = extras.read(path)
     figs = [f for f in cases_render.collect(rows, cases_mod.read_registry()) if f['metric'] == f['case'].metrics[0] and f['metric'] == 'ms' and f['native'] and f['sift']]
     wins = [f['native'] / f['sift'] for f in figs if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
-    lose = [f for f in figs if f['native'] / f['sift'] <= 1 - TIE]
+    lose = [f for f in figs if not f['kept'] and f['native'] / f['sift'] <= 1 - TIE]
     kept = [f for f in figs if f['kept']]
+    g = cases_render.by_gap(figs)
+    gaps = 'with the scan forced: faster on %d, not faster on %d, cannot run on %d' % tuple(len(g.get(k, [])) for k in ('cost', 'declined', 'feature')) + (', not measured on %d' % len(g['unmeasured']) if g.get('unmeasured') else '')
     out = (f'Across {len(figs)} query shapes on {int(meta["orders"]):,} rows (reports with grouping sets and window functions, top-N, semi and anti joins, keyset pages, JSON arrays, lookups by key) pg_sift is faster than '
-           f'PostgreSQL on the same table on {len(wins)} (median {x(statistics.median(wins))}, up to {x(max(wins))}); the planner kept PostgreSQL\'s plan on {len(kept)}, and pg_sift is slower on {len(lose)}'
+           f'PostgreSQL on the same table on {len(wins)} (median {x(statistics.median(wins))}, up to {x(max(wins))}); the planner kept PostgreSQL\'s plan on {len(kept)} (no ratio; {gaps}), and pg_sift is slower on {len(lose)}'
            + (' (' + ', '.join(f'{f["case"].id} {x(f["sift"] / f["native"])}' for f in lose) + ')' if lose else '') + '.')
     p4 = os.path.join(results, 'cases-wm4g.tsv')
     if os.path.exists(p4):
         m4, r4 = extras.read(p4)
         f4 = [f for f in cases_render.collect(r4, cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
         w4 = [f for f in f4 if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
-        out += f' At the release setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
+        out += f' At a large `work_mem` setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
     return out
 
 
@@ -210,6 +214,8 @@ def main():
     b = block(a.results)
     readme.replace_block(a.readme, 'intro', b)
     compare.render(a.results, a.readme)
+    limits.render(a.results, a.readme)
+    budget.render(a.results, os.path.join(os.path.dirname(a.results), 'BENCHMARKS.md'))
     print('\n'.join(b))
 
 

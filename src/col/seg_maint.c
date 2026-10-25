@@ -4,6 +4,7 @@
 
 #include "core/host.h"
 
+#include "col/hll.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -29,6 +30,7 @@ sift_cseg_decode_unit_freeze(SiftColSegment *seg, uint32 u, SiftColBatch *dst, S
 		dicts[c] = sift_cseg_dict(seg, c);
 	sift_cseg_live(seg, u, live);
 	sift_cbatch_reset(dst, r->sb);
+	dst->keyed = v.keyed;
 	sift_cunit_decode(&v, r->sb, dicts, dirty ? live : NULL, dst);
 	pfree(dicts);
 	if (sift_cseg_vers(seg))
@@ -261,7 +263,7 @@ verify_set(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 
 /* The sorted run of leaf c in unit u, when it has one, is what its chunk gives, entry for entry */
 static void
-verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys)
 {
 	SiftCRun	r;
 	uint64		at;
@@ -271,11 +273,28 @@ verify_run(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 		return;
 	if (!col->ready)
 		corrupt(seg, "Leaf %d has a sorted run in unit %u, whose chunk has no keys.", c, u);
-	blob = palloc(sift_crun_bytes(r.kind, r.n));
+	blob = palloc(sift_crun_total(&r));
 	sift_cseg_run_blob(seg, at, &r, blob);
-	if (!sift_crun_matches(&seg->schema->cols[c], col, blob, sift_crun_bytes(r.kind, r.n)))
+	if (!sift_crun_matches(&seg->schema->cols[c], col, keys, blob, sift_crun_total(&r)))
 		corrupt(seg, "The sorted run of leaf %d in unit %u differs from its chunk.", c, u);
 	pfree(blob);
+}
+
+/* The sketch of leaf c in unit u, when it has one, is what its chunk gives, byte for byte */
+static void
+verify_hll(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
+{
+	uint32		len;
+	const uint8 *blob = sift_cseg_hll(seg, c, u, &len);
+	StringInfoData want;
+
+	if (blob == NULL)
+		return;
+	initStringInfo(&want);
+	if (!sift_hll_build(&seg->schema->cols[c], col, seg->schema->cols[c].store == SIFT_COLS_STR ? sift_cseg_dict(seg, c) : NULL, &want) ||
+		(uint32) want.len != len || memcmp(want.data, blob, len) != 0)
+		corrupt(seg, "The sketch of leaf %d in unit %u differs from its chunk.", c, u);
+	pfree(want.data);
 }
 
 /* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
@@ -331,7 +350,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u do not decode.", r->sb);
 	sift_cunit_keys(&v, r->sb, keys);
 	for (uint32 i = 0; i < r->nrows; i++)
-		if (sift_block_sb(sift_key_block(keys[i])) != r->sb || (i > 0 && keys[i] <= keys[i - 1]) ||
+		if ((!v.keyed && sift_block_sb(sift_key_block(keys[i])) != r->sb) || (i > 0 && keys[i] <= keys[i - 1]) ||
 			(keys[i] & 0xFFFF) == 0)
 			corrupt(seg, "Row %u of the unit of SB %u has key %llx out of order or outside the SB.", i, r->sb, ULL(keys[i]));
 	for (int c = 0; c < sc->ncols; c++)
@@ -372,7 +391,8 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 				corrupt(seg, "The exact sums of leaf %d in the unit of SB %u differ from its chunk.", c, r->sb);
 		}
 		verify_set(seg, c, u, &pcol[c]);
-		verify_run(seg, c, u, &pcol[c]);
+		verify_run(seg, c, u, &pcol[c], keys);
+		verify_hll(seg, c, u, &pcol[c]);
 		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
@@ -390,6 +410,35 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 	}
 	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
+	if (seg->entry.format >= SIFT_COL_FORMAT_EXCEPT)
+	{
+		uint32		xlen,
+					xelen;
+		const uint8 *xcube = sift_cseg_xcube(seg, u, &xlen);
+		const uint8 *xecube = sift_cseg_xecube(seg, u, &xelen);
+		const uint32 **eoff = palloc0(sc->ncols * sizeof(uint32 *));
+		uint32	  **own = palloc0(sc->ncols * sizeof(uint32 *));
+		bool		same;
+
+		for (int c = 0; c < sc->ncols; c++)
+		{
+			int			g = sc->cols[c].parent;
+
+			if (g < 0 || !need[g])
+				continue;
+			if (own[g] == NULL)
+			{
+				own[g] = palloc((Size) (r->nrows + 1) * sizeof(uint32));
+				own[g][0] = 0;
+				for (uint32 i = 0; i < r->nrows; i++)
+					own[g][i + 1] = own[g][i] + (uint32) kept[g][i];
+			}
+			eoff[c] = own[g];
+		}
+		same = sift_cpagg_check_excepts(sc, pcol, eoff, r->nrows, cube, clen, ecube, elen, seg->entry.format, xcube, xcube ? xlen : 0, xecube, xecube ? xelen : 0);
+		if (!same)
+			corrupt(seg, "The exceptions of the unit of SB %u differ from its chunks.", r->sb);
+	}
 	for (int c = 0; c < sc->ncols; c++)
 		if (kept[c])
 			pfree(kept[c]);
@@ -498,7 +547,8 @@ sift_cseg_verify_super(SiftColSegment *seg)
 			const uint8 *rec = sift_cseg_unit(seg, k * fan + i, &ulen);
 			const uint8 *cube;
 
-			if (!sift_cunit_parse(rec, ulen, sc, &v) || memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0)
+			if (!sift_cunit_parse(rec, ulen, sc, &v) ||
+				(v.keyed ? (pm[i * SIFT_PAGEMASK_WORDS] != ((uint64) v.kblk1 << 32 | v.kblk0)) : memcmp(v.pagemask, pm + i * SIFT_PAGEMASK_WORDS, sizeof(v.pagemask)) != 0))
 				corrupt(seg, "The page mask of unit %u in superunit %u is not the unit's.", k * fan + i, k);
 			cube = sift_cseg_cube(seg, k * fan + i, &len[i]);
 			blob[i] = len[i] ? memcpy(palloc(len[i]), cube, len[i]) : NULL;
@@ -581,6 +631,28 @@ verify_run_kinds(SiftColSegment *seg)
 	}
 }
 
+/* The forms a leaf's record in the sketches lists are those of its units' sketches */
+static void
+verify_hll_kinds(SiftColSegment *seg)
+{
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		uint32		want = sift_cseg_hll_kinds(seg, c),
+					have = 0;
+
+		for (uint32 u = 0; want != 0 && u < seg->nsb; u++)
+		{
+			uint32		len;
+			const uint8 *blob = sift_cseg_hll(seg, c, u, &len);
+
+			if (blob != NULL)
+				have |= blob[0];
+		}
+		if (have != want)
+			corrupt(seg, "The record of the sketches of leaf %d lists forms %u, its units hold %u.", c, want, have);
+	}
+}
+
 /* A dictionary stored in blocks is in a segment of minor 14; if it has an order, that names every code once and the strings ascend in it */
 static void
 verify_dicts(SiftColSegment *seg)
@@ -644,6 +716,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	sift_cseg_verify_super(seg);
 	verify_set_kinds(seg);
 	verify_run_kinds(seg);
+	verify_hll_kinds(seg);
 	if (seg->entry.flags & SIFT_SEG_DIRTY)
 		live -= sift_live_ndead(&PRIV(seg)->live);
 	sift_sr_release(&seg->sr);

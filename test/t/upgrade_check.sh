@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 54
+plan 56
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -95,6 +95,12 @@ check "after the REINDEX the index is not listed and is column format 12" test "
 q clean "DROP INDEX facts_legacy" >/dev/null
 check "the deprecated mutable_limit warns" grep -q -E '^warn +facts_old_opt +option +mutable_limit' <<<"$out"
 check "a warning alone exits 0, and 1 with --strict" test "$(uc clean >/dev/null; echo $?)$(uc --strict clean >/dev/null; echo $?)" == 01
+# the sketches of hll_columns: set after the build, the old units lack them; built with them, the index is column format 20 and 3.3 cannot read it
+q clean "CREATE INDEX facts_late_hll ON facts USING sift_col (id, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX facts_late_hll SET (hll_columns = 'n')" \
+	"CREATE INDEX facts_hll ON facts USING sift_col (id, g, n) WITH (hll_columns = 'n')" >/dev/null
+check "hll_columns set after the build warns that the old units have no sketch, with the REINDEX" grep -q -E '^warn +facts_late_hll +option +hll_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_hll;' <<<"$(uc clean)"
+check "to 3.3: an index with sketches (format 20) is a blocker that says to reset hll_columns" grep -q -E '^blocker +facts_hll .*ALTER INDEX facts_hll RESET \(hll_columns\), then REINDEX INDEX facts_hll' <<<"$(uc --to 3.3 clean)"
+q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null
 check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1

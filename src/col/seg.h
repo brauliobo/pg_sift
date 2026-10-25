@@ -53,6 +53,8 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
  * `preagg`). Set before the first sift_colw_add.
  */
 extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
+/* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
+extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
 extern void sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b);
 extern uint64 sift_colw_rows(const SiftColSegWriter *w);
@@ -141,6 +143,13 @@ extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
 #define DICT_LAZY_RATIO			16
 extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
 extern PGDLLIMPORT bool sift_col_table_lookup;	/* sift.table_dict_lookup: the order of a dictionary of a sift_table is stored too */
+/*
+ * Whether the dictionary of a STR leaf is given to a reader of codes as a view that reads the strings of the codes it is asked for (SiftColDict.get): it is stored in blocks, is
+ * not at hand, and the blocks decompressed for such views are fewer than 1/DICT_LAZY_LOADS of its blocks (a view then asks for the whole dictionary, which the cache keeps).
+ * Fills n, get and gctx of `view`.
+ */
+#define DICT_LAZY_LOADS			8
+extern bool sift_cseg_dict_view_lazy(SiftColSegment *seg, int col, SiftColDict *view);
 extern const char *sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char *buf);
 
 /* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows, 16 bit (a unit with a longer list is not kept), and the elements they add up to; the running ends are summed again from them */
@@ -177,6 +186,9 @@ extern void sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs);
 extern void sift_cseg_agg(SiftColSegment *seg, int col, uint32 u, SiftCAgg *a);
 extern const uint8 *sift_cseg_cube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_ecube(SiftColSegment *seg, uint32 u, uint32 *len);
+/* the exception cube and element blob of unit u (column format minor 19; NULL: the unit has none): same formats, over the unit's exception rows; the first varint of each is the exception leaf */
+extern const uint8 *sift_cseg_xcube(SiftColSegment *seg, uint32 u, uint32 *len);
+extern const uint8 *sift_cseg_xecube(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, uint32 *len);
 /*
  * Superunits (docs/COL-PREAGG.md section 10): the units in groups of fan consecutive ones, group k = units [k * fan, min((k + 1) * fan, nsb)), with the page
@@ -185,6 +197,20 @@ extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, u
  * else valid until the next call on seg. sift_cseg_super_pagemask fills 4 words for each of the n units from the first of group k.
  */
 extern uint32 sift_cseg_super_fan(SiftColSegment *seg);
+extern bool sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm);
+
+/*
+ * The superblocks the rows of a segment are in, as ascending disjoint ranges [lo, hi], read once and kept with the segment. A unit cut by superblock gives its own; a unit cut by key or
+ * by TID range, the blocks from the first to the last of its summary (the whole heap when the segment has none)
+ */
+typedef struct SiftCSbSpan
+{
+	uint32		lo;
+	uint32		hi;
+} SiftCSbSpan;
+extern uint32 sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans);
+/* Is superblock sb inside one of the spans? */
+extern bool sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb);
 extern void sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm);
 extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a);
 extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);
@@ -232,12 +258,28 @@ extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys
 extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const uint64 *nulls, const SiftKey *tid, uint32 n, uint64 *listed);
 /* The rows the point directory of leaf col lists (0: it has none), and the check of the blocks of every leaf: slots and lists in range, ascending, as many keys, rows and words as the records say */
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);
+extern uint32 sift_cseg_point_nkeys(SiftColSegment *seg, int col);
 extern void sift_cseg_verify_points(SiftColSegment *seg);
+/*
+ * The global order of leaf col (col/gorder.h, column format minor 21): false when the segment has none. entries: its rows, values: those with a value (the first ones in
+ * the order of (key, heap address), then the rows without a value by address). _chunk: the entries [c * SIFT_CGORD_ROWS, + the count it returns) as keys and heap
+ * addresses (SIFT_CGORD_CAP slots each; the keys of a NULL row are 0). _find: the place of the first value at or after key (past it when after), the number of values when none.
+ */
+extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
+extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
+extern int	sift_cseg_gorder_group(SiftColSegment *seg, int col);	/* the leaf the block is grouped by, -1 when it is not */
+extern void sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the entries of a group (all of a block that is not grouped) */
+extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none */
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 /* The bytes the sorted runs of the segment take */
 extern uint64 sift_cseg_run_bytes(SiftColSegment *seg);
+extern uint64 sift_cseg_hll_bytes(SiftColSegment *seg);
+/* The stored sketch of leaf col in unit u (len bytes, well formed: sift_hll_check), NULL when the unit has none; valid until the next call */
+extern const uint8 *sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len);
+/* HLL_LIST | HLL_DENSE: the forms of sketch some unit of the leaf has (0: none) */
+extern uint32 sift_cseg_hll_kinds(SiftColSegment *seg, int col);
 /* The kinds (RUNS_ORD, RUNS_IDENT) the record of the leaf says some unit has; 0 when the leaf has no run */
 extern uint32 sift_cseg_run_kinds(SiftColSegment *seg, int col);
 /* the kinds (SETS_EXACT, SETS_BLOOM, SETS_PRES) the record of leaf col in the small-set summaries lists */
@@ -247,8 +289,25 @@ extern uint32 sift_cseg_set_kinds(SiftColSegment *seg, int col);
  * [pos, pos + cnt) of it as the ordinals of rows (sift_cseg_run_read), each checked to be a row of the unit.
  */
 extern bool sift_cseg_run(SiftColSegment *seg, int col, uint32 u, SiftCRun *r, uint64 *at);
+extern void sift_cseg_run_bytes_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint8 *dst);
 extern void sift_cseg_run_read(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint32 pos, uint32 cnt, uint32 *out);
-/* The whole stored run, sift_crun_bytes(r->kind, r->n) bytes (the verifier) */
+/* The head of the run (r->heads > 0): sift_crun_head_counts entries, the low end first, then the high end from the last of the run */
+extern void sift_cseg_run_heads(SiftColSegment *seg, uint64 at, const SiftCRun *r, SiftCHeadEnt *out);
+/*
+ * The page mask and the run head of leaf col in unit u, the two reads of a head bypass (col/scan_unit.c), kept by the backend for the next query (col/dictcache.c:
+ * a segment never changes). False when the segment has no page masks; else has: the unit has a head, nlo + nhi entries of ent (sift_cseg_run_heads).
+ */
+typedef struct SiftCSbHead
+{
+	bool		has;
+	uint32		nlo;
+	uint32		nhi;
+	uint64		pm[SIFT_PAGEMASK_WORDS];
+	SiftCHeadEnt ent[2 * SIFT_CRUN_HEAD_MAX];
+} SiftCSbHead;
+
+extern bool sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out);
+/* The whole stored run with its head, sift_crun_total(r) bytes (the verifier) */
 extern void sift_cseg_run_blob(SiftColSegment *seg, uint64 at, const SiftCRun *r, uint8 *dst);
 /* The small-set summary of leaf col in unit u for sift_cset_open (NULL: the unit has none), valid until the next call on seg */
 extern const uint8 *sift_cseg_set(SiftColSegment *seg, int col, uint32 u, uint32 *len);
@@ -336,5 +395,12 @@ typedef struct SiftTestDamage
 extern void sift_test_cube_damage(const SiftColSchema *sc, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
 								  MemoryContext cx, SiftTestDamage *r);
 #endif
+
+/* Are the segment's units cut by a declared key? Not told by the minor: a later minor (a segment may have several of the optional records) is no more keyed than an earlier one; the first keyed segments had no flag and are minor 17 */
+static inline bool
+sift_cseg_keyed(const SiftSegEntry *e)
+{
+	return (e->flags & SIFT_SEG_KEYED) != 0 || e->format == SIFT_COL_FORMAT_KEYED;
+}
 
 #endif							/* SIFT_COL_SEG_H */

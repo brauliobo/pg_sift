@@ -1,0 +1,65 @@
+-- ORDER BY <column> LIMIT n over a sift_col index whose units hold every column of the output: the rows come from the units, no heap row is fetched
+-- (Heap Fetches 0), and they are the rows of the plain plan when the table has changed since the build: updates that move an output column (a new index
+-- entry), deletes, inserts that are still in the write buffer, an update of a column the index does not hold (a HOT chain), an aborted update, and a column that is NULL.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET sift.agg_force = on;
+
+CREATE TABLE uo (id int, ts timestamptz, grp int, pad text DEFAULT repeat('x', 40)) WITH (autovacuum_enabled = false);
+INSERT INTO uo SELECT i, timestamptz '2024-01-01' + i * interval '1 minute', CASE WHEN i % 7 = 0 THEN NULL ELSE i % 50 END FROM generate_series(1, 30000) i;
+CREATE INDEX uo_col ON uo USING sift_col (id, ts, grp);
+VACUUM (FREEZE, ANALYZE) uo;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), the Heap Fetches of the pushed plan, and the number of rows
+CREATE FUNCTION uo_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; line text; fetches text := 'none'; res text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF line ~ 'Heap Fetches: ' THEN fetches := regexp_replace(line, '.*Heap Fetches: (\d+).*', '\1'); END IF;
+	END LOOP;
+	EXECUTE 'CREATE TEMP TABLE uo_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE uo_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM uo_a EXCEPT ALL SELECT pos, r FROM uo_b) UNION ALL (SELECT pos, r FROM uo_b EXCEPT ALL SELECT pos, r FROM uo_a)) d;
+	res := format('%s, fetches %s, %s rows', CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END, fetches, (SELECT count(*) FROM uo_b));
+	DROP TABLE uo_a, uo_b;
+	RETURN res;
+END $$;
+
+CREATE FUNCTION uo_run() RETURNS TABLE (q int, result text) LANGUAGE plpgsql AS $$
+DECLARE i int; qs text[] := ARRAY[
+	'SELECT id, ts, grp FROM uo ORDER BY id LIMIT 500',
+	'SELECT id, grp FROM uo ORDER BY ts LIMIT 400',
+	'SELECT ts, grp, id FROM uo ORDER BY ts DESC, id LIMIT 600',
+	'SELECT id, grp FROM uo WHERE grp < 10 ORDER BY id LIMIT 300 OFFSET 20'];
+BEGIN
+	FOR i IN 1..array_length(qs, 1) LOOP
+		q := i;
+		result := uo_check(qs[i]);
+		RETURN NEXT;
+	END LOOP;
+END $$;
+
+-- the table as built
+SELECT * FROM uo_run();
+
+-- updates that move an output column and the rows to the end of the heap, deletes, inserts in the write buffer, a NULL
+UPDATE uo SET ts = ts + interval '10 days', grp = 99 WHERE id % 40 = 3;
+DELETE FROM uo WHERE id % 53 = 0;
+INSERT INTO uo SELECT i, timestamptz '2023-12-01' + i * interval '1 minute', i % 50 FROM generate_series(30001, 30400) i;
+UPDATE uo SET grp = NULL WHERE id % 61 = 5;
+UPDATE uo SET pad = 'y' WHERE id % 17 = 0;
+SELECT * FROM uo_run();
+
+-- an aborted update
+BEGIN;
+UPDATE uo SET ts = ts - interval '30 days', grp = -1 WHERE id % 29 = 1;
+ROLLBACK;
+SELECT * FROM uo_run();
+
+DROP TABLE uo;
+DROP FUNCTION uo_check(text), uo_run();
+DROP EXTENSION pg_sift;

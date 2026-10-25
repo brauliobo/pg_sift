@@ -70,6 +70,37 @@ agk_cmp_f64_scalar(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 	}
 }
 
+#define CMP2(OPS, T, ORDER) \
+	switch (op) \
+	{ \
+		case SCMP_EQ: PRED_BITS(out, n, i, ORDER(a[i], b[i]) == 0); break; \
+		case SCMP_NE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) != 0); break; \
+		case SCMP_LT: PRED_BITS(out, n, i, ORDER(a[i], b[i]) < 0); break; \
+		case SCMP_LE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) <= 0); break; \
+		case SCMP_GT: PRED_BITS(out, n, i, ORDER(a[i], b[i]) > 0); break; \
+		case SCMP_GE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) >= 0); break; \
+	}
+
+#define INT_ORDER(x, y)	(((x) > (y)) - ((x) < (y)))
+
+void
+agk_cmp2_i32_scalar(uint64 *out, const int32 *a, const int32 *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, int32, INT_ORDER)
+}
+
+void
+agk_cmp2_i64_scalar(uint64 *out, const int64 *a, const int64 *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, int64, INT_ORDER)
+}
+
+void
+agk_cmp2_f64_scalar(uint64 *out, const double *a, const double *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, double, f8_cmp)
+}
+
 void
 agk_lut_i32_scalar(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut)
 {
@@ -209,6 +240,54 @@ void
 agk_sum_gid_f64_scalar(double *acc, const uint32 *gid, const double *v, const uint64 *mask, int n)
 {
 	FOREACH_ROW(mask, n, i, acc[gid[i]] += v[i]);
+}
+
+uint64
+agk_absmax_i64_scalar(const int64 *v, int n)
+{
+	uint64		m = 0;
+
+	for (int i = 0; i < n; i++)
+		m = Max(m, v[i] < 0 ? -(uint64) v[i] : (uint64) v[i]);
+	return m;
+}
+
+void
+agk_lin_i64_scalar(int64 *dst, const int64 *a, int32 ka, const int64 *b, int32 kb, int n)
+{
+	for (int i = 0; i < n; i++)
+		dst[i] = (int64) ((uint64) agk_lin_term(a[i], ka) + (uint64) agk_lin_term(b[i], kb));
+}
+
+void
+agk_mulw_i64_scalar(int64 *dst, const int64 *a, const int64 *b, int n)
+{
+	for (int i = 0; i < n; i++)
+		dst[i] = (int64) (int32) a[i] * (int64) (int32) b[i];
+}
+
+/* the sums wrap modulo 2^64 (the caller proved they do not); unsigned, so that a sanitizer build has nothing to report */
+#define ADD_WRAP(dst, x)	((dst) = (int64) ((uint64) (dst) + (uint64) (x)))
+
+void
+agk_sum_gid_i64_scalar(int64 *acc, uint32 stride, const uint32 *gid, const int64 *v, const uint64 *mask, int n)
+{
+	if (mask == NULL)
+	{
+		int			i = 0;
+
+		for (; i + 4 <= n; i += 4)
+		{
+			ADD_WRAP(acc[gid[i]], v[i]);
+			ADD_WRAP(acc[stride + gid[i + 1]], v[i + 1]);
+			ADD_WRAP(acc[2 * (size_t) stride + gid[i + 2]], v[i + 2]);
+			ADD_WRAP(acc[3 * (size_t) stride + gid[i + 3]], v[i + 3]);
+		}
+		for (; i < n; i++)
+			ADD_WRAP(acc[(i & 3) * (size_t) stride + gid[i]], v[i]);
+	}
+	else
+		FOREACH_ROW(mask, n, i, ADD_WRAP(acc[(i & 3) * (size_t) stride + gid[i]], v[i]));
 }
 
 #define AGK_INIT(s)	.s = agk_##s##_scalar,

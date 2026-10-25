@@ -22,6 +22,9 @@ exec python3 -I - "$mode" <<'PY'
 import os
 import re
 import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, 'scripts')
+from genlib import split_args, strip_comments
 
 mode = sys.argv[1]
 ROOT = os.getcwd()
@@ -34,13 +37,6 @@ errors = []
 
 def err(msg):
     errors.append(msg)
-
-
-def strip_comments(text):
-    def blank(m):
-        t = m.group(0)
-        return t if t[0] in '"\'' else re.sub(r'[^\n]', ' ', t)
-    return re.sub(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*.*?\*/|//[^\n]*', blank, text, flags=re.S)
 
 
 def read(path):
@@ -103,31 +99,6 @@ def ev(expr, rel, depth=0):
 
 
 # ---- the registry ----
-def split_args(s):
-    out, depth, cur, i = [], 0, '', 0
-    while i < len(s):
-        c = s[i]
-        if c == '"':
-            j = i + 1
-            while s[j] != '"':
-                j += 2 if s[j] == '\\' else 1
-            cur += s[i:j + 1]
-            i = j + 1
-            continue
-        if c == '(':
-            depth += 1
-        elif c == ')':
-            depth -= 1
-        if c == ',' and depth == 0:
-            out.append(cur.strip())
-            cur = ''
-        else:
-            cur += c
-        i += 1
-    out.append(cur.strip())
-    return out
-
-
 def unq(s):
     return s[1:-1].replace('\\"', '"')
 

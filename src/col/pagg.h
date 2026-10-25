@@ -26,6 +26,32 @@ extern bool sift_col_unit_preagg_ok(const SiftColUnit *unit);
  * until the next call on the segment. false for a superunit, a unit that is not exact or has no presence for the leaf.
  */
 extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
+/* The HyperLogLog sketch of col in an exact unit (col/hll.h), valid until the next call; false when the unit has none */
+extern bool sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob);
+
+/*
+ * Exceptions (docs/COL-PREAGG.md 11): a stored exact unit may hold the cube and rollups of its rows where one leaf is not NULL. With leaf >= 0 and the unit
+ * holding them for that leaf, this returns true and the next sift_col_unit_hist / sift_col_unit_rollup on the unit give the groups and tuples of the rows where
+ * the leaf IS NULL: counts and sums net of the exceptions, no minimum or maximum, false when a float sum would lose more than 6 bits to the subtraction or the
+ * unit lacks the dim; sift_col_unit_agg and sift_col_unit_presence refuse the unit. Leaf -1 (and true) returns it to its own rows. unit->except holds the leaf.
+ */
+extern bool sift_col_unit_except(SiftColUnit *unit, int leaf);
+
+/*
+ * A dirty unit net of its dead rows (col/delta.c, docs/COL-PREAGG.md 12): when every page the unit has rows on is all-visible and no more than max_pct percent of its rows are dead, the
+ * unit answers from its pre-aggregates minus the dead rows' for counts and sums, until it is given back with a negative max_pct. Returns the number of its dead rows, or -1 when
+ * it cannot (and nothing changes). While on, sift_col_unit_preagg_ok holds, sift_col_unit_agg gives the live counts and sums with min and max that only bound (SIFT_CAGG_LOOSE),
+ * sift_col_unit_hist and sift_col_unit_rollup the groups and tuples of the live rows without min and max, and sift_col_unit_presence, _hll and _except refuse the unit.
+ * With bounds, only the cheap tests are made (no liveness read): sift_col_unit_agg then gives the unit's zone with its dead rows (min, max, has_minmax: bounds of the live ones) and
+ * counts and sums that are not net; a call without bounds builds the rest.
+ */
+extern int	sift_col_unit_dead(SiftColUnit *unit, int max_pct, bool bounds);
+extern bool sift_col_unit_dead_on(const SiftColUnit *unit);
+extern bool sift_col_unit_dead_bounds(const SiftColUnit *unit);
+/* ... and the histogram and rollup of the unit minus its dead rows, row by row: false when a leaf cannot be read at them */
+extern bool sift_col_unit_dead_hist(const SiftColUnit *unit, SiftCHistDim *h);
+extern bool sift_col_unit_dead_rollup(const SiftColUnit *unit, SiftCRollup *r);
+extern bool sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *ndead, uint32 *nnull, SiftCLeafAgg *la);
 
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);

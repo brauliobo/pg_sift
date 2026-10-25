@@ -34,6 +34,7 @@
 #include "col/am.h"
 #include "col/enc.h"
 #include "col/pg.h"
+#include "col/runs.h"
 #include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
@@ -220,6 +221,8 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
 			continue;
 		}
+		if (ls[i].point_units > 0 && ls[i].nunits > 0)
+			st->point_cover[i] = Min(ls[i].point_units / ls[i].nunits, 1.0);
 		if (ls[i].set_units > 0)
 		{
 			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
@@ -332,14 +335,14 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 static void *
 col_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL);
+	return col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 }
 
 /* a partition read through its partitioned table: the privileges and row security of the table were checked, not those of the partition */
 static void *
 col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD);
+	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
 	sift_col_unpin(src->cs);
@@ -372,86 +375,16 @@ col_source_layout(const void *impl)
 	return ((const ColSource *) impl)->lay;
 }
 
+static bool
+col_sb_heap(void *impl)
+{
+	return sift_col_sb_heap(((ColSource *) impl)->cs);
+}
+
 static uint32
 col_nsb(void *impl)
 {
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
-}
-
-/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none */
-static void
-zone_preds(MemoryContext cxt, const SiftSrcPrune *z, SiftColValue *vals, SiftColPred *out)
-{
-	vals[0].v.i = z->lo;
-	vals[1].v.i = z->hi;
-	out[0] = (SiftColPred) {z->leaf, SIFT_COLOP_GE, 1, &vals[0]};
-	out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_LE, 1, &vals[1]};
-	if (z->nvals > 0)
-	{
-		SiftColValue *set = MemoryContextAllocZero(cxt, z->nvals * sizeof(SiftColValue));
-
-		for (int i = 0; i < z->nvals; i++)
-			set[i].v.i = z->vals[i];
-		out[1] = (SiftColPred) {z->leaf, SIFT_COLOP_IN, z->nvals, set};
-	}
-}
-
-/* are the predicates p made of the entry z (the entry's range, and its set of values when it has one)? */
-static bool
-zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z)
-{
-	if (p[0].col != z->leaf || p[0].vals[0].v.i != z->lo)
-		return false;
-	if (z->nvals == 0)
-		return p[1].op == SIFT_COLOP_LE && p[1].vals[0].v.i == z->hi;
-	if (p[1].op != SIFT_COLOP_IN || p[1].nvals != z->nvals)
-		return false;
-	for (int i = 0; i < z->nvals; i++)
-		if (p[1].vals[i].v.i != z->vals[i])
-			return false;
-	return true;
-}
-
-/*
- * The zone tests of the entries that are no junction, into src->zpred. A begin comes for every range of units a worker takes, and a set of many values
- * is converted to column values and copied for each: the tests of the last begin stay while the entries hold the same ranges and values.
- */
-static void
-zone_tests(ColSource *src, const SiftSrcPrune *prune, int nprune)
-{
-	int			n = 0;
-
-	if (src->zpred == NULL)
-		src->zpred = MemoryContextAllocZero(src->cxt, 2 * SIFT_COLSRC_MAX_LEAVES * sizeof(SiftColPred));
-	for (int k = 0; k < nprune; k++)
-		if (prune[k].nkids == 0)
-		{
-			if (n >= src->nzpred || !zone_preds_same(&src->zpred[n], &prune[k]))
-				zone_preds(src->cxt, &prune[k], MemoryContextAllocZero(src->cxt, 2 * sizeof(SiftColValue)), &src->zpred[n]);
-			n += 2;
-		}
-	src->nzpred = n;
-}
-
-/* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin) */
-static SiftColPrune
-zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
-{
-	SiftColPrune c = {.any = z->any, .nkids = z->nkids};
-
-	if (z->nkids == 0)
-	{
-		SiftColPred *preds = MemoryContextAlloc(cxt, 2 * sizeof(SiftColPred));
-
-		zone_preds(cxt, z, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
-		c.preds = preds;
-		c.npreds = 2;
-		return c;
-	}
-	c.kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));
-	for (int i = 0; i < z->nkids; i++)
-		((SiftColPrune *) c.kids)[i] = zone_tree(cxt, &z->kids[i]);
-	return c;
 }
 
 #define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
@@ -460,24 +393,12 @@ zone_tree(MemoryContext cxt, const SiftSrcPrune *z)
 static int
 col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
 {
-	int			n;
+	int			n = sift_aggzone_preds(&src->zones, src->cxt, NULL, prune, nprune, preds);
 
-	if (src->zfor != prune)
-	{
-		src->zfor = prune;
-		src->nzone = 0;
-		src->zone = MemoryContextAlloc(src->cxt, Max(nprune, 1) * sizeof(SiftColPrune));
-		for (int k = 0; k < nprune; k++)
-			if (prune[k].nkids > 0)
-				src->zone[src->nzone++] = zone_tree(src->cxt, &prune[k]);
-	}
-	zone_tests(src, prune, nprune);
-	memcpy(preds, src->zpred, src->nzpred * sizeof(SiftColPred));
-	n = src->nzpred;
 	for (int i = 0; i < src->nspred; i++)
 		preds[n++] = src->spred[i];
-	for (int i = 0; i < src->nflt; i++)
-		preds[n++] = src->fpred[i];
+	for (int i = 0; i < src->flt.n; i++)
+		preds[n++] = src->flt.pred[i];
 	for (int i = 0; i < src->nwtest; i++)
 		if (src->wtest[i].verdict == SIFT_COLW_PRED)
 			preds[n++] = src->wtest[i].pred;
@@ -494,7 +415,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	n = col_preds(src, prune, nprune, preds);
-	sift_col_begin_zones(src->cs, preds, n, src->zone, src->nzone, sb_lo, sb_hi);
+	sift_col_begin_zones(src->cs, preds, n, src->zones.zone, src->zones.nzone, sb_lo, sb_hi);
 }
 
 static bool
@@ -504,7 +425,7 @@ col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint6
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->cs, preds, n, src->zone, src->nzone, nspace, kept);
+	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept);
 }
 
 static bool
@@ -615,6 +536,27 @@ col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 	return n;
 }
 
+static uint32
+col_zone_range_segs(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
+{
+	SiftColZone cz;
+	uint32		n = sift_col_zone_range_segs(((ColSource *) impl)->cs, leaf, lo, hi, &cz);
+
+	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
+	return n;
+}
+
+static bool
+col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem)
+{
+	SiftColWalkStamp cs;
+
+	if (!sift_col_walk_stamp(((ColSource *) impl)->cs, &cs, mem, cap, nmem))
+		return false;
+	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version};
+	return true;
+}
+
 /* the stored numbering: not a unit of a match set, of rows read again from the heap, or narrowed to a few rows */
 static bool
 col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
@@ -625,6 +567,63 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint3
 	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows)
 		return false;
 	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
+}
+
+static bool
+col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	ColSource  *src = impl;
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+
+	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || !sift_col_sb_heads(src->cs, sb, leaf, e, nlo, nhi))
+		return false;
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return true;
+}
+
+static int
+col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+	int			h = sift_col_run_heads(&((ColSource *) impl)->unit, leaf, e, nlo, nhi);
+
+	StaticAssertStmt(sizeof(SiftSrcHead) == sizeof(SiftCHeadEnt) && SIFT_SRC_HEAD_MAX == SIFT_CRUN_HEAD_MAX, "the run head entries of the engine and the source differ");
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return h;
+}
+
+static int
+col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
+{
+	ColSource  *src = impl;
+
+	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped);
+}
+
+static bool
+col_gorder_info(void *impl, int i, int leaf, uint32 *entries, uint32 *values)
+{
+	return sift_col_gorder_info(((ColSource *) impl)->cs, i, leaf, entries, values);
+}
+
+static void
+col_gorder_range(void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
+{
+	sift_col_gorder_range(((ColSource *) impl)->cs, i, leaf, vs, ve, ns, ne);
+}
+
+static uint32
+col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after);
+}
+
+static uint32
+col_gorder_chunk(void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+{
+	return sift_col_gorder_chunk(((ColSource *) impl)->cs, i, leaf, c, key, addr);
 }
 
 static void
@@ -661,6 +660,18 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 	return sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
 }
 
+static int
+col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
+{
+	return sift_col_unit_dead(&((ColSource *) impl)->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
+}
+
+static bool
+col_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_col_unit_except(&((ColSource *) impl)->unit, leaf);
+}
+
 static bool
 col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
@@ -686,6 +697,12 @@ col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence
 		return false;
 	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
 	return true;
+}
+
+static bool
+col_unit_hll(void *impl, const SiftSrcUnit *unit, int leaf, const uint8 **blob)
+{
+	return sift_col_unit_hll(&((ColSource *) impl)->unit, leaf, blob);
 }
 
 /* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */
@@ -820,11 +837,21 @@ static const SiftSrcProvider col_provider = {
 	.read_into = col_read_into,
 	.select = col_select,
 	.tids = col_tids,
+	.sb_heap = col_sb_heap,
 	.zone = col_zone,
 	.zone_range = col_zone_range,
+	.zone_range_segs = col_zone_range_segs,
+	.walk_stamp = col_walk_stamp,
 	.overflow = col_overflow,
 	.run_info = col_run_info,
+	.run_heads = col_run_heads,
+	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
+	.gorder_open = col_gorder_open,
+	.gorder_info = col_gorder_info,
+	.gorder_chunk = col_gorder_chunk,
+	.gorder_range = col_gorder_range,
+	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
@@ -844,9 +871,12 @@ static const SiftSrcProvider col_provider = {
 	.filter_wide = col_filter_wide,
 	.preagg = col_preagg,
 	.unit_exact = col_unit_exact,
+	.unit_dead = col_unit_dead,
+	.unit_except = col_unit_except,
 	.unit_agg = col_unit_agg,
 	.unit_hist = col_unit_hist,
 	.unit_presence = col_unit_presence,
+	.unit_hll = col_unit_hll,
 	.gpu_unit = col_gpu_unit,
 	.gpu_dense = col_gpu_dense,
 	.gpu_chunk = col_gpu_chunk,

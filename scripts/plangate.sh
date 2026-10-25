@@ -3,13 +3,18 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--lane stock|tuned] [--table] [--warn-time] [--update] [--keep]
 #
 #   --rows N      events (default 30000, the size the expectations are recorded at; they hold from 20000 to 50000), --seed N the generator seed (default 1)
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
+#   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
+#                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
+#   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
+#                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
-#   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff
+#   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff. In another
+#                 lane (--lane tuned, --table) it rewrites the rows of that lane in test/plan/bands.tsv (the plan the lane chooses and the band around its ratio)
 #   --keep        keeps the database sift_plangate
 # Fails (exit 1) on a result that differs between the paths, a plan other than the expected one, a cost ratio outside its band and (without
 # --warn-time) a lose. Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT).
@@ -17,14 +22,14 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP=
+ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE=
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
 	case $1 in
-		--warn-time) WARN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;;
-		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;;
-		*) sed -n '2,17p' "$0"; exit 1 ;;
+		--warn-time) WARN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
+		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --lane) LANE=$2; shift ;;
+		*) sed -n '2,21p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -36,17 +41,37 @@ log() { printf '[plangate %s] %s\n' "$(date +%T)" "$*" >&2; }
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
 # serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
 settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
+case $LANE in
+	stock) ;;
+	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
+	*) log "unknown lane $LANE (stock or tuned)"; exit 1 ;;
+esac
+# the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned or tabletuned
+LK=${TABLE:+table}$([[ $LANE != tuned ]] || echo tuned)
+[[ -z $LK ]] || settings+=("plangate.lane=$LK")
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
 sql -qAt -c "CREATE EXTENSION pg_sift" >/dev/null
 log "tables: $ROWS events, seed $SEED"
-sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/plan/gen.sql" -f "$REPO/test/plan/run.sql" >/dev/null
+sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/plan/gen.sql" ${TABLE:+-f "$REPO/test/plan/table.sql"} -f "$REPO/test/plan/run.sql" >/dev/null
 log "shapes"
+sql -q <<-SQL >/dev/null
+	\\copy plangate.bands FROM '$REPO/test/plan/bands.tsv'
+SQL
 sql -q -v runs="$RUNS" -v pattern="$ONLY" >/dev/null <<-SQL
 	\\set text \`cat '$REPO/test/plan/shapes.sql'\`
 	SELECT plangate.run_all(:'text', :runs, :'pattern');
 SQL
 
-if [[ -n $UPDATE ]]; then
+if [[ -n $UPDATE && -n $LK ]]; then
+	# the plan this lane chooses (either stays) and the band of a factor of 2 around its ratio, in 2 significant digits
+	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
+		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
+		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
+	{ awk -F'\t' 'NR == FNR { new[$1 FS $2] = 1; next } !(($1 FS $2) in new)' "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/bands.tsv"; cat "${SIFT_TMP}/plangate-bands.tsv"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"${SIFT_TMP}/plangate-all.tsv"
+	cat "${SIFT_TMP}/plangate-all.tsv" >"$REPO/test/plan/bands.tsv"
+	rm -f "${SIFT_TMP}/plangate-bands.tsv" "${SIFT_TMP}/plangate-all.tsv"
+	log "updated the $LK rows of test/plan/bands.tsv"
+elif [[ -n $UPDATE ]]; then
 	sql -qAt -F $'\t' -c "SELECT name, expect FROM plangate.suggestions" >"${SIFT_TMP}/plangate-expect.tsv"
 	awk -F'\t' 'NR == FNR { e[$1] = $2; next }
 		/^-- name: / { n = substr($0, 10) }
@@ -57,7 +82,7 @@ if [[ -n $UPDATE ]]; then
 	log "updated test/plan/shapes.sql"
 fi
 
-# the expected plans and cost bands are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
+# the expected plans and cost bands, of every lane, are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
 hard=true
 (( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
 sql -q -P footer=off <<-SQL

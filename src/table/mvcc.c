@@ -159,6 +159,24 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 	return true;
 }
 
+/*
+ * Does a statement of this transaction delete the row for the snapshot? Then the row is no version of the snapshot whatever its insertion says
+ * (it was inserted before): the repeated fetches of the old versions of a key updated many times in one transaction skip reading them
+ */
+bool
+sift_tbl_deleted_by_self(const SiftTblRel *st, Snapshot snapshot, uint64 key)
+{
+	const SiftTblTomb *e;
+	int			n;
+
+	if ((e = sift_tbl_tomb_find(st, key, &n)) == NULL)
+		return false;
+	for (int i = 0; i < n; i++)
+		if (e[i].kind != SIFT_TBL_TOMB_LOCK && TransactionIdIsCurrentTransactionId(e[i].xid) && tomb_deletes(snapshot, &e[i]))
+			return true;
+	return false;
+}
+
 void
 sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del)
 {

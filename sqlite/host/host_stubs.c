@@ -46,6 +46,13 @@ sift_cseg_dict_asked(SiftColSegment *seg, int col)
 	return UINT32_MAX;
 }
 
+/* there is no cache that could fail to hold a dictionary */
+bool
+sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
+{
+	return false;
+}
+
 /* ---------- segment heads and zone arrays (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
 
 const SegHead *
@@ -59,7 +66,7 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
 {
 }
 
-const ZoneArrays *
+ZoneArrays *
 sift_cseg_zones_find(SiftColSegment *seg, int col)
 {
 	return NULL;
@@ -99,4 +106,20 @@ sift_wbuf_totals(const SiftWbufReader *r, uint64 *ndocs, uint64 *sum_dl)
 void
 sift_wbuf_close(SiftWbufReader *r)
 {
+}
+
+/* ---------- hashing (col/hll.c): the sketches of hll_columns are written by the PostgreSQL extension, whose hash they carry ---------- */
+
+uint64
+hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the sketch of a column is built by the PostgreSQL extension only"),
+					errhint("Index the column with hll_columns in PostgreSQL.")));
+	return 0;
+}
+
+uint64
+hash_bytes_uint32_extended(uint32 k, uint64 seed)
+{
+	return hash_bytes_extended(NULL, 0, seed);
 }

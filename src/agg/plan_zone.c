@@ -111,25 +111,52 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 }
 
 /*
- * the bytes the scan clears to test the IN list p when it starts (agg/pred_in.c); 0 for an empty list, a list that is not constants (but see below) or a hash
- * table. An array the plan cannot see (a parameter of a generic plan) has sift.agg_param_set_size values, taken over the whole range of the leaf: the keys of
- * a list are spread over it unless the query says otherwise, and a plan that is made once must not assume the narrow one.
+ * the span of values and the number of values of the IN list p, for the structure that tests it (agg/pred_in.c): false for an empty list, a list that is
+ * not constants (but see below) and a type with no table. An array the plan cannot see (a parameter of a generic plan) has sift.agg_param_set_size values,
+ * taken over the whole range of the leaf: the keys of a list are spread over it unless the query says otherwise, and a plan that is made once must not
+ * assume the narrow one.
  */
-double
-in_list_table_bytes(AggCtx *c, const SiftAggPred *p)
+static bool
+in_list_shape(AggCtx *c, const SiftAggPred *p, uint64 *span, int *nv)
 {
 	ZoneRange	r;
 	const SiftSrcLeaf *lf;
 
 	if (p->kind != SAP_IN)
-		return 0;
+		return false;
 	if (zone_range(c, p, &r))
-		return r.nvals == 0 ? 0 : sift_agg_in_table_bytes((uint64) r.hi - (uint64) r.lo + 1, r.nvals);
+	{
+		*span = (uint64) r.hi - (uint64) r.lo + 1;
+		*nv = r.nvals;
+		return r.nvals > 0;
+	}
 	lf = &c->lay->leaf[p->leaf];
 	if (p->argtype == NUMERICOID || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64) || sift_agg_param_set_size <= 0 ||
 		!IsA(estimate_expression_value(c->root, (Node *) p->expr), Param) || c->stats.max[p->leaf] <= c->stats.min[p->leaf])
-		return 0;
-	return sift_agg_in_table_bytes((uint64) (c->stats.max[p->leaf] - c->stats.min[p->leaf]) + 1, sift_agg_param_set_size);
+		return false;
+	*span = (uint64) (c->stats.max[p->leaf] - c->stats.min[p->leaf]) + 1;
+	*nv = sift_agg_param_set_size;
+	return true;
+}
+
+/* the bytes the scan clears to test the IN list p when it starts (agg/pred_in.c); 0 for an empty list, a list that is not constants or a hash table */
+double
+in_list_table_bytes(AggCtx *c, const SiftAggPred *p)
+{
+	uint64		span;
+	int			nv;
+
+	return in_list_shape(c, p, &span, &nv) ? sift_agg_in_table_bytes(span, nv) : 0;
+}
+
+/* the nanoseconds a row costs the test of the IN list p (0: none known) */
+double
+in_list_test_ns(AggCtx *c, const SiftAggPred *p)
+{
+	uint64		span;
+	int			nv;
+
+	return in_list_shape(c, p, &span, &nv) ? sift_agg_in_test_ns(span, nv) : 0;
 }
 
 /* may a unit whose zone is [zlo, zhi] hold a value the range keeps? */

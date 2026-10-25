@@ -169,6 +169,7 @@ static const struct
 	[SPW_AGG_KIND] = {"aggregate not additive over tuples", "aggregate_kind"},
 	[SPW_AGG_ARG] = {"aggregate argument is not a plain leaf", "aggregate_argument"},
 	[SPW_AGG_TYPE] = {"aggregate type not summed", "aggregate_type"},
+	[SPW_AGG_APPROX] = {"approx_count_distinct without a stored sketch", "approx_no_sketch"},
 	[SPW_DIM_NOT_STORED] = {"dim not in the rollup", "dim_not_stored"},
 	[SPW_MEAS_NOT_STORED] = {"measure not in the rollup", "measure_not_stored"},
 	[SPW_ROW_KEYS] = {"rows: several group keys", "rows_several_keys"},
@@ -246,6 +247,9 @@ preagg_agg_leaf(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, int gr
 
 				leaf = sift_aggnum_linear(&a->num, &mul, &add);
 			}
+			/* the cell's sum times the program's factor is not carried out of 128 bits */
+			if (a->num.dig > 26)
+				return SPW_AGG_ARG;
 			/* the arithmetic of an element's value is not checked against the zone of the unit: the rollup's tuples hold sums only */
 			if (group >= 0 && a->num.n > 1)
 				return SPW_AGG_ARG;
@@ -297,8 +301,12 @@ cube_agg_ok(const SiftAggAgg *a, const SiftSrcLayout *lay, int nbase, const Sift
 	int			leaf;
 	SiftPaWhy	why;
 
+	/* sift.approx_count_distinct of a leaf with stored sketches: the unit's sketch, not a group's */
+	if (a->kind == SAA_GEN && a->gen->hll >= 0)
+		return d < 0 && pa->hll[a->gen->hll] ? SPW_OK : SPW_AGG_APPROX;
+	/* the groups of the leaf's own histogram are its values; those of its calendar cells are months or years of them */
 	if (distinct_leaf(a, lay))
-		return (d >= 0 && a->leaf == pa->dim[d].leaf) || (d < 0 && pa_pres(pa, a->leaf)) ? SPW_OK : SPW_AGG_DISTINCT;
+		return (d >= 0 && !pa->dim[d].cal && a->leaf == pa->dim[d].leaf) || (d < 0 && pa_pres(pa, a->leaf)) ? SPW_OK : SPW_AGG_DISTINCT;
 	why = preagg_agg_leaf(a, lay, nbase, -1, &leaf);
 
 	if (why != SPW_OK || leaf < 0 || d < 0)
@@ -320,15 +328,24 @@ hist_leaf_ok(const SiftSrcLayout *lay, int nbase, int leaf)
 	return vt == SCV_I32 || vt == SCV_CODE || vt == SCV_I64;
 }
 
+/* the conjuncts a unit's zone decides: the comparisons and, in a shape that has them (nullz), the NULL tests */
+static List *
+zone_conjs(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nullz)
+{
+	List	   *out = sift_aggspec_zone_cmps(s, lay, nbase, false);
+
+	return nullz ? list_concat(out, sift_aggspec_zone_cmps(s, lay, nbase, true)) : out;
+}
+
 /*
  * The leaf the conjuncts test besides the zone comparisons (-1: none), or -2 when they cannot be answered from a histogram. The conjuncts must be
  * zone comparisons, or test one scalar leaf. *zdim: the first leaf of a zone comparison that has a histogram (-1: none), which tests it when the
  * zone of a unit is not inside the comparison.
  */
 static int
-preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim, const SiftSrcPreagg *pa, int *zdim)
+preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int dim, const SiftSrcPreagg *pa, bool nullz, int *zdim)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = zone_conjs(s, lay, nbase, nullz);
 
 	*zdim = -1;
 	for (int i = 0; i < s->npred; i++)
@@ -339,7 +356,7 @@ preagg_conj_dim(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int d
 			return -2;
 		/* a conjunct on a leaf the zones of a unit can decide whole is no reason for a histogram; every other one is a test of the dimension. The cells of a timestamp stand in for
 		 * its histogram, which a unit that spans more than 32 instants does not have */
-		if (l >= 0 && *zdim < 0 && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l) &&
+		if (l >= 0 && *zdim < 0 && s->pred[i]->kind != SAP_NULL && list_member_ptr(cmps, s->pred[i]) && pa_dim(pa, l) >= 0 && hist_leaf_ok(lay, nbase, l) &&
 			!(lay->leaf[l].vtype == SCV_I64 && pa_cal(pa, l) >= 0))
 			*zdim = l;
 		if (l < 0 || list_member_ptr(cmps, s->pred[i]))
@@ -427,9 +444,9 @@ in_leaves(const int *arr, int n, int leaf)
  * answered by the rollup of the rows the same way, where every conjunct tests dims.
  */
 static SiftPaWhy
-preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, bool nullz, SiftAggPaShape *out)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, nullz);
 	int			group = s->group,
 				nd = 0,
 				nm = 0,
@@ -485,7 +502,7 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	for (int i = 0; i < nm; i++)
 		if (!in_leaves(pa->rollup[r].meas, pa->rollup[r].nmeas, meas[i]))
 			return SPW_MEAS_NOT_STORED;
-	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .rows = group < 0, .ndims = nd, .nmeas = nm};
+	*out = (SiftAggPaShape) {.dim = -1, .hdim = -1, .list = group, .rows = group < 0, .ndims = nd, .nmeas = nm, .nullz = nullz};
 	memcpy(out->rdim, dims, nd * sizeof(int));
 	memcpy(out->rmeas, meas, nm * sizeof(int));
 	return SPW_OK;
@@ -518,23 +535,49 @@ cal_pred(const SiftAggPred *p, uint8 *mask)
 }
 
 /*
- * Can the cells of the calendar dim of leaf test the conjuncts on it? Its zone comparisons are decided by the span of each cell (a unit with a cell that
- * one cuts is scanned); the others must be tests of calendar expressions of the leaf or of its NULLs, which a cell answers when its grain is in *mask.
+ * Can the cells of the calendar dim of leaf test the conjuncts on it? Its zone comparisons, and the ANDs and ORs of them, are decided by the span of each cell
+ * (a unit with a cell that one cuts is scanned); the others must be tests of calendar expressions of the leaf or of its NULLs, which a cell answers when its grain is in *mask.
  */
 static bool
 cal_tests(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, int leaf, uint8 *mask)
 {
-	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+	List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 
 	for (int i = 0; i < s->npred; i++)
-		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !cal_pred(s->pred[i], mask))
+		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == leaf && !list_member_ptr(cmps, s->pred[i]) && !sift_aggspec_span_pred(s->pred[i], lay, nbase) &&
+			!cal_pred(s->pred[i], mask))
 			return false;
 	return *mask != 0;
 }
 
+/*
+ * Does the calendar dim of the date leaf dim answer a unit that has no histogram of the leaf (more days than a histogram holds): no key, and every test of the
+ * leaf a comparison tree whose truth a cell's span decides, which the aggregates can all be read from the cells of
+ */
+static bool
+cal_alt(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, int dim)
+{
+	int			cd = pa_cal(pa, dim);
+	bool		any = false;
+
+	if (cd < 0 || s->nkeys != 0)
+		return false;
+	for (int i = 0; i < s->npred; i++)
+		if (sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1) == dim)
+		{
+			if (!sift_aggspec_span_pred(s->pred[i], lay, nbase))
+				return false;
+			any = true;
+		}
+	for (int i = 0; any && i < s->naggs; i++)
+		if (s->agg[i].filter || distinct_leaf(&s->agg[i], lay) || cube_agg_ok(&s->agg[i], lay, nbase, pa, cd) != SPW_OK)
+			return false;
+	return any;
+}
+
 /* the sums and histograms of the rows' leaves answer a scan of the rows: at most one key, a column of a histogram */
 static SiftPaWhy
-preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out)
+preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, bool nullz, SiftAggPaShape *out)
 {
 	int			dim = -1,
 				d = -1,
@@ -543,7 +586,9 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 				fdim,
 				zdim;
 	uint8		cmask = 0;
-	bool		hcal = false;
+	bool		hcal = false,
+				hcalalt = false,
+				calalt = false;
 	SiftPaWhy	why = SPW_OK;
 
 	if (s->nkeys > 1)
@@ -566,7 +611,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 			cleaf = s->key[0].leaf;
 		}
 	}
-	dim = preagg_conj_dim(s, lay, nbase, dim, pa, &zdim);
+	dim = preagg_conj_dim(s, lay, nbase, dim, pa, nullz, &zdim);
 	if (dim == -2)
 		return SPW_ROW_PRED;
 	/* the tests of the key's calendar leaf are made on its cells; those of another leaf are not */
@@ -630,7 +675,17 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 		if (zwhy == SPW_OK)
 		{
 			if (why == SPW_OK)
+			{
+				int			cd = pa_cal(pa, zdim);
+
 				hdim = zdim;
+				/* a date whose unit has too many days for a histogram of its own still has its cells */
+				hcalalt = cd >= 0;
+				for (int i = 0; hcalalt && i < s->naggs; i++)
+					hcalalt = cube_agg_ok(&s->agg[i], lay, nbase, pa, cd) == SPW_OK;
+				if (hcalalt)
+					cmask = 0x0E;
+			}
 			else
 				dim = zdim;
 			why = SPW_OK;
@@ -650,7 +705,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	/* ... or from the cells of a date or timestamp it compares, whose span decides each cell (a unit with a cell the comparison cuts is scanned) */
 	if (dim < 0 && hdim < 0 && cleaf < 0 && why == SPW_OK)
 	{
-		List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase);
+		List	   *cmps = sift_aggspec_zone_cmps(s, lay, nbase, false);
 
 		foreach_ptr(SiftAggPred, p, cmps)
 		{
@@ -671,7 +726,12 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	}
 	if (why != SPW_OK)
 		return why;
-	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hdim = hdim, .list = -1};
+	if (cleaf < 0 && dim >= 0 && hdim < 0 && fdim < 0 && cal_alt(s, lay, nbase, pa, dim))
+	{
+		calalt = true;
+		cmask = 0x0E;
+	}
+	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
 	return SPW_OK;
 }
 
@@ -679,7 +739,7 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 static bool
 rows_zone_bound(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftAggPaShape *shape)
 {
-	foreach_ptr(SiftAggPred, p, sift_aggspec_zone_cmps(s, lay, nbase))
+	foreach_ptr(SiftAggPred, p, zone_conjs(s, lay, nbase, shape->nullz))
 		if (sift_aggspec_pred_leaf(p, lay, nbase, -1) != shape->dim)
 			return true;
 	return false;
@@ -709,8 +769,27 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 	if (s->topn)
 		return SPW_TOPN;
 	if (s->group >= 0)
-		return lay->leaf[s->group].kind == SCL_ARRAY || lay->leaf[s->group].kind == SCL_OBJECT ? preagg_rollup(s, lay, nbase, pa, out) : SPW_NOT_LIST;
-	why = preagg_rows(s, lay, nbase, pa, out);
+	{
+		if (lay->leaf[s->group].kind != SCL_ARRAY && lay->leaf[s->group].kind != SCL_OBJECT)
+			return SPW_NOT_LIST;
+		why = preagg_rollup(s, lay, nbase, pa, false, out);
+		/* a NULL test of a column of the rows (WHERE deleted_at IS NULL) is decided by the zone of each unit, or by the exceptions the unit kept (unit_preagg.c) */
+		if (why == SPW_PRED && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
+			why = preagg_rollup(s, lay, nbase, pa, true, out);
+		return why;
+	}
+	why = preagg_rows(s, lay, nbase, pa, false, out);
+	/* a NULL test of a column that is no dim of the shape (WHERE deleted_at IS NULL): the zone's NULL count decides it for each unit, as a comparison is decided */
+	if (why != SPW_OK && sift_aggspec_zone_cmps(s, lay, nbase, true) != NIL)
+	{
+		SiftAggPaShape nz;
+
+		SiftPaWhy	nwhy = preagg_rows(s, lay, nbase, pa, true, &nz);
+
+		if (nwhy == SPW_OK)
+			*out = nz;
+		why = nwhy;
+	}
 	/*
 	 * What the histograms cannot give (two keys, a key and a test of another column), or give only for the units inside a comparison, the rollup of the
 	 * rows may: it answers every exact unit.
@@ -719,7 +798,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		if (pa->rollup[r].list < 0 && (why != SPW_OK || rows_zone_bound(s, lay, nbase, out)))
 		{
 			SiftAggPaShape rows;
-			SiftPaWhy	rwhy = preagg_rollup(s, lay, nbase, pa, &rows);
+			SiftPaWhy	rwhy = preagg_rollup(s, lay, nbase, pa, false, &rows);
 
 			if (rwhy == SPW_OK)
 				*out = rows;

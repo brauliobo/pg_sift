@@ -29,20 +29,26 @@ le_epu32(__m256i x, __m256i y)
 	return _mm256_cmpeq_epi32(_mm256_min_epu32(x, y), x);
 }
 
+/*
+ * The rows of a block of 32 values (CC_NV vectors each) whose value is in [lo, lo + span], one bit each, 32 to a u32 of bits (little endian: the
+ * byte order of x86-64): a row is shifted out of the lane streams and compared in registers, with no row array between
+ */
 static void
 unpack_range32_avx2(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 span, uint64 *bits)
 {
 	uint32		mask = W >= 32 ? ~0u : (1u << W) - 1;
 	uint32		row = 0;
-	__m256i		vspan = _mm256_set1_epi32((int) span);
+	uint32	   *out = (uint32 *) bits;
+	__m256i		vspan = _mm256_set1_epi32((int) span),
+				vmask = _mm256_set1_epi32((int) mask),
+				vadd = _mm256_set1_epi32((int) (0u - lo));
 
-	for (uint32 w = 0; w < (rows + 1) / 2; w++)
-		bits[w] = 0;
+	if (rows & 1)
+		out[rows] = 0;
 	if (W == 0)
 	{
-		if ((0u - lo) <= span)
-			for (uint32 r = 0; r < rows; r++)
-				bits[r / 2] |= (uint64) 0xFFFFFFFFu << ((r & 1) * 32);
+		for (uint32 r = 0; r < rows; r++)
+			out[r] = (0u - lo) <= span ? ~0u : 0;
 		return;
 	}
 	while (row < rows)
@@ -52,17 +58,32 @@ unpack_range32_avx2(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint32 
 		for (uint32 r = 0; r < R; r++, row++)
 		{
 			uint32		bp = r * W,
-						m = 0;
-			cc_row_t	v;
+						sh = bp & 31,
+						m;
+			const uint32 *a = src + (size_t) (bp >> 5) * 32;
+			__m128i		cnt = _mm_cvtsi32_si128((int) sh),
+						cnt2 = _mm_cvtsi32_si128((int) (32 - sh));
+			__m256i		x0 = _mm256_srl_epi32(LD256(a), cnt),
+						x1 = _mm256_srl_epi32(LD256(a + 8), cnt),
+						x2 = _mm256_srl_epi32(LD256(a + 16), cnt),
+						x3 = _mm256_srl_epi32(LD256(a + 24), cnt);
 
-			cc_row_avx2(src + (size_t) (bp >> 5) * 32, bp & 31, W, mask, 0u - lo, v);
-			for (int q = 0; q < CC_NV; q++)
+			if (sh + W > 32)
 			{
-				__m256i		x = (__m256i) v[q];
-
-				m |= (uint32) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x, vspan))) << (8 * q);
+				x0 = _mm256_or_si256(x0, _mm256_sll_epi32(LD256(a + 32), cnt2));
+				x1 = _mm256_or_si256(x1, _mm256_sll_epi32(LD256(a + 40), cnt2));
+				x2 = _mm256_or_si256(x2, _mm256_sll_epi32(LD256(a + 48), cnt2));
+				x3 = _mm256_or_si256(x3, _mm256_sll_epi32(LD256(a + 56), cnt2));
 			}
-			bits[row / 2] |= (uint64) m << ((row & 1) * 32);
+			x0 = _mm256_add_epi32(_mm256_and_si256(x0, vmask), vadd);
+			x1 = _mm256_add_epi32(_mm256_and_si256(x1, vmask), vadd);
+			x2 = _mm256_add_epi32(_mm256_and_si256(x2, vmask), vadd);
+			x3 = _mm256_add_epi32(_mm256_and_si256(x3, vmask), vadd);
+			m = (uint32) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x0, vspan))) |
+				(uint32) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x1, vspan))) << 8 |
+				(uint32) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x2, vspan))) << 16 |
+				(uint32) _mm256_movemask_ps(_mm256_castsi256_ps(le_epu32(x3, vspan))) << 24;
+			out[row] = m;
 		}
 		src += R == 32 ? (size_t) 32 * W : (size_t) 32 * ((R * W + 31) / 32);
 	}

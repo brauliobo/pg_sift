@@ -5,8 +5,8 @@
  * or run from the child plan, which a worker cannot do). It writes each table once in a flat form without pointers: the arrays of the
  * table as they are, the bytes of the distinct text keys and of the by-reference column values after them, the references as offsets. A
  * worker maps the segment and only makes the arrays that hold addresses (one per distinct text key and by-reference value), the rest is
- * read in place. The table is never written to by a scan that shares it (a preserved side is: its join keeps its own copy,
- * sift_aggspec_parallel_ok).
+ * read in place. The table is never written to by a scan that shares it: a preserved side keeps which of its rows a tuple matched in an array of
+ * each participant (hit), which a worker sends to the leader with its tables.
  */
 #include "postgres.h"
 
@@ -32,13 +32,14 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	Size		off = MAXALIGN(sizeof(MapShared)),
 				data = 0;
 
-	Assert(!m->keep && m->ncol <= SIFT_AGG_MAX_JCOLS);
+	Assert(m->ncol <= SIFT_AGG_MAX_JCOLS);
 	memset(l, 0, sizeof(MapShared));
 	l->nkey = m->nkey;
 	l->ncol = m->ncol;
 	l->nrow = m->nrow;
 	l->nslot = m->nslot;
 	l->filtered = m->filtered;
+	l->keep = m->keep;
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
 	memcpy(l->knull, m->knull, sizeof(l->knull));
 	l->kid = share_array(&off, (size_t) m->nrow * m->nkey, sizeof(uint32));
@@ -167,6 +168,8 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	m->cap = l->nrow;
 	m->nslot = l->nslot;
 	m->filtered = l->filtered;
+	m->keep = l->keep;
+	m->hit = l->keep ? MemoryContextAllocZero(cxt, Max(l->nrow, 1)) : NULL;
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
 	memcpy(m->knull, l->knull, sizeof(m->knull));
 	m->kid = (uint32 *) (src + l->kid);

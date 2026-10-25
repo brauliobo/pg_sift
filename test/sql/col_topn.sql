@@ -173,8 +173,10 @@ BEGIN
 	RAISE NOTICE 'cursor % %', cardinality(want), got = want || ARRAY(SELECT x FROM unnest(want) WITH ORDINALITY u(x, o) ORDER BY o DESC);
 END $$;
 
--- the heap is read for the rows of the result only, and a column that grows with the table lets the scan skip superblocks
+-- the heap is read for the rows of the result only, and not at all when the units hold every column of the output; a column that grows with the table lets the scan skip superblocks
 SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches, ct_stat(q, 'Search Matches') > 100 AS many_matches
+FROM (SELECT $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
+SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_desc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq DESC LIMIT 10$q$ AS q) x;
@@ -263,9 +265,10 @@ CREATE INDEX ct_t_bm ON ct_t USING sift (memo);
 SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') AS tbl;
 
 -- The top-N opens the match set whole (the posting lists of the words), whatever part of the table it reads: on a table of 41 superblocks
--- (rows of one page in six) a search for any of the 20 words costs the top-N about 910 and the btree plan, which the declared cost of the
--- match function sets (COST: what a row costs to test), 25 + COST / 40. The btree plan is the cheaper one up to a COST of about 36000; if
--- the opening were scaled by the fraction read (0.2) the top-N would cost 630 and win from 25000. COST 3000 and 300000 are far on either side.
+-- (rows of one page in six) a search for any of the 20 words costs the top-N about 635 and the btree plan, which the declared cost of the
+-- match function sets (COST: what a row costs to test), 25 + COST / 40. The btree plan is the cheaper one up to a COST of about 25000; if
+-- the opening were scaled by the fraction read (0.2) the top-N would cost 355 and win from 13000. COST 3000 and 300000 are far on either side,
+-- 18000 is between the two.
 CREATE TABLE cb (id serial PRIMARY KEY, ts timestamp, memo text) WITH (fillfactor = 10);
 INSERT INTO cb (ts, memo) SELECT timestamp '2024-01-01' + (hashint4(i + 11) & 2147483647) % 60000000 * interval '1 second', ct_words(i)
 FROM generate_series(1, 100000) i;
@@ -276,8 +279,8 @@ SELECT $q$SELECT id, ts FROM cb WHERE memo @@> 'fast OR late OR damaged OR refun
 BEGIN;
 ALTER FUNCTION sift.match(text, text) COST 3000;
 SELECT ct_plan(:'q') AS cost_3000;
-ALTER FUNCTION sift.match(text, text) COST 30000;
-SELECT ct_plan(:'q') AS cost_30000;
+ALTER FUNCTION sift.match(text, text) COST 18000;
+SELECT ct_plan(:'q') AS cost_18000;
 ALTER FUNCTION sift.match(text, text) COST 300000;
 SELECT ct_plan(:'q') AS cost_300000;
 ROLLBACK;

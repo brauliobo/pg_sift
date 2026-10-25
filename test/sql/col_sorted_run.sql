@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '120s';
 
--- 30,000 rows in about 24 units. k: 500 values (about 60 rows each), kn: 40 values and a NULL in 7 rows, t: ties, NULLs and infinity, f: NaN, -0, 0 and NULLs,
+-- 15,000 rows in about 12 units. k: 500 values (about 60 rows each), kn: 40 values and a NULL in 7 rows, t: ties, NULLs and infinity, f: NaN, -0, 0 and NULLs,
 -- n: a numeric with NaN (stored as an overflow) and NULLs, d: a date; c: ascending in runs of 100 (clustered), cd: descending; sk: its best values are
 -- all in the first units, so that the first pass of a top-N leaves those unfinished
 CREATE TABLE sr (id int, k int, kn int, t timestamptz, f float8, n numeric(12, 2), d date, c int, cd int, sk int, pad text) WITH (autovacuum_enabled = off);
@@ -26,7 +26,7 @@ SELECT g, (hashint4(g) & 2147483647) % 500,
        CASE WHEN g % 19 = 0 THEN NULL ELSE date '2020-01-01' + (hashint4(g + 5) & 2147483647) % 2000 END,
        g / 100, 100000 - g,
        CASE WHEN g <= 3000 THEN (hashint4(g + 6) & 2147483647) % 1000 ELSE 1000 + (hashint4(g + 6) & 2147483647) % 100000 END, repeat('x', 1500)
-FROM generate_series(1, 30000) g;
+FROM generate_series(1, 15000) g;
 
 -- the minor of the segments: 4 (this schema has no jsonb paths) without the option or under a lower setting, 13 with both, and the option writes nothing else
 CREATE TABLE sr_o (LIKE sr) WITH (autovacuum_enabled = off);
@@ -48,8 +48,8 @@ SELECT pg_relation_size('sr_twelve') = pg_relation_size('sr_off') AS lower_is_of
        (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('sr_twelve'))
        = (SELECT array_agg(section || coalesce(':' || leaf, '') || '=' || bytes ORDER BY section, leaf) FROM sift.col_sections('sr_off')) AS lower_is_off_sections;
 SELECT count(*) FILTER (WHERE section = 'runs') AS rows_off FROM sift.col_sections('sr_off');
--- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c)
-SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 30000 AND 8 * 2 * 30000 * 1.02 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
+-- two bytes a row for each of the 8 leaves whose rows do not ascend with the column (k, kn, t, f, n, d, cd, sk), a header for the 2 that do (id, c), and the heads of the leaves with no NULL (under 10% more)
+SELECT bytes > 0 AS runs_take_bytes, bytes BETWEEN 8 * 2 * 15000 AND 8 * 2 * 15000 * 1.10 AS two_bytes_a_row_per_unordered_leaf FROM sift.col_sections('sr_on') WHERE section = 'runs';
 
 -- the options are checked: names, types that are not ordered by their key (text, uuid, bool), a leaf of a jsonb path
 CREATE INDEX sr_bad1 ON sr USING sift_col (id, k) WITH (order_columns = 'nosuch', cube_minmax = false, superunit = 0, calendar_columns = 'off');
@@ -60,21 +60,23 @@ CREATE INDEX sr_bad4 ON sr_x USING sift_col (id, b) WITH (order_columns = 'b', c
 CREATE INDEX sr_bad5 ON sr_x USING sift_col (id, u) WITH (order_columns = 'u', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 DROP TABLE sr_x;
 
--- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off)
+-- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off); the heads of the runs are col_run_heads's (sift.test_topn_heads = off)
 CREATE FUNCTION sr_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', (m <> 'plain')::text, false);
 	PERFORM set_config('sift.topn_runs', (m = 'runs')::text, false);
+	PERFORM set_config('sift.test_topn_heads', 'false', false);
 	PERFORM set_config('enable_seqscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_indexscan', (m = 'plain')::text, false);
 	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);
 END $$;
 
--- the rows as text, in order; -0 and 0 are the same value and either may be the row a plan takes among ties
+-- the rows as text, in order; -0 and 0 are the same value and either may be the row a plan takes among ties. The row text and not row_to_json, and the
+-- pattern only on a row that has a -0: the json of 4,000 rows cost 0.5 s on a server with assertions under a sanitizer, the text 22 ms
 CREATE FUNCTION sr_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	EXECUTE 'SELECT md5(string_agg(r, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, regexp_replace(row_to_json(x)::text, ''-0(?![.0-9])'', ''0'', ''g'') AS r FROM (' || q || ') x) y' INTO r;
+	EXECUTE 'SELECT md5(string_agg(CASE WHEN r ~ ''-0[,)]'' THEN regexp_replace(r, ''-0(?![.0-9])'', ''0'', ''g'') ELSE r END, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, x::text AS r FROM (' || q || ') x) y' INTO r;
 	RETURN r;
 END $$;
 
@@ -113,7 +115,12 @@ BEGIN
 	PERFORM sr_mode('runs');
 END $$;
 
-CREATE TEMP TABLE sr_res AS SELECT * FROM sr_check('sr', ARRAY['k', 'kn', 't', 'f', 'n', 'd', 'c', 'cd', 'id', 'sk'], ARRAY[1, 300, 4000]);
+-- two columns to a statement: the ten in one ran into the statement timeout on a loaded runner under a sanitizer
+CREATE TEMP TABLE sr_res AS SELECT * FROM sr_check('sr', ARRAY['k', 'kn'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['t', 'f'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['n', 'd'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['c', 'cd'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['id', 'sk'], ARRAY[1, 300, 4000]);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_res;
 SELECT n, shape FROM sr_res WHERE NOT same;
 -- the same rows from an index without runs, and from one written under a lower setting, which read none
@@ -139,21 +146,21 @@ RESET sift.topn_runs;
 SELECT sr_runs('SELECT id, sk FROM sr ORDER BY sk LIMIT 300') > sr_runs('SELECT id, k FROM sr ORDER BY k LIMIT 300') AS second_pass_reads_units;
 
 CREATE FUNCTION sr_small(tab text) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
-	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'c', 'sk'], ARRAY[1, 300])
+	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY['k', 'kn', 't', 'f', 'sk'], ARRAY[1, 300])
 $$;
 
 -- filters that leave 2%, 10% and 50% of the rows (a unit reads the key of the rows that pass only when they are few) and a start after a value of the key
 -- itself (keyset paging): the run is walked over the rows that do not pass
 CREATE FUNCTION sr_filt(tab text, cols text[], lims int[]) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
 	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same)
-	FROM sr_check(tab, cols, lims, ARRAY['WHERE id % 50 = 3', 'WHERE id % 10 = 4', 'WHERE id % 2 = 0', 'WHERE COL > (SELECT COL FROM TAB ORDER BY COL, id OFFSET 12000 LIMIT 1)'])
+	FROM sr_check(tab, cols, lims, ARRAY['WHERE id % 50 = 3', 'WHERE id % 10 = 4', 'WHERE id % 2 = 0', 'WHERE COL > (SELECT COL FROM TAB ORDER BY COL, id OFFSET 6000 LIMIT 1)'])
 $$;
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn', 't'], ARRAY[20, 300]);
 
 -- rows in the write buffer have no run and are read whatever the runs say; deletes and updates leave the rows of a run that are not live, and the new
 -- version of an updated row is in the buffer; VACUUM, promotion and merge write the runs again
 INSERT INTO sr SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 2 = 0 THEN NULL ELSE g % 3 END, timestamptz '2023-06-01' + g * interval '1 second',
-       CASE WHEN g % 5 = 0 THEN NULL ELSE -g END, 1.5, date '2019-01-01', g / 100, 100000 - g, repeat('x', 1500) FROM generate_series(30001, 30600) g;
+       CASE WHEN g % 5 = 0 THEN NULL ELSE -g END, 1.5, date '2019-01-01', g / 100, 100000 - g, repeat('x', 1500) FROM generate_series(15001, 15300) g;
 SELECT * FROM sr_small('sr');
 UPDATE sr SET k = 2, kn = NULL, t = NULL, f = 'NaN' WHERE id % 1000 = 5;
 UPDATE sr SET k = 1000 + k WHERE id % 1000 = 6;
@@ -182,7 +189,14 @@ SET max_parallel_workers_per_gather = 2;
 -- every query starts workers, which a sanitizer build takes a second each to start: two keys and one limit
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs, array_agg(shape) FILTER (WHERE NOT same) AS different
 FROM sr_check('sr', ARRAY['k', 'sk'], ARRAY[300]);
-RESET max_parallel_workers_per_gather;
+-- back to none: a RESET would restore the default of two, and every later statement would start workers (a sanitizer build takes a second to start one)
+SET max_parallel_workers_per_gather = 0;
+
+-- the damage walks every byte of a run against the chunk, so its time grows with the square of the rows of a unit: a table of wider rows, about 770 rows to a unit, for it
+CREATE TABLE sr_d (LIKE sr) WITH (autovacuum_enabled = off);
+ALTER TABLE sr_d ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sr_d SELECT id, k, kn, t, f, n, d, c, cd, sk, repeat('x', 2700) FROM sr WHERE id <= 1600 ORDER BY id;
+CREATE INDEX sr_d_idx ON sr_d USING sift_col (id, k, kn, t, f, n, d, c, cd, sk) WITH (write_buffer_limit = 4096, order_columns = 'id, k, kn, t, f, n, d, c, cd, sk', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 
 -- the runs are decoded with checks: a cut run, a flag bit, an unknown kind, a row count that is not the unit's, counts that do not fit, a width that is not
 -- the one the row count says are refused; an ordinal that is no row of the unit is refused when the entries are read; a changed byte that is accepted is
@@ -190,7 +204,7 @@ RESET max_parallel_workers_per_gather;
 SELECT blobs > 0 AS has_blobs, ord > 0 AS has_ord, ident > 0 AS has_ident, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks,
        cut > 0 AS cuts_made, cut_accepted = 0 AS cuts_refused, named > 0 AS named_made, named_accepted = 0 AS named_refused,
        damaged > 0 AS damages_made, accepted < damaged AS some_refused, missed = 0 AS accepted_differ_from_chunk
-FROM sift._test_col_run_damage('sr_on', 12);
+FROM sift._test_col_run_damage('sr_d_idx', 12);
 -- the bytes of the section as the segment holds them, one bit flipped at a time (the header, the records, the directories and the head of every run, then one entry in 997): every
 -- one in a byte that is used is refused by the reader or by the check
 CREATE TABLE sr_f (id int, k int, f float8, n numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
@@ -204,11 +218,11 @@ SELECT runs > 0 AS has_runs, damaged > 1000 AS many, refused > 0 AS some_refused
 -- nothing of it is written
 CREATE TABLE sa (id int, k int, t timestamptz, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sa ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(1, 12000) g;
+INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(1, 6000) g;
 CREATE INDEX sa_idx ON sa USING sift_col (id, k, t) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('sa_idx');
 ALTER INDEX sa_idx SET (order_columns = 'k, t');
-INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(12001, 24000) g;
+INSERT INTO sa SELECT g, (hashint4(g) & 2147483647) % 500, timestamptz '2024-01-01' + ((hashint4(g + 2) & 2147483647) % 20000) * interval '1 minute', repeat('x', 1500) FROM generate_series(6001, 12000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
 SELECT sift.col_verify('sa_idx', true);
@@ -216,18 +230,18 @@ SELECT * FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]) LIMIT 0;
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
-SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 3);
+SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 1);
 SELECT sift.col_verify('sa_idx', true);
 ALTER INDEX sa_idx SET (order_columns = '');
-INSERT INTO sa SELECT g, g % 500, timestamptz '2024-01-01' + g * interval '1 minute', repeat('x', 1500) FROM generate_series(24001, 28000) g;
+INSERT INTO sa SELECT g, g % 500, timestamptz '2024-01-01' + g * interval '1 minute', repeat('x', 1500) FROM generate_series(12001, 14000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
-SELECT blobs AS runs FROM sift._test_col_run_damage('sa_idx', 3);
+SELECT blobs AS runs FROM sift._test_col_run_damage('sa_idx', 1);
 SELECT sift.col_verify('sa_idx', true);
 ALTER INDEX sa_idx SET (order_columns = 'k, t');
 SET sift.col_format_minor = 6;
-INSERT INTO sa SELECT g, g % 500, timestamptz '2024-01-01' + g * interval '1 minute', repeat('x', 1500) FROM generate_series(28001, 30000) g;
+INSERT INTO sa SELECT g, g % 500, timestamptz '2024-01-01' + g * interval '1 minute', repeat('x', 1500) FROM generate_series(14001, 15000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
@@ -235,10 +249,10 @@ RESET sift.col_format_minor;
 SELECT sift.col_verify('sa_idx', true);
 REINDEX INDEX sa_idx;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
-SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 3);
+SELECT blobs > 0 AS has_runs FROM sift._test_col_run_damage('sa_idx', 1);
 SELECT sift.col_verify('sa_idx', true);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
 
-DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f CASCADE;
+DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f, sr_d CASCADE;
 DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

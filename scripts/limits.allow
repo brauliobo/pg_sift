@@ -6,6 +6,7 @@ COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
 LOOKCACHE_MAX_BLOCKS	derived from the lookup cache budget (sift.agg_lookup_cache_kb)
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
+ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of key_cut_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
 PROBE_MAX_ENTRIES	size of the table of one planner probe: an internal bound with no visible effect
@@ -15,6 +16,7 @@ SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
 SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
 SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
 SIFT_CPOINT_MAX_KEYS	keys of one lookup that the point directory answers: a speed threshold, the answer is the same either way
+SIFT_CPOINT_MAX_RANGE	keys of one range that the point directory enumerates: a speed threshold, the zones answer a longer range the same way
 SIFT_CPOINT_MAX_ROWS	rows of one lookup that the point directory answers: a speed threshold, the answer is the same either way
 SIFT_FOLD_MAX_EXPAND	characters one character expands to in case folding: a property of the Unicode tables
 SIFT_MAX_EXTENTS	derived from the page layout (extents of a segment header)
@@ -41,3 +43,4 @@ SIFT_VK_MAX_UNITS	shader job layout of the opt-in Vulkan backend
 VK_MAX_MEMORY_HEAPS	constant of the Vulkan API
 VK_MAX_MEMORY_TYPES	constant of the Vulkan API
 VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API
+VSHM_MAX_SETS	the array of the shared verdict table, which sift.verdict_cache_kb (up to 1 MB) fills in part

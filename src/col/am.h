@@ -15,6 +15,8 @@
 #include "col/wbuf.h"
 
 /* The relcache entry's amcache: leaves, shredder, insert hint and a scratch context for aminsert */
+#define SIFT_COL_CUT_MAX 4
+
 typedef struct SiftColRel
 {
 	SiftColSchema *schema;
@@ -29,8 +31,18 @@ typedef struct SiftColRel
 	SiftCcPolicy *policy;		/* [ncols] compression policy of each leaf (the compression option) */
 	SiftCPaggSpec pagg;			/* the pre-aggregates of every unit the index writes (the preagg option, docs/COL-PREAGG.md) */
 	SiftCWbufHint hint;
+	int			cut[SIFT_COL_CUT_MAX];	/* the leaves of the option key_cut, most significant first; ncut 0: units are cut by superblock */
+	int			ncut;
+	uint32		cut_rows;		/* rows a key-cut unit aims at (the option key_cut_rows), 0: as many as an average superblock holds */
 	MemoryContext rowcxt;		/* reset after every aminsert */
 } SiftColRel;
+
+/* Are the units this index writes now cut by key? The option names the key, and sift.col_format_minor lets minor 17 be written (a lowered setting writes superblock units again, for a rollback) */
+static inline bool
+sift_col_key_cut(const SiftColRel *r)
+{
+	return r->ncut > 0 && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE;
+}
 
 /*
  * The on-demand refresh of the rollups (col/rollup.c): a scan asks for the segment gen of index to be rewritten with the rollups the index writes now.
@@ -42,9 +54,34 @@ extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
 extern void sift_col_report_caps(Relation index);
+extern void sift_col_report_key_cut(Relation index);
 /* The default of key_columns (col/keycols.c): before a build, the columns chosen and written to the option (true: the build keeps the choice and says so); after it, those that hold a key list or bitmap in half of the units, and a NOTICE */
 #define SIFT_COL_AUTO_KEEP_PCT	50		/* a column that holds no key list or bitmap in this share of the units, or more, is not kept; the cube answers a column it holds in as many */
 extern bool sift_col_auto_keys(Relation heap, Relation index);
+typedef enum SiftAutoCut
+{
+	SIFT_AUTOCUT_NONE,
+	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
+	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
+} SiftAutoCut;
+extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
+extern bool sift_col_options_key_cut_auto(Relation index);
+/* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build.c) */
+extern bool sift_col_volatile_name(const char *name);
+#define SIFT_COL_AUTO_ADD_PCT	40		/* a merge of every segment adds a key list to a column the cube holds in fewer of the units than this; the report drops one it holds in SIFT_COL_AUTO_KEEP_PCT or more, so a column that sits between is not added and dropped in turn */
+extern bool sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n);
+/* paths = 'auto' (col/keycols.c, col/suggest.c): before a build, the paths read from a sample of the jsonb documents and written to the option as 'auto: spec' */
+#define SIFT_COL_AUTO_PATHS_SAMPLE	2000
+extern void sift_col_auto_paths(Relation heap, Relation index);
+/* preagg = 'auto' or none (col/keycols.c): before a build of an index with more plain columns than the cube holds, the columns ranked by data and written to the option as 'auto: a, b' */
+extern void sift_col_auto_cube(Relation heap, Relation index);
+/* rollup_dims = 'auto' (col/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
+extern void sift_col_auto_rows(Relation heap, Relation index);
+extern void sift_col_set_option(Relation index, const char *name, const char *value);
+extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
+extern const char *sift_col_options_paths_raw(Relation index);
+extern bool sift_col_paths_auto(const char *opt);
+extern bool sift_col_paths_redecide(Relation index);
 extern void sift_col_auto_keys_report(Relation index);
 /* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
@@ -55,6 +92,7 @@ extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
+extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16) */
 #endif
 
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */
@@ -64,6 +102,9 @@ extern void sift_col_validate_rollup_dims(const char *value);
 extern void sift_col_validate_calendar_columns(const char *value);
 extern void sift_col_validate_key_columns(const char *value);
 extern void sift_col_validate_order_columns(const char *value);
+extern void sift_col_validate_order_array_columns(const char *value);
+extern void sift_col_validate_order_array_group(const char *value);
+extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);
@@ -89,6 +130,16 @@ extern SiftColRel *sift_col_rel(Relation index);
  * meanwhile may cause one) frees the one sift_col_rel returns, which stays only for what the caller reads before it does either.
  */
 extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
+
+/* Key-cut units */
+extern bool sift_col_index_keyed(Oid indexoid);
+extern uint32 sift_colk_unit_rows(uint32 aim);
+extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
+extern uint32 sift_colk_aim_rows(Relation index);
+extern uint64 sift_colk_heap_sbs(Relation index);
+extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
+extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
+							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with
@@ -139,6 +190,8 @@ extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, ui
 extern bool sift_enable_col_scan;
 extern double sift_plan_scale;
 extern void sift_col_scan_init(void);
+/* The bytes a row takes while the rows of a key-cut build, promotion or merge are held to be sorted (an estimate: a reference and a value of every leaf) */
+extern uint64 sift_colk_row_bytes(const SiftColSchema *schema);
 extern IndexScanDesc sift_col_ambeginscan(Relation index, int nkeys, int norderbys);
 extern void sift_col_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int norderbys);
 extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
@@ -183,6 +236,7 @@ extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;
 extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
+extern PGDLLIMPORT int sift_col_unit_floor;
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */

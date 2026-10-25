@@ -33,6 +33,7 @@ typedef struct SiftTblFetch
 {
 	IndexFetchTableData base;
 	SiftTblRel *st;
+	bool		fresh;			/* the tombstones were synced by the begin and no fetch followed yet */
 } SiftTblFetch;
 
 IndexFetchTableData *
@@ -45,6 +46,7 @@ sift_tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 	sift_tbl_auto_defrag_tick(rel, f->st);
 	sift_tbl_refresh(rel, f->st);
 	sift_tbl_tomb_sync(rel, f->st);
+	f->fresh = true;
 	return &f->base;
 }
 
@@ -59,9 +61,9 @@ sift_tbl_index_fetch_end(IndexFetchTableData *data)
 	pfree(data);
 }
 
-/* Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again */
+/* Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale */
 static bool
-fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead)
+fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync)
 {
 	SiftTblRowVer rv;
 	bool		dead;
@@ -69,8 +71,10 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	if (all_dead)
 		*all_dead = false;
 	PredicateLockRelation(rel, snapshot);
-	if (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF)
+	if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
 		sift_tbl_tomb_sync(rel, st);
+	if (sift_tbl_deleted_by_self(st, snapshot, sift_key_from_tid(tid)))
+		return false;
 	if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
 	{
 		if (all_dead)
@@ -98,8 +102,11 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 {
 	SiftTblFetch *f = (SiftTblFetch *) scan;
 
+	bool		sync = !f->fresh;
+
+	f->fresh = false;
 	*call_again = false;
-	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead);
+	return fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync);
 }
 
 typedef struct VblockTest
@@ -179,7 +186,7 @@ sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapsho
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
-	return fetch_visible(rel, st, tid, snapshot, slot, NULL);
+	return fetch_visible(rel, st, tid, snapshot, slot, NULL, true);
 }
 
 bool
@@ -235,16 +242,31 @@ sift_tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot s
 	return ok;
 }
 
-/* TIDs no snapshot will see any more: rows that are gone, or whose deleter is removable now */
+static int
+deltid_cmp(const void *a, const void *b)
+{
+	return ItemPointerCompare((ItemPointer) &((const TM_IndexDelete *) a)->tid, (ItemPointer) &((const TM_IndexDelete *) b)->tid);
+}
+
+/*
+ * TIDs no snapshot will see any more: those whose deleter is removable now, by the tombstone log (a TID is never reused, so the log of its
+ * key is the row's whole history), and in a simple deletion those whose row is gone, which VACUUM removed with its tombstone. A row is read
+ * for the second only: a bottom-up pass, which the index runs before it splits a page of versions that UPDATEs left behind, is answered by
+ * the log alone, where it read every row of the page (several hundred, each from another superblock of the column groups). The rows of a
+ * simple deletion are read in TID order, so that those of one superblock meet the fetch scan that caches it.
+ */
 TransactionId
 sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 	TransactionId horizon = InvalidTransactionId;
-	int			final = 0;
+	int			final = 0,
+				freed = 0;
 
 	sift_tbl_refresh(rel, st);
 	sift_tbl_tomb_sync(rel, st);
+	if (!delstate->bottomup)
+		qsort(delstate->deltids, delstate->ndeltids, sizeof(TM_IndexDelete), deltid_cmp);
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
 		TM_IndexDelete *d = &delstate->deltids[i];
@@ -252,22 +274,27 @@ sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 		SiftTblRowVer rv;
 		SiftTblDel del;
 
-		if (!sift_tbl_fetch_lazy(rel, st, &d->tid, &rv))
-			status->knowndeletable = true;
-		else
+		if (delstate->bottomup && freed >= delstate->bottomupfreespace)
+			break;
+		sift_tbl_del_state(st, sift_key_from_tid(&d->tid), &del);
+		if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && GlobalVisCheckRemovableXid(rel, del.xid))
 		{
-			sift_tbl_free_row(&rv);
-			sift_tbl_del_state(st, rv.key, &del);
-			if ((del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) &&
-				GlobalVisCheckRemovableXid(rel, del.xid))
-			{
+			status->knowndeletable = true;
+			if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
+				horizon = del.xid;
+		}
+		else if (!delstate->bottomup && del.state == SIFT_TBL_DEL_NONE)
+		{
+			if (!sift_tbl_fetch_lazy(rel, st, &d->tid, &rv))
 				status->knowndeletable = true;
-				if (!TransactionIdIsValid(horizon) || TransactionIdFollows(del.xid, horizon))
-					horizon = del.xid;
-			}
+			else
+				sift_tbl_free_row(&rv);
 		}
 		if (status->knowndeletable)
+		{
 			final = i + 1;
+			freed += status->freespace;
+		}
 	}
 	/* the array ends at its last deletable entry (none left: a bottom-up pass found nothing) */
 	delstate->ndeltids = final;

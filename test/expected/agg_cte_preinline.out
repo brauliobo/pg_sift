@@ -1,0 +1,76 @@
+-- A CTE that the query reads once is inlined before the statement is planned (agg/preinline.c), as PostgreSQL does at planning: the rows are the
+-- same, and a CTE PostgreSQL keeps (MATERIALIZED, volatile, writing, recursive, read twice) stays a CTE.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ev (id int PRIMARY KEY, grp int NOT NULL, v int NOT NULL);
+INSERT INTO ev SELECT g, g % 7, g % 13 FROM generate_series(1, 2000) g;
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, v);
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE log (id int);
+-- every case reads ev through a CTE that two aggregates share, next to the CTE under test
+CREATE TABLE cases (name text PRIMARY KEY, q text NOT NULL);
+INSERT INTO cases VALUES
+	('chain', $q$WITH s AS (SELECT grp, v FROM ev), a AS (SELECT grp, v FROM s WHERE v > 2), b AS (SELECT grp, sum(v) AS m FROM a GROUP BY grp), c AS (SELECT * FROM b WHERE m > 0)
+	             SELECT c.grp, c.m, (SELECT count(*) FROM s WHERE s.grp = c.grp) AS n, (SELECT sum(v) FROM s WHERE s.grp = c.grp) AS t FROM c ORDER BY 1$q$),
+	('sublink', $q$WITH s AS (SELECT grp, v FROM ev), t AS (SELECT grp FROM ev WHERE v < 3 GROUP BY grp HAVING count(*) > 1)
+	               SELECT grp, count(*), sum(v) FROM s WHERE grp IN (SELECT grp FROM t) GROUP BY grp UNION ALL SELECT -1, count(*), sum(v) FROM s ORDER BY 1$q$),
+	('lateral', $q$WITH s AS (SELECT grp, v FROM ev), t AS (SELECT grp, max(v) AS top FROM ev GROUP BY grp)
+	               SELECT t.grp, x.n, y.m FROM t, LATERAL (SELECT count(*) AS n FROM s WHERE s.grp = t.grp AND s.v <= t.top) x, LATERAL (SELECT sum(v) AS m FROM s WHERE s.grp = t.grp) y ORDER BY 1$q$),
+	('nested with', $q$WITH s AS (SELECT grp, v FROM ev) SELECT sub.grp, sub.n, (SELECT sum(v) FROM s) AS total
+	               FROM (WITH one AS (SELECT grp, v FROM s WHERE v = 1) SELECT grp, count(*) AS n FROM one GROUP BY grp) sub, (SELECT count(*) FROM s) q ORDER BY 1$q$),
+	('materialized', $q$WITH s AS (SELECT grp, v FROM ev), m AS MATERIALIZED (SELECT grp, count(*) AS n FROM ev GROUP BY grp)
+	               SELECT m.grp, m.n, (SELECT sum(v) FROM s WHERE s.grp = m.grp) FROM m ORDER BY 1$q$),
+	('volatile', $q$WITH s AS (SELECT grp, v FROM ev), r AS (SELECT grp, v, random() < 2 AS keep FROM ev WHERE id < 50)
+	               SELECT grp, count(*), (SELECT sum(v) FROM s WHERE s.grp = r.grp) FROM r WHERE keep GROUP BY grp ORDER BY 1$q$),
+	('writing', $q$WITH s AS (SELECT grp, v FROM ev), w AS (INSERT INTO log SELECT id FROM ev WHERE id < 5 RETURNING id)
+	               SELECT (SELECT count(*) FROM w) AS written, (SELECT count(*) FROM s) AS n, (SELECT sum(v) FROM s) AS total$q$),
+	('recursive', $q$WITH RECURSIVE s AS (SELECT grp, v FROM ev), n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 5)
+	               SELECT i, (SELECT count(*) FROM s WHERE grp = i), (SELECT sum(v) FROM s WHERE grp = i) FROM n ORDER BY 1$q$);
+CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	IF (SELECT count(*) FROM r_off) < 1 THEN RAISE EXCEPTION 'no rows'; END IF;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN d;
+END $$;
+-- the CTEs of the plan: what PostgreSQL keeps as a CTE is there, what it inlines is not
+CREATE FUNCTION kept_ctes(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text[] := '{}';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '^\s*CTE ' THEN r := r || btrim(l); END IF;
+	END LOOP;
+	RETURN array_to_string(r, ', ');
+END $$;
+SELECT name, differences(q) AS differences FROM cases ORDER BY name;
+     name     | differences 
+--------------+-------------
+ chain        |           0
+ lateral      |           0
+ materialized |           0
+ nested with  |           0
+ recursive    |           0
+ sublink      |           0
+ volatile     |           0
+ writing      |           0
+(8 rows)
+
+SELECT name, kept_ctes(q) AS kept FROM cases WHERE name IN ('chain', 'sublink', 'lateral', 'materialized', 'volatile', 'recursive') ORDER BY name;
+     name     |     kept     
+--------------+--------------
+ chain        | CTE s
+ lateral      | CTE s
+ materialized | CTE m
+ recursive    | CTE s, CTE n
+ sublink      | CTE s
+ volatile     | CTE r
+(6 rows)
+
+DROP FUNCTION differences, kept_ctes;
+DROP TABLE cases, log, ev;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,231 @@
+-- key_cut with point_tid_columns: the units of a key-cut segment are not block ranges, so a heap address names no unit, and the
+-- point directories of such a segment list the rows of the segment instead. The access method's answers (an index scan, an index-only scan, a bitmap scan) are
+-- the heap's for an equality and an IN list on the key-cut column and on the others, through the write buffer, DML, VACUUM, a merge and a REINDEX, and
+-- sift.col_verify accepts the segments.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE kpt (id int, cust int, k int, s text, pad text DEFAULT repeat('x', 200));
+ALTER TABLE kpt ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kpt (id, cust, k, s)
+SELECT i, (i * 7919) % 97, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 31) % 9000 END, 's' || (i * 13) % 5000
+FROM generate_series(1, 40000) i;
+CREATE INDEX kpt_idx ON kpt USING sift_col (id, cust, k, s) WITH (key_cut = 'cust', point_tid_columns = 'id, cust, k, s');
+NOTICE:  sift_col index "kpt_idx": point_tid_columns lists the rows of the segment on a key-cut index
+DETAIL:  The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.
+VACUUM (ANALYZE) kpt;
+SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+ format 
+--------
+     17
+(1 row)
+
+SELECT sift.col_verify('kpt_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- the answer of the access method three ways against the heap's
+CREATE FUNCTION kp_run(w text, cols text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	IF mode = 'seq' THEN
+		SET LOCAL sift.enable_col_scan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+	ELSE
+		SET LOCAL sift.enable_col_scan = on; SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = off;
+		IF mode = 'index' THEN SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off; END IF;
+		IF mode = 'indexonly' THEN SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexscan = off; END IF;
+		IF mode = 'bitmap' THEN SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; END IF;
+	END IF;
+	SET LOCAL max_parallel_workers_per_gather = 0;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, '';'' ORDER BY x::text), '''') FROM (SELECT %s FROM kpt WHERE %s) x', cols, w) INTO r;
+	RESET sift.enable_col_scan; RESET sift.enable_agg; RESET enable_seqscan; RESET enable_indexscan; RESET enable_indexonlyscan; RESET enable_bitmapscan;
+	RETURN r;
+END $$;
+CREATE FUNCTION kp_check(step text) RETURNS TABLE (after_step text, shape text, result text) LANGUAGE plpgsql AS $$
+DECLARE q record; seq text; m text; bad text := '';
+BEGIN
+	FOR q IN SELECT * FROM (VALUES
+		('id = 777', 'id, cust'), ('id = 39999', 'id, cust'), ('id = 40001', 'id, cust'),
+		('id IN (5, 500, 5000, 15000, 25000, 35000)', 'id, cust'),
+		('cust = 42', 'id, cust'), ('cust IN (1, 42, 96)', 'id, cust'),
+		('k = 1234', 'id, k'), ('k IN (10, 20, 30, 40, 50)', 'id, k'), ('k IS NULL', 'id'),
+		('s = ''s4321''', 'id, s'), ('s IN (''s1'', ''s2'', ''s4999'')', 'id, s'),
+		('cust = 42 AND k > 4500', 'id, cust, k'), ('id = 777 AND cust = 777 * 7919 % 97', 'id, cust')) AS v(w, cols)
+	LOOP
+		seq := kp_run(q.w, q.cols, 'seq');
+		bad := '';
+		FOREACH m IN ARRAY ARRAY['index', 'indexonly', 'bitmap'] LOOP
+			IF kp_run(q.w, q.cols, m) IS DISTINCT FROM seq THEN bad := bad || ' ' || m; END IF;
+		END LOOP;
+		after_step := step; shape := q.w; result := CASE WHEN bad = '' THEN 'same' ELSE 'DIFFERENT:' || bad END;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT * FROM kp_check('built');
+ after_step |                   shape                   | result 
+------------+-------------------------------------------+--------
+ built      | id = 777                                  | same
+ built      | id = 39999                                | same
+ built      | id = 40001                                | same
+ built      | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ built      | cust = 42                                 | same
+ built      | cust IN (1, 42, 96)                       | same
+ built      | k = 1234                                  | same
+ built      | k IN (10, 20, 30, 40, 50)                 | same
+ built      | k IS NULL                                 | same
+ built      | s = 's4321'                               | same
+ built      | s IN ('s1', 's2', 's4999')                | same
+ built      | cust = 42 AND k > 4500                    | same
+ built      | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+INSERT INTO kpt (id, cust, k, s) SELECT 40000 + i, 42, i, 's' || i FROM generate_series(1, 50) i;
+SELECT * FROM kp_check('write buffer');
+  after_step  |                   shape                   | result 
+--------------+-------------------------------------------+--------
+ write buffer | id = 777                                  | same
+ write buffer | id = 39999                                | same
+ write buffer | id = 40001                                | same
+ write buffer | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ write buffer | cust = 42                                 | same
+ write buffer | cust IN (1, 42, 96)                       | same
+ write buffer | k = 1234                                  | same
+ write buffer | k IN (10, 20, 30, 40, 50)                 | same
+ write buffer | k IS NULL                                 | same
+ write buffer | s = 's4321'                               | same
+ write buffer | s IN ('s1', 's2', 's4999')                | same
+ write buffer | cust = 42 AND k > 4500                    | same
+ write buffer | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+SELECT sift.col_promote('kpt_idx') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT * FROM kp_check('promoted');
+ after_step |                   shape                   | result 
+------------+-------------------------------------------+--------
+ promoted   | id = 777                                  | same
+ promoted   | id = 39999                                | same
+ promoted   | id = 40001                                | same
+ promoted   | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ promoted   | cust = 42                                 | same
+ promoted   | cust IN (1, 42, 96)                       | same
+ promoted   | k = 1234                                  | same
+ promoted   | k IN (10, 20, 30, 40, 50)                 | same
+ promoted   | k IS NULL                                 | same
+ promoted   | s = 's4321'                               | same
+ promoted   | s IN ('s1', 's2', 's4999')                | same
+ promoted   | cust = 42 AND k > 4500                    | same
+ promoted   | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+DELETE FROM kpt WHERE id % 11 = 0;
+UPDATE kpt SET k = k + 1, cust = 42 WHERE id % 1009 = 0;
+SELECT * FROM kp_check('deleted and updated');
+     after_step      |                   shape                   | result 
+---------------------+-------------------------------------------+--------
+ deleted and updated | id = 777                                  | same
+ deleted and updated | id = 39999                                | same
+ deleted and updated | id = 40001                                | same
+ deleted and updated | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ deleted and updated | cust = 42                                 | same
+ deleted and updated | cust IN (1, 42, 96)                       | same
+ deleted and updated | k = 1234                                  | same
+ deleted and updated | k IN (10, 20, 30, 40, 50)                 | same
+ deleted and updated | k IS NULL                                 | same
+ deleted and updated | s = 's4321'                               | same
+ deleted and updated | s IN ('s1', 's2', 's4999')                | same
+ deleted and updated | cust = 42 AND k > 4500                    | same
+ deleted and updated | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+VACUUM kpt;
+SELECT * FROM kp_check('vacuumed');
+ after_step |                   shape                   | result 
+------------+-------------------------------------------+--------
+ vacuumed   | id = 777                                  | same
+ vacuumed   | id = 39999                                | same
+ vacuumed   | id = 40001                                | same
+ vacuumed   | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ vacuumed   | cust = 42                                 | same
+ vacuumed   | cust IN (1, 42, 96)                       | same
+ vacuumed   | k = 1234                                  | same
+ vacuumed   | k IN (10, 20, 30, 40, 50)                 | same
+ vacuumed   | k IS NULL                                 | same
+ vacuumed   | s = 's4321'                               | same
+ vacuumed   | s IN ('s1', 's2', 's4999')                | same
+ vacuumed   | cust = 42 AND k > 4500                    | same
+ vacuumed   | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+SELECT sift.col_merge('kpt_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT * FROM kp_check('merged');
+ after_step |                   shape                   | result 
+------------+-------------------------------------------+--------
+ merged     | id = 777                                  | same
+ merged     | id = 39999                                | same
+ merged     | id = 40001                                | same
+ merged     | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ merged     | cust = 42                                 | same
+ merged     | cust IN (1, 42, 96)                       | same
+ merged     | k = 1234                                  | same
+ merged     | k IN (10, 20, 30, 40, 50)                 | same
+ merged     | k IS NULL                                 | same
+ merged     | s = 's4321'                               | same
+ merged     | s IN ('s1', 's2', 's4999')                | same
+ merged     | cust = 42 AND k > 4500                    | same
+ merged     | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+SELECT sift.col_verify('kpt_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+REINDEX INDEX kpt_idx;
+NOTICE:  sift_col index "kpt_idx": point_tid_columns lists the rows of the segment on a key-cut index
+DETAIL:  The units of a key-cut segment are not block ranges, so a heap address does not name its unit: a lookup reads the unit of each row, as with point_columns.
+SELECT * FROM kp_check('reindexed');
+ after_step |                   shape                   | result 
+------------+-------------------------------------------+--------
+ reindexed  | id = 777                                  | same
+ reindexed  | id = 39999                                | same
+ reindexed  | id = 40001                                | same
+ reindexed  | id IN (5, 500, 5000, 15000, 25000, 35000) | same
+ reindexed  | cust = 42                                 | same
+ reindexed  | cust IN (1, 42, 96)                       | same
+ reindexed  | k = 1234                                  | same
+ reindexed  | k IN (10, 20, 30, 40, 50)                 | same
+ reindexed  | k IS NULL                                 | same
+ reindexed  | s = 's4321'                               | same
+ reindexed  | s IN ('s1', 's2', 's4999')                | same
+ reindexed  | cust = 42 AND k > 4500                    | same
+ reindexed  | id = 777 AND cust = 777 * 7919 % 97       | same
+(13 rows)
+
+SELECT sift.col_verify('kpt_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
+ format 
+--------
+     17
+(1 row)
+
+DROP FUNCTION kp_run(text, text, text), kp_check(text);
+DROP TABLE kpt;
+DROP EXTENSION pg_sift;

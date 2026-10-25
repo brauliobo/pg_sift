@@ -1,5 +1,5 @@
 -- Churn simulator for sift_col indexes (bench/churn/churn.sh): synthetic events, deterministic hash-selected DML, and the state of an index
--- after every cycle: segments, dead rows, dirty units, pre-aggregate coverage, zone-map tightness, the latency of three query shapes.
+-- after every cycle: segments, dead rows, dirty units, pre-aggregate coverage, zone-map tightness, the latency of five query shapes.
 create schema if not exists churn;
 
 create table if not exists churn.state (
@@ -24,6 +24,8 @@ create or replace function churn.qdef(p_q text, p_tbl text) returns text languag
 		when 'rollup' then format('select kind, count(*), sum(amount) from %I group by kind', p_tbl)
 		when 'window' then format('select kind, count(*), sum(amount) from %I where ts >= timestamptz ''2026-01-01'' + interval ''90 days'' * %s group by kind', p_tbl, 0.97)
 		when 'scan'   then format('select kind, count(*), sum((payload->>''m'')::float8) from %I group by kind', p_tbl)
+		when 'lookup' then format('select count(*), sum(amount) from %I where key = 4242', p_tbl)
+		when 'topn'   then format('select ts, key from %I order by ts desc limit 20', p_tbl)
 	end $$;
 
 -- one query: median of 3 execution times, the counters of the last run
@@ -69,7 +71,7 @@ begin
 		(select sum(extract(epoch from (max::timestamptz - min::timestamptz))) / nullif(extract(epoch from (max(max::timestamptz) - min(min::timestamptz))), 0)
 		   from sift.col_unit_agg(ix, 'ts'));
 	if not p_queries then return; end if;
-	for q in select unnest(array['rollup', 'window', 'scan']) loop
+	for q in select unnest(array['rollup', 'window', 'scan', 'lookup', 'topn']) loop
 		select * into r from churn.runq(churn.qdef(q, t));
 		insert into churn.qres values (p_scn, p_arm, p_cycle, p_stage, q, r.ms, r.units, r.pre, r.pruned, r.rows_scanned, r.vetted);
 	end loop;

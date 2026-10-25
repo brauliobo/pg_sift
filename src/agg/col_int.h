@@ -18,6 +18,8 @@
 
 #include "agg/kern.h"
 #include "agg/pre.h"
+#include "agg/zoneprune.h"
+#include "agg/chunkfilter.h"
 #include "agg/sel.h"
 #include "agg/wide.h"
 #include "core/popcount.h"
@@ -86,15 +88,10 @@ typedef struct ColSource
 	Relation	index;
 	Snapshot	snapshot;
 	SiftAggSel	sel;			/* the match set the units are restricted to */
-	int			nflt;			/* the filters set_filters accepted, as engine predicates */
-	SiftColPred *fpred;
+	SiftAggFilters flt;			/* the filters set_filters accepted */
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
-	const SiftSrcPrune *zfor;	/* the prune entries of the last begin, and the zone trees made of those that are junctions */
-	SiftColPrune *zone;
-	int			nzone;
-	SiftColPred *zpred;			/* the zone tests of the other prune entries, two each, kept while the entries are the same (zone_tests) */
-	int			nzpred;
+	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin */
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
 	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */

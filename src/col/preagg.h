@@ -39,18 +39,22 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_CAL_DAY			1			/* the grains of a cell, finest first: a day, a month, a year; the key of a cell is its first day, as days since 2000-01-01 (a date) */
 #define SIFT_CAL_MONTH			2
 #define SIFT_CAL_YEAR			3
-#define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
-#define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
+#define SIFT_PAGG_DEF_MEAS		8			/* measures of a default dim */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
 #define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
-#define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
-#define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
-#define SIFT_PAGG_CAL_PERMILLE	50			/* the calendar dims of a unit together may take this much of its bytes (at least twice the minimum budget) */
+#define SIFT_PAGG_DEF_PERMILLE	400			/* default: the dims of a unit's cube take at most this share of its encoded bytes, counted as built (on disk the index holds about a quarter of that for dims of few groups, more for many) */
+#define SIFT_PAGG_ROLLUP_PERMILLE	20			/* the rollups of one list of elements take at most this share of the unit's bytes */
+#define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
+#define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
+#define SIFT_PAGG_MIN_BUDGET	2048		/* a unit's rollups of a list always may take this many bytes */
+#define SIFT_PAGG_CUBE_MIN_BUDGET	8192		/* ... and its cube's dims (and calendar cells) this many, or the tail of a table would keep none under the share */
+#define SIFT_PAGG_CAL_PERMILLE	100		/* the calendar dims of a unit together may take this much of its bytes, counted as built (at least the cube's minimum budget) */
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
+#define SIFT_CAGG_LOOSE			0x4			/* a unit net of its dead rows (col/delta.c): min and max bound its live rows, they are not their minimum and maximum */
 
 typedef struct SiftCLeafAgg
 {
@@ -80,7 +84,6 @@ typedef struct SiftCPaggDim
 	uint8		nmeas;
 	bool		cal;					/* leaf is a date or timestamp leaf and the dim groups it by calendar cells: each unit stores the finest grain (SIFT_CAL_*) that fits, the key of a cell being its first day */
 	uint8		grain;					/* cal: 0, the writer chooses the grain; else exactly this grain (a stored dim, which the verify recomputes) */
-	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
 
@@ -108,6 +111,9 @@ typedef struct SiftCPaggSpec
 	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */
 	bool		pres[SIFT_COL_MAX_COLS];	/* the leaves of set that can keep every distinct key of a unit as a bitmap or a list (column format minor 15; col/setsum.h) */
 	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
+	bool		hll[SIFT_COL_MAX_COLS];	/* the leaves that keep a HyperLogLog sketch of their values in every unit (option hll_columns, column format minor 20; col/hll.h) */
+	bool		gorder[SIFT_COL_MAX_COLS];	/* the leaves that get a global order block in the segment (column format minor 21; col/gorder.h) */
+	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
 	bool		point_tid[SIFT_COL_MAX_COLS];	/* ... and, of these or others, those whose directory lists heap addresses (option point_tid_columns, column format minor 16) */
 	int			ndims;
@@ -142,10 +148,12 @@ extern int64 sift_cpagg_cal_next(int grain, int64 day);
 extern bool sift_cpagg_cal_key_ok(int type, int grain, int64 key);
 /* Is leaf c a date, timestamp or timestamptz leaf of the top level that has calendar cells? */
 extern bool sift_cpagg_cal_type(const SiftColSchema *s, int c);
+/* the date, timestamp and timestamptz columns that get calendar cells (a plain dimension gives way for each of them in a default cube of more than 16 columns) */
+extern int	sift_cpagg_cal_count(const SiftColSchema *s);
 /* The date, timestamp and timestamptz leaves of the top level with no calendar dim in spec, in leaf order, at most max of them in out; returns how many there are */
 extern int	sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max);
 
-/* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
+/* 'default': every top level dim candidate with up to SIFT_PAGG_DEF_MEAS measures (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
 /*
  * The option: "" / "default", "off", or "cube(dim: m1, m2; dim2: m3; dim3)" for the top level and "rollup(d1, d2: m1, m2; ...)" for lists (one entry per list,
@@ -185,6 +193,19 @@ typedef struct SiftCPaggCol
 	uint32		n;
 	bool		ready;					/* key is usable: false for a STR leaf stored inline and for a leaf that was not decoded */
 } SiftCPaggCol;
+
+/*
+ * The spec that builds, over other rows of a unit, the dims and rollups the unit's cube blob and element blob hold (same leaves, measures and calendar grains, no
+ * byte budget, no minimum and maximum): the exceptions of a unit (docs/COL-PREAGG.md 11). false when a blob does not decode.
+ */
+extern bool sift_cpagg_mirror(const SiftColSchema *s, const SiftCPaggSpec *spec, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, SiftCPaggSpec *out);
+
+/*
+ * The exceptions of a unit (docs/COL-PREAGG.md 11): the cube and element rollups of the rows where its one NULL-heavy INT leaf is not NULL, with the dims of the unit's
+ * own blobs; appended (leaf first) to xcube and xecube. eoff[c]: the element offsets of a leaf of a list, NULL for the others. false: the unit has none.
+ */
+extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+							   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube);
 
 /* The exact sums of one INT leaf's values */
 extern void sift_cpagg_leaf(const SiftCPaggCol *c, SiftCLeafAgg *a);
@@ -349,6 +370,10 @@ typedef struct SiftCPaggCensus
 extern void sift_cpagg_census(const SiftColSchema *s, const SiftCPaggSpec *spec, bool minmax, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen,
 							  SiftCPaggCensus *c);
 /* The leaves a stored cube and element blob read (lists, dims and measures), marked true in need[ncols]; false when they do not decode */
+extern bool sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, const uint8 *blob, uint32 len,
+									 const uint8 *eblob, uint32 elen, int format, const uint8 *xblob, uint32 xlen, const uint8 *xeblob, uint32 xelen);
 extern bool sift_cpagg_leaves(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblob, uint32 elen, bool *need);
+/* The cells of a calendar grain of the n rows of a date or timestamp leaf (the dead rows of a unit, col/delta.c); false for an infinity or a day no cell can start on */
+extern bool sift_cpagg_cal_rows(const SiftColSchema *s, int leaf, int grain, const SiftCPaggCol *c, int64 *cells);
 
 #endif							/* SIFT_COL_PREAGG_H */

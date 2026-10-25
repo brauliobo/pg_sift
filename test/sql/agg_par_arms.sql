@@ -124,17 +124,24 @@ INSERT INTO p_q (q, par) VALUES
 	    SELECT mk, sum(s) AS total, count(*) AS n, count(DISTINCT id) AS ids
 	    FROM (SELECT id, parent_id, mk, sum(n) AS s FROM base GROUP BY id, parent_id, mk
 	          UNION ALL
-	          SELECT id, parent_id, NULL::text, sum(n) FROM base GROUP BY id, parent_id) q GROUP BY mk$q$, false),
-	-- the arms joined to a spine of buckets: the spine is the leader's plan and its unmatched rows are the end of the scan
+	          SELECT id, parent_id, NULL::text, sum(n) FROM base GROUP BY id, parent_id) q GROUP BY mk$q$, true),
+	-- the arms joined to a spine of buckets: the leader runs its plan once and the workers read the rows from the shared memory; its unmatched rows are the end of the scan
 	($q$WITH base AS (SELECT t.id, t.region, p.k, p.n FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, n int)),
 	         sp(region, label) AS (VALUES ('r1', 'one'), ('r2', 'two'), ('r2', 'deux'), ('r9', 'none'))
 	    SELECT sp.label, m.k, sum(m.s) AS total, count(*) AS cells, count(DISTINCT m.id) AS ids
 	    FROM sp LEFT JOIN (SELECT id, region, k, sum(n) AS s FROM base GROUP BY id, region, k
 	                       UNION ALL
-	                       SELECT id, region, NULL::text, sum(n) FROM base GROUP BY id, region) m ON m.region = sp.region GROUP BY sp.label, m.k$q$, false),
+	                       SELECT id, region, NULL::text, sum(n) FROM base GROUP BY id, region) m ON m.region = sp.region GROUP BY sp.label, m.k$q$, true),
 	-- floats as they are
 	(report('sum(fs) AS fsum, avg(fa) AS favg, count(*) AS n'), true),
-	(report('sum(fs) AS fsum, avg(fa) AS favg, count(DISTINCT parent_id) AS parents', 'parent_id, tag', '', 'HAVING count(*) > 1'), true);
+	(report('sum(fs) AS fsum, avg(fa) AS favg, count(DISTINCT parent_id) AS parents', 'parent_id, tag', '', 'HAVING count(*) > 1'), true),
+	-- a spine and float sums: a worker scans several lanes, and the spine's values get ids in the tables of each
+	($q$WITH base AS (SELECT t.id, t.region, p.k, p.x FROM items t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') AS p(k text, x float8)),
+	         sp(region, label) AS (VALUES ('r1', 'one'), ('r2', 'two'), ('r2', 'deux'), ('r9', 'none'))
+	    SELECT sp.label, m.k, round(sum(m.s)::numeric, 3) AS total, round(avg(m.s)::numeric, 4) AS mean, count(*) AS cells
+	    FROM sp LEFT JOIN (SELECT id, region, k, sum(x) AS s FROM base GROUP BY id, region, k
+	                       UNION ALL
+	                       SELECT id, region, NULL::text, sum(x) FROM base GROUP BY id, region) m ON m.region = sp.region GROUP BY sp.label, m.k$q$, true);
 UPDATE p_q SET raw = true WHERE n IN (SELECT n FROM p_q WHERE q LIKE '%sum(fs) AS fsum, avg(fa)%');
 
 CREATE FUNCTION p_compare(pick int[] DEFAULT NULL, OUT n int, OUT mode text, OUT par_same bool, OUT off_same text) RETURNS SETOF record LANGUAGE plpgsql AS $$
@@ -156,7 +163,7 @@ SELECT n, mode, par_same, off_same FROM p_compare();
 
 -- the leader does not scan: the tables of the workers are the whole answer
 SET parallel_leader_participation = off;
-SELECT n, mode, par_same, off_same FROM p_compare(ARRAY[1, 4, 11, 14, 16, 18]);
+SELECT n, mode, par_same, off_same FROM p_compare(ARRAY[1, 4, 11, 14, 16, 18, 19]);
 RESET parallel_leader_participation;
 
 -- the workers scanned

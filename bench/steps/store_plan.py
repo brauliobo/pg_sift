@@ -1,4 +1,4 @@
-"""The store benchmark's passes: the plan of a pass, the cache of the cells, merging and comparing part files (steps/store.py plan, merge, noisy, patch, stable)."""
+"""The orders benchmark's passes: the plan of a pass, the cache of the cells, merging and comparing part files (steps/store.py plan, merge, noisy, patch, stable)."""
 import benchlib
 import json
 import os

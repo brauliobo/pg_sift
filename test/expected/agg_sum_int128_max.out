@@ -1,0 +1,103 @@
+-- The integer a sum keeps is any 128-bit value. 2^127 - 1 (170141183460469231731687303715884105727) is also the value of a NaN in the numeric
+-- programs (at most 38 digits, which never reach it), and a sum that came to exactly that integer was returned as NaN. Each shape is a sum
+-- (and average) that ends at, or passes, 2^127 - 1, compared as text with the normal plan.
+CREATE EXTENSION pg_sift;
+CREATE TABLE big (id int, g int, n0 numeric(38,0), n10 numeric(38,10), w numeric, a numeric(19,0), b numeric(19,0), c numeric(24,0), d numeric(24,0));
+-- numeric(38,0): two values that add up to 2^127 - 1, the same negated, three values that pass it, a control
+INSERT INTO big (id, g, n0) VALUES
+	(1, 1, 99999999999999999999999999999999999999), (2, 1, 70141183460469231731687303715884105728),
+	(3, 2, -99999999999999999999999999999999999999), (4, 2, -70141183460469231731687303715884105728),
+	(5, 3, 99999999999999999999999999999999999999), (6, 3, 70141183460469231731687303715884105728), (7, 3, 1),
+	(8, 4, 5);
+-- numeric(38,10): the same integers at scale 10
+INSERT INTO big (id, g, n10) VALUES
+	(11, 11, 9999999999999999999999999999.9999999999), (12, 11, 7014118346046923173168730371.5884105728),
+	(13, 12, 7014118346046923173168730371.5884105727), (14, 12, 9999999999999999999999999999.9999999999);
+-- numeric without a precision (a dictionary leaf): the value alone at scale 0 and 38, a pair that adds up to it, one that passes it
+INSERT INTO big (id, g, w) VALUES
+	(21, 21, 170141183460469231731687303715884105727),
+	(22, 22, 1), (23, 22, 170141183460469231731687303715884105726),
+	(24, 23, 1.70141183460469231731687303715884105727),
+	(25, 24, 170141183460469231731687303715884105727), (26, 24, 5),
+	(27, 25, -170141183460469231731687303715884105727), (28, 25, -5),
+	(29, 26, 3);
+-- products of two numeric(19,0), and of two numeric(24,0) (48 digits: a scan that adds products wider than 38 digits), that add up to 2^127 - 1
+WITH t AS (SELECT power(2::numeric, 127) - 1 AS top, 9999999999999999999::numeric AS p),
+	 u AS (SELECT p, floor((top - p * p) / p) AS q, top - p * p - floor((top - p * p) / p) * p AS r FROM t)
+INSERT INTO big (id, g, a, b) SELECT 31, 31, p, p FROM u UNION ALL SELECT 32, 31, q, p FROM u UNION ALL SELECT 33, 31, r, 1 FROM u
+	UNION ALL SELECT 34, 32, 3, 2;
+WITH t AS (SELECT power(2::numeric, 127) - 1 AS top, 999999999999999999999999::numeric AS p)
+INSERT INTO big (id, g, c, d) SELECT 41, 41, floor(top / p), p FROM t UNION ALL SELECT 42, 41, top - floor(top / p) * p, 1 FROM t
+	UNION ALL SELECT 43, 42, 3, 2;
+CREATE INDEX big_col ON big USING sift_col (id, g, n0, n10, w, a, b, c, d);
+VACUUM (FREEZE, ANALYZE) big;
+CREATE FUNCTION same_rows(q text, workers int) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE format('SET LOCAL max_parallel_workers_per_gather = %s', workers);
+	SET LOCAL parallel_setup_cost = 0;
+	SET LOCAL parallel_tuple_cost = 0;
+	SET LOCAL min_parallel_table_scan_size = 0;
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO j;
+	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
+	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS SELECT row_to_json(r)::text AS t FROM (%s) r', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS SELECT row_to_json(r)::text AS t FROM (%s) r', q);
+	rows_pushed := (SELECT count(*) FROM on_rows);
+	differences := (SELECT count(*) FROM ((TABLE on_rows EXCEPT TABLE off_rows) UNION ALL (TABLE off_rows EXCEPT TABLE on_rows)) d);
+	DROP TABLE on_rows, off_rows;
+	RETURN NEXT;
+END $$;
+SELECT s.expr, w.workers, r.*
+FROM (VALUES ('n0', 'g < 10'), ('n10', 'g BETWEEN 11 AND 19'), ('w', 'g BETWEEN 21 AND 29'), ('a * b', 'g IN (31, 32)'), ('c * d', 'g IN (41, 42)')) s(expr, rng),
+	 (VALUES (0), (2)) w(workers),
+	 LATERAL same_rows(format('SELECT g, sum(%1$s) AS s, avg(%1$s) AS a, count(%1$s) AS n FROM big WHERE %2$s GROUP BY g ORDER BY g', s.expr, s.rng), w.workers) r
+ORDER BY 1, 2;
+ expr  | workers |  scan   | rows_pushed | differences 
+-------+---------+---------+-------------+-------------
+ a * b |       0 | SiftAgg |           2 |           0
+ a * b |       2 | SiftAgg |           2 |           0
+ c * d |       0 | SiftAgg |           2 |           0
+ c * d |       2 | SiftAgg |           2 |           0
+ n0    |       0 | SiftAgg |           4 |           0
+ n0    |       2 | SiftAgg |           4 |           0
+ n10   |       0 | SiftAgg |           2 |           0
+ n10   |       2 | SiftAgg |           2 |           0
+ w     |       0 | SiftAgg |           6 |           0
+ w     |       2 | SiftAgg |           6 |           0
+(10 rows)
+
+-- and the figures themselves, not only the agreement with the normal plan
+SET sift.agg_force = on;
+SELECT g, sum(n0) AS sum_n0, avg(n0) AS avg_n0 FROM big WHERE g = 1 GROUP BY g;
+ g |                 sum_n0                  |                 avg_n0                 
+---+-----------------------------------------+----------------------------------------
+ 1 | 170141183460469231731687303715884105727 | 85070591730234615865843651857942052864
+(1 row)
+
+SELECT g, sum(w) AS sum_w FROM big WHERE g IN (21, 22, 23) GROUP BY g ORDER BY g;
+ g  |                  sum_w                   
+----+------------------------------------------
+ 21 |  170141183460469231731687303715884105727
+ 22 |  170141183460469231731687303715884105727
+ 23 | 1.70141183460469231731687303715884105727
+(3 rows)
+
+SELECT g, sum(a * b) AS sum_ab FROM big WHERE g = 31 GROUP BY g;
+ g  |                 sum_ab                  
+----+-----------------------------------------
+ 31 | 170141183460469231731687303715884105727
+(1 row)
+
+SELECT g, sum(c * d) AS sum_cd FROM big WHERE g = 41 GROUP BY g;
+ g  |                 sum_cd                  
+----+-----------------------------------------
+ 41 | 170141183460469231731687303715884105727
+(1 row)
+
+DROP FUNCTION same_rows(text, int);
+DROP TABLE big;
+DROP EXTENSION pg_sift;

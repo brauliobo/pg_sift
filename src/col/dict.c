@@ -500,6 +500,67 @@ sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 blocks, Strin
 		pfree(z.data);
 }
 
+/* The plain form read straight into the arrays of the dictionary (sift_cdict_plain_*): the offsets first, then the bytes they end at, then the checks cdict_from makes */
+SiftCDict *
+sift_cdict_plain_begin(MemoryContext mcxt, uint32 n)
+{
+	SiftCDict  *d = sift_cdict_create(mcxt);
+
+	pfree(d->off);
+	d->n = n;
+	d->cap = Max(n, DICT_MINCAP);
+	d->off = MemoryContextAlloc(mcxt, ((Size) d->cap + 1) * sizeof(uint32));
+	return d;
+}
+
+bool
+sift_cdict_plain_bytes(SiftCDict *d, MemoryContext mcxt, uint64 room)
+{
+	if (d->off[0] != 0 || d->off[d->n] > room)
+		return false;
+	d->nbytes = d->off[d->n];
+	d->bytescap = Max(d->nbytes, 256);
+	pfree(d->bytes);
+	d->bytes = MemoryContextAlloc(mcxt, d->bytescap);
+	return true;
+}
+
+bool
+sift_cdict_plain_valid(const SiftCDict *d)
+{
+	for (uint32 c = 0; c < d->n; c++)
+		if (d->off[c + 1] < d->off[c] || d->off[c + 1] - d->off[c] > SIFT_COL_DICT_MAX_ENTRY)
+			return false;
+	return true;
+}
+
+/* A dictionary of n strings that takes the arrays off[n + 1] (room for Max(n, DICT_MINCAP) + 1) and bytes (room for Max(nbytes, 256)) allocated in mcxt */
+static SiftCDict *
+cdict_adopt(MemoryContext mcxt, uint32 n, uint32 *off, char *bytes, Size nbytes)
+{
+	SiftCDict  *d;
+
+	if (off[0] != 0)
+		return NULL;
+	d = sift_cdict_create(mcxt);
+	pfree(d->off);
+	pfree(d->bytes);
+	d->n = n;
+	d->cap = Max(n, DICT_MINCAP);
+	d->off = off;
+	d->nbytes = off[n];
+	d->bytescap = Max(nbytes, 256);
+	d->bytes = bytes;
+	if (d->nbytes != nbytes || !sift_cdict_plain_valid(d))
+	{
+		d->off = NULL;
+		d->bytes = NULL;
+		pfree(d);
+		return NULL;
+	}
+	return d;
+}
+
 /* A dictionary of n strings: off[n + 1] and bytes[off[n]] are copied */
 static SiftCDict *
 cdict_from(MemoryContext mcxt, uint32 n, const uint32 *off, const char *bytes)
@@ -564,8 +625,9 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 		pfree(boff);
 		return NULL;
 	}
-	off = palloc(((Size) n + 1) * sizeof(uint32));
-	bytes = palloc(Max(nbytes, 1));
+	/* the arrays are the dictionary's own (cdict_adopt), at the sizes a dictionary of its codes has, so that nothing is copied again */
+	off = MemoryContextAlloc(mcxt, ((Size) Max(n, DICT_MINCAP) + 1) * sizeof(uint32));
+	bytes = MemoryContextAlloc(mcxt, Max(nbytes, 256));
 	raw = palloc(DICT_BLOCK_RAW_MAX);
 	for (uint32 b = 0; b < nblk && ok; b++)
 	{
@@ -624,14 +686,16 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	if (ok && pos == nbytes)
 	{
 		off[n] = pos;
-		d = cdict_from(mcxt, n, off, bytes);
+		d = cdict_adopt(mcxt, n, off, bytes, nbytes);
 	}
 	pfree(boff);
-	pfree(off);
-	pfree(bytes);
 	pfree(raw);
 	if (d == NULL)
+	{
+		pfree(off);
+		pfree(bytes);
 		return NULL;
+	}
 	d->blocked = true;
 	if (form == DICT_BLOCKS)
 	{
@@ -703,4 +767,6 @@ sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view)
 	view->id = id;
 	view->order = cdict_order;
 	view->octx = d;
+	view->get = NULL;
+	view->gctx = NULL;
 }

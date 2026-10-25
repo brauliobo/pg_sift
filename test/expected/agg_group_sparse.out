@@ -46,6 +46,19 @@ SELECT * FROM same_rows('SELECT ts, wk, dow, quarter, wk + 1 AS w1, dow + 1 AS d
  SiftAgg |          90 |           0
 (1 row)
 
+-- a key whose room doubles and no other key changes (one key of 40,000 groups, a key of few values before it): the groups keep their numbers
+SELECT * FROM same_rows('SELECT id, count(*) AS n, sum(amount) AS s FROM sp_facts GROUP BY id');
+  scan   | rows_pushed | differences 
+---------+-------------+-------------
+ SiftAgg |       40000 |           0
+(1 row)
+
+SELECT * FROM same_rows('SELECT dow, id, count(*) AS n, sum(amount) AS s, count(DISTINCT parent_id) AS p FROM sp_facts GROUP BY dow, id');
+  scan   | rows_pushed | differences 
+---------+-------------+-------------
+ SiftAgg |       40000 |           0
+(1 row)
+
 DROP FUNCTION same_rows(text);
 DROP TABLE sp_facts;
 DROP EXTENSION pg_sift;

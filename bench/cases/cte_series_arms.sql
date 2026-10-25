@@ -1,5 +1,5 @@
 -- three UNION ALL arms over the elements of a jsonb array, counted DISTINCT above a spine: the shared common table expression or the inline scans
--- the first statement of a backend that has not loaded the library (it needs no shared_preload_libraries) is planned without the scan; the plan of the timed runs is the one asserted
+-- the plan of the timed runs is the one asserted; a first statement of a backend planned another way is named in the note
 -- label: three `UNION ALL` arms over `jsonb_to_recordset(doc -> 'parts')` with a mapping lookup, `count(DISTINCT id)` above a series, `lag()` over the groups
 -- ordered: yes
 --@ setup

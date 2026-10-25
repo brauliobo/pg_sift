@@ -102,23 +102,41 @@ sift_aggspec_zone_cmp(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
 	return lf->parent < 0 && !lf->lossy && (num || (sift_aggspec_integer_type(p->argtype) && sift_aggspec_integer_type(lf->typid)));
 }
 
+bool
+sift_aggspec_span_pred(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	if (p->kind != SAP_AND && p->kind != SAP_OR)
+		return sift_aggspec_zone_cmp(p, lay, nbase);
+	for (int i = 0; i < p->nchild; i++)
+		if (!sift_aggspec_span_pred(p->child[i], lay, nbase))
+			return false;
+	return true;
+}
+
+/* x IS [NOT] NULL on a scalar leaf of the rows: the NULL count of a unit's zone refuses the unit (no NULL, or only NULLs) or holds the test for all its rows */
+bool
+sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+{
+	return p->kind == SAP_NULL && p->op <= 1 && p->level == 0 && !p->late && p->leaf < nbase && lay->leaf[p->leaf].parent < 0 && lay->leaf[p->leaf].kind == SCL_SCALAR;
+}
+
 /* the conjuncts a unit's zone can refuse */
 static List *
-zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase)
+zone_cmps(List *out, const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, bool nulls)
 {
 	if (p->kind == SAP_AND)
 		for (int i = 0; i < p->nchild; i++)
-			out = zone_cmps(out, p->child[i], lay, nbase);
-	return sift_aggspec_zone_cmp(p, lay, nbase) ? lappend(out, (void *) p) : out;
+			out = zone_cmps(out, p->child[i], lay, nbase, nulls);
+	return (nulls ? sift_aggspec_null_zone(p, lay, nbase) : sift_aggspec_zone_cmp(p, lay, nbase)) ? lappend(out, (void *) p) : out;
 }
 
 List *
-sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase)
+sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, bool nulls)
 {
 	List	   *out = NIL;
 
 	for (int i = 0; i < s->npred; i++)
-		out = zone_cmps(out, s->pred[i], lay, nbase);
+		out = zone_cmps(out, s->pred[i], lay, nbase, nulls);
 	return out;
 }
 
@@ -316,7 +334,7 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 static bool
 plain_key(const SiftAggKey *k)
 {
-	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO;
+	return k->kind == SAK_LEAF || k->kind == SAK_LUT || k->kind == SAK_NUM || k->kind == SAK_SET || k->kind == SAK_COMBO || k->kind == SAK_SPINE;
 }
 
 static bool
@@ -338,6 +356,8 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_SUM_NUM:
 		case SAA_AVG_NUM:
 		case SAA_COUNT_DISTINCT:
+		case SAA_M_COUNT:
+		case SAA_M_DISTINCT:
 			return true;
 		/* the outer aggregates of the arms: a row is in one item, so the cells it makes and the groups they reach add up */
 		case SAA_O_COUNT_STAR:
@@ -350,6 +370,12 @@ plain_agg(const SiftAggAgg *a)
 		case SAA_MIN:
 		case SAA_MAX:
 			return true;
+		/* the aggregates of the columns of a nullable input (a preserved join): counts and float sums add up (the lanes keep the order of the sums) */
+		case SAA_X_COUNT:
+			return true;
+		case SAA_X_SUM:
+		case SAA_X_AVG:
+			return a->restype == FLOAT8OID || a->restype == NUMERICOID;
 		case SAA_GEN:
 			return a->gen->parallel;
 		default:
@@ -361,14 +387,15 @@ plain_agg(const SiftAggAgg *a)
 bool
 sift_aggspec_spillable(const SiftAggSpec *s)
 {
-	if (s->topn || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+	/* an ordered scan holds its groups to the end: the partitions of a spilled scan come one after the other */
+	if (s->topn || s->nord > 0 || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (s->key[j].kind == SAK_SET)
 			return false;
 	/* the values of an ordered-set aggregate are one sort for all the groups, which a blob of some of them cannot take */
 	for (int i = 0; i < s->naggs; i++)
-		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN)
+		if (is_ordered_agg(&s->agg[i]) || s->agg[i].kind == SAA_GEN || s->agg[i].kind == SAA_M_DISTINCT)
 			return false;
 	return true;
 }
@@ -420,20 +447,9 @@ const char *
 sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 {
 	*agg = -1;
-	/* the rows of the spine are those of a plan the leader runs, and the rows no cell joined are a group of the end of the scan */
-	if (s->spine)
-		return "the rows of a spine are those of a plan the leader runs";
-	/*
-	 * a worker has no child plan to run: the rows of a joined sub-select, VALUES list or function are the leader's, who shares them; a child plan
-	 * run per combination of leaves (params) is not, unless the leader reads it as a table of the unique key it takes the first row of
-	 * (join_first_rows; a leader that cannot runs the scan alone)
-	 */
+	/* the rows nothing matched are known when every participant told which it matched (hit); the cells of arms are flushed by the one that read the row */
 	for (int i = 0; i < s->njoin; i++)
-		if (s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use))
-			return "a joined child plan runs per combination of values";
-	/* the rows nothing matched are known when every row of the table was seen: by one scan */
-	for (int i = 0; i < s->njoin; i++)
-		if (sift_aggjoin_preserves(s->join[i].kind))
+		if (sift_aggjoin_preserves(s->join[i].kind) && s->narms > 0)
 			return "an outer join keeps the rows nothing matched";
 	for (int j = 0; j < s->nkeys; j++)
 		if (!plain_key(&s->key[j]))
@@ -454,6 +470,16 @@ sift_aggspec_serial_reason(const SiftAggSpec *s, int *agg)
 					return "a float sum is merged in lane order, a generic state as the workers finish";
 				}
 	return NULL;
+}
+
+bool
+sift_aggspec_workers_only(const SiftAggSpec *s)
+{
+	bool		only = s->spine;
+
+	for (int i = 0; i < s->njoin; i++)
+		only |= s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use);
+	return only;
 }
 
 bool

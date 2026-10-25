@@ -221,11 +221,24 @@ pgbench_bg() {
 }
 
 # crash_cycle NAME LABEL MAXSLEEP CLIENTS ARGS...: pgbench (600 s at most) under CLIENTS clients, killed with the cluster after a random delay
-# of up to MAXSLEEP seconds, then the restart; false (not ok LABEL, the log) when the node does not come back
+# of up to MAXSLEEP seconds, then the restart; false (not ok LABEL, the log) when the node does not come back. The delay counts from the first
+# work of the clients when CRASH_READY names a query that returns t once they have done some (pgbench connects its clients before it runs
+# anything, which on a busy host outlasts the delay and kills a cluster that has done nothing): false, with the log of pgbench, when that
+# does not happen within 120 s
 crash_cycle() {
-	local name=$1 label=$2 max=$3 clients=$4
+	local name=$1 label=$2 max=$3 clients=$4 w ready=
 	shift 4
 	pgbench_bg "$name" "$clients" 600 "$@"
+	if [[ -n ${CRASH_READY:-} ]]; then
+		for w in $(seq 240); do [[ $(sql "$name" "$CRASH_READY" 2>/dev/null) == t ]] && { ready=1; break; }; sleep 0.5; done
+		if [[ -z $ready ]]; then
+			crash "$name"
+			wait "$PGBENCH_PID"
+			not_ok "$label: the clients did no work within 120 s"
+			diag "$(tail -5 "$(dir "$name")/pgbench.log")"
+			return 1
+		fi
+	fi
 	sleep "$((RANDOM % max)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
 	crash "$name"
 	wait "$PGBENCH_PID"

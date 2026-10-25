@@ -4,8 +4,10 @@
 
 #include "core/host.h"
 
+#include "col/gorder.h"
 #include "col/point.h"
 #include "col/preagg.h"
+#include "col/hll.h"
 #include "col/runs.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -25,6 +27,19 @@ typedef struct PointAcc
 	bool		bad;
 	bool		want;			/* the index names the leaf (option point_columns or point_tid_columns) */
 	bool		tids;			/* ... and wants the table to list heap addresses */
+	bool		ord;			/* the leaf also gets a global order block (col/gorder.h): the entries are kept for it, with the addresses of the rows without a value */
+	int64	   *gk;				/* ord with a group leaf: the group of each entry of key, and of each one of ntid (a row with no group is left out when the block is built) */
+	uint8	   *gok;
+	int64	   *ngk;
+	uint8	   *ngok;
+	uint64	   *ntid;
+	uint32		nn;
+	uint32		ncap;
+	uint32		gcap;
+	uint32		onch;			/* its block, once built (0: none) */
+	uint32		onent;
+	uint32		onvals;
+	StringInfoData otab;
 	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
 	uint32		nkeys;
 	uint32		words;
@@ -66,6 +81,12 @@ struct SiftColSegWriter
 	StringInfoData cube;		/* the cube blobs of all units */
 	uint64	   *ecubeoff;		/* the same for the element blobs (minor 4) */
 	StringInfoData ecube;
+	uint64	   *xcubeoff;		/* the same for the exception cubes and element blobs (minor 19): a unit with none has an empty blob */
+	StringInfoData xcube;
+	uint64	   *xecubeoff;
+	StringInfoData xecube;
+	bool		excepts;		/* the units may get exceptions: a sift_col index, written under a setting that allows them */
+	bool		anyexc;			/* some unit has exceptions: the segment is column format minor 19 */
 	uint64	   *pmask;			/* [unit * SIFT_PAGEMASK_WORDS]: the pages of its superblock that hold the rows of the unit (superunits) */
 	SiftColSBRef *sbdir;
 	uint32		nsb;
@@ -73,6 +94,8 @@ struct SiftColSegWriter
 	uint64		rows;
 	uint32		sb_lo;
 	uint32		sb_hi;
+	uint32		aim_rows;		/* the rows of a unit of the page cut of the table: a key-cut unit's cube is budgeted as that unit's */
+	bool		keyed;			/* the units are key-cut: the segment is column format minor 17 */
 	uint8		format;			/* SiftSegEntry.format: what the writer was begun with (a segment with a version section needs SIFT_COL_FORMAT_VERS, the sift_table sees to it); 4 writes the tags of overflow values */
 	uint8		setting;		/* the minor the caller asked for, before the schema and the kinds narrowed it: 7 lets a cube hold min and max, 9 a unit the rollup of its rows, 10 a unit the small-set summary of a leaf, 12 the sorted run of a leaf */
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
@@ -80,8 +103,12 @@ struct SiftColSegWriter
 	bool		anypres;		/* some unit keeps a key list or bitmap of a leaf (minor 15) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
+	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
+	SetAcc	   *hll;			/* [ncols], NULL unless the segment keeps HyperLogLog sketches (sift_colw_set_preagg) */
+	bool		anyhll;
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
+	bool		anyord;			/* some leaf has a global order block to write (minor 21) */
 	bool		anytids;		/* ... and one of them lists heap addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -141,6 +168,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->lagg = palloc(w->capsb * schema->ncols * sizeof(SiftCLeafAgg));
 	w->cubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->ecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->xcubeoff = palloc((w->capsb + 1) * sizeof(uint64));
+	w->xecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 	sift_cpagg_spec_default(schema, &w->pagg);
 	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
@@ -156,6 +185,8 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	}
 	initStringInfo(&w->cube);
 	initStringInfo(&w->ecube);
+	initStringInfo(&w->xcube);
+	initStringInfo(&w->xecube);
 	w->sbdir = palloc(w->capsb * sizeof(SiftColSBRef));
 	initStringInfo(&w->buf);
 	MemoryContextSwitchTo(old);
@@ -202,6 +233,7 @@ void
 sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 {
 	w->pagg = *spec;
+	w->excepts = w->setting >= SIFT_COL_FORMAT_PRESENCE;
 	/* the cube asks for min and max: the segment is minor 7, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
 	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
 	if (w->pagg.minmax)
@@ -246,19 +278,38 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 		w->format = SIFT_COL_FORMAT_SUPER;
 	if (w->setting >= SIFT_COL_FORMAT_RUNS && w->run == NULL)
 		w->run = acc_new(w, spec->run);
+	/* the option is what stamps the minor 18: the setting stays at 15 */
+	if (w->setting >= SIFT_COL_FORMAT_PRESENCE && w->hll == NULL)
+		w->hll = acc_new(w, spec->hll);
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (spec->point[c] || spec->point_tid[c])
+			if (spec->point[c] || spec->point_tid[c] || spec->gorder[c])
 			{
 				MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
 				if (w->pt == NULL)
 					w->pt = palloc0(w->schema->ncols * sizeof(PointAcc));
 				MemoryContextSwitchTo(old);
-				w->pt[c].want = true;
-				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* the option is what stamps minor 16: the setting stays at 15 */
+				w->pt[c].want = spec->point[c] || spec->point_tid[c];
+				w->pt[c].ord = spec->gorder[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE;	/* stamps minor 21 itself, as the lists of addresses do 16 */
+				w->pt[c].tids = spec->point_tid[c] && w->setting >= SIFT_COL_FORMAT_PRESENCE && !w->keyed;	/* the option is what stamps minor 16: the setting stays at 15 */
 			}
+}
+
+/*
+ * The units of a key-cut segment are not block ranges, so a heap address does not name its unit: its point directories list the rows of the segment
+ *, whatever point_tid_columns says, and a lookup reads the unit of each row.
+ */
+void
+sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows)
+{
+	SIFT_INVARIANT(w->nsb == 0, "sift_col: a segment is keyed before its first unit");
+	w->keyed = true;
+	w->aim_rows = aim_rows;
+	if (w->pt)
+		for (int c = 0; c < w->schema->ncols; c++)
+			w->pt[c].tids = false;
 }
 
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
@@ -270,12 +321,18 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 		PointAcc   *a = &w->pt[c];
 		const SiftCPaggCol *v = &cols[c];
 
-		if (!a->want || a->bad)
+		bool		wt = a->tids || a->ord;		/* the entries carry heap addresses */
+		const SiftCPaggCol *gv = a->ord && w->pagg.gorder_group > 0 ? &cols[w->pagg.gorder_group - 1] : NULL;	/* the group of each row */
+
+		if (!(a->want || a->ord) || a->bad)
 			continue;
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
 			if (v->ovf[i])
 				a->bad = true;
-		if (!v->ready || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
+		for (uint32 i = 0; gv && gv->ovf && i < SIFT_COL_NWORDS(gv->n); i++)
+			if (gv->ovf[i])
+				a->bad = true;
+		if (!v->ready || (gv && !gv->ready) || a->bad || w->rows + v->n >= SIFT_CPOINT_SEG_ROWS)
 		{
 			a->bad = true;
 			continue;
@@ -287,22 +344,64 @@ add_points(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *rowkeys
 			a->cap = Max(Max(a->cap * 2, 4096), a->n + v->n);
 			a->key = a->key ? repalloc_huge(a->key, (Size) a->cap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(int64));
 			a->row = a->row ? repalloc_huge(a->row, (Size) a->cap * sizeof(uint32)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint32));
-			if (a->tids)
+			if (wt)
 				a->tid = a->tid ? repalloc_huge(a->tid, (Size) a->cap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->cap * sizeof(uint64));
+			MemoryContextSwitchTo(old);
+		}
+		if (a->ord && v->nulls && a->nn + v->n > a->ncap)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			a->ncap = Max(Max(a->ncap * 2, 1024), a->nn + v->n);
+			a->ntid = a->ntid ? repalloc_huge(a->ntid, (Size) a->ncap * sizeof(uint64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(uint64));
+			if (gv)
+			{
+				a->ngk = a->ngk ? repalloc_huge(a->ngk, (Size) a->ncap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap * sizeof(int64));
+				a->ngok = a->ngok ? repalloc_huge(a->ngok, (Size) a->ncap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->ncap);
+			}
+			MemoryContextSwitchTo(old);
+		}
+		if (gv && a->n + v->n > a->gcap)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			a->gcap = a->cap;
+			a->gk = a->gk ? repalloc_huge(a->gk, (Size) a->gcap * sizeof(int64)) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap * sizeof(int64));
+			a->gok = a->gok ? repalloc_huge(a->gok, (Size) a->gcap) : MemoryContextAllocHuge(CurrentMemoryContext, (Size) a->gcap);
 			MemoryContextSwitchTo(old);
 		}
 		for (uint32 i = 0; i < v->n; i++)
 		{
-			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
-				continue;
 			/* no offset number of a heap page of 8 kB reaches the codes' room, but a key from elsewhere must not be listed wrongly */
-			if (a->tids && (rowkeys[i] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+			if (wt && (rowkeys[i] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
 			{
 				a->bad = true;
 				break;
 			}
+			if (v->nulls && (v->nulls[i / 64] >> (i % 64) & 1))
+			{
+				if (a->ord)
+				{
+					if (gv)
+					{
+						bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+
+						a->ngok[a->nn] = !gnull;
+						a->ngk[a->nn] = gnull ? 0 : gv->key[i];
+					}
+					a->ntid[a->nn++] = rowkeys[i];
+				}
+				continue;
+			}
+			if (gv)
+			{
+				bool		gnull = gv->nulls && (gv->nulls[i / 64] >> (i % 64) & 1);
+
+				a->gok[a->n] = !gnull;
+				a->gk[a->n] = gnull ? 0 : gv->key[i];
+			}
 			a->key[a->n] = v->key[i];
-			if (a->tids)
+			if (wt)
 				a->tid[a->n] = rowkeys[i];
 			a->row[a->n++] = (uint32) w->rows + i;
 		}
@@ -356,7 +455,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 
 /* The sorted run of each leaf that asks for one, from the keys of the unit just encoded */
 static void
-add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols)
+add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
 {
 	for (int c = 0; w->run && c < w->schema->ncols; c++)
 	{
@@ -365,13 +464,59 @@ add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols)
 		if (a->blobs.data == NULL)
 			continue;
 		a->off[w->nsb] = a->blobs.len;
-		if (sift_crun_build(&w->schema->cols[c], &cols[c], &a->blobs))
+		if (sift_crun_build(&w->schema->cols[c], &cols[c], addr, !w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &a->blobs))
 		{
 			a->any = w->anyruns = true;
+			w->anyheads |= a->blobs.data[a->off[w->nsb] + 2] != 0;
 			a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
 		}
 		a->off[w->nsb + 1] = a->blobs.len;
 	}
+}
+
+/* The sketch of each leaf that asks for one, from the unit just encoded */
+static void
+add_hll(SiftColSegWriter *w, const SiftCPaggCol *cols)
+{
+	for (int c = 0; w->hll && c < w->schema->ncols; c++)
+	{
+		SetAcc	   *a = &w->hll[c];
+
+		if (a->blobs.data == NULL)
+			continue;
+		a->off[w->nsb] = a->blobs.len;
+		if (sift_hll_build(&w->schema->cols[c], &cols[c], w->dict[c], &a->blobs))
+		{
+			a->any = w->anyhll = true;
+			a->kinds |= a->blobs.data[a->off[w->nsb]];
+		}
+		a->off[w->nsb + 1] = a->blobs.len;
+	}
+}
+
+/*
+ * The exceptions of the unit (docs/COL-PREAGG.md 11): when one INT leaf is NULL in nearly every row (a soft-delete stamp), the cube and the element rollups of the few
+ * rows where it is not, with the dims and measures of the unit's own blobs (cube bytes from cubeat, element bytes from ecubeat). `leaf IS NULL` over the unit is then
+ * its aggregates minus these. The blob starts with the leaf; a unit with none has an empty one (sift_cpagg_excepts).
+ */
+static void
+add_excepts(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols, Size cubeat, Size ecubeat)
+{
+	int			ncols = w->schema->ncols;
+	const uint32 **eoff = palloc0(ncols * sizeof(uint32 *));
+
+	w->xcubeoff[w->nsb] = w->xcube.len;
+	w->xecubeoff[w->nsb] = w->xecube.len;
+	for (int c = 0; c < ncols; c++)
+		if (w->schema->cols[c].parent >= 0)
+			eoff[c] = b->col[w->schema->cols[c].parent].eoff;
+	if (w->excepts &&
+		sift_cpagg_excepts(w->schema, &w->pagg, cols, eoff, b->nrows, (const uint8 *) w->cube.data + cubeat, w->cube.len - cubeat,
+						   (const uint8 *) w->ecube.data + ecubeat, w->ecube.len - ecubeat, &w->xcube, &w->xecube))
+		w->anyexc = true;
+	w->xcubeoff[w->nsb + 1] = w->xcube.len;
+	w->xecubeoff[w->nsb + 1] = w->xecube.len;
+	pfree(eoff);
 }
 
 /*
@@ -386,6 +531,8 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	bool	   *dim = palloc0(ncols * sizeof(bool));
 	int64	  **tk = palloc0(ncols * sizeof(int64 *));
 	SiftCLeafAgg *la = w->lagg + (Size) w->nsb * ncols;
+	Size		cubeat,
+				ecubeat;
 
 	for (int d = 0; d < w->pagg.ndims; d++)
 		dim[w->pagg.dim[d].leaf] = true;
@@ -398,7 +545,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		const SiftColDef *def = &w->schema->cols[c];
 
 		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
-		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
+		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->hll && w->hll[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -408,13 +555,16 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		if (def->store == SIFT_COLS_INT)
 			sift_cpagg_leaf(&cols[c], &la[c]);
 	}
-	w->cubeoff[w->nsb] = w->cube.len;
-	w->ecubeoff[w->nsb] = w->ecube.len;
-	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
+	w->cubeoff[w->nsb] = cubeat = w->cube.len;
+	w->ecubeoff[w->nsb] = ecubeat = w->ecube.len;
+	/* a key-cut unit holds fewer rows than a superblock: its cube may take what the cube of the unit of that many rows would. With less, the dims that fit differ from unit to unit and the groups of units (superunits) keep none */
+	sift_cpagg_cube(w->schema, &w->pagg, cols, b->nrows, w->keyed && b->nrows < w->aim_rows ? (Size) ((uint64) unit_bytes * w->aim_rows / b->nrows) : unit_bytes, &w->cube, w->format >= PAGG_ECUBE_MINOR ? &w->ecube : NULL);
 	w->cubeoff[w->nsb + 1] = w->cube.len;
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
+	add_excepts(w, b, cols, cubeat, ecubeat);
 	add_sets(w, cols, unit_bytes);
-	add_runs(w, cols);
+	add_runs(w, cols, b->keys);
+	add_hll(w, cols);
 	add_points(w, cols, b->keys);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
@@ -474,11 +624,11 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	if (!sift_cbatch_kinds_exact(b))
 	{
 		/* the callers lower the setting before they begin when a row of the segment may lack its kind: minor 7, 9, 10 and 12 promise complete kinds */
-		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && w->format != SIFT_COL_FORMAT_CALENDAR) || w->set || w->run),
+		SIFT_INVARIANT(!((w->format >= SIFT_COL_FORMAT_MINMAX && !(w->format == SIFT_COL_FORMAT_CALENDAR && !w->schema->kinds)) || w->set || w->run || w->hll),
 					   "sift_col: a unit without its kinds in a segment of column format %d", w->run ? SIFT_COL_FORMAT_RUNS : w->set ? SIFT_COL_FORMAT_SETS : w->format);
 		w->inexact = true;
-		/* a schema with a calendar dim has no leaf with kinds to lose: the minor stays */
-		if (w->format != SIFT_COL_FORMAT_CALENDAR)
+		/* a schema without shredded leaves has no kinds to lose: the minor stays */
+		if (w->format != SIFT_COL_FORMAT_CALENDAR || w->schema->kinds)
 			w->format = sift_col_write_minor(w->schema, Min(w->format, SIFT_COL_FORMAT_TAGS), false);
 	}
 	Assert(b->nrows > 0 && b->schema->ncols == ncols);
@@ -491,12 +641,16 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 		w->lagg = repalloc_huge(w->lagg, (Size) w->capsb * ncols * sizeof(SiftCLeafAgg));
 		w->cubeoff = repalloc_huge(w->cubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		w->ecubeoff = repalloc_huge(w->ecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->xcubeoff = repalloc_huge(w->xcubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
+		w->xecubeoff = repalloc_huge(w->xecubeoff, ((Size) w->capsb + 1) * sizeof(uint64));
 		for (int c = 0; c < ncols; c++)
 		{
 			if (w->set && w->set[c].off)
 				w->set[c].off = repalloc_huge(w->set[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
 			if (w->run && w->run[c].off)
 				w->run[c].off = repalloc_huge(w->run[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
+			if (w->hll && w->hll[c].off)
+				w->hll[c].off = repalloc_huge(w->hll[c].off, ((Size) w->capsb + 1) * sizeof(uint64));
 		}
 		w->pmask = repalloc_huge(w->pmask, (Size) w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
 		w->sbdir = repalloc_huge(w->sbdir, w->capsb * sizeof(SiftColSBRef));
@@ -509,7 +663,14 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
-	memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
+	if (b->keyed)
+	{
+		/* a key-cut unit has no page mask: its slot holds the first and last block of the unit (its head), which a group of units tests against the visibility map at once */
+		memset(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
+		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), 2 * sizeof(uint32));
+	}
+	else
+		memcpy(w->pmask + (Size) w->nsb * SIFT_PAGEMASK_WORDS, w->buf.data + start + 4 * sizeof(uint32), SIFT_PAGEMASK_WORDS * sizeof(uint64));	/* after the unit's head */
 	add_vers(w, b);
 	sw_pad8(w->sw);
 	off = sift_sw_tell(w->sw);
@@ -537,7 +698,7 @@ sift_colw_bytes(const SiftColSegWriter *w)
 Size
 sift_colw_memory(const SiftColSegWriter *w)
 {
-	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + 2 * sizeof(uint64)) + w->cube.len + w->ecube.len;
+	Size		m = (Size) w->nsb * (w->schema->ncols * (sizeof(SiftCZone) + sizeof(SiftCLeafAgg)) + sizeof(SiftColSBRef) + 2 * sizeof(uint64)) + w->cube.len + w->ecube.len + w->xcube.len + w->xecube.len;
 
 	for (int c = 0; c < w->schema->ncols; c++)
 		if (w->dict[c])
@@ -565,6 +726,55 @@ build_points(SiftColSegWriter *w)
 	{
 		PointAcc   *a = &w->pt[c];
 
+		if (a->ord && !a->bad && a->n + a->nn > 0)
+		{
+			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+			initStringInfo(&a->otab);
+			MemoryContextSwitchTo(old);
+			if (w->pagg.gorder_group > 0)
+			{
+				/* the rows with no group are not in the block; the arrays of the entries are the point directory's too, so the others are copied */
+				uint32		nv = 0,
+							nl = 0;
+				int64	   *key = palloc((a->n + 1) * sizeof(int64)),
+						   *grp = palloc((a->n + 1) * sizeof(int64)),
+						   *ngrp = palloc((a->nn + 1) * sizeof(int64));
+				uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
+						   *ntid = palloc((a->nn + 1) * sizeof(uint64));
+
+				for (uint32 i = 0; i < a->n; i++)
+					if (a->gok[i])
+					{
+						key[nv] = a->key[i];
+						tid[nv] = a->tid[i];
+						grp[nv++] = a->gk[i];
+					}
+				for (uint32 i = 0; i < a->nn; i++)
+					if (a->ngok[i])
+					{
+						ntid[nl] = a->ntid[i];
+						ngrp[nl++] = a->ngk[i];
+					}
+				a->onent = nv + nl;
+				a->onvals = nv;
+				if (a->onent > 0)
+					sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, &a->otab);
+				pfree(key);
+				pfree(grp);
+				pfree(ngrp);
+				pfree(tid);
+				pfree(ntid);
+			}
+			else
+			{
+				a->onent = a->n + a->nn;
+				a->onvals = a->n;
+				sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
+			}
+			a->onch = (a->onent + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS;
+			w->anyord = a->onch > 0 || w->anyord;
+		}
 		if (a->want && !a->bad && a->n > 0)
 		{
 			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
@@ -590,6 +800,25 @@ build_points(SiftColSegWriter *w)
 			a->row = NULL;
 			a->tid = NULL;
 		}
+		if (a->ntid)
+		{
+			pfree(a->ntid);
+			a->ntid = NULL;
+		}
+		if (a->gk)
+		{
+			pfree(a->gk);
+			pfree(a->gok);
+			a->gk = NULL;
+			a->gok = NULL;
+		}
+		if (a->ngk)
+		{
+			pfree(a->ngk);
+			pfree(a->ngok);
+			a->ngk = NULL;
+			a->ngok = NULL;
+		}
 	}
 }
 
@@ -603,17 +832,20 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 {
 	int			ncols = w->schema->ncols;
 	uint64		block = sift_sw_tell(w->sw) - sec->off;
-	uint32		ver = w->anytids ? SIFT_CPOINT_VERSION : SIFT_CPOINT_VERSION_ROWS;
+	uint32		ver = w->anyord ? SIFT_CPOINT_VERSION_ORD : w->anytids ? SIFT_CPOINT_VERSION : SIFT_CPOINT_VERSION_ROWS;
 	uint32		hdr[4] = {SIFT_CPOINT_MAGIC, ver, 0, 0};
 	uint64		foot[2];
 	uint32		ftail[2] = {SIFT_CPOINT_MAGIC, ver};
 	uint64		at;
 
-	if (!w->anypoints)
+	if (!w->anypoints && !w->anyord)
 		return;
 	for (int c = 0; c < ncols; c++)
+	{
 		hdr[2] += w->pt[c].nslots > 0;
-	at = block + sizeof(hdr) + (uint64) hdr[2] * SIFT_CPOINT_RECLEN;
+		hdr[3] += w->pt[c].onch > 0;
+	}
+	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
 	for (int c = 0; c < ncols; c++)
 	{
@@ -627,8 +859,22 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		at += a->tab.len;
 	}
 	for (int c = 0; c < ncols; c++)
+	{
+		const PointAcc *a = &w->pt[c];
+		uint32		rec[6] = {c, a->onch, a->onent, a->onvals, (uint32) (a->otab.len / 8), SIFT_CPOINT_MODE_ORDER};
+
+		if (a->onch == 0)
+			continue;
+		sift_sw_write(w->sw, rec, sizeof(rec));
+		sift_sw_write(w->sw, &at, sizeof(at));
+		at += a->otab.len;
+	}
+	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
+	for (int c = 0; c < ncols; c++)
+		if (w->pt[c].onch > 0)
+			sift_sw_write(w->sw, w->pt[c].otab.data, w->pt[c].otab.len);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
 	sift_sw_write(w->sw, foot, sizeof(foot));
@@ -645,6 +891,8 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 			   *compact = palloc0(ncols * sizeof(Size)),
 				budget = sift_sw_tell(w->sw);
 	bool		blocks = w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact;
+	bool	   *asked = palloc0(ncols * sizeof(bool));
+	const SiftCcPolicy *pol;
 	StringInfoData blob;
 
 	sw_pad8(w->sw);
@@ -659,10 +907,11 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	 */
 	for (int c = 0; blocks && c < ncols; c++)
 	{
-		if (w->dict[c] == NULL || (w->dform && w->dform[c]) || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
 			extra[c] = SIZE_MAX;
 		else
 			extra[c] = sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact[c]);
+		asked[c] = w->dform && w->dform[c];
 		budget += compact[c];
 	}
 	budget /= CDICT_BLOCKS_BUDGET_DENOM;
@@ -677,7 +926,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
-		if (extra[c] != SIZE_MAX && blocks)
+		if (extra[c] != SIZE_MAX && blocks && !asked[c])
 		{
 			if (extra[c] <= budget)
 			{
@@ -708,10 +957,12 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		}
 		if (form == DICT_BLOCKS)
 			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
-		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, form, &blob);
+		pol = w->pol ? &w->pol[c] : NULL;
+		sift_cdict_serialize(w->dict[c], pol, form, &blob);
 	}
 	pfree(extra);
 	pfree(compact);
+	pfree(asked);
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
 	sw_pad8(w->sw);
@@ -807,11 +1058,12 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		return false;
 	for (int c = 0; c < ncols; c++)
 		h.nleaf += super_leaf_ok(&w->schema->cols[c]);
+	/* what the merge of one group allocates is freed with the group: a segment of many units has thousands of groups */
 	cx = AllocSetContextCreate(w->mcxt, "sift col superunits", ALLOCSET_DEFAULT_SIZES);
-	old = MemoryContextSwitchTo(cx);
 	ua = palloc(fan * sizeof(SiftCAgg));
 	cdir = palloc((nsu + 1) * sizeof(uint64));
 	initStringInfo(&cubes);
+	old = MemoryContextSwitchTo(cx);
 	for (uint32 k = 0; k < nsu; k++)
 	{
 		uint32		n = Min(fan, nsb - k * fan);
@@ -831,8 +1083,7 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		}
 		if (n >= 2 && anycube && !sift_cpagg_super_cube(w->schema, blob, len, n, &cubes))
 			cubes.len = before;
-		pfree(blob);
-		pfree(len);
+		MemoryContextReset(cx);
 	}
 	cdir[nsu] = cubes.len;
 	h.cubedir_off = cubes.len > 0 ? ALIGN8(sizeof(SuperHeader) + (Size) nsb * SIFT_PAGEMASK_WORDS * sizeof(uint64) + (Size) h.nleaf * nsu * sizeof(SiftCSuperLeaf)) : 0;
@@ -863,6 +1114,9 @@ build_super(SiftColSegWriter *w, StringInfo out)
 		appendBinaryStringInfo(out, cubes.data, cubes.len);
 	}
 	MemoryContextDelete(cx);
+	pfree(ua);
+	pfree(cdir);
+	pfree(cubes.data);
 	return true;
 }
 
@@ -876,9 +1130,11 @@ write_pagg(SiftColSegWriter *w)
 				at = hsz;
 	PaggHeader *h = palloc0(hsz);
 	SetsLeaf   *sets = NULL,
-			   *runs = NULL;
+			   *runs = NULL,
+			   *hlls = NULL;
 	int			nsets = 0,
-				nruns = 0;
+				nruns = 0,
+				nhlls = 0;
 	StringInfoData super;
 	bool		has_super;
 
@@ -930,6 +1186,29 @@ write_pagg(SiftColSegWriter *w)
 		runs = layout_blobs(w, w->run, at, &start, &bytes, &nruns);
 		PAGG_RUNS(h) = start;
 		PAGG_RUNS_BYTES(h) = bytes;
+		at = start + bytes;
+	}
+	if (ver > 5 && w->anyexc)
+	{
+		at = ALIGN8(at);
+		PAGG_XCUBEDIR(h) = at;
+		PAGG_XCUBE_BYTES(h) = w->xcube.len;
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xcube.len);
+		if (w->xecube.len > 0)
+		{
+			PAGG_XECUBEDIR(h) = at;
+			PAGG_XECUBE_BYTES(h) = w->xecube.len;
+		}
+		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xecube.len);
+	}
+	if (ver > 6 && w->anyhll)
+	{
+		Size		start,
+					bytes;
+
+		hlls = layout_blobs(w, w->hll, at, &start, &bytes, &nhlls);
+		PAGG_HLL(h) = start;
+		PAGG_HLL_BYTES(h) = bytes;
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -983,6 +1262,20 @@ write_pagg(SiftColSegWriter *w)
 	pfree(super.data);
 	if (runs)
 		write_blobs(w, w->run, RUNS_MAGIC, runs, nruns);
+	if (ver > 5 && w->anyexc)
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, w->xcubeoff, (Size) (nsb + 1) * sizeof(uint64));
+		sift_sw_write(w->sw, w->xcube.data, w->xcube.len);
+		if (w->xecube.len > 0)
+		{
+			sw_pad8(w->sw);
+			sift_sw_write(w->sw, w->xecubeoff, (Size) (nsb + 1) * sizeof(uint64));
+			sift_sw_write(w->sw, w->xecube.data, w->xecube.len);
+		}
+	}
+	if (hlls)
+		write_blobs(w, w->hll, HLL_MAGIC, hlls, nhlls);
 	pfree(h);
 }
 
@@ -1074,10 +1367,18 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->anysets)
 		w->format = Max(w->format, w->anypres ? SIFT_COL_FORMAT_PRESENCE : SIFT_COL_FORMAT_SETS);
 	if (w->anyruns)
-		w->format = Max(w->format, SIFT_COL_FORMAT_RUNS);
+		w->format = Max(w->format, w->anyheads ? SIFT_COL_FORMAT_HEADS : SIFT_COL_FORMAT_RUNS);
+	if (w->anyexc)
+		w->format = Max(w->format, SIFT_COL_FORMAT_EXCEPT);
+	if (w->anyhll)
+		w->format = Max(w->format, SIFT_COL_FORMAT_HLL);
 	build_points(w);
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
+	if (w->anyord)
+		w->format = Max(w->format, SIFT_COL_FORMAT_GORDER);
+	if (w->keyed)
+		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{
@@ -1131,6 +1432,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		entry->flags |= SIFT_SEG_VERS;
 		entry->reserved = w->vmin;
 	}
+	if (w->keyed)
+		entry->flags |= SIFT_SEG_KEYED;
 	entry->ndocs = w->rows;
 	entry->bytes = blocks * BLCKSZ;
 	pfree(schema.data);

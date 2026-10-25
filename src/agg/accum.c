@@ -327,6 +327,20 @@ mapped_finish(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/* the sum of group g of a SAA_SUM_NUM / SAA_AVG_NUM at scale: w + i * 2^128 (agg_sum_add), as the numeric PostgreSQL's numeric_add would end with */
+Datum
+agg_sum_datum(const AggAcc *acc, uint32 g, int scale)
+{
+	Datum		lo = acc->nf[g] ? scaled_numeric(SIFT_NX_NAN, scale) : scaled_numeric_exact(acc->w[g], scale);
+
+	if (acc->nf[g] || acc->i[g] == 0)
+		return lo;
+	/* 2^128 does not fit a signed 128-bit integer: 4 * 2^126 does */
+	return DirectFunctionCall2(numeric_add, lo,
+							   DirectFunctionCall2(numeric_mul, DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->i[g] * 4)),
+												   scaled_numeric((sift_i128) 1 << 126, scale)));
+}
+
 Datum
 mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnull)
 {
@@ -338,7 +352,7 @@ mapped_sum_datum(AggExec *ex, const SiftAggAgg *a, int ai, uint32 g, bool *isnul
 		return (Datum) 0;
 	if (a->restype == NUMERICOID)
 	{
-		Datum		tot = acc->nf[g] || a->kind == SAA_M_SUM || a->kind == SAA_M_AVG ? acc->v[g] : scaled_numeric(acc->w[g], (int) acc->i[g]);
+		Datum		tot = acc->nf[g] || a->kind == SAA_M_SUM || a->kind == SAA_M_AVG ? acc->v[g] : scaled_numeric_exact(acc->w[g], (int) acc->i[g]);
 
 		return sum ? tot : DirectFunctionCall2(numeric_div, tot, DirectFunctionCall1(int8_numeric, Int64GetDatum(acc->n[g])));
 	}

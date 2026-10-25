@@ -295,6 +295,72 @@ bench_cc(void)
 	free(u), free(a32), free(w32), free(r32), free(a64), free(w64), free(r64), free(keys), free(d), free(rd);
 }
 
+/* The other slots of SiftCcKernels: the unpack at the widths of the chunks (W bits a value), the prefix sums, the maximum, the run expansion, the float keys */
+static void
+bench_cc2(void)
+{
+	static const uint32 widths[] = {3, 11, 20};
+	static const char *const shapes[] = {"n=4096, W=3", "n=4096, W=11", "n=4096, W=20"};
+	enum {NR = N / 32, NRUN = 64};
+	uint32	   *src = rand_array(4 * (size_t) NR * 32 + 64),
+			   *d1 = kt_alloc(N * 4 + SIFT_COL_PAD),
+			   *d2 = kt_alloc(N * 4 + SIFT_COL_PAD),
+			   *a = rand_array(N * 4),
+			   *vals = rand_array(NRUN * 4),
+			   *lens = kt_alloc(NRUN * 4 + SIFT_COL_PAD);
+	uint64	   *b1 = kt_alloc(N / 8 + SIFT_COL_PAD),
+			   *b2 = kt_alloc(N / 8 + SIFT_COL_PAD);
+	int64	   *q1 = kt_alloc(N * 8 + SIFT_COL_PAD),
+			   *q2 = kt_alloc(N * 8 + SIFT_COL_PAD);
+	const SiftCcKernels *s0 = sift_cc_kernels_for(SIFT_SIMD_SCALAR);
+	uint32		total = 0;
+
+	for (int i = 0; i < NRUN; i++)
+		total += lens[i] = 1 + (uint32) (sift_rng_next(&rng) % 127);
+	for (int l = 0; l < nlevels; l++)
+	{
+		const SiftCcKernels *k = sift_cc_kernels_for(SIFT_SIMD_SCALAR + l);
+		const char *lv = kt_level_name[l];
+
+		for (int w = 0; w < 3; w++)
+		{
+			s0->unpack32(src, widths[w], NR, 5, d1);
+			k->unpack32(src, widths[w], NR, 5, d2);
+			same("unpack32", l, d2, d1, N * 4);
+			s0->unpack_range32(src, widths[w], NR, 1, 1000, b1);
+			k->unpack_range32(src, widths[w], NR, 1, 1000, b2);
+			same("unpack_range32", l, b2, b1, N / 8);
+			row("unpack32", shapes[w], lv, BENCH(k->unpack32(src, widths[w], NR, 5, d2)), N, 4);
+			row("unpack_range32", shapes[w], lv, BENCH(k->unpack_range32(src, widths[w], NR, 1, 1000, b2)), N, 4);
+		}
+		s0->prefix32(a, N, d1, 7, 3);
+		k->prefix32(a, N, d2, 7, 3);
+		same("prefix32", l, d2, d1, N * 4);
+		s0->prefix64(a, N, q1, 7, 3);
+		k->prefix64(a, N, q2, 7, 3);
+		same("prefix64", l, q2, q1, N * 8);
+		row("prefix32", "n=4096", lv, BENCH(k->prefix32(a, N, d2, 7, 3)), N, 4);
+		row("prefix64", "n=4096", lv, BENCH(k->prefix64(a, N, q2, 7, 3)), N, 4);
+		row("max32", "n=4096", lv, BENCH(k->max32(a, N)), N, 4);
+		if (k->max32(a, N) != s0->max32(a, N))
+			printf("max32 differs at %s\n", lv);
+		s0->rle_expand32(vals, lens, NRUN, d1);
+		k->rle_expand32(vals, lens, NRUN, d2);
+		same("rle_expand32", l, d2, d1, 4 * (size_t) total);
+		row("rle_expand32", "64 runs of 1..127", lv, BENCH(k->rle_expand32(vals, lens, NRUN, d2)), total, 4);
+		s0->alp_keys_f8(q1, a, N, -50000, 100.0);
+		k->alp_keys_f8(q2, a, N, -50000, 100.0);
+		same("alp_keys_f8", l, q2, q1, N * 8);
+		row("alp_keys_f8", "n=4096", lv, BENCH(k->alp_keys_f8(q2, a, N, -50000, 100.0)), N, 4);
+		s0->alp_keys_f4(q1, a, N, -50000, 100.0f);
+		k->alp_keys_f4(q2, a, N, -50000, 100.0f);
+		same("alp_keys_f4", l, q2, q1, N * 8);
+		row("alp_keys_f4", "n=4096", lv, BENCH(k->alp_keys_f4(q2, a, N, -50000, 100.0f)), N, 4);
+		row("alp_f4", "n=4096, to doubles", lv, BENCH(k->alp_f4((double *) q2, a, N, -50000, 100.0f)), N, 4);
+	}
+	free(src), free(d1), free(d2), free(a), free(vals), free(lens), free(b1), free(b2), free(q1), free(q2);
+}
+
 void
 bench_col(void)
 {
@@ -308,4 +374,5 @@ bench_col(void)
 	bench_decode();
 	bench_lanes();
 	bench_cc();
+	bench_cc2();
 }

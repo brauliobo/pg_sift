@@ -15,7 +15,7 @@ sql pv "CREATE EXTENSION pg_sift" \
 	"CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v)" \
 	"CLUSTER ordered USING ordered_k" "ANALYZE ordered" >/dev/null || bail "setup failed"
 
-CTE="WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v"
+CTE="WITH r AS (SELECT * FROM ordered WHERE k < 12) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v"
 WHY="SELECT count(*) FROM sift.explain_why('$CTE') WHERE reason LIKE '%all-visible%'"
 
 check "the refused CTE plan records the heap check of an empty visibility map" test "$(sql pv "$WHY")" -ge 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The store benchmark: ten questions about an online store's orders on PostgreSQL, PostgreSQL with pg_sift, Citus columnar, Elasticsearch and ClickHouse.
+"""The orders benchmark: ten questions about the orders of an e-commerce dataset on PostgreSQL, PostgreSQL with pg_sift, Citus columnar, Elasticsearch and ClickHouse.
 Called by steps/store.sh, which starts the containers (one per server, equal CPU and memory limits). stdlib only; `python3 -I`.
 
     store.py gen   --rows N --data DIR            the seeded CSV every system loads (bench/sql/store/gen.sql)

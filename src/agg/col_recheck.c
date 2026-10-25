@@ -214,6 +214,7 @@ recheck_batch(ColSource *src)
 	MemoryContextReset(k->cxt);
 	b = sift_cbatch_create(k->cxt, sift_col_schema(src->cs));
 	sift_cbatch_reset(b, k->sb);
+	b->keyed = true;		/* the rows of a key-cut unit lie in any superblock */
 	k->err = MemoryContextAllocZero(k->cxt, Max(k->npend, 1) * sizeof(ErrorData *));
 	for (uint32 i = 0; i < k->npend; i++)
 	{

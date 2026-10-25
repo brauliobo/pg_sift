@@ -326,6 +326,9 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 				pfree(s->kmap[i]);
 		memset(s->lut, 0, np * sizeof(uint64 *));
 		memset(s->kmap, 0, nk * sizeof(uint32 *));
+		if (s->num)
+			pfree(s->num);
+		s->num = NULL;
 	}
 	s->id = d->id;
 	return s;
@@ -356,25 +359,34 @@ key_value_id(AggExec *ex, int ki, Datum in, bool in_null)
 	return id;
 }
 
+/* the id of key ki for entry c of the dictionary */
+uint32
+kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c)
+{
+	KeyState   *k = &ex->ks[ki];
+	MemoryContext old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+	uint32		len;
+	char		buf[SIFT_SRC_DICT_ENTRY];
+	const char *str = sift_srcdict_str(d, c, &len, buf);
+	Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, str, len);
+	uint32		id = key_value_id(ex, ki, v, false);
+
+	ResetExprContext(ex->lutcx);
+	MemoryContextSwitchTo(old);
+	return id;
+}
+
 uint32 *
 dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki)
 {
-	KeyState   *k = &ex->ks[ki];
 	uint32	   *map = s->kmap[ki];
 	MemoryContext old;
 
 	if (map)
 		return map;
 	map = MemoryContextAlloc(ex->tcxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
+	memset(map, 0xFF, d->n * sizeof(uint32));
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
-	for (uint32 c = 0; c < d->n; c++)
-	{
-		Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, d->bytes + d->off[c],
-								   d->off[c + 1] - d->off[c]);
-
-		map[c] = key_value_id(ex, ki, v, false);
-		ResetExprContext(ex->lutcx);
-	}
 	map[d->n] = key_value_id(ex, ki, (Datum) 0, true);
 	MemoryContextSwitchTo(old);
 	s->kmap[ki] = map;
@@ -386,6 +398,7 @@ dict_code(const SiftSrcDict *d, const char *key)
 {
 	size_t		len = strlen(key);
 
+	d = sift_srcdict_whole(d);
 	for (uint32 c = 0; c < d->n; c++)
 		if (d->off[c + 1] - d->off[c] == len && memcmp(d->bytes + d->off[c], key, len) == 0)
 			return c;
@@ -783,7 +796,7 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 		}
 	}
 	for (int j = 0; has_nan && j < nsel; j++)
-		if (NFLAG(0)[j])
+		if (NFLAG(0)[j] || (p->dig > SIFT_NUM_MAX_DIGITS && NFLAG(1)[j]))
 			NSTK(0)[j] = SIFT_NX_NAN;
 	return ex->nstk;
 }
@@ -800,9 +813,13 @@ unit_parent(AggExec *ex)
 	return ex->parent;
 }
 
-/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale; SIFT_NX_NAN is the NaN */
+/*
+ * v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale. The integer of a sum can be any
+ * 128-bit value, SIFT_NX_NAN (2^127 - 1) included, so the sums use this one; scaled_numeric reads that value as NaN, as the values of the
+ * numeric programs (at most 38 digits, which never reach it) do.
+ */
 Datum
-scaled_numeric(__int128 v, int scale)
+scaled_numeric_exact(__int128 v, int scale)
 {
 	char		tmp[48],
 				buf[64];
@@ -810,8 +827,6 @@ scaled_numeric(__int128 v, int scale)
 	int			n = 0;
 	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
 
-	if (v == SIFT_NX_NAN)
-		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 	do
 	{
 		tmp[n++] = '0' + (int) (u % 10);
@@ -827,4 +842,13 @@ scaled_numeric(__int128 v, int scale)
 	}
 	*o = '\0';
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+}
+
+/* v / 10^scale as a numeric of that scale; SIFT_NX_NAN is the NaN */
+Datum
+scaled_numeric(__int128 v, int scale)
+{
+	if (v == SIFT_NX_NAN)
+		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	return scaled_numeric_exact(v, scale);
 }

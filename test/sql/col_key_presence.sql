@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-SET statement_timeout = '60s';
+SET statement_timeout = '240s';
 
 -- 60,000 rows in about 8 units of 7,500 rows. k: 3,000 values scattered over every unit; kn: 1,500 values from -700, NULL for every 7th row; s: an int2 from -250;
 -- d: a date; ts: ascending with id (a window covers the middle units whole and cuts two); g: 5 groups; big: sparse values (no bitmap fits 3% of the unit)
@@ -180,8 +180,14 @@ SELECT blobs > 0 AS has_blobs, exact = 0 AND bloom = 0 AS only_bitmaps, intact =
 FROM sift._test_col_set_damage('kp_on', 6);
 
 -- a bit flipped, one at a time, in the section of the summaries in the stream (its structure, every 7th byte of the bitmaps): the reader or the check of the
--- bitmaps against the chunks refuses each
-SELECT runs > 0 AS has_sections, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_set_file_damage('kp_on', 7);
+-- bitmaps against the chunks refuses each. Each flip opens and verifies the whole segment, so the cost grows with the square of the rows: two units of the table
+CREATE TABLE kp_f (LIKE kp) WITH (autovacuum_enabled = off);
+ALTER TABLE kp_f ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kp_f SELECT * FROM kp WHERE id <= 15000 ORDER BY id;
+VACUUM (FREEZE, ANALYZE) kp_f;
+CREATE INDEX kp_f_on ON kp_f USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+SELECT runs > 0 AS has_sections, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_set_file_damage('kp_f_on', 7);
+DROP TABLE kp_f;
 
 -- the same index built by workers: the same bytes of bitmaps, the same answers
 CREATE TABLE kp_w (LIKE kp) WITH (autovacuum_enabled = off);

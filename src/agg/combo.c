@@ -76,6 +76,7 @@
 #include "core/popcount.h"
 #include "core/limits.h"
 #include "agg/agg_int.h"
+#include "agg/memo.h"
 
 #define COMBO_MAX_ENTRIES	16777216	/* entries of one combo cache before the caches start again (combo_trim) */
 
@@ -153,7 +154,13 @@ static inline uint32
 cmap_id(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ci, int p, uint32 c)
 {
 	if (map[c] == CMAP_UNSET)
-		map[c] = intern_id(ex, &ex->cs[ci].in[p], d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	{
+		uint32		len;
+		char		buf[SIFT_SRC_DICT_ENTRY];
+		const char *str = sift_srcdict_str(d, c, &len, buf);
+
+		map[c] = intern_id(ex, &ex->cs[ci].in[p], str, len);
+	}
 	return map[c];
 }
 
@@ -352,19 +359,59 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 	}
 }
 
-/* A native correlated child runs for this input only; cached output rows keep their own identity. */
+/*
+ * The key of the child's parameters (their values, serialized): what the processes of a parallel scan share the rows of the child by.
+ * Returns the length; *key is in the current context.
+ */
+static uint32
+child_key(EState *estate, ComboSt *cs, const SiftAggJoin *j, char **key)
+{
+	Size		len = 0;
+	char	   *at;
+	ListCell   *lp,
+			   *la;
+
+	forboth(lp, j->params, la, cs->args)
+	{
+		ParamExecData *prm = &estate->es_param_exec_vals[lfirst_int(lp)];
+		int16		tlen;
+		bool		tbyval;
+
+		get_typlenbyval(exprType((Node *) ((ExprState *) lfirst(la))->expr), &tlen, &tbyval);
+		len += datumEstimateSpace(prm->value, prm->isnull, tbyval, tlen);
+	}
+	*key = at = palloc(Max(len, 1));
+	forboth(lp, j->params, la, cs->args)
+	{
+		ParamExecData *prm = &estate->es_param_exec_vals[lfirst_int(lp)];
+		int16		tlen;
+		bool		tbyval;
+
+		get_typlenbyval(exprType((Node *) ((ExprState *) lfirst(la))->expr), &tlen, &tbyval);
+		datumSerialize(prm->value, prm->isnull, tbyval, tlen, &at);
+	}
+	return (uint32) (at - *key);
+}
+
 static int
-combo_child_rows(AggExec *ex, int ci, uint32 **rows)
+combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 {
 	ComboSt    *cs = &ex->cs[ci];
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
-	EState     *estate = ex->css.ss.ps.state;
-	PlanState  *child = list_nth(estate->es_subplanstates, j->subplan - 1);
+	QueryDesc  *wq = ex->wchild ? ex->wchild[cb->join] : NULL;
+	EState     *estate = wq ? wq->estate : ex->css.ss.ps.state;
+	PlanState  *child = wq ? wq->planstate : list_nth(estate->es_subplanstates, j->subplan - 1);
+	ChildMemo  *memo = ex->cmemo ? ex->cmemo[cb->join] : NULL;
 	ListCell   *lp, *la;
 	int         start = cs->map->nrow, n = 0;
 	MemoryContext caller = CurrentMemoryContext;
 	instr_time  t0;
+	char	   *key = NULL;
+	uint32		klen = 0,
+				nmt = 0;
+	const char *stored;
+	MinimalTuple *mts = NULL;
 
 	INSTR_TIME_SET_CURRENT(t0);
 	forboth(lp, j->params, la, cs->args)
@@ -374,8 +421,36 @@ combo_child_rows(AggExec *ex, int ci, uint32 **rows)
 
 		prm->value = ExecEvalExprSwitchContext(lfirst(la), ex->lutcx, &prm->isnull);
 		Assert(prm->execPlan == NULL);
-		child->chgParam = bms_add_member(child->chgParam, id);
 	}
+	if (memo)
+	{
+		uint32		nstored;
+
+		klen = child_key(estate, cs, j, &key);
+		stored = memo_find(memo, key, klen, &nstored);
+		if (stored)
+		{
+			TupleTableSlot *slot = ex->cmslot[cb->join];
+
+			MemoryContextSwitchTo(ex->cxt);
+			if (slot == NULL)
+				slot = ex->cmslot[cb->join] = MakeSingleTupleTableSlot(ExecGetResultType(child), &TTSOpsMinimalTuple);
+			for (uint32 r = 0; r < nstored; r++)
+			{
+				MinimalTuple mt;
+
+				stored = memo_row(stored, &mt);
+				ExecStoreMinimalTuple(mt, slot, false);
+				map_row(ex, cs->map, slot, j, cb, NULL);
+			}
+			MemoryContextSwitchTo(caller);
+			pfree(key);
+			goto done;
+		}
+		mts = palloc(8 * sizeof(MinimalTuple));
+	}
+	foreach(lp, j->params)
+		child->chgParam = bms_add_member(child->chgParam, lfirst_int(lp));
 	MemoryContextSwitchTo(estate->es_query_cxt);
 	ExecReScan(child);
 	for (;;)
@@ -384,11 +459,26 @@ combo_child_rows(AggExec *ex, int ci, uint32 **rows)
 
 		if (TupIsNull(slot))
 			break;
+		if (memo)
+		{
+			if (nmt >= 8 && (nmt & (nmt - 1)) == 0)
+				mts = repalloc(mts, nmt * 2 * sizeof(MinimalTuple));
+			mts[nmt++] = ExecCopySlotMinimalTuple(slot);
+		}
 		MemoryContextSwitchTo(ex->cxt);
 		map_row(ex, cs->map, slot, j, cb, NULL);
 		MemoryContextSwitchTo(estate->es_query_cxt);
 	}
 	MemoryContextSwitchTo(caller);
+	if (memo)
+	{
+		memo_put(memo, key, klen, nmt, mts);
+		for (uint32 r = 0; r < nmt; r++)
+			pfree(mts[r]);
+		pfree(mts);
+		pfree(key);
+	}
+done:
 	n = cs->map->nrow - start;
 	map_loaded(ex, n, t0);
 	*rows = palloc(Max(n, 1) * sizeof(uint32));
@@ -512,7 +602,7 @@ combo_matches(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 	bool		nul[SIFT_AGG_MAX_JKEYS] = {0};
 
 	if (j->params != NIL)
-		return combo_child_rows(ex, ci, rows);
+		return combo_child_rows(ex, ci, v, rows);
 	*rows = NULL;
 	return combo_keys(ex, ci, v, ptr, len, iv, nul) ? combo_find(ex, ci, v, ptr, len, iv, nul, rows) : 0;
 }
@@ -658,7 +748,7 @@ slot_ot(AggExec *ex, const SiftAggSlot *sl)
  * digits, the weight of the first one), which is what pg_upgrade keeps stable; NaN, the infinities and what does not fit 38 digits
  * are not ok and stay numerics (the sums add them with numeric_add).
  */
-static void
+void
 numeric_decode(Datum d, DNum *out)
 {
 	const char *data = VARDATA_ANY(DatumGetPointer(d));
@@ -1015,6 +1105,31 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	return cs->nent - 1;
 }
 
+/* the output rows of the earlier lookups start again (table_reset): so do the ids of their values, which name those rows */
+void
+combo_forget_priors(AggExec *ex, int ci)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+
+	for (int p = 0; p < cb->nleaves; p++)
+	{
+		if (cb->leaf[p] >= 0)
+			continue;
+		if (cs->pv[p].memo)
+			pfree(cs->pv[p].memo);
+		if (cs->pv[p].rep)
+			pfree(cs->pv[p].rep);
+		if (cs->id64[p].tab)
+		{
+			pfree(cs->id64[p].tab);
+			pfree(cs->id64[p].val);
+		}
+		memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
+		memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
+	}
+}
+
 /* the cache starts again: the entries, the outputs of the slots, the values and the ids of the leaves (nothing else holds them) */
 void
 combo_reset(AggExec *ex, int ci)
@@ -1090,6 +1205,45 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
 }
 
 /*
+ * combo_resolve of a combo of one leaf of the scan, the common case: a loop per kind of leaf (`kind` is a constant where it is inlined), the
+ * directory of the entries probed inline, and the value of a position read once for the tuples that share it (a row seen from each of its
+ * elements). The values and the entries come in the order of the tuples, as in the general loop, so the ids are the same.
+ */
+static pg_attribute_always_inline void
+resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const uint64 *alive, const SiftSrcLeaf *lf, const SiftSrcVec *v,
+			const SiftSrcVecType kind)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	uint32	   *map = kind == SCV_CODE ? dict_cmap(ex, dict_slot(ex, v->dict), v->dict, ci, 0) : NULL;
+	uint32		last = UINT32_MAX;
+	uint64		x = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		uint32		d;
+
+		if (alive && !sift_colsrc_bit(alive, i))
+		{
+			eid[i] = COMBO_NONE;
+			continue;
+		}
+		if (idx[i] != last)
+		{
+			last = idx[i];
+			if (kind == SCV_I64)
+				x = wide_vid(cs, 0, lf, v, last);
+			else if (v->isnull && v->isnull[last])
+				x = 0;
+			else if (kind == SCV_CODE)
+				x = cmap_id(ex, map, v->dict, ci, 0, ((const uint32 *) v->data)[last]);
+			else
+				x = (uint64) (uint32) ((const int32 *) v->data)[last] + 1;
+		}
+		eid[i] = x < cs->dircap && (d = cs->dir[x]) != 0 ? d - 1 : combo_ent(ex, ci, &x);
+	}
+}
+
+/*
  * eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx. A tuple that is not
  * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
  */
@@ -1101,6 +1255,20 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
+	if (cb->nleaves == 1 && cb->leaf[0] >= 0 && !cs->by_id && !ex->null_input)
+	{
+		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[0]];
+		const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);
+		const uint32 *idx = leaf_lvl(ex, cb->leaf[0]) == qlevel ? tidx : ridx;
+
+		if (leaf_wide(lf))
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_I64);
+		else if (lf->vtype == SCV_CODE)
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_CODE);
+		else
+			resolve_one(ex, ci, n, idx, eid, alive, lf, v, SCV_I32);
+		return;
+	}
 	for (int p = 0; p < cb->nleaves; p++)
 	{
 		uint64	   *vid = ex->cvid[p];

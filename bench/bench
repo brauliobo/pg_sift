@@ -53,7 +53,7 @@ Commands
   machine    print the machine and engine description (CPU, RAM, kernel, PostgreSQL, versions, load)
   du         what the work directory and the store hold, by component and in total
   analytics  the analytics benchmark of sift_col: `analytics setup|run|report|clean|clickbench|clickbench-setup`
-  store      the store benchmark, for everyone: ten questions about the orders of an online store on PostgreSQL, PostgreSQL with pg_sift,
+  store      the orders benchmark, for everyone: ten questions about the orders of an e-commerce dataset on PostgreSQL, PostgreSQL with pg_sift,
              Citus (columnar, one node), Elasticsearch and ClickHouse in docker containers with equal limits (the same memory cap, the same CPU quota and the same thread budget for every engine,
              timed at 1 and 3 CPUs): `store [all|setup|run|cold|updates|report|merge|clean]`
   resume     `resume [ID]`: continue the unfinished run (the latest, or ID) from what is done: results of the same key are kept, the rest is measured; exit status 75 means a run was interrupted
@@ -63,10 +63,11 @@ Commands
   sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
              parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
-  duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
+  duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
              as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
+  generic    the generic suites (TPC-H-like, ClickBench-like, time series, the headline cases on orders) on pg_duckdb and ClickHouse, one container at a time, the answers checked against PostgreSQL's before any time: `generic [--rows N] [--suites tpch,hits,tseries] [--engines pg_duckdb,clickhouse] [--runs N] [--check-only] [--docs]` (steps/generic.py)
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
-             asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--docs] [--no-wait]`,
+             asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--any-plan] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh)
   extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
              leaftypes fields buildcost gpu all (steps/extras.sh)
@@ -148,7 +149,7 @@ Options (not every option applies to every command)
                     changed key), --parallel-engines N (independent engines at once on disjoint cpusets), --max-rerun N (NOISY cells measured again), --docs, --out DIR,
                     --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; bench/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
-  final options     --stages store,compression,stats,gap,search, --budget MIN (default 25; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
+  final options     --stages store,compression,stats,gap,search, --budget MIN (default 96 at --size standard, 25 below it; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
   --cache, --build, --all   clean: also remove the dumps and the cache of lanes, the engine builds, everything
   --run-id ID       name the run (bench/out/run-ID); a directory that has a manifest is continued, results of the same key are kept (`bench/bench resume`)
@@ -199,7 +200,7 @@ Examples
   bench/bench analytics run --flat --clickhouse        the analytics corpus: baseline, flat tables and ClickHouse (+ sift_col when built)
   bench/bench analytics run --queries S1,S2 --sets K400 --col-index @my_index.sql
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
-  bench/bench store all --docs                         the store benchmark at 1M and 10M orders, then bench/results/store.json, README.md and docs/BENCHMARKS.md
+  bench/bench store all --docs                         the orders benchmark at 1M and 10M orders, then bench/results/store.json, README.md and docs/BENCHMARKS.md
   bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
   bench/bench store all --size quick                  the development loop; `compare A.json B.json` diffs two runs, `store gap` prints the gap tables
   bench/bench final --dry-run                         the release pass: stages, budgets, total against 25 min
@@ -559,6 +560,7 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
 
 cmd_store() { # [all|setup|run|cold|updates|report|merge|clean]: steps/store.sh; the settings travel as S_* variables, the timed runs take the perf lock themselves
   local sub=${rest[0]:-all}
+  [[ $sub != scaling ]] || exec "$STEPS/store_scaling.sh" "${rest[@]:1}"   # the results of other sizes into one file: steps/store_scaling.sh
   case $sub in all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|clean|table|gap|compare) ;; *) die "usage: store [all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|clean|table|gap|compare]" ;; esac
   if [[ $s_compression && -z $engines ]]; then   # the pg_sift compression variants next to PostgreSQL, the default sift_col, Citus, ClickHouse and Elasticsearch
     engines="pg sift sift_none sift_enc sift_auto sift_lz4 sift_zstd sift_table es ch citus"
@@ -680,6 +682,7 @@ case $cmd in
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
   cases) exec "$STEPS/cases.sh" "$@" ;;
+  generic) exec python3 -I "$STEPS/generic.py" run "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
   extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
 esac

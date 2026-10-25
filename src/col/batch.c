@@ -37,6 +37,8 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 {
 	b->sb = sb;
 	b->nrows = 0;
+	b->keyed = false;
+	b->unsorted = false;
 	b->hasver = false;
 	for (int i = 0; i < b->schema->ncols; i++)
 	{
@@ -141,11 +143,11 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 static void
 batch_row_begin(SiftColBatch *b, SiftKey key)
 {
-	SIFT_INVARIANT(sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
+	SIFT_INVARIANT(b->keyed || sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
 				   (uint32) (key & 0xFFFF), b->sb);
 	SIFT_INVARIANT((key & 0xFFFF) >= 1 && (key & 0xFFFF) <= MaxHeapTuplesPerPage, "sift_col: row offset %u is not a heap offset",
 				   (uint32) (key & 0xFFFF));
-	SIFT_INVARIANT(b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
+	SIFT_INVARIANT(b->unsorted || b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
 	if (b->nrows == b->rowcap)
 	{
 		b->rowcap *= 2;
@@ -404,9 +406,47 @@ sift_cbatch_row_free(SiftColRow *row)
 	memset(row, 0, sizeof(*row));
 }
 
+/* A row without arrays is copied leaf by leaf (a SiftColRow is for the rows that have them: false) */
+static bool
+batch_copy_plain(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
+{
+	const SiftColSchema *s = dst->schema;
+	uint32		xmin;
+
+	for (int id = 0; id < s->ncols; id++)
+		if (s->cols[id].kind == SIFT_COLK_GROUP || s->cols[id].parent >= 0)
+			return false;
+	batch_row_begin(dst, src->keys[r]);
+	for (int id = 0; id < s->ncols; id++)
+	{
+		const SiftCVals *v = &src->col[id];
+
+		if (s->cols[id].store == SIFT_COLS_INT || s->cols[id].store == SIFT_COLS_F4 || s->cols[id].store == SIFT_COLS_F8)
+		{
+			bool		ovf = sift_col_bit_test(v->ovf, r);
+
+			vals_put(dst->mcxt, &dst->col[id], v->key[r], ovf || sift_col_bit_test(v->nulls, r), ovf, v->otag ? v->otag[r] : SIFT_COLTAG_UNKNOWN);
+		}
+		else
+		{
+			SiftColValue val;
+
+			sift_cbatch_value(src, id, r, &val);
+			put_value(dst, id, &val);
+		}
+	}
+	xmin = src->hasver ? src->xmin[r] : 0;
+	if (dst->hasver || xmin)
+		sift_cbatch_set_ver(dst, dst->nrows, xmin, src->hasver ? src->cmin[r] : 0);
+	dst->nrows++;
+	return true;
+}
+
 static void
 batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, SiftColRow *scratch)
 {
+	if (batch_copy_plain(dst, src, r))
+		return;
 	sift_cbatch_row(src, r, scratch);
 	sift_cbatch_add_ver(dst, scratch, src->hasver ? src->xmin[r] : 0, src->hasver ? src->cmin[r] : 0);
 }

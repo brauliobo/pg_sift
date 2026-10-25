@@ -77,9 +77,11 @@ subtest 'a backend killed in the middle of a COPY leaves none of its rows, and w
 	is(digest($primary, 'k'), $want, 'and a reader sees none of its rows');
 	my $pid = $primary->safe_psql('postgres', q{SELECT pid FROM pg_stat_activity WHERE query LIKE 'COPY k FROM PROGRAM%' AND pid <> pg_backend_pid()});
 	ok($pid, 'the backend of the COPY');
+	my $log_offset = -s $primary->logfile;
 	kill_expected($pid);
 	finish($h);
-	ok($primary->poll_query_until('postgres', 'SELECT true'),'the server recovered from the crash');
+	# not poll_query_until: its psql can exit on 'in recovery mode' before the 'SELECT true' is written, and IPC::Run dies with a broken pipe
+	ok($primary->wait_for_log(qr/database system is ready to accept connections/, $log_offset), 'the server recovered from the crash');
 	is(digest($primary, 'k'), $want, 'only the committed rows after crash recovery');
 	cmp_ok($primary->safe_psql('postgres', "SELECT sift._test_check('k')"), '>=', 0, 'the store verifies');
 	$primary->safe_psql('postgres', 'VACUUM k; VACUUM k');

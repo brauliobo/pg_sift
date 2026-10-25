@@ -21,6 +21,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import engines  # noqa: E402  (steps/engines.py: bench/engines.tsv)
 import tables  # noqa: E402  (steps/tables.py: the Markdown tables of a tier)
 
 BENCH = os.path.dirname(HERE)
@@ -40,8 +41,7 @@ def versions():
 
 def engine_registry():
     """(ids drawn in the README in table order, label by id) from bench/engines.tsv: the engines with chart = yes"""
-    rows = [l.rstrip('\n').split('\t') for l in open(os.path.join(BENCH, 'engines.tsv')) if l.strip() and not l.startswith('#')]
-    return [r[0] for r in rows if r[4] == 'yes']
+    return [r['id'] for r in engines.rows() if r['chart'] == 'yes']
 
 
 def load(results):

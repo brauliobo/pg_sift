@@ -221,6 +221,19 @@ count_sbs(PartSource *ps)
 	ps->have_off = true;
 }
 
+static bool
+part_sb_heap(void *impl)
+{
+	PartSource *ps = impl;
+
+	count_sbs(ps);
+	open_rest(ps);				/* a worker takes its offsets from the leader and has opened nothing yet */
+	for (int i = 0; i < ps->n; i++)
+		if ((ps->skip == NULL || !ps->skip[i]) && !sift_colsrc_sb_heap(ps->src[i]))
+			return false;
+	return true;
+}
+
 static uint32
 part_nsb(void *impl)
 {
@@ -1050,6 +1063,9 @@ part_counters(const void *impl, SiftSrcCounters *c)
 		c->heap_pages += pc.heap_pages;
 		c->rechecked += pc.rechecked;
 		c->recheck_units += pc.recheck_units;
+		c->point_units += pc.point_units;
+		c->point_rows += pc.point_rows;
+		c->run_windows += pc.run_windows;
 	}
 }
 
@@ -1180,6 +1196,18 @@ static bool
 part_unit_exact(void *impl, const SiftSrcUnit *unit)
 {
 	return sift_colsrc_unit_exact(cur_of(impl), unit_of(impl));
+}
+
+static int
+part_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
+{
+	return sift_colsrc_unit_dead(cur_of(impl), unit_of(impl), mode);
+}
+
+static bool
+part_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_colsrc_unit_except(cur_of(impl), unit_of(impl), leaf);
 }
 
 static bool
@@ -1334,6 +1362,7 @@ static const SiftSrcProvider part_provider = {
 	.close = part_close,
 	.source_layout = part_source_layout,
 	.nsb = part_nsb,
+	.sb_heap = part_sb_heap,
 	.begin = part_begin,
 	.next = part_next,
 	.read = part_read,
@@ -1364,6 +1393,8 @@ static const SiftSrcProvider part_provider = {
 	.set_wide = part_set_wide,
 	.filter_wide = part_filter_wide,
 	.unit_exact = part_unit_exact,
+	.unit_dead = part_unit_dead,
+	.unit_except = part_unit_except,
 	.unit_agg = part_unit_agg,
 	.unit_hist = part_unit_hist,
 	.unit_rollup_tuples = part_unit_rollup_tuples,

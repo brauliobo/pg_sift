@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/table.h"
 #include "catalog/index.h"
 #include "catalog/pg_type_d.h"
@@ -30,7 +32,30 @@ sift_col_unit_preagg_ok(const SiftColUnit *unit)
 	SiftColSegment *seg;
 	uint32		u;
 
-	return sift_col_unit_super(unit, &seg, &u) || (sift_col_unit_stored(unit, &seg, &u) && sift_col_unit_exact(unit));
+	return sift_col_unit_super(unit, &seg, &u) || (sift_col_unit_stored(unit, &seg, &u) && (sift_col_unit_exact(unit) || sift_col_unit_dead_on(unit)));
+}
+
+/* the leaf's counts and sums net of the dead rows; min and max only bound what is left */
+static bool
+agg_dead(const SiftColUnit *unit, int col, SiftCAgg *a)
+{
+	SiftCLeafAgg la;
+	uint32		ndead,
+				nnull;
+
+	if (sift_col_unit_dead_bounds(unit))
+		return true;
+	if (!sift_col_unit_dead_leaf(unit, col, &ndead, &nnull, &la) || ndead > a->nvals || nnull > a->nnull)
+		return false;
+	a->nvals -= ndead;
+	a->nnull -= nnull;
+	a->sum -= la.sum;
+	if (la.flags & SIFT_CAGG_SUMSQ_OVF)
+		a->flags |= SIFT_CAGG_SUMSQ_OVF;
+	else
+		a->sumsq -= la.sumsq;
+	a->flags |= SIFT_CAGG_LOOSE;
+	return true;
 }
 
 bool
@@ -41,11 +66,13 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 
 	if (sift_col_unit_super(unit, &seg, &u))
 		return sift_cseg_super_agg(seg, col, u, a);
-	if (!sift_col_unit_preagg_ok(unit))
+	if (unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	sift_cseg_agg(seg, col, u, a);
-	return !(a->zflags & SIFT_COLZ_OVERFLOW);
+	if (a->zflags & SIFT_COLZ_OVERFLOW)
+		return false;
+	return !sift_col_unit_dead_on(unit) || agg_dead(unit, col, a);
 }
 
 bool
@@ -54,10 +81,23 @@ sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
 	SiftColSegment *seg;
 	uint32		u;
 
-	if (sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+	if (unit->except >= 0 || sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
 	return sift_cseg_presence(seg, col, u, p);
+}
+
+bool
+sift_col_unit_hll(const SiftColUnit *unit, int col, const uint8 **blob)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+
+	if (sift_col_unit_dead_on(unit) || sift_col_unit_super(unit, &seg, &u) || !sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	return (*blob = sift_cseg_hll(seg, col, u, &len)) != NULL;
 }
 
 static void
@@ -67,6 +107,280 @@ corrupt_cube(SiftColSegment *seg, uint32 u)
 			(errcode(ERRCODE_INDEX_CORRUPTED),
 			 errmsg("sift index \"%s\" segment %llu: the cube of unit %u does not decode", RelationGetRelationName(seg->index),
 					(unsigned long long) seg->entry.gen, u)));
+}
+
+/* ---------- exceptions (docs/COL-PREAGG.md 11) ---------- */
+
+/* The exception leaf and cube bytes of unit u; NULL when it has none */
+static const uint8 *
+x_cube(SiftColSegment *seg, uint32 u, int *leaf, uint32 *len)
+{
+	uint32		n,
+				i = 0;
+	const uint8 *b;
+	uint64		v = 0;
+	int			shift = 0;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_EXCEPT || (b = sift_cseg_xcube(seg, u, &n)) == NULL)
+		return NULL;
+	do
+	{
+		if (i >= n || shift > 28)
+			corrupt_cube(seg, u);
+		v |= (uint64) (b[i] & 0x7f) << shift;
+		shift += 7;
+	} while (b[i++] & 0x80);
+	if (v >= (uint64) seg->schema->ncols)
+		corrupt_cube(seg, u);
+	*leaf = (int) v;
+	*len = n - i;
+	return b + i;
+}
+
+bool
+sift_col_unit_except(SiftColUnit *unit, int leaf)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+	int			xl;
+
+	unit->except = -1;
+	if (leaf < 0)
+		return true;
+	if (unit->nsu > 0 || !sift_col_unit_preagg_ok(unit) || !sift_col_unit_stored(unit, &seg, &u) || x_cube(seg, u, &xl, &len) == NULL || xl != leaf)
+		return false;
+	unit->except = leaf;
+	return true;
+}
+
+/*
+ * total - e for a float sum, when the cancellation costs at most 6 bits: the sums of a unit are in row order and the exceptions' are added on their own, so a
+ * result far below the total (or a non-finite one) would carry the rounding of the total, not of the rows that remain
+ */
+static bool
+float_net(double total, double e, uint32 left, double *out)
+{
+	double		d;
+
+	if (left == 0)
+	{
+		*out = 0;
+		return true;
+	}
+	if (!isfinite(total) || !isfinite(e))
+		return false;
+	d = total - e;
+	if (d == 0 || fabs(d) * 64 < fabs(total))
+		return false;
+	*out = d;
+	return true;
+}
+
+/*
+ * h minus the groups of x (the rows where the exception leaf is not NULL), found by key; min and max are gone, and so is a measure x lacks or whose float sum would
+ * cancel (a query that reads it scans the unit, the others do not mind). false: x has a group h lacks
+ */
+static bool
+hist_subtract(SiftCHistDim *h, const SiftCHistDim *x)
+{
+	int			slot[SIFT_PAGG_MAX_MEAS];
+	bool		bad[SIFT_PAGG_MAX_MEAS] = {false};
+	uint32		nk = h->ngroups - h->has_null,
+				xk = x->ngroups - x->has_null,
+				g = 0;
+
+	for (int m = 0; m < h->nmeas; m++)
+		bad[m] = true;
+	for (int m = 0; m < x->nmeas; m++)
+	{
+		slot[m] = 0;
+		while (slot[m] < h->nmeas && h->meas[slot[m]] != x->meas[m])
+			slot[m]++;
+		if (slot[m] == h->nmeas)
+			return false;
+		bad[slot[m]] = false;
+	}
+	for (uint32 i = 0; i < x->ngroups; i++)
+	{
+		uint32		at;
+
+		if (i < xk)
+		{
+			while (g < nk && h->key[g] < x->key[i])
+				g++;
+			if (g >= nk || h->key[g] != x->key[i])
+				return false;
+			at = g;
+		}
+		else if (h->has_null)
+			at = h->ngroups - 1;
+		else
+			return false;
+		if (x->count[i] > h->count[at])
+			return false;
+		h->count[at] -= x->count[i];
+		for (int m = 0; m < x->nmeas; m++)
+		{
+			int			hm = slot[m];
+
+			if (bad[hm])
+				continue;
+			if (x->nn[m][i] > h->nn[hm][at])
+				return false;
+			h->nn[hm][at] -= x->nn[m][i];
+			if (h->sum[hm] && x->sum[m])
+				h->sum[hm][at] -= x->sum[m][i];
+			else if (h->sumf[hm] && x->sumf[m])
+				bad[hm] = !float_net(h->sumf[hm][at], x->sumf[m][i], h->nn[hm][at], &h->sumf[hm][at]);
+			else
+				bad[hm] = true;
+		}
+	}
+	h->minmax = false;
+	{
+		int			to = 0;
+
+		for (int m = 0; m < h->nmeas; m++)
+			if (!bad[m])
+			{
+				h->meas[to] = h->meas[m];
+				h->nn[to] = h->nn[m];
+				h->sum[to] = h->sum[m];
+				h->sumf[to] = h->sumf[m];
+				h->min[to] = h->max[to] = NULL;
+				to++;
+			}
+		h->nmeas = to;
+	}
+	return true;
+}
+
+/* the order of tuple i of x against tuple t of r: the dims first to last, a NULL after the values */
+static int
+tuple_cmp(const SiftCRollup *r, uint32 t, const SiftCRollup *x, uint32 i)
+{
+	for (int j = 0; j < r->ndims; j++)
+	{
+		bool		rn = r->isnull[j] && r->isnull[j][t],
+					xn = x->isnull[j] && x->isnull[j][i];
+
+		if (rn != xn)
+			return rn ? 1 : -1;
+		if (!rn && r->key[j][t] != x->key[j][i])
+			return r->key[j][t] < x->key[j][i] ? -1 : 1;
+	}
+	return 0;
+}
+
+/* the same for the tuples of a rollup, which both hold with all their dims */
+static bool
+rollup_subtract(SiftCRollup *r, const SiftCRollup *x)
+{
+	int			slot[SIFT_PAGG_MAX_MEAS];
+	bool		bad[SIFT_PAGG_MAX_MEAS] = {false};
+	uint32		t = 0;
+
+	if (r->ndims != x->ndims)
+		return false;
+	for (int j = 0; j < r->ndims; j++)
+		if (r->dim[j] != x->dim[j] || r->key[j] == NULL || x->key[j] == NULL)
+			return false;
+	for (int m = 0; m < r->nmeas; m++)
+		bad[m] = true;
+	for (int m = 0; m < x->nmeas; m++)
+	{
+		slot[m] = 0;
+		while (slot[m] < r->nmeas && r->meas[slot[m]] != x->meas[m])
+			slot[m]++;
+		if (slot[m] == r->nmeas)
+			return false;
+		bad[slot[m]] = false;
+	}
+	for (uint32 i = 0; i < x->ntuples; i++)
+	{
+		while (t < r->ntuples && tuple_cmp(r, t, x, i) < 0)
+			t++;
+		if (t >= r->ntuples || tuple_cmp(r, t, x, i) != 0 || x->count[i] > r->count[t])
+			return false;
+		r->count[t] -= x->count[i];
+		for (int m = 0; m < x->nmeas; m++)
+		{
+			int			rm = slot[m];
+
+			if (bad[rm])
+				continue;
+			if (x->nn[m][i] > r->nn[rm][t])
+				return false;
+			r->nn[rm][t] -= x->nn[m][i];
+			if (r->sum[rm] && x->sum[m])
+				r->sum[rm][t] -= x->sum[m][i];
+			else if (r->sumf[rm] && x->sumf[m])
+				bad[rm] = !float_net(r->sumf[rm][t], x->sumf[m][i], r->nn[rm][t], &r->sumf[rm][t]);
+			else
+				bad[rm] = true;
+		}
+	}
+	{
+		int			to = 0;
+
+		for (int m = 0; m < r->nmeas; m++)
+			if (!bad[m])
+			{
+				r->meas[to] = r->meas[m];
+				r->nn[to] = r->nn[m];
+				r->sum[to] = r->sum[m];
+				r->sumf[to] = r->sumf[m];
+				r->min[to] = r->max[to] = NULL;
+				r->minf[to] = r->maxf[to] = NULL;
+				to++;
+			}
+		r->nmeas = to;
+	}
+	return true;
+}
+
+/* The exceptions' rollup of list in unit u, all dims and measures; false: the unit has none of that list */
+static bool
+x_rollup(SiftColSegment *seg, uint32 u, int list, MemoryContext mcxt, SiftCRollup *x)
+{
+	uint32		elen,
+				len;
+	const uint8 *e = sift_cseg_xecube(seg, u, &elen),
+			   *blob;
+
+	if (e == NULL)
+		return false;
+	blob = sift_cpagg_elem_cube(seg->schema, e, elen, list, &len);
+	if (len == UINT32_MAX)
+		corrupt_cube(seg, u);
+	if (blob == NULL)
+		return false;
+	if (!sift_cpagg_rollup_decode(seg->schema, blob, len, mcxt, x))
+		corrupt_cube(seg, u);
+	return true;
+}
+
+/* The histogram of dim without the rows of the unit's exceptions */
+static bool
+hist_except(SiftColSegment *seg, uint32 u, int dim, MemoryContext mcxt, SiftCHistDim *h)
+{
+	SiftCHistDim x;
+	SiftCRollup r;
+	int			xl,
+				found;
+	uint32		len;
+	const uint8 *blob;
+
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent < 0)
+	{
+		if ((blob = x_cube(seg, u, &xl, &len)) == NULL || len == 0)
+			return false;
+		if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, &x)) < 0)
+			corrupt_cube(seg, u);
+		return found > 0 && hist_subtract(h, &x);
+	}
+	return x_rollup(seg, u, seg->schema->cols[dim].parent, mcxt, &r) && sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, &x) && hist_subtract(h, &x);
 }
 
 /* The histogram of dim of a stored unit: from the cube (SIFT_PAGG_CAL + a leaf: the calendar cells of a date or timestamp leaf), or the rollup of its list added up by dim. false: the unit has none */
@@ -122,7 +436,8 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 		if (!sift_col_unit_preagg_ok(unit))
 			return false;
 		sift_col_unit_stored(unit, &seg, &u);
-		if (!seg_hist(seg, u, dim, mcxt, out))
+		if (!seg_hist(seg, u, dim, mcxt, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, out)) ||
+			(sift_col_unit_dead_on(unit) && !sift_col_unit_dead_hist(unit, out)))
 			return false;
 	}
 	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
@@ -143,7 +458,7 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 	sift_col_unit_stored(unit, &seg, &u);
 	if ((blob = sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, need, r) || r->list != list)
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, unit->except >= 0 || sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
 		corrupt_cube(seg, u);
 	if (list < 0)
 	{
@@ -155,6 +470,15 @@ sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, cons
 		if (rows != unit->nrows)
 			corrupt_cube(seg, u);
 	}
+	if (unit->except >= 0)
+	{
+		SiftCRollup x;
+
+		if (!x_rollup(seg, u, list, mcxt, &x) || !rollup_subtract(r, &x))
+			return false;
+	}
+	if (sift_col_unit_dead_on(unit) && !sift_col_unit_dead_rollup(unit, r))
+		return false;
 	memset(dict, 0, SIFT_PAGG_MAX_RDIMS * sizeof(*dict));
 	for (int j = 0; j < r->ndims; j++)
 		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
