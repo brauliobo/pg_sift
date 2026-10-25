@@ -195,6 +195,7 @@ typedef struct AggExec
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */
 	uint64		lookup_loaded;
 	int			lookup_index;
+	int			lookup_cols;	/* the loads from the leaves of an index of the table (map_load_cols) */
 	uint64		lookup_us;
 	uint64		lookup_shared;	/* the rows of the tables the leader put in the shared memory of its workers (par_launch) */
 	const char **pmaps;			/* in a worker: per combo, the table of its join in the shared memory, NULL when it has none (map_load) */
@@ -310,6 +311,7 @@ extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
 extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
+extern bool		sift_agg_lookup_columns;
 extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
 extern int		sift_agg_lookup_cache_kb;

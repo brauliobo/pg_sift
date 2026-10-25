@@ -1037,7 +1037,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		index_close(idx, AccessShareLock);
 		ex->lookup_index++;
 	}
-	else if (!none)
+	else if (!none && !map_load_cols(ex, m, &lj, cb, own, rel))
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
 		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();

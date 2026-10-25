@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 87 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 88 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -649,6 +649,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.agg_lookup_pushdown = off (session, role, database or postgresql.conf): the whole joined table is loaded. No REINDEX.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave on. Off loads the whole joined table. Gains need a btree on the table's equality columns or a selective condition; a set that is most of the table gains nothing (100,000 keys: 30.4 vs 31.3 ms).
+
+#### sift.agg_lookup_columns
+
+`sift_col`, `sift_table` · default · since 3.4 · default on
+
+- **What it does:** the rows of a lookup table are read from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap
+- **Gain:** a table of 200,000 rows loaded by the query (1,000,000 orders): 33.5 to 23.3 ms; the load of the fact-first TPC-H-like Q3 at 400,000 lineitem rows: 102 M to 41 M instructions
+- **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: none: the same memory as the load from the heap
+- **When:** A joined table with a sift_col index that holds its join columns (integer, date, timestamp, text, numeric of up to 18 digits) and no value its leaves cannot store; the first query after a write to the table, or any query when the lookup cache is off. A table cached from an earlier query is not loaded again.
+- **Default:** on — On: the heap is read a tuple at a time (about 160 ns a row read); the leaves are decoded a unit at a time, and the conditions `column <op> constant` of the table are tested on them before a tuple is made. The result is the same rows.
+- **Turn off:** SET sift.agg_lookup_columns = off (session, role, database or postgresql.conf): the heap is read. No REINDEX.
+- **Upgrade from 3.3:** Nothing to do after ALTER EXTENSION UPDATE: the setting is read by the library, no REINDEX, the format is unchanged.
+- **Advice:** Leave on. Turn it off to load every lookup table from the heap.
 
 #### sift.verdict_cache_kb
 
@@ -1894,7 +1907,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1916,6 +1929,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.verdict_cache_kb`, `s
 | `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
 | `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
+| `sift.agg_lookup_columns` | new | on |  | Nothing to do after ALTER EXTENSION UPDATE: the setting is read by the library, no REINDEX, the format is unchanged. |
 | `sift.verdict_cache_kb` | new | 256 kB |  | Nothing to do after ALTER EXTENSION UPDATE: the table is allocated by the first backend that plans a statement with a shared CTE, in the shared memory of the server; no REINDEX. |
 | `sift.plan_scale` | 1 | 1 |  | Now also scales the normal side of a plan on PostgreSQL 19 (3.3 did nothing there, as PostgreSQL 19 removed the hook it used); nothing to do. |
 | `sift.agg_force` | new | off |  | New, off: a diagnostic that nothing sets after the update. Nothing to do. |

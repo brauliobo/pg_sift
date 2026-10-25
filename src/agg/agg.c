@@ -105,6 +105,7 @@ bool		sift_agg_semi_lut = true;
 bool		sift_agg_two_level_on = true;
 int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
+bool		sift_agg_lookup_columns = true;
 bool		sift_agg_join_filter = true;
 bool		sift_agg_left_lateral = true;
 bool		sift_agg_key_skew = true;
@@ -177,6 +178,10 @@ sift_agg_init(void)
 	DefineCustomBoolVariable("sift.agg_lookup_pushdown",
 							 "Loads the rows a lookup join can match only: an index scan or scan keys on the table's own `column = value` conditions, and the other own conditions tested while loading.",
 							 NULL, &sift_agg_lookup_pushdown, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_lookup_columns",
+							 "Loads the rows of a lookup table from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap.",
+							 NULL, &sift_agg_lookup_columns, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_join_filter",
 							 "Tests the integer key leaf of an inner or semi lookup join against the keys of the loaded table before tuples are made (zone pruning, source filters, row bitmaps).",
@@ -1354,6 +1359,8 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 			ExplainPropertyInteger("Lookup Rows Shared", NULL, c->lookup_shared, es);
 		if (c->lookup_index > 0)
 			ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
+		if (c->lookup_cols > 0)
+			ExplainPropertyInteger("Lookup Column Loads", NULL, c->lookup_cols, es);
 		if (es->timing)
 			ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
 	}
