@@ -23,6 +23,7 @@
 #include "nodes/nodeFuncs.h"
 #include "nodes/plannodes.h"
 #include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "optimizer/planner.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
@@ -887,6 +888,22 @@ reads_column_index(Query *q)
 }
 
 /*
+ * PostgreSQL prices each rescan of a function scan at the rows it returns (0.11 for the unnest of a group's top rows), and the executor spends
+ * 1.4 to 2 us on it: 6,263 groups of the top 3 rows cost 12.3 ms above the scan, priced 4.5. Measured per group on the unnest of two arrays.
+ */
+#define FLAT_RESCAN_OPS	360.0
+
+/* the groups that a nested loop unnests: the rescans of a function scan below this node */
+static double
+function_rescans(Plan *plan)
+{
+	if (plan == NULL)
+		return 0;
+	return (IsA(plan, NestLoop) && IsA(plan->righttree, FunctionScan) ? plan->lefttree->plan_rows : 0) +
+		function_rescans(plan->lefttree) + function_rescans(plan->righttree);
+}
+
+/*
  * The query planned as it is, and with its lateral sub-selects pulled up when that is possible (agg/flat.c): the flat plan wins if it
  * runs in the scan and costs less. Both are plans of the same query.
  */
@@ -942,7 +959,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 	 */
 	if ((uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) &&
 		((flat_inlined && !uses_sift_agg(plain->planTree) && !any_sift_agg(plain->subplans)) ||
-		 flatplan->planTree->total_cost < plain->planTree->total_cost))
+		 flatplan->planTree->total_cost + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
 		verdict_remember(&fv, true, 0, 0, 0, 0);

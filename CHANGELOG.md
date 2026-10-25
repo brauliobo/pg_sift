@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: the first N rows of each group asked with a window function (`row_number() OVER (PARTITION BY k ORDER BY o)` and `rn <= N`, N > 1) ran in the scan with the groups' arrays when its plan priced less than the window's, which left out the work above the scan: the executor spends 1.4 to 2 us on each group to unnest its rows (PostgreSQL prices the rescan of a function scan at the rows it returns, 0.11), so 6,263 groups of the top 3 rows cost 12.3 ms there, priced 4.5. The plan of the arrays now pays 0.9 for each group it unnests (360 operator costs). 1,000,000 rows, 31,675 of them in range, 6,263 groups: the window plan 26.2 ms, the arrays 32.8 ms (was chosen, priced 17,693 against 18,857); with 30 or 40 groups the scan stays (22.4 ms against 33.2); 100,000 rows unchanged (2.3 ms). Test `agg_topn_rownumber`.
+
 ## 3.4.0 - 2026-10-25
 
 - Changed: pg_sift: the byte budget of the cube of a `sift_col` unit counts what the cube holds (every measure of a kept dimension, with its minimum and maximum) and is 40% of the unit's encoded bytes, at least 8 kB, where it was 2% of the first three measures, so an index of sixteen columns whose dimensions have 50 to 200 values keeps the dimensions in every unit and answers a `GROUP BY` of any of them from the pre-aggregates: the last of eight dimensions of 50 values over 500,000 rows goes from 2.3 ms to 0.28 ms (the normal plan takes 63 ms), the index grows by 8.9% for the cube instead of 6.7% at 1,000,000 rows (at most 41% for 32 columns of 200 values) and the index of the store table is the same file. Dimensions of alike size keep the order of the columns, so units do not keep other ones each, the calendar cells of the dates share 10% as built, and a column the cube holds in every unit no longer keeps a key list (`key_columns`). Segments written afterwards; `REINDEX` or `sift.col_refresh(index)` rewrite the older ones. No format change.

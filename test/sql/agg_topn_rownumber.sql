@@ -91,6 +91,24 @@ SELECT * FROM check_query('a grouped sub-select', $q$
  SELECT * FROM (SELECT grp, c, row_number() OVER (PARTITION BY c % 3 ORDER BY c DESC, grp) rn FROM (SELECT grp, count(*) c FROM events GROUP BY grp) g) t WHERE rn <= 3 $q$);
 SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn = 2 $q$);
 
+-- the cost decides it: PostgreSQL prices the unnest of a group at the rows it returns and the executor spends more on each group, so the scan that wins for 37
+-- groups of 135 rows loses to the window for 1,000 groups of 5
+CREATE TABLE ranked (id int PRIMARY KEY, k37 int NOT NULL, k1000 int NOT NULL, ts int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO ranked SELECT i, i % 37, i % 1000, (i * 31) % 1000, i % 11 FROM generate_series(1, 5000) i;
+CREATE INDEX ranked_col ON ranked USING sift_col (id, k37, k1000, ts, amount);
+VACUUM (FREEZE, ANALYZE) ranked;
+CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE line text; found bool := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	RETURN found;
+END $$;
+SET seq_page_cost = 64;
+SELECT k AS "partition key", plan_in_scan(format($q$ SELECT * FROM (SELECT id, amount, row_number() OVER (PARTITION BY %s ORDER BY ts DESC, id) rn FROM ranked) t WHERE rn <= 3 $q$, k)) AS in_scan
+FROM unnest(ARRAY['k37', 'k1000']) k;
+DROP FUNCTION plan_in_scan(text);
+DROP TABLE ranked;
+
 DROP FUNCTION first_n_of_tie(text, int);
 DROP TABLE events, plain_events;
 DROP FUNCTION window_why(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
