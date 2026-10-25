@@ -4,6 +4,7 @@
 # ORDER BY .. LIMIT n over the index returns what the normal plan returns (the units answered from a head are those that are clean), and the space
 # stays bounded. SIFT_COL_CRASH_ITERS (default 20, 3 quick).
 . "$(dirname "$0")/lib.bash"
+. "$(dirname "$0")/lib_col.bash"
 
 ITERS=$(knob SIFT_COL_CRASH_ITERS 20 3)
 MAX_MB=$(knob SIFT_CRASH_MAX_MB 4096 1024)
@@ -13,29 +14,7 @@ max_wal_size = 256MB
 autovacuum = off"
 node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
-	"CREATE FUNCTION topn_same() RETURNS bool LANGUAGE plpgsql AS \$\$
-		DECLARE col text; dir text; lim int; g text; q text; a text; b text;
-		BEGIN
-			SET LOCAL max_parallel_workers_per_gather = 0;
-			FOREACH col IN ARRAY ARRAY['k', 'v'] LOOP
-			FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
-			FOREACH lim IN ARRAY ARRAY[1, 32, 100] LOOP
-			FOREACH g IN ARRAY ARRAY['on', 'off'] LOOP
-				q := format('SELECT coalesce(string_agg(%1\$s::text, '','' ORDER BY pos), '''') FROM (SELECT row_number() OVER () AS pos, %1\$s FROM (SELECT %1\$s FROM t ORDER BY %1\$s %2\$s LIMIT %3\$s) x) y', col, dir, lim);
-				PERFORM set_config('sift.test_topn_gorder', g, true);
-				SET LOCAL sift.enable_agg = on;
-				EXECUTE q INTO a;
-				SET LOCAL sift.enable_agg = off;
-				EXECUTE q INTO b;
-				IF a IS DISTINCT FROM b THEN RETURN false; END IF;
-			END LOOP; END LOOP; END LOOP; END LOOP;
-			RETURN true;
-		END \$\$" \
-	"CREATE TABLE t (id bigserial PRIMARY KEY, k int NOT NULL, v int NOT NULL, pad text)" \
-	"ALTER TABLE t ALTER COLUMN pad SET STORAGE PLAIN" \
-	"INSERT INTO t (k, v, pad) SELECT (hashint4(i) & 2147483647) % 100000, i, repeat('x', 400) FROM generate_series(1, 60000) i" \
-	"CREATE INDEX t_col ON t USING sift_col (k, v) WITH (write_buffer_limit = 64, order_columns = 'k, v', order_array_columns = 'k, v')" \
-	"VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) t" >/dev/null || bail "setup failed"
+	"${COL_TOPN_FIXTURE[@]}" >/dev/null || bail "setup failed"
 check "the segments carry the heads" test "$(sql crash "SELECT string_agg(DISTINCT format::text, ',') FROM sift._test_col_formats('t_col')")" == 21
 check "the top-N scan answers units from the heads" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'Units Answered By Run Head')" == 1
 check "and reads the global order of the key" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 100" | grep -c 'Global Order')" == 1
