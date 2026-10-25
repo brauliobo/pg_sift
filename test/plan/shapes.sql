@@ -36,7 +36,7 @@ SELECT parent_id, kind, date_trunc('quarter', ts)::date AS bucket, sum(qty) AS u
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 
 -- name: a06_global
--- expect: scan 0.096 0.32
+-- expect: scan 0.050 0.20
 SELECT count(*) AS n, sum(amount) AS total, min(ts) AS first_day, max(ts) AS last_day FROM events
 WHERE deleted_at IS NULL AND kind = 'cat_a' AND ts >= date '2024-03-01' AND ts < date '2025-03-01';
 
@@ -294,7 +294,7 @@ SELECT parent_id, sum(amount) AS total FROM events_part WHERE deleted_at IS NULL
 SELECT count(*) AS n FROM events_part;
 
 -- name: i01_count_all
--- expect: scan 0.15 0.58
+-- expect: scan 0.059 0.24
 SELECT count(*) AS n FROM events;
 
 -- name: i02_count_by_kind
@@ -306,11 +306,11 @@ SELECT kind, count(*) AS n FROM events GROUP BY 1 ORDER BY 1;
 SELECT parent_id, sum(amount) AS total FROM events GROUP BY 1 ORDER BY 1;
 
 -- name: i04_min_max
--- expect: scan 0.11 0.35
+-- expect: scan 0.061 0.25
 SELECT min(ts) AS first_day, max(ts) AS last_day, min(amount) AS low, max(amount) AS high FROM events;
 
 -- name: i05_count_live
--- expect: scan 0.14 0.54
+-- expect: scan 0.055 0.22
 SELECT count(*) AS n FROM events WHERE deleted_at IS NULL;
 
 -- name: i06_sum_by_kind_month
@@ -318,7 +318,7 @@ SELECT count(*) AS n FROM events WHERE deleted_at IS NULL;
 SELECT kind, date_trunc('month', ts)::date AS bucket, sum(amount) AS total, count(*) AS n FROM events GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: j01_distinct_global
--- expect: scan 0.13 0.51
+-- expect: scan 0.051 0.20
 SELECT count(DISTINCT parent_id) AS parents FROM events WHERE deleted_at IS NULL;
 
 -- name: j02_distinct_by_kind
@@ -352,7 +352,7 @@ UNION ALL
 SELECT 'catg_b', round(avg((doc -> 'metrics' ->> 'catg_b')::float8)::numeric, 3), count(*) FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' ORDER BY 1;
 
 -- name: k02_arms_scalar_subselects
--- expect: scan 0.10 0.37
+-- expect: scan 0.048 0.19
 SELECT (SELECT avg(amount) FROM events WHERE kind = 'cat_a' AND deleted_at IS NULL) AS mean_a, (SELECT avg(amount) FROM events WHERE kind = 'cat_b' AND deleted_at IS NULL) AS mean_b,
        (SELECT count(*) FROM events WHERE deleted_at IS NULL) AS n;
 

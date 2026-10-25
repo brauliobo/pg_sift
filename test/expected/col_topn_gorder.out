@@ -129,8 +129,8 @@ VACUUM gt;
 SELECT * FROM gt_mm_all();
  result | n  
 --------+----
- array  | 22
- units  | 76
+ array  | 24
+ units  | 74
 (2 rows)
 
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
