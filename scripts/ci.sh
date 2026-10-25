@@ -110,6 +110,8 @@ focus_tokens() {
 # The assertions family of a pull request (the `cassert` output of `affected --github`, run on the PostgreSQL 18 built with --enable-cassert): a change of a source that starts
 # workers or handles snapshots or executor hooks (ASSERT_MARK, read from the file: no list to keep) runs the regression tests that run those paths. The `assertions` label
 # of a pull request runs the family for any change. A change reached the tip with green fast checks and failed an Assert of the server (GetActiveSnapshot) in a worker.
+# Measured (run 40164658605, 27 tests, 4 lanes): the job 8.0 min (cache 1 s, extension build 34 s, tests 7.2 min wall, scratch 435 MB); the slowest tests agg_preagg_elem_parallel 266 s,
+# agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
 ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|parallel_)'
 if [[ $MODE == affected ]]; then
