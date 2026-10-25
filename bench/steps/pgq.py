@@ -26,7 +26,7 @@ class Backend:
         self.p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1, env=env)
         try:
             for sql in [*setup, '\\o /dev/null']:
-                self.run(sql)
+                Backend.run(self, sql)   # not an override: the subclass's run may need the backend set up
         except BaseException:   # no backend (the server is starting): reap this psql
             self.p.kill()
             self.p.communicate()

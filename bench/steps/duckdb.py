@@ -29,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import benchlib  # noqa: E402  (steps/benchlib.py)
 import extras  # noqa: E402
+import pgq  # noqa: E402  (steps/pgq.py)
 from store_lib import load_queries  # noqa: E402
 
 SQL = os.path.join(HERE, '..', 'sql', 'store')
@@ -79,36 +80,22 @@ def wait_quiet(limit=300):
     return True
 
 
-class Session:
+class Session(pgq.Backend):
     """one psql process kept open; run() returns (milliseconds as psql timed the statement, its rows, the error or warning)"""
 
     def __init__(self, port, timeout, setting, db='bench', host='127.0.0.1'):
-        env = {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout}
-        self.p = subprocess.Popen(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db],
-                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        self.p.stdin.write('\\set VERBOSITY terse\n')
+        super().__init__(['psql', '-X', '-qAt', '-F', '|', '-h', host, '-p', str(port), '-U', 'postgres', '-d', db], {**ENV, 'PGOPTIONS': '-c statement_timeout=%ds' % timeout},
+                         setup=['\\set VERBOSITY terse'], strict=False)
         if setting:
             self.run('SET duckdb.force_execution = %s' % setting)
 
     def run(self, sql):
-        self.p.stdin.write('\\timing on\n%s;\n\\timing off\nSELECT \'__END__\';\n' % sql.rstrip(';'))
-        self.p.stdin.flush()
-        lines = []
-        for line in self.p.stdout:
-            if line.strip() == '__END__':
-                break
-            lines.append(line.rstrip('\n'))
-        else:
-            sys.exit('duckdb: psql ended')
+        lines = super().run('\\timing on\n%s;\n\\timing off' % sql.rstrip(';'), capture=True)
         ms = next((float(m.group(1)) for l in reversed(lines) if (m := re.match(r'Time: ([0-9.]+) ms', l))), None)
         err = next((l[6:].strip() for l in lines if l.startswith('ERROR:')), '')
         warn = next((l[8:].strip() for l in lines if l.startswith('WARNING:')), '')
         rows = [l for l in lines if not l.startswith(('Time:', 'ERROR:', 'WARNING:', 'NOTICE:'))]
         return ms, rows, err, warn
-
-    def close(self):
-        self.p.stdin.close()
-        self.p.wait()
 
 
 def key(row):
