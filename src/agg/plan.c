@@ -1325,6 +1325,8 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 			break;
 	}
 	agg_stage_end(&st);
+	if (stage == UPPERREL_FINAL)
+		agg_final_paths(root, output_rel);
 	agg_index_pick = outer_pick;
 	agg_index_usable = outer_usable;
 	agg_stage_normal = outer_normal;

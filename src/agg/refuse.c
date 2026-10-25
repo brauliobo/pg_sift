@@ -67,6 +67,7 @@ typedef struct ArmNote
 	RelOptInfo *rel;
 	Path		best;			/* the cheapest normal path of the upper relation when the arm added its first */
 	bool		has_best;
+	bool		limited;		/* the top-N arm: a LIMIT above it is costed by the fraction of the rows it reads (agg_final_paths) */
 	bool		cheaper;		/* a path of the arm is no dearer than best, as add_path compares them (enable_* off counts) */
 	double		scan;
 	double		normal;
@@ -91,6 +92,7 @@ static double path_vet_pct;
 static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of: in vet_cx, for the plans of a statement are planned in contexts that are deleted before the choice between them is made */
 static MemoryContext vet_cx;		/* kept for the backend, reset after each statement's plans (the leak report allows the names "sift cache ...") */
 static List *done;
+static List *final_wait;			/* (root, ArmNote) of the arms that were used before the LIMIT of the query was costed: reported when the final paths are known */
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
 static Tuplestorestate *why_store;
@@ -147,6 +149,7 @@ agg_arm_begin(const char *name, bool candidate)
 		return;
 	arm = palloc0(sizeof(ArmNote));
 	arm->name = arm_name(name);
+	arm->limited = strcmp(name, "topn") == 0;
 	arm->candidate = candidate;
 	arm->scan = arm->normal = get_float8_infinity();
 }
@@ -349,6 +352,7 @@ forget_arms(void)
 {
 	arm = NULL;
 	done = NIL;
+	final_wait = NIL;
 	agg_vet_forget();
 	agg_variant = NULL;
 	quiet_reports = false;
@@ -377,6 +381,7 @@ agg_stage_begin(AggStage *st, PlannerInfo *root)
 	int			level = root->query_level;
 
 	st->on = sift_explain_refusals;
+	st->root = root;
 	if (!st->on)
 		return;
 	if (!registered)
@@ -412,13 +417,77 @@ pick_of(const char *name)
 	return first;
 }
 
+/* does the path, or what it only limits, projects or sorts, run a SiftAgg scan? */
+static bool
+final_runs_siftagg(const Path *p)
+{
+	for (;; )
+	{
+		if (is_siftagg(p))
+			return true;
+		switch (nodeTag(p))
+		{
+			case T_LimitPath:
+				p = ((const LimitPath *) p)->subpath;
+				break;
+			case T_ProjectionPath:
+				p = ((const ProjectionPath *) p)->subpath;
+				break;
+			case T_SortPath:
+			case T_IncrementalSortPath:
+				p = ((const SortPath *) p)->subpath;
+				break;
+			default:
+				return false;
+		}
+	}
+}
+
+/*
+ * The arm for ORDER BY .. LIMIT compares its path with the whole cost of the ordered paths; the LIMIT is costed after it, and an index that
+ * delivers the order reads only the rows asked for. The final paths say which won, and at what cost.
+ */
+void
+agg_final_paths(PlannerInfo *root, RelOptInfo *final_rel)
+{
+	List	   *rest = NIL;
+
+	foreach_ptr(List, w, final_wait)
+	{
+		ArmNote    *a = lsecond(w);
+
+		if (linitial(w) != root)
+		{
+			rest = lappend(rest, w);
+			continue;
+		}
+		a->used = false;
+		foreach_ptr(Path, p, final_rel->pathlist)
+			a->used |= final_runs_siftagg(p);
+		if (!a->used)
+		{
+			a->normal = get_float8_infinity();
+			foreach_ptr(Path, p, final_rel->pathlist)
+				a->normal = Min(a->normal, p->total_cost);
+			a->why = AGG_REFUSE_COST;
+			a->detail = psprintf("the scan costs %.2f, the normal plan with the LIMIT %.2f", a->scan, a->normal);
+		}
+		report(a);
+	}
+	final_wait = rest;
+}
+
 void
 agg_stage_end(AggStage *st)
 {
 	if (!st->on)
 		return;
 	foreach_ptr(ArmNote, a, done)
-		if (pick_of(a->name) == a)
+		if (pick_of(a->name) != a)
+			continue;
+		else if (a->used && a->limited && st->root->parse->limitCount != NULL)
+			final_wait = lappend(final_wait, list_make2(st->root, a));
+		else
 			report(a);
 	arm = st->outer_arm;
 	done = st->outer_done;

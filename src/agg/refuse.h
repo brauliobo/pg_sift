@@ -95,10 +95,12 @@ typedef struct AggStage
 	int			outer_level;
 	bool		outer_volatile;
 	bool		on;
+	PlannerInfo *root;
 } AggStage;
 
 extern void agg_stage_begin(AggStage *st, PlannerInfo *root);
 extern void agg_stage_end(AggStage *st);
+extern void agg_final_paths(PlannerInfo *root, RelOptInfo *final_rel);
 
 /*
  * `return agg_refuse(ID);` in a function that returns bool, `agg_refused(ID);` before a bare return; _on: with a detail (a name); _f: with a detail
