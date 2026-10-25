@@ -107,16 +107,11 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 	if (lit->kind == 's' && typid == TEXTOID && (op == SCMP_EQ || op == SCMP_NE) && lut_leaf_ok(c, leaf))
 	{
 		/* bytewise equality: the C collation is deterministic whatever the database collation is */
-		Param	   *pm = makeNode(Param);
+		Param	   *pm = exec_param(0, TEXTOID, -1, C_COLLATION_OID);
 		char	   *str = pnstrdup(lit->s, lit->len);
 		Oid			eq = get_opfamily_member(TEXT_BTREE_FAM_OID, TEXTOID, TEXTOID, BTEqualStrategyNumber);
 		OpExpr	   *e;
 
-		pm->paramkind = PARAM_EXEC;
-		pm->paramtype = TEXTOID;
-		pm->paramtypmod = -1;
-		pm->paramcollid = C_COLLATION_OID;
-		pm->location = -1;
 		k = makeConst(TEXTOID, -1, C_COLLATION_OID, -1, PointerGetDatum(cstring_to_text_with_len(lit->s, lit->len)), false, false);
 		e = (OpExpr *) make_opclause(op == SCMP_NE ? get_negator(eq) : eq, BOOLOID, false, (Expr *) pm, (Expr *) k, InvalidOid, C_COLLATION_OID);
 		set_opfuncid(e);

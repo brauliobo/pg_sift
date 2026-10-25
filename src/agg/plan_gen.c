@@ -155,18 +155,11 @@ gen_sub_mutator(Node *n, GenWalk *w)
 	if ((IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr) || IsA(n, RelabelType)) &&
 		(id = match_leaf(w->c, n)) >= 0)
 	{
-		Param	   *p = makeNode(Param);
 		int			pos = 0;
 
 		while (w->leaf[pos] != id)
 			pos++;
-		p->paramkind = PARAM_EXEC;
-		p->paramid = pos;
-		p->paramtype = w->ptype[pos];
-		p->paramtypmod = w->ptypmod[pos];
-		p->paramcollid = w->pcoll[pos];
-		p->location = -1;
-		return (Node *) p;
+		return (Node *) exec_param(pos, w->ptype[pos], w->ptypmod[pos], w->pcoll[pos]);
 	}
 	return expression_tree_mutator(n, gen_sub_mutator, w);
 }

@@ -308,19 +308,26 @@ subst_mutator(Node *n, SubstCtx *s)
 	return expression_tree_mutator(n, subst_mutator, s);
 }
 
+Param *
+exec_param(int id, Oid type, int32 typmod, Oid coll)
+{
+	Param	   *p = makeNode(Param);
+
+	p->paramkind = PARAM_EXEC;
+	p->paramid = id;
+	p->paramtype = type;
+	p->paramtypmod = typmod;
+	p->paramcollid = coll;
+	p->location = -1;
+	return p;
+}
+
 /* e with the leaf reference replaced by Param 0 (PARAM_EXEC) of the type it had */
 Node *
 substitute_leaf(AggCtx *c, Node *e, Oid ptype, int32 ptypmod, Oid pcoll)
 {
-	Param	   *p = makeNode(Param);
-	SubstCtx	s = {c, p};
+	SubstCtx	s = {c, exec_param(0, ptype, ptypmod, pcoll)};
 
-	p->paramkind = PARAM_EXEC;
-	p->paramid = 0;
-	p->paramtype = ptype;
-	p->paramtypmod = ptypmod;
-	p->paramcollid = pcoll;
-	p->location = -1;
 	return subst_mutator(e, &s);
 }
 

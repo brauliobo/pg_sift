@@ -609,7 +609,6 @@ static Node *
 combo_sub_mutator(Node *n, ComboSub *s)
 {
 	int			id;
-	Param	   *p;
 
 	if (n == NULL)
 		return NULL;
@@ -622,41 +621,26 @@ combo_sub_mutator(Node *n, ComboSub *s)
 	}
 	if (IsA(n, Var) || IsA(n, CoerceViaIO) || IsA(n, FuncExpr) || IsA(n, OpExpr))
 	{
-		p = makeNode(Param);
-		p->paramkind = PARAM_EXEC;
-		p->location = -1;
 		if (s->jc != NULL && join_of_var(s->c, n) == s->jc)
 		{
 			Var		   *v = (Var *) n;
 
-			p->paramid = s->cb->nl + join_col(s->jc, v);
-			p->paramtype = v->vartype;
-			p->paramtypmod = v->vartypmod;
-			p->paramcollid = v->varcollid;
-			return (Node *) p;
+			return (Node *) exec_param(s->cb->nl + join_col(s->jc, v), v->vartype, v->vartypmod, v->varcollid);
 		}
 		if (join_of_var(s->c, n) != NULL)
 		{
 			Var		   *v = (Var *) n;
+			int			paramid = combo_reference(s->c, s->cb, join_of_var(s->c, n), v);
 
-			p->paramid = combo_reference(s->c, s->cb, join_of_var(s->c, n), v);
-			Assert(p->paramid >= 0);
-			p->paramtype = v->vartype;
-			p->paramtypmod = v->vartypmod;
-			p->paramcollid = v->varcollid;
-			return (Node *) p;
+			Assert(paramid >= 0);
+			return (Node *) exec_param(paramid, v->vartype, v->vartypmod, v->varcollid);
 		}
 		if ((id = match_leaf(s->c, n)) >= 0)
 		{
 			int			pos = combo_leaf(s->cb, id, false, 0, 0, 0);
 
-			p->paramid = pos;
-			p->paramtype = s->cb->ptype[pos];
-			p->paramtypmod = s->cb->ptypmod[pos];
-			p->paramcollid = s->cb->pcoll[pos];
-			return (Node *) p;
+			return (Node *) exec_param(pos, s->cb->ptype[pos], s->cb->ptypmod[pos], s->cb->pcoll[pos]);
 		}
-		pfree(p);
 	}
 	return expression_tree_mutator(n, combo_sub_mutator, s);
 }

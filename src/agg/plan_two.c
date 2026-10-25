@@ -517,16 +517,10 @@ having_mutator(Node *n, HavingSub *h)
 	if (IsA(n, Aggref))
 	{
 		int			ai = h->bad || list_length(h->src) >= SIFT_AGG_MAX_PARAMS ? -1 : arm_inner_agg(h->c, h->in, n, exprType(n));
-		Param	   *p = makeNode(Param);
+		Param	   *p = exec_param(list_length(h->src), exprType(n), -1, InvalidOid);
 
 		if (ai < 0)
 			h->bad = true;
-		p->paramkind = PARAM_EXEC;
-		p->paramid = list_length(h->src);
-		p->paramtype = exprType(n);
-		p->paramtypmod = -1;
-		p->paramcollid = InvalidOid;
-		p->location = -1;
 		h->src = lappend_int(h->src, ai);
 		return (Node *) p;
 	}

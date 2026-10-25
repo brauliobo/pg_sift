@@ -308,6 +308,8 @@ extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
 extern bool array_initplan_ok(AggCtx *c, Param *prm);
 extern bool single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll);
 extern void hash_param_saop(ScalarArrayOpExpr *sa);
+/* A PARAM_EXEC placeholder of the type given */
+extern Param *exec_param(int id, Oid type, int32 typmod, Oid coll);
 extern Node *substitute_leaf(AggCtx *c, Node *e, Oid ptype, int32 ptypmod, Oid pcoll);
 extern bool lut_leaf_ok(AggCtx *c, int leaf);
 extern bool combo_leaf_ok(AggCtx *c, int leaf);

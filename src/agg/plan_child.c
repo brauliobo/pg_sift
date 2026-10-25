@@ -97,6 +97,24 @@ derivable_call(Node *n)
 		(fid == F_JSONB_EXISTS || fid == F_JSONB_OBJECT_FIELD_TEXT || fid == F_JSONB_TYPEOF);
 }
 
+/* The parameter that stands for expr of the enclosing query: one per distinct expr of *exprs, whose parameter ids are in *ids, typed as like */
+static Param *
+outer_param(PlannerInfo *root, List **exprs, List **ids, Node *expr, Node *like)
+{
+	int			at = -1;
+
+	for (int i = 0; i < list_length(*exprs); i++)
+		if (equal(list_nth(*exprs, i), expr))
+			at = i;
+	if (at < 0)
+	{
+		*exprs = lappend(*exprs, expr);
+		*ids = lappend_int(*ids, assign_special_exec_param(root));
+		at = list_length(*exprs) - 1;
+	}
+	return exec_param(list_nth_int(*ids, at), exprType(like), exprTypmod(like), exprCollation(like));
+}
+
 typedef struct DeriveCtx
 {
 	int			depth;			/* the query levels below the child's own */
@@ -125,29 +143,12 @@ derive_mutator(Node *n, DeriveCtx *x)
 	if (derivable_call(n) && IsA(a = strip_relabel(linitial(func_args(n))), Var) && ((Var *) a)->varlevelsup == x->depth + 1)
 	{
 		Node	   *call = copyObject(n);
-		Param	   *prm = makeNode(Param);
-		int			at = -1;
 
 		foreach_ptr(Node, other, func_args(call))
 			if (foreach_current_index(other) > 0 && !IsA(strip_relabel(other), Const))
 				return expression_tree_mutator(n, derive_mutator, x);
 		((Var *) strip_relabel(linitial(func_args(call))))->varlevelsup = 0;
-		for (int i = 0; i < list_length(x->calls); i++)
-			if (equal(list_nth(x->calls, i), call))
-				at = i;
-		if (at < 0)
-		{
-			x->calls = lappend(x->calls, call);
-			x->params = lappend_int(x->params, assign_special_exec_param(x->root));
-			at = list_length(x->calls) - 1;
-		}
-		prm->paramkind = PARAM_EXEC;
-		prm->paramid = list_nth_int(x->params, at);
-		prm->paramtype = exprType(n);
-		prm->paramtypmod = exprTypmod(n);
-		prm->paramcollid = exprCollation(n);
-		prm->location = -1;
-		return (Node *) prm;
+		return (Node *) outer_param(x->root, &x->calls, &x->params, call, n);
 	}
 	return expression_tree_mutator(n, derive_mutator, x);
 }
@@ -628,25 +629,7 @@ typedef struct LiftCtx
 static Node *
 lift_param(LiftCtx *x, Node *outer)
 {
-	Param	   *prm = makeNode(Param);
-	int			at = -1;
-
-	for (int i = 0; i < list_length(x->args); i++)
-		if (equal(list_nth(x->args, i), outer))
-			at = i;
-	if (at < 0)
-	{
-		x->args = lappend(x->args, outer);
-		x->params = lappend_int(x->params, assign_special_exec_param(x->root));
-		at = list_length(x->args) - 1;
-	}
-	prm->paramkind = PARAM_EXEC;
-	prm->paramid = list_nth_int(x->params, at);
-	prm->paramtype = exprType(outer);
-	prm->paramtypmod = exprTypmod(outer);
-	prm->paramcollid = exprCollation(outer);
-	prm->location = -1;
-	return (Node *) prm;
+	return (Node *) outer_param(x->root, &x->args, &x->params, outer, outer);
 }
 
 /* the column as the scan reads it: of the query (two levels up) or of the EXISTS' tables (one up), in the merged range table */

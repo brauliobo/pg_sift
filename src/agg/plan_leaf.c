@@ -903,12 +903,8 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 		{
 			CaseExpr   *out = makeNode(CaseExpr);
 			CaseWhen   *when = makeNode(CaseWhen);
-			Param	   *missing = makeNode(Param);
+			Param	   *missing = exec_param(SIFT_AGG_NULL_INPUT, BOOLOID, -1, InvalidOid);
 
-			missing->paramkind = PARAM_EXEC;
-			missing->paramid = SIFT_AGG_NULL_INPUT;
-			missing->paramtype = BOOLOID;
-			missing->paramtypmod = -1;
 			missing->location = SIFT_AGG_NULL_INPUT_LOC;
 			when->expr = (Expr *) missing;
 			when->result = (Expr *) makeNullConst(exprType(n), exprTypmod(n), exprCollation(n));
