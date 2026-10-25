@@ -66,7 +66,8 @@ report() {
 	for k in "${!job_peak[@]}"; do printf '  %-40s %6d\n' "$k" $(( ${job_peak[$k]} / 1048576 )); done | sort -k2 -n -r | head -"${JOBS_SHOWN:-12}"
 	echo "postgres processes, peak PSS: $rss_peak MB"
 }
-trap 'report; exit 0' TERM INT
+nap=
+trap 'kill "$nap" 2>/dev/null; report; exit 0' TERM INT
 
 while :; do
 	sample=$(find "$BASE" -type f -printf '%b %P\n' 2>/dev/null | awk "$classify")
@@ -83,5 +84,6 @@ while :; do
 	rss=$(pss_mb)
 	(( rss > rss_peak )) && rss_peak=$rss
 	sleep 1 &
-	wait $!
+	nap=$!
+	wait "$nap"
 done

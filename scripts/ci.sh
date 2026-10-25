@@ -781,6 +781,13 @@ for s in "${ORDER[@]}" leakcheck; do
 	for id in ${bad:-}; do [[ $id != installcheck-batch* ]] || grep -h '^not ok' "$LOG/$id.log" | sed "s/^/$red    /; s/\$/$off/"; done
 done
 [[ ! -e $LOG/cap_exceeded ]] || { failed=1; echo "$red$(cat "$LOG/cap_exceeded")$off"; }
-[[ -z ${STATS:-} ]] || { kill "$STATS"; wait "$STATS"; cat "$LOG/stats.txt"; }
+# the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
+if [[ -n ${STATS:-} ]]; then
+	kill "$STATS" 2>/dev/null
+	for _ in {1..20}; do kill -0 "$STATS" 2>/dev/null || break; sleep 1; done
+	if kill -0 "$STATS" 2>/dev/null; then echo "ci: the footprint sampler ignored TERM for 20 s:"; ps -o pid,stat,wchan:20,args --ppid "$STATS"; kill -9 "$STATS"; fi
+	wait "$STATS" 2>/dev/null
+	cat "$LOG/stats.txt"
+fi
 printf 'wall %ss (%s lanes), peak scratch %s MB, logs %s\n' "$((SECONDS - t0))" "$LANES" "$(cat "$LOG/peak_mb" 2>/dev/null || echo '<2')" "$LOG"
 exit $failed

@@ -258,6 +258,7 @@ jobs:
           SIFT_CI_AFFECTED: ${{ matrix.jobs }}
           SIFT_CI_JOBS: ${{ matrix.only }}
           SIFT_CI_NO_HARNESS: 1
+          SIFT_CI_STATS: ${{ matrix.tier == 'quick' && '1' || '' }}
           SIFT_CI_SHARD: ${{ matrix.shard }}/${{ matrix.n }}
           SIFT_CI_DEEP: ${{ (github.event_name == 'schedule' || inputs.deep == true) && '1' || '' }}
 
