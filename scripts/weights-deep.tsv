@@ -1,11 +1,14 @@
 # job	PostgreSQL 17 lane seconds	PostgreSQL 18 lane seconds: the deep full tier, run 40193282663 (the other jobs weigh 10); the shards are cut by these
-difftest	2227	2505
+difftest-mutants-1	1190	935
+difftest-mutants-2	1190	935
+difftest-fuzz-tbl-1	773	1018
+difftest-fuzz-tbl-2	773	1018
+difftest	1340	1500
+difftest-2	1340	1500
 difftest-col-3	1300	1479
-difftest-mutants	2376	1867
 difftest-col-6	1300	1487
 difftest-col-4	1300	1425
 difftest-col-1	1300	1365
-difftest-fuzz-tbl	1546	2035
 difftest-col-7	2201	1359
 difftest-col-2	1300	1487
 difftest-col-tbl-5	1100	1210

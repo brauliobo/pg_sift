@@ -153,7 +153,7 @@ if [[ $MODE == affected ]]; then
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-table(-tuned)?)?$'
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?$'
+		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl(-[12])?)?$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-table(-tuned)?)?$'; fi
 	done
 	case $OUT in
@@ -460,8 +460,18 @@ if [[ $MODE == full ]]; then
 	job soak soak 1 "$S/soak.sh" --duration "$(lean_or_deep 180 600)" --check-every 30
 	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
 	job soak-col soak-col 1 "$S/colsoak.sh" --duration "$(lean_or_deep 120 300)"
-	job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs "$(lean_or_deep 4000 8000)" --queries 40 --rounds "$(lean_or_deep 1 2)" --minimize 1
-	job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 4000 5000)" --queries "$(lean_or_deep 100 150)" --rounds "$(lean_or_deep 3 4)"
+	# the deep tier cuts the three longest single jobs in two (run 40193282663: 1867 to 2505 s each on 18, up to 2376 s on 17): the mutants alternate between the jobs,
+	# the seeds of the corpus differ, two rounds of mutations each
+	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
+		for k in 1 2; do
+			job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/2 --docs 8000 --queries 40 --rounds 2 --minimize 1
+		done
+		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed 1 --docs 5000 --queries 150 --rounds 2
+		job difftest-2 difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --seed 2 --docs 5000 --queries 150 --rounds 2
+	else
+		job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
+		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+	fi
 	job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs "$(lean_or_deep 2500 3000)" --queries "$(lean_or_deep 40 60)" --rounds "$(lean_or_deep 1 2)"
 	# the shape tags and 0 DIFFER hold the same at 1500 fixture rows and 20000 analytics rows as at 4000 and 100000 (395 s against 483 s)
 	# the two differential tests of the column index take 160 minutes of one lane each on PostgreSQL 18, and more on 17, longer than the rest of the tier together
@@ -485,7 +495,12 @@ if [[ $MODE == full ]]; then
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on --stop-after 3
-	job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds "$(lean_or_deep 1-6 1-12)" --queries "$(lean_or_deep 100 150)" --rows 6000 --leader-on --stop-after 3
+	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
+		job difftest-fuzz-tbl-1 difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 150 --rows 6000 --leader-on --stop-after 3
+		job difftest-fuzz-tbl-2 difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 7-12 --queries 150 --rows 6000 --leader-on --stop-after 3
+	else
+		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
+	fi
 	job coverage coverage 1 "$S/coverage.sh" --check
 	job reference-live reference-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-reference.sh" --live' "$REPO"
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"

@@ -37,7 +37,7 @@
 ^test/plan/	^plan-gate(-tuned|-table(-tuned)?)?$|{ci}
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/[^d]	^(fuzz|hardened)$|{ci}
-^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl)?$|{ci}
+^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl(-[12])?)?$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
 ^src/bm25/	fast:{bm25}|{search}|{cheap}
@@ -52,7 +52,7 @@
 ^src/table/	{tbl}|{any}|gh:replication
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
 # the harness of one job selects the jobs that run it (`scripts/ci.sh --selftest` fails when it misses one)
-^scripts/difftest\.sh$	^difftest(-mutants|-nopos)?$
+^scripts/difftest\.sh$	^difftest(-mutants(-[12])?|-nopos|-2)?$
 ^scripts/coldiff\.sh$	^(difftest-col|coverage)
 ^scripts/colsoak\.sh$	^soak-col$
 ^scripts/soak\.sh$	^soak(-gin)?$

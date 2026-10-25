@@ -3,7 +3,7 @@
 # (test/sql/reference.sql) and seq-scan sift.match; harness in test/diff/diff.sql.
 #
 #   scripts/difftest.sh [--seed N] [--docs N] [--vocab N] [--queries N] [--rounds N]
-#                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--minimize N] [--min-trials N]
+#                       [--k N] [--engine sift|mutant:NAME|mutants] [--mutants "NAME..."] [--mutant-slice K/N] [--minimize N] [--min-trials N]
 #                       [--jobs N]
 #   scripts/difftest.sh --repro FILE
 #   INDEX_OPTS="WITH (positions = off)" scripts/difftest.sh ...   build the index with options
@@ -34,11 +34,17 @@ while (( $# )); do
 	case $1 in
 		--seed) SEED=$2 ;; --docs) DOCS=$2 ;; --vocab) VOCAB=$2 ;; --queries) QUERIES=$2 ;;
 		--rounds) ROUNDS=$2 ;; --k) K=$2 ;; --engine) ENGINE=$2 ;; --repro) REPRO=$2 ;;
-		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;; --jobs) JOBS=$2 ;;
+		--min-trials) MIN_TRIALS=$2 ;; --minimize) MAXMIN=$2 ;; --mutants) MUTANTS=$2 ;; --mutant-slice) MSLICE=$2 ;; --jobs) JOBS=$2 ;;
 		*) sed -n '2,21p' "$0"; exit 1 ;;
 	esac
 	shift 2
 done
+# --mutant-slice K/N: every N-th mutant from the K-th, so that N jobs split the list (the deep tier runs two)
+if [[ -n ${MSLICE:-} ]]; then
+	i=0 sel=
+	for m in $MUTANTS; do (( i++ % ${MSLICE#*/} == ${MSLICE%/*} - 1 )) && sel+=" $m"; done
+	MUTANTS=$sel
+fi
 
 sql() { PGOPTIONS='-c client_min_messages=warning' SIFT_DB=${DB:-sift_diff} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 -qAt "$@"; }
 fseed() { awk -v x="$1" 'BEGIN { printf "%.6f", ((x * 7919) % 19999) / 10000 - 1 }'; }
