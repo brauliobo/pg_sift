@@ -41,7 +41,9 @@ extern BlockNumber sift_vis_nblocks(Relation heap);
 extern BlockNumber sift_vis_count_allvisible(Relation heap, BlockNumber nblocks);
 /*
  * index and dir_version are the index the scan reads and the version of the directory it read before it read any liveness bit (the plan's);
- * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0.
+ * a caller that reads no liveness from an index (rows it takes from the heap pages themselves, or heap checks only) passes NULL and 0, and so does a column
+ * scan, which asks the directory a finer question after the map (segments_current: is every segment it opened still there), so that a promotion,
+ * which adds a segment, does not void the map for the rest of the scan.
  * A page is all-visible once a VACUUM has removed the index entries of its dead tuples, which clears liveness bits and then bumps the
  * directory version (sift_ambulkdelete): the liveness a scan read before that does not show the removals the map reflects.
  */

@@ -6,14 +6,14 @@
 # flag 4) waits for an advisory lock after it opens, which the test holds until the statements are done: no timing involved.
 . "$(dirname "$0")/lib.bash"
 
-plan 11
+plan 13
 node_init vs 14 "autovacuum = off"
 node_start vs || bail "start failed"
 D=$(dir vs)
 sql vs "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
 
 # race TABLE [STATEMENT...]: the rows of TABLE go to exp_TABLE, the scan of its index opens, the statements run (default: VACUUM), the scan
-# reads; its TIDs go to got_TABLE
+# reads; its TIDs (or the query SCAN) go to got_TABLE
 race() {
 	local t=$1 hp sp
 	shift
@@ -22,7 +22,7 @@ race() {
 	{ echo "SELECT pg_advisory_lock(20983, 1);"; echo "\\! touch '$D/locked'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; } | sql vs >/dev/null &
 	hp=$!
 	until [[ -e $D/locked ]]; do sleep 0.05; done
-	sql vs "CREATE TABLE got_$t AS SELECT tid FROM sift._test_col_tids('${t}_idx', '', 4)" >/dev/null &
+	sql vs "CREATE TABLE got_$t AS ${SCAN:-SELECT tid FROM sift._test_col_tids('${t}_idx', '', 4)}" >/dev/null &
 	sp=$!
 	until [[ $(sql vs "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]]; do sleep 0.05; done
 	sql vs "${@:-VACUUM $t}" >/dev/null
@@ -81,4 +81,11 @@ race churn "UPDATE churn SET n = n + 1 WHERE id % 3 = 0" "DELETE FROM churn WHER
 	"VACUUM churn" "SELECT sift.col_promote('churn_idx')" "SELECT sift.col_merge('churn_idx', true)" "VACUUM churn"
 check "DML, VACUUM, promote and merge under the scan: it returns the rows of its snapshot" test "$(differ churn)" == 0
 check "the index verifies after them" test "$(sql vs "SELECT sift.col_verify('churn_idx', true)" 2>&1)" == ""
+# a promotion under the open scan adds a segment and replaces none: the pages the map calls all-visible stay trusted, only the page the insert touched goes to the heap
+sql vs "CREATE TABLE trusted (id int, g int, n int)" "INSERT INTO trusted SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
+	"CREATE INDEX trusted_idx ON trusted USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" "VACUUM trusted" >/dev/null || bail "setup trusted failed"
+SCAN="SELECT rows, rows_vetted FROM sift._test_col_counters('trusted_idx', '', 4)" race trusted "INSERT INTO trusted SELECT i, i % 7, i % 100 FROM generate_series(20001, 20200) i" \
+	"SELECT sift.col_promote('trusted_idx')"
+check "a promotion under the scan: it reads the rows of its snapshot" test "$(sql vs "SELECT rows FROM got_trusted")" == 20000
+check "a promotion under the scan: only the rows of the page the insert touched are checked in the heap" test "$(sql vs "SELECT rows_vetted FROM got_trusted")" -lt 1000
 finish
