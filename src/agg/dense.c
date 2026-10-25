@@ -88,14 +88,19 @@ chunk_vals(AggExec *ex, int leaf, int start, int n, bool wide, void *tmp)
 	return tmp;
 }
 
-/* the group of every row of the chunk in ex->gid; false when the keys outgrew the direct table (the chunk goes the way of tuples) */
+/*
+ * The group of every row of the chunk in ex->gid; false when the keys outgrew the direct table (the chunk goes the way of tuples). A mask that keeps
+ * less than half of the chunk sends the rows it drops to the NULL code, so that their dictionary entries are not looked up: a filter that keeps 82 of
+ * the 39,000 rows of the units it reads would otherwise decompress the blocks of the entries of all of them.
+ */
 static bool
-dense_gids(AggExec *ex, int start, int n)
+dense_gids(AggExec *ex, int start, int n, const uint64 *mask, uint64 kept)
 {
 	SiftAggSpec *s = ex->spec;
 	const uint32 *maps[SIFT_AGG_MAX_KEYS],
 			   *codes[SIFT_AGG_MAX_KEYS];
-	bool		grow = false;
+	bool		grow = false,
+				sparse = kept * 2 < n;
 
 	for (int j = 0; j < s->nkeys; j++)
 	{
@@ -104,14 +109,17 @@ dense_gids(AggExec *ex, int start, int n)
 		uint32	   *own = ex->kids + (Size) j * (VEC + PADW);
 
 		codes[j] = chunk_vals(ex, s->key[j].leaf, start, n, false, own);
-		if (v->isnull)
+		if (v->isnull || sparse)
 		{
 			const uint32 *par = same ? NULL : unit_parent(ex);
 
 			if (codes[j] != own)
 				memcpy(own, codes[j], n * sizeof(uint32));
-			for (int i = 0; i < n; i++)
+			for (int i = 0; v->isnull && i < n; i++)
 				if (v->isnull[same ? start + i : par[start + i]])
+					own[i] = v->dict->n;
+			for (int i = 0; sparse && i < n; i++)
+				if (!(mask[i >> 6] >> (i & 63) & 1))
 					own[i] = v->dict->n;
 			codes[j] = own;
 		}
@@ -265,7 +273,7 @@ dense_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 
 	if (cnt == 0)
 		return true;
-	if (ex->spec->nkeys && !dense_gids(ex, start, n))
+	if (ex->spec->nkeys && !dense_gids(ex, start, n, mask, cnt))
 		return false;
 	ex->cstart = start;
 	ex->cn = n;

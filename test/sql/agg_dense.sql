@@ -106,6 +106,7 @@ INSERT INTO d_q VALUES
 	('SELECT kind, count(*), avg(amt) FROM d_t WHERE grp <> 2 AND flag <> ''fb'' GROUP BY 1'),
 	('SELECT kind, count(*), sum(qty) FROM d_t WHERE id < 5000 GROUP BY 1'),
 	('SELECT kind, count(*), sum(qty) FROM d_t WHERE id > 8990 GROUP BY 1'),
+	('SELECT kind, flag, count(*), sum(amt) FROM d_t WHERE id > 4000 AND id < 4100 AND flag <> ''fb'' GROUP BY 1, 2'),
 	('SELECT grp, count(*), sum(amt), avg(qty), count(*) FILTER (WHERE kind = ''k5'') FROM d_t GROUP BY 1'),
 	('SELECT grp, kind, count(*) FILTER (WHERE amt > 0), sum(qty) FROM d_t GROUP BY 1, 2'),
 	('SELECT kind, count(*) FROM d_t GROUP BY 1 HAVING count(*) > 700'),
@@ -125,6 +126,7 @@ INSERT INTO d_q VALUES
 	('SELECT d.label, count(*), sum(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) GROUP BY 1'),
 	('SELECT d.label, e.k, count(*), avg(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.grp <> 1 AND e.f <> ''fc'' GROUP BY 1, 2'),
 	('SELECT e.k, count(*), avg(e.x) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id <> 7 GROUP BY 1'),
+	('SELECT e.k, count(*), sum(e.n) FROM d_j d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8) WHERE d.id = 7 GROUP BY 1'),
 	-- the documents never vacuumed
 	('SELECT count(*), count(e.k), sum(e.n), sum(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
 	('SELECT count(*) FILTER (WHERE e.f = ''fa''), count(*) FILTER (WHERE e.f = ''fb''), avg(e.x) FROM d_nv d CROSS JOIN LATERAL jsonb_to_recordset(d.items) AS e(k text, f text, n int, x float8)'),
