@@ -348,6 +348,7 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 #pragma GCC target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")
 #endif
 #define AKV_VB 64
+#define AKV_OWN_REDUCE
 #define AKV_WIDEN(a, b) _mm512_mul_epi32((__m512i) (a), (__m512i) (b))
 #define AKV_BITS32(m) ((uint64) _mm512_movepi32_mask((__m512i) (m)))
 #define AKV_BITS64(m) ((uint64) _mm512_movepi64_mask((__m512i) (m)))

@@ -12,14 +12,6 @@
 
 #if defined(SIFT_HAVE_NEON)
 
-static inline uint64x2_t
-lanes2(uint32 b)
-{
-	static const uint64 bit[2] = {1, 2};
-
-	return vtstq_u64(vdupq_n_u64(b), vld1q_u64(bit));
-}
-
 static inline uint32x4_t
 lanes4(uint32 b)
 {
@@ -33,16 +25,6 @@ static inline uint32
 rowbits(const uint64 *mask, int i, int n, int L)
 {
 	return mask ? (uint32) (mask[i >> 6] >> (i & 63)) & (uint32) AGK_LOW(L) : (uint32) AGK_LANES(n - i, L);
-}
-
-/* Whether the mask selects a row below n (its bits from n on are zero) */
-static inline bool
-agk_any_row(const uint64 *mask, int n)
-{
-	for (int w = 0; w < AGK_NW(n); w++)
-		if (mask[w])
-			return true;
-	return false;
 }
 
 /* ---- predicates ---- */
@@ -94,12 +76,9 @@ agk_cmp_f64_neon(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 	}
 }
 
-/* ---- reductions ---- */
-
 /*
- * Reductions walk a full word of the mask in sixteen steps of four rows (two of two for the doubles), several accumulators wide, and
- * the rows past the last full word, or all rows when there is no mask, in steps that take their bits from rowbits(). A step with no
- * selected row costs the same as one with: a branch on it mispredicts more than it saves.
+ * The masked sum walks a full word of the mask in sixteen steps of four rows, four accumulators wide (vpadal widens and adds in one instruction,
+ * which the bias of the shared sum does not beat here); the plain sum is the compiler's vectorized loop.
  */
 #define MASKED_WORDS(mask, n, i, STEP) \
 	for (; (mask) && (i) + 64 <= (n); (i) += 64) \
@@ -130,122 +109,16 @@ agk_sum_i32_neon(const int32 *v, const uint64 *mask, int n)
 	return vaddvq_s64(vaddq_s64(vaddq_s64(acc[0], acc[1]), vaddq_s64(acc[2], acc[3])));
 }
 
-/* Unselected lanes are ANDed to +0.0; a lane is finite when |x| <= DBL_MAX (false for NaN and Inf) */
-static bool
-agk_absmax_f64_neon(const double *v, const uint64 *mask, int n, double *mx)
-{
-	const float64x2_t big = vdupq_n_f64(DBL_MAX);
-	float64x2_t m[4] = {vdupq_n_f64(0), vdupq_n_f64(0), vdupq_n_f64(0), vdupq_n_f64(0)};
-	uint64x2_t	fin = vdupq_n_u64(~UINT64CONST(0));
-	int			i = 0;
-
-#define ABS_STEP2(r, b, a) \
-	do { \
-		const float64x2_t x_ = vreinterpretq_f64_u64(vandq_u64(vreinterpretq_u64_f64(vabsq_f64(vld1q_f64(v + (r)))), lanes2(b))); \
-		fin = vandq_u64(fin, vcleq_f64(x_, big)); \
-		m[a] = vmaxq_f64(m[a], x_); \
-	} while (0)
-#define ABS_STEP(r, b, a) do { ABS_STEP2(r, (b) & 3, a); ABS_STEP2((r) + 2, (b) >> 2, a); } while (0)
-	MASKED_WORDS(mask, n, i, ABS_STEP)
-	for (; i < n; i += 2)
-		ABS_STEP2(i, rowbits(mask, i, n, 2), 0);
-#undef ABS_STEP2
-#undef ABS_STEP
-	if ((vgetq_lane_u64(fin, 0) & vgetq_lane_u64(fin, 1)) == 0)
-		return false;
-	{
-		const float64x2_t h = vmaxq_f64(vmaxq_f64(m[0], m[1]), vmaxq_f64(m[2], m[3]));
-
-		*mx = Max(vgetq_lane_f64(h, 0), vgetq_lane_f64(h, 1));
-	}
-	return true;
-}
-
-static bool
-agk_minmax_i32_neon(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n)
-{
-	int32x4_t	lo[4],
-				hi[4];
-	int			i = 0;
-
-	if (!mask)
-		return agk_minmax_i32_scalar(mn, mx, v, mask, n);
-	for (int g = 0; g < 4; g++)
-		lo[g] = vdupq_n_s32(INT32_MAX), hi[g] = vdupq_n_s32(INT32_MIN);
-#define MM_STEP(r, b, a) \
-	do { \
-		const uint32x4_t sel_ = lanes4(b); \
-		const int32x4_t x_ = vld1q_s32(v + (r)); \
-		lo[a] = vminq_s32(lo[a], vbslq_s32(sel_, x_, vdupq_n_s32(INT32_MAX))); \
-		hi[a] = vmaxq_s32(hi[a], vbslq_s32(sel_, x_, vdupq_n_s32(INT32_MIN))); \
-	} while (0)
-	MASKED_WORDS(mask, n, i, MM_STEP)
-	for (; i < n; i += 4)
-		MM_STEP(i, rowbits(mask, i, n, 4), 0);
-#undef MM_STEP
-	if (!agk_any_row(mask, n))
-		return false;
-	*mn = vminvq_s32(vminq_s32(vminq_s32(lo[0], lo[1]), vminq_s32(lo[2], lo[3])));
-	*mx = vmaxvq_s32(vmaxq_s32(vmaxq_s32(hi[0], hi[1]), vmaxq_s32(hi[2], hi[3])));
-	return true;
-}
-
-/*
- * A NaN row never enters the running values (FMINNM would let a signaling NaN in): it is replaced by the identity and noted on the
- * side. The minimum is NaN only when every selected row is (the running minimum then never left +Inf and the maximum never left
- * -Inf: lo <= hi tells that a non-NaN row was seen), the maximum when any is. Unselected lanes are replaced by +-Inf.
- */
-static bool
-agk_minmax_f64_neon(double *mn, double *mx, const double *v, const uint64 *mask, int n)
-{
-	float64x2_t lo[4],
-				hi[4];
-	uint64x2_t	anynan = vdupq_n_u64(0);
-	int			i = 0;
-
-	for (int g = 0; g < 4; g++)
-		lo[g] = vdupq_n_f64(INFINITY), hi[g] = vdupq_n_f64(-INFINITY);
-#define MMF_STEP2(r, b, a) \
-	do { \
-		const float64x2_t x_ = vld1q_f64(v + (r)); \
-		const uint64x2_t sel_ = lanes2(b), ord_ = vandq_u64(sel_, vceqq_f64(x_, x_)); \
-		anynan = vorrq_u64(anynan, veorq_u64(sel_, ord_)); \
-		lo[a] = vminq_f64(lo[a], vbslq_f64(ord_, x_, vdupq_n_f64(INFINITY))); \
-		hi[a] = vmaxq_f64(hi[a], vbslq_f64(ord_, x_, vdupq_n_f64(-INFINITY))); \
-	} while (0)
-#define MMF_STEP(r, b, a) do { MMF_STEP2(r, (b) & 3, a); MMF_STEP2((r) + 2, (b) >> 2, a); } while (0)
-	MASKED_WORDS(mask, n, i, MMF_STEP)
-	for (; !mask && i + 8 <= n; i += 8)
-		for (int g = 0; g < 4; g++)
-		{
-			const float64x2_t x = vld1q_f64(v + i + 2 * g);
-			const uint64x2_t ord = vceqq_f64(x, x);
-
-			anynan = vorrq_u64(anynan, veorq_u64(vdupq_n_u64(~UINT64CONST(0)), ord));
-			lo[g] = vminq_f64(lo[g], vbslq_f64(ord, x, vdupq_n_f64(INFINITY)));
-			hi[g] = vmaxq_f64(hi[g], vbslq_f64(ord, x, vdupq_n_f64(-INFINITY)));
-		}
-	for (; i < n; i += 2)
-		MMF_STEP2(i, rowbits(mask, i, n, 2), 0);
-#undef MMF_STEP2
-#undef MMF_STEP
-	if (n == 0 || (mask && !agk_any_row(mask, n)))
-		return false;
-	{
-		const float64x2_t l = vminq_f64(vminq_f64(lo[0], lo[1]), vminq_f64(lo[2], lo[3])),
-					h = vmaxq_f64(vmaxq_f64(hi[0], hi[1]), vmaxq_f64(hi[2], hi[3]));
-		const double lov = Min(vgetq_lane_f64(l, 0), vgetq_lane_f64(l, 1)),
-					hiv = Max(vgetq_lane_f64(h, 0), vgetq_lane_f64(h, 1));
-
-		*mn = agk_canon_minmax(lov <= hiv ? lov : __builtin_nan(""));
-		*mx = agk_canon_minmax((vgetq_lane_u64(anynan, 0) | vgetq_lane_u64(anynan, 1)) ? __builtin_nan("") : hiv);
-	}
-	return true;
-}
-
 /* the scalar loop is faster than two 64-bit lanes on an arm64 core: both stay scalar */
 #define AKV_NO_ABSMAX
 #define AKV_VB 16
+#define AKV_RFN(x) agk_##x##_v_neon
+#define AKV_NO_SUM_I32
+#define AKV_BLEND(T, m, a, b) ((T) vbslq_u8((uint8x16_t) (m), (uint8x16_t) (a), (uint8x16_t) (b)))
+#define AKV_LANES64(k) ((akv_s) vtstq_u64(vdupq_n_u64(k), (uint64x2_t) akv_w64))
+#define AKV_LANES32(k) ((akv_i32) vtstq_u32(vdupq_n_u32(k), (uint32x4_t) akv_w32))
+#define AKV_MIN_akv_i32(a, b) ((akv_i32) vminq_s32((int32x4_t) (a), (int32x4_t) (b)))
+#define AKV_MAX_akv_i32(a, b) ((akv_i32) vmaxq_s32((int32x4_t) (a), (int32x4_t) (b)))
 #define AKV_WIDEN(a, b) vmull_s32(vmovn_s64((int64x2_t) (a)), vmovn_s64((int64x2_t) (b)))
 /* the lane masks of four int32 as bits: AND with the weight of the lane, add across */
 static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
@@ -258,6 +131,8 @@ static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
 #define agk_absmax_i64_neon		agk_absmax_i64_scalar
 #define agk_cmp2_i64_neon		agk_cmp2_i64_scalar
 #define agk_minmax_i64_neon		agk_minmax_i64_scalar
+#define agk_minmax_f64_neon		agk_minmax_f64_v_neon
+
 #define agk_lut_i32_neon		agk_lut_i32_scalar
 #define agk_gather_bits_neon	agk_gather_bits_scalar
 #define agk_gid_code_neon		agk_gid_code_scalar
@@ -266,6 +141,19 @@ static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
 #define agk_sum_gid_i32_neon	agk_sum_gid_i32_scalar
 #define agk_sum_gid_f64_neon	agk_sum_gid_f64_scalar
 #define agk_sum_gid_i64_neon	agk_sum_gid_i64_scalar
+
+/* a mask the lane compares build costs as much as the scalar loop (absmax_f64 922 ns for 4096 rows at 50 %, arm64), and a plain min and max is the compiler's vectorized loop (minmax_i32 141 against 430 ns) */
+static bool
+agk_absmax_f64_neon(const double *v, const uint64 *mask, int n, double *mx)
+{
+	return mask ? agk_absmax_f64_scalar(v, mask, n, mx) : agk_absmax_f64_v_neon(v, mask, n, mx);
+}
+
+static bool
+agk_minmax_i32_neon(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n)
+{
+	return mask ? agk_minmax_i32_v_neon(mn, mx, v, mask, n) : agk_minmax_i32_scalar(mn, mx, v, mask, n);
+}
 
 #define AGK_INIT_NEON(s)	.s = agk_##s##_neon,
 

@@ -20,8 +20,6 @@
 #define ST(p, x)	_mm256_storeu_si256((__m256i *) (p), x)
 #define LDPD(p)		_mm256_loadu_pd((const double *) (p))
 #define ALL1		(~UINT64CONST(0))
-#define BYTE(mask, i)	((uint32) ((mask)[(i) >> 6] >> ((i) & 63)) & 0xFF)
-#define NIBBLE(mask, i)	((uint32) ((mask)[(i) >> 6] >> ((i) & 63)) & 0xF)
 
 #define R4(F, m)	F(m), F(m + 1), F(m + 2), F(m + 3)
 #define R16(F, m)	R4(F, m), R4(F, m + 4), R4(F, m + 8), R4(F, m + 12)
@@ -45,6 +43,8 @@ lanes32(uint32 k)
 #define LM(n)		{-(int64) ((n) & 1), -(int64) (((n) >> 1) & 1), -(int64) (((n) >> 2) & 1), -(int64) (((n) >> 3) & 1)}
 static const int64 lane_tab[16][4] __attribute__((aligned(32))) = {R16(LM, 0)};
 
+#define NIBBLE(mask, i)	((uint32) ((mask)[(i) >> 6] >> ((i) & 63)) & 0xF)
+
 K2 __m256i
 lanes64(uint32 k)
 {
@@ -56,14 +56,6 @@ K2 __m256i
 ld_n32(const void *p, int r)
 {
 	return _mm256_maskload_epi32((const int *) p, lanes32(AGK_LANES(r, 8)));
-}
-
-K2 int64
-hsum64(__m256i x)
-{
-	__m128i		s = _mm_add_epi64(_mm256_castsi256_si128(x), _mm256_extracti128_si256(x, 1));
-
-	return _mm_cvtsi128_si64(s) + _mm_extract_epi64(s, 1);
 }
 
 /* ---- predicates ---- */
@@ -152,117 +144,7 @@ gather_bits_avx2(uint64 *out, const uint64 *rowmask, const uint32 *parent, int m
 	AGK_BITS2(out, m, 8, 0, e, row_bits(rowmask, LD(parent + e)), row_bits(rowmask, ld_n32(parent + e, m - e)));
 }
 
-/* ---- reductions ---- */
-
-/* Sign-extends 8 selected int32 into two 4 x int64 accumulators */
-K2 int64
-sum_i32_t(const int32 *v, const uint64 *mask, int n, const bool masked)
-{
-	__m256i		a0 = _mm256_setzero_si256(),
-				a1 = a0;
-
-	for (int i = 0; i < n; i += 8)
-	{
-		__m256i		x = LD(v + i);
-
-		if (masked)
-			x = _mm256_and_si256(x, lanes32(BYTE(mask, i)));
-		else if (i + 8 > n)
-			x = _mm256_and_si256(x, lanes32(AGK_LANES(n - i, 8)));
-		a0 = _mm256_add_epi64(a0, _mm256_cvtepi32_epi64(_mm256_castsi256_si128(x)));
-		a1 = _mm256_add_epi64(a1, _mm256_cvtepi32_epi64(_mm256_extracti128_si256(x, 1)));
-	}
-	return hsum64(_mm256_add_epi64(a0, a1));
-}
-
-F2 int64
-sum_i32_avx2(const int32 *v, const uint64 *mask, int n)
-{
-	return mask ? sum_i32_t(v, mask, n, true) : sum_i32_t(v, mask, n, false);
-}
-
-/* Unselected lanes are ANDed to +0.0; a lane is finite when |x| <= DBL_MAX (false for NaN and Inf) */
-K2 bool
-absmax_f64_t(const double *v, const uint64 *mask, int n, double *mx, const bool masked)
-{
-	const __m256d habs = _mm256_castsi256_pd(_mm256_set1_epi64x(INT64_MAX)),
-				big = _mm256_set1_pd(DBL_MAX);
-	__m256d		m0 = _mm256_setzero_pd(),
-				m1 = m0,
-				fin = _mm256_castsi256_pd(_mm256_set1_epi64x(-1));
-	double		t[4];
-
-	for (int i = 0; i < n; i += 8)
-	{
-		const uint32 b = masked ? BYTE(mask, i) : (uint32) AGK_LANES(n - i, 8);
-		const __m256d x0 = _mm256_and_pd(_mm256_and_pd(LDPD(v + i), _mm256_castsi256_pd(lanes64(b & 15))), habs),
-					x1 = _mm256_and_pd(_mm256_and_pd(LDPD(v + i + 4), _mm256_castsi256_pd(lanes64(b >> 4))), habs);
-
-		fin = _mm256_and_pd(fin, _mm256_and_pd(_mm256_cmp_pd(x0, big, _CMP_LE_OQ), _mm256_cmp_pd(x1, big, _CMP_LE_OQ)));
-		m0 = _mm256_max_pd(m0, x0);
-		m1 = _mm256_max_pd(m1, x1);
-	}
-	if (_mm256_movemask_pd(fin) != 15)
-		return false;
-	_mm256_storeu_pd(t, _mm256_max_pd(m0, m1));
-	*mx = Max(Max(t[0], t[1]), Max(t[2], t[3]));
-	return true;
-}
-
-F2 bool
-absmax_f64_avx2(const double *v, const uint64 *mask, int n, double *mx)
-{
-	return mask ? absmax_f64_t(v, mask, n, mx, true) : absmax_f64_t(v, mask, n, mx, false);
-}
-
-K2 bool
-minmax_i32_t(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n, const bool masked)
-{
-	const __m256i imax = _mm256_set1_epi32(INT32_MAX),
-				imin = _mm256_set1_epi32(INT32_MIN);
-	__m256i		lo = imax,
-				hi = imin;
-	uint32		any = 0;
-	int32		l[8],
-				h[8];
-	int			i = 0;
-
-	for (; !masked && i + 8 <= n; i += 8)
-	{
-		__m256i		x = LD(v + i);
-
-		lo = _mm256_min_epi32(lo, x);
-		hi = _mm256_max_epi32(hi, x);
-	}
-	for (; i < n; i += 8)
-	{
-		const uint32 b = masked ? BYTE(mask, i) : (uint32) AGK_LANES(n - i, 8);
-		const __m256i x = LD(v + i),
-					m = lanes32(b);
-
-		any |= b;
-		lo = _mm256_min_epi32(lo, _mm256_blendv_epi8(imax, x, m));
-		hi = _mm256_max_epi32(hi, _mm256_blendv_epi8(imin, x, m));
-	}
-	if (!masked ? n == 0 : !any)
-		return false;
-	ST(l, lo);
-	ST(h, hi);
-	*mn = l[0];
-	*mx = h[0];
-	for (int j = 1; j < 8; j++)
-	{
-		*mn = Min(*mn, l[j]);
-		*mx = Max(*mx, h[j]);
-	}
-	return true;
-}
-
-F2 bool
-minmax_i32_avx2(int32 *mn, int32 *mx, const int32 *v, const uint64 *mask, int n)
-{
-	return mask ? minmax_i32_t(mn, mx, v, mask, n, true) : minmax_i32_t(mn, mx, v, mask, n, false);
-}
+/* ---- reductions that keep the hand loop: the masked 50 % case measured 7 to 8 % slower in the shared body ---- */
 
 /* min / max of 4 int64 lanes, the selected ones (m: all-ones lanes) */
 K2 void
@@ -413,6 +295,14 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 #pragma GCC target("avx2,bmi,bmi2,popcnt")
 #endif
 #define AKV_VB 32
+#define AKV_NO_MINMAX_I64
+#define AKV_NO_MINMAX_F64
+#define AKV_BLEND(T, m, a, b) ((T) _mm256_blendv_epi8((__m256i) (b), (__m256i) (a), (__m256i) (m)))
+#define AKV_LANES64(k) ((akv_s) lanes64(k))
+#define AKV_MIN_akv_i32(a, b) ((akv_i32) _mm256_min_epi32((__m256i) (a), (__m256i) (b)))
+#define AKV_MAX_akv_i32(a, b) ((akv_i32) _mm256_max_epi32((__m256i) (a), (__m256i) (b)))
+#define AKV_MIN_akv_f64(a, b) ((akv_f64) _mm256_min_pd((__m256d) (a), (__m256d) (b)))
+#define AKV_MAX_akv_f64(a, b) ((akv_f64) _mm256_max_pd((__m256d) (a), (__m256d) (b)))
 #define AKV_WIDEN(a, b) _mm256_mul_epi32((__m256i) (a), (__m256i) (b))
 #define AKV_BITS32(m) ((uint64) (uint32) _mm256_movemask_ps((__m256) (m)))
 #define AKV_BITS64(m) ((uint64) (uint32) _mm256_movemask_pd((__m256d) (m)))
