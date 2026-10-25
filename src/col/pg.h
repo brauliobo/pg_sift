@@ -120,7 +120,6 @@ typedef struct SiftColOptions
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
-	int			dict_stored;	/* percent of the segment the dictionaries of many strings may add by being written uncompressed (a scan then copies them where it inflated them) */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */

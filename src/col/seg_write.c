@@ -802,7 +802,6 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 				budget = sift_sw_tell(w->sw);
 	bool		blocks = w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact;
 	bool	   *asked = palloc0(ncols * sizeof(bool));
-	Size		room;
 	const SiftCcPolicy *pol;
 	StringInfoData blob;
 
@@ -825,7 +824,6 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		asked[c] = w->dform && w->dform[c];
 		budget += compact[c];
 	}
-	room = budget / 100 * w->pagg.stored_pct;
 	budget /= CDICT_BLOCKS_BUDGET_DENOM;
 	/* the directory is written last to know the offsets: serialize the dictionaries first into memory */
 	initStringInfo(&blob);
@@ -870,23 +868,6 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		if (form == DICT_BLOCKS)
 			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
 		pol = w->pol ? &w->pol[c] : NULL;
-		if (extra[c] != SIZE_MAX && blocks && pol != NULL)
-		{
-			/*
-			 * A scan that groups by the leaf reads the whole dictionary, once for each backend: stored, it is a copy where compressed it is inflated (6 ms for
-			 * 100,000 strings). The dictionaries of many strings are stored while what that adds is under the share of the segment that the option dict_stored allows (3% by default).
-			 */
-			SiftCDict  *d = w->dict[c];
-			Size		stored = form == 0 ? sizeof(uint32) * ((Size) d->n + 1) + d->nbytes
-				: d->n + d->nbytes + (Size) ((d->n + DICT_BLOCK - 1) / DICT_BLOCK) * (sizeof(uint32) + DICT_BLOCK_HEAD),
-						packed = form == 0 ? compact[c] : compact[c] + extra[c];
-
-			if (stored <= packed + room)
-			{
-				room -= stored > packed ? stored - packed : 0;
-				pol = NULL;
-			}
-		}
 		sift_cdict_serialize(w->dict[c], pol, form, &blob);
 	}
 	pfree(extra);

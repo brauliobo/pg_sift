@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 91 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 90 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -272,19 +272,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (dict_lookup = off) stores no order (a lookup parses the dictionary whole; blocks still where they add <= 3%); sift.col_format_minor <= 13 writes neither. REINDEX changes older segments.
 - **Upgrade from 3.3:** unchanged; writes column format minor 14
 - **Advice:** Leave at auto: strings are searched in place and the lookup order is stored for the columns named in point_columns, key_columns and return_columns. on for every column; off for none. REINDEX to apply.
-
-#### sift_col(dict_stored)
-
-`sift_col` · default · since 3.4 · default 3
-
-- **What it does:** a dictionary of 1,024 strings or more is written uncompressed while that adds at most this percent to the segment: the first scan of a backend that groups by the column copies it instead of inflating it
-- **Gain:** first statement of a new backend that groups by a text column; two text columns of about 97,000 strings of 25 bytes, 1,000,000 rows, 82 groups, new backend: dict_stored = 17 5.5 ms where 0 or 3 take 8.3 ms (2.6 against 5.6 ms with the set summaries checked in one loop); 51.3M to 9.7M instructions on a second fixture; one dictionary of 100,000 short strings: about 4%; at the default 3 these dictionaries are not stored and the first statement is unchanged
-- **Impact:** index size: default 3: 0% on an index of 25.1 MB with two dictionaries of about 97,000 strings (they are not stored); dict_stored = 17: +9.5% (25.1 to 27.5 MB after REINDEX); build, merge and writes: REINDEX of 1,000,000 rows 1.13 s at 0, 1.12 s at 17, 1.16 s at 3: no cost measurable (copying is cheaper than compressing); other: the dictionaries stored add 4 bytes a string for the offsets and the bytes the compact form saves (a 100,000-string dictionary: about 1.2 MB); the share bounds the sum for the segment
-- **When:** Dictionaries of 1,024 strings or more of the segments a sift_col index writes (build, merge, refresh), when a scan reads the whole dictionary; smaller ones are always compact.
-- **Default:** 3 — 3: the 3.3 rule for a default (growth at most 3% of the index); the dictionaries are stored only while they fit that share.
-- **Turn off:** SET (dict_stored = 0) writes every dictionary compressed, as 3.3 did; segments already written keep their form until a merge or REINDEX.
-- **Upgrade from 3.3:** No REINDEX needed: segments already written keep their form, new segments follow the option; nothing a 3.3 library cannot read (the plain form is the oldest).
-- **Advice:** Leave at 3. Raise it (17 stores two dictionaries of 100,000 strings) for an index whose statements start new backends often and group by a text column of many distinct values; 0 compresses every dictionary as before. REINDEX or a merge applies it.
 
 #### sift_col(cube_minmax)
 
@@ -1932,13 +1919,12 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(paths)` | '' | '' |  | The paths that CREATE INDEX takes from sift.suggest_paths changed (a wildcard for a map of more than 4 keys of one type, no long text keys): an index created after the update can choose other paths than one created by 3.3; an existing index keeps its own. |
 | `sift_col(preagg)` | '' | '' |  | The value auto is new; the default rule is unchanged, so an existing index keeps its cube. To rank the columns by data, ALTER INDEX .. SET (preagg = 'auto') and REINDEX; sift.index_advice names it when more dimensions are asked for than the cube's 16. |
-| `sift_col(dict_stored)` | new | 3 |  | No REINDEX needed: segments already written keep their form, new segments follow the option; nothing a 3.3 library cannot read (the plain form is the oldest). |
 | `sift_col(rollup_dims)` | '' | '' | minor 9 | The value auto is new; an existing index keeps its option as it is. ALTER INDEX .. SET (rollup_dims = 'auto') and REINDEX pick the pair from a sample; column format minor 9 as before. |
 | `sift_col(calendar_columns)` | '' | '' | minor 8 | The value all, or a list, now also works beside jsonb paths (3.3 refused it). ALTER INDEX .. SET (calendar_columns = 'all') and REINDEX; it costs +9.3% to +12.1% of an index with three date columns, so it is not the default. |
 | `sift_col(key_columns)` | '' | '' | minor 15 | No format change: a merge of every segment of an index with key_columns auto now decides the key lists again from the segments it rewrites, so a key-shaped column that the cube holds in under 40% of the units gets its key list at the merge. An explicit list is unchanged. Nothing to do. |

@@ -154,7 +154,6 @@ sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec)
 	memset(spec, 0, sizeof(*spec));
 	spec->max_groups = SIFT_PAGG_DEF_GROUPS;
 	spec->permille = SIFT_PAGG_DEF_PERMILLE;
-	spec->stored_pct = SIFT_PAGG_DEF_STORED_PCT;
 	for (int c = 0; c < s->ncols; c++)
 		if (sift_cpagg_dim_ok(s, &s->cols[c]) && s->cols[c].parent < 0 && spec->ndims < SIFT_PAGG_MAX_DIMS)
 			add_dim(s, spec, c, false);

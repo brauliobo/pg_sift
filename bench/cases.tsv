@@ -138,7 +138,6 @@ two_level_cell_conditions	the conditions of the outer aggregates of a two-level 
 dict_small_request	the ids of a dictionary's entries (the key of a group by a text column	orders	default	Group Keys: tag	native	-	ms	faster33	no
 dict_blocks_first_statement	are decompressed one at a time	orders	default	fallback:Index Scan using orders_pkey	native	warm_forced:sift.agg_force = on	ms	faster33	no
 dict_first_scan	made when a tuple first reads the entry	orders	default+id+title	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
-dict_first_stored	is stored uncompressed in the segments written from now on	orders	default+id+title WITH (dict_stored = 17)	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
 verdict_shared_report	the choice between a shared CTE and its inline plan (several planner runs of the statement) is kept in the backend	events	-	Custom Scan \(SiftAgg\)	native	no_shared:sift.verdict_cache_kb = 0,warm_backend:sift.enable_agg = on	ms	faster33	no
 set_pruned_request	are checked in one loop for each width of the list	orders	default	Pushed Aggregates	native	-	ms	faster33	no
 grouping_sets_many_keys	prepares the key ids of a chunk once for all the sets that read its rows	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
