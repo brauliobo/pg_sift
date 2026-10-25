@@ -301,7 +301,7 @@ extern const SegHead *sift_cseg_head_find(Relation index, const SiftSegEntry *en
 extern void sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt);
 
 /* The zone arrays of leaf col of seg from the cache (pinned for the segment's context), else NULL; keep takes the ones made in cx, a child of the segment's context */
-extern const ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
+extern ZoneArrays *sift_cseg_zones_find(SiftColSegment *seg, int col);
 extern void sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z);
 
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */

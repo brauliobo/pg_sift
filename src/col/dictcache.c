@@ -231,7 +231,7 @@ sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx,
  */
 #define ZONES_UNIT	(UINT32_MAX - 1)
 
-const ZoneArrays *
+ZoneArrays *
 sift_cseg_zones_find(SiftColSegment *seg, int col)
 {
 	DictKey		k;
