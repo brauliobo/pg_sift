@@ -170,6 +170,13 @@ SELECT 'with_ties' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt GROUP
  with_ties | SiftAgg |        3000 |              0
 (1 row)
 
+-- no group ranks after the n-th: nothing is dropped
+SELECT 'all_tied' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt WHERE id <= 30000 GROUP BY g ORDER BY v DESC LIMIT 10', 'v');
+   what   |  plan   | result_rows | vs_normal_plan 
+----------+---------+-------------+----------------
+ all_tied | SiftAgg |          10 |              0
+(1 row)
+
 SELECT 'window' AS what, * FROM same('SELECT g, v, rank() OVER (ORDER BY v DESC NULLS LAST, g) r FROM (SELECT g, sum(n) v FROM gt GROUP BY g) s ORDER BY r LIMIT 10');
   what  |  plan   | result_rows | vs_normal_plan 
 --------+---------+-------------+----------------

@@ -126,6 +126,7 @@ groups_topn(AggExec *ex)
 				k = s->gtopn_k;
 	GKey	   *heap;
 	uint32		w = 0;
+	bool		droppable = false;
 
 	if (k <= 0 || s->gtopn_agg < 0 || n <= 2 * k)
 		return;
@@ -152,7 +153,16 @@ groups_topn(AggExec *ex)
 		{
 			heap[0] = key;
 			sift_down(s, heap, k, 0);
+			droppable = true;
 		}
+		else if (!droppable && worse(s, &key, &heap[0]))
+			droppable = true;
+	}
+	/* no key ranks after the n-th: the second pass would keep every group */
+	if (!droppable)
+	{
+		pfree(heap);
+		return;
 	}
 	for (int i = 0; i < n; i++)
 	{

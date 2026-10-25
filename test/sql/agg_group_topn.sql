@@ -100,6 +100,8 @@ SELECT 'key_first' AS what, * FROM same('SELECT g, sum(n) v FROM gt GROUP BY g O
 SELECT 'expression' AS what, * FROM same('SELECT g, sum(n) + count(*) v FROM gt GROUP BY g ORDER BY v DESC NULLS LAST, g LIMIT 10');
 SELECT 'rollup' AS what, * FROM same('SELECT g, sum(n) v FROM gt GROUP BY ROLLUP (g) ORDER BY v DESC NULLS LAST, g LIMIT 10');
 SELECT 'with_ties' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt GROUP BY g ORDER BY v DESC FETCH FIRST 10 ROWS WITH TIES', 'v');
+-- no group ranks after the n-th: nothing is dropped
+SELECT 'all_tied' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt WHERE id <= 30000 GROUP BY g ORDER BY v DESC LIMIT 10', 'v');
 SELECT 'window' AS what, * FROM same('SELECT g, v, rank() OVER (ORDER BY v DESC NULLS LAST, g) r FROM (SELECT g, sum(n) v FROM gt GROUP BY g) s ORDER BY r LIMIT 10');
 
 -- parallel workers merge their groups before the top-N
