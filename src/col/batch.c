@@ -406,9 +406,47 @@ sift_cbatch_row_free(SiftColRow *row)
 	memset(row, 0, sizeof(*row));
 }
 
+/* A row without arrays is copied leaf by leaf (a SiftColRow is for the rows that have them: false) */
+static bool
+batch_copy_plain(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
+{
+	const SiftColSchema *s = dst->schema;
+	uint32		xmin;
+
+	for (int id = 0; id < s->ncols; id++)
+		if (s->cols[id].kind == SIFT_COLK_GROUP || s->cols[id].parent >= 0)
+			return false;
+	batch_row_begin(dst, src->keys[r]);
+	for (int id = 0; id < s->ncols; id++)
+	{
+		const SiftCVals *v = &src->col[id];
+
+		if (s->cols[id].store == SIFT_COLS_INT || s->cols[id].store == SIFT_COLS_F4 || s->cols[id].store == SIFT_COLS_F8)
+		{
+			bool		ovf = sift_col_bit_test(v->ovf, r);
+
+			vals_put(dst->mcxt, &dst->col[id], v->key[r], ovf || sift_col_bit_test(v->nulls, r), ovf, v->otag ? v->otag[r] : SIFT_COLTAG_UNKNOWN);
+		}
+		else
+		{
+			SiftColValue val;
+
+			sift_cbatch_value(src, id, r, &val);
+			put_value(dst, id, &val);
+		}
+	}
+	xmin = src->hasver ? src->xmin[r] : 0;
+	if (dst->hasver || xmin)
+		sift_cbatch_set_ver(dst, dst->nrows, xmin, src->hasver ? src->cmin[r] : 0);
+	dst->nrows++;
+	return true;
+}
+
 static void
 batch_copy_row(SiftColBatch *dst, const SiftColBatch *src, uint32 r, SiftColRow *scratch)
 {
+	if (batch_copy_plain(dst, src, r))
+		return;
 	sift_cbatch_row(src, r, scratch);
 	sift_cbatch_add_ver(dst, scratch, src->hasver ? src->xmin[r] : 0, src->hasver ? src->cmin[r] : 0);
 }
