@@ -4,8 +4,7 @@ Reference for everything beyond the [README](../README.md) quick start. The exam
 
 ## Install
 
-Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (the whole suite), Linux arm64 (PostgreSQL 18, the fast tier of every labeled pull request in CI) and macOS arm64 (the Homebrew build and its test, and a few regression tests, in CI). The chunk codec of the column engine links `liblz4` and `libzstd` when their
-development headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one, and the packages depend on both.
+Requires PostgreSQL 17, 18 or 19, server headers with `pg_config` on `PATH`, and a C compiler. Tested on x86-64 (whole suite), Linux arm64 (PostgreSQL 18; fast tier of every labeled pull request in CI) and macOS arm64 (Homebrew build and test plus a few regression tests, in CI). The column engine's chunk codec links `liblz4` and `libzstd` when their headers are installed (`liblz4-dev`, `libzstd-dev`); `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one; the packages depend on both.
 
 ```sh
 make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_config picks another installation
@@ -18,11 +17,11 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
   `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.3.0/pg_sift_18-3.3.0-1.el9.x86_64.rpm`.
 
-Then, as a superuser (after installing a newer version run `ALTER EXTENSION pg_sift UPDATE`): `CREATE EXTENSION pg_sift;`. No `shared_preload_libraries` entry is needed for the `sift` index, the `sift_col` index or the `sift_table` table access method; only publishing a `sift_table` under `wal_level = logical` does ([Replication](#replication)).
+Then, as a superuser: `CREATE EXTENSION pg_sift;` (after installing a newer version: `ALTER EXTENSION pg_sift UPDATE`). `shared_preload_libraries` is not needed for the `sift` index, the `sift_col` index or the `sift_table` access method; only publishing a `sift_table` under `wal_level = logical` needs it ([Replication](#replication)).
 
-A backend loads the library when a statement first opens one of its objects. For a query on a heap table with a `sift_col` index that is while the planner opens the index, after `planner()` had chosen to run without the planner hook that decides the CTE and lateral-join plans. The executor start therefore plans that first statement again through the hook when it is a plain `SELECT`, the query of an `EXPLAIN` (which then prints the plan the statement gets, `EXPLAIN ANALYZE` runs it) or the query of a `CREATE TABLE AS` (the parameters of the extended protocol or of `EXECUTE` are planned with their own types and values, as a custom plan is; and it resets the plan cache, so a prepared statement does not keep the first plan), and the statement runs in the scan like the ones after it. Any other first statement (a cursor, whose plan depends on its options, a query inside a function) keeps the plan it was given, which is the ordinary plan for the aggregates that need the hook. Loading the library at session start also saves the second planning and the few milliseconds of the load: `ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift'` (new sessions only, no restart), or list it in `shared_preload_libraries`.
+A backend loads the library when a statement first opens one of its objects. For a heap table with a `sift_col` index that is in `planner()`, after it skipped the planner hook that decides CTE and lateral-join plans. The executor start therefore re-plans that first statement through the hook if it is a plain `SELECT`, an `EXPLAIN` query (it prints the plan the statement gets; `EXPLAIN ANALYZE` runs it) or a `CREATE TABLE AS` query; extended-protocol and `EXECUTE` parameters are planned with their own types and values (a custom plan) and the plan cache is reset. Any other first statement (a cursor, a query inside a function) keeps its plan, the ordinary one for aggregates that need the hook. To avoid the second planning and the load's few milliseconds, preload: `ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift'` (new sessions, no restart) or `shared_preload_libraries`.
 
-Since 3.3 the install gives `USAGE` on the schema `sift` to `PUBLIC`, so any role can call `sift.score(ctid)` and the read-only diagnostics without a `GRANT`; each function still checks the table or index it reads, and the tables of the extension stay unreadable. `REVOKE USAGE ON SCHEMA sift FROM PUBLIC` takes it back (then `GRANT USAGE ON SCHEMA sift TO` the roles that need it; the `@@>` operator and the access methods need none). `ALTER EXTENSION pg_sift UPDATE` grants it again.
+The install grants `USAGE` on schema `sift` to `PUBLIC` (since 3.3): any role can call `sift.score(ctid)` and the read-only diagnostics; each function still checks the table or index it reads and the extension's tables stay unreadable. `REVOKE USAGE ON SCHEMA sift FROM PUBLIC` takes it back (then `GRANT USAGE ON SCHEMA sift TO` the roles that need it; `@@>` and the access methods need none). `ALTER EXTENSION pg_sift UPDATE` grants it again.
 
 ### Install with Homebrew
 
@@ -32,19 +31,11 @@ brew install --HEAD brauliobo/pg_sift/pg_sift
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The formula in this repository builds for Homebrew PostgreSQL 17 and 18 (Homebrew has no PostgreSQL 19 formula yet), with LZ4 and zstd, and links extension files through Homebrew's versioned directories.
-The HEAD-only formula builds `main` and supports macOS arm64; CI builds it and runs `brew test` on PostgreSQL 17 and 18.
-The test creates temporary clusters, checks BM25 queries, an extension upgrade and a `sift_col` aggregate, then stops the clusters.
-For aggregate pushdown in a new session, load the planner hooks with `LOAD 'pg_sift';` before querying.
-Remove the extension package with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
+The formula is HEAD-only (builds `main`), for macOS arm64 and Homebrew PostgreSQL 17 and 18 (no PostgreSQL 19 formula yet), with LZ4 and zstd, and links extension files through Homebrew's versioned directories. CI builds it and runs `brew test` on PostgreSQL 17 and 18 (temporary clusters, BM25 queries, an extension upgrade, a `sift_col` aggregate). For aggregate pushdown in a new session run `LOAD 'pg_sift';` first. Remove with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
 
 ## Queries
 
-`AND`, `OR`, `NOT` are keywords in upper case only; juxtaposition is `AND`; precedence is `NOT` > `AND` > `OR`; a `NOT` needs a positive
-term in its AND group. A wildcard, regex, fuzzy or prefix leaf expands to dictionary terms. It matches every word it matches, however many (`h*`,
-`*ing`, `/.*tion/` or `~2` on a million names), and above `sift.max_expansions` (512) terms it scores as the one term whose documents
-are those with such a word (for a prefix, the term `prefix_index` would hold for it), instead of as the best of its terms. A regex
-cannot have back-references.
+`AND`, `OR`, `NOT` are keywords in upper case only; juxtaposition is `AND`; precedence is `NOT` > `AND` > `OR`; a `NOT` needs a positive term in its AND group. A wildcard, regex, fuzzy or prefix leaf expands to dictionary terms and matches every word it matches, however many (`h*`, `*ing`, `/.*tion/` or `~2` on a million names). Above `sift.max_expansions` (512) terms it scores as one term whose documents are those with such a word (for a prefix, the term `prefix_index` would hold), not as the best of its terms. A regex cannot have back-references.
 
 ```sql
 SELECT id FROM docs WHERE body @@> 'battery NOT squeaky';             -- exclusion: 2
@@ -57,58 +48,14 @@ SELECT id FROM docs WHERE body @@> ANY (ARRAY['case', 'clip']);       -- OR of s
 
 ## Ranking, filters and joins
 
-`ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid.
-`sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table. In `WHERE` it
-may only be compared with a constant, a parameter or a stable expression of them (`>`, `>=`, `<`, `<=`, either side): a minimum or maximum
-score, tested by the scan on the score it computed, so the rows are those of a subquery that filters on the score (several cutoffs must all
-hold; `EXPLAIN` shows `Score Filter`). A cutoff from below keeps the `LIMIT` hint of the ranked scan; one from above reads every match.
-`BETWEEN` and `NOT (score > c)` are such comparisons once PostgreSQL has rewritten them. Any other use in `WHERE` (`OR`, `=`, `<>`, an
-expression of the score, `sift.max_score()`) is an error: filter on the score from a subquery. A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant one, also in a generic plan.
-`ORDER BY name, sift.score(ctid) DESC LIMIT k` (columns of the scanned table first, then the score) scores only the rows tied with the
-k-th best `name` instead of every match, and gives the answer of ranking every match and sorting after; `EXPLAIN` shows
-`Order: name, score DESC` and `Key Passes`. A query with no `LIMIT` ranks every match in one search.
-It works on materialized views too, in `INSERT ... SELECT`, and in a `HAVING` that reads the score of an aggregate. `UPDATE`, `DELETE`,
-`MERGE` and `FOR UPDATE` re-check the rows they read, which a scan cannot do: a subquery, view or `WITH` query of such a statement that
-reads the score is planned apart (as with `OFFSET 0` or `MATERIALIZED`) and the statement uses its rows by key (`UPDATE t SET s = q.s FROM
-(SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'case') q WHERE t.id = q.id`); a score read straight from a table the statement
-joins is an error (planned, with a hint).
+`ORDER BY sift.score(ctid) DESC LIMIT k` runs a ranked scan that skips blocks that cannot reach the top k; ties break by ctid. Without a `LIMIT` it ranks every match in one search. A prepared `LIMIT $1 [OFFSET $2]` gets the same scan as a constant, also in a generic plan. It works on materialized views, in `INSERT ... SELECT`, and in a `HAVING` that reads the score of an aggregate.
 
-### Row-level security
+`sift.score()` is computed by the scan: use it in the select list or `ORDER BY` of the query level that scans the table.
 
-A role under a row-level security policy gets no ranked scan by default: the match is not leakproof and the index statistics
-(document count, document frequencies, field lengths, the vocabulary a wildcard expands over) include the rows the policy hides.
-`sift.rls_scores = on` (a superuser setting: `ALTER ROLE app SET sift.rls_scores = on`, or `GRANT SET ON PARAMETER` to a role that may
-change it) lets the ranked scan serve such a role:
-
-```sql
-ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY own ON docs USING (tenant = current_user);
-SET sift.rls_scores = on;       -- as a superuser, or per role with ALTER ROLE ... SET
-SET ROLE app;
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' ORDER BY sift.score(ctid) DESC LIMIT 10;
-```
-
-The policy's quals run on every row the ranker offers before any qual of the query (the order PostgreSQL gives a sequential scan, so a
-function or an expression of the query that raises for a row is never evaluated on a hidden one), the ranker is asked for more rows until
-`k` pass the policy, and no hidden row is ever returned. Policies that call functions or read other tables work. `EXPLAIN` does not
-estimate the matches from the index (on a partition or an inheritance child either) and `EXPLAIN ANALYZE` does not print its counters
-(`Candidates`, `Superblocks`, `Heap Checks`, ...), as those count the hidden rows; the plan's estimates are the same whatever the hidden
-rows hold. `BUFFERS`, `pg_statio_*` and the time still show the pages the scan read, which grow with the hidden rows the ranker offered
-before `k` visible ones passed (a sequential scan under a policy shows its hidden rows in `Rows Removed by Filter` the same way). Without a ranking (`WHERE body @@> ...` with
-no score), `count(*)`, `sift.facets` and the column index behave as before: a sequential scan, no pushdown. `sift.max_score()` stays an
-error (it is the best score of all the matches, hidden ones included). A table owner and a role with `BYPASSRLS` are not under the policy
-and score as always; `FORCE ROW LEVEL SECURITY` puts the owner under it.
-
-**The caveat, in full.** The score of a visible row is computed from the statistics of the whole index. It is the score the table owner
-sees for the same row, and it depends on the hidden rows: a term that the hidden rows repeat has a lower weight, and a row's score changes
-when a hidden row is added. No hidden row is returned and none is counted in a result, but the numbers are information about the corpus,
-readable from the scores of rows the role sees (a row of known length and term counts fixes the weight of each term of the query, and so
-the number of documents that hold it in the whole index): the number of documents, their average length, how common a term is in all of
-them, and whether a wildcard expands past `sift.max_expansions`. A role that can insert documents can probe any word it chooses. Time and
-the pages read (`BUFFERS`, `pg_statio_*`) are side channels as for any query. Enable the setting for roles whose
-tenants may see that much (a shared corpus with per-user visibility), not for tenants whose documents must be unobservable by each other;
-for those, index each tenant's rows separately (a partition per tenant, a sift index on each) or leave the setting off. Because the
-setting is read when the query is planned, a prepared statement planned with it on keeps its plan for the session.
+- In `WHERE` it may only be compared (`>`, `>=`, `<`, `<=`, either side) with a constant, a parameter or a stable expression of them (`BETWEEN` and `NOT (score > c)` qualify after rewriting). The scan tests it (`EXPLAIN` shows `Score Filter`; several cutoffs must all hold). A cutoff from below keeps the `LIMIT` hint; one from above reads every match.
+- Any other use in `WHERE` (`OR`, `=`, `<>`, an expression of the score, `sift.max_score()`) is an error: filter on the score from a subquery.
+- `ORDER BY name, sift.score(ctid) DESC LIMIT k` (columns of the scanned table first, then the score) scores only the rows tied with the k-th best `name` and gives the answer of ranking all matches and sorting after; `EXPLAIN` shows `Order: name, score DESC` and `Key Passes`.
+- `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE` re-check rows, which a scan cannot: a subquery, view or `WITH` query of such a statement that reads the score is planned apart (as with `OFFSET 0` or `MATERIALIZED`) and the statement uses its rows by key (`UPDATE t SET s = q.s FROM (SELECT id, sift.score(ctid) AS s FROM docs WHERE body @@> 'case') q WHERE t.id = q.id`). A score read straight from a table the statement joins is an error (planned, with a hint).
 
 ```sql
 SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly OR case' AND sift.score(ctid) > 0.5
@@ -119,24 +66,34 @@ SELECT d.id, c.name FROM docs d JOIN (VALUES (1, 'audio')) c(id, name) ON c.id =
 WHERE d.body @@> 'friendly' ORDER BY sift.score(d.ctid) DESC LIMIT 10;              -- joins work too
 ```
 
+### Row-level security
+
+A role under a row-level security policy gets no ranked scan by default: the match is not leakproof and the index statistics (document count, document frequencies, field lengths, the vocabulary a wildcard expands over) include the rows the policy hides. `sift.rls_scores = on` (superuser setting: `ALTER ROLE app SET sift.rls_scores = on`, or `GRANT SET ON PARAMETER` to a role that may change it) lets the ranked scan serve such a role:
+
+```sql
+ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY own ON docs USING (tenant = current_user);
+SET sift.rls_scores = on;       -- as a superuser, or per role with ALTER ROLE ... SET
+SET ROLE app;
+SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'friendly' ORDER BY sift.score(ctid) DESC LIMIT 10;
+```
+
+The policy's quals run on every row the ranker offers before any qual of the query (so a query expression that raises for a row never sees a hidden one); the ranker is asked for more rows until `k` pass, and no hidden row is returned. Policies that call functions or read other tables work.
+
+- `EXPLAIN` does not estimate matches from the index (also on a partition or inheritance child) and `EXPLAIN ANALYZE` does not print its counters (`Candidates`, `Superblocks`, `Heap Checks`, ...), as they count hidden rows; the estimates are the same whatever the hidden rows hold.
+- `BUFFERS`, `pg_statio_*` and the time still show the pages read, which grow with the hidden rows offered before `k` visible ones passed (a sequential scan shows them in `Rows Removed by Filter`).
+- Without a ranking (`WHERE body @@> ...` with no score), `count(*)`, `sift.facets` and the column index behave as before: a sequential scan, no pushdown. `sift.max_score()` stays an error (it covers hidden rows).
+- A table owner and a role with `BYPASSRLS` are not under the policy and score as always; `FORCE ROW LEVEL SECURITY` puts the owner under it.
+
+**The caveat.** A visible row's score comes from the statistics of the whole index, as the owner sees it, so it depends on hidden rows (a term they repeat weighs less; adding one changes scores). No hidden row is returned or counted, but scores leak corpus information (a row of known length and term counts fixes each term's weight, hence how many documents hold it): document count, average length, how common a term is, whether a wildcard expands past `sift.max_expansions`. A role that can insert documents can probe any word; time and pages read (`BUFFERS`, `pg_statio_*`) are side channels as for any query. Enable it for roles whose tenants may see that much (a shared corpus with per-user visibility); where tenants' documents must be unobservable by each other, index each tenant separately (a partition per tenant, a sift index on each) or leave it off. The setting is read at planning: a prepared statement planned with it on keeps its plan for the session.
+
 ### Filter pushdown
 
-With `sift.filter_pushdown` (`on` by default) the planner builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and
-gives it to the ranked scan, which then scores only the matches that pass, so the work follows the filter and not a very common term;
-results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 23.6 ms to 0.22 ms (clustered) and 15.0 ms to 0.86 ms
-(scattered). `force` pushes down whenever a bitmap path exists; with `on` the planner costs both plans. The post-filter plan is priced
-from the filter column's statistics: the ranker visits the heap in order and verifies every match until it holds `k` rows that pass,
-so a filter whose rows lie at the end of a correlated column (recent ids) costs it the whole heap before them. Both plans are also charged for the blocks the ranker scores, and an id list (`= ANY(array)`) is priced by the btree leaf pages it touches, so a long list of scattered ids is pushed down.
-A prepared statement (or any generic plan: `plan_cache_mode`, a driver that prepares) is planned without its query, so no plan is right for
-every query: the plan keeps the filter's bitmap as a child that the scan builds only when the bound query matches enough documents for it
-to pay (`Filter Mask From Matches` in `EXPLAIN VERBOSE`; the planner finds the number on the costs of both plans, and a loose filter, one that keeps
-a tenth of the rows or more on the benchmark corpus, never gets one). A rare query is
-answered by checking the filter after the ranker, a common one by the mask, as in the plan of the literal query (a prepared 2.3% filter
-query on common words went from 2.72M to 1.51M cycles, a rare one from 772k to 658k; a filter of 10% or more is left after the ranker).
-A filter on a value that the table stores in one stretch of the heap (`country_code = 'US'` on rows loaded by country) is placed from the
-btree at planning time (the entries of a key are in heap order, so a few of them tell where the rows that pass start), and is pushed down
-when that stretch is late: the filtered one-letter prefix of the places went from 8.74M to 1.26M user cycles. A stretch at the start of the
-heap keeps the scan that checks the filter after the ranker.
+With `sift.filter_pushdown` (`on` by default) the planner builds a bitmap of the other quals from their indexes (btree, BRIN, GIN) and gives it to the ranked scan, which scores only matches that pass; results equal the post-filter plan. A 0.1% filter on 218,058 articles went from 23.6 ms to 0.22 ms (clustered) and 15.0 ms to 0.86 ms (scattered). `force` pushes down whenever a bitmap path exists; `on` costs both plans.
+
+- The post-filter plan is priced from the filter column's statistics: the ranker verifies matches in heap order until `k` pass, so a filter at the end of a correlated column (recent ids) costs the whole heap before it. Both plans are charged for the blocks the ranker scores; an id list (`= ANY(array)`) is priced by the btree leaf pages it touches, so a long list of scattered ids is pushed down.
+- A generic plan (prepared statement, `plan_cache_mode`, a preparing driver) is planned without its query, so it keeps the bitmap as a child the scan builds only when the bound query matches enough documents (`Filter Mask From Matches` in `EXPLAIN VERBOSE`; a filter keeping a tenth of the rows or more on the benchmark corpus never gets one). Rare queries check the filter after the ranker, common ones use the mask (prepared 2.3% filter, common words: 2.72M to 1.51M cycles; rare: 772k to 658k).
+- A value stored in one stretch of the heap (`country_code = 'US'` on rows loaded by country) is placed from the btree at planning time (a key's entries are in heap order) and pushed down when the stretch is late: the filtered one-letter prefix of the places went from 8.74M to 1.26M user cycles. A stretch at the start of the heap keeps the filter after the ranker.
 
 ```sql
 CREATE INDEX docs_published ON docs (published);
@@ -149,11 +106,7 @@ RESET sift.filter_pushdown;
 
 ## Analyzers, phrases, several columns
 
-Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no
-stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. The index
-stores word positions (`positions = on`, the default), so phrases are decided from the index; `positions = off` gives a much smaller
-index that rechecks phrases in the heap. An index has one
-key, a `text` column or an immutable expression, so concatenate columns (`coalesce` nullable ones, `NULL` keys are not indexed).
+Text is split into words, case folded, accent folded (`résumé` is `resume`) and optionally stemmed (Snowball English only); there is no stopword list. The analyzer is fixed per index: build the replacement with `CREATE INDEX CONCURRENTLY` and swap. With `positions = on` (default) the index stores word positions and decides phrases itself; `positions = off` gives a much smaller index that rechecks phrases in the heap. An index has one key, a `text` column or an immutable expression: concatenate columns (`coalesce` nullable ones; `NULL` keys are not indexed).
 
 ```sql
 SELECT token, pos FROM sift.tokenize('Running Cafés, RÉSUMÉ', stemmer => 'en');             -- run, cafe, resum
@@ -164,11 +117,7 @@ SELECT id FROM docs WHERE body @@> 'run';                         -- 4: runners,
 CREATE INDEX docs_title_body ON docs USING sift ((coalesce(title, '') || ' ' || coalesce(body, '')));   -- query with the same expression
 ```
 
-For autocomplete and for weighted fields, build the key from sections with `sift.sections(a, b, ...)` (they are joined with `chr(29)`; a NULL
-section is empty), name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of
-up to n letters are one term lookup. The option is a speed and size trade-off, not a requirement: without it a broad prefix such as `h*` is read
-from the postings of all its words, once per backend and then from a cache (`sift.prefix_cache_size`): 10-15 ms for a one-letter prefix of a million
-names, under a millisecond with the option, which costs index size (a million names: 17 MB, 34 MB at 3, 73 MB at 15):
+For autocomplete and weighted fields, build the key from sections with `sift.sections(a, b, ...)` (joined with `chr(29)`; a NULL section is empty), name the leading ones with `fields` and set `prefix_index = n` (up to 15) so prefixes of up to n letters are one term lookup. It trades index size for speed and is optional: without it a broad prefix such as `h*` is read from the postings of all its words, once per backend and then from a cache (`sift.prefix_cache_size`): 10-15 ms for a one-letter prefix of a million names, under a millisecond with the option, which costs index size (a million names: 17 MB, 34 MB at 3, 73 MB at 15):
 
 ```sql
 CREATE TABLE places (id int PRIMARY KEY, name text, admin1 text, country text);
@@ -178,20 +127,12 @@ SELECT id FROM places WHERE sift.sections(name, admin1 || ' ' || country) @@> '(
 ORDER BY sift.score(ctid) DESC LIMIT 20;                          -- every word a prefix, name matches boosted x3
 ```
 
-`name:word`, `name:(a b)` and `name:{a b}` need the field in the index: a name it lacks is an error (`42601`, listing the fields) and
-a query on one key means the same on every plan. Without `fields` (also with no sift index at all) a colon is text, so `name:word` is
-the word `name:word` and `name:(a b)` the words `name:a` and `name:b`. With several sift indexes on one key, `@@>` means the default
-analyzer when one of them has it, else that of the lowest OID; an index that answers differently (one with `fields` next to a plain
-one) does not serve it, and `sift.match_idx(key, query, index)` names the analyzer. Partitions bind `@@>` to their own indexes.
+- `name:word`, `name:(a b)` and `name:{a b}` need the field in the index; a name it lacks is an error (`42601`, listing the fields), so a query on one key means the same on every plan. Without `fields` (or with no sift index) a colon is text: `name:word` is the word `name:word`, `name:(a b)` the words `name:a` and `name:b`.
+- With several sift indexes on one key, `@@>` means the default analyzer when one of them has it, else that of the lowest OID. An index that answers differently (one with `fields` next to a plain one) does not serve it; `sift.match_idx(key, query, index)` names the analyzer. Partitions bind `@@>` to their own indexes.
 
 ### Field weights
 
-`sift.field_query(query, fields [, index])` searches each word, prefix, wildcard and fuzzy term of a query in every listed field, with the
-weight of the field times the term's own boost. A row scores the sum of its fields' scores (the sum of per-field BM25, each with its own
-`idf` and `tf` and the length of the whole key); the rows that match are those of the unweighted query on those fields. A weight is above 0 and
-up to 10000, and no weight is 1. With `index` the field names are checked against the `fields` of that index. Phrases, regular expressions and
-the terms of a `NOT` are not scoped to a field; there is no BM25F, no analyzer per field and no highlight per field
-([FIELDS-FACETS.md](FIELDS-FACETS.md)).
+`sift.field_query(query, fields [, index])` searches each word, prefix, wildcard and fuzzy term in every listed field, with the field's weight times the term's boost. A row scores the sum of its fields' scores (per-field BM25, each with its own `idf` and `tf` and the length of the whole key); matching rows are those of the unweighted query on those fields. A weight is above 0 and up to 10000, and no weight is 1. With `index` the field names are checked against its `fields`. Phrases, regular expressions and the terms of a `NOT` are not scoped to a field; there is no BM25F, no analyzer per field and no highlight per field ([FIELDS-FACETS.md](FIELDS-FACETS.md)).
 
 ```sql
 CREATE INDEX items_sift ON items USING sift (sift.sections(title, body, tags)) WITH (fields = 'title,body,tags');
@@ -202,9 +143,7 @@ ORDER BY sift.score(ctid) DESC LIMIT 10;
 
 ## Partitioned tables
 
-Works with declarative partitioning (also multi-level) and inheritance parents. `CREATE INDEX ... USING sift` on the parent builds one
-sift index per leaf partition, also for partitions attached later. Matching and `count(*)` span partitions, and ranking works through the
-parent: each partition runs its own ranked scan and a MergeAppend returns the global top-k.
+Declarative partitioning (also multi-level) and inheritance parents work. `CREATE INDEX ... USING sift` on the parent builds one sift index per leaf partition, also for partitions attached later. Matching and `count(*)` span partitions; ranking works through the parent: each partition runs its own ranked scan and a MergeAppend returns the global top-k.
 
 ```sql
 CREATE TABLE logs (id int, region text, msg text) PARTITION BY LIST (region);
@@ -218,10 +157,7 @@ SELECT id, region, sift.score(ctid) FROM logs WHERE msg @@> 'disk "node 7"' ORDE
 
 ## Facets
 
-`sift.facet_counts(table, key, query, facets [, filter [, hits]])` returns the counts of several facets of one search in one call: terms with a
-top N and the count of the other values, range, histogram and date buckets, on columns of any type (also arrays), and the facets of a
-multi-select (a facet ignores its own selection). Every count is exact, the `count(*)` of the same snapshot. The design, the options and the
-limits are in [FIELDS-FACETS.md](FIELDS-FACETS.md).
+`sift.facet_counts(table, key, query, facets [, filter [, hits]])` returns the counts of several facets of one search in one call: terms with a top N and the count of the other values, range, histogram and date buckets, on columns of any type (also arrays), with multi-select (a facet ignores its own selection). Every count is exact, the `count(*)` of the same snapshot. Design, options and limits: [FIELDS-FACETS.md](FIELDS-FACETS.md).
 
 ```sql
 SELECT * FROM sift.facet_counts('items', 'title', 'wireless',
@@ -233,19 +169,11 @@ SELECT * FROM sift.facet_counts('items', 'title', 'wireless',
   '[{"expr":"brand","selected":["acme"]}, "category"]');       -- category counts only brand acme; brand counts all brands
 ```
 
-`kind` is `value` (terms), `bucket` (range, histogram, date), `other` (`lo` values past `size`, `count` their sum), `missing` (NULL) or `hits`
-(the rows left after every selection). `sift.facet_sql(...)` returns the statement that `facet_counts` runs, for `EXPLAIN`: with a `sift_col`
-index on the columns each facet is a `Custom Scan (SiftAgg)` with the search as the row selection (a million rows, four facets: 3-13 ms against
-140-310 ms for the ordinary plan on broad queries); an array facet or a filter on a column outside the index runs as the ordinary plan, with
-the same counts. The statement runs as the calling role, so permissions and row-level security apply.
+`kind` is `value` (terms), `bucket` (range, histogram, date), `other` (`lo` values past `size`, `count` their sum), `missing` (NULL) or `hits` (rows left after every selection). `sift.facet_sql(...)` returns the statement `facet_counts` runs, for `EXPLAIN`; it runs as the calling role, so permissions and row-level security apply. With a `sift_col` index on the columns each facet is a `Custom Scan (SiftAgg)` with the search as the row selection (a million rows, four facets: 3-13 ms against 140-310 ms for the ordinary plan on broad queries); an array facet or a filter on a column outside the index runs as the ordinary plan, with the same counts.
 
 ### Keyword facets
 
-`analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts the matches of a
-query per value of another column from the bitmaps, equal to the `GROUP BY` of the same snapshot. It pays for broad queries on
-low-cardinality columns (1.9-4.5x on 26 values); for selective queries or thousands of values `GROUP BY` wins.
-A value of more than 255 bytes is indexed as its first bytes and a hash of all of it, so `@@>` still finds exactly the rows with that value
-(`sift.facets` shows it as that start and the hash); it was an error before.
+`analyzer = keyword` indexes each whole value as one term, so `sift.facets(index, facet_index, query, lim, nulls)` counts a query's matches per value of another column from the bitmaps, equal to the same snapshot's `GROUP BY`. It pays for broad queries on low-cardinality columns (1.9-4.5x on 26 values); selective queries or thousands of values favor `GROUP BY`. A value over 255 bytes is indexed as its first bytes plus a hash of all of it, so `@@>` still finds exactly the rows with that value (`sift.facets` shows that start and the hash).
 
 ```sql
 CREATE INDEX docs_category ON docs USING sift ((category::text)) WITH (analyzer = keyword);   -- text keys: cast integers
@@ -254,9 +182,7 @@ SELECT * FROM sift.facets('docs_body', 'docs_category', 'friendly OR case', 10);
 
 ## Parallel scan
 
-`sift.parallel_scan` (`off` by default) lets the planner add a Gather over a parallel SiftScan or SiftCount; a ranked one needs a `LIMIT`
-and a single table, and rows, scores and ties equal the serial plan. It is off because a Gather costs milliseconds before any work: on
-218,058 articles only an unordered scan with a heavy residual qual gained (1.8x). Try it on much larger tables or expensive quals.
+`sift.parallel_scan` (`off` by default) lets the planner add a Gather over a parallel SiftScan or SiftCount; a ranked one needs a `LIMIT` and a single table, and rows, scores and ties equal the serial plan. It is off because a Gather costs milliseconds before any work: on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x). Try it on much larger tables or with expensive quals.
 
 ```sql
 SET sift.parallel_scan = on;
@@ -266,30 +192,23 @@ RESET sift.parallel_scan;
 
 ## Maintenance and operations
 
-Writes go to small write buffers through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments
-and merges; VACUUM promotes, merges and clears dead postings.
-`sift.workers` lists every `sift` and `sift_col` index you can read with its directory entries, the write buffers waiting for promotion, whether maintenance is running and, when the last background step failed, `failures` in a row, `failed_at`, `next_retry` (the delay doubles from `sift.maintenance_naptime` up to an hour), the SQLSTATE and the `last_error`; the next successful step clears them. For a `sift_col` index `due` is the answer of `sift.col_maintenance_due`; a worker of a `sift_col` index that fails records its error the same way, and the requests for a new worker wait out the same delay.
+Writes go to small write buffers through generic WAL; a background worker (`sift.async_maintenance`) turns them into immutable segments and merges; VACUUM promotes, merges and clears dead postings. Disk, memory and time of a large index: [SIZING.md](SIZING.md).
 
-`sift.col_index_status` is the one row per `sift_col` index you can read that a DBA of a large table looks at first: the size of the index, of its segments, of the free and reusable blocks, the segments against the 128 the directory holds and the largest one, the rows, the dead rows (`dead_pct`) and the segments VACUUM marked dirty, the rows in the write buffer and the buffers sealed, whether maintenance runs or fails, and what `sift.col_maintenance_status` says (the last VACUUM, the rows changed since, why a rewrite is `due`, what it is `blocked_by`).
-`sift.segments(index)` and `sift.verify(index, true)` inspect and check an index. `sift.index_info(index)` shows its size, high-water mark,
-free and reusable blocks, directory entries and whether a maintenance run holds the lock; `sift.version()` is the version of the loaded
-library (compare with `pg_extension.extversion`). `sift.promote`, `merge`, `verify`, `segments`, `segment_postings` and `index_info`
-need the owner of the table or a role with `MAINTAIN` on it, like `VACUUM`. Disk, memory and time of a large index: [SIZING.md](SIZING.md).
-
-- `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it.
-- `pg_stat_progress_create_index` shows a build's phase (`scanning table`, `spilling runs`, `merging runs`, `writing segments`) and the documents done.
-- A build writes its postings to temporary files (`temp_tablespaces`) before the segments: about 2.3 times the index size at the default
-  `maintenance_work_mem`, about 4.3 times at `1MB` (a second merge pass), measured on 100,000 articles (64 MB index). Memory stays within the budget at any table size.
-- pg_dump restores rebuild the index. Replication: see [Replication](#replication).
+- `sift.workers` lists every readable `sift` and `sift_col` index with its directory entries, write buffers awaiting promotion, whether maintenance runs and, after a failed background step, `failures` in a row, `failed_at`, `next_retry` (the delay doubles from `sift.maintenance_naptime` up to an hour), the SQLSTATE and `last_error`; the next success clears them. For a `sift_col` index `due` is the answer of `sift.col_maintenance_due`; a failing `sift_col` worker records its error the same way and new-worker requests wait out the same delay.
+- `sift.col_index_status` is one row per readable `sift_col` index: size of the index, its segments and the free and reusable blocks, segments against the 128 the directory holds and the largest one, rows, dead rows (`dead_pct`), segments VACUUM marked dirty, rows in the write buffer and buffers sealed, whether maintenance runs or fails, and `sift.col_maintenance_status` (last VACUUM, rows changed since, why a rewrite is `due`, what it is `blocked_by`).
+- `sift.segments(index)` and `sift.verify(index, true)` inspect and check an index. `sift.index_info(index)` shows size, high-water mark, free and reusable blocks, directory entries and whether a maintenance run holds the lock; `sift.version()` is the loaded library's version (compare `pg_extension.extversion`). `sift.promote`, `merge`, `verify`, `segments`, `segment_postings` and `index_info` need the table owner or a role with `MAINTAIN` on it, like `VACUUM`.
+- `REINDEX [CONCURRENTLY]` works as usual; `CREATE INDEX` is parallel on large tables. Changing `k1`, `b` or an analyzer option needs it. `pg_stat_progress_create_index` shows a build's phase (`scanning table`, `spilling runs`, `merging runs`, `writing segments`) and the documents done. pg_dump restores rebuild the index ([Replication](#replication)).
+- A build writes postings to temporary files (`temp_tablespaces`) before the segments: about 2.3 times the index size at the default `maintenance_work_mem`, about 4.3 times at `1MB` (a second merge pass), on 100,000 articles (64 MB index). Memory stays within the budget at any table size.
 - `EXPLAIN` shows `Custom Scan (SiftScan)`, or `SiftCount` for the `count(*)` pushdown.
-- A `sift_col` unit answers from its pre-aggregates only over pages the visibility map calls all-visible. A plain VACUUM sets every page it can: measured on
-  400,000 rows with 3% of them updated in ten transactions and `synchronous_commit = on`, none stays unset with no old snapshot, and with a transaction
-  holding a snapshot older than the updates 9,814 of 10,052 pages stay unset until it ends, after which one more VACUUM sets them (0 left). That is the
-  PostgreSQL rule that the oldest snapshot decides what a VACUUM may call all-visible, so look for the oldest `xact_start` or `backend_xmin` in
-  `pg_stat_activity` and for replication slots when grouped aggregates still read rows after a VACUUM. With
-  `synchronous_commit = off` the commits not yet flushed do the same (see `sift.col_auto_merge`).
-- Rows deleted or updated and not yet vacuumed cost a heap check: a scan reads the heap page of every row of a page that is not all-visible, to see whether the row is still there (`Rows Vetted By Heap` in EXPLAIN ANALYZE). Measured on 3,000,000 rows with 6% of them deleted from 16% of the heap pages and no VACUUM (the SiftAgg cells of a grouped-aggregate corpus, warm cache): a wide scan vetted 181,251 to 295,931 rows over 11,615 to 25,029 heap pages, and ran within the noise of the same scan after a VACUUM (263.6 against 272.6 ms; the cells differ by -18% to +21% either way); the cost is the page reads, which a cold cache turns into I/O, and it is zero after a VACUUM. With `sift.col_auto_merge` on, the first scans that vet rows ask the worker to vacuum the table, which does it unless it was vacuumed lately: the table counts as vacuumed lately for 5 `sift.maintenance_naptime`s, and on PostgreSQL 18 for ten times its average VACUUM, so a table whose VACUUM takes an hour is not vacuumed by the worker twice in ten hours. Here the VACUUM before the deletes took 2.4 s: the worker's VACUUM ran 24 s after the deletes, on the fourth scan, and the next scan vetted 0 rows. A VACUUM that cannot remove the dead rows (a long transaction, a replication slot, a standby with `hot_standby_feedback`) leaves them vetted whatever the trigger does.
-- The free part of a `sift_col` file depends on the rewrite budget. Measured on 1M rows with 0.87% of them changed per cycle (21% in 24 cycles): with `sift.col_auto_merge_wal_pct` at 0 (no budget, the rewrite at every VACUUM) the file reaches 2.2 times the live bytes (54 to 55% of the blocks free) in 5 cycles and stays there, on 3.3.0 and on 3.4 alike; with the default 5% a fresh index stays at 1.2 to 1.3 times (cycles 60 to 240), with a burst of 1.5 to 1.75 when a segment is rewritten whole. An index that came out of an old build with a few very large segments does not get there by itself: the rewrite of such a segment costs its size in WAL, and the budget refuses it against 5% of the WAL of the changes, and the VACUUM space step copies only the segments at the end of the file that fit `sift.vacuum_rewrite_limit`. One such index of more than a hundred million rows, with a few segments of tens of millions of rows, had more than twice its live bytes in the file. To get the space back in a maintenance window, either raise the limit for one VACUUM, `SET sift.vacuum_rewrite_limit = 4096; VACUUM t;` (the MB to move: `sift.col_segments` lists the segments, the ones at the end first matter; the copy holds the index under an exclusive lock and writes as much WAL as the bytes it moves: 20.2 to 13.4 MB of file for 7.7 MB of WAL in 26 ms, 9.3 MB live), or rebuild with `REINDEX INDEX CONCURRENTLY` (20.2 to 10.4 MB of file, 10.4 MB of WAL, 0.9 s per million rows with the heap cached; the old file stays until the swap, so the disk holds both). The REINDEX of that index with 3.3.0 gave segments of a few million rows, in disjoint ranges of the heap (a range filter pruned 247,370 of 258,254 units), 2.8 GB of file with 0.1% of the blocks free, column format minor 15: 7.0 to 2.8 GB. Its WAL is about the size of the new index and the time is the read of the heap; the index then held 136.7M rows against 128.5M in the heap statistics (6% of dead rows a VACUUM had not cleared).
+- A `sift_col` unit answers from its pre-aggregates only over pages the visibility map calls all-visible. A plain VACUUM sets every page it can: on 400,000 rows with 3% updated in ten transactions and `synchronous_commit = on`, none stays unset with no old snapshot; with a transaction holding a snapshot older than the updates, 9,814 of 10,052 pages stay unset until it ends, then one more VACUUM sets them (0 left). PostgreSQL lets the oldest snapshot decide what VACUUM may call all-visible, so when grouped aggregates still read rows after a VACUUM, check the oldest `xact_start` or `backend_xmin` in `pg_stat_activity` and replication slots. With `synchronous_commit = off` unflushed commits do the same (see `sift.col_auto_merge`).
+- Deleted or updated rows not yet vacuumed cost a heap check: a scan reads the heap page of every row on a page that is not all-visible (`Rows Vetted By Heap` in EXPLAIN ANALYZE). With 3,000,000 rows, 6% deleted from 16% of heap pages and no VACUUM (SiftAgg cells of a grouped-aggregate corpus, warm cache), a wide scan vetted 181,251 to 295,931 rows over 11,615 to 25,029 heap pages and ran within noise of the same scan after VACUUM (263.6 against 272.6 ms; cells differ -18% to +21% either way). The cost is page reads (I/O on a cold cache) and vanishes after a VACUUM.
+  - With `sift.col_auto_merge` on, the first scans that vet rows ask the worker to vacuum the table unless it was vacuumed lately: 5 `sift.maintenance_naptime`s, and on PostgreSQL 18 ten times its average VACUUM (an hour-long VACUUM is not repeated by the worker within ten hours). Here the VACUUM before the deletes took 2.4 s; the worker's ran 24 s after the deletes, on the fourth scan, and the next scan vetted 0 rows.
+  - A VACUUM that cannot remove the dead rows (long transaction, replication slot, standby with `hot_standby_feedback`) leaves them vetted whatever the trigger does.
+- Free space in a `sift_col` file depends on the rewrite budget (1M rows, 0.87% changed per cycle, 21% in 24 cycles):
+  - `sift.col_auto_merge_wal_pct = 0` (no budget, a rewrite at every VACUUM): the file reaches 2.2 times the live bytes (54 to 55% of blocks free) in 5 cycles and stays, on 3.3.0 and 3.4 alike.
+  - Default 5%: a fresh index stays at 1.2 to 1.3 times (cycles 60 to 240), bursting to 1.5 to 1.75 when a segment is rewritten whole.
+  - An index from an old version with a few very large segments does not recover alone: rewriting one costs its size in WAL, the budget refuses it against 5% of the changes' WAL, and VACUUM's space step copies only end-of-file segments that fit `sift.vacuum_rewrite_limit`.
+  - To recover space in a maintenance window, either `SET sift.vacuum_rewrite_limit = 4096; VACUUM t;` (MB to move; `sift.col_segments` lists segments, end-of-file ones first; exclusive lock, WAL equal to the bytes moved: 20.2 to 13.4 MB of file for 7.7 MB of WAL in 26 ms, 9.3 MB live), or `REINDEX INDEX CONCURRENTLY` (20.2 to 10.4 MB of file, 10.4 MB of WAL, 0.9 s per million rows with the heap cached; the disk holds both files until the swap).
 
 <!-- sift-settings:start -->
 | Setting | Applies to | Default | Class | Values | Context | Description | Cost |
@@ -425,11 +344,9 @@ Index options go in `WITH (...)` at `CREATE INDEX`; `write_buffer_limit`, `vacuu
 | `superunit` | `sift_col` | 16 | default | int 0..256 | Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16) | format minor 12; +1.0% of the index (groups of 64: +0.8%, of 4 to 8: +1.3% to +1.5%); a range query on a 2-unit table 0.10 to 0.13-0.15 ms [COL-PREAGG 10](COL-PREAGG.md#10-superunits-one-summary-for-a-group-of-units-column-format-minor-12-reloption-superunit-default-16) |
 <!-- sift-reloptions:end -->
 
-`vacuum_segments` is the number of directory entries (the write buffer included) that `VACUUM`, autovacuum and the maintenance worker's
-merges leave an index with. `ALTER INDEX ... SET (vacuum_segments = N)` takes effect on the next `VACUUM`; no `REINDEX`, and an index built
-before the option keeps working with the default. A value out of 1 to 128 is an error; an index that already has N segments or fewer is left as it is.
-A segment more than `merge_fanin` times the size of the others that would merge with it stays: its rewrite would cost more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`), so an index may keep more than N segments when sizes differ that much; `sift.merge(index, true)` merges them all. A segment of which more than `dead_rewrite_pct` percent of the documents are dead is rewritten at any N.
-The trade-off, measured on 60 segments of 50,000 documents: a lower N is more merging work per `VACUUM` and faster queries, a higher N the opposite.
+`ALTER INDEX ... SET` of the options below takes effect at the next `VACUUM`, seal, merge or worker step, with no `REINDEX`; an index built before an option exists keeps working with the default.
+
+**`vacuum_segments`** (1 to 128; out of range is an error): an index that already has N segments or fewer is left as it is. A segment more than `merge_fanin` times the size of the others that would merge with it stays, since rewriting it costs more than the count gains (a 0.1 MB segment next to one of 11 MB would rewrite the 11 MB at every `VACUUM`); an index may thus keep more than N segments, and `sift.merge(index, true)` merges them all. A segment over `dead_rewrite_pct` percent dead is rewritten at any N. A lower N means more merging per `VACUUM` and faster queries (60 segments of 50,000 documents):
 
 | `vacuum_segments` | `VACUUM` | `count(*)` | ranked top-10 |
 |---|---|---|---|
@@ -438,34 +355,17 @@ The trade-off, measured on 60 segments of 50,000 documents: a lower N is more me
 | 8 | 0.12 s | 0.22 ms | 0.28 ms |
 | 16 | 0.10 s | 0.35 ms | 0.33 ms |
 
-`merge_fanin` is the number of segments of one size tier (a tier is a factor of `merge_fanin` in size, starting at `write_buffer_limit`) that
-makes the background worker, the inserters that need room and `sift.merge()` merge them, and the most one merge takes is twice that. A
-lower value merges sooner and more often, which is more write work and fewer segments to query; a higher one merges less and keeps up to
-`merge_fanin` - 1 segments per tier. It is read when a merge is chosen: `ALTER INDEX ... SET (merge_fanin = N)` applies to the next one, with no
-`REINDEX`, and an index built before the option keeps working with the default. A value out of 2 to 32 is an error. The limits the
-policy keeps on the directory follow it: more than `greatest(32, 2 * merge_fanin)` entries merge the smallest segments whatever their tier, and inserters
-still merge themselves from 112 of the 128 entries, so no value in range can fill a directory. Merging 39 segments of similar size leaves 1
-segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sql`).
+**`merge_fanin`** (2 to 32; out of range is an error): the segments of one size tier (a factor of `merge_fanin` in size, starting at `write_buffer_limit`) that make the worker, inserters that need room and `sift.merge()` merge; one merge takes at most twice that. More than `greatest(32, 2 * merge_fanin)` directory entries merge the smallest segments whatever their tier, and inserters merge themselves from 112 of the 128 entries, so no value in range can fill a directory. Merging 39 segments of similar size leaves 1 segment at 2 to 8, 8 at 16, 6 at 17 and 1 at 31 and 32 (`test/sql/merge_fanin.sql`).
 
-`sift.maintenance_cost_delay` slows the merges of the maintenance worker so that they leave I/O to the queries and inserts: after every 16 pages
-(128 kB) the merge reads (the segments it merges) or writes (the new segment) the worker sleeps that many milliseconds. A worker merge of a
-10 MB index took 0.27 s at the default 0 and 5.3 s at 20, at most 6.4 MB/s of I/O (128 kB per 20 ms); set it per database (`ALTER DATABASE ... SET`) or in `postgresql.conf`, as the worker reads the
-settings of its database. It applies to the worker only: `VACUUM`, `sift.merge()` and the merges inserters do for room are never delayed, and neither
-are the worker's promotions of write buffers, which the writers wait for.
+**`sift.maintenance_cost_delay`**: after every 16 pages (128 kB) its merge reads or writes the worker sleeps that many milliseconds (a 10 MB index: 0.27 s at 0, 5.3 s at 20, at most 6.4 MB/s). The worker reads its database's settings, so set it with `ALTER DATABASE ... SET` or in `postgresql.conf`. It never delays `VACUUM`, `sift.merge()`, merges inserters do for room, or the promotions writers wait for.
 
-`VACUUM` rewrites a segment alone only above `dead_rewrite_pct` percent of dead rows (default 10), but a `DELETE` or `UPDATE` spread over the table puts a dead
-row in every unit long before that, and a unit with a dead row answers from its rows and not from its pre-aggregates. `sift.col_auto_merge` (above) is the answer: the
-`VACUUM` that sees the rule satisfied starts a worker that does what `sift.col_promote` followed by `sift.col_merge(index, true)` does, without blocking readers or writers.
-`sift.col_maintain(index)` applies the same rule in a session (a `pg_cron` job after the nightly `VACUUM`: `SELECT sift.col_maintain('idx')`; false when nothing is due or the
-maintenance lock is held, never in a read-only transaction or on a standby) and `sift.col_maintenance_due(index)` tells why it would (`dirty units`, `fragmented units`, `write buffer rows`).
-The rewrite writes the new segment before it frees the old ones, so the index file is about twice its live size until the `VACUUM`s that follow reuse and give back the free end; that and the unthrottled default of `sift.maintenance_cost_delay` (0) are why the setting is off by default: turn it on for a database with scattered churn, with a delay of a few milliseconds.
-With `sift.col_auto_merge_partition_kb` the rewrite is by range instead: the index is kept as segments of that size, a step rewrites the one the churn left most dirty (or merges the small segments over them), and the maintenance lock is held, and free space needed, for one step; where the churn is local (a retention window, a hot tail) the partitions it did not touch are not written at all. `sift.maintenance_wal_rate` and `sift.col_auto_merge_max_workers` bound what the workers take from the WAL and from the other sessions.
+**`sift_col` churn.** `VACUUM` rewrites a segment alone only above `dead_rewrite_pct` percent dead rows (default 10), but a `DELETE` or `UPDATE` spread over the table puts a dead row in every unit long before that, and a unit with a dead row answers from its rows, not its pre-aggregates. `sift.col_auto_merge` (above) answers it: the `VACUUM` that sees the rule satisfied starts a worker that does what `sift.col_promote` plus `sift.col_merge(index, true)` do, without blocking readers or writers.
 
-`dead_rewrite_pct` is the share of dead documents above which maintenance rewrites a lone segment to drop them and their terms (a segment
-that no merge picks; the dead postings are cleared by `VACUUM` either way). `ALTER INDEX ... SET (dead_rewrite_pct = N)` applies to the next
-`VACUUM` or worker step, with no `REINDEX`; 100 never rewrites a segment on its own. A `sift_col` index has the same option with the default 10: a unit with a dead row answers from its rows, not from its pre-aggregates ([docs/COL-PREAGG.md](COL-PREAGG.md)), so a lone segment is rewritten sooner. The BM25 default 50 was measured against 5 on 400,000
-documents of 40 words, 10 rounds of updating or deleting 6% of the rows, each followed by `VACUUM` (mean of 5 runs); 5 rewrites the segment
-at every round and costs more everywhere except the queries after the deletes:
+- `sift.col_maintain(index)` applies the same rule in a session (for example a `pg_cron` job after the nightly `VACUUM`: `SELECT sift.col_maintain('idx')`; false when nothing is due or the maintenance lock is held, never in a read-only transaction or on a standby). `sift.col_maintenance_due(index)` tells why it would (`dirty units`, `fragmented units`, `write buffer rows`).
+- The rewrite writes the new segment before freeing the old ones, so the file is about twice its live size until later `VACUUM`s reuse and give back the free end. That and the unthrottled default of `sift.maintenance_cost_delay` (0) are why the setting is off by default: turn it on for a database with scattered churn, with a delay of a few milliseconds.
+- With `sift.col_auto_merge_partition_kb` the rewrite is by range: the index is kept as segments of that size, a step rewrites the one the churn left most dirty (or merges small segments over them), and the maintenance lock is held, and free space needed, for one step. Where churn is local (a retention window, a hot tail) untouched partitions are not written. `sift.maintenance_wal_rate` and `sift.col_auto_merge_max_workers` bound what the workers take from the WAL and from other sessions.
+
+**`dead_rewrite_pct`**: `VACUUM` clears dead postings either way; the rewrite of a lone segment (one no merge picks) also drops the dead documents' terms. A `sift_col` index has the option with default 10: a unit with a dead row answers from its rows, not its pre-aggregates ([docs/COL-PREAGG.md](COL-PREAGG.md)), so lone segments are rewritten sooner. The BM25 default 50 against 5 (400,000 documents of 40 words, 10 rounds of updating or deleting 6% of the rows, each followed by `VACUUM`, mean of 5 runs); 5 rewrites the segment every round and costs more everywhere except the queries after the deletes:
 
 | load | `dead_rewrite_pct` | `VACUUM` total | WAL | index file | `count(*)` | ranked top-10 |
 |---|---|---|---|---|---|---|
@@ -474,56 +374,45 @@ at every round and costs more everywhere except the queries after the deletes:
 | delete | 50 (default) | 2.3 s | 86 MB | 67 MB | 3.5 ms | 4.1 ms |
 | delete | 5 | 15.8 s | 455 MB | 89 MB | 0.15 ms | 1.5 ms |
 
-`write_buffer_limit` (kB, 4096) is the size at which the open write buffer is sealed for promotion; it is also where the merge tiers start.
-`ALTER INDEX ... SET (write_buffer_limit = N)` applies from the next seal. 1024 was measured against 4096 on
-100,000 documents of 40 words (mean of 5 runs): it promotes and merges faster per step and leaves queries on the grown index faster, but it
-does that 3.7 times as often and the writers pay for it, so the default stays 4096:
+**`write_buffer_limit`** (kB) is also where the merge tiers start. 1024 against 4096 (100,000 documents of 40 words, mean of 5 runs) promotes and merges faster per step and leaves queries on the grown index faster, but does it 3.7 times as often and the writers pay, so the default stays 4096:
 
 | `write_buffer_limit` | 16 clients, `INSERT` | `INSERT .. SELECT` | `COPY` | promotion / merge | index, segments | `count(*)` / top-10 OR / top-10 AND |
 |---|---|---|---|---|---|---|
 | 4096 (default) | 107k rows/s, p99 0.69 ms | 113k rows/s | 261k rows/s | 37 ms / 1.4 s | 72 MB, 17 | 11.5 / 12.5 / 6.1 ms |
 | 1024 | 87k rows/s, p99 0.81 ms | 94k rows/s | 137k rows/s | 13 ms / 0.43 s | 98 MB, 78 | 10.6 / 4.1 / 2.6 ms |
 
-`VACUUM` also gives the free blocks at the end of the index file back to the operating system, as it does for a heap (`sift.index_info(index)`:
-`relation_blocks` falls to `high_water`). It tries when free space amounts to 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` on the
-index only if that is free right now, and lets go of it as soon as the file is cut; if any query, insert or maintenance step holds the index it
-does nothing, and the next `VACUUM` tries again (it says so at `DEBUG2`; `VACUUM VERBOSE` shows the new size of the index). A hot standby
-cancels the queries that hold the index when it replays that lock (or delays replay up to `max_standby_streaming_delay`), as for a heap
-(`hot_standby_feedback` does not prevent it; `vacuum_truncate = false` does). A
-`VACUUM` that runs with parallel workers (it vacuums several large indexes at once) cannot take the lock, which needs a transaction id, and
-leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate. Under the exclusive lock, newly released space can be reused
-immediately and tail segments can be relocated into interior free runs before truncation, all in the same `VACUUM`. See COL §2.7
-for the write allowance and conditions that defer relocation. Free pages left inside the file remain reusable by later writes. `ALTER INDEX ... SET (vacuum_truncate = false)`
-turns the truncation off for an index (no `REINDEX`), like `vacuum_truncate` of a heap table.
+**`vacuum_truncate`.** `VACUUM` returns the free blocks at the end of the index file to the operating system, as for a heap (`sift.index_info(index)`: `relation_blocks` falls to `high_water`).
 
-**Merging is automatic.** Sealed segments are merged `merge_fanin` (8) at a time per size tier, the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the
-`merge_fanin` smallest, inserts wait for the worker at 112 entries, and an insert seals the lane itself when 4 segments are waiting. VACUUM merges
-down to `vacuum_segments`, except that a segment more than `merge_fanin` times larger than the ones before it is left alone (`sift.merge(index, true)` merges
-it anyway). `write_buffer_limit`, `merge_fanin` and `dead_rewrite_pct` scale and tune these thresholds; the rest are constants.
+- It tries when free space reaches 1000 blocks or a 16th of the index, takes `AccessExclusiveLock` only if free right now, and releases it once the file is cut. If a query, insert or maintenance step holds the index it does nothing and the next `VACUUM` retries (`DEBUG2` says so; `VACUUM VERBOSE` shows the new size).
+- A hot standby cancels the queries that hold the index when it replays that lock (or delays replay up to `max_standby_streaming_delay`), as for a heap; `hot_standby_feedback` does not prevent it, `vacuum_truncate = false` does.
+- A `VACUUM` with parallel workers (several large indexes at once) cannot take the lock, which needs a transaction id, and leaves it to the next one: `VACUUM (PARALLEL 0)` and autovacuum do truncate.
+- Under the exclusive lock, released space can be reused at once and tail segments relocated into interior free runs before truncation, in the same `VACUUM`. See COL §2.7 for the write allowance and conditions that defer relocation. Free pages left inside the file stay reusable.
+- `ALTER INDEX ... SET (vacuum_truncate = false)` turns truncation off for an index (no `REINDEX`), like `vacuum_truncate` of a heap table.
 
-**Cost of one library (3.0).** `pg_sift` 3.0 carries the BM25 index and the column engine in one library, so the library is about twice the size of 2.0's and each new backend that loads it links more symbols. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells are accepted above 1.02: the first query of a session (`session`, about 1.04 to 1.05), a `VACUUM` with nothing to free (`vacuum_nofree`, about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (`idle1_rank`, 1.02 to 1.03). Every other cell (queries, inserts, `COPY`, `CREATE INDEX`, `sift.merge`, `sift.promote`, `VACUUM` with work) is within 1.02. Connection pooling amortizes the session cost; a deployment that needs neither `sift_col` nor `sift_table` pays it for nothing.
+**Merging is automatic.** Sealed segments merge `merge_fanin` (8) at a time per size tier; the directory (128 entries) is kept under `greatest(32, 2 * merge_fanin)` by merging the `merge_fanin` smallest; inserts wait for the worker at 112 entries and seal the lane themselves at 4 waiting segments. VACUUM merges down to `vacuum_segments`, except a segment more than `merge_fanin` times larger than the ones before it (`sift.merge(index, true)` merges it anyway). `write_buffer_limit`, `merge_fanin` and `dead_rewrite_pct` tune these thresholds; the rest are constants.
+
+**Cost of one library (3.0).** BM25 index and column engine share one library, about twice the size of 2.0's, so each new backend links more symbols. Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) three BM25 cells are accepted above 1.02: the first query of a session (`session`, about 1.04 to 1.05), a `VACUUM` with nothing to free (`vacuum_nofree`, about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (`idle1_rank`, 1.02 to 1.03); every other cell (queries, inserts, `COPY`, `CREATE INDEX`, `sift.merge`, `sift.promote`, `VACUUM` with work) is within 1.02. Connection pooling amortizes the session cost; a deployment without `sift_col` or `sift_table` pays it for nothing.
 
 ## Column indexes, aggregates and sift_table
 
 Three pieces share the column engine; none needs `shared_preload_libraries`, and `CREATE EXTENSION pg_sift` (3.0) installs all of them.
 
-- **`sift_col` index** over a heap table (`CREATE INDEX ... USING sift_col` on a `sift_table` is refused: it is already in column format and `SiftAgg` reads it as it is): `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those
-  columns once more, column by column, with zone maps; filters and aggregates read it instead of the heap rows, and the heap stays authoritative (MVCC
-  is the table's). Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` of any precision, unconstrained `numeric`, `money`, `interval`, `time`, `timetz`, enums, `uuid`, `bytea`, `inet`, `cidr`, `macaddr`, `macaddr8`, `bit`, `varbit`, arrays, ranges and multiranges, `char(n)`, `name`, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline). Reloptions: `write_buffer_limit` (kB, 4096, like the
-  `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`) and `preagg` (`default`, `off` or `cube(dim: measure, ...)`, the pre-aggregates written with every unit; a change applies to the segments written afterwards, [docs/COL-PREAGG.md](COL-PREAGG.md)) and `dead_rewrite_pct` (default 10) and `cluster_advice` (default on: `sift.cluster_advice()` may recommend an order for the table).
-  `sift.index_advice(index)` is the profile of the columns of a `sift_col` index and what its options could still use, advice only: per column its kind (`dimension`: at most 256 distinct values in 90% of 32 evenly spaced units; `key`, `unique`, `date`, `measure`, `text`, `list`), what the index holds of it (the cube histogram in so many units, the key list or bitmap, the calendar cells, a rollup), and the advice when a rule holds (add the dimension to `preagg = 'cube(...)'`, `key_columns = 'auto'`); per pair of dimensions the share of units whose combinations fit a rollup of the rows, and `rollup_dims = 'a, b: <measure>'` when that is 90% of them for no more than 3% of the index. The same rows after a `REINDEX`; the options stay explicit.
-  Maintenance is the same as for `sift` indexes (background worker, VACUUM); `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote`,
-  `col_merge`, `col_maintain` and `col_maintenance_due` inspect and drive one (`col_merge(index, true)` seals the open write buffer and merges every segment into one: `col_promote` and the merge in a call, without blocking readers or writers).
-  `CREATE INDEX` and `REINDEX` (also `CONCURRENTLY`) are parallel on large tables with the workers PostgreSQL plans (`max_parallel_maintenance_workers`, `min_parallel_table_scan_size`,
-  the table's `parallel_workers`, 32 MB of `maintenance_work_mem` for each process): each process writes the segments of the superblocks it took, so the index has a segment per process until a merge,
-  and its file is longer by the unused end of each process's last run (free space, up to 64 MB each); the rows it serves are those of a serial build.
-- **Aggregate pushdown:** a `GROUP BY` over a table with a `sift_col` index (or over a lateral unnest of an indexed `jsonb` array) with `count`, `count(DISTINCT)`, `sum`,
-  `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps
-  its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus.
-  A partitioned table works the same when every partition the query reads has a `sift_col` index of the same columns and options: create it per partition or
-  once on the parent (`CREATE INDEX ON parent USING sift_col (...)` builds one per partition, also for later ones); `EXPLAIN` lists the `Partitions:` ([AGG.md](AGG.md), "Partitioned tables").
-- **`sift_table`:** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump` A `GROUP BY` of the calendar (`date_trunc('month', ts)::date`, `extract(isoyear FROM d)`, `ts::date`, a week or a quarter) and a date range are answered from the calendar cells each unit stores for its `date`, `timestamp` and `timestamptz` columns, so no generated month column or expression index is needed ([COL-PREAGG](COL-PREAGG.md) section 2); on a `timestamptz` write `AT TIME ZONE 'UTC'` in the key (the session time zone does not give the cells' UTC days); a `sift_col` index gets the same cells for the columns of its reloption `calendar_columns = 'ts, d'` (or `'all'`).
-  support ([docs/COL-TAM.md](COL-TAM.md)). New rows go to row-format write pages; when a write buffer fills, or VACUUM or autovacuum runs, the settled rows become compressed column segments with the same TIDs (`sift.table_segments('t')` lists them with their column format minor, `sift.table_space('t')` the file and its free blocks, `sift.table_maintain('t')` does VACUUM's work on the segments and the file without its index cleanup: [COL-TAM §7](COL-TAM.md); settings: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct`, in the settings table of [Maintenance and operations](#maintenance-and-operations)). VACUUM clears deleted rows out of the column segments, rewrites a segment once more than `sift.table_dead_rewrite_pct` percent of it is dead, and, when it can take the exclusive lock, can reuse newly released space and relocate tail segments into interior free runs before returning the free tail to the operating system in the same VACUUM (enabled by default; `vacuum_truncate = false` or `VACUUM (TRUNCATE FALSE)` disables this exclusive-lock reuse, relocation and tail-truncation step while other ordinary maintenance continues; allowance and deferral conditions in COL §2.7); `VACUUM FULL` and `CLUSTER` write the table anew as column segments. Every type is kept exactly. Its limits are listed once, under [Limits](#limits); publishing one under `wal_level = logical` is under [Replication](#replication).
+**`sift_col` index** over a heap table: `CREATE INDEX ON orders USING sift_col (tenant_id, status, total, (placed_at::date))` keeps those columns once more, column by column, with zone maps. Filters and aggregates read it instead of the heap rows; the heap stays authoritative (MVCC is the table's). On a `sift_table` it is refused: that table is already in column format and `SiftAgg` reads it as it is.
+
+- Types: integers, `bool`, dates and timestamps, `float4`/`float8`, `numeric(p, s)` of any precision, unconstrained `numeric`, `money`, `interval`, `time`, `timetz`, enums, `uuid`, `bytea`, `inet`, `cidr`, `macaddr`, `macaddr8`, `bit`, `varbit`, arrays, ranges and multiranges, `char(n)`, `name`, and `text` of any length (up to 1 GB; a unit with strings over 255 bytes stores them inline).
+- Reloptions: `write_buffer_limit` (kB, 4096, like the `sift` index) and `paths` for `jsonb` attributes (`WITH (paths = 'metrics.* float4, items[]{sku text, qty int4}')`, [docs/COL-SHRED.md](COL-SHRED.md)) and `compression` (`auto`, `none`, `lz4[:N]`, `zstd[:N]`; per column `'auto; col=zstd:9'`; needs `REINDEX`) and `preagg` (`default`, `off` or `cube(dim: measure, ...)`, the pre-aggregates written with every unit; a change applies to segments written afterwards, [docs/COL-PREAGG.md](COL-PREAGG.md)) and `dead_rewrite_pct` (default 10) and `cluster_advice` (default on: `sift.cluster_advice()` may recommend an order for the table).
+- `sift.index_advice(index)` profiles a `sift_col` index's columns and what its options could still use (advice only). Per column: kind (`dimension`: at most 256 distinct values in 90% of 32 evenly spaced units; `key`, `unique`, `date`, `measure`, `text`, `list`), what the index holds of it (cube histogram in so many units, key list or bitmap, calendar cells, a rollup) and the advice when a rule holds (add the dimension to `preagg = 'cube(...)'`, `key_columns = 'auto'`). Per pair of dimensions: the share of units whose combinations fit a rollup of the rows, and `rollup_dims = 'a, b: <measure>'` when that is 90% of them for no more than 3% of the index. Same rows after a `REINDEX`; options stay explicit.
+- Maintenance is as for `sift` indexes (background worker, VACUUM). `sift.col_index_info`, `col_segments`, `col_leaves`, `col_verify`, `col_promote`, `col_merge`, `col_maintain` and `col_maintenance_due` inspect and drive one; `col_merge(index, true)` seals the open write buffer and merges every segment into one (`col_promote` plus the merge in a call, without blocking readers or writers).
+- `CREATE INDEX` and `REINDEX` (also `CONCURRENTLY`) are parallel on large tables with the workers PostgreSQL plans (`max_parallel_maintenance_workers`, `min_parallel_table_scan_size`, the table's `parallel_workers`, 32 MB of `maintenance_work_mem` per process). Each process writes the segments of the superblocks it took, so the index has a segment per process until a merge and its file is longer by the unused end of each process's last run (free space, up to 64 MB each); rows served equal a serial build's.
+
+**Aggregate pushdown.** A `GROUP BY` over a table with a `sift_col` index (or a lateral unnest of an indexed `jsonb` array) with `count`, `count(DISTINCT)`, `sum`, `avg`, `min`, `max`, filters and `IN` lists runs as `Custom Scan (SiftAgg)` when the planner can prove the result equals the plain plan's; anything else keeps its plan ([docs/COL-PLAN.md](COL-PLAN.md), [docs/AGG.md](AGG.md)). `SET sift.enable_agg = off` compares the two; `scripts/coldiff.sh` does it for a whole corpus. A partitioned table works the same when every partition the query reads has a `sift_col` index of the same columns and options (per partition, or once on the parent: `CREATE INDEX ON parent USING sift_col (...)` builds one per partition, also later ones); `EXPLAIN` lists the `Partitions:` ([AGG.md](AGG.md), "Partitioned tables").
+
+A `GROUP BY` of the calendar (`date_trunc('month', ts)::date`, `extract(isoyear FROM d)`, `ts::date`, a week or a quarter) and a date range are answered from the calendar cells each unit stores for its `date`, `timestamp` and `timestamptz` columns: no generated month column or expression index is needed ([COL-PREAGG](COL-PREAGG.md) section 2). On a `timestamptz` write `AT TIME ZONE 'UTC'` in the key (the session time zone does not give the cells' UTC days). A `sift_col` index gets the same cells for the columns of its reloption `calendar_columns = 'ts, d'` (or `'all'`).
+
+**`sift_table`.** `CREATE TABLE t (...) USING sift_table` is a table access method with native MVCC, btree and `sift` indexes, VACUUM, generic WAL and `pg_dump` support ([docs/COL-TAM.md](COL-TAM.md)). Every type is kept exactly. Limits: [Limits](#limits); publishing one under `wal_level = logical`: [Replication](#replication).
+
+- New rows go to row-format write pages; when a write buffer fills, or VACUUM or autovacuum runs, settled rows become compressed column segments with the same TIDs. `sift.table_segments('t')` lists them with their column format minor, `sift.table_space('t')` the file and its free blocks, `sift.table_maintain('t')` does VACUUM's work on segments and file without index cleanup ([COL-TAM §7](COL-TAM.md)). Settings: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression`, `sift.table_dead_rewrite_pct` (table in [Maintenance and operations](#maintenance-and-operations)).
+- VACUUM clears deleted rows out of the column segments and rewrites a segment once more than `sift.table_dead_rewrite_pct` percent is dead. Under the exclusive lock it can reuse released space and relocate tail segments into interior free runs before returning the free tail to the operating system, in the same VACUUM (on by default; `vacuum_truncate = false` or `VACUUM (TRUNCATE FALSE)` disables this reuse, relocation and truncation while other maintenance continues; conditions in COL §2.7). `VACUUM FULL` and `CLUSTER` write the table anew as column segments.
 
 ```sql
 CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
@@ -542,7 +431,7 @@ Index what you filter and group by; an expression such as the month above is a c
 
 ### What CREATE INDEX decides for the columns
 
-A `sift_col` index chooses these from the table at `CREATE INDEX` and says each choice in one NOTICE; every one is a default that an explicit option replaces, and none changes an answer (the aggregates are the normal plan's).
+A `sift_col` index chooses these from the table at `CREATE INDEX` and says each choice in one NOTICE; each is a default that an explicit option replaces, and none changes an answer (the aggregates are the normal plan's).
 
 | Decision | Rule | NOTICE says | Replace it with |
 |---|---|---|---|
@@ -552,26 +441,27 @@ A `sift_col` index chooses these from the table at `CREATE INDEX` and says each 
 | Primary key of the table (not a default) | a one-column primary key that is not a column of the index and that a foreign key of another table references | the key, the tables that reference it | add the key to the index columns: a join of two sift tables on it needs it as a column of both (`join_condition`) |
 | Covered columns that are rewritten often (not a default) | a covered column named like a timestamp of the last change (`updated_at`, `modified_at`), a counter (`*_count`, `likes`, `views`) or a version | the columns, and that an UPDATE of them is not HOT | leave the column out of the index, or keep it for its aggregates |
 
-`rollup_dims = 'auto'` is not a default either: it reads 8 stretches of 256 blocks at `CREATE INDEX`, takes the columns that have at most 256 values in a unit in most of them (the six with the fewest), and writes the rollup of the rows by the pair of them with the fewest combinations that fits a unit's cells (a tenth of its rows, at most 4,096), recorded as `rollup_dims = 'auto: a, b'`. The cells grew the index by up to 11% in the case measured.
+Two structures are opt-in because each adds more index than the 3% a default may add:
 
-Rebuilds keep what was chosen (the options hold `auto: ...`), so `REINDEX` and the workers of a build see one schema. What is not decided for you, and how to see it: `sift.index_advice(index)` lists per column its kind, what the index holds and, over 32 evenly spaced units, whether it qualifies as a cube dimension, and advises a `rollup_dims` pair that covers 90% of the units for within 3% more index; `sift.suggest_paths(table, column)` shows the paths the build would read. The min/max, superunit and calendar structures are not chosen per column: each costs about 1% of an index of wide rows and none is dropped by a rule that keeps its gain.
+- `preagg = 'auto'`: for an index with more plain columns than the cube holds dimensions, reads 8 stretches of 256 blocks at `CREATE INDEX`, puts first the columns with at most 256 values in a unit in most of them, and records `preagg = 'auto: a, b'`.
+- `rollup_dims = 'auto'`: reads 8 stretches of 256 blocks at `CREATE INDEX`, takes the columns with at most 256 values in a unit in most of them (the six with the fewest) and writes the rollup of the rows by the pair with the fewest combinations that fits a unit's cells (a tenth of its rows, at most 4,096), recorded as `rollup_dims = 'auto: a, b'`. The cells grew the index by up to 11% in the case measured.
+
+Rebuilds keep what was chosen (the options hold `auto: ...`), so `REINDEX` and a build's workers see one schema. `sift.index_advice(index)` lists per column its kind, what the index holds and, over 32 evenly spaced units, whether it qualifies as a cube dimension, and advises a `rollup_dims` pair covering 90% of the units for within 3% more index; `sift.suggest_paths(table, column)` shows the paths a build would read. Min/max, superunit and calendar structures are not chosen per column: each costs about 1% of an index of wide rows and no rule drops one while keeping its gain.
 
 ### Memory of a backend
 
-A backend that plans and runs statements of many aggregate arms keeps far more memory after them than its memory contexts hold: the planner and the scan free blocks of tens of megabytes, and the C library of Linux (glibc) keeps them in the heap of the process for the next statement, because its threshold for mapping a block by itself grows to the largest block it has freed. For a server with hundreds of pooled backends that is the number to watch.
+A backend that plans and runs statements of many aggregate arms keeps far more memory than its memory contexts hold: the planner and scan free blocks of tens of megabytes, and glibc keeps them in the process heap because its threshold for mapping a block by itself grows to the largest block freed. This matters for a server with hundreds of pooled backends. Two clients replaying 258 statement shapes of an analytics mix (40 to 60 aggregate arms for the largest, 195,000 rows, 75 seconds, same seed, run twice) hold per backend on average:
 
 | allocator setting | private memory of a backend | CPU per statement |
 |---|---|---|
 | default | 104 MB (116, 93) | 145 ms (154, 136) |
 | `MALLOC_MMAP_THRESHOLD_=131072` | 70 MB | 145 ms |
 
-(The same mix held 156 MB per backend before a statement kept the memory of one plan, not of the up to four it makes.) A fixed threshold of 128 kB gives every freed block above it back to the system, so a backend holds what its statements use. Set it for the server process, where the memory is the limit (a pool of hundreds of backends), not where the CPU is (the cost is the fresh pages the next block touches); `Environment=MALLOC_MMAP_THRESHOLD_=131072` in the systemd unit of PostgreSQL, or `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`. The library does not call `mallopt` or `malloc_trim` itself: both change the whole process, the server's own allocations too. Other allocators (musl, jemalloc) were not measured.
+A fixed 128 kB threshold returns every freed block above it to the system. Set it for the server process where memory is the limit (hundreds of pooled backends), not where CPU is (the cost is fresh pages the next block touches): `Environment=MALLOC_MMAP_THRESHOLD_=131072` in PostgreSQL's systemd unit, or `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072`. The library does not call `mallopt` or `malloc_trim` itself: both change the whole process, the server's own allocations too. Other allocators (musl, jemalloc) were not measured.
 
 ### Why a query kept the normal plan
 
-The pushdown refuses most shapes by design, and the planner gives up without a word. `SET sift.explain_refusals = on` makes it say why: for each candidate path (arm: `single`, `distinct`,
-`topn`, `two_level`, `rows`, and the decisions `lookup` and `cte_inline`) it reports the first reason the path gave up for, as a notice in the session that plans the query (also under `EXPLAIN`),
-and compares a path that was built with the normal plan (`cost`). The setting changes no plan and costs nothing when off.
+The pushdown refuses most shapes by design, silently. `SET sift.explain_refusals = on` says why: for each candidate path (arm: `single`, `distinct`, `topn`, `two_level`, `rows`, and the decisions `lookup` and `cte_inline`) it reports the first reason the path gave up for, as a notice in the session that plans the query (also under `EXPLAIN`), and compares a path that was built with the normal plan (`cost`). It changes no plan and costs nothing when off.
 
 ```sql
 SET sift.explain_refusals = on;
@@ -580,15 +470,12 @@ EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM plain_table GROUP BY 1;
 -- DETAIL:  arm: single
 ```
 
-A sub-select is planned in its own query level and its arms are named `L2:single`, and the plan of a statement with its shared CTE inlined, `inline:single`.
-The notice names the arm in its detail; the detail of the reason names the leaf, the expression or the limit and its value (`the limit group_keys is 32`).
-`sift.refusal_slugs()` lists the slugs below with their class: `limit` is a query with more of something than the scan holds (a fixed limit of [LIMITS.md](LIMITS.md), lowered by
-`sift.test_limits` in a test build), `semantic` a shape the scan does not prove or does not need.
+A sub-select is planned in its own query level and its arms are named `L2:single`; a statement with its shared CTE inlined, `inline:single`. The notice names the arm in its detail; the reason's detail names the leaf, expression or limit and its value (`the limit group_keys is 32`). `sift.refusal_slugs()` lists the slugs below with their class: `limit` is a query with more of something than the scan holds (a fixed limit of [LIMITS.md](LIMITS.md), lowered by `sift.test_limits` in a test build), `semantic` a shape the scan does not prove or does not need.
 
-`sift.explain_why(query)` gives the same as rows without running the query or setting anything: it plans one `SELECT` (the privileges to read its tables are checked) and returns one row per arm with
-`used` (the arm is in the plan), `slug` and `reason` (why it gave up, NULL when used) and `scan_cost` and `normal_cost` (the path that was built and the cheapest normal path it was compared with, both at the grouping stage: the total before an `ORDER BY` or a `LIMIT` above it, while PostgreSQL chooses by the cost of the top node; NULL without such a path; for the `cte_inline` row they are the totals of the plan with the shared CTEs inlined and of the plan that keeps them).
-A `cost` refusal that the heap check decided says so: `the scan costs 705, the normal plan 658; 100% of the heap pages are not all-visible, which adds 163 to the scan: VACUUM (ANALYZE) the table` (a rewrite by `CLUSTER`, `VACUUM FULL` or `pg_repack` leaves the visibility map empty).
-A `cte_cost` refusal says the same when the heap check of the inlined scans is what keeps the shared CTE (`inline costs 1654 (the scans 1654), the shared CTE 1740 (the work the scans replace 1740); 100% of the heap pages are not all-visible, which adds 547 to the scans: VACUUM (ANALYZE) the table`): it is said only when the inlined plan would win without that charge in both plans.
+`sift.explain_why(query)` gives the same as rows without running the query or setting anything: it plans one `SELECT` (privileges to read its tables are checked) and returns one row per arm with `used` (the arm is in the plan), `slug` and `reason` (why it gave up, NULL when used), and `scan_cost` and `normal_cost` (the path built and the cheapest normal path it was compared with, both at the grouping stage, i.e. the total before an `ORDER BY` or `LIMIT` above it, while PostgreSQL chooses by the top node's cost; NULL without such a path; for the `cte_inline` row, the totals of the plan with the shared CTEs inlined and of the plan that keeps them).
+
+- A `cost` refusal that the heap check decided says so: `the scan costs 705, the normal plan 658; 100% of the heap pages are not all-visible, which adds 163 to the scan: VACUUM (ANALYZE) the table` (a rewrite by `CLUSTER`, `VACUUM FULL` or `pg_repack` leaves the visibility map empty).
+- A `cte_cost` refusal says the same when the heap check of the inlined scans keeps the shared CTE (`inline costs 1654 (the scans 1654), the shared CTE 1740 (the work the scans replace 1740); 100% of the heap pages are not all-visible, which adds 547 to the scans: VACUUM (ANALYZE) the table`), and only when the inlined plan would win without that charge in both plans.
 
 ```sql
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_table GROUP BY 1');
@@ -637,7 +524,7 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_t
 | `cte_cost` | semantic | yes | the shared CTE plan is estimated cheaper than the plan with the CTE inlined |
 <!-- refusals:end -->
 
-PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background promotion by `VACUUM`, autovacuum and the maintenance worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](#limits).
+PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` options (a patch targets PostgreSQL 20), so a `sift_table` is tuned with PostgreSQL settings (`SET`, `ALTER DATABASE ... SET`, `postgresql.conf`), not per table; a `sift_col` index has real options stored with the index (`CREATE INDEX ... WITH`, `ALTER INDEX ... SET`). Background promotion by `VACUUM`, autovacuum and the worker uses the server or database value of the setting, not your session's; the exact rule is under [Limits](#limits).
 
 | option | `sift_col` (per index) | `sift_table` (setting) |
 |---|---|---|
@@ -646,73 +533,49 @@ PostgreSQL 17-19 table access methods cannot define their own `WITH (...)` optio
 | promotion while rows are inserted | not applicable (the index follows the heap) | `sift.table_inline_promote` (`on`; `off` leaves it to `VACUUM`) |
 | dead rows | `dead_rewrite_pct` (per index) | `sift.table_dead_rewrite_pct` (percent of a segment) |
 
-A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks.
-
-The chunk codec compresses the chunks of a `sift_col` index (option `compression`: `auto`, `none`, `lz4`, `zstd`, or per column `'auto; col=zstd:9'`). It is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
+A `sift_table` has no `paths` or rows-per-unit setting: a `jsonb` column is stored as its exact bytes and units follow the 2 MB superblocks. The chunk codec is built into the library; `make SIFT_NO_LZ4=1` or `SIFT_NO_ZSTD=1` build without one.
 
 ### The choice for a shared CTE is kept per backend
 
-Choosing between a shared CTE and its inline plan takes PostgreSQL's planner several runs of the statement (the shared plan, the inline plan, the larger sizes of `sift.agg_scale_horizon`, the flattened form).
-A backend keeps the choice for up to 4,096 statements (under 1 MB), under the statement without its constants, the size class of each table it reads (half an octave of its pages) and the settings that move a plan (the planner's, `work_mem` and the `sift.*` ones), and plans only the chosen variant when it sees the statement again.
-The entry is dropped when a table it reads is invalidated (DDL, an index created or dropped, `ANALYZE`, `VACUUM`), and it is checked again by a plan in full at every eighth hit. A verdict that went stale (the constants select other rows than the ones it was made for) costs the other plan, never other rows: both variants are plans of the same query.
-`sift.explain_why` shows a `verdict_cached` row for a statement planned from it, and `sift.stats()` counts `verdict_cache_hits`, `verdict_cache_misses` and `verdict_cache_flips` (the plans in full that chose the other plan). There is no setting: the first plan of a statement and the plan after a change are made in full.
+Choosing between a shared CTE and its inline plan takes PostgreSQL's planner several runs of the statement (the shared plan, the inline plan, the larger sizes of `sift.agg_scale_horizon`, the flattened form). A backend therefore keeps the choice for up to 4,096 statements (under 1 MB), keyed by the statement without its constants, the size class of each table it reads (half an octave of its pages) and the settings that move a plan (the planner's, `work_mem` and the `sift.*` ones), and plans only the chosen variant when it sees the statement again.
+
+- The entry is dropped when a table it reads is invalidated (DDL, an index created or dropped, `ANALYZE`, `VACUUM`) and is checked again by a plan in full at every eighth hit. A stale verdict (the constants select other rows than the ones it was made for) costs the other plan, never other rows: both variants plan the same query.
+- `sift.explain_why` shows a `verdict_cached` row for a statement planned from it; `sift.stats()` counts `verdict_cache_hits`, `verdict_cache_misses` and `verdict_cache_flips` (the plans in full that chose the other plan). There is no setting: a statement's first plan and the plan after a change are made in full.
 
 ### When the cost model keeps the normal plan and the scan is faster
 
-A `cte_cost` refusal (`sift.explain_why`: the `cte_inline` row, `scan_cost` against `normal_cost`) compares the scans of the inline plan with the normal plan of the shared CTE, which PostgreSQL prices from row counts it guesses:
-a join on a range (`date <@ daterange`) and a top-N cut leave a CTE it expects to hold one row where the scans read hundreds of thousands, and everything above it, nested loops that rescan an aggregate included, is priced for that row.
-On 10x data (31.7 million rows, 32 keys spread over the table, `work_mem` 4GB, 27 statements of the nested-list families) the planner's own choice took the scan for 3 statements and 25 were refused with a ratio of the
-costs between 10 and 54: 107.2 s in all against 114.5 s for the normal plans, and 6.3 s with the scan forced (8 to 22 times faster for each statement). The model's price of the normal plan was a median of 180 times lower than its
-measured time (57 to 554 times for 80% of the statements) at 32 keys and 240 to 380 times at 64 to 250 keys; the price of the scan was within 0.2 to 2 times of its time at 32 keys. No setting of the cost model corrects a
-miss of that size, and a plan whose join order and strategy come from the guessed rows cannot be priced from the rows alone.
+A `cte_cost` refusal (`sift.explain_why`: the `cte_inline` row, `scan_cost` against `normal_cost`) compares the inline plan's scans with the shared CTE's normal plan, which PostgreSQL prices from guessed row counts: a join on a range (`date <@ daterange`) or a top-N cut leaves a CTE it expects to hold one row where the scans read hundreds of thousands, and everything above it (nested loops that rescan an aggregate included) is priced for that row.
 
-For a role or a database whose workload is analytical (requests that read thousands of rows or more), `sift.agg_force = on` takes the scan wherever one is possible:
+On 10x data (31.7 million rows, 32 keys spread over the table, `work_mem` 4GB, 27 statements of the nested-list families) the planner took the scan for 3 statements and refused 25 with a cost ratio between 10 and 54: 107.2 s in all against 114.5 s for the normal plans, 6.3 s with the scan forced (8 to 22 times faster per statement). The model priced the normal plan a median 180 times below its measured time (57 to 554 times for 80% of statements) at 32 keys and 240 to 380 times at 64 to 250 keys; the scan's price was within 0.2 to 2 times of its time at 32 keys. No cost setting fixes a miss that size: a plan whose join order and strategy come from guessed rows cannot be priced from the rows alone.
+
+For a role or database with an analytical workload (requests that read thousands of rows or more), `sift.agg_force = on` takes the scan wherever one is possible:
 
 ```sql
 ALTER ROLE reporting SET sift.agg_force = on;   -- new sessions of that role; SET LOCAL sift.agg_force = on for one statement
 ```
 
-It is a diagnostic first and a setting second: it does not make the scan cheaper, it stops comparing. A statement whose normal plan takes 15 to 120 ms is slower with it, because the scan is planned (the CTE decision plans
-the statement several times) and opened for nothing: on 0.1x data (353,000 rows) two minimum-per-bucket statements went from 25 and 119 ms to 106 and 270 ms, and two empty-bucket statements from 18 and 31 ms to 47 and 45 ms,
-while the statements with a normal plan of 130 ms to 5 s ran 1.4 to 3 times faster. Do not set it for a role that also runs small requests; `SET LOCAL` it in the statements known to be large.
+It does not make the scan cheaper, it stops comparing. A statement whose normal plan takes 15 to 120 ms is slower with it (the scan is planned, with several CTE-decision plans, and opened for nothing): on 0.1x data (353,000 rows) two minimum-per-bucket statements went from 25 and 119 ms to 106 and 270 ms, two empty-bucket statements from 18 and 31 ms to 47 and 45 ms, while statements with a normal plan of 130 ms to 5 s ran 1.4 to 3 times faster. Do not set it for a role that also runs small requests; `SET LOCAL` it in statements known to be large.
 
-A normal plan that keeps a nested loop over a CTE the planner expects to hold one row (the `Nested Loop` reruns a `HashAggregate` or a `GroupAggregate` once for each real row of the outer side, and the plan
-shows `CTE Scan ... rows=1` with thousands of rows actual) is slow with or without the scan, and the scan cannot reprice it. Without `sift`, a reproducer of a grouping-sets chain filtered by two columns without
-statistics ran in 9.7 s at 128 keys and in 268 ms with `SET LOCAL enable_nestloop = off` (32,887 ms and 732 ms at 256 keys; the slope of the time against the keys goes from 1.9 to 1.0). The setting changes every join of the
-statement, so test the statement with it before keeping it.
+Two cases where the normal plan is slow or mispriced whatever the scan does:
 
-A normal plan that reads an unclustered key through an index (correlation near 0) is priced as if its heap pages were cached: with `random_page_cost` at 1.1 and `effective_cache_size` above the table, PostgreSQL charges
-a heap fetch about as much as a sequential page. When the table does not fit `shared_buffers` the fetches miss it and the normal plan runs slower than its price says, so the refusal of a scan that would have been faster
-is the planner's optimistic estimate, not the scan's price (a top-3-per-group statement over 1.5 million rows, a 213 MB table, `work_mem` 4GB, `random_page_cost` 1.1, no workers; the price of the scan, 284,288, against
-114,152 for the normal plan, is refused in both rows):
+- A nested loop over a CTE the planner expects to hold one row (the `Nested Loop` reruns a `HashAggregate` or `GroupAggregate` per real outer row; the plan shows `CTE Scan ... rows=1` with thousands of rows actual) is slow with or without the scan, which cannot reprice it. Without `sift`, a grouping-sets chain filtered by two columns without statistics ran in 9.7 s at 128 keys and 268 ms with `SET LOCAL enable_nestloop = off` (32,887 ms and 732 ms at 256 keys; the slope of time against keys goes from 1.9 to 1.0). That setting changes every join of the statement: test before keeping it.
+- An unclustered key read through an index (correlation near 0) is priced as if its heap pages were cached: with `random_page_cost` 1.1 and `effective_cache_size` above the table, a heap fetch costs about a sequential page. When the table does not fit `shared_buffers` the fetches miss and the normal plan runs slower than its price, so the refusal of a scan that would have been faster is the planner's optimistic estimate, not the scan's price (top-3-per-group over 1.5 million rows, a 213 MB table, `work_mem` 4GB, `random_page_cost` 1.1, no workers; scan price 284,288 against 114,152 for the normal plan, refused in both rows):
 
 | `shared_buffers` | normal plan | scan forced | cost units for each ms of the normal plan |
 |---|---|---|---|
 | 64 MB (the table does not fit) | 4.0 to 4.5 s | 2.3 s | 28 to 32 |
 | 1 GB (the table is cached) | 1.35 to 1.45 s | 1.9 s | about 90 |
 
-The normal plan is the faster one when the table is cached, so no change of the price is right for both cases; for a role that reads tables larger than `shared_buffers`, `sift.agg_force` (above), `sift.enable_agg`
-per role, or a `random_page_cost` that reflects the storage are the supported overrides.
-
-The first statement of a session that has not preloaded the library (`session_preload_libraries = 'pg_sift'` does it at the start) is planned again through the hook when it is a `SELECT`, an `EXPLAIN` or a
-`CREATE TABLE AS` (see Install above); a diagnosis that starts with `EXPLAIN (ANALYZE)` in a fresh session therefore shows the plan the next statement gets.
+The normal plan is faster when the table is cached, so no price change is right for both cases. For a role that reads tables larger than `shared_buffers`, the supported overrides are `sift.agg_force` (above), `sift.enable_agg` per role, or a `random_page_cost` that reflects the storage. A diagnosis that starts with `EXPLAIN (ANALYZE)` in a session that has not preloaded the library shows the plan the next statement gets (see Install above).
 
 ### Approximate distinct counts
 
-`count(DISTINCT x)` is exact in every plan, whatever the settings and the options of the index: nothing rewrites it into an estimate. When an estimate is enough (the distinct visitors of a
-dashboard), `sift.approx_count_distinct(x)` is an ordinary aggregate that returns a `bigint`: a HyperLogLog sketch of 16,384 registers, relative standard error 0.81% (the estimate is within
-1.6% of the count in 95 cases of 100 and within 2.4% in 99.7). Measured on 40 sets of each size: the mean error was 0.44% (300 distinct values), 0.43% (6,000) and 0.53% (120,000), and the largest
-1.33%, 1.35% and 1.96%. It is not exact for few values either: 2,000 distinct values gave 1,987.
+`count(DISTINCT x)` is exact in every plan, whatever the settings and index options. When an estimate is enough (the distinct visitors of a dashboard), `sift.approx_count_distinct(x)` is an ordinary aggregate returning a `bigint`: a HyperLogLog sketch of 16,384 registers, relative standard error 0.81% (within 1.6% of the count in 95 cases of 100, within 2.4% in 99.7). On 40 sets of each size the mean error was 0.44% (300 distinct values), 0.43% (6,000) and 0.53% (120,000), the largest 1.33%, 1.35% and 1.96%; 2,000 distinct values gave 1,987.
 
-- It takes any type that has a hash operator class (`int`, `bigint`, `text`, `uuid`, `date`, `timestamptz`, ...); a type without one is an error. A `NULL` is not counted; no row, or only `NULL`s, gives 0 (not `NULL`).
-- The number is a function of the set of values (their extended hash with seed 0), so it is the same in every plan, with workers or without, by partition, from a scan of the heap or of a column index, and for any
-  order of the rows. The partial states are mergeable (parallel aggregates, partitionwise aggregates and `sift_col` units all use the same combine function). `DISTINCT` and `FILTER` in the call are allowed.
-- An index with `hll_columns = 'col, col'` stores the sketch of each unit of those columns, and the aggregate over the units a query reads whole is the merge of their sketches,
-  not a hash of every row: on 100,000 to 1,600,000 rows of two columns (50,000 to 200,000 distinct values) it took 0.8 to 5.4 ms, against 12 to 63 ms for the normal plan and 38 to 153 ms for the scan of the rows;
-  `count(DISTINCT)` of the same columns took 58 to 880 ms by the normal plan. A sketch costs 8 bytes and 3 per register (169 bytes for 50 values, 8,209 for 2,700, 12,307 above 4,096) a unit and column; four columns of a
-  million rows made the index 23% larger and the build 70% longer. An index without the option is the one it was, and the aggregate then hashes the rows (the scan and the normal plan give the same number).
-- `EXPLAIN` of the scan says `Approximate Distinct` and `Units Without The Sketch` (the units read by their rows: a page not yet all-visible, a test that cuts the unit, an older unit); `sift.explain_why` and `EXPLAIN (VERBOSE)`
-  say `approx_no_sketch` when the index keeps no sketch of the column or the query groups the aggregate. `sift.upgrade_commands()` lists an index whose option is newer than its units as a gain from `REINDEX`.
+- It takes any type with a hash operator class (`int`, `bigint`, `text`, `uuid`, `date`, `timestamptz`, ...); a type without one is an error. A `NULL` is not counted; no row, or only `NULL`s, gives 0 (not `NULL`). `DISTINCT` and `FILTER` in the call are allowed.
+- The number is a function of the set of values (their extended hash with seed 0): the same in every plan, with workers or without, by partition, from a heap or column-index scan, in any row order. Partial states are mergeable (parallel and partitionwise aggregates and `sift_col` units share one combine function).
+- An index with `hll_columns = 'col, col'` stores each unit's sketch of those columns; the aggregate over units a query reads whole merges sketches instead of hashing every row. On 100,000 to 1,600,000 rows of two columns (50,000 to 200,000 distinct values): 0.8 to 5.4 ms, against 12 to 63 ms for the normal plan and 38 to 153 ms for the scan of the rows; `count(DISTINCT)` took 58 to 880 ms by the normal plan. A sketch costs 8 bytes and 3 per register (169 bytes for 50 values, 8,209 for 2,700, 12,307 above 4,096) a unit and column; four columns of a million rows made the index 23% larger and the build 70% longer. Without the option the aggregate hashes the rows (same number from scan and normal plan).
+- `EXPLAIN` of the scan says `Approximate Distinct` and `Units Without The Sketch` (units read by their rows: a page not yet all-visible, a test that cuts the unit, an older unit); `sift.explain_why` and `EXPLAIN (VERBOSE)` say `approx_no_sketch` when the index keeps no sketch of the column or the query groups the aggregate. `sift.upgrade_commands()` lists an index whose option is newer than its units as a gain from `REINDEX`.
 
 ```sql
 CREATE INDEX visits_col ON visits USING sift_col (day, site_id, visitor_id) WITH (hll_columns = 'visitor_id');
@@ -722,11 +585,9 @@ SELECT count(DISTINCT visitor_id) FROM visits;                                  
 
 ### Set filters
 
-A filter on a set of ids (the members of a group, the entities that have an attribute) runs in `Custom Scan (SiftAgg)` as an array parameter, a literal `IN` list, or a
-join to the table that holds the set. [docs/SET-FILTERS.md](SET-FILTERS.md) has the measurements and the settings; the array parameter is the fast one: send the ids as one
-`int4[]` of a prepared statement on a generic plan (`SET LOCAL plan_cache_mode = force_generic_plan`), and keep a small set (about 100 ids) on a custom plan.
+A filter on a set of ids (the members of a group, the entities that have an attribute) runs in `Custom Scan (SiftAgg)` as an array parameter, a literal `IN` list, or a join to the table that holds the set. [docs/SET-FILTERS.md](SET-FILTERS.md) has the measurements and settings. The array parameter is the fast one: send the ids as one `int4[]` of a prepared statement on a generic plan (`SET LOCAL plan_cache_mode = force_generic_plan`); keep a small set (about 100 ids) on a custom plan.
 
-The array form pushes down for these key types (the element type of the array is the type of the column; cast the array, `ANY($1::int8[])`, `ANY($1::text[])`, `ANY($1::date[])`):
+The array form pushes down for these key types (the array's element type is the column's type; cast the array, `ANY($1::int8[])`, `ANY($1::text[])`, `ANY($1::date[])`):
 
 | key column | array | how `SiftAgg` tests it |
 |---|---|---|
@@ -734,8 +595,7 @@ The array form pushes down for these key types (the element type of the array is
 | `text` | `text[]` | PostgreSQL evaluates `col = ANY($1)` once per distinct value of the column, with a hash table of the array built on the first value |
 | `uuid`, `bytea` |  | not supported: a `sift_col` index refuses these columns, so the query keeps the normal plan |
 
-A `NULL` element matches nothing (`= ANY`) and makes `<> ALL` empty, an empty array keeps no row (`= ANY`) or every row (`<> ALL`), as in SQL. The timings by type are in
-[docs/SET-FILTERS.md](SET-FILTERS.md), section 2.
+A `NULL` element matches nothing (`= ANY`) and makes `<> ALL` empty; an empty array keeps no row (`= ANY`) or every row (`<> ALL`), as in SQL. Timings by type: [docs/SET-FILTERS.md](SET-FILTERS.md), section 2.
 
 ```c
 /* libpq: one text parameter of type int4[] (OID 1007) */
@@ -754,8 +614,7 @@ DB.transaction { DB.run 'SET LOCAL plan_cache_mode = force_generic_plan'; ps.cal
 
 ### Is the index clustered, and what did the scans do
 
-`sift.col_clustering(index, width_pct => 1)` tells, per integer, date and timestamp leaf of a `sift_col` index, whether sorting the table by it would let scans skip more units. It reads the
-zone maps (min and max of each unit) of the immutable segments, no chunk, and answers with the units a filter on a value of the data touches, as `Units` of `EXPLAIN ANALYZE` counts them:
+`sift.col_clustering(index, width_pct => 1)` tells, per integer, date and timestamp leaf of a `sift_col` index, whether sorting the table by it would let scans skip more units. It reads the zone maps (min and max of each unit) of the immutable segments, no chunk, and reports the units a filter on a value of the data touches, as `Units` of `EXPLAIN ANALYZE` counts them:
 
 | column | meaning |
 |---|---|
@@ -769,29 +628,28 @@ zone maps (min and max of each unit) of the immutable segments, no chunk, and an
 
 A `scattered` leaf that queries filter on is the one to sort by: `CLUSTER`, load the rows in its order, or `INSERT .. SELECT .. ORDER BY` into a fresh table, then `REINDEX`. Rows still in the write buffer are not counted.
 
-`sift.cluster_advice(rel => NULL, min_rows => 100000, key => NULL)` says which order is worth a rewrite, one row per `sift_col` index of the table (or index, or of every index you may read): the `order_by` to sort by, the `units_now` an
-equality or window on it reads and the `units_after` a table sorted by it would, the `saved_rows` of every query, the `churn_pct` since the last `ANALYZE`, a `verdict` (`recommended` or `not recommended`), its `reason` and
-the `pg_repack` call followed by the `VACUUM (ANALYZE)` the rewrite needs. `key => 'a, b'` asks about an order of your own (the filter keys of the workload: the function alone proposes the best single leaf, and a leaf it would scatter can make it say `not recommended` for it): `order_by` is that list, `units_now` and `units_after` those of an equality on its first leaf, and the leaves outside the list are the ones the sort can scatter. A reason ends with a note when under half of the heap pages are all-visible. It is not recommended when the table is small (a query saves under `min_rows` rows, about a millisecond of scan, or the index has under 16 units), already ordered, when the sort would scatter a leaf
-that is ordered now and saves about as much, or when over 10% of the rows change a day (the order is lost faster than a repack restores it). A rewrite restores the order at once: the planner and the scans read the
-zone maps of the rebuilt index. `CLUSTER`, `VACUUM FULL` and `pg_repack` leave the visibility map empty, and autovacuum does not
-come for it (a rewrite counts no inserts, so the insert threshold is not reached): with `sift.col_auto_merge` on, the first scan that checks the rows in the heap starts the worker that vacuums the table (500,000 rows, a 200 ms `sift.maintenance_naptime`: the map set 1.6 s after the `CLUSTER`, a grouped sum 12 ms before and 0.15 ms after); with it off, run `VACUUM (ANALYZE) t` right after the rewrite. A scan checks the heap for every row of a page that is not all-visible, and the planner prices that (`relallvisible`
-of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 heap pages and took 320 ms instead of 82 ms. The planner charges each page of the units the zones keep that holds a selected row, at what a page read costs: about 1.3 us from shared buffers, 3 us from the cache of the operating system and a sequential or random page read from the disk, by `shared_buffers`, `effective_cache_size` and the size of the table (as an index scan of PostgreSQL does), and 4 ns for each row of it. A clustered table of wide rows whose scan costs 531 with the map set costs 705 without it for a twentieth of the units, against 658 for the normal plan, which wins until the `VACUUM`; the larger the share of the table the scan reads, the larger the charge, and a table that does not fit in memory pays the disk for it. Switch it off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or one index with
-`ALTER INDEX ... SET (cluster_advice = off)`.
+`sift.cluster_advice(rel => NULL, min_rows => 100000, key => NULL)` says which order is worth a rewrite, one row per `sift_col` index of the table (or index, or every index you may read): the `order_by` to sort by, `units_now` an equality or window on it reads and `units_after` a table sorted by it would, the `saved_rows` of every query, `churn_pct` since the last `ANALYZE`, a `verdict` (`recommended` or `not recommended`), its `reason` and the `pg_repack` call followed by the `VACUUM (ANALYZE)` the rewrite needs.
 
-A rewrite is not the only answer to a key that reads many units. A clustered table keeps its key tight only until rows are written into the holes that `UPDATE`, `DELETE` and `VACUUM` leave (one foreign row in a unit widens its min/max zone to the whole key range): in a test of 400,000 rows, at 0.2% of the rows churned that way an equality on the key went from 2 to 74 of 112 units, and `REINDEX` and the merges left it there; only a rewrite brought it back. `key_cut` cuts the units by the key, so the equality stays at 1 or 2 units through any amount of churn, without a rewrite. It costs the other leaves that follow the order of the table (an id or a timestamp of arrival), whose zones it widens, and the unit address lists in the index, so the advice names it only for the key the workload looks rows up by and only when no leaf is ordered now: the key is the first leaf of `key =>`, or else the leaf of `point_columns`, `point_tid_columns` or `key_columns` (not unique) that would save the most units. It says `key_cut = 'k'` with the `ALTER INDEX` and `REINDEX` that apply it, and `key_columns = 'k'` (a key list in every unit, which skips the units a few foreign rows widen) for a key of over 256 values, and with no such leaf it says how to choose one. A table whose leaves such as `id` or a date follow the arrival order is left alone (`competing leaves`), and a table that is ordered by the key already says `already ordered`. `CREATE INDEX` and `REINDEX` print the same advice as a `NOTICE` for the key of those options when its equality reads over a quarter of the units and no other leaf is ordered; the setting and the index option `cluster_advice` silence both.
+- `key => 'a, b'` asks about an order of your own (the workload's filter keys; alone, the function proposes the best single leaf, and a leaf it would scatter can make it say `not recommended` for it): `order_by` is that list, `units_now` and `units_after` are those of an equality on its first leaf, and leaves outside the list are the ones the sort can scatter. A reason ends with a note when under half the heap pages are all-visible.
+- Not recommended when: the table is small (a query saves under `min_rows` rows, about a millisecond of scan, or the index has under 16 units); it is already ordered; the sort would scatter a leaf that is ordered now and saves about as much; or over 10% of the rows change a day (the order is lost faster than a repack restores it).
+- A rewrite restores the order at once: the planner and scans read the rebuilt index's zone maps. `CLUSTER`, `VACUUM FULL` and `pg_repack` leave the visibility map empty and autovacuum does not come for it (a rewrite counts no inserts). With `sift.col_auto_merge` on, the first scan that checks rows in the heap starts the worker that vacuums the table (500,000 rows, 200 ms `sift.maintenance_naptime`: map set 1.6 s after the `CLUSTER`, a grouped sum 12 ms before and 0.15 ms after); with it off, run `VACUUM (ANALYZE) t` right after the rewrite.
+- A scan checks the heap for every row of a page that is not all-visible, and the planner prices that (`relallvisible` of `pg_class` is 0): on a 200,000-row table a scan of 133,660 rows read 33,415 heap pages and took 320 ms instead of 82 ms. It charges each page of the kept units that holds a selected row by `shared_buffers`, `effective_cache_size` and table size, as an index scan does: about 1.3 us from shared buffers, 3 us from the OS cache, a sequential or random page read from disk, plus 4 ns per row. A clustered table of wide rows whose scan costs 531 with the map set costs 705 without it for a twentieth of the units, against 658 for the normal plan, which wins until the `VACUUM`; the charge grows with the share of the table read, and a table that does not fit in memory pays the disk.
+- Switch the advice off with the setting `sift.cluster_advice` (off: every index answers `not recommended`) or for one index with `ALTER INDEX ... SET (cluster_advice = off)`.
 
-Rewriting the table: `CLUSTER` and `VACUUM FULL` lock it exclusively and work for heap tables with every sift index and for a `sift_table`. `pg_repack` (online, `--order-by`, 1.5.3 tested on PostgreSQL 18) rebuilds the
-`sift`, `sift_col` indexes and keeps their options and the results of the scans, also under concurrent writes, as a non-superuser table owner and on a standby; it needs a primary key or a not-null unique index. Its copy is an `INSERT .. SELECT .. ORDER BY`, which
-fills the tail of a page through the free space map, so a table of rows of unequal width keeps a small share of rows out of place (0.5% of the rows of a test table of 900,000 wide rows, enough to double the units of a key and
-year window); `CLUSTER`, `VACUUM FULL` and `CREATE TABLE .. AS .. ORDER BY` write the exact order. It
-cannot rewrite a `sift_table` (it swaps in a heap copy): an event trigger refuses it, and `pg_repack --only-indexes` is fine. `pg_squeeze` only supports heap tables.
-After any of them run `ANALYZE t` for the planner (`pg_repack` does), and `VACUUM t` too with `sift.col_auto_merge` off.
+A rewrite is not the only answer to a key that reads many units. A clustered table keeps its key tight only until rows land in the holes `UPDATE`, `DELETE` and `VACUUM` leave (one foreign row widens a unit's min/max zone to the whole key range): in a test of 400,000 rows, churning 0.2% of the rows took an equality on the key from 2 to 74 of 112 units; `REINDEX` and the merges left it there, only a rewrite restored it. `key_cut` cuts the units by the key, so the equality stays at 1 or 2 units through any churn, with no rewrite. It costs the other leaves that follow the table's order (an id or arrival timestamp), whose zones it widens, and the unit address lists in the index.
 
-`sift.stats()` returns what the `Custom Scan (SiftAgg)` scans of the session did, one `(name, value)` row per counter, and `sift.stats_reset()` zeroes them. The counters are plain memory of the
-backend: no shared memory and no `shared_preload_libraries`, nothing is shared between sessions and a restart or a reconnection starts them again (read them before a pooled connection is returned, or log
-them with `auto_explain`). A scan adds its numbers once, when it ends, from the counters `EXPLAIN ANALYZE` shows; a statement that fails adds none. A query that kept the normal plan adds
-`refused.<slug>` while `sift.explain_refusals` or `sift.count_refusals` is on (the second counts without the notice), and for a refusal by a fixed limit also `limit.<id>`, the id of
-[LIMITS.md](LIMITS.md): `SELECT name, value FROM sift.stats() WHERE name LIKE 'limit.%'` lists the limits the session ran into.
+- The advice names `key_cut` only for the key the workload looks rows up by, and only when no leaf is ordered now: the first leaf of `key =>`, else the leaf of `point_columns`, `point_tid_columns` or `key_columns` (not unique) that would save the most units. It gives `key_cut = 'k'` with the `ALTER INDEX` and `REINDEX` that apply it, `key_columns = 'k'` (a key list in every unit, skipping units a few foreign rows widen) for a key of over 256 values, and how to choose a leaf when none qualifies.
+- A table whose leaves such as `id` or a date follow the arrival order is left alone (`competing leaves`); one already ordered by the key says `already ordered`.
+- `CREATE INDEX` and `REINDEX` print the same advice as a `NOTICE` for the key of those options when its equality reads over a quarter of the units and no other leaf is ordered; the setting and the index option `cluster_advice` silence both.
+
+Rewriting the table:
+
+- `CLUSTER` and `VACUUM FULL` lock it exclusively and work for heap tables with every sift index and for a `sift_table`.
+- `pg_repack` (online, `--order-by`, 1.5.3 tested on PostgreSQL 18) rebuilds the `sift` and `sift_col` indexes, keeps their options and scan results, also under concurrent writes, as a non-superuser table owner and on a standby; it needs a primary key or a not-null unique index. Its `INSERT .. SELECT .. ORDER BY` copy fills a page's tail through the free space map, so a table of rows of unequal width keeps a small share out of place (0.5% of a 900,000-row test table of wide rows, enough to double the units of a key and year window); `CLUSTER`, `VACUUM FULL` and `CREATE TABLE .. AS .. ORDER BY` write the exact order. It cannot rewrite a `sift_table` (it swaps in a heap copy): an event trigger refuses it, and `pg_repack --only-indexes` is fine.
+- `pg_squeeze` only supports heap tables.
+- After any of them run `ANALYZE t` (`pg_repack` does), and `VACUUM t` too with `sift.col_auto_merge` off.
+
+`sift.stats()` returns what the session's `Custom Scan (SiftAgg)` scans did, one `(name, value)` row per counter; `sift.stats_reset()` zeroes them. The counters are plain backend memory (no shared memory, no `shared_preload_libraries`): not shared between sessions, reset by a restart or reconnection (read them before a pooled connection is returned, or log them with `auto_explain`). A scan adds its numbers once, when it ends, from the counters `EXPLAIN ANALYZE` shows; a failed statement adds none. A query that kept the normal plan adds `refused.<slug>` while `sift.explain_refusals` or `sift.count_refusals` is on (the second counts without the notice), and for a refusal by a fixed limit also `limit.<id>`, the id of [LIMITS.md](LIMITS.md): `SELECT name, value FROM sift.stats() WHERE name LIKE 'limit.%'` lists the limits the session hit.
 
 | name | counts |
 |---|---|
@@ -818,15 +676,11 @@ asked for are the ones to name); `units` counts the units scanned for lack of th
 
 ## Replication
 
-**Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM,
-`CREATE INDEX CONCURRENTLY` and `REINDEX`, and serves `@@>`, ranked `sift.score()`, `count(*)` and pushed-down filters read-only with the
-primary's rows and scores; a promoted standby takes writes at once. No `shared_preload_libraries`, but install the same pg_sift version on
-every node that queries. `sift.*` settings are per node; `hot_standby_feedback = on` avoids retryable "segment recycled during scan" errors. Without feedback, `sift.standby_conflicts` (on by default, superuser) makes the primary log a recovery conflict when it reuses space a merge freed: standby scans are waited for (`max_standby_streaming_delay`) or cancelled like any standby query, never served recycled pages, and the replay of other long snapshots waits the same way a heap conflict makes it wait. `off` skips the record: such a scan fails at once with the retryable "segment recycled during scan".
+**Physical:** the index goes through generic WAL, so a hot standby (`pg_basebackup -R`) replays builds, inserts, VACUUM, `CREATE INDEX CONCURRENTLY` and `REINDEX`, and serves `@@>`, ranked `sift.score()`, `count(*)` and pushed-down filters read-only with the primary's rows and scores; a promoted standby takes writes at once. No `shared_preload_libraries`, but install the same pg_sift version on every node that queries. `sift.*` settings are per node.
 
-**Logical:** only table rows replicate, never indexes or `CREATE EXTENSION`. On the subscriber install pg_sift, create the table and its own
-sift index (before or after the initial sync) and the apply worker maintains it, with a primary key or `REPLICA IDENTITY FULL` (a sift index
-is never a replica identity). Matches and counts equal the publisher's, and so do scores while both indexes saw the same changes: BM25 counts
-postings that are not yet vacuumed, so an index rebuilt on one side only (`REINDEX`) scores slightly differently.
+`hot_standby_feedback = on` avoids retryable "segment recycled during scan" errors. Without feedback, `sift.standby_conflicts` (on by default, superuser) makes the primary log a recovery conflict when it reuses space a merge freed: standby scans are waited for (`max_standby_streaming_delay`) or cancelled like any standby query, never served recycled pages, and replay of other long snapshots waits as a heap conflict makes it wait. `off` skips the record: such a scan fails at once with the retryable "segment recycled during scan".
+
+**Logical:** only table rows replicate, never indexes or `CREATE EXTENSION`. On the subscriber install pg_sift, create the table and its own sift index (before or after the initial sync) and the apply worker maintains it, with a primary key or `REPLICA IDENTITY FULL` (a sift index is never a replica identity). Matches and counts equal the publisher's, and so do scores while both indexes saw the same changes: BM25 counts postings not yet vacuumed, so an index rebuilt on one side only (`REINDEX`) scores slightly differently.
 
 ```sql
 CREATE PUBLICATION docs_pub FOR TABLE docs;                                                -- publisher
@@ -836,55 +690,38 @@ CREATE INDEX docs_body ON docs USING sift (body);
 CREATE SUBSCRIPTION docs_sub CONNECTION 'host=primary dbname=app' PUBLICATION docs_pub;
 ```
 
-**sift_table:** a table created `USING sift_table` replicates physically like any table (generic WAL, no preload). To *publish* one under
-`wal_level = logical`, `pg_sift` must be in `shared_preload_libraries` on the publisher and on every standby of it: the logical change records
-use a custom WAL resource manager, which a server can only register at preload time. Without the preload a DML on the published table fails
-with `0A000` (`sift_table table "t" is published ... but pg_sift is not in shared_preload_libraries`, hint: preload or publish a heap staging
-table); unpublished sift_table tables never need it. INSERT, UPDATE, DELETE and TRUNCATE reach a heap or sift_table subscriber, UPDATE and
-DELETE with a primary key or `REPLICA IDENTITY FULL` as for heap.
+**sift_table:** replicates physically like any table (generic WAL, no preload). To *publish* one under `wal_level = logical`, `pg_sift` must be in `shared_preload_libraries` on the publisher and every standby of it: the logical change records use a custom WAL resource manager, which a server can only register at preload time. Without the preload a DML on the published table fails with `0A000` (`sift_table table "t" is published ... but pg_sift is not in shared_preload_libraries`, hint: preload or publish a heap staging table); unpublished sift_table tables never need it. INSERT, UPDATE, DELETE and TRUNCATE reach a heap or sift_table subscriber, UPDATE and DELETE with a primary key or `REPLICA IDENTITY FULL` as for heap.
 
-`scripts/replication.sh` checks all of it on a primary, a standby and a subscriber in temporary clusters; `--container` puts every node in
-its own docker container.
+`scripts/replication.sh` checks all of it on a primary, a standby and a subscriber in temporary clusters; `--container` puts every node in its own docker container.
 
 ## Limits
 
-Every fixed limit of the code, with its value, what happens at it and the setting that changes it, is in the generated table [LIMITS.md](LIMITS.md); the list below adds the context.
+Every fixed limit of the code, with its value, what happens at it and the setting that changes it, is in the generated table [LIMITS.md](LIMITS.md); the list below adds context.
 
 - PostgreSQL 17, 18 and 19; x86-64 tested, arm64 tested with PostgreSQL 18 (Linux in CI, macOS by the formula's test), other architectures untested; heap and sift_table tables; BLCKSZ 8192; database encoding UTF8 or SQL_ASCII.
 - `sift_table` (full list in [docs/COL-TAM.md](COL-TAM.md), section 9):
-  - at most 127 columns (`CREATE TABLE`, and an `ALTER TABLE` that adds a column or brings declared paths back past it, fail with `54000`; `DROP COLUMN` is not checked, so a table that 3.2 let grow too wide can be narrowed), 128 directory entries, `BLCKSZ` 8192;
-  - a single `COPY` or `INSERT ... SELECT` writes any number of rows in one transaction (the write buffers of one command become column groups that carry their writer while it runs, and `VACUUM` freezes them once it is committed or drops them if it aborted; a 10,000,000-row `COPY` takes about 180 MB in the backend). a transaction of many commands (a loop of single-row `INSERT`s, savepoints, several sessions into the same write buffers) is not bounded either: once the directory is half full every write buffer it closes becomes such a group, and only a write buffer that holds a row deleted since the last `VACUUM` or a speculative insertion in progress waits (the insert that cannot open another write buffer then fails with `54000`, and the message says to `VACUUM` or to end the transaction); writers merge the column segments as they go;
-  - `0A000` for a DML on a published table without the preload (see [Replication](#replication)), and an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
-  - `sift_table` has no pre-aggregate rollups of array elements, and a jsonb path is read only once it is declared and every segment holds its leaf (`VACUUM FULL`); no HOT, and shared row locks degrade to exclusive;
-  - `xmax` of a row locked by several transactions is the last locker's, not a MultiXactId;
-  - no per-table options: `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression` and `sift.table_dead_rewrite_pct` are ordinary settings that the backend doing the work reads when it does it (PostgreSQL 17 through 19 give a table access method no reloptions of its own: `WITH` knows heap's and TOAST's only and `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20). Inline promotion and the closing of write buffers follow the settings of the inserting session (`SET`, `SET LOCAL`, the role's or the database's default); a manual `VACUUM`, those of the session that runs it; autovacuum has no session, so it applies the server settings (`postgresql.conf`, `ALTER SYSTEM`), `ALTER DATABASE ... SET`, and the `ALTER ROLE ... SET` defaults of the bootstrap superuser (the role autovacuum runs as), never the writer's session or the owner's role; the maintenance worker does not touch a `sift_table`. The settings of the session that wrote the rows are not kept for the VACUUM that promotes them later. So set what background promotion should use at the server or database level; a `SET` in a session shapes only that session's inserts and its own VACUUM (the segments already written keep their codec until a merge or rewrite). `sift_col` indexes do have per-index options (`compression` and the rest, see above), so a column index on a table needs no setting for it. Tested by `test/t/010_tbl_settings.pl`;
+  - at most 127 columns (`CREATE TABLE`, and an `ALTER TABLE` that adds a column or brings declared paths back past it, fail with `54000`; `DROP COLUMN` is not checked), 128 directory entries, `BLCKSZ` 8192;
+  - a single `COPY` or `INSERT ... SELECT` writes any number of rows in one transaction (its write buffers become column groups that carry their writer while it runs; `VACUUM` freezes them once committed or drops them if aborted; a 10,000,000-row `COPY` takes about 180 MB in the backend). A transaction of many commands (a loop of single-row `INSERT`s, savepoints, several sessions into the same write buffers) is not bounded either: once the directory is half full every write buffer it closes becomes such a group, and only a write buffer holding a row deleted since the last `VACUUM` or a speculative insertion in progress waits (the insert that cannot open another write buffer then fails with `54000`, saying to `VACUUM` or end the transaction); writers merge the column segments as they go;
+  - `0A000` for a DML on a published table without the preload ([Replication](#replication)), and for an aggregate scan that reads a column holding a non-canonical float NaN (`SET sift.enable_agg = off` for that query);
+  - no pre-aggregate rollups of array elements; a jsonb path is read only once it is declared and every segment holds its leaf (`VACUUM FULL`); no HOT, and shared row locks degrade to exclusive; `xmax` of a row locked by several transactions is the last locker's, not a MultiXactId;
+  - no per-table options (PostgreSQL 17 through 19 give a table access method no reloptions: `WITH` knows heap's and TOAST's only and `amoptions` is for indexes; the patch that adds them, commitfest entry 5631, targets PostgreSQL 20). `sift.table_write_buffer_limit`, `sift.table_inline_promote`, `sift.table_compression` and `sift.table_dead_rewrite_pct` are ordinary settings that the backend doing the work reads when it does it:
+    - inline promotion and the closing of write buffers follow the inserting session's settings (`SET`, `SET LOCAL`, the role's or database's default); a manual `VACUUM` follows those of the session that runs it;
+    - autovacuum has no session: it applies the server settings (`postgresql.conf`, `ALTER SYSTEM`), `ALTER DATABASE ... SET`, and the `ALTER ROLE ... SET` defaults of the bootstrap superuser (the role it runs as), never the writer's session or the owner's role; the maintenance worker does not touch a `sift_table`;
+    - the writing session's settings are not kept for the VACUUM that promotes the rows later, so set what background promotion should use at server or database level; a session `SET` shapes only that session's inserts and its own VACUUM (written segments keep their codec until a merge or rewrite);
+    - `sift_col` indexes have per-index options (`compression` and the rest, above), so a column index needs no setting for it. Tested by `test/t/010_tbl_settings.pl`.
 - One key per index: multicolumn, `INCLUDE` and unique indexes and non-text keys are rejected (build a key of several columns with `sift.sections`). No plain or index-only scans.
-- Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000.
-- `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
-- A word over 255 bytes is stored as its first 236 bytes and a hash of all of it (`REINDEX` makes an index built before 3.3 follow: it holds such words cut at 255 bytes, so a query for one finds nothing there), `tf` saturates at 255 and document length at 65535; at most 128 segments per index (writers merge the smallest closed segments from 112 entries; with the directory full and the merges failing, the open write buffer takes the writes and `sift.workers` shows the failed step, until a merge succeeds). A merge reads at most 16 GB of segments: a segment of that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
+- Queries: at most 256 leaves, nesting depth 32, phrases of 128 tokens, boosts up to 10000. `fields`: at most 14 field names, 128 bytes of names in all; `prefix_index` up to 15.
+- A word over 255 bytes is stored as its first 236 bytes and a hash of all of it (`REINDEX` makes an index built before 3.3 follow: it holds such words cut at 255 bytes, so a query for one finds nothing there); `tf` saturates at 255 and document length at 65535. At most 128 segments per index (writers merge the smallest closed segments from 112 entries; with the directory full and merges failing, the open write buffer takes the writes and `sift.workers` shows the failed step until a merge succeeds). A merge reads at most 16 GB of segments: a segment that size is not merged again (VACUUM still clears its dead postings through the liveness bits).
 - Analyzers: English Snowball stemmer only, no stopword list, fixed per index (REINDEX to change).
-- `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are
-  rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows
-  inserted since the build, and phrases under `NOT`.
-- `sift.score()` in `WHERE` is only a comparison with a constant (`>`, `>=`, `<`, `<=`); any other use is an error, read the score from a subquery
-  to filter on it. It works with `@@> ANY (array)` (the OR of its
-  queries, scored like the same OR in one query text), but not in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
-- Under `SERIALIZABLE` a sift scan locks the whole relation (the index access method has no finer predicate locks), so concurrent writers
-  can make a serializable transaction fail with `40001`: retry.
-- Row-level security and security barrier views: a role under a policy gets no ranked scan, no `count(*)` pushdown and no index estimate
-  (the document frequencies would include the rows the policy hides), so `sift.score()` raises an error for it and its matches come from
-  a sequential scan; the table owner and roles that bypass row-level security are not affected ([SIZING.md](SIZING.md#features-and-their-costs)).
-  `sift.rls_scores = on` (superuser) gives the role a ranked scan whose scores count the hidden rows: [Row-level security](#row-level-security).
-  Security barrier views stay refused.
-- Partitions: `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)`
-  still work).
-- Partitions: BM25 statistics are per partition, so scores can differ across partitions.
-- Partitions: `sift.max_score()` is not available through a parent (call it on a partition).
-- Partitions: the score cannot be used inside an aggregate or a non-nested-loop join; compute it in a subquery with `OFFSET 0` or `LIMIT`.
-- Ranked partition scans are never parallel, and neither are scans with a pushed-down filter.
-- Keyword facets (`sift.facets`): text keys only (use an expression index for integers), cost linear in the distinct values, tables with row-level
-  security are refused. `sift.facet_counts` has none of these limits; its array facets and filters on columns outside the `sift_col` index use the
-  ordinary plan.
-- Fields: weights are set at query time over the sections of one key; no BM25F, no analyzer per field, phrases and regular expressions are not
-  scoped to a field, no highlight per field ([FIELDS-FACETS.md](FIELDS-FACETS.md)).
+- `positions = on` is the default and makes the index about 2.5x larger (`positions = off` restores the small index). Phrases are rechecked in the heap for documents without positions: indexes built by earlier versions until `REINDEX`, `positions = off`, rows inserted since the build, and phrases under `NOT`.
+- `sift.score()`: the rules for `WHERE` are under [Ranking, filters and joins](#ranking-filters-and-joins); it works with `@@> ANY (array)` ([Queries](#queries)) but not in `UPDATE`, `DELETE`, `MERGE` and `FOR UPDATE`.
+- Under `SERIALIZABLE` a sift scan locks the whole relation (the access method has no finer predicate locks), so concurrent writers can make a serializable transaction fail with `40001`: retry.
+- Row-level security: a role under a policy gets no ranked scan, no `count(*)` pushdown and no index estimate, so `sift.score()` raises an error and matches come from a sequential scan, unless `sift.rls_scores = on` ([Row-level security](#row-level-security); [SIZING.md](SIZING.md#features-and-their-costs)). Owners and roles that bypass RLS are unaffected. Security barrier views stay refused.
+- Partitions:
+  - `sift.score()` needs a sift index on every partition the query reads (otherwise an error; unranked matching and `count(*)` still work);
+  - BM25 statistics are per partition, so scores can differ across partitions;
+  - `sift.max_score()` is not available through a parent (call it on a partition);
+  - the score cannot be used inside an aggregate or a non-nested-loop join; compute it in a subquery with `OFFSET 0` or `LIMIT`;
+  - ranked partition scans are never parallel, and neither are scans with a pushed-down filter.
+- Keyword facets (`sift.facets`): text keys only (use an expression index for integers), cost linear in the distinct values, tables with row-level security refused. `sift.facet_counts` has none of these limits; its array facets and filters on columns outside the `sift_col` index use the ordinary plan. Field weights: [Field weights](#field-weights).
 - pg_upgrade to a newer PostgreSQL major keeps the files as they are ([UPGRADING.md](UPGRADING.md), tested from the previous major when both are installed). `pg_sift_test` (built with `SIFT_TESTING=1`) is for the test suite only.
