@@ -412,7 +412,7 @@ sift_colsrc_leaf_n(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
 	return vec.n;
 }
 
-static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+const size_t sift_src_vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 
 void
 sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
@@ -425,7 +425,7 @@ sift_colsrc_read_into(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, con
 		return;
 	}
 	src->prov->read(src->impl, unit, leaf, vec);
-	sz = vtype_size[src->prov->source_layout(src->impl)->leaf[leaf].vtype];
+	sz = sift_src_vtype_size[src->prov->source_layout(src->impl)->leaf[leaf].vtype];
 	memcpy(buf->data, vec->data, vec->n * sz);
 	memset((char *) buf->data + vec->n * sz, 0, SIFT_AGG_PAD * sz);
 	vec->data = buf->data;

@@ -320,7 +320,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags);
 	src->lay = col_layout(index);
 	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
-	src->buf = palloc0(sizeof(ColLeafBuf) * src->lay->nleaves);
+	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);

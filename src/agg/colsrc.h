@@ -785,6 +785,8 @@ sift_colsrc_nan_leaf(const SiftSrcLeaf *l)
  * its bit in vec->ovf for the code that evaluates it as PostgreSQL does. The engine stores it as NULL with the flag; a source calls this
  * after it filled data and isnull.
  */
+/* The bytes of one value of each vector type, by SiftSrcVecType */
+extern const size_t sift_src_vtype_size[];
 extern void sift_colsrc_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec);
 
 /* The leaf of leaf def i of a shredded jsonb attribute (a sift_col index, or the declared paths of a sift_table); desc names the attribute and gives its type */

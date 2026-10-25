@@ -12,14 +12,6 @@
 #include "agg/chunkfilter.h"
 #include "table/table.h"
 
-typedef struct TblLeafBuf
-{
-	size_t		cap;			/* elements the buffers hold */
-	void	   *data;
-	uint8	   *isnull;
-	uint64	   *ovf;			/* the values the columns cannot hold: the NaNs of a numeric leaf, the values of a path of another type */
-} TblLeafBuf;
-
 /* A conjunct on a wide leaf: decided with the type's own comparison on the exact values */
 typedef struct TblWide
 {
@@ -63,7 +55,7 @@ typedef struct TblSource
 	int			last;			/* the part of the unit returned last, -1 at the start */
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
-	TblLeafBuf *buf;			/* per leaf */
+	SiftSrcLeafBuf *buf;			/* per leaf */
 	SiftAggSel	sel;			/* the match set the units are restricted to */
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
@@ -75,7 +67,6 @@ typedef struct TblSource
 } TblSource;
 
 extern void wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t n, Datum dflt, bool dnull, SiftSrcVec *vec);
-extern TblLeafBuf *leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n);
 extern int	tbl_set_wide(void *impl, const SiftSrcWideTest *t, int nt);
 extern bool tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
 

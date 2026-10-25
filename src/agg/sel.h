@@ -49,6 +49,23 @@ extern void sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, Sift
 extern void sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 /* A dictionary of the engine as the source's: the strings in place, or (a read that stayed in the segment) fetched by code and loaded whole on demand */
 extern SiftSrcDict sift_aggsel_src_dict(const SiftColDict *d);
+/* The caller's buffers of one leaf: room for cap values of any vector type, their null flags and overflow bits */
+typedef struct SiftSrcLeafBuf
+{
+	size_t		cap;
+	void	   *data;
+	uint8	   *isnull;
+	uint64	   *ovf;			/* the values the leaf cannot hold: the NaNs of a numeric leaf, the values of a path of another type */
+} SiftSrcLeafBuf;
+
+/* Room in b (allocated in cxt, replaced when too small) for n values and SIFT_AGG_PAD more */
+extern void sift_aggsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n);
+/* A read of the engine in the vector type of the leaf l, into the caller's storage (buf, with room for v->n + SIFT_AGG_PAD values); without buf->ovf an overflow value is an error */
+extern void sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
+/* The ordinals, in the unit as stored, of the rows of the executor's numbering, for sift_col_read_idx (padded with SIFT_COL_IDXPAD zeros) */
+extern uint32 *sift_aggsel_ords(const SiftAggSel *a, const uint32 *rows, int n);
+/* The selection of the executor's bits (the rows of a unit of nrow) */
+extern void sift_aggsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel *sel);
 extern void sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec);
 extern void sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits);
 extern bool sift_aggsel_vet_needed(const SiftColUnit *cu);

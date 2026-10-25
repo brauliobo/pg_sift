@@ -32,14 +32,6 @@
 #include "agg/colsrc.h"
 #include "col/shred_pg.h"
 
-typedef struct ColLeafBuf
-{
-	size_t		cap;			/* elements the buffers hold */
-	void	   *data;
-	uint8	   *isnull;
-	uint64	   *ovf;			/* numeric leaves: the NaNs of the heap */
-} ColLeafBuf;
-
 /*
  * The recheck of the rows that hold, in a leaf the query reads, a value the leaf cannot store: `live` takes them out of
  * the stored unit and keeps their TIDs, the next unit is these rows read again from the heap as the query's SQL reads them.
@@ -81,7 +73,7 @@ typedef struct ColSource
 	SiftSrcLayout *lay;
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
-	ColLeafBuf *buf;			/* per leaf */
+	SiftSrcLeafBuf *buf;			/* per leaf */
 	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
 	Relation	heap;

@@ -104,11 +104,12 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 {
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
 	int16		typlen = TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attlen;
-	TblLeafBuf *b = leaf_buf(t, leaf, SCV_CODE, n);
+	SiftSrcLeafBuf *b = &t->buf[leaf];
 	MemoryContext old;
 	WideBuild	w = {0};
 	bool		has_null = false;
 
+	sift_aggsel_leaf_buf(t->cxt, b, n);
 	if (t->wcxt[leaf] == NULL)
 		t->wcxt[leaf] = AllocSetContextCreate(t->cxt, "sift table wide leaf", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextReset(t->wcxt[leaf]);

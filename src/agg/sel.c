@@ -165,8 +165,89 @@ sift_aggsel_src_dict(const SiftColDict *d)
 	return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes, d->order, d->octx};
 }
 
-static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
+
+void
+sift_aggsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n)
+{
+	size_t		need = n + SIFT_AGG_PAD;
+
+	if (b->cap >= need)
+		return;
+	if (b->data)
+	{
+		pfree(b->data);
+		pfree(b->isnull);
+		pfree(b->ovf);
+	}
+	b->cap = Max(need, 4096);
+	b->data = MemoryContextAlloc(cxt, b->cap * 8);
+	b->isnull = MemoryContextAlloc(cxt, b->cap);
+	b->ovf = MemoryContextAlloc(cxt, SIFT_COL_NWORDS(b->cap) * sizeof(uint64));
+}
+
+void
+sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+{
+	size_t		n = v->n;
+
+	vec->ovf = NULL;
+	if (v->ovf && !buf->ovf)
+		sift_aggsel_overflow_error(a->heapoid);
+	switch (l->vtype)
+	{
+		case SCV_I32:
+			for (size_t i = 0; i < n; i++)
+				((int32 *) buf->data)[i] = (int32) v->i[i];
+			break;
+		case SCV_I64:
+			memcpy(buf->data, v->i, n * sizeof(int64));
+			break;
+		case SCV_F64:
+			memcpy(buf->data, v->f, n * sizeof(double));
+			break;
+		case SCV_CODE:
+			memcpy(buf->data, v->codes, n * sizeof(uint32));
+			*dict = sift_aggsel_src_dict(v->dict);
+			break;
+	}
+	memset((char *) buf->data + n * sift_src_vtype_size[l->vtype], 0, SIFT_AGG_PAD * sift_src_vtype_size[l->vtype]);
+	vec->data = buf->data;
+	vec->dict = l->vtype == SCV_CODE ? dict : NULL;
+	vec->n = n;
+	vec->isnull = NULL;
+	if (v->ovf && !tol)
+	{
+		memcpy(buf->ovf, v->ovf, SIFT_COL_NWORDS(n) * sizeof(uint64));
+		vec->ovf = buf->ovf;
+	}
+	if (v->nulls)
+	{
+		for (size_t i = 0; i < n; i++)
+			buf->isnull[i] = sift_colsrc_bit(v->nulls, i);
+		vec->isnull = buf->isnull;
+	}
+	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
+}
+
+uint32 *
+sift_aggsel_ords(const SiftAggSel *a, const uint32 *rows, int n)
+{
+	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
+
+	for (int i = 0; i < n; i++)
+		ords[i] = a->compact ? a->idx[rows[i]] : rows[i];
+	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
+	return ords;
+}
+
+void
+sift_aggsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel *sel)
+{
+	sift_col_sel_alloc(src, nrow, sel);
+	memcpy(sel->bits, bits, sel->nwords * sizeof(uint64));
+	sift_col_sel_count(sel);
+}
 
 void
 sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
@@ -186,7 +267,7 @@ sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftS
 	}
 	else if (info.ovf)
 		sift_aggsel_overflow_error(a->heapoid);
-	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
+	memset((char *) buf->data + info.n * sift_src_vtype_size[l->vtype], 0, SIFT_AGG_PAD * sift_src_vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->n = info.n;
 	vec->isnull = info.nulls ? buf->isnull : NULL;
@@ -204,7 +285,7 @@ sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 {
 	size_t		m = v->n;
 
-	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
+	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * sift_src_vtype_size[l->vtype]);
 	switch (l->vtype)
 	{
 		case SCV_I32:
