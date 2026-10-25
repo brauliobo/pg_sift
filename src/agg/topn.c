@@ -32,6 +32,8 @@
 #include "agg/leaf_int.h"
 #include "agg/part.h"
 #include "agg/topn.h"
+#include "agg/kern.h"
+#include "col/kern.h"
 #include "core/cmp.h"
 #include "core/compat.h"
 
@@ -41,6 +43,11 @@
 #define TOPN_PROBES		6
 /* Rows a unit gives the heap, at least, for a column of the output to be read from it: decoding costs as much as fetching this many rows from the heap, and a unit that gives less than half the heap is not one most of the final rows come from */
 #define TOPN_OUT_ROWS	16
+/* Rows of a unit the first key of which is an integer, at least, for the best value of a segment to be looked at before its rows (vec_rows), and the rows of a segment */
+#define TOPN_VEC_ROWS	512
+#define TOPN_SEG		256
+/* ... and one row in this many of the unit passes the filters at least: the passes of the kernels cost the same whatever the rows are, so fewer rows go to the heap one by one */
+#define TOPN_VEC_DENSITY	16
 
 bool		sift_topn_zone_keys = true;
 #ifdef SIFT_TESTING
@@ -2432,6 +2439,175 @@ sift_topn_revisit_next(SiftTopN *t, uint32 *sb)
 }
 
 /*
+ * The rows of the words w0..w0+nw of mask (a unit's row mask) go to the unit's heap in row order: those the bar leaves, with their keys in crow, ck and cnul
+ * (the candidates finish_unit reads the other keys of). The bar tightens as the heap fills.
+ */
+static void
+scan_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *mask, int w0, int nw, Rank *bar, bool *barred, int *m)
+{
+	for (int w = 0; w < nw; w++)
+		for (uint64 b = mask[w]; b; b &= b - 1)
+		{
+			int			i = (w0 + w) * 64 + pg_rightmost_one_pos64(b);
+			int64		v = 0;
+			bool		isnull = !row_key(k0, key0, i, &v);
+			TopEnt		e;
+
+			if (*barred && rank_after(rank_of(k0, isnull, v), *bar))
+				continue;
+			memset(&e, 0, sizeof(e));
+			e.k[0] = v;
+			e.nul = isnull;
+			e.row = e.tie = i;
+			t->crow[*m] = i;
+			t->ck[*m] = v;
+			t->cnul[(*m)++] = isnull;
+			heap_push(t, t->lh, &t->ln, &e);	/* the other keys are 0 in all of them: the order is the first key's, then the row */
+			if (t->ln == t->limit)
+			{
+				Rank		mine = ent_rank(t, &t->lh[0]);
+
+				if (!*barred || rank_after(*bar, mine))
+				{
+					*bar = mine;
+					*barred = true;
+				}
+			}
+		}
+}
+
+typedef struct SegBest
+{
+	int64		best;
+	int			seg;
+} SegBest;
+
+static int
+segbest_asc(const void *a, const void *b)
+{
+	int64		x = ((const SegBest *) a)->best,
+				y = ((const SegBest *) b)->best;
+
+	return x < y ? -1 : x > y;
+}
+
+static int
+segbest_desc(const void *a, const void *b)
+{
+	return segbest_asc(b, a);
+}
+
+/*
+ * scan_rows for an integer first key, TOPN_SEG rows at a time: the segments are taken by the best value they hold (a descending scan of a column that
+ * ascends, or the reverse, would push every row of the unit in turn), a segment whose best cannot pass the bar ends the unit, and for the others a range
+ * kernel marks the rows that can pass: only those reach the heap. A value equal to the bar's passes, as in scan_rows. The NULL rows (the vector's value
+ * there is undefined) go first, through scan_rows.
+ */
+static void
+vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rmask, int nrow, Rank *bar, bool *barred, int *m)
+{
+	const bool	wide = k0->vtype == SCV_I64;
+	const char *data = key0->data;
+	const int	esz = wide ? 8 : 4;
+	int			nw = (nrow + 63) / 64,
+				nseg = (nrow + TOPN_SEG - 1) / TOPN_SEG,
+				nb = 0;
+	bool		all;
+	uint64	   *vm = palloc0((SIFT_COL_NWORDS(nrow) + SIFT_COL_SELWORDS) * sizeof(uint64));
+	uint64		hit[SIFT_COL_SELWORDS];
+	SegBest    *sb = palloc(nseg * sizeof(SegBest));
+
+	memcpy(vm, rmask, nw * sizeof(uint64));
+	if (key0->isnull)
+	{
+		uint64	   *nullw = palloc((SIFT_COL_NWORDS(nrow) + SIFT_COL_SELWORDS) * sizeof(uint64));
+		bool		any = false;
+
+		sift_colk_nonzero(key0->isnull, nrow, nullw);
+		for (int w = 0; w < nw; w++)
+		{
+			uint64		nm = vm[w] & nullw[w];
+
+			vm[w] &= ~nm;
+			nullw[w] = nm;
+			any |= nm != 0;
+		}
+		if (any)
+			scan_rows(t, k0, key0, nullw, 0, nw, bar, barred, m);
+		pfree(nullw);
+	}
+	/* every row of the unit is selected: the kernels need no mask */
+	all = sift_colk->bits_count(vm, nw) == nrow;
+	for (int s = 0; s < nseg; s++)
+	{
+		int			off = s * TOPN_SEG,
+					len = Min(TOPN_SEG, nrow - off);
+		int64		mn,
+					mx;
+		bool		some;
+
+		if (wide)
+			some = sift_aggk->minmax_i64(&mn, &mx, (const int64 *) data + off, all ? NULL : vm + off / 64, len);
+		else
+		{
+			int32		a,
+						b;
+
+			some = sift_aggk->minmax_i32(&a, &b, (const int32 *) data + off, all ? NULL : vm + off / 64, len);
+			mn = a;
+			mx = b;
+		}
+		if (some)
+		{
+			sb[nb].best = k0->desc ? mx : mn;
+			sb[nb++].seg = s;
+		}
+	}
+	qsort(sb, nb, sizeof(SegBest), k0->desc ? segbest_desc : segbest_asc);
+	for (int q = 0; q < nb; q++)
+	{
+		int			off = sb[q].seg * TOPN_SEG,
+					len = Min(TOPN_SEG, nrow - off),
+					sw = (len + 63) / 64;
+		Rank		g;
+
+		if (bar_rank(t, &g) && (!*barred || rank_after(*bar, g)))
+		{
+			*bar = g;
+			*barred = true;
+		}
+		if (*barred && bar->cls == 0)
+			break;				/* the worst row is a NULL, which sorts before every value */
+		if (*barred && bar->cls == 1)
+		{
+			if (rank_after(rank_of(k0, false, sb[q].best), *bar))
+				break;			/* the segments after this one hold worse values */
+			if (wide)
+			{
+				uint64		bv = (uint64) (~bar->ord ^ UINT64CONST(0x8000000000000000));
+
+				sift_colk->range[SIFT_COLW_64](data + (Size) off * esz, len, k0->desc ? bv : UINT64CONST(0x8000000000000000),
+											   k0->desc ? (uint64) PG_INT64_MAX - bv : bar->ord, hit);
+			}
+			else
+			{
+				uint32		bv = (uint32) (~bar->ord ^ UINT64CONST(0x8000000000000000));
+
+				sift_colk->range[SIFT_COLW_32](data + (Size) off * esz, len, k0->desc ? bv : 0x80000000u,
+											   k0->desc ? (uint32) PG_INT32_MAX - bv : (uint32) bar->ord ^ 0x80000000u, hit);
+			}
+			for (int w = 0; w < sw; w++)
+				hit[w] &= vm[off / 64 + w];
+			scan_rows(t, k0, key0, hit, off / 64, sw, bar, barred, m);
+		}
+		else
+			scan_rows(t, k0, key0, vm + off / 64, off / 64, sw, bar, barred, m);
+	}
+	pfree(sb);
+	pfree(vm);
+}
+
+/*
  * The rows of the unit are cut in two steps, so that the leaves of the other sort keys are read for a handful of rows and not for all of
  * them. First the first key of every row that passes: a row strictly worse on it than the n-th of the heap, or than the n-th of the unit
  * so far, cannot be in the result whatever its other keys are. Then the others, for the rows that remain (the n best and those tied with
@@ -2441,8 +2617,7 @@ void
 sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, SiftTopLeaf leaf, void *ctx)
 {
 	const TopKey *k0 = &t->key[0];
-	Rank		bar = {0, 0},
-				mine;
+	Rank		bar = {0, 0};
 	bool		barred = false;
 	int			nw = (nrow + 63) / 64,
 				m = 0,
@@ -2489,34 +2664,11 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	grow_unit_buffers(t, nrow);
 	t->ln = 0;
 	barred = bar_rank(t, &bar);
-	for (int w = 0; w < nw; w++)
-		for (uint64 b = rmask[w]; b; b &= b - 1)
-		{
-			int			i = w * 64 + pg_rightmost_one_pos64(b);
-			int64		v = 0;
-			bool		isnull = !row_key(k0, key0, i, &v);
-			TopEnt		e;
-
-			if (barred && rank_after(rank_of(k0, isnull, v), bar))
-				continue;
-			memset(&e, 0, sizeof(e));
-			e.k[0] = v;
-			e.nul = isnull;
-			e.row = e.tie = i;
-			t->crow[m] = i;
-			t->ck[m] = v;
-			t->cnul[m++] = isnull;
-			heap_push(t, t->lh, &t->ln, &e);	/* the other keys are 0 in all of them: the order is the first key's, then the row */
-			if (t->ln == t->limit)
-			{
-				mine = ent_rank(t, &t->lh[0]);
-				if (!barred || rank_after(bar, mine))
-				{
-					bar = mine;
-					barred = true;
-				}
-			}
-		}
+	if (nrow >= TOPN_VEC_ROWS && k0->xk == TXK_NONE && k0->nenum == 0 && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) &&
+		sift_colk->bits_count(rmask, nw) * TOPN_VEC_DENSITY >= nrow)
+		vec_rows(t, k0, key0, rmask, nrow, &bar, &barred, &m);
+	else
+		scan_rows(t, k0, key0, rmask, 0, nw, &bar, &barred, &m);
 	for (int q = 0; q < m; q++)
 	{
 		TopEnt	   *e = &t->ce[nc];
