@@ -394,6 +394,7 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 {
 	TblSource  *t = impl;
 
+	t->sel.compact = false;
 	for (;;)
 	{
 		TblPart    *best = NULL;
@@ -593,7 +594,7 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 			break;
 		case SCV_CODE:
 			memcpy(b->data, v.codes, n * sizeof(uint32));
-			t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v.dict->id, v.dict->n, v.dict->off, v.dict->bytes, v.dict->order, v.dict->octx};
+			t->dict[leaf] = sift_aggsel_src_dict(v.dict);
 			break;
 	}
 	*vec = (SiftSrcVec) {.data = b->data,.dict = l->vtype == SCV_CODE ? &t->dict[leaf] : NULL,.n = n};
@@ -632,6 +633,14 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	if (p->col[leaf] < 0)
 	{
 		read_absent(t, leaf, unit->nrow, vec);
+		return;
+	}
+	if (!t->lay->leaf[leaf].wide && !t->sel.compact)
+	{
+		/* decoded into the leaf's buffer in its own vector type, with no vector of keys to convert and copy */
+		TblLeafBuf *b = leaf_buf(t, leaf, t->lay->leaf[leaf].vtype, sift_col_lane_n(&p->unit, p->col[leaf]));
+
+		sift_aggsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], t->tol[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 		return;
 	}
 	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
@@ -691,7 +700,7 @@ tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 {
 	TblSource  *t = impl;
 	TblPart    *p = unit->priv;
-	bool		compact = t->sel.keep && t->sel.compact,
+	bool		compact = t->sel.compact,
 				known;
 
 	sift_col_jnull_bits(&p->unit, p->col[leaf], compact ? t->sel.idx : NULL, t->sel.sel.count, bits, &known);
@@ -707,7 +716,7 @@ stored_ords(TblSource *t, const uint32 *rows, int n)
 	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
 
 	for (int i = 0; i < n; i++)
-		ords[i] = t->sel.keep && t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
+		ords[i] = t->sel.compact ? t->sel.idx[rows[i]] : rows[i];
 	memset(ords + n, 0, SIFT_COL_IDXPAD * sizeof(uint32));
 	return ords;
 }
@@ -784,6 +793,48 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
 	read_vec(t, leaf, p, &v, vec);
 	pfree(ords);
+}
+
+/* Only the rows of bits, at their rows in the leaf's buffer; the unit as stored, a column the segment lacks and a wide leaf are read whole */
+static void
+tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftColSel	sel;
+	SiftColVec	v;
+	uint32	   *idx;
+	TblLeafBuf *b;
+
+	if (t->sel.compact || p->col[leaf] < 0 || t->lay->leaf[leaf].wide)
+	{
+		tbl_read(impl, unit, leaf, vec);
+		return;
+	}
+	sift_col_sel_alloc(p->src, unit->nrow, &sel);
+	memcpy(sel.bits, bits, sel.nwords * sizeof(uint64));
+	sift_col_sel_count(&sel);
+	idx = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+	sift_col_sel_idx(&sel, idx);
+	sift_col_read(&p->unit, p->col[leaf], &sel, &v);
+	b = leaf_buf(t, leaf, t->lay->leaf[leaf].vtype, unit->nrow);
+	sift_aggsel_scatter(&t->lay->leaf[leaf], t->tol[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+	pfree(idx);
+}
+
+/* The rows of bits are few: the unit goes on as them alone, renumbered as in a unit of a match set */
+static bool
+tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	uint32		nrow;
+
+	if (t->sel.compact)
+		return false;
+	sift_aggsel_narrow(&t->sel, p->src, &p->unit, bits, &nrow);
+	unit->nrow = nrow;
+	return true;
 }
 
 static void
@@ -897,6 +948,8 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.read_sel = tbl_read_sel,
+	.narrow = tbl_narrow,
 	.set_filters = tbl_set_filters,
 	.filter = tbl_filter,
 	.set_wide = tbl_set_wide,

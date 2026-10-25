@@ -35,26 +35,7 @@
 
 #include "agg/col_int.h"
 
-/* The dictionary of a read that stayed in the segment, loaded whole */
-static void
-col_dict_full(const void *gctx, SiftSrcDict *self)
-{
-	SiftColDict d = {.id = (uint64) (uintptr_t) self->id};
-
-	sift_col_dict_full(gctx, &d);
-	*self = (SiftSrcDict) {self->id, d.n, d.off, d.bytes, d.order, d.octx};
-}
-
-static SiftSrcDict
-col_src_dict(const SiftColDict *d)
-{
-	if (d->off == NULL)
-		return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, .get = d->get, .full = col_dict_full, .gctx = d->gctx};
-	return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes, d->order, d->octx};
-}
-
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
-static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
 /* of the unit as stored: a compacted unit of a match set yields fewer */
 int64
@@ -131,7 +112,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 			break;
 		case SCV_CODE:
 			memcpy(buf->data, v->codes, n * sizeof(uint32));
-			src->dict[leaf] = col_src_dict(v->dict);
+			src->dict[leaf] = sift_aggsel_src_dict(v->dict);
 			break;
 	}
 	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
@@ -171,7 +152,6 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 {
 	ColSource  *src = impl;
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	SiftColLaneInfo info;
 
 	if (col_wide(src, leaf))
 	{
@@ -183,30 +163,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 		col_read_selected(src, leaf, buf, vec);
 		return;
 	}
-	sift_col_read_lane(&src->unit, leaf, vtype_lane[l->vtype], buf->data, buf->isnull, &info);
-	vec->ovf = NULL;
-	info.ovf &= !src->tol[leaf];
-	if (info.ovf && buf->ovf)
-	{
-		SiftColVec	v;
-
-		sift_col_read(&src->unit, leaf, NULL, &v);
-		memcpy(buf->ovf, v.ovf, SIFT_COL_NWORDS(info.n) * sizeof(uint64));
-		vec->ovf = buf->ovf;
-	}
-	else if (info.ovf)
-		sift_aggsel_overflow_error(RelationGetRelid(src->heap));
-	memset((char *) buf->data + info.n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
-	vec->data = buf->data;
-	vec->n = info.n;
-	vec->isnull = info.nulls ? buf->isnull : NULL;
-	vec->dict = NULL;
-	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
-	if (l->vtype == SCV_CODE)
-	{
-		src->dict[leaf] = col_src_dict(&info.dict);
-		vec->dict = &src->dict[leaf];
-	}
+	sift_aggsel_read_lane(&src->sel, &src->unit, leaf, l, src->tol[leaf], buf, &src->dict[leaf], vec);
 }
 
 /* the leaf's buffers for n elements and SIFT_AGG_PAD more */
@@ -246,52 +203,9 @@ col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 static void
 col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
 {
-	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
-	size_t		m = v->n;
 	ColLeafBuf *b = leaf_buf(src, leaf, nrow);
 
-	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * vtype_size[l->vtype]);
-	switch (l->vtype)
-	{
-		case SCV_I32:
-			for (size_t k = 0; k < m; k++)
-				((int32 *) b->data)[idx[k]] = (int32) v->i[k];
-			break;
-		case SCV_I64:
-			for (size_t k = 0; k < m; k++)
-				((int64 *) b->data)[idx[k]] = v->i[k];
-			break;
-		case SCV_F64:
-			for (size_t k = 0; k < m; k++)
-				((double *) b->data)[idx[k]] = v->f[k];
-			break;
-		case SCV_CODE:
-			for (size_t k = 0; k < m; k++)
-				((uint32 *) b->data)[idx[k]] = v->codes[k];
-			src->dict[leaf] = col_src_dict(v->dict);
-			break;
-	}
-	vec->data = b->data;
-	vec->dict = l->vtype == SCV_CODE ? &src->dict[leaf] : NULL;
-	vec->n = nrow;
-	vec->isnull = NULL;
-	vec->ovf = NULL;
-	if (v->ovf && !src->tol[leaf])
-	{
-		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
-		for (size_t k = 0; k < m; k++)
-			if (sift_colsrc_bit(v->ovf, k))
-				b->ovf[idx[k] >> 6] |= UINT64CONST(1) << (idx[k] & 63);
-		vec->ovf = b->ovf;
-	}
-	if (v->nulls)
-	{
-		memset(b->isnull, 0, nrow);
-		for (size_t k = 0; k < m; k++)
-			b->isnull[idx[k]] = sift_colsrc_bit(v->nulls, k);
-		vec->isnull = b->isnull;
-	}
-	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
+	sift_aggsel_scatter(&src->lay->leaf[leaf], src->tol[leaf], v, idx, nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &src->dict[leaf], vec);
 }
 
 /*

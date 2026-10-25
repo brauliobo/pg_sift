@@ -35,7 +35,9 @@ INSERT INTO tf_q VALUES
 	('SELECT g, count(*) FROM tf WHERE n = 5 GROUP BY 1'),
 	('SELECT g, count(*) FROM tf WHERE n <> 5 AND a < 20 GROUP BY 1'),
 	('SELECT count(*) FROM tf WHERE a > 100'),
-	('SELECT count(*) FROM tf WHERE a >= 0 AND b IS NOT NULL');
+	('SELECT count(*) FROM tf WHERE a >= 0 AND b IS NOT NULL'),
+	('SELECT id, c FROM tf WHERE a = 17 AND b IS NOT NULL ORDER BY c DESC, id LIMIT 7'),
+	('SELECT id, n FROM tf WHERE a = 3 ORDER BY n NULLS FIRST, id LIMIT 7');
 
 SELECT regexp_replace(q, '^.* FROM tf WHERE ', '') AS q, in_source(q) AS in_source, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM tf_q ORDER BY q;
 
