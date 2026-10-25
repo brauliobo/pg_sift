@@ -1026,6 +1026,11 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		{
 			acc->gord_rows += g->hdr.entries;
 			acc->gord_bytes += g->bytes;
+			if (g->hdr.gcol >= 0)
+			{
+				acc->gord_grp_rows += g->hdr.entries;
+				acc->gord_gcol = g->hdr.gcol;
+			}
 		}
 	}
 	if (set_leaf(seg, col) != NULL)

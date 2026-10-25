@@ -129,6 +129,7 @@ extern bool sift_topn_gordered(const SiftTopN *t);
 extern int	sift_topn_leaf(const SiftTopN *t, int j);
 /* The heap column of a leaf that is a plain integer, date or time column of a heap, which the global order orders and a condition tests on the heap row; 0 for any other */
 extern int	sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf);
+extern bool sift_topn_same_scale(Oid a, Oid b);
 
 /*
  * The order the superblocks are visited in. Before the scan the zones of the sort column's first key in a few superblocks, spread over the

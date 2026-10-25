@@ -47,6 +47,33 @@ CREATE FUNCTION gt_all(lims int[]) RETURNS TABLE (result text, n bigint) LANGUAG
 $$ SELECT gt_chk(c, d, nl, l), 1::bigint FROM unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(lims) l $$;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
 
+-- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
+-- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
+CREATE FUNCTION gt_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
+BEGIN
+	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
+		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
+		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 1000; END IF;
+		used := used OR pl LIKE '%Global Order%';
+	END LOOP;
+	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
+END $$;
+SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
+ 'SELECT id, b FROM gt ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b >= 100 ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b < 100 ORDER BY b DESC LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b = 100 AND a > 0 ORDER BY b, id LIMIT 10',
+ 'SELECT id, b FROM gt WHERE (b < 20 OR b > 480) ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE a > 0 ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b > 100 AND a > 0 ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b >= 100 ORDER BY b LIMIT 10 OFFSET 5',
+ 'SELECT id, b FROM gt WHERE b IS NOT NULL ORDER BY b LIMIT 10',
+ 'SELECT id, b FROM gt WHERE b <> 100 ORDER BY b LIMIT 10'
+]) q;
+DROP FUNCTION gt_plan(text);
+
 -- rows after the index: the write buffer joins the merge, deleted rows and rows of other versions are skipped
 INSERT INTO gt (id, a, b, c, d, t, z) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, DATE '2021-01-01' + i % 300, TIMESTAMP '2021-01-01' + i * interval '1 minute', NULL FROM generate_series(1, 1500) i;
 DELETE FROM gt WHERE id % 11 = 0;

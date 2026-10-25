@@ -318,6 +318,8 @@ typedef struct SiftColLeafStats
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
 	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
+	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
+	int			gord_gcol;
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;

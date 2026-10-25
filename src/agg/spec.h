@@ -652,6 +652,7 @@ extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *la
  */
 #define SIFT_TID_KEY_END	(UINT64CONST(1) << 48)
 extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi);
+extern bool sift_aggspec_plain(const SiftAggSpec *s);
 
 /* How the pre-aggregates answer a scan: the histogram of dim of the cube (-1: the sums of the leaves), or the rollup of the list leaf list */
 typedef struct SiftAggPaShape

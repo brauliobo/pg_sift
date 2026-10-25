@@ -120,6 +120,8 @@ typedef struct SiftSrcStats
 	double		point_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose segment keeps a point directory of the leaf, which lists the rows of a short list of keys (0: none does) */
 	double		set_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units that hold a small-set summary of the leaf (0: none do) */
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
+	double		gord_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that the segments keep in a global order (order_array_columns): ORDER BY .. LIMIT reads n entries of it, not the units (0: none does) */
+	int			gord_group[SIFT_COLSRC_MAX_LEAVES];	/* ... and the leaf the order is grouped by (order_array_group), -1 when it is not grouped */
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
 	const SiftSrcZones *zones;	/* the zones of a sample of the units (NULL: the source has none to show, zone_span is the whole of it) */
 	double		elems_per_row[SIFT_COLSRC_MAX_LEAVES];	/* group leaves: average elements per row */

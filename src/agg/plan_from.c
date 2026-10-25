@@ -583,6 +583,8 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->set_cover, src->set_cover, d);
 	memcpy(dst->set_keys, src->set_keys, d);
 	memcpy(dst->zone_span, src->zone_span, d);
+	memcpy(dst->gord_cover, src->gord_cover, d);
+	memcpy(dst->gord_group, src->gord_group, n * sizeof(int));
 	memcpy(dst->elems_per_row, src->elems_per_row, d);
 	memcpy(dst->ovf_units, src->ovf_units, d);
 	memcpy(dst->ovf_frac, src->ovf_frac, d);

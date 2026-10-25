@@ -145,6 +145,7 @@ typedef struct AggCtx
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
 	double		path_rows;		/* the groups of the rows the lookup lists can pass, 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
+	bool		topn_array;		/* ... the executor reads the order array of the first key (sift_topn_gorder): no unit is read */
 	bool		topn_sorted;	/* ... it keeps no heap: every row that passes goes to a sort (the whole table is read) */
 	double		topn_fetch;		/* ... the rows it reads from the heap */
 	double		topn_cmpx;		/* ... the operators a compare of two entries of a key of byte strings costs more than one of integers (0: no such key) */

@@ -750,9 +750,8 @@ topn_parallel(AggExec *ex)
 static bool
 topn_plain_ok(AggExec *ex)
 {
-	return ex->spec->njoin == 0 && ex->spec->ncombo == 0 && ex->spec->npost == 0 && ex->spec->narms == 0 && ex->spec->spine == NULL &&
-		ex->spec->nsets == 0 && ex->spec->group < 0 && ex->spec->nvleaf == 0 && !ex->spec->left_lateral && ex->ntype == 0 &&
-		ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 && ex->tid_sb_hi == PG_UINT32_MAX;
+	return sift_aggspec_plain(ex->spec) && ex->ntype == 0 && ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 &&
+		ex->tid_sb_hi == PG_UINT32_MAX;
 }
 
 /* a scan with no condition, join or aggregate: every row of a clean unit passes, and the head of its sorted run names the n best of them */
@@ -760,13 +759,6 @@ static bool
 topn_heads_ok(AggExec *ex)
 {
 	return ex->spec->npred == 0 && ex->nzone == 0 && ex->nfilter == 0 && topn_plain_ok(ex);
-}
-
-/* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */
-static bool
-topn_same_scale(Oid a, Oid b)
-{
-	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
 }
 
 /*
@@ -793,7 +785,7 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		return g;
 	}
 	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&
-		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
+		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{
 		bool		isnull;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);

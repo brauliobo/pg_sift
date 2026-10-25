@@ -892,6 +892,74 @@ topn_joins_ok(AggCtx *c, SiftAggSpec *s)
 	return true;
 }
 
+/* a condition the array of the key answers as sift_topn_gorder tests it (topn_gpred, gcond_loose): comparisons of integer or time columns with constants, the columns other than the key only where the key or (at the top of the conjunction) the group is pinned by an equality */
+static bool
+topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned, bool top)
+{
+	if (p->kind == SAP_AND || p->kind == SAP_OR)
+	{
+		for (int i = 0; p->kind == SAP_AND && i < p->nchild && !pinned; i++)
+			pinned = p->child[i]->kind == SAP_CMP && p->child[i]->leaf == key && p->child[i]->op == SCMP_EQ;
+		for (int i = 0; i < p->nchild; i++)
+			if (!topn_array_pred(c, p->child[i], key, group, pinned, top && p->kind == SAP_AND))
+				return false;
+		return true;
+	}
+	if (p->kind != SAP_CMP || p->level != 0 || p->late || p->leaf >= c->lay->nleaves || leaf_of(c, p->leaf)->parent >= 0 ||
+		!sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
+		return false;
+	return p->leaf == key || pinned || (top && p->op == SCMP_EQ && p->leaf == group);
+}
+
+/* does the condition leave the key a lower or an upper bound (an AND does when a conjunct does, an OR when every arm does) */
+static bool
+topn_array_bounded(const SiftAggPred *p, int key)
+{
+	if (p->kind == SAP_CMP)
+		return p->leaf == key && p->op != SCMP_NE;
+	for (int i = 0; i < p->nchild; i++)
+		if (topn_array_bounded(p->child[i], key) == (p->kind == SAP_OR))
+			return p->kind == SAP_AND;
+	return p->kind == SAP_OR;
+}
+
+/*
+ * Does the scan read the order array of the first key, not the units (sift_topn_gorder opens it for the shapes below and falls back to the units for any
+ * other)? A key with an array in every segment, no OFFSET, integer or time keys, and conditions the array answers: bounds on the key, or an equality of the
+ * column an array grouped by one is grouped by (the unpinned group of a grouped array is refused).
+ */
+static bool
+topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, double offset)
+{
+	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
+	bool		bounded = false,
+				key_pinned = false,
+				group_pinned = false;
+
+	if (offset > 0 || leaf[0] < 0 || c->stats.gord_cover[leaf[0]] < 0.9 || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
+		nkey > 4 || c->level_params != NIL)
+		return false;
+	for (int j = 0; j < nkey; j++)
+	{
+		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
+
+		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
+			return false;
+	}
+	for (int i = 0; i < s->npred; i++)
+		key_pinned |= s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf == leaf[0] && s->pred[i]->op == SCMP_EQ;
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+
+		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true))
+			return false;
+		bounded |= topn_array_bounded(p, leaf[0]);
+		group_pinned |= p->kind == SAP_CMP && p->leaf == gl && p->op == SCMP_EQ;
+	}
+	return gl >= 0 ? group_pinned : s->npred == 0 || bounded;
+}
+
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
 topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, double rows, int nworkers, int nordered, double wanted)
@@ -1157,6 +1225,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	xf = palloc0(nkey * sizeof(SiftTopXform));
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
+	c->topn_array = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
@@ -1231,6 +1300,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
+		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, offset);
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
@@ -1248,6 +1318,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	if (nlead < nkey)
 		return;
 	c->topn_sorted = true;
+	c->topn_array = false;
 	c->topn_frac = 1.0;
 	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nkey, count + offset);

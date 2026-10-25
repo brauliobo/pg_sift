@@ -140,6 +140,14 @@ sift_aggspec_zone_cmps(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase
 	return out;
 }
 
+/* a scan with no join or aggregate, whatever its conditions: the rows of one table, as a top-N of them reads */
+bool
+sift_aggspec_plain(const SiftAggSpec *s)
+{
+	return s->njoin == 0 && s->ncombo == 0 && s->npost == 0 && s->narms == 0 && s->spine == NULL && s->nsets == 0 && s->group < 0 && s->nvleaf == 0 &&
+		!s->left_lateral;
+}
+
 static uint64
 tid_key(const ItemPointerData *t)
 {

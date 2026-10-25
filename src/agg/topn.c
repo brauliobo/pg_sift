@@ -539,6 +539,13 @@ sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 	return IsA(e, Var) && ((Var *) e)->varattno > 0 ? ((Var *) e)->varattno : 0;
 }
 
+/* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */
+bool
+sift_topn_same_scale(Oid a, Oid b)
+{
+	return a == b || ((a == INT2OID || a == INT4OID || a == INT8OID) && (b == INT2OID || b == INT4OID || b == INT8OID));
+}
+
 /* Can the global order of the first key stand for the scan, the others being read from the heap rows: plain integer and time columns of a heap */
 static bool
 order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
