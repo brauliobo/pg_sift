@@ -1,0 +1,54 @@
+-- The ordered output (the groups emitted in the order the parent sorts by) of a scan that filters by a semi or anti join: the paths of the node keep the order
+-- they promise until the plan is made, after the planner has gone on to other work, so the array that describes it must live as long as the paths. The rows are the
+-- normal plan's, in the same order, for IN, NOT IN, EXISTS and NOT EXISTS, an ORDER BY of the same level and a window or an ORDER BY of the level above.
+CREATE EXTENSION pg_sift;
+
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 3000 END, date '2024-01-01' + i % 90, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
+FROM generate_series(1, 30000) i;
+CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, day, kind, amount);
+CREATE TABLE dim_b (group_id int, dim_a_id int);
+INSERT INTO dim_b SELECT g, 1 + (g * 1000 + i * 37) % 3000 FROM generate_series(1, 4) g, generate_series(1, 300 * g) i;
+CREATE TABLE holidays (d date);
+INSERT INTO holidays SELECT date '2024-01-01' + i * 7 FROM generate_series(0, 12) i;
+VACUUM (FREEZE, ANALYZE) ev; ANALYZE dim_b; ANALYZE holidays;
+
+CREATE FUNCTION keys_of(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT md5(string_agg(row(q.*)::text, E''\n'')) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+-- the node with the groups ordered (the semi lookup is in the plan) and no Sort above it
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false; srt bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scan := scan OR l LIKE '%Custom Scan (SiftAgg)%';
+		srt := srt OR l LIKE '%Sort%';
+	END LOOP;
+	RETURN CASE WHEN NOT scan THEN 'no scan' WHEN srt THEN 'sorted above' ELSE 'ordered' END;
+END $$;
+
+CREATE TABLE q (n int, q text);
+INSERT INTO q VALUES
+	(1, 'SELECT kind, day, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 2) GROUP BY kind, day ORDER BY day DESC, kind'),
+	(2, 'SELECT kind, day, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3 AND dim_a_id IS NOT NULL) GROUP BY kind, day ORDER BY kind DESC, day'),
+	(3, 'SELECT kind, day, sum(amount) AS s FROM ev e WHERE EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = e.dim_a_id AND m.group_id = 1) GROUP BY kind, day ORDER BY day, kind DESC'),
+	(4, 'SELECT kind, day, count(*) AS n FROM ev e WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = e.dim_a_id AND m.group_id = 4) GROUP BY kind, day ORDER BY kind, day'),
+	(5, 'SELECT day, kind, count(*) AS n FROM ev WHERE day IN (SELECT d FROM holidays) GROUP BY day, kind ORDER BY day DESC, kind'),
+	(6, 'SELECT * FROM (SELECT kind, day, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 2) GROUP BY kind, day) g ORDER BY day DESC, kind'),
+	(7, 'WITH g AS (SELECT kind, day, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 4) GROUP BY kind, day) SELECT kind, day, n, lag(n) OVER (PARTITION BY kind ORDER BY day DESC) AS l FROM g'),
+	(8, 'WITH g AS (SELECT kind, day, count(*) AS n FROM ev e WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = e.dim_a_id AND m.group_id = 2) GROUP BY kind, day) SELECT kind, day, n, sum(n) OVER (PARTITION BY day ORDER BY kind DESC) AS w FROM g');
+
+SELECT n, keys_of(q, true) = keys_of(q, false) AS same_rows, plan_of(q) AS plan FROM q ORDER BY n;
+
+DROP FUNCTION keys_of(text, bool), plan_of(text);
+DROP TABLE q, ev, dim_b, holidays;
+DROP EXTENSION pg_sift;

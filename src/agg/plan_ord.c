@@ -89,7 +89,8 @@ ordered_add(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output
 		return;
 	*seen = lappend(*seen, pathkeys);
 	s->nord = n;
-	s->ord = ord;
+	/* the paths keep the spec, which is packed when the plan is made: the array outlives this call (the caller's is on its stack) */
+	s->ord = memcpy(palloc(n * sizeof(SiftAggOrd)), ord, n * sizeof(SiftAggOrd));
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, pathkeys);
 	if (nworkers > 0)
 		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, pathkeys);
@@ -249,7 +250,7 @@ ordered_parent(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_r
 			SortGroupClause *copy = copyObject(sgc);
 
 			copy->sortop = sortop;
-			copy->reverse_sort = sift_pathkey_descending(pk);
+			sift_sortclause_reverse(copy, pk);
 			copy->nulls_first = pk->pk_nulls_first;
 			sgcs = lappend(sgcs, copy);
 		}
