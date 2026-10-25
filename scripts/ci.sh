@@ -32,7 +32,7 @@
 # SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.
 # `affected --focus [--list] [BASE]` narrows the regression tests of a change in src/ to the ones that execute the functions the diff touched (scripts/focus.tsv, made by
 # scripts/focus-gen.sh with gcov): a function every test executes, or a change outside functions, runs the tests of the area as in the fast tier; the other jobs only run in CI.
-# SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the pull request tier: lint runs three of them). Logs:
+# SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the workflow sets it: its `lint` job runs them once for every run). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.
 #
