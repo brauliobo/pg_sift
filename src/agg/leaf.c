@@ -356,25 +356,31 @@ key_value_id(AggExec *ex, int ki, Datum in, bool in_null)
 	return id;
 }
 
+/* the id of key ki for entry c of the dictionary */
+uint32
+kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c)
+{
+	KeyState   *k = &ex->ks[ki];
+	MemoryContext old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
+	Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	uint32		id = key_value_id(ex, ki, v, false);
+
+	ResetExprContext(ex->lutcx);
+	MemoryContextSwitchTo(old);
+	return id;
+}
+
 uint32 *
 dict_kmap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ki)
 {
-	KeyState   *k = &ex->ks[ki];
 	uint32	   *map = s->kmap[ki];
 	MemoryContext old;
 
 	if (map)
 		return map;
 	map = MemoryContextAlloc(ex->tcxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
+	memset(map, 0xFF, d->n * sizeof(uint32));
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
-	for (uint32 c = 0; c < d->n; c++)
-	{
-		Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, d->bytes + d->off[c],
-								   d->off[c + 1] - d->off[c]);
-
-		map[c] = key_value_id(ex, ki, v, false);
-		ResetExprContext(ex->lutcx);
-	}
 	map[d->n] = key_value_id(ex, ki, (Datum) 0, true);
 	MemoryContextSwitchTo(old);
 	s->kmap[ki] = map;

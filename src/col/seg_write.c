@@ -742,6 +742,9 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 			   *compact = palloc0(ncols * sizeof(Size)),
 				budget = sift_sw_tell(w->sw);
 	bool		blocks = w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact;
+	bool	   *asked = palloc0(ncols * sizeof(bool));
+	Size		room;
+	const SiftCcPolicy *pol;
 	StringInfoData blob;
 
 	sw_pad8(w->sw);
@@ -756,12 +759,14 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	 */
 	for (int c = 0; blocks && c < ncols; c++)
 	{
-		if (w->dict[c] == NULL || (w->dform && w->dform[c]) || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
 			extra[c] = SIZE_MAX;
 		else
 			extra[c] = sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact[c]);
+		asked[c] = w->dform && w->dform[c];
 		budget += compact[c];
 	}
+	room = budget / 100 * w->pagg.stored_pct;
 	budget /= CDICT_BLOCKS_BUDGET_DENOM;
 	/* the directory is written last to know the offsets: serialize the dictionaries first into memory */
 	initStringInfo(&blob);
@@ -774,7 +779,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		while (blob.len % 8)
 			appendStringInfoChar(&blob, '\0');
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
-		if (extra[c] != SIZE_MAX && blocks)
+		if (extra[c] != SIZE_MAX && blocks && !asked[c])
 		{
 			if (extra[c] <= budget)
 			{
@@ -805,10 +810,29 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		}
 		if (form == DICT_BLOCKS)
 			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
-		sift_cdict_serialize(w->dict[c], w->pol ? &w->pol[c] : NULL, form, &blob);
+		pol = w->pol ? &w->pol[c] : NULL;
+		if (extra[c] != SIZE_MAX && blocks && pol != NULL)
+		{
+			/*
+			 * A scan that groups by the leaf reads the whole dictionary, once for each backend: stored, it is a copy where compressed it is inflated (6 ms for
+			 * 100,000 strings). The dictionaries of many strings are stored while what that adds is under the share of the segment that the option dict_stored allows (3% by default).
+			 */
+			SiftCDict  *d = w->dict[c];
+			Size		stored = form == 0 ? sizeof(uint32) * ((Size) d->n + 1) + d->nbytes
+				: d->n + d->nbytes + (Size) ((d->n + DICT_BLOCK - 1) / DICT_BLOCK) * (sizeof(uint32) + DICT_BLOCK_HEAD),
+						packed = form == 0 ? compact[c] : compact[c] + extra[c];
+
+			if (stored <= packed + room)
+			{
+				room -= stored > packed ? stored - packed : 0;
+				pol = NULL;
+			}
+		}
+		sift_cdict_serialize(w->dict[c], pol, form, &blob);
 	}
 	pfree(extra);
 	pfree(compact);
+	pfree(asked);
 	sift_sw_write(w->sw, offs, sizeof(uint32) * 2 + ncols * sizeof(uint64));
 	sift_sw_write(w->sw, blob.data, blob.len);
 	sw_pad8(w->sw);

@@ -338,6 +338,9 @@ sift_col_init(void)
 	add_int_reloption(col_relopt_kind, "write_buffer_limit",
 					  "Write buffer size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
+	add_int_reloption(col_relopt_kind, "dict_stored",
+					  "A dictionary of 1,024 strings or more of the segments written from now on is stored uncompressed while that adds at most this percent to the segment, so that the first scan of a backend that groups by the column copies it where it inflated it (0 stores none)",
+					  SIFT_PAGG_DEF_STORED_PCT, 0, 50, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
 					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (100 never)",
 					  SIFT_COL_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
@@ -406,6 +409,7 @@ sift_col_init(void)
 
 static const relopt_parse_elt col_relopt_tab[] = {
 	{"write_buffer_limit", RELOPT_TYPE_INT, offsetof(SiftColOptions, write_buffer_limit)},
+	{"dict_stored", RELOPT_TYPE_INT, offsetof(SiftColOptions, dict_stored)},
 	{"dead_rewrite_pct", RELOPT_TYPE_INT, offsetof(SiftColOptions, dead_rewrite_pct)},
 	{"vacuum_truncate", RELOPT_TYPE_BOOL, offsetof(SiftColOptions, vacuum_truncate)},
 	{"paths", RELOPT_TYPE_STRING, offsetof(SiftColOptions, paths)},
@@ -455,7 +459,7 @@ sift_col_test_reloptions(const relopt_parse_elt **tab, int *n)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .dict_stored = SIFT_PAGG_DEF_STORED_PCT, .cube_minmax = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
@@ -728,6 +732,7 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
+		r->pagg.stored_pct = sift_col_options(index)->dict_stored;
 		for (int i = 0; i < n; i++)
 			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON ||
 				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));

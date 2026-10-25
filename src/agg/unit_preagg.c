@@ -449,7 +449,7 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 	KeyState   *k = &ex->ks[ki];
 	int32		mn = PG_INT32_MAX,
 				mx = PG_INT32_MIN;
-	const uint32 *map = NULL;
+	uint32	   *map = NULL;
 	bool		cover = false;
 
 #define PA_NULL(g) (isnull ? isnull[g] : (g) >= nonnull)
@@ -487,7 +487,7 @@ preagg_key_ids(AggExec *ex, int ki, const int64 *key, const uint8 *isnull, uint3
 		uint32		g = kept[j];
 
 		if (dict)
-			ids[j] = map[PA_NULL(g) ? dict->n : (uint32) key[g]];
+			ids[j] = kmap_id(ex, map, dict, ki, PA_NULL(g) ? dict->n : (uint32) key[g]);
 		else if (PA_NULL(g))
 			ids[j] = key_null_id(ex, ki);
 		else
@@ -640,7 +640,7 @@ preagg_hist(AggExec *ex)
 				/* the group is one value: a NULL group adds none, any other adds its id (the value for a 32-bit leaf, the id over all dictionaries for text) */
 				if (kept[j] < h.ngroups - h.has_null && h.count[kept[j]] > 0)
 				{
-					uint32		id = h.dict ? dict_amap(ex, dict_slot(ex, h.dict), h.dict, ai)[(uint32) h.key[kept[j]]] : (uint32) h.key[kept[j]];
+					uint32		id = h.dict ? amap_id(ex, dict_amap(ex, dict_slot(ex, h.dict), h.dict, ai), h.dict, ai, (uint32) h.key[kept[j]]) : (uint32) h.key[kept[j]];
 
 					if (dist_add(ex, ex->dist[ai], gid[j], id))
 						ex->acc[ai].n[gid[j]]++;

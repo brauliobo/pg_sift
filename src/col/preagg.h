@@ -45,6 +45,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
+#define SIFT_PAGG_DEF_STORED_PCT	3			/* default: the dictionaries stored uncompressed (option dict_stored) add at most 3% to the segment */
 #define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
 #define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
 #define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
@@ -106,6 +107,7 @@ typedef struct SiftCPaggSpec
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that keep their keys in every unit (option key_columns, column format minors 10 and 15; col/setsum.h) */
 	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */
+	uint8		stored_pct;				/* the dictionaries of many strings that a scan reads whole are written uncompressed while that adds this percent to the segment (option dict_stored) */
 	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
 	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */
 	bool		pres[SIFT_COL_MAX_COLS];	/* the leaves of set that can keep every distinct key of a unit as a bitmap or a list (column format minor 15; col/setsum.h) */

@@ -781,6 +781,7 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 
 		if (v->isnull && key_nulls(ex, ki, v->isnull, idx, nsel))
 			key_nulls_set(ex, ki, nsel, vals_out, v->dict->n);
+		kmap_fill(ex, map, v->dict, ki, vals_out, nsel);
 		*map_out = map;
 		*base_out = 0;
 	}

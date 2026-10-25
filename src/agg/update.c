@@ -11,22 +11,27 @@
 #include "col/kern.h"
 #include "agg/dense_int.h"
 
-/* the id (1..) over all dictionaries of each entry of d, for the values count(DISTINCT) of aggregate ai counts */
+/* the id (1..) over all dictionaries of entry c of d, for the values count(DISTINCT) of aggregate ai counts */
+uint32
+amap_resolve(AggExec *ex, const SiftSrcDict *d, int ai, uint32 c)
+{
+	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
+	uint32		id = ot_id(&ex->aot[ai], text_datum(ex->spec->agg[ai].argtype, -1, d->bytes + d->off[c], d->off[c + 1] - d->off[c]));
+
+	MemoryContextSwitchTo(old);
+	return id;
+}
+
 uint32 *
 dict_amap(AggExec *ex, DictSlot *s, const SiftSrcDict *d, int ai)
 {
-	SiftAggAgg *a = &ex->spec->agg[ai];
 	int			slot = ex->spec->nkeys + ai;
 	uint32	   *map = s->kmap[slot];
-	MemoryContext old;
 
 	if (map)
 		return map;
 	map = MemoryContextAlloc(ex->tcxt, (d->n + 1) * sizeof(uint32) + SIFT_AGG_PAD);
-	old = MemoryContextSwitchTo(ex->tcxt);
-	for (uint32 c = 0; c < d->n; c++)
-		map[c] = ot_id(&ex->aot[ai], text_datum(a->argtype, -1, d->bytes + d->off[c], d->off[c + 1] - d->off[c]));
-	MemoryContextSwitchTo(old);
+	memset(map, 0xFF, d->n * sizeof(uint32));
 	map[d->n] = 0;
 	s->kmap[slot] = map;
 	return map;
@@ -540,10 +545,10 @@ upd_count_distinct(const AggUpd *u)
 	sift_colk->gather_u32((const uint32 *) v->data, idx, nsel, ex->cu32);
 	if (u->lf->vtype == SCV_CODE)
 	{
-		const uint32 *map = dict_amap(ex, dict_slot(ex, v->dict), v->dict, u->ai);
+		uint32	   *map = dict_amap(ex, dict_slot(ex, v->dict), v->dict, u->ai);
 
 		for (int j = 0; j < nsel; j++)
-			ex->cu32[j] = map[v->isnull && v->isnull[idx[j]] ? v->dict->n : ex->cu32[j]];
+			ex->cu32[j] = amap_id(ex, map, v->dict, u->ai, v->isnull && v->isnull[idx[j]] ? v->dict->n : ex->cu32[j]);
 	}
 	dist_update(ex, u->ai, ok, nsel, ex->cu32);
 }
