@@ -219,6 +219,15 @@ sift_session_abbrev_not_utc(const char *name)
 /* The operator that orders values of type typ as the pathkey does (make_sort_from_pathkeys) */
 #define sift_pathkey_sortop(pk, typ)	get_opfamily_member_for_cmptype((pk)->pk_opfamily, (typ), (typ), (pk)->pk_cmptype)
 
+/* The strategy get_ordering_op_properties returns, and the two of it that decide min/max and descending */
+typedef CompareType SiftCmpStrategy;
+#define SIFT_CMP_LT		COMPARE_LT
+#define SIFT_CMP_GT		COMPARE_GT
+
+/* The columns of a range table entry as names and Vars (expandRTE of the entry's own level, no dropped columns) */
+#define sift_expand_rte(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, VAR_RETURNING_DEFAULT, -1, false, (names), (vars))
+
 /* One page of a TIDBitmap: block, lossy, and the offsets of an exact page */
 typedef TBMPrivateIterator SiftTbmIter;
 
@@ -247,6 +256,13 @@ sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *
 #define sift_pathkey_descending(pk)	((pk)->pk_strategy == BTGreaterStrategyNumber)
 #define sift_sortclause_reverse(sgc, pk)	((void) 0)
 #define sift_pathkey_sortop(pk, typ)	get_opfamily_member((pk)->pk_opfamily, (typ), (typ), (pk)->pk_strategy)
+
+typedef int16 SiftCmpStrategy;
+#define SIFT_CMP_LT		BTLessStrategyNumber
+#define SIFT_CMP_GT		BTGreaterStrategyNumber
+
+#define sift_expand_rte(rte, rti, names, vars) \
+	expandRTE((rte), (rti), 0, -1, false, (names), (vars))
 
 typedef TBMIterator SiftTbmIter;
 

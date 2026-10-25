@@ -935,10 +935,8 @@ normalize_expr(AggCtx *c, Node *n)
 		n = nullable_expr_mutator(n, c);
 		n = remove_nulling_relids(n, c->nulling, NULL);
 	}
-#if PG_VERSION_NUM >= 180000
 	/* the group expressions of grouping sets are marked as nulled by the grouping step (Vars with the RTE_GROUP in varnullingrels) */
-	if (c->root->group_rtindex > 0)
-		n = remove_nulling_relids(n, bms_make_singleton(c->root->group_rtindex), NULL);
-#endif
+	if (group_rti(c) > 0)
+		n = remove_nulling_relids(n, bms_make_singleton(group_rti(c)), NULL);
 	return jsonb_int_mutator(nulltest_mutator(exists_mutator(n, c), c), c);
 }

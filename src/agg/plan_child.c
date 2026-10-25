@@ -199,11 +199,7 @@ function_query(RangeTblEntry *e)
 	q->rtable = list_make1(fe);
 	ref->rtindex = 1;
 	q->jointree = makeFromExpr(list_make1(ref), NULL);
-#if PG_VERSION_NUM >= 180000
-	expandRTE(fe, 1, 0, VAR_RETURNING_DEFAULT, -1, false, &names, &vars);
-#else
-	expandRTE(fe, 1, 0, -1, false, &names, &vars);
-#endif
+	sift_expand_rte(fe, 1, &names, &vars);
 	forboth(lv, vars, ln, names)
 		q->targetList = lappend(q->targetList, makeTargetEntry(lfirst(lv), list_length(q->targetList) + 1, pstrdup(strVal(lfirst(ln))), false));
 	return q;

@@ -632,13 +632,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	Oid			opfamily,
 				opcintype,
 				rtype;
-#if PG_VERSION_NUM >= 180000
-	CompareType strategy;
-#define TOPN_DESC	COMPARE_GT
-#else
-	int16		strategy;
-#define TOPN_DESC	BTGreaterStrategyNumber
-#endif
+	SiftCmpStrategy strategy;
 
 	if (!get_ordering_op_properties(sgc->sortop, &opfamily, &opcintype, &strategy))
 		return agg_refuse_on(TOPN_SHAPE, "the sort operator has no btree ordering");
@@ -673,7 +667,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 		if (opcintype == TEXTOID && (!OidIsValid(*collid) || !get_collation_isdeterministic(*collid)))
 			return agg_refuse_on(TOPN_SHAPE, "a text sort key has a nondeterministic collation: strings that are equal under it differ as bytes, and their order is the plan's");
 	}
-	*desc = strategy == TOPN_DESC;
+	*desc = strategy == SIFT_CMP_GT;
 	appendStringInfo(txt, "%s", txt->len ? ", " : "");
 	if (xf->kind == TXK_COALESCE)
 		appendStringInfo(txt, "coalesce(%s, %s)", leaf_name(c, *leaf), deparse_expression(konst, NIL, false, false));

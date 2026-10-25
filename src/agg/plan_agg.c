@@ -346,14 +346,6 @@ share_ordered(SiftAggSpec *s)
 	}
 }
 
-#if PG_VERSION_NUM >= 180000
-typedef CompareType SortStrategy;
-#define SORT_LT		COMPARE_LT
-#else
-typedef int16 SortStrategy;
-#define SORT_LT		BTLessStrategyNumber
-#endif
-
 /* the kind of min() or max(): its sort operator is the less (greater) than of the default btree order of the argument's type */
 static int
 minmax_kind(Aggref *a, Oid argtype)
@@ -363,7 +355,7 @@ minmax_kind(Aggref *a, Oid argtype)
 	Oid			sortop,
 				opfamily,
 				opcintype;
-	SortStrategy strategy;
+	SiftCmpStrategy strategy;
 
 	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", a->aggfnoid);
 	sortop = ((Form_pg_aggregate) GETSTRUCT(tup))->aggsortop;
@@ -371,7 +363,7 @@ minmax_kind(Aggref *a, Oid argtype)
 	if (!OidIsValid(sortop) || !get_ordering_op_properties(sortop, &opfamily, &opcintype, &strategy) ||
 		opfamily != tc->btree_opf || !OidIsValid(tc->cmp_proc))
 		return -1;
-	return strategy == SORT_LT ? SAA_M_MIN : SAA_M_MAX;
+	return strategy == SIFT_CMP_LT ? SAA_M_MIN : SAA_M_MAX;
 }
 
 /*

@@ -125,11 +125,7 @@ join_leftmost(Query *q, Node *tree, Node *left, JoinExpr *lateral)
 	j->rarg = tree;
 	j->rtindex = lateral->rtindex;
 	/* the columns of the join: those of the left side, then those of the table */
-#if PG_VERSION_NUM >= 180000
-	expandRTE(leaf, ((RangeTblRef *) tree)->rtindex, 0, VAR_RETURNING_DEFAULT, -1, false, &names, &vars);
-#else
-	expandRTE(leaf, ((RangeTblRef *) tree)->rtindex, 0, -1, false, &names, &vars);
-#endif
+	sift_expand_rte(leaf, ((RangeTblRef *) tree)->rtindex, &names, &vars);
 	join_rte->joinaliasvars = list_concat(list_copy_head(join_rte->joinaliasvars, nleft), vars);
 	join_rte->eref = makeAlias(join_rte->eref->aliasname, list_concat(list_copy_head(join_rte->eref->colnames, nleft), names));
 	return (Node *) j;
@@ -1104,11 +1100,7 @@ join_columns(Query *q, Node *n, List **names, List **vars)
 	List	   *nn,
 			   *vv;
 
-#if PG_VERSION_NUM >= 180000
-	expandRTE(rt_fetch(rti, q->rtable), rti, 0, VAR_RETURNING_DEFAULT, -1, false, &nn, &vv);
-#else
-	expandRTE(rt_fetch(rti, q->rtable), rti, 0, -1, false, &nn, &vv);
-#endif
+	sift_expand_rte(rt_fetch(rti, q->rtable), rti, &nn, &vv);
 	*names = list_concat(*names, nn);
 	*vars = list_concat(*vars, vv);
 }
