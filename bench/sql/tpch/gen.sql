@@ -45,11 +45,13 @@ FROM (SELECT g, 1 + (g - 1) / 4 AS k, 1 + (g - 1) % 4 AS n, date '1992-01-01' + 
 ALTER TABLE customer ADD PRIMARY KEY (c_custkey);
 ALTER TABLE orders ADD PRIMARY KEY (o_orderkey);
 ALTER TABLE lineitem ADD PRIMARY KEY (l_orderkey, l_linenumber);
+ALTER TABLE orders ADD FOREIGN KEY (o_custkey) REFERENCES customer;
+ALTER TABLE lineitem ADD FOREIGN KEY (l_orderkey) REFERENCES orders;
 CREATE INDEX orders_custkey ON orders (o_custkey);
 CREATE INDEX orders_orderdate ON orders (o_orderdate);
 CREATE INDEX lineitem_shipdate ON lineitem (l_shipdate);
 CREATE INDEX lineitem_receiptdate ON lineitem (l_receiptdate);
-CREATE INDEX lineitem_col ON lineitem USING sift_col (l_shipdate, l_commitdate, l_receiptdate, l_returnflag, l_linestatus, l_shipmode, l_quantity, l_extendedprice, l_discount, l_tax);
-CREATE INDEX orders_col ON orders USING sift_col (o_orderdate, o_orderpriority, o_orderstatus, o_custkey, o_totalprice);
-CREATE INDEX customer_col ON customer USING sift_col (c_mktsegment, c_nationkey, c_acctbal);
+CREATE INDEX lineitem_col ON lineitem USING sift_col (l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_returnflag, l_linestatus, l_shipmode, l_quantity, l_extendedprice, l_discount, l_tax);
+CREATE INDEX orders_col ON orders USING sift_col (o_orderkey, o_shippriority, o_orderdate, o_orderpriority, o_orderstatus, o_custkey, o_totalprice);
+CREATE INDEX customer_col ON customer USING sift_col (c_custkey, c_name, c_mktsegment, c_nationkey, c_acctbal);
 VACUUM (FREEZE, ANALYZE) customer, orders, lineitem;

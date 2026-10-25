@@ -93,9 +93,15 @@ SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
 
 -- 'off', or the columns by name, is the way out; neither chooses anything
 CREATE INDEX au_off ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'off');
+NOTICE:  sift_col index "au_off": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, val) WITH (write_buffer_limit = 4096, key_columns = 'plain_none');
 ERROR:  invalid key_columns option: unknown column
 CREATE INDEX au_named ON au USING sift_col (id, parent_id, set_id, sparse_fk, region_id, plain, val) WITH (write_buffer_limit = 4096, key_columns = 'plain');
+NOTICE:  sift_col index "au_named": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 SELECT au_option('au_off') AS off_option, au_minors('au_off') AS off_minors, au_option('au_named') AS named_option, au_minors('au_named') AS named_minors;
    off_option    | off_minors |   named_option    | named_minors 
 -----------------+------------+-------------------+--------------
@@ -105,6 +111,9 @@ SELECT au_option('au_off') AS off_option, au_minors('au_off') AS off_minors, au_
 -- 'auto' by name decides again at the next build, and an index of an older release (no option) does at its REINDEX
 ALTER INDEX au_named SET (key_columns = 'auto');
 REINDEX INDEX au_named;
+NOTICE:  sift_col index "au_named": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 NOTICE:  sift_col index au_named keeps the keys of parent_id, set_id, region_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: sparse_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes).
 HINT:  ALTER INDEX au_named SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -122,6 +131,9 @@ SELECT au_option('au_off') AS before_reindex;
 (1 row)
 
 REINDEX INDEX au_off;
+NOTICE:  sift_col index "au_off": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 NOTICE:  sift_col index au_off keeps the keys of parent_id, set_id, region_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: sparse_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes).
 HINT:  ALTER INDEX au_off SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -135,6 +147,9 @@ DROP INDEX au_off, au_named;
 -- a setting below 15 chooses nothing (the index stays readable by the release that reads that setting) and a later REINDEX does
 SET sift.col_format_minor = 6;
 CREATE INDEX au_old ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "au_old": the foreign key columns sparse_fk, ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 RESET sift.col_format_minor;
 SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
  option  | minors 
@@ -143,6 +158,9 @@ SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 (1 row)
 
 REINDEX INDEX au_old;
+NOTICE:  sift_col index "au_old": the foreign key columns sparse_fk, ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 NOTICE:  sift_col index au_old keeps the keys of parent_id, set_id, region_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX au_old SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -155,6 +173,9 @@ SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 DROP INDEX au_old;
 -- no column of the index qualifies: nothing written, no notice
 CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, wide_fk, txt_id, val);
+NOTICE:  sift_col index "au_none": the foreign key columns parent_id, set_id, sparse_fk, ext_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 SELECT au_option('au_none') AS option, au_minors('au_none') AS minors;
  option  | minors 
 ---------+--------
@@ -168,6 +189,9 @@ SET min_parallel_table_scan_size = 0;
 SET parallel_setup_cost = 0;
 ALTER TABLE au SET (parallel_workers = 3);
 CREATE INDEX au_par ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "au_par": the foreign key columns sparse_fk, ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 NOTICE:  sift_col index au_par keeps the keys of parent_id, set_id, region_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX au_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
@@ -175,6 +199,9 @@ RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;
 CREATE INDEX CONCURRENTLY au_conc ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (write_buffer_limit = 4096);
+NOTICE:  sift_col index "au_conc": the foreign key columns sparse_fk, ext_fk, wide_fk of "au" are not columns of the index
+DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
+HINT:  Add the columns to the index if queries join on them.
 NOTICE:  sift_col index au_conc keeps the keys of parent_id, set_id, region_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX au_conc SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.

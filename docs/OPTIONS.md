@@ -1997,6 +1997,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
 | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
 | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
+| sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |
 | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
 | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
 | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |

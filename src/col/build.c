@@ -558,6 +558,67 @@ notice_pkey(Relation heap, Relation index)
 }
 
 /*
+ * The columns of the foreign keys of the table are the keys a join from it reads (a fact table's keys to its dimensions). When one is not a column of the index, an
+ * aggregate scan that joins the table to the referenced one keeps the normal plan (join_condition) and a lookup join cannot filter the table by the keys of the
+ * rows its filters keep. The column adds a few bytes a row, more than a default may add, so the build says it once, as it does for a primary key.
+ */
+static void
+notice_fk(Relation heap, Relation index)
+{
+	Relation	conrel = table_open(ConstraintRelationId, AccessShareLock);
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple	tup;
+	StringInfoData names;
+	Oid			to = InvalidOid;
+	Bitmapset  *seen = NULL;
+
+	initStringInfo(&names);
+	ScanKeyInit(&key, Anum_pg_constraint_conrelid, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(RelationGetRelid(heap)));
+	scan = systable_beginscan(conrel, InvalidOid, false, NULL, 1, &key);
+	while (HeapTupleIsValid(tup = systable_getnext(scan)))
+	{
+		Form_pg_constraint con = (Form_pg_constraint) GETSTRUCT(tup);
+		bool		isnull;
+		Datum		d;
+		ArrayType  *arr;
+		int16	   *att;
+
+		if (con->contype != CONSTRAINT_FOREIGN)
+			continue;
+		d = heap_getattr(tup, Anum_pg_constraint_conkey, RelationGetDescr(conrel), &isnull);
+		if (isnull)
+			continue;
+		arr = DatumGetArrayTypeP(d);
+		att = (int16 *) ARR_DATA_PTR(arr);
+		for (int k = 0; k < ARR_DIMS(arr)[0]; k++)
+		{
+			bool		listed = false;
+
+			for (int i = 0; i < index->rd_index->indnatts; i++)
+				listed |= index->rd_index->indkey.values[i] == att[k];
+			if (listed || bms_is_member(att[k], seen))
+				continue;
+			seen = bms_add_member(seen, att[k]);
+			to = OidIsValid(to) ? to : con->confrelid;
+			if (names.len > 0)
+				appendStringInfoString(&names, ", ");
+			appendStringInfoString(&names, quote_identifier(get_attname(RelationGetRelid(heap), att[k], false)));
+		}
+	}
+	systable_endscan(scan);
+	table_close(conrel, AccessShareLock);
+	if (names.len == 0)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index \"%s\": the foreign key columns %s of \"%s\" are not columns of the index", RelationGetRelationName(index), names.data,
+					RelationGetRelationName(heap)),
+			 errdetail("A join to \"%s\" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.",
+					   get_rel_name(to)),
+			 errhint("Add the columns to the index if queries join on them.")));
+}
+
+/*
  * A column the index covers cannot be changed by a HOT update: every UPDATE of it writes a new row version into every index of the table, and the index keeps the
  * old one until the next merge. Measured on the 13-column index of the web API (updated_at and a counter covered): 0% HOT updates against 28% without the index,
  * 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update. The columns that look rewritten often (a timestamp of the last change, a
@@ -651,6 +712,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	notice_point_tid(index);
 	notice_order_array(index);
 	notice_pkey(heap, index);
+	notice_fk(heap, index);
 	notice_volatile(heap, index);
 	sift_col_report_caps(index);
 	sift_col_vacuum_notice(heap, index);

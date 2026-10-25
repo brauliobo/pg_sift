@@ -110,9 +110,12 @@ cte_lookup_par	a scan whose lookup joins read a CTE, a sub-select or a function	
 point_dense_keys	only while the keys are expected to have fewer rows than 4,096	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 tpch_q1	tpch_q1	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
 tpch_q6	tpch_q6	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
-tpch_q3	tpch_q3	tpch	-	fallback:Seq Scan on orders	native	-	ms	faster33	no
-tpch_q10	tpch_q10	tpch	-	fallback:Seq Scan on lineitem	native	-	ms	faster33	no
-tpch_q12	tpch_q12	tpch	-	fallback:Seq Scan on orders	native	-	ms	faster33	no
+tpch_q3	tpch_q3	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q3_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q10	tpch_q10	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q10_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q12	tpch_q12	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_q12_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 hits_count	hits_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_filter_count	hits_filter_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_sum_avg	hits_sum_avg	hits	-	Pushed Aggregates	native	-	ms	faster33	no
