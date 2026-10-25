@@ -186,6 +186,44 @@ group_has_partition_key(AggCtx *c, List *keys)
 	return ok;
 }
 
+/* is a column of table a equal to a column of table b in the query (an equivalence class holds both)? */
+static bool
+eq_joined(PlannerInfo *root, int a, int b)
+{
+	foreach_node(EquivalenceClass, ec, root->eq_classes)
+	{
+		bool		ina = false,
+					inb = false;
+
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+		{
+			ina |= bms_is_member(a, em->em_relids);
+			inb |= bms_is_member(b, em->em_relids);
+		}
+		if (ina && inb)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The tables joined to the scan, those joined to the scanned table itself first: a table keyed by a column of another lookup is loaded after the
+ * one it takes its keys from (a customer listed before the orders that name it is read whole, row by row, by every row of the scan).
+ */
+static List *
+joined_in_order(PlannerInfo *root, int scanned, List *joined)
+{
+	List	   *direct = NIL,
+			   *rest = NIL;
+
+	foreach_int(rti, joined)
+		if (eq_joined(root, scanned, rti))
+			direct = lappend_int(direct, rti);
+		else
+			rest = lappend_int(rest, rti);
+	return list_concat(direct, rest);
+}
+
 bool
 agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
@@ -279,6 +317,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	/* the joins come after the source: planning the sub-selects of a query with no column index to scan would be a waste */
 	if (c->rel == NULL || !find_source(c, &ii))
 		return agg_refuse(NO_SOURCE);
+	if (list_length(joined) > 1 && list_length(joined) == list_length(fs->rtis) - 1 && fs->lefts == NIL)
+		joined = joined_in_order(root, c->relid, joined);
 	c->nsiblings = list_length(joined) + (c->func_rti != 0);
 	foreach_int(rti, joined)
 		if (!add_join(c, fs, rti))
@@ -1052,7 +1092,7 @@ group_topn(PlannerInfo *root, SiftAggSpec *s, List *aggs, List *groupClause, Gro
  * aggregate): the SiftAgg path of output_rel, whose rows are those of `target` (the grouping target of the query, or its distinct target).
  */
 static void
-group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
+group_paths_skip(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause, int skip, int *others)
 {
 	Query	   *parse = root->parse;
 	AggCtx		ctx = {0},
@@ -1065,8 +1105,20 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 			   *firsts = NIL;
 	bool		lead = true;
 
-	if (!agg_base_either(c, root, input_rel, &fs))
-		return;
+	if (skip == 0)
+	{
+		if (!agg_base_either(c, root, input_rel, &fs))
+			return;
+		/* the tables of an inner join may each be the scanned one, the others its lookups: the first in the FROM list is not the only way (group_paths) */
+		*others = fs.skip == 0 && !fs.flippable && fs.lefts == NIL && !c->joinless && !fs.flip &&
+			input_rel->cheapest_total_path->total_cost >= AGG_ORDER_MIN_COST ? fs.ntables - 1 : 0;
+	}
+	else
+	{
+		fs.skip = skip;
+		if (!agg_base(c, root, input_rel, &fs))
+			return;
+	}
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, false);
@@ -1160,6 +1212,26 @@ agg_spec_keep(const SiftAggSpec *s)
 
 	*keep = *s;
 	return keep;
+}
+
+/*
+ * The scan of the first table of the FROM list with the others as its lookups, and, for inner joins, the scan of each of the others in turn: PostgreSQL
+ * does not depend on the order of the FROM list and the price of the scan does (a table read whole as a lookup against one read by its keys), so each
+ * order gets its path and the cheaper wins. The paths of the other orders do not report: the arm tells why the first had none.
+ */
+static void
+group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, GroupPathExtraData *gextra, List *groupClause)
+{
+	int			others = 0;
+
+	group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, 0, &others);
+	for (int skip = 1; skip <= others; skip++)
+	{
+		bool		quiet = agg_quiet_reports(true);
+
+		group_paths_skip(root, input_rel, output_rel, target, gextra, groupClause, skip, &others);
+		agg_quiet_reports(quiet);
+	}
 }
 
 int			agg_index_pick;

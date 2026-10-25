@@ -67,7 +67,7 @@ SELECT 'reads periods' AS filter, * FROM plan_nodes(series_query($f$SELECT x.par
 SELECT 'lookup' AS filter, * FROM plan_nodes(series_query('SELECT parent_id FROM events WHERE id < 5000'));
  filter | scan_nodes | hoisted_ctes | hoisted_reads 
 --------+------------+--------------+---------------
- lookup |          0 |            0 |             0
+ lookup |          2 |            0 |             0
 (1 row)
 
 SELECT 'correlated' AS filter, * FROM plan_nodes(series_query('SELECT x.parent_id FROM events x WHERE x.id = e.id GROUP BY x.parent_id'));

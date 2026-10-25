@@ -354,6 +354,47 @@ apply_test(const ColTest *t, const ColNeed *nd, int nrow, uint64 *rows)
 	}
 }
 
+/* the index the load of the table reads when the join's columns are all in one (map_load_cols), NULL when the heap is read; need and nneed are the columns */
+static Relation
+load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nneed)
+{
+	*nneed = 0;
+	if (!sift_agg_lookup_columns || rel->rd_rel->relkind != RELKIND_RELATION || rel->rd_tableam != GetHeapamTableAmRoutine() || (j->nidx > 0 && !own) || j->first.qual != NIL ||
+		j->first.nord > 0)
+		return NULL;
+	for (int k = 0; k < j->nkey; k++)
+		if (j->tkey[k] != NULL)
+			return NULL;
+	for (int i = 0; i < j->nkey + j->ncol; i++)
+	{
+		int			att = i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
+		bool		seen = false;
+
+		for (int p = 0; p < *nneed; p++)
+			seen |= need[p].att == att;
+		if (!seen)
+		{
+			memset(&need[*nneed], 0, sizeof(ColNeed));
+			need[(*nneed)++].att = att;
+		}
+	}
+	return covering_index(rel, need, *nneed);
+}
+
+/* will the load of the table read the leaves of an index (the planner prices it by that)? */
+bool
+map_load_cols_possible(Relation rel, const SiftAggJoin *j)
+{
+	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
+	int			nneed;
+	Relation	ix = load_index(rel, j, j->fslot >= 0, need, &nneed);
+
+	if (ix == NULL)
+		return false;
+	index_close(ix, AccessShareLock);
+	return true;
+}
+
 /*
  * Loads the rows of the table into m from the leaves of an index of it, as the scan of the heap would: false (nothing loaded) when the load
  * is not one of rows by plain columns, when no index holds the columns, or when a unit holds a value a leaf cannot store.
@@ -362,7 +403,7 @@ bool
 map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel)
 {
 	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
-	int			nneed = 0;
+	int			nneed;
 	Relation	ix;
 	SiftSrcSource *src;
 	SiftSrcUnit unit;
@@ -377,26 +418,7 @@ map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *
 	int			ntest = 0,
 				ntotal = 0;
 
-	if (!sift_agg_lookup_columns || rel->rd_rel->relkind != RELKIND_RELATION || rel->rd_tableam != GetHeapamTableAmRoutine() || (j->nidx > 0 && own == NULL) || j->first.qual != NIL ||
-		j->first.nord > 0)
-		return false;
-	for (int k = 0; k < j->nkey; k++)
-		if (j->tkey[k] != NULL)
-			return false;
-	for (int i = 0; i < j->nkey + j->ncol; i++)
-	{
-		int			att = i < j->nkey ? j->keyatt[i] : j->colatt[i - j->nkey];
-		bool		seen = false;
-
-		for (int p = 0; p < nneed; p++)
-			seen |= need[p].att == att;
-		if (!seen)
-		{
-			memset(&need[nneed], 0, sizeof(ColNeed));
-			need[nneed++].att = att;
-		}
-	}
-	if ((ix = covering_index(rel, need, nneed)) == NULL)
+	if ((ix = load_index(rel, j, own != NULL, need, &nneed)) == NULL)
 		return false;
 	if (own != NULL && j->fslot >= 0)
 		collect_tests((Node *) cb->slot[j->fslot].expr, j, cb->nleaves, need, nneed, test, &ntest, &ntotal);

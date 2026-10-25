@@ -42,7 +42,7 @@ table	e06_count_of_groups	scan	0.11	0.42
 table	f01_spine_range_join	normal	1.9	7.5
 table	f02_spine_derived_cells	scan	0.23	0.93
 table	f03_spine_expression_key	normal	4.1	17
-table	f04_spine_span_kind	normal	2.3	9.3
+table	f04_spine_span_kind	scan	0.12	0.47
 table	f05_spine_series	scan	0.13	0.53
 table	f06_spine_dims_cross	normal	0.57	2.3
 table	g01_exists_element	scan	0.0075	0.030
@@ -141,7 +141,7 @@ tabletuned	e06_count_of_groups	scan	0.028	0.11
 tabletuned	f01_spine_range_join	normal	1.2	4.7
 tabletuned	f02_spine_derived_cells	scan	0.25	1.0
 tabletuned	f03_spine_expression_key	normal	1.3	5.4
-tabletuned	f04_spine_span_kind	normal	1.2	4.8
+tabletuned	f04_spine_span_kind	scan	0.047	0.19
 tabletuned	f05_spine_series	scan	0.069	0.27
 tabletuned	f06_spine_dims_cross	scan	0.49	2.0
 tabletuned	g01_exists_element	scan	0.0064	0.026

@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
@@ -64,6 +65,7 @@
 #include "agg/colsrc.h"
 #include "agg/dist_int.h"
 #include "agg/search.h"
+#include "agg/lookup_int.h"
 #include "agg/plan_int.h"
 #include "agg/agg_int.h"
 
@@ -345,7 +347,7 @@ json_build_walker(Node *n, double *ops)
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 static double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows)
 {
 	double		cost = 0;
 
@@ -354,7 +356,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		const SiftAggCombo *cb = &s->combo[ci];
 		int			wide = 0;
 		bool		direct = false,
-					filter = false;
+					filter = false,
+					lookup_ref = false;
 		double		tuples;
 
 		if (cb->join >= 0)
@@ -376,16 +379,31 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			continue;
 		}
 		for (int p = 0; p < cb->nleaves; p++)
+		{
 			if (cb->leaf[p] >= 0)
 				wide += leaf_of(c, cb->leaf[p])->vtype == SCV_I64 || leaf_of(c, cb->leaf[p])->vtype == SCV_F64;
+			else
+				lookup_ref = true;
+		}
 		for (int sl = 0; sl < cb->nslots; sl++)
 		{
 			direct |= cb->slot[sl].direct;
 			filter |= !cb->slot[sl].is_key && !cb->slot[sl].direct;
 		}
-		if (wide == 0 && !direct)
-			continue;
 		tuples = filter ? rows : agg_rows;
+		/*
+		 * A test between leaves (a column compared with a column) is evaluated by PostgreSQL once per distinct combination of the leaves: a few for
+		 * dictionary and small integer leaves, which keep the price they had, one per row for two dates that vary (545 instructions a row measured,
+		 * 124 ms for 400,000 rows, against the 36 of a test on a constant)
+		 */
+		if (wide == 0 && !direct)
+		{
+			double		entries = filter && !lookup_ref && cb->nleaves > 1 ? combo_entries(c, s, cb, kept_rows, false) : 0;
+
+			if (entries > AGG_KEY_IDS)
+				cost += entries * cb->nslots * AGG_EVAL_SLOT;
+			continue;
+		}
 		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
 	}
 	return cost;
@@ -1639,7 +1657,14 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 		return Max(prows, 1.0);
 	}
 	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
-	*row_cost = AGG_JOIN_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+	{
+		Relation	rel = relation_open(root->simple_rte_array[jc->rti]->relid, NoLock);
+		bool		cols = map_load_cols_possible(rel, &jc->j);
+
+		relation_close(rel, NoLock);
+		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
+		*row_cost = cols ? AGG_LOAD_ROW_COLS : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+	}
 	return tuples;
 }
 
@@ -1762,7 +1787,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
-	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows) + bucket_eval_cost(c, s, k->agg_rows);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units)) + bucket_eval_cost(c, s, k->agg_rows);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
