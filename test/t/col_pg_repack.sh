@@ -49,7 +49,8 @@ check "the column scan answers as the heap does" test "$(answers on)" == "$(answ
 check "the BM25 index finds the rows the heap has" test "$(sql rp "SELECT count(*) FROM facts WHERE title @@> 'alpha beta 7'")" == "$(sql rp "SELECT count(*) FROM facts WHERE title LIKE 'alpha beta 7'")"
 check "the new order tightens the zones of grp (units an equality touches: $before_points before)" test "$(points)" -lt "$before_points"
 check "the rewrite left the visibility map empty (the doc tells to VACUUM)" test "$(sql rp "SELECT relallvisible FROM pg_class WHERE oid = 'facts'::regclass")" == 0
-sql rp "VACUUM (ANALYZE) facts" >/dev/null
+# an aggressive VACUUM waits for a page another backend has pinned (the bgwriter writing the rewritten heap, say); a plain one skips it and leaves it out of the map
+sql rp "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) facts" >/dev/null
 check "after VACUUM the visibility map is set again" test "$(sql rp "SELECT relallvisible = relpages AND relpages > 0 FROM pg_class WHERE oid = 'facts'::regclass")" == t
 check "pg_repack refuses the sift_table and leaves it readable" test "$(repack -t st 2>&1 | grep -c 'cannot rewrite the sift_table')|$(sql rp "SELECT count(*), sum(v) FROM st")" == "1|1000|500500"
 check "pg_repack --only-indexes of the sift_table is fine" test "$(repack -t st --only-indexes >/dev/null 2>&1; echo $?)|$(sql rp "SELECT count(*) FROM st")" == "0|1000"
