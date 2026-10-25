@@ -2,8 +2,7 @@
 import os
 import re
 import subprocess
-import sys
-import time
+import benchlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -92,12 +91,7 @@ is_es = lambda eid: eid in ('es', 'es_cached')
 DDL = {'pg': 'pg.sql', 'sift': 'sift.sql', 'sift_table': 'sift_table.sql', 'sift_maint': 'sift.sql', 'sift_table_maint': 'sift_table.sql', 'citus': 'citus.sql', **{e: 'sift.sql' for e in COMPRESSION}}
 
 
-def die(msg):
-    sys.exit(f'store: {msg}')
-
-
-def log(msg):
-    print(f'[{time.strftime("%T")}] {msg}', file=sys.stderr, flush=True)
+log, die = benchlib.logger('store', False)
 
 
 def container(eid):

@@ -29,6 +29,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 from duckdb import Session, same, wait_quiet, busy  # noqa: E402  (a persistent psql session, the comparison of rows, the quiet gate)
 from store_lib import sections  # noqa: E402  (`--@ name` sections)
 
@@ -55,12 +56,7 @@ FORCED = ('agg_forced', 'sift.agg_force = on')   # the lane of a fallback case: 
 TIMES = {}   # case id -> [build seconds, run seconds] of the last point
 
 
-def die(msg):
-    sys.exit('cases: ' + msg)
-
-
-def log(msg):
-    print('[%s cases] %s' % (time.strftime('%T'), msg), file=sys.stderr, flush=True)
+log, die = benchlib.logger('cases')
 
 
 # --- the registry

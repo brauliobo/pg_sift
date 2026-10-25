@@ -15,6 +15,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 from duckdb import Session  # noqa: E402  (a persistent psql session)
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -23,8 +24,7 @@ NAME = 'sift-generic'
 UNSUPPORTED = '-- unsupported:'
 
 
-def log(msg):
-    print('[%s generic] %s' % (time.strftime('%T'), msg), file=sys.stderr, flush=True)
+log = benchlib.logger('generic')[0]
 
 
 def sh(*cmd, check=True, **kw):

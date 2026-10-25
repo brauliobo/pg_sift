@@ -27,6 +27,7 @@ import argparse, glob, json, math, os, re, signal, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 from stats import number, summary  # noqa: E402  (steps/stats.py)
 SQL = os.path.join(HERE, '..', 'sql', 'analytics')
 PERF = os.path.join(HERE, 'perf.sh')
@@ -36,12 +37,7 @@ SECTIONS = {'heap': 'pg', 'col': 'pg', 'flat': 'flat', 'ch': 'ch'}
 NULL = '\\N'
 
 
-def die(msg):
-    sys.exit(f'analytics: {msg}')
-
-
-def log(msg):
-    print(f'[{time.strftime("%T")}] {msg}', file=sys.stderr, flush=True)
+log, die = benchlib.logger('analytics', False)
 
 
 # --- the query corpus

@@ -27,6 +27,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import benchlib  # noqa: E402  (steps/benchlib.py)
 import extras  # noqa: E402
 from store_lib import load_queries  # noqa: E402
 
@@ -42,8 +43,7 @@ TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', '
 ENV = {**os.environ, 'LC_ALL': 'C'}
 
 
-def log(msg):
-    print('[%s duckdb] %s' % (time.strftime('%T'), msg), file=sys.stderr, flush=True)
+log = benchlib.logger('duckdb')[0]
 
 
 def psql(port, db, *args, stdin=None):
