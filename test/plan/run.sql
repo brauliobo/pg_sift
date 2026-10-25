@@ -47,10 +47,13 @@ CREATE FUNCTION plangate.run(txt text, runs int) RETURNS void LANGUAGE plpgsql A
 DECLARE
 	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; tags text[] := string_to_array(coalesce(h ->> 'expect', 'untagged -'), ' '); plan text := tags[1]; band text[] := tags[2:3];
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
-	lane_band plangate.bands; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
+	lane_band plangate.bands; anyband boolean := false; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
 BEGIN
 	SELECT * INTO lane_band FROM plangate.bands WHERE lane = current_setting('plangate.lane', true) AND name = nm;
-	IF FOUND THEN plan := lane_band.plan; band := ARRAY[lane_band.lo, nullif(lane_band.hi, '-')]; END IF;
+	IF FOUND THEN
+		anyband := lane_band.lo = 'any';	-- a scan path that exists at some sizes only (no band to hold, none to miss)
+		plan := lane_band.plan; band := CASE WHEN anyband THEN ARRAY['-', NULL] ELSE ARRAY[lane_band.lo, nullif(lane_band.hi, '-')] END;
+	END IF;
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
 	err := coldiff.materialize(q, 'pg_native');
@@ -80,7 +83,8 @@ BEGIN
 	IF plan = 'new' THEN problems := problems || format('plan: no expectation yet (chosen %s; scripts/plangate.sh --update records it)', chosen);
 	ELSIF plan <> 'either' AND plan <> chosen THEN problems := problems || format('plan: chosen %s, expected %s', chosen, plan); END IF;
 	IF plan = 'scan' AND ratio IS NULL THEN problems := problems || 'plan: the scan path does not exist'::text; END IF;
-	IF ratio IS NOT NULL AND coalesce(band[1], '-') = '-' THEN problems := problems || format('ratio: %s has no band', round(ratio::numeric, 3));
+	IF anyband THEN NULL;
+	ELSIF ratio IS NOT NULL AND coalesce(band[1], '-') = '-' THEN problems := problems || format('ratio: %s has no band', round(ratio::numeric, 3));
 	ELSIF ratio IS NOT NULL AND NOT ratio BETWEEN band[1]::float8 AND band[2]::float8 THEN problems := problems || format('ratio: %s outside %s %s', round(ratio::numeric, 3), band[1], band[2]);
 	ELSIF ratio IS NULL AND coalesce(band[1], '-') <> '-' THEN problems := problems || 'ratio: the scan path does not exist'::text;
 	END IF;

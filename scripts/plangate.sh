@@ -9,9 +9,9 @@
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
-#                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan there is read, not failed
+#                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
-#                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan there is read, not failed
+#                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
 #   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff. In another
 #                 lane (--lane tuned, --table) it rewrites the rows of that lane in test/plan/bands.tsv (the plan the lane chooses and the band around its ratio)
@@ -82,10 +82,9 @@ elif [[ -n $UPDATE ]]; then
 	log "updated test/plan/shapes.sql"
 fi
 
-# the expected plans and cost bands are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
+# the expected plans and cost bands, of every lane, are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails
 hard=true
 (( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
-[[ $LANE == stock && -z $TABLE ]] || hard="p !~ '^(plan|ratio):'"
 sql -q -P footer=off <<-SQL
 	SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
 		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict,
