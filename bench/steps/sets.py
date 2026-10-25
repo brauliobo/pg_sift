@@ -37,6 +37,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import extras  # noqa: E402
+import pgq  # noqa: E402  (steps/pgq.py)
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 LOCK = os.environ.get('PERF_LOCK', '/tmp/sift-perf.lock')
@@ -56,13 +57,7 @@ CH_WINDOW = "fact_date >= toDate('2025-10-01')"
 
 def psql(db, sqls, timeout=600):
     """the statements run in one session, the last one timed: (ms, stdout)"""
-    script = ''.join(s + ';\n' for s in COMMON + sqls[:-1]) + '\\timing on\n' + sqls[-1]
-    script += '\n' if sqls[-1].rstrip().endswith('\\g') else ';\n'
-    p = subprocess.run(['psql', '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-d', db], input=script, capture_output=True, text=True, timeout=timeout, env=dict(os.environ, LC_ALL='C'))
-    if p.returncode:
-        raise RuntimeError(p.stderr.strip()[:300] + ' :: ' + sqls[-1][:120])
-    t = re.findall(r'Time: ([0-9.]+) ms', p.stdout)
-    return (float(t[-1]) if t else None), re.sub(r'Time: [0-9.]+ ms( \([0-9:.]+\))?\n?', '', p.stdout)
+    return pgq.timed(db, sqls, COMMON, timeout=timeout)
 
 
 def groups(db):
