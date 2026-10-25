@@ -1,4 +1,4 @@
-"""The store benchmark's settings: the lanes (engines), ports, the SQL files and the questions (steps/store.py)."""
+"""The orders benchmark's settings: the lanes (engines), ports, the SQL files and the questions (steps/store.py)."""
 import os
 import re
 import subprocess

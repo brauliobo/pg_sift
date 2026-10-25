@@ -1,4 +1,4 @@
-"""The store benchmark's servers: the clients of PostgreSQL, Elasticsearch and ClickHouse, the containers, and the windows that tell how busy the host was (steps/store.py)."""
+"""The orders benchmark's servers: the clients of PostgreSQL, Elasticsearch and ClickHouse, the containers, and the windows that tell how busy the host was (steps/store.py)."""
 import benchlib
 import functools
 import http.client

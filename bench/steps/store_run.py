@@ -1,4 +1,4 @@
-"""The store benchmark's measurements: the warm and cold latency of the questions and the interference check (steps/store.py run, cold, interference)."""
+"""The orders benchmark's measurements: the warm and cold latency of the questions and the interference check (steps/store.py run, cold, interference)."""
 import benchlib
 import functools
 import os

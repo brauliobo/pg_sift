@@ -1,4 +1,4 @@
-"""What the commands of the store benchmark share: the part files and their keys, the identity of the data and the host, the comparison of results (steps/store.py)."""
+"""What the commands of the orders benchmark share: the part files and their keys, the identity of the data and the host, the comparison of results (steps/store.py)."""
 import benchlib
 import json
 import math

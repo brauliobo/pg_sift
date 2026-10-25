@@ -120,7 +120,7 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
                                                                   ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
-    out = ['%d benchmark cases (`bench/cases.tsv`) on %s rows (the orders of the store benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
+    out = ['%d benchmark cases (`bench/cases.tsv`) on %s rows (the orders of the orders benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
         n, '{:,}'.format(int(meta.get('orders', 0))), rounds(meta), extras.footer(meta)), ''] + head + body + [
         '', '**Takeaway:** ' + takeaway(figs), '', '**Caveats**', '',
         '- PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store\'s PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).',

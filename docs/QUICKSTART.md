@@ -106,7 +106,7 @@ bench/bench kit                      # docker only; builds the image if needed
 bench/bench kit --rows 200000 --cpus 2 --runs 3
 ```
 
-It starts a throwaway container, loads the online-store data of the benchmark (100,000 orders by default), runs the ten questions with and without the pushdown, compares every
+It starts a throwaway container, loads the orders data of the benchmark (100,000 orders by default), runs the ten questions with and without the pushdown, compares every
 answer, and prints a table (exit status 3 when an answer differs). It took about 25 seconds once the image existed (100,000 orders, the only size run);
 a laptop with fewer, slower cores differs in times and ratios.
 Citus, Elasticsearch and ClickHouse (about an hour).

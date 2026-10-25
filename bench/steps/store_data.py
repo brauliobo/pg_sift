@@ -1,4 +1,4 @@
-"""The store benchmark's data: the generated CSV, the load into every engine, the keys of the data volumes (steps/store.py gen, load, datakey)."""
+"""The orders benchmark's data: the generated CSV, the load into every engine, the keys of the data volumes (steps/store.py gen, load, datakey)."""
 import benchlib
 import csv
 import hashlib

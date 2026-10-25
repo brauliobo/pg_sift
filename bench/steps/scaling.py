@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregates by number of partitions and parallel workers: the orders of the store benchmark on a scratch cluster (bench/steps/scaling.sh runs it).
+"""Aggregates by number of partitions and parallel workers: the orders of the orders benchmark on a scratch cluster (bench/steps/scaling.sh runs it).
 
     scaling.py run --db DB --out FILE [--rows N] [--partitions 1,16,...] [--workers 0,1,2,3] [--reps 7] [--meta KEY=VALUE ...]
 
@@ -110,7 +110,7 @@ def run(a):
                  'method': 'psql \\timing of one statement, planning included, one client, %d timed runs after one untimed, cells interleaved in random order; jit off; partitions: 2 workers' % a.reps})
     for r in rows:
         r['version'] = version
-    extras.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the store benchmark (bench/steps/scaling.sh).', meta, rows)
+    extras.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the orders benchmark (bench/steps/scaling.sh).', meta, rows)
 
 
 def main():

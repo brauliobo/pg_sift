@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bench/bench refresh [--stages LIST] [--calm [SECONDS]] [--pr BASE] [--dry-run] [--prepare] [OPTION...]   (bench/steps/refresh.sh, called by bench/bench)
 # Measures the numbers of the README again at this checkout and rewrites their generated blocks: `bench final --docs` for the stages whose blocks are in
-# README.md (default `updates search store`: the update, delete and VACUUM section, articles and places, the online store). Each block says the version, date,
+# README.md (default `updates search store`: the update, delete and VACUUM section, articles and places, the orders dataset). Each block says the version, date,
 # host and load it was measured at. Resumable: a stage that finished with the same code, settings and host is skipped (`bench final`), an interrupted run
 # continues with `bench resume`; the other stages of the release pass (compression stats gap sets extras) are `bench final --docs --stages ...`.
 #   --stages LIST  the stages to measure (space or comma separated; default "updates search store")

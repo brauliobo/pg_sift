@@ -1,4 +1,4 @@
-"""The store benchmark's update load: the writer, reads under a load, read-after-write, space (steps/store.py updates, verify)."""
+"""The orders benchmark's update load: the writer, reads under a load, read-after-write, space (steps/store.py updates, verify)."""
 import glob
 import json
 import os

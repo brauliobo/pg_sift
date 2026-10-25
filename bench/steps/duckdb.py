@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark (bench/bench duckdb, steps/duckdb.sh).
+"""pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (bench/bench duckdb, steps/duckdb.sh).
 
     python3 -I bench/steps/duckdb.py run --sift-port P --duck-port P --out FILE --data DIR [--rows N] [--runs 3] [--timeout 30] [--version V] [--meta KEY=VALUE ...]
 
@@ -286,7 +286,7 @@ def main():
 
     meta = dict(m.split('=', 1) for m in args.meta)
     meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings), host_load_before=load_before, host_load_after=extras.host_load())
-    extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the store benchmark (%d orders).' % args.rows, meta, rows)
+    extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (%d orders).' % args.rows, meta, rows)
     log('wrote %s' % args.out)
 
 
