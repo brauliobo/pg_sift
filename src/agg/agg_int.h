@@ -332,7 +332,7 @@ void run_scan(AggExec *ex);
 bool part_flush_on(const AggExec *ex);
 void groups_topn(AggExec *ex);
 void part_flush(AggExec *ex);
-void groups_topn(AggExec *ex);
+void groups_order(AggExec *ex);
 void list_groups(AggExec *ex);
 Datum key_datum(AggExec *ex, int j, uint32 g, bool *isnull);
 Datum key_id_datum(AggExec *ex, int j, uint32 id, bool *isnull);

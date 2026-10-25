@@ -924,13 +924,14 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (!child_paths(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
-	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0);
+	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	nworkers = preagg_share(c, s) >= AGG_PREAGG_EXACT ? 0 : parallel_workers(c, s);
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum */
 	if (table > (double) get_hash_memory_limit() && sift_aggspec_spillable(s))
 		nworkers = 0;
 	if (nworkers > 0)
-		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers);
+		add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, nworkers, NIL);
+	agg_ordered_paths(c, s, root, input_rel, output_rel, target, scan_tlist, keys, table, nworkers);
 }
 
 /* the index among the group columns of the one with the sortgroupref ref */

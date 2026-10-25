@@ -500,6 +500,16 @@ osa_int_key(const SiftAggAgg *a)
 	return a->kind == SAA_PCT_DISC && (a->argtype == INT8OID || a->argtype == TIMESTAMPOID || a->argtype == TIMESTAMPTZOID || a->argtype == NUMERICOID);
 }
 
+/* a key of the order the groups are emitted in: the sort operator, collation and nulls order of the parent's pathkey */
+typedef struct SiftAggOrd
+{
+	int			key;
+	Oid			sortop;
+	Oid			collation;
+	bool		nulls_first;
+	Const	   *subst;			/* COALESCE(key, subst) is the sort value: a NULL key sorts as this constant; NULL: the key itself */
+} SiftAggOrd;
+
 typedef struct SiftAggSpec
 {
 	Oid			indexoid;		/* the column index; InvalidOid: the table itself. A partitioned table: that of its first partition */
@@ -551,6 +561,8 @@ typedef struct SiftAggSpec
 	int			gtopn_agg;
 	bool		gtopn_desc;
 	bool		gtopn_nulls_first;
+	int			nord;			/* > 0: the groups are emitted in the order of these keys (agg/gorder.c), which the path's pathkeys promise to the parent */
+	SiftAggOrd *ord;
 } SiftAggSpec;
 
 /* "-123.450" as -123450 with scale 3; false unless it is a plain decimal of at most SIFT_NUM_MAX_DIGITS digits (not NaN, not infinite) */

@@ -62,16 +62,14 @@ SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS planner_guess;
 RESET sift.agg_param_set_size;
 -- the plan shows the parameter, and a query SiftAgg cannot run keeps its plan whatever the size of the array
 EXPLAIN (COSTS OFF) EXECUTE on_q('{1,2,3}');
-                          QUERY PLAN                           
----------------------------------------------------------------
- Sort
-   Sort Key: kind
-   ->  Custom Scan (SiftAgg)
-         Index: ev_col
-         Filters: day >= '01-01-2024'::date AND dim_a_id IN $1
-         Group Keys: kind
-         Pushed Aggregates: count(*), sum(ev.amount)
-(7 rows)
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: ev_col
+   Filters: day >= '01-01-2024'::date AND dim_a_id IN $1
+   Group Keys: kind
+   Pushed Aggregates: count(*), sum(ev.amount)
+(5 rows)
 
 PREPARE other_q(int4[]) AS SELECT count(*) FROM ev WHERE dim_a_id = ANY ($1) AND kind ~ '^[ab]' AND (id % 7 = 0 OR amount > 99);
 SELECT plan_kind('EXECUTE other_q(''{1,2,3}'')') AS unsupported_shape;

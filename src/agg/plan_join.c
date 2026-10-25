@@ -822,7 +822,7 @@ child_pos(List *vars, int att)
 
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 void
-add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers)
+add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers, List *pathkeys)
 {
 	SiftAggPath *ap = (SiftAggPath *) newNode(sizeof(SiftAggPath), T_CustomPath);
 	CustomPath *cp = &ap->path;
@@ -834,6 +834,11 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	cp->path.parallel_safe = false;
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, s->est_groups);
+	cp->path.pathkeys = pathkeys;
+	ap->parent_pathkeys = c->parent_pathkeys;
+	ap->parent_rti = c->parent_rti;
+	cp->path.startup_cost += agg_order_cost(c, s, cp->path.rows);
+	cp->path.total_cost += agg_order_cost(c, s, cp->path.rows);
 	/* the groups after the n-th of the sort key are not emitted (a tie keeps more): the sort above sees about n of them */
 	if (s->gtopn_k > 0 && cp->path.rows > 4.0 * s->gtopn_k)
 		cp->path.rows = 2.0 * s->gtopn_k;

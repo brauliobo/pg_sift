@@ -998,6 +998,8 @@ agg_next(ScanState *node)
 		ex->n_groups = ex->n_flushed ? ex->n_flushed : ex->n_groups;
 		if (ex->spec->gtopn_k > 0 && !ex->done && !spill_started(ex))
 			groups_topn(ex);
+		if (ex->spec->nord > 0 && !ex->done && !spill_started(ex))
+			groups_order(ex);
 	}
 	if (ex->done)
 	{
@@ -1491,6 +1493,8 @@ explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
 	if (ex->spec->gtopn_k > 0)
 		ExplainPropertyInteger("Groups Dropped By Top-N", NULL, ex->n_gpruned, es);
+	if (ex->spec->nord > 0)
+		ExplainPropertyInteger("Group Order Keys", NULL, ex->spec->nord, es);
 	if (part_flush_on(ex))
 		ExplainPropertyText("Groups Finished", "per partition", es);
 	if (c->n_osa_spilled)

@@ -387,7 +387,8 @@ plain_agg(const SiftAggAgg *a)
 bool
 sift_aggspec_spillable(const SiftAggSpec *s)
 {
-	if (s->topn || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
+	/* an ordered scan holds its groups to the end: the partitions of a spilled scan come one after the other */
+	if (s->topn || s->nord > 0 || s->nsets > 0 || s->narms > 0 || s->nkeys == 0 || !sift_aggspec_parallel_ok(s))
 		return false;
 	for (int j = 0; j < s->nkeys; j++)
 		if (s->key[j].kind == SAK_SET)

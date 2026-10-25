@@ -159,6 +159,8 @@ typedef struct AggCtx
 	List	   *planned;		/* the correlated children planned for the query (JoinCtx, by rti): the other scanned table of a flipped join reuses them */
 	bool		detached;		/* root is a query level below the one being planned (the arms of a two level aggregate): its paths are planned there */
 	Path	   *spine;			/* the plan of the spine's rows (SiftAggSpine): the only child of the path */
+	List	   *parent_pathkeys;	/* the pathkeys of the parent query that the ordered path being added satisfies, and the entry of the sub-select there (agg/plan_ord.c) */
+	Index		parent_rti;
 } AggCtx;
 
 /* Planner-only paths of correlated children are planned in their own query level. */
@@ -167,6 +169,8 @@ typedef struct SiftAggPath
 	CustomPath path;
 	List       *correlated;		/* the native path of each child planned in its own query level (correlated, or of a detached scan), NULL for the other joins */
 	List       *subroots;		/* and the query level it belongs to */
+	List       *parent_pathkeys;	/* an ordered path: the pathkeys of the parent query it satisfies (also on columns the sub-select gives as constants) ... */
+	Index		parent_rti;		/* ... on the entry of the parent that reads this level */
 } SiftAggPath;
 
 typedef struct JsonRef
@@ -412,7 +416,11 @@ extern bool setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals,
 extern int	parallel_workers(AggCtx *c, SiftAggSpec *s);
 extern SiftAggSpec *agg_spec_keep(const SiftAggSpec *s);
 extern void add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
-						 List *scan_tlist, int nworkers);
+						 List *scan_tlist, int nworkers, List *pathkeys);
+extern void agg_ordered_paths(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target,
+							  List *scan_tlist, List *keys, double table, int nworkers);
+extern Cost agg_order_cost(AggCtx *c, const SiftAggSpec *s, double groups);
+extern void agg_subquery_ordered(PlannerInfo *root, RelOptInfo *rel, Index rti);
 extern bool child_paths(AggCtx *c, SiftAggSpec *s);
 extern Node *sift_agg_child_sig(Node *n, List *params);
 

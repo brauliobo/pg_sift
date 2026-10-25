@@ -192,6 +192,12 @@ Fusable arms:
 
 Staying apart: arms the pre-aggregates answer one by one, and arms that join no lookup (a per-set chunk filter costs more than the shared decode saves).
 
+### Groups in the order the parent sorts by
+
+A grouped scan returns its groups in the order the table met them and PostgreSQL puts a Sort above it for an `ORDER BY`, a window (`PARTITION BY .. ORDER BY ..`) or a merge that wants them sorted. Besides its path the planner (`agg/plan_ord.c`) offers a copy that promises pathkeys: the longest prefix of the pathkeys of the query's `ORDER BY` (`sort_pathkeys`), of its window (`window_pathkeys`) and, for a sub-select or an inlined CTE, of the parent query's (`query_pathkeys` of `parent_root`) whose columns are keys of the group. A column the sub-select gives as a constant is in any order, and `COALESCE(key, constant)` sorts as a key whose NULL is the constant; the scan of the sub-select is offered with the parent's pathkeys, which include those columns, so the parent's Sort goes. The parent uses the path when it is cheaper than the Sort it would add (`ORDER BY`, window or Incremental Sort on a shorter prefix). EXPLAIN shows `Group Order Keys` in the node.
+
+The executor (`agg/gorder.c`) sorts the final groups, after the lanes and the workers' tables are merged, so it is the leader's and costs by the groups, not the rows: the distinct values of each key (far fewer than the groups) are sorted once with the comparator of the pathkey (its sort operator, collation and nulls order, so the order is the Sort's), each id gets a rank (equal values the same rank), and the groups are sorted by the tuple of ranks as integers. An ordered scan keeps its groups in memory: it does not spill (the path is offered only when the table fits hash memory), and it is not fused with other scans. Not offered for grouping sets, `DISTINCT ON` or a scan that keeps only some of its groups (`ORDER BY` an aggregate `LIMIT n`). The rows and their order are the normal plan's (test `agg_group_order`).
+
 ### count(DISTINCT) of a 32 bit value
 
 A dictionary code, a dense id of a numeric expression or an integer column up to 32 bits is counted per group in one of three exact forms (`struct Dist`); NULLs never enter.

@@ -930,7 +930,7 @@ fuse_candidate(const SiftAggSpec *s)
 	for (int i = 0; i < s->njoin; i++)
 		if ((s->join[i].child >= 0 && s->join[i].sig == NULL) || sift_aggjoin_preserves(s->join[i].kind) || (s->join[i].params != NIL && s->join[i].sig == NULL))
 			return false;
-	return s->narms == 0 && s->nsets == 0 && s->nprepost == 0;
+	return s->narms == 0 && s->nsets == 0 && s->nprepost == 0 && s->nord == 0;
 }
 
 /* what the arms must share: everything but their keys, aggregates and the conjuncts over the rows (fuse_aggs, fuse_split) */

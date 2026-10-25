@@ -425,6 +425,15 @@ sift_aggspec_pack(const SiftAggSpec *s)
 	put_int(p, s->gtopn_agg);
 	put_int(p, s->gtopn_desc);
 	put_int(p, s->gtopn_nulls_first);
+	put_int(p, s->nord);
+	for (int i = 0; i < s->nord; i++)
+	{
+		put_int(p, s->ord[i].key);
+		put_int(p, (int) s->ord[i].sortop);
+		put_int(p, (int) s->ord[i].collation);
+		put_int(p, s->ord[i].nulls_first);
+		put_node(p, (Node *) s->ord[i].subst);
+	}
 	return pk.items;
 }
 
@@ -860,5 +869,15 @@ sift_aggspec_unpack(const List *items)
 	s->gtopn_agg = get_int(u);
 	s->gtopn_desc = get_int(u);
 	s->gtopn_nulls_first = get_int(u);
+	s->nord = get_int(u);
+	s->ord = palloc0(Max(s->nord, 1) * sizeof(SiftAggOrd));
+	for (int i = 0; i < s->nord; i++)
+	{
+		s->ord[i].key = get_int(u);
+		s->ord[i].sortop = (Oid) get_int(u);
+		s->ord[i].collation = (Oid) get_int(u);
+		s->ord[i].nulls_first = get_int(u);
+		s->ord[i].subst = (Const *) get_node(u);
+	}
 	return s;
 }

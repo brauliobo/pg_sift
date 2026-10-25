@@ -16,6 +16,9 @@ table	b03_top_rows_by_ts	scan	0.10	0.41
 table	b04_top_rows_one_parent	normal	7.0	28
 table	b05_top_months	scan	0.098	0.39
 table	b06_top_offset	scan	0.088	0.35
+table	b07_top_rows_trailing_key	scan	0.071	0.28
+table	b08_top_rows_trailing_key_desc_offset	scan	0.071	0.28
+table	b09_top_rows_trailing_key_ties	scan	0.069	0.27
 table	c01_join_tier	scan	0.11	0.43
 table	c02_join_active_filter	scan	0.11	0.42
 table	c03_join_month	scan	0.098	0.39
@@ -112,6 +115,9 @@ tabletuned	b03_top_rows_by_ts	scan	0.028	0.11
 tabletuned	b04_top_rows_one_parent	normal	7.0	28
 tabletuned	b05_top_months	scan	0.028	0.11
 tabletuned	b06_top_offset	scan	0.023	0.093
+tabletuned	b07_top_rows_trailing_key	scan	0.021	0.084
+tabletuned	b08_top_rows_trailing_key_desc_offset	scan	0.019	0.078
+tabletuned	b09_top_rows_trailing_key_ties	scan	0.00093	0.0037
 tabletuned	c01_join_tier	scan	0.031	0.12
 tabletuned	c02_join_active_filter	scan	0.030	0.12
 tabletuned	c03_join_month	scan	0.030	0.12
@@ -208,6 +214,9 @@ tuned	b03_top_rows_by_ts	scan	0.048	0.19
 tuned	b04_top_rows_one_parent	normal	7.2	29
 tuned	b05_top_months	scan	0.047	0.19
 tuned	b06_top_offset	scan	0.25	1.0
+tuned	b07_top_rows_trailing_key	scan	0.027	0.11
+tuned	b08_top_rows_trailing_key_desc_offset	scan	0.030	0.12
+tuned	b09_top_rows_trailing_key_ties	normal	-	-
 tuned	c01_join_tier	scan	0.054	0.22
 tuned	c02_join_active_filter	scan	0.053	0.21
 tuned	c03_join_month	scan	0.052	0.21
