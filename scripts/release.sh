@@ -11,7 +11,7 @@
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
 #   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines: one commit, after a check that every place agrees
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
-# A step that passed is in $RELEASE_STATE/VERSION/manifest (default ~/.local/state/pg_sift-release): --resume skips it. --dry-run does it all
+# A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
 # Environment: RELEASE_TMP (scratch, default ~/.cache), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail

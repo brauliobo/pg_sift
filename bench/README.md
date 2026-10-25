@@ -232,7 +232,7 @@ bench/steps/cpu_gate.sh --build before=/tmp/x-before --build after=/tmp/x-after 
     [--index-opts LABEL='vacuum_truncate = false'] [--guc LABEL=sift.maintenance_cost_delay=0]
 ```
 
-The first `--build` is the baseline. `--index-opts` gives the indexes of one build a reloption list and `--guc` a setting of its cluster, so the same checkout under two labels compares two configurations of one build (`merge_fanin = 32` against the default).
+The first `--build` is the baseline. `--index-opts` gives the indexes of one build a reloption list and `--guc` a setting of its cluster, so the same checkout under two labels compares two configurations of one build (`merge_fanin = 32` against the default). Each build gets a release-build cluster under `/tmp/sift-gate-LABEL` (ports `SIFT_PORT`, default 56120, and up); nothing else is touched, and clusters and scratch files are removed
 at the end. The data are deterministic (`setseed`), made once per build into template databases and copied per run, and the heap's md5 must be equal on all builds. Cells: `insert1 bulk copy update
 delete promote merge create` (writes on a fresh copy), `vacuum_backlog vacuum_dead vacuum_clean vacuum_nofree` (the last is the second VACUUM in a row, which costs less than a session, so it is compared raw, session included: what the check for a free tail to give back costs), and the query classes `count rank and or phrase` on 61 segments (`idle60_*`), on one (`idle1_*`) and
 on the index after VACUUM and more rows (`vac_*`), plus `session` (connect, load sift, one query on an empty index), whose cost is subtracted from every other cell, which is divided by its operations.

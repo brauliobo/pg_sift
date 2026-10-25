@@ -66,7 +66,7 @@ CHARTS = [
     ('cases-speedup', 'How much faster is each benchmark case of a query shape than PostgreSQL on the same rows?', 'cases.tsv'),
     ('cases-ecdf', 'On what share of the cases and shapes is pg_sift how many times faster?', 'cases.tsv'),
     ('cases-scale', 'How does each case scale from 100,000 to 3,000,000 rows?', 'cases-scale.tsv'),
-    ('cases-workmem', 'Does the release work_mem (4GB) change the ranking?', 'cases-wm4g.tsv'),
+    ('cases-workmem', 'Does a large work_mem (4GB) change the ranking?', 'cases-wm4g.tsv'),
 ]
 
 
@@ -253,7 +253,7 @@ def shapes_lines(results):
 
 
 def readme_shapes(results):
-    """the README's real query shapes: what they are, how many are faster and by how much, the chart by the size of the filter, and the same cases at the release work_mem"""
+    """the README's real query shapes: what they are, how many are faster and by how much, the chart by the size of the filter, and the same cases at a large work_mem"""
     found = shape_cases(results)
     if not found:
         return not_measured(SHAPES_CMD, 'bench/results/analytics.json with the sift_col arm')
@@ -280,7 +280,7 @@ def readme_shapes(results):
         ms_ = lambda path: {f['case'].id: f['native'] / f['sift'] for f in cases_render.collect(extras.read(path)[1], reg) if f['metric'] == 'ms' and f['native'] and f['sift'] and not f['kept']}
         a, b = ms_(os.path.join(results, 'cases.tsv')), ms_(os.path.join(results, 'cases-wm4g.tsv'))
         both = [i for i in b if i in a]
-        out += [f'The application-shaped cases of the table above again at the `work_mem` the release servers run ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
+        out += [f'The application-shaped cases of the table above again at a large `work_mem` ({extras.read(os.path.join(results, "cases-wm4g.tsv"))[0].get("work_mem", "4GB")}, the benchmark cluster runs 64MB): the median speed-up of the {len(both)} cases that run on the scan is '
                 f'{statistics.median(a[i] for i in both):.1f}x at 64MB and {statistics.median(b[i] for i in both):.1f}x at 4GB.', '', picture('cases-workmem', 'Speed-up of pg_sift over PostgreSQL for the application-shaped cases at the benchmark work_mem and at 4GB', 'docs/img/'), '']
     return out + ['Every shape with its times on PostgreSQL, on pg_sift, on flat tables and on ClickHouse: [docs/perf/AGGREGATES.md](docs/perf/AGGREGATES.md#shapes-of-real-queries); raw results [bench/results/analytics.json](bench/results/analytics.json).']
 

@@ -18,7 +18,7 @@ ENGINES = {
     'sift': ['enable_seqscan=off', 'sift.enable_col_scan=on'],             # col_scan: the index scan of sift_col (point lookups, IN lists, ORDER BY .. LIMIT)
     'native': ['sift.enable_agg=off', 'sift.enable_topn=off', 'sift.enable_scan=off', 'sift.enable_count=off', 'sift.enable_col_scan=off'],
 }
-COMMON = ["work_mem='4GB'", 'max_parallel_workers_per_gather=0', "statement_timeout=0"]      # large work_mem; one worker so that time is work
+COMMON = ["work_mem='4GB'", 'max_parallel_workers_per_gather=0', "statement_timeout=0"]      # a large work_mem; one worker so that time is work
 
 
 def psql(sql, check=True):

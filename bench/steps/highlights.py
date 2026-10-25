@@ -135,7 +135,7 @@ def cases_summary(results):
         m4, r4 = extras.read(p4)
         f4 = [f for f in cases_render.collect(r4, cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
         w4 = [f for f in f4 if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
-        out += f' At the large-memory setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
+        out += f' At a large `work_mem` setting (`work_mem` = {m4.get("work_mem", "4GB")}) {len(w4)} of the {len(f4)} application-shaped cases measured there are faster (median {x(statistics.median(f["native"] / f["sift"] for f in w4))}).' if w4 else ''
     return out
 
 

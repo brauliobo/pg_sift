@@ -11,7 +11,7 @@ marker of store_charts.SYSTEMS in every chart (pg_duckdb is one more system amon
   cases-ecdf       the share of cases (and of the real query shapes) that are at least as fast as x times PostgreSQL
   shapes-speedup   the real query shapes by the size of the filter set (analytics.json)
   cases-scale      time against rows for the case families, with the log-log slope of pg_sift and of PostgreSQL (cases-scale.tsv)
-  cases-workmem    pg_sift and PostgreSQL at work_mem 64MB and at the 4GB of release (cases-wm4g.tsv)
+  cases-workmem    pg_sift and PostgreSQL at work_mem 64MB and at a large 4GB (cases-wm4g.tsv)
   cost-per-row     index bytes per row, load time per row and update rate (store.json)
 """
 import json
@@ -689,7 +689,7 @@ def cases_workmem(results, theme):
     ids = [i for i in f2 if i in f1]
     ids.sort(key=lambda i: -f2[i]['native'] / f2[i]['sift'])
     c = Wide(theme)
-    c.head('The same cases at work_mem = 4GB, the release setting',
+    c.head('The same cases at work_mem = 4GB, a large setting',
            f'Speed-up of pg_sift over PostgreSQL at the {m1.get("work_mem", "64MB")} of the benchmark cluster (gray square) and at {m2.get("work_mem", "4GB")} (blue dot). Logarithmic axis; the plans of both engines can change with work_mem.')
     left, right, rowh, top = 250, 60, 30, 112
     pw = W - left - right
@@ -714,7 +714,7 @@ def cases_workmem(results, theme):
     c.marker(180, y, 'sift')
     c.text(192, y + 4, f'work_mem {m2.get("work_mem", "4GB")}', 12)
     end = c.foot(y + 30, [f'Data: bench/results/cases.tsv and cases-wm4g.tsv, {m2.get("date", "?")}, {m2.get("cpu", "?").split(",")[0]}; {int(m2["orders"]):,} orders, one backend.'])
-    return c.render(end + 8, 'Speed-up at the default and at the release work_mem', 'Speed-up of pg_sift over PostgreSQL for the API-shaped cases at two work_mem settings.')
+    return c.render(end + 8, 'Speed-up at the default and at a large work_mem', 'Speed-up of pg_sift over PostgreSQL for the analytics-shaped cases at two work_mem settings.')
 
 
 def cost_per_row(d, theme):

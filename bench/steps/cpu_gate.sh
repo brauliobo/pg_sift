@@ -7,7 +7,7 @@
 #                           --build LABEL=DIR --build LABEL=DIR ...
 #
 # Every --build is a checkout with scripts/pgtest.sh (git worktree add --detach DIR REF); the first is the baseline and the others are
-# compared with it. Each build gets its own release cluster (SIFT_TMP ${SIFT_GATE_TMP:-/tmp}/sift-gate-LABEL (SIFT_GATE_TMP moves the root), ports SIFT_PORT=56120 and up).
+# compared with it. Each build gets its own release-build cluster (SIFT_TMP ${SIFT_GATE_TMP:-/tmp}/sift-gate-LABEL (SIFT_GATE_TMP moves the root), ports SIFT_PORT=56120 and up).
 # What is counted: perf stat -e instructions:u,cycles:u on the postmaster of the build, which follows the processes it forks while the
 # operation runs, so it sums the backend, the maintenance worker and parallel workers, and leaves out what the host does for others.
 # The window of a write ends when the maintenance worker has gone. The cost of a session (connect, load sift, one query on an empty
