@@ -424,7 +424,12 @@ typedef struct SiftColDict
 	 * hash (cdict_find); octx is its argument */
 	const uint32 *(*order) (const void *octx, uint64 rows);
 	const void *octx;
+	/* A dictionary of many strings that the segment stores in blocks and the backend has not loaded (sift_col_read_lane): off and bytes are NULL, get gives the string of a code (into buf of
+	 * SIFT_COL_DICT_MAX_ENTRY bytes, valid until the next call) by decompressing its block, and sift_col_dict_full(gctx, &d) sets the arrays of the whole dictionary in d (its id stays), loaded now */
+	const char *(*get) (const void *gctx, uint32 code, uint32 *len, char *buf);
+	const void *gctx;
 } SiftColDict;
+extern void sift_col_dict_full(const void *gctx, SiftColDict *self);
 
 #define SIFT_COL_DICT_LEN(d, c)		((d)->off[(c) + 1] - (d)->off[(c)])
 #define SIFT_COL_DICT_STR(d, c)		((d)->bytes + (d)->off[c])
@@ -508,6 +513,9 @@ typedef struct SiftColUnit
 	int			except;			/* sift_col_unit_except: the leaf whose NULL rows the histograms and rollups of the unit answer for; -1: the unit's own rows */
 	void	   *priv;
 } SiftColUnit;
+
+/* Whether the next sift_col_read and sift_col_read_idx of the unit may give a STR leaf a dictionary that stays in the segment (get, no off and bytes): for a reader that asks for the strings of a few codes */
+extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
 
 /*
  * Superunits (docs/COL-PREAGG.md section 10). With sift_col_super(src, true), a source whose next unit starts a group of units of a segment that

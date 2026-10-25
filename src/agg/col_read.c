@@ -35,6 +35,24 @@
 
 #include "agg/col_int.h"
 
+/* The dictionary of a read that stayed in the segment, loaded whole */
+static void
+col_dict_full(const void *gctx, SiftSrcDict *self)
+{
+	SiftColDict d = {.id = (uint64) (uintptr_t) self->id};
+
+	sift_col_dict_full(gctx, &d);
+	*self = (SiftSrcDict) {self->id, d.n, d.off, d.bytes, d.order, d.octx};
+}
+
+static SiftSrcDict
+col_src_dict(const SiftColDict *d)
+{
+	if (d->off == NULL)
+		return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, .get = d->get, .full = col_dict_full, .gctx = d->gctx};
+	return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes, d->order, d->octx};
+}
+
 static const size_t vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
@@ -113,7 +131,7 @@ col_fill(ColSource *src, int leaf, const SiftColVec *v, const SiftSrcBuf *buf, S
 			break;
 		case SCV_CODE:
 			memcpy(buf->data, v->codes, n * sizeof(uint32));
-			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes, v->dict->order, v->dict->octx};
+			src->dict[leaf] = col_src_dict(v->dict);
 			break;
 	}
 	memset((char *) buf->data + n * vtype_size[l->vtype], 0, SIFT_AGG_PAD * vtype_size[l->vtype]);
@@ -141,7 +159,9 @@ col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *v
 {
 	SiftColVec	v;
 
+	sift_col_unit_lazy_dict(&src->unit, true);
 	sift_aggsel_read(&src->sel, &src->unit, leaf, &v);
+	sift_col_unit_lazy_dict(&src->unit, false);
 	col_fill(src, leaf, &v, buf, vec);
 }
 
@@ -184,7 +204,7 @@ col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *b
 	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
 	if (l->vtype == SCV_CODE)
 	{
-		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) info.dict.id, info.dict.n, info.dict.off, info.dict.bytes, info.dict.order, info.dict.octx};
+		src->dict[leaf] = col_src_dict(&info.dict);
 		vec->dict = &src->dict[leaf];
 	}
 }
@@ -248,7 +268,7 @@ col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, si
 		case SCV_CODE:
 			for (size_t k = 0; k < m; k++)
 				((uint32 *) b->data)[idx[k]] = v->codes[k];
-			src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) v->dict->id, v->dict->n, v->dict->off, v->dict->bytes, v->dict->order, v->dict->octx};
+			src->dict[leaf] = col_src_dict(v->dict);
 			break;
 	}
 	vec->data = b->data;
@@ -335,7 +355,9 @@ col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 		wide_scatter(src, leaf, &sel, idx, unit->nrow, vec);
 	else
 	{
+		sift_col_unit_lazy_dict(&src->unit, true);
 		sift_col_read(&src->unit, leaf, &sel, &v);
+		sift_col_unit_lazy_dict(&src->unit, false);
 		col_scatter(src, leaf, &v, idx, unit->nrow, vec);
 	}
 	pfree(idx);

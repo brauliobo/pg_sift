@@ -147,6 +147,8 @@ typedef struct SiftSrcWalkStamp
 
 typedef struct SiftSrcSource SiftSrcSource;
 
+#define SIFT_SRC_DICT_ENTRY		255	/* the longest entry of a dictionary of a source (SIFT_COL_DICT_MAX_ENTRY) */
+
 /* A dictionary of a text leaf: value c is bytes[off[c] .. off[c + 1]). id is the same pointer for every unit that shares it and is never reused for another dictionary while the source is open */
 typedef struct SiftSrcDict
 {
@@ -156,7 +158,32 @@ typedef struct SiftSrcDict
 	const char *bytes;
 	const uint32 *(*order) (const void *octx, uint64 rows);	/* the codes in byte order of their strings (SiftColDict.order), NULL: none */
 	const void *octx;
+	/* off NULL: the strings stay in the segment and get gives the string of a code (into buf of SIFT_SRC_DICT_ENTRY bytes, valid until the next call); sift_srcdict_whole loads the arrays */
+	const char *(*get) (const void *gctx, uint32 code, uint32 *len, char *buf);
+	void		(*full) (const void *gctx, struct SiftSrcDict *self);
+	const void *gctx;
 } SiftSrcDict;
+
+/* The string of entry c: from the arrays, or read in the segment when the dictionary has none */
+static inline const char *
+sift_srcdict_str(const SiftSrcDict *d, uint32 c, uint32 *len, char *buf)
+{
+	if (likely(d->off != NULL))
+	{
+		*len = d->off[c + 1] - d->off[c];
+		return d->bytes + d->off[c];
+	}
+	return d->get(d->gctx, c, len, buf);
+}
+
+/* The dictionary with its arrays: d itself, or d completed in place (the whole dictionary is loaded and kept for the backend), for the code that reads off, bytes or the order */
+static inline const SiftSrcDict *
+sift_srcdict_whole(const SiftSrcDict *d)
+{
+	if (unlikely(d->off == NULL))
+		d->full(d->gctx, (SiftSrcDict *) d);
+	return d;
+}
 
 /* One decoded leaf of a unit: n values (rows; elements for a child leaf), see the padding rules of agg/kern.h */
 typedef struct SiftSrcVec

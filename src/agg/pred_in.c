@@ -22,6 +22,7 @@ dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
 
 	if (lut)
 		return lut;
+	d = sift_srcdict_whole(d);
 	lut = MemoryContextAllocZero(ex->cxt, ((d->n + 64) / 64) * sizeof(uint64));
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
 	for (uint32 c = 0; c < d->n; c++)

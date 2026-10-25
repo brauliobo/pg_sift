@@ -16,7 +16,10 @@ uint32
 amap_resolve(AggExec *ex, const SiftSrcDict *d, int ai, uint32 c)
 {
 	MemoryContext old = MemoryContextSwitchTo(ex->tcxt);
-	uint32		id = ot_id(&ex->aot[ai], text_datum(ex->spec->agg[ai].argtype, -1, d->bytes + d->off[c], d->off[c + 1] - d->off[c]));
+	uint32		len;
+	char		buf[SIFT_SRC_DICT_ENTRY];
+	const char *str = sift_srcdict_str(d, c, &len, buf);
+	uint32		id = ot_id(&ex->aot[ai], text_datum(ex->spec->agg[ai].argtype, -1, str, len));
 
 	MemoryContextSwitchTo(old);
 	return id;

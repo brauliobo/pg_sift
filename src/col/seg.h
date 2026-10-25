@@ -143,6 +143,13 @@ extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
 #define DICT_LAZY_RATIO			16
 extern bool sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want);
 extern PGDLLIMPORT bool sift_col_table_lookup;	/* sift.table_dict_lookup: the order of a dictionary of a sift_table is stored too */
+/*
+ * Whether the dictionary of a STR leaf is given to a reader of codes as a view that reads the strings of the codes it is asked for (SiftColDict.get): it is stored in blocks, is
+ * not at hand, and the blocks decompressed for such views are fewer than 1/DICT_LAZY_LOADS of its blocks (a view then asks for the whole dictionary, which the cache keeps).
+ * Fills n, get and gctx of `view`.
+ */
+#define DICT_LAZY_LOADS			8
+extern bool sift_cseg_dict_view_lazy(SiftColSegment *seg, int col, SiftColDict *view);
 extern const char *sift_cseg_dict_get(SiftColSegment *seg, int col, uint32 code, uint32 *len, char *buf);
 
 /* The backend's cache (col/dictcache.c) of the element structure of a list leaf of a unit: the lengths of the lists of its rows, 16 bit (a unit with a longer list is not kept), and the elements they add up to; the running ends are summed again from them */

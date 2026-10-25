@@ -154,7 +154,13 @@ static inline uint32
 cmap_id(AggExec *ex, uint32 *map, const SiftSrcDict *d, int ci, int p, uint32 c)
 {
 	if (map[c] == CMAP_UNSET)
-		map[c] = intern_id(ex, &ex->cs[ci].in[p], d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	{
+		uint32		len;
+		char		buf[SIFT_SRC_DICT_ENTRY];
+		const char *str = sift_srcdict_str(d, c, &len, buf);
+
+		map[c] = intern_id(ex, &ex->cs[ci].in[p], str, len);
+	}
 	return map[c];
 }
 

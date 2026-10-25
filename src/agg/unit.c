@@ -162,7 +162,11 @@ topn_viable(AggExec *ex)
 static const SiftSrcVec *
 topn_leaf_vec(void *ex, int leaf)
 {
-	return get_vec(ex, leaf);
+	const SiftSrcVec *v = get_vec(ex, leaf);
+
+	if (v->dict)
+		sift_srcdict_whole(v->dict);	/* it compares the entries as bytes and keeps their order */
+	return v;
 }
 
 static void

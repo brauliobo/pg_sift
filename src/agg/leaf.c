@@ -362,7 +362,10 @@ kmap_resolve(AggExec *ex, const SiftSrcDict *d, int ki, uint32 c)
 {
 	KeyState   *k = &ex->ks[ki];
 	MemoryContext old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
-	Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+	uint32		len;
+	char		buf[SIFT_SRC_DICT_ENTRY];
+	const char *str = sift_srcdict_str(d, c, &len, buf);
+	Datum		v = text_datum(k->param->paramtype, k->param->paramtypmod, str, len);
 	uint32		id = key_value_id(ex, ki, v, false);
 
 	ResetExprContext(ex->lutcx);
@@ -392,6 +395,7 @@ dict_code(const SiftSrcDict *d, const char *key)
 {
 	size_t		len = strlen(key);
 
+	d = sift_srcdict_whole(d);
 	for (uint32 c = 0; c < d->n; c++)
 		if (d->off[c + 1] - d->off[c] == len && memcmp(d->bytes + d->off[c], key, len) == 0)
 			return c;

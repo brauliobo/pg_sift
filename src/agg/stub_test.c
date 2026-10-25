@@ -176,7 +176,13 @@ valtext(const ValText *vt, const SiftSrcVec *v, int64 i, bool *isnull, int64 *co
 			break;
 		case SCV_CODE:
 			*code = ((const uint32 *) v->data)[i];
-			return pnstrdup(v->dict->bytes + v->dict->off[*code], v->dict->off[*code + 1] - v->dict->off[*code]);
+			{
+				uint32		len;
+				char		buf[SIFT_SRC_DICT_ENTRY];
+				const char *str = sift_srcdict_str(v->dict, *code, &len, buf);
+
+				return pnstrdup(str, len);
+			}
 	}
 	return OidOutputFunctionCall(vt->outfn, d);
 }
@@ -328,7 +334,7 @@ sift_test_aggstub_dicts(PG_FUNCTION_ARGS)
 			values[1] = Int32GetDatum(leaf);
 			values[2] = CStringGetTextDatum(psprintf("%p", v.dict->id));
 			values[3] = Int32GetDatum(v.dict->n);
-			values[4] = Int32GetDatum(v.dict->off[v.dict->n]);
+			values[4] = Int32GetDatum(sift_srcdict_whole(v.dict)->off[v.dict->n]);
 			put_row(rsi, values, nulls);
 		}
 		unitno++;

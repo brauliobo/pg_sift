@@ -211,6 +211,7 @@ typedef struct DictLook
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
+	uint32		loads;			/* blocks decompressed for the strings of sift_cseg_dict_view_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;

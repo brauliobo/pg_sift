@@ -509,6 +509,7 @@ look_load_block(DictLook *l, uint32 b)
 			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
 	}
 	l->blkno = b;
+	l->loads++;
 }
 
 /* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */
@@ -710,6 +711,54 @@ sift_cseg_dict_lazy(SiftColSegment *seg, int col, uint32 want)
 	if (((uint64) l->reads + want) * DICT_LAZY_RATIO >= l->n)
 		return false;
 	l->reads += want;
+	return true;
+}
+
+/* The loads that pay for the whole dictionary: its blocks decompressed one by one cost the same as the parse when they are a DICT_LAZY_LOADS-th of them */
+static bool
+look_lazy_left(const DictLook *l)
+{
+	return l->blocked && (uint64) l->loads * DICT_LAZY_LOADS < ((uint64) l->n + DICT_BLOCK - 1) / DICT_BLOCK;
+}
+
+static const char *
+lazy_get(const void *gctx, uint32 code, uint32 *len, char *buf)
+{
+	DictLook   *l = (DictLook *) gctx;
+
+	if (!look_lazy_left(l))
+		return sift_cdict_str(sift_cseg_dict(l->seg, l->col), code, len);
+	return look_code_str(l, code, len, buf);
+}
+
+void
+sift_col_dict_full(const void *gctx, SiftColDict *self)
+{
+	const DictLook *l = gctx;
+	uint64		id = self->id;
+
+	sift_cdict_view(sift_cseg_dict(l->seg, l->col), id, self);
+}
+
+bool
+sift_cseg_dict_view_lazy(SiftColSegment *seg, int col, SiftColDict *view)
+{
+	SegPriv    *pv = PRIV(seg);
+	DictLook   *l;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR)
+		return false;
+	if (pv->dict[col] == NULL)
+		pv->dict[col] = sift_cseg_dict_peek(seg, col);
+	if (pv->dict[col] != NULL || (l = dict_look(seg, col)) == NULL || !look_lazy_left(l))
+		return false;
+	view->n = l->n;
+	view->off = NULL;
+	view->bytes = NULL;
+	view->order = NULL;
+	view->octx = NULL;
+	view->get = lazy_get;
+	view->gctx = l;
 	return true;
 }
 

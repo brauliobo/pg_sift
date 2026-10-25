@@ -767,4 +767,6 @@ sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view)
 	view->id = id;
 	view->order = cdict_order;
 	view->octx = d;
+	view->get = NULL;
+	view->gctx = NULL;
 }

@@ -381,12 +381,14 @@ gen_leaf_value(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 i, bool *isnull
 				Float8GetDatum(((const double *) v->data)[i]);
 		case SCV_CODE:
 			{
-				uint32		code = ((const uint32 *) v->data)[i];
+				uint32		code = ((const uint32 *) v->data)[i],
+							len;
+				char		buf[SIFT_SRC_DICT_ENTRY];
+				const char *str = sift_srcdict_str(v->dict, code, &len, buf);
 
 				if (l->wide)
-					return sift_aggwide_datum(l->typid, v->dict->bytes + v->dict->off[code], v->dict->off[code + 1] - v->dict->off[code]);
-				return PointerGetDatum(cstring_to_text_with_len(v->dict->bytes + v->dict->off[code],
-																v->dict->off[code + 1] - v->dict->off[code]));
+					return sift_aggwide_datum(l->typid, str, len);
+				return PointerGetDatum(cstring_to_text_with_len(str, len));
 			}
 	}
 	return (Datum) 0;
