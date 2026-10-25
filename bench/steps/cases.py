@@ -36,7 +36,10 @@ BENCH = os.path.dirname(HERE)
 REPO = os.path.dirname(BENCH)
 GEN = os.path.join(BENCH, 'sql', 'store', 'gen.sql')
 EVENTS_GEN = os.path.join(REPO, 'test', 'plan', 'gen.sql')   # the events dataset of the plan-choice gate: one schema, c_events, for every case of the dataset
-DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql'))}   # the datasets a case shares: schema and generator
+DATASETS = {'events': ('c_events', EVENTS_GEN), 'keys': ('c_keys', os.path.join(BENCH, 'sql', 'keys', 'gen.sql')),
+            'tpch': ('c_tpch', os.path.join(BENCH, 'sql', 'tpch', 'gen.sql')),
+            'hits': ('c_hits', os.path.join(BENCH, 'sql', 'hits', 'gen.sql')),
+            'tseries': ('c_tseries', os.path.join(BENCH, 'sql', 'tseries', 'gen.sql'))}   # the datasets a case shares: schema and generator
 BUILT = set()
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']
@@ -401,7 +404,7 @@ def run_point(args, cases, rows, engines, results, failed):
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
-                    point.append(dict(case=c.id, arm=lane, metric=metric, note=('sift_table, segments written: %s' % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
+                    point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
         t1 = time.time()

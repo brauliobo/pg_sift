@@ -106,3 +106,24 @@ lookup_table_whole	is priced with the pages PostgreSQL's own sequential scan of 
 topn_from_units	takes the rows of the result from the units that gave them	orders	default	Heap Fetches: 0	native,pg_duckdb	-	ms	faster33	no
 cte_lookup_par	a scan whose lookup joins read a CTE, a sub-select or a function	orders	default	.	native,pg_duckdb	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no
 point_dense_keys	only while the keys are expected to have fewer rows than 4,096	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+tpch_q1	tpch_q1	tpch	-	.	native	-	ms	faster33	no
+tpch_q6	tpch_q6	tpch	-	.	native	-	ms	faster33	no
+tpch_q3	tpch_q3	tpch	-	.	native	-	ms	faster33	no
+tpch_q10	tpch_q10	tpch	-	.	native	-	ms	faster33	no
+tpch_q12	tpch_q12	tpch	-	.	native	-	ms	faster33	no
+hits_count	hits_count	hits	-	.	native	-	ms	faster33	no
+hits_filter_count	hits_filter_count	hits	-	.	native	-	ms	faster33	no
+hits_sum_avg	hits_sum_avg	hits	-	.	native	-	ms	faster33	no
+hits_distinct_users	hits_distinct_users	hits	-	.	native	-	ms	faster33	no
+hits_distinct_phrases	hits_distinct_phrases	hits	-	.	native	-	ms	faster33	no
+hits_region_users	hits_region_users	hits	-	.	native	-	ms	faster33	no
+hits_top_phrases	hits_top_phrases	hits	-	.	native	-	ms	faster33	no
+hits_like_count	hits_like_count	hits	-	.	native	-	ms	faster33	no
+hits_like_group	hits_like_group	hits	-	.	native	-	ms	faster33	no
+hits_order_time	hits_order_time	hits	-	.	native	-	ms	faster33	no
+ts_range_by_day	ts_range_by_day	tseries	-	.	native	-	ms	faster33	no
+ts_hour_metric	ts_hour_metric	tseries	-	.	native	-	ms	faster33	no
+ts_top_devices	ts_top_devices	tseries	-	.	native	-	ms	faster33	no
+ts_latest_device	ts_latest_device	tseries	-	.	native	-	ms	faster33	no
+oltp_insert_index	oltp_insert_index	orders	-	.	native	-	ms,cpu_ms	faster33	no
+oltp_update_index	oltp_update_index	orders	-	.	native	-	ms,cpu_ms	faster33	no

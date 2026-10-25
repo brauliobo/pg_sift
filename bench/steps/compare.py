@@ -91,11 +91,17 @@ def shape_pairs(results, what):
     return out
 
 
-def case_pairs(results):
+GENERIC = (('Generic suite, TPC-H-like (5 queries, 1,000,000 lineitem rows, generated)', 'tpch_'), ('Generic suite, ClickBench-like (10 queries, a generated wide table of 1,000,000 rows)', 'hits_'),
+           ('Generic suite, time series (4 queries, 1,000,000 readings)', 'ts_'), ('Write overhead of a `sift_col` index on a heap table (20,000 single-row INSERTs, 20,000 UPDATEs)', 'oltp_'))
+
+
+def case_pairs(results, prefix=None):
+    """([(case, PostgreSQL / pg_sift)], planner kept PostgreSQL's plan): the cases of one generic suite (prefix), or every other case"""
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
         return []
-    figs = [f for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']]
+    figs = [f for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']
+            and (f['case'].id.startswith(prefix) if prefix else not f['case'].id.startswith(tuple(p for _, p in GENERIC)))]
     return [(f['case'].id, f['native'] / f['sift']) for f in figs if not f['kept']], sum(1 for f in figs if f['kept'])
 
 
@@ -141,6 +147,11 @@ def rows_of(results):
     if cp:
         pairs, kept = cp
         rows.append((f'Benchmark cases ({len(pairs) + kept} query shapes; the planner kept PostgreSQL\'s plan on {kept})', {'pg': cell(pairs), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+    for name, prefix in GENERIC:
+        gp = case_pairs(results, prefix)
+        if gp and (gp[0] or gp[1]):
+            pairs, kept = gp
+            rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
     tier = t1
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
     for name, variant, metric, inv in (('Update 10% of the rows, rows per second (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),
