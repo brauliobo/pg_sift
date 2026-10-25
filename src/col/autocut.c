@@ -37,6 +37,7 @@
 #include "col/codec.h"
 #include "col/col.h"
 #include "col/setsum.h"
+#include "core/sql.h"
 
 #define AUTOCUT_MIN_UNITS	64		/* units an equality reads, at least */
 #define AUTOCUT_RATIO		8		/* times the units its rows fill, at least */
@@ -742,14 +743,11 @@ sift_col_key_cut_decision(PG_FUNCTION_ARGS)
 	Relation	index = index_open(relid, AccessShareLock);
 	Relation	heap;
 	CutVerdict	v;
-	TupleDesc	tupdesc;
 	Datum		vals[8];
 	bool		nulls[8] = {false};
 
 	if (!sift_col_is_index(index))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	decide(heap, index, true, &v);
 	vals[0] = v.leaf[0] ? CStringGetTextDatum(v.leaf) : (Datum) 0;
@@ -764,5 +762,5 @@ sift_col_key_cut_decision(PG_FUNCTION_ARGS)
 	vals[7] = CStringGetTextDatum(v.reason);
 	table_close(heap, AccessShareLock);
 	index_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, vals, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, vals, nulls));
 }

@@ -30,6 +30,7 @@
 #include "bm25/maint.h"
 #include "core/store.h"
 #include "core/testrng.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_seg_write);
 PG_FUNCTION_INFO_V1(sift_test_seg_read);
@@ -793,12 +794,9 @@ sift_test_page(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_index(PG_GETARG_OID(0), AccessShareLock);
 	Buffer		buf = ReadBuffer(index, (BlockNumber) PG_GETARG_INT64(1));
 	Page		page;
-	TupleDesc	desc;
 	Datum		values[4];
 	bool		nulls[4] = {0};
 
-	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
 	values[0] = Int32GetDatum(PageIsNew(page) ? 0 : SiftPageGetOpaque(page)->type);
@@ -807,7 +805,7 @@ sift_test_page(PG_FUNCTION_ARGS)
 	values[3] = Int32GetDatum(((PageHeader) page)->pd_upper);
 	UnlockReleaseBuffer(buf);
 	relation_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(desc, values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /* Overwrites width bytes at offset with a little-endian value, without WAL */

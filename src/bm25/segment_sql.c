@@ -153,12 +153,10 @@ sift_index_info(PG_FUNCTION_ARGS)
 {
 	Relation	index = open_sift(PG_GETARG_OID(0));
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	SiftFreeStats fs;
 	Datum		v[10];
 	bool		nulls[10] = {0};
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
@@ -173,7 +171,7 @@ sift_index_info(PG_FUNCTION_ARGS)
 	nulls[9] = RecoveryInProgress();
 	v[9] = BoolGetDatum(!nulls[9] && sift_maintenance_busy(index));
 	index_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /*
@@ -186,13 +184,11 @@ sift_worker_state(PG_FUNCTION_ARGS)
 	Oid			relid = PG_GETARG_OID(0);
 	Relation	index;
 	SiftDirSnapshot *snap;
-	TupleDesc	tupdesc;
 	Datum		v[8];
 	bool		nulls[8] = {0};
 	uint32		failures;
 	int			sealed = 0;
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	if (!ConditionalLockRelationOid(relid, AccessShareLock))
 		PG_RETURN_NULL();
 	index = try_index_open(relid, NoLock);
@@ -233,7 +229,7 @@ sift_worker_state(PG_FUNCTION_ARGS)
 		v[7] = CStringGetTextDatum(pg_verifymbstr(msg, strlen(msg), true) ? msg : "(unreadable)");
 	}
 	index_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /*
@@ -245,16 +241,14 @@ sift_index_format(PG_FUNCTION_ARGS)
 {
 	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(rel, snap);
 	v[0] = Int32GetDatum(snap->meta.format_major);
 	v[1] = Int32GetDatum(snap->meta.format_minor);
 	relation_close(rel, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /*
@@ -771,11 +765,9 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 	Relation	index = open_sift(PG_GETARG_OID(0));
 	text	   *term = PG_GETARG_TEXT_PP(1);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	Datum		v[5];
 	bool		nulls[5] = {0};
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -806,7 +798,7 @@ sift_test_term_blob(PG_FUNCTION_ARGS)
 		v[3] = Int32GetDatum(info.codec_len);
 		v[4] = Int32GetDatum(info.nnib);
 		index_close(index, AccessShareLock);
-		PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+		PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 	}
 	index_close(index, AccessShareLock);
 	ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("no segment has a blob for term \"%s\"", text_to_cstring(term))));
@@ -831,11 +823,9 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 				tfsum = 0,
 				groups = 0;
 	uint8	   *tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
-	TupleDesc	tupdesc;
 	Datum		v[2];
 	bool		nulls[2] = {0};
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	memcpy(blob, VARDATA_ANY(b), len);
 	pc = sift_post_open_blob(&info, blob, CurrentMemoryContext);
 	cur = sift_post_cursor(pc);
@@ -856,7 +846,7 @@ sift_test_blob_read(PG_FUNCTION_ARGS)
 	}
 	v[0] = Int64GetDatum(postings);
 	v[1] = Int64GetDatum(tfsum);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 #endif							/* SIFT_TESTING */

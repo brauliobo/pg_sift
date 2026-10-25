@@ -14,6 +14,8 @@ extern void sift_analyzer_config_lookup_index(Oid indexoid, struct SiftAnalyzerC
 
 /* core/handler.c */
 extern PGDLLEXPORT Datum sift_handler(PG_FUNCTION_ARGS);
+/* The result of a SQL function that returns a row type: the values and nulls in the columns its declaration gives */
+extern Datum sift_result_row(FunctionCallInfo fcinfo, Datum *values, bool *nulls);
 
 /* bm25/funcs.c */
 extern PGDLLEXPORT Datum sift_match(PG_FUNCTION_ARGS);			/* (text, text) bool */

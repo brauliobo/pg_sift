@@ -14,6 +14,7 @@
 #include "utils/builtins.h"
 
 #include "core/filter.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_filter);
 
@@ -57,10 +58,7 @@ sift_test_filter(PG_FUNCTION_ARGS)
 				values[NOUT];
 	bool		nulls[NOUT] = {0};
 	int64		mismatches = 0;
-	TupleDesc	tupdesc;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	if (ntid > 0)
 		tbm_add_tuples(tbm, tid, ntid, false);
 	for (int i = 0; i < nlossy; i++)
@@ -81,7 +79,7 @@ sift_test_filter(PG_FUNCTION_ARGS)
 	values[4] = PointerGetDatum(construct_array(has, nprobe, BOOLOID, 1, true, TYPALIGN_CHAR));
 	values[5] = Int64GetDatum(mismatches);
 	tbm_free(tbm);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 #endif							/* SIFT_TESTING */

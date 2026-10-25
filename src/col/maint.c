@@ -40,6 +40,7 @@
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
+#include "core/sql.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -1218,7 +1219,6 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
 	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	Datum		v[7],
 				blocked[8];
 	bool		nulls[7] = {0};
@@ -1229,7 +1229,6 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	int			gates = 0,
 				nblocked = 0;
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	why = rewrite_check(index, true, &gates);
 	if (!sift_col_auto_merge)
@@ -1260,7 +1259,7 @@ sift_col_maintenance_status(PG_FUNCTION_ARGS)
 	v[6] = PointerGetDatum(construct_array(blocked, nblocked, TEXTOID, -1, false, TYPALIGN_INT));
 	relation_close(heap, AccessShareLock);
 	index_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* sift.col_maintain(index): the rewrite of sift.col_auto_merge, now and in this session, whatever that setting says; false when nothing is due or the maintenance lock is held */
@@ -1304,7 +1303,6 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	Relation	index = sift_mops_open(&col_ops, PG_GETARG_OID(0), AccessShareLock);
 	const SiftColIndexMeta *defs = sift_col_index_defs(index);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	SiftFreeStats fs;
 	Datum		v[16];
 	bool		nulls[16] = {0};
@@ -1315,7 +1313,6 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				pagg_units = 0;
 	int			nwbuf = 0;
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -1350,7 +1347,7 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 	v[14] = Int64GetDatum(pagg_bytes);
 	v[15] = Int64GetDatum(pagg_units);
 	index_close(index, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 Datum

@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
@@ -533,6 +534,15 @@ sift_am_routine(int strategies, int support, bool multicol)
 	am->amparallelvacuumoptions = 0;
 	am->amkeytype = InvalidOid;
 	return am;
+}
+
+Datum
+sift_result_row(FunctionCallInfo fcinfo, Datum *values, bool *nulls)
+{
+	TupleDesc	tupdesc;
+
+	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
+	return HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls));
 }
 
 Datum

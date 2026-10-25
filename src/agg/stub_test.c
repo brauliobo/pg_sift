@@ -15,6 +15,7 @@
 
 #include "agg/kern.h"
 #include "agg/stub.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_aggstub_is_index);
 PG_FUNCTION_INFO_V1(sift_test_aggstub_layout);
@@ -387,12 +388,9 @@ sift_test_aggstub_counters(PG_FUNCTION_ARGS)
 	SiftSrcPrune prune;
 	int			nprune;
 	SiftSrcCounters c;
-	TupleDesc	tupdesc;
 	Datum		values[4];
 	bool		nulls[4] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	ts_open(&ts, PG_GETARG_OID(0));
 	prune_args(fcinfo, &prune, &nprune);
 	sift_colsrc_begin(ts.src, sb_arg(fcinfo, 1, 0), sb_arg(fcinfo, 2, PG_UINT32_MAX), &prune, nprune);
@@ -404,7 +402,7 @@ sift_test_aggstub_counters(PG_FUNCTION_ARGS)
 	values[2] = Int64GetDatum(c.rows);
 	values[3] = Int64GetDatum(c.bytes);
 	ts_close(&ts);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /* (index regclass, sb int4) returns the rows of one superblock, a checksum of their TIDs and whether a parallel worker read it */
@@ -413,14 +411,11 @@ sift_test_aggstub_sb(PG_FUNCTION_ARGS)
 {
 	TestScan	ts;
 	SiftSrcUnit unit;
-	TupleDesc	tupdesc;
 	int64		rows = 0;
 	int64		sum = 0;
 	Datum		values[3];
 	bool		nulls[3] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	ts_open(&ts, PG_GETARG_OID(0));
 	sift_colsrc_begin(ts.src, PG_GETARG_INT32(1), PG_GETARG_INT32(1) + 1, NULL, 0);
 	while (sift_colsrc_next(ts.src, &unit))
@@ -434,7 +429,7 @@ sift_test_aggstub_sb(PG_FUNCTION_ARGS)
 	values[1] = Int64GetDatum(sum);
 	values[2] = BoolGetDatum(IsParallelWorker());
 	ts_close(&ts);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /* (index regclass, sb_lo int4, sb_hi int4): bytes the source's memory context holds after each unit was read in full */
@@ -443,15 +438,12 @@ sift_test_aggstub_memory(PG_FUNCTION_ARGS)
 {
 	TestScan	ts;
 	SiftSrcUnit unit;
-	TupleDesc	tupdesc;
 	int64		units = 0;
 	int64		peak = 0;
 	int64		maxrows = 0;
 	Datum		values[3];
 	bool		nulls[3] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	ts_open(&ts, PG_GETARG_OID(0));
 	sift_colsrc_begin(ts.src, sb_arg(fcinfo, 1, 0), sb_arg(fcinfo, 2, PG_UINT32_MAX), NULL, 0);
 	while (sift_colsrc_next(ts.src, &unit))
@@ -465,7 +457,7 @@ sift_test_aggstub_memory(PG_FUNCTION_ARGS)
 	values[1] = Int64GetDatum(peak);
 	values[2] = Int64GetDatum(maxrows);
 	ts_close(&ts);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 /* (index regclass) returns the planner statistics, one row per leaf */

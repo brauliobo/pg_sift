@@ -14,6 +14,7 @@
 
 #include "col/enc.h"
 #include "col/enc_test_int.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_enc_roundtrip);
 
@@ -54,12 +55,9 @@ sift_test_col_enc_roundtrip(PG_FUNCTION_ARGS)
 				rounds = PG_GETARG_INT32(2);
 	TCtx		t = {0};
 	MemoryContext rctx = AllocSetContextCreate(CurrentMemoryContext, "col_enc round", ALLOCSET_DEFAULT_SIZES);
-	TupleDesc	tupdesc;
 	Datum		values[3];
 	bool		nulls[3] = {false, false, false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	pg_prng_seed(&t.rng, (uint64) seed);
 	for (int i = 0; i < rounds; i++)
 	{
@@ -74,7 +72,7 @@ sift_test_col_enc_roundtrip(PG_FUNCTION_ARGS)
 	values[0] = Int64GetDatum(t.checks);
 	values[1] = Int64GetDatum(t.failures);
 	values[2] = Int64GetDatum(t.encodings);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
 #define SIZE_ROWS	(SIFT_SB_PAGES * MaxHeapTuplesPerPage)

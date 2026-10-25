@@ -16,6 +16,7 @@
 
 #include "col/codec.h"
 #include "col/compress.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_cc_encode);
 PG_FUNCTION_INFO_V1(sift_test_cc_decode);
@@ -110,19 +111,16 @@ sift_test_cc_info(PG_FUNCTION_ARGS)
 {
 	bytea	   *b = PG_GETARG_BYTEA_PP(0);
 	SiftCc	   *cc = open_blob(b, true);
-	TupleDesc	td;
 	Datum		v[6];
 	bool		nul[6] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	v[0] = Int32GetDatum(sift_cc_kind(cc));
 	v[1] = Int32GetDatum((int32) sift_cc_nrows(cc));
 	v[2] = Int64GetDatum(sift_cc_min(cc));
 	v[3] = Int64GetDatum(sift_cc_max(cc));
 	v[4] = Int32GetDatum(sift_cc_tag(cc));
 	v[5] = Int32GetDatum((int32) VARSIZE_ANY_EXHDR(b));
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(td, v, nul)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nul));
 }
 
 /* sift._test_cc_filter(blob bytea, lo int8, hi int8, OUT rows int4[], OUT sum int8): the rows with a key in [lo, hi], and their sum */
@@ -135,12 +133,9 @@ sift_test_cc_filter(PG_FUNCTION_ARGS)
 	Datum	   *rows = palloc(sizeof(Datum) * (n + 1));
 	int			nr = 0;
 	int64		sum;
-	TupleDesc	td;
 	Datum		v[2];
 	bool		nul[2] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	sift_cc_filter(cc, PG_GETARG_INT64(1), PG_GETARG_INT64(2), bits);
 	sift_cc_sum(cc, bits, &sum);
 	for (uint32 i = 0; i < n; i++)
@@ -148,7 +143,7 @@ sift_test_cc_filter(PG_FUNCTION_ARGS)
 			rows[nr++] = Int32GetDatum((int32) i);
 	v[0] = PointerGetDatum(construct_array_builtin(rows, nr, INT4OID));
 	v[1] = Int64GetDatum(sum);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(td, v, nul)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nul));
 }
 
 Datum
@@ -422,12 +417,9 @@ sift_test_cc_corrupt(PG_FUNCTION_ARGS)
 	pg_prng_state rs;
 	uint64		raised = 0,
 				decoded = 0;
-	TupleDesc	td;
 	Datum		v[2];
 	bool		nul[2] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &td) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	pg_prng_seed(&rs, (uint64) PG_GETARG_INT64(0));
 	for (int it = 0; it < PG_GETARG_INT32(1); it++)
 	{
@@ -456,7 +448,7 @@ sift_test_cc_corrupt(PG_FUNCTION_ARGS)
 	}
 	v[0] = Int64GetDatum((int64) raised);
 	v[1] = Int64GetDatum((int64) decoded);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(td, v, nul)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nul));
 }
 
 #endif							/* SIFT_TESTING */

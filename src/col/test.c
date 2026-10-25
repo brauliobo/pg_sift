@@ -31,6 +31,7 @@
 #include "col/pagg.h"
 #include "col/runs.h"
 #include "col/setsum.h"
+#include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
@@ -546,17 +547,14 @@ sift_test_col_types(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 {
-	TupleDesc	tupdesc;
 	Datum		v[7] = {Int64GetDatum(sift_cdict_cache_stats.loads), Int64GetDatum(sift_cdict_cache_stats.hits), Int64GetDatum(sift_cdict_cache_bytes()),
 						Int64GetDatum(sift_cdict_cache_stats.head_loads), Int64GetDatum(sift_cdict_cache_stats.head_hits),
 						Int64GetDatum(sift_cdict_cache_stats.zone_loads), Int64GetDatum(sift_cdict_cache_stats.zone_hits)};
 	bool		nulls[7] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	if (PG_GETARG_BOOL(0))
 		memset(&sift_cdict_cache_stats, 0, sizeof(sift_cdict_cache_stats));
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* The counters of a scan that selects the rows of the query */
@@ -566,14 +564,11 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	int			flags = PG_GETARG_INT32(2);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	Datum		v[10];
 	bool		nulls[10] = {false};
 	const SiftColCounters *c;
 	int64		rows = 0;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(1)), flags);
 	while (test_next(&ts, &unit))
 	{
@@ -594,7 +589,7 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	v[8] = CStringGetTextDatum(sift_simd_level_name(c->simd));
 	v[9] = Int64GetDatum(c->tests_made);
 	scan_close(&ts);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* One row per leaf of an index or sift_table: the planner statistics its column source reports (agg/colsrc.h SiftSrcStats), 0 where unknown */
@@ -633,7 +628,6 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 				meas = PG_GETARG_INT32(2);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	MemoryContext unitcx = AllocSetContextCreate(CurrentMemoryContext, "pagg fold", ALLOCSET_DEFAULT_SIZES);
 	struct
 	{
@@ -650,8 +644,6 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	bool		nulls[7] = {false};
 	char		buf[64];
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (test_next(&ts, &unit))
 	{
@@ -697,7 +689,7 @@ sift_test_col_pagg_fold(PG_FUNCTION_ARGS)
 	v[2] = Int32GetDatum(ng);
 	v[3] = Int64GetDatum(rows);
 	v[4] = DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* does a decoded cube keep what the decoder promises: min <= max in every group that has a value, and the groups of a calendar dim are the first days of cells of its grain, in ascending order */
@@ -828,14 +820,11 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 	bool		rows = PG_GETARG_BOOL(2);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
 	SiftTestDamage r = {0};
 	Datum		v[10];
 	bool		nulls[10] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (r.blobs < maxunits && test_next(&ts, &unit))
 	{
@@ -863,7 +852,7 @@ sift_test_col_cube_damage(PG_FUNCTION_ARGS)
 	v[7] = Int64GetDatum(r.unsound);
 	v[8] = Int64GetDatum(r.census_cut_odd);
 	v[9] = Int64GetDatum(r.census_odd);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 typedef enum DamageSection
@@ -1079,14 +1068,11 @@ sift_test_col_damage(PG_FUNCTION_ARGS)
 	int			maxunits = PG_GETARG_INT32(2);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	Damage		d = {0};
 	int64		t[7] = {0};
 	Datum		v[8];
 	bool		nulls[8] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	if (strcmp(section, "unit") == 0)
 		d.section = DMG_UNIT;
 	else if (strcmp(section, "chunk") == 0)
@@ -1137,7 +1123,7 @@ sift_test_col_damage(PG_FUNCTION_ARGS)
 	for (int i = 0; i < 7; i++)
 		v[i] = Int64GetDatum(t[i]);
 	v[7] = Int32GetDatum((int32) d.flags);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* sift._test_col_pre_stats(index): the units that hold the histogram (with min and max) of a leaf, or the rollup of a list, as the planner counts them */
@@ -1174,7 +1160,6 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	int			maxunits = PG_GETARG_INT32(1);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	int64		blobs = 0,
 				exact = 0,
 				bloom = 0,
@@ -1190,8 +1175,6 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	Datum		v[12];
 	bool		nulls[12] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (blobs < maxunits && test_next(&ts, &unit))
 	{
@@ -1324,7 +1307,7 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	v[9] = Int64GetDatum(damaged);
 	v[10] = Int64GetDatum(accepted);
 	v[11] = Int64GetDatum(missed);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /*
@@ -1338,7 +1321,6 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 	static const uint8 masks[] = {0x01, 0x80};
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	int64		supers = 0,
 				damaged = 0,
 				refused = 0;
@@ -1347,8 +1329,6 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 	MemoryContext old = CurrentMemoryContext;
 	ResourceOwner owner = CurrentResourceOwner;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -1406,7 +1386,7 @@ sift_test_col_super_damage(PG_FUNCTION_ARGS)
 	v[1] = Int64GetDatum(damaged);
 	v[2] = Int64GetDatum(refused);
 	v[3] = Int64GetDatum(damaged - refused);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /*
@@ -1422,7 +1402,6 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
 	int32		stride = Max(PG_GETARG_INT32(1), 1);
 	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
-	TupleDesc	tupdesc;
 	int64		runs = 0,
 				damaged = 0,
 				refused = 0,
@@ -1432,8 +1411,6 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 	MemoryContext old = CurrentMemoryContext;
 	ResourceOwner owner = CurrentResourceOwner;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
@@ -1493,7 +1470,7 @@ section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, 
 	v[1] = Int64GetDatum(damaged);
 	v[2] = Int64GetDatum(refused);
 	v[3] = Int64GetDatum(unnoticed);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 Datum
@@ -1529,7 +1506,6 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 	int			maxunits = PG_GETARG_INT32(1);
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	int64		blobs = 0,
 				ord = 0,
 				ident = 0,
@@ -1545,8 +1521,6 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 	Datum		v[12];
 	bool		nulls[12] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (blobs < maxunits && test_next(&ts, &unit))
 	{
@@ -1657,7 +1631,7 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 	v[9] = Int64GetDatum(damaged);
 	v[10] = Int64GetDatum(accepted);
 	v[11] = Int64GetDatum(missed);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
@@ -1688,14 +1662,11 @@ sift_test_col_zone_flags(PG_FUNCTION_ARGS)
 {
 	TestScan	ts;
 	SiftColUnit unit;
-	TupleDesc	tupdesc;
 	int64		units = 0,
 				jnull = 0;
 	Datum		v[2];
 	bool		nulls[2] = {false};
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
 	scan_open(&ts, PG_GETARG_OID(0), "", TEST_NOWBUF);
 	while (test_next(&ts, &unit))
 	{
@@ -1718,7 +1689,7 @@ sift_test_col_zone_flags(PG_FUNCTION_ARGS)
 	scan_close(&ts);
 	v[0] = Int64GetDatum(units);
 	v[1] = Int64GetDatum(jnull);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 /* (seg, pos, key, tid, null_row): the entries of the global order of leaf (by its column number) in every immutable segment that has one, in the order stored */

@@ -41,6 +41,7 @@
 #include "col/setsum.h"
 #include "bm25/maint.h"
 #include "core/ops.h"
+#include "core/sql.h"
 
 #define ROLLUP_QUEUE		64		/* segments waiting */
 #define ROLLUP_DONE			256		/* refreshed segments remembered */
@@ -615,7 +616,6 @@ Datum
 sift_col_refresh(PG_FUNCTION_ARGS)
 {
 	Relation	index;
-	TupleDesc	tupdesc;
 	uint64		gens[SIFT_MAX_SEGMENTS];
 	uint32		hash;
 	int			limit,
@@ -630,7 +630,6 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
 	if (limit < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
 	if (!sift_col_is_index(index))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(index))));
@@ -656,7 +655,7 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	index_close(index, RowExclusiveLock);
 	v[0] = Int32GetDatum(done);
 	v[1] = Int32GetDatum(n - visited);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 bool
@@ -703,13 +702,11 @@ Datum
 sift_col_rollup_counters(PG_FUNCTION_ARGS)
 {
 	RollupShared *sh = shared();
-	TupleDesc	tupdesc;
 	Datum		v[6];
 	bool		nulls[6] = {false};
 	int			queued = 0,
 				busy = 0;
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	SpinLockAcquire(&sh->lock);
 	for (int i = 0; i < sh->nreq; i++)
 		if (sh->req[i].db == MyDatabaseId)
@@ -724,7 +721,7 @@ sift_col_rollup_counters(PG_FUNCTION_ARGS)
 	v[4] = Int32GetDatum(queued - busy);
 	v[5] = Int32GetDatum(busy);
 	SpinLockRelease(&sh->lock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 Datum
