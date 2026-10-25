@@ -128,3 +128,4 @@ ts_latest_device	ts_latest_device	tseries	-	fallback:Index Scan	native	-	ms	fast
 oltp_insert_index	oltp_insert_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no
 oltp_update_index	oltp_update_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no
 run_window	a range on a leaf with a sorted run (`order_columns`), or an equality on it	orders	default WITH (order_columns = 'created_at')	Units Filtered By Sorted Run: [1-9]	native,pg_duckdb	-	ms	faster33	no
+two_level_cell_conditions	the conditions of the outer aggregates of a two-level scan read the value of each cell once	orders	default	Pushed Aggregates	native	-	ms	faster33	no
