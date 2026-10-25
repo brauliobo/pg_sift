@@ -93,7 +93,7 @@ def main():
                     if note:
                         med = lo = hi = None
                         skipped.setdefault(arm, []).append('%s: %s' % (c.id, note))
-                    results.append((c.id, arm, med, lo, hi, note))
+                    results.append((c.id, arm, med, lo, hi, open('/proc/loadavg').read().split()[0], note))
         finally:
             eng.down()
 
@@ -102,16 +102,17 @@ def main():
     for arm in dict.fromkeys(r[1] for r in results):
         why = skipped.get(arm, [])
         total = sum(1 for r in results if r[1] == arm)
-        log('%-17s %2d of %2d compared%s' % (arm, total - len(why), total, ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
+        loads = [float(r[5]) for r in results if r[1] == arm]
+        log('%-17s %2d of %2d compared, host load %.1f to %.1f%s' % (arm, total - len(why), total, min(loads), max(loads), ', not run: ' + '; '.join(w[:150] for w in why) if why else ''))
     if a.out and runs:
         with open(a.out, 'w') as f:
             f.write('# The generic suites on the other engines (steps/generic.py, bench/engines.tsv): %s against PostgreSQL 18 (the pg_duckdb image), the same rows, answers compared before any time.\n' % ', '.join(order))
             f.write('# rows: %d\n# date: %s\n# method: client-side milliseconds, warm median of %d runs after one untimed; %d CPUs and %s per engine, one engine at a time; pg is PostgreSQL 18.1 of the pg_duckdb image\n'
                     % (a.rows, time.strftime('%Y-%m-%d'), runs, a.cpus, a.memory))
-            f.write('# NA: the engine did not run the case, the reason is in note\n')
-            f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tnote\n')
-            for case, arm, med, lo, hi, note in results:
-                f.write('\t'.join([str(x) for x in ('3.4', case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, note)]) + '\n')
+            f.write('# NA: the engine did not run the case, the reason is in note; load: the load average (1 minute) of the host when the case finished, so a noisy engine is reported, not skipped\n')
+            f.write('version\tcase\tarm\tmetric\tvalue\tmin\tmax\tn\tload\tnote\n')
+            for case, arm, med, lo, hi, load, note in results:
+                f.write('\t'.join([str(x) for x in ('3.4', case, arm, 'ms', 'NA' if med is None else '%.3f' % med, '' if lo is None else '%.3f' % lo, '' if hi is None else '%.3f' % hi, runs, load, note)]) + '\n')
     sys.exit(1 if failures else 0)
 
 
