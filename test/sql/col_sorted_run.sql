@@ -115,7 +115,12 @@ BEGIN
 	PERFORM sr_mode('runs');
 END $$;
 
-CREATE TEMP TABLE sr_res AS SELECT * FROM sr_check('sr', ARRAY['k', 'kn', 't', 'f', 'n', 'd', 'c', 'cd', 'id', 'sk'], ARRAY[1, 300, 4000]);
+-- two columns to a statement: the ten in one ran into the statement timeout on a loaded runner under a sanitizer
+CREATE TEMP TABLE sr_res AS SELECT * FROM sr_check('sr', ARRAY['k', 'kn'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['t', 'f'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['n', 'd'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['c', 'cd'], ARRAY[1, 300, 4000]);
+INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['id', 'sk'], ARRAY[1, 300, 4000]);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_res;
 SELECT n, shape FROM sr_res WHERE NOT same;
 -- the same rows from an index without runs, and from one written under a lower setting, which read none
@@ -184,7 +189,8 @@ SET max_parallel_workers_per_gather = 2;
 -- every query starts workers, which a sanitizer build takes a second each to start: two keys and one limit
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs, array_agg(shape) FILTER (WHERE NOT same) AS different
 FROM sr_check('sr', ARRAY['k', 'sk'], ARRAY[300]);
-RESET max_parallel_workers_per_gather;
+-- back to none: a RESET would restore the default of two, and every later statement would start workers (a sanitizer build takes a second to start one)
+SET max_parallel_workers_per_gather = 0;
 
 -- the damage walks every byte of a run against the chunk, so its time grows with the square of the rows of a unit: a table of wider rows, about 770 rows to a unit, for it
 CREATE TABLE sr_d (LIKE sr) WITH (autovacuum_enabled = off);
