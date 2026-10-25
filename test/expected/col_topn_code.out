@@ -525,8 +525,8 @@ SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN (
 (3 rows)
 
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'uuid_filter', 'text_asc', 'text_desc', 'text_nulls_first', 'text_offset', 'text_filter', 'text_same_prefix', 'text_same_prefix_desc', 'text_then_uuid') ORDER BY tag COLLATE "C";
-          tag          |   oc_check   
------------------------+--------------
+          tag          |      oc_check       
+-----------------------+---------------------
  text_asc              | same+topn 25
  text_desc             | same+topn 25
  text_filter           | same+topn 30
@@ -535,19 +535,19 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN 
  text_same_prefix      | same+topn 40
  text_same_prefix_desc | same+topn 40
  text_then_uuid        | same+topn 30
- uuid_asc              | same+topn 25
- uuid_desc             | same+topn 25
- uuid_filter           | same+topn 30
+ uuid_asc              | same+topn+stored 25
+ uuid_desc             | same+topn+stored 25
+ uuid_filter           | same+topn+stored 30
 (11 rows)
 
 INSERT INTO ot (id, g, u, s, sp) SELECT i, i % 7, md5('n' || i)::uuid, 'Zz' || md5('n' || i), 'prefix_c' || i FROM generate_series(6001, 6300) i;
 DELETE FROM ot WHERE id % 61 = 0;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |   oc_check   
-------------------+--------------
+       tag        |      oc_check       
+------------------+---------------------
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
- uuid_asc         | same+topn 25
+ uuid_asc         | same+topn+stored 25
 (3 rows)
 
 -- values the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the query stays with the normal plan or reads them from the heap

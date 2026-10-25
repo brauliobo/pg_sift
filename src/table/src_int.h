@@ -68,6 +68,7 @@ typedef struct TblSource
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;
+	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
 	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL (tolerate_ovf) */
 	MemoryContext *wcxt;		/* per wide leaf: the dictionary of its last read */
 	uint64		wseq;			/* the id of the next wide dictionary */

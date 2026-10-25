@@ -242,7 +242,8 @@ part_col(const TblPart *p, const SiftColDef *want)
 				return j;
 			continue;
 		}
-		SIFT_INVARIANT(have->store == want->store, "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		/* a uuid written before it was a dictionary is a VAR leaf of images: the segment is read through the datum, the next rewrite makes it a dictionary */
+		SIFT_INVARIANT(have->store == want->store || (have->store == SIFT_COLS_VAR && want->store == SIFT_COLS_STR), "sift_table: a segment holds column %d in another storage than the table's", want->attno);
 		return j;
 	}
 	return -1;
@@ -304,6 +305,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->buf = palloc0(sizeof(TblLeafBuf) * t->lay->nleaves);
 	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
+	t->raw = palloc0(sizeof(bool) * t->lay->nleaves);
 	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
 	cur = sift_tbl_layout_schema(heap, st);
@@ -610,6 +612,16 @@ fill_vec(TblSource *t, int leaf, const SiftColVec *vp, SiftSrcVec *vec)
 	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
 }
 
+/* A wide leaf is read through a dictionary of its datum images, unless the executor wants the codes of the stored dictionary (set_raw) and the segment has one (an older layout holds the images inline) */
+static void
+read_vec(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, SiftSrcVec *vec)
+{
+	if (t->lay->leaf[leaf].wide && !(t->raw[leaf] && v->dict != NULL))
+		wide_read(t, leaf, p, v, v->n, (Datum) 0, false, vec);
+	else
+		fill_vec(t, leaf, v, vec);
+}
+
 static void
 tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
@@ -623,10 +635,7 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 		return;
 	}
 	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
-	if (t->lay->leaf[leaf].wide)
-		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
-	else
-		fill_vec(t, leaf, &v, vec);
+	read_vec(t, leaf, p, &v, vec);
 }
 
 /* ---- the values of a path of another JSON type than its leaf's: the engine sets them aside as overflow, with the tag of their type ---- */
@@ -641,6 +650,12 @@ tbl_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 		return false;
 	sift_col_zone(&p->unit, p->col[leaf], &cz);
 	return cz.has_ovf;
+}
+
+static void
+tbl_set_raw(void *impl, int leaf)
+{
+	((TblSource *) impl)->raw[leaf] = true;
 }
 
 static void
@@ -767,10 +782,7 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 	}
 	ords = stored_ords(t, rows, n);
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
-	if (t->lay->leaf[leaf].wide)
-		wide_read(t, leaf, p, &v, v.n, (Datum) 0, false, vec);
-	else
-		fill_vec(t, leaf, &v, vec);
+	read_vec(t, leaf, p, &v, vec);
 	pfree(ords);
 }
 
@@ -891,6 +903,7 @@ static const SiftSrcProvider tbl_provider = {
 	.filter_wide = tbl_filter_wide,
 	.overflow = tbl_overflow,
 	.tolerate_ovf = tbl_tolerate_ovf,
+	.set_raw = tbl_set_raw,
 	.filter_types = tbl_filter_types,
 	.read_types = tbl_read_types,
 	.read_jnull = tbl_read_jnull,
