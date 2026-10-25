@@ -50,6 +50,8 @@ FIELDS = ['id', 'changelog', 'dataset', 'index', 'plan', 'baselines', 'variants'
 TIMEOUT = 60
 LANE_BUDGET = 20.0   # seconds of timed runs after which a lane stops repeating (it has MIN_RUNS or more); --lane-budget
 MIN_RUNS = 3
+SCAN = re.compile(r'Custom Scan \(Sift')
+FORCED = ('agg_forced', 'sift.agg_force = on')   # the lane of a fallback case: what the scan can do where the planner declines it
 TIMES = {}   # case id -> [build seconds, run seconds] of the last point
 
 
@@ -74,6 +76,10 @@ class Case:
         self.load = 'load' in self.sec
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
+        self.fallback = self.plan.startswith('fallback:')   # the planner is expected to keep PostgreSQL's plan: `plan` is that plan, and a lane with the scan forced is measured beside it
+        if self.fallback:
+            self.plan = self.plan[len('fallback:'):]
+            self.variants = [v for v in self.variants if v[0] != FORCED[0]] + [list(FORCED)]
         self.metrics = self.metric.split(',')
         self.headline = self.headline == 'yes'
         self.share = None   # read_registry: the name of the table that cases with the same index and setup read together
@@ -279,6 +285,12 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
                 text = texts[lane] = again
             if keep_plan and not re.search(case.plan, text, re.S):
                 errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
+            elif keep_plan and case.fallback and SCAN.search(text):
+                errors[lane] = 'PLAN CHANGED: the planner chooses the scan now (%s): drop the fallback: of the plan column' % notes[lane]
+            if case.fallback:
+                notes['why'] = why(s, sql[lane])
+    if FORCED[0] in texts and not SCAN.search(texts[FORCED[0]]) and FORCED[0] not in errors:
+        notes[FORCED[0]] = 'no scan: ' + why(lanes[FORCED[0]], sql[FORCED[0]])   # the shape the scan cannot run: a feature gap, not a cost
     if 'native' in texts and 'sift' in texts and notes['sift'] == notes['native'] and plan_shape(texts['sift']) != plan_shape(texts['native']):
         notes['sift'] += ' (a different plan below it)'   # the first scan is the same: a block must not call two different plans "the same plan"
     ref = answers.get('native')
@@ -294,6 +306,12 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
                     break
                 times[lane].append(lanes[lane].run(sql[lane])[0])
     return times, notes, errors
+
+
+def why(session, sql):
+    """sift.explain_why of the statement (planned, not run): the first reason each arm of the aggregate pushdown gave up"""
+    out = session.run("SELECT arm || ' ' || slug || ': ' || reason FROM sift.explain_why($q$%s$q$) WHERE NOT used" % sql.rstrip(';'))[1]
+    return '; '.join(out)[:300] or 'sift.explain_why names no reason'
 
 
 def stats(ms):
@@ -363,10 +381,15 @@ def summarize(results, cases):
         if not (n and s and 'NA' not in (n['value'], s['value']) and 'error' not in (n['value'], s['value'])):
             lines.append('%-26s %-10s %10s %10s %8s  %s' % (c.id, m, n['value'] if n else '-', s['value'] if s else '-', '-', (s or {}).get('note', '')[:60]))
             continue
+        if c.fallback:   # PostgreSQL's plan against itself has no ratio: the lane with the scan forced is the comparison
+            f = cell(FORCED[0])
+            ok = f and f['value'] not in ('NA', 'error', '')
+            lines.append('%-26s %-10s %10s %10s %8s  %s' % (c.id, m, n['value'], f['value'] if ok else '-', '%.1fx' % (float(n['value']) / float(f['value'])) if ok and float(f['value']) else '-', 'scan forced: ' + f['note'][:46] if f else ''))
+            continue
         speed = float(n['value']) / float(s['value']) if float(s['value']) else float('inf')
         lines.append('%-26s %-10s %10s %10s %7.1fx  %s' % (c.id, m, n['value'], s['value'], speed, s['note'][:60]))
         if speed < 0.95:
-            losses.append('%s: sift %s %s against native %s (%.1fx slower%s)' % (c.id, s['value'], m, n['value'], 1 / speed, ', the same plan' * (n['note'].replace(' NOISY', '') == s['note'].replace(' NOISY', ''))))
+            losses.append('%s: sift %s %s against native %s (%.1fx slower)' % (c.id, s['value'], m, n['value'], 1 / speed))
     if losses:
         lines += ['', 'slower than native on %d of %d numbers:' % (len(losses), sum(len(c.metrics) for c in cases))] + ['  ' + l for l in losses]
     return '\n'.join(lines)
@@ -418,6 +441,8 @@ def run_point(args, cases, rows, engines, results, failed):
             else:
                 point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
             lanes[lane].close()
+        if 'why' in notes:
+            point.append(dict(case=c.id, arm='why', metric='ms', value='', note=notes['why'], load=load))
         if c.share:
             left[c.schema()] -= 1
         if c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
@@ -590,6 +615,8 @@ def cmd_check(args):
     for c in cases:
         if ids.count(c.id) > 1:
             errors.append('%s: the id is in bench/cases.tsv twice' % c.id)
+        if c.plan in ('', '.') or (c.fallback and c.load):
+            errors.append('%s: the plan column must name the plan (a case that compares pg_sift has its scan in it; fallback:REGEX names the plan PostgreSQL keeps), not %r' % (c.id, c.plan))
         try:
             re.compile(c.plan)
         except re.error as e:

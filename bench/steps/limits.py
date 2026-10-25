@@ -33,9 +33,8 @@ def case_losses(results):
         return []
     out = []
     for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()):
-        if f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:
-            unit = cases_render.UNIT[f['metric']]
-            out.append((f['sift'] / f['native'], '`%s` %s%s' % (f['case'].id, unit, ' (the planner kept the same plan)' if f['kept'] else ''), 'PostgreSQL', ms(f['sift']), ms(f['native'])))
+        if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of docs/BENCHMARKS.md
+            out.append((f['sift'] / f['native'], '`%s` %s' % (f['case'].id, cases_render.UNIT[f['metric']]), 'PostgreSQL', ms(f['sift']), ms(f['native'])))
     return out
 
 

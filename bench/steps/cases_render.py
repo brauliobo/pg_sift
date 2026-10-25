@@ -43,20 +43,39 @@ def collect(rows, registry, root=REPO):
                 continue
             val = lambda r: float(r['value']) if r and r['value'] not in ('', 'NA', 'error') else None  # noqa: E731
             others = {arm: ('not supported' if (r := get(arm)) and r['value'] == 'NA' else val(r)) for arm in c.baselines[1:] + [v[0] for v in c.variants] if get(arm)}
-            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), kept=re.sub(r' NOISY$', '', n['note']) == re.sub(r' NOISY$', '', s['note']), noisy=any('NOISY' in (r['note'] or '') for r in (n, s))))
+            forced, why = get(cases_mod.FORCED[0]), get('why')
+            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), kept=c.fallback, noisy=any('NOISY' in (r['note'] or '') for r in (n, s)),
+                            forced=val(forced), forced_note=re.sub(r' NOISY$', '', forced['note']) if forced else '', why=why['note'] if why else ''))
     return out
 
 
-def same_plan(f):
-    """the planner kept PostgreSQL's plan: no ratio of the optimization, but the cost of deciding, when it shows"""
-    r = f['native'] / f['sift'] if f['native'] and f['sift'] else 1
-    return 'same plan' + (' (%s slower)' % speed(1 / r) if r <= 1 - TIE else '')
+def gap(f):
+    """what the scan does where the planner keeps PostgreSQL's plan (the lane with `sift.agg_force = on`): cost (faster than PostgreSQL, the cost model declines it), declined (not faster:
+    the planner is right), feature (the shape cannot run on the scan), unmeasured"""
+    if f['forced_note'].startswith('no scan'):
+        return 'feature'
+    if not f['forced'] or not f['native']:
+        return 'unmeasured'
+    return 'cost' if f['native'] / f['forced'] >= 1 + TIE else 'declined'
+
+
+def declined(f):
+    """the speed-up cell of a case whose default plan is PostgreSQL's: no ratio of that plan against itself, the ratio of the forced scan"""
+    g = gap(f)
+    if g == 'feature':
+        return 'default: PostgreSQL\'s plan; the scan cannot run it'
+    if g == 'unmeasured':
+        return 'default: PostgreSQL\'s plan; forced scan not measured'
+    r = f['native'] / f['forced']
+    return 'default: PostgreSQL\'s plan; forced scan **%s**' % speed(r) if g == 'cost' else 'default: PostgreSQL\'s plan; forced scan %s' % ('%s slower' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r))
 
 
 def ranked(f):
-    """0 a loss (the scan slower than PostgreSQL, or its time with the same plan), 1 a tie or no ratio, 2 a win"""
+    """0 a loss or a gap (the scan slower than PostgreSQL, or a case where the planner declines it and the forced scan wins or cannot run), 1 a tie or no ratio, 2 a win"""
     r = f['native'] / f['sift'] if f['native'] and f['sift'] else 1
-    return 0 if r <= 1 - TIE else 2 if r >= 1 + TIE and not f['kept'] else 1
+    if f['kept']:
+        return 0 if gap(f) in ('cost', 'feature') else 1
+    return 0 if r <= 1 - TIE else 2 if r >= 1 + TIE else 1
 
 
 def verdict(f):
@@ -68,30 +87,65 @@ def verdict(f):
 def cell_others(f):
     parts = []
     for arm, v in f['others'].items():
-        parts.append('%s %s' % ('`%s`' % arm if arm in VARIANT else arm, v if isinstance(v, str) else figure(v)))
+        parts.append('%s %s' % ('`%s`' % arm if arm in VARIANT else arm, 'no scan' if arm == cases_mod.FORCED[0] and gap(f) == 'feature' else v if isinstance(v, str) else figure(v)))
     return '; '.join(parts) or '-'
+
+
+def by_gap(figs):
+    """the cases where the planner keeps PostgreSQL's plan, by gap(): cost, declined, feature, unmeasured -> case ids"""
+    out = {}
+    for f in figs:
+        if f['kept'] and f['metric'] == f['case'].metrics[0]:
+            out.setdefault(gap(f), []).append(f['case'].id)
+    return out
+
+
+def kept_text(figs, ids=True):
+    """the sentence on the cases that run PostgreSQL's plan: no ratio of that plan against itself, what the scan does when it is forced"""
+    g = by_gap(figs)
+    total = len({f['case'].id for f in figs})
+    k = sum(map(len, g.values()))
+    if not k:
+        return 'the planner chose the scan on all %d cases' % total
+    names = lambda key: ' (%s)' % ', '.join(g[key]) if ids else ''  # noqa: E731
+    parts = ['faster on %d%s: the cost model declines it' % (len(g['cost']), names('cost')) if g.get('cost') else '', 'not faster on %d%s: the planner is right' % (len(g['declined']), names('declined')) if g.get('declined') else '',
+             'cannot run on %d%s: the shape is not supported' % (len(g['feature']), names('feature')) if g.get('feature') else '', 'not measured on %d%s' % (len(g['unmeasured']), names('unmeasured')) if g.get('unmeasured') else '']
+    return 'the planner chose the scan on %d of %d cases and ran PostgreSQL\'s plan on %d (no ratio for those); with the scan forced (`sift.agg_force`) it is %s' % (total - k, total, k, '; '.join(p for p in parts if p))
 
 
 def takeaway(figs, brief=False):
     rs = [(f, verdict(f)) for f in figs if verdict(f)]
-    kept = [f for f in figs if f['kept']]
     faster = [r for f, r in rs if r >= 1 + TIE]
     tie = [f for f, r in rs if 1 - TIE < r < 1 + TIE]
     slower = [(f, 1 / r) for f, r in rs if r <= 1 - TIE]
     lo, hi = (speed(min(faster)), speed(max(faster))) if faster else ('', '')
-    text = 'pg_sift (the planner\'s own choice) is faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on %d of %d numbers%s' % (len(faster), len(rs), ' (%s to %s)' % (lo, hi) if faster else '')
+    text = 'where the planner chooses the scan, pg_sift is faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on %d of %d numbers%s' % (len(faster), len(rs), ' (%s to %s)' % (lo, hi) if faster else '')
     if tie:
         text += ', a tie on %d' % len(tie)
     if slower:
         text += ', slower on %d: %s' % (len(slower), ', '.join('%s %s (%s slower)' % (f['case'].id, UNIT[f['metric']], speed(r)) for f, r in slower))
     flat = [(f, a) for f, _ in rs for a in OFF if isinstance(f['others'].get(a), float) and f['sift'] and f['others'][a] <= f['sift'] * (1 + TIE)]
     if brief:
-        return text + (', the planner kept the normal plan on %d (%s)' % (len(kept), ', '.join(f['case'].id for f in kept)) if kept else '') + '. The setting of a variant that brings no gain is listed in docs/BENCHMARKS.md.'
+        return text + '; ' + kept_text(figs, ids=False) + '. The gap list per case and the setting of a variant that brings no gain are in docs/BENCHMARKS.md.'
     if flat:
         text += '; the setting itself brings no gain (its variant is as fast, within %d%%) on %d: %s' % (TIE * 100, len(flat), ', '.join('%s %s `%s`' % (f['case'].id, UNIT[f['metric']], a) for f, a in flat))
-    if kept:
-        text += '; the planner kept the normal plan (the same plan as PostgreSQL\'s, no ratio; the slower ones are pg_sift\'s time with that plan) on %d: %s' % (len(kept), ', '.join('%s %s%s' % (f['case'].id, UNIT[f['metric']], same_plan(f)[len('same plan'):]) for f in kept))
-    return text + '.'
+    return text + '; ' + kept_text(figs) + '.'
+
+
+def gap_lines(figs):
+    """docs/BENCHMARKS.md, block gaps: one row per case that runs PostgreSQL's plan, with the lane that forces the scan beside it and the reasons sift.explain_why gives; the key_sets work from this list"""
+    owner = {'cost': 'cost model', 'feature': 'feature breadth', 'declined': 'none (the planner is right)', 'unmeasured': '-'}
+    rows = [f for f in figs if f['kept'] and f['metric'] == f['case'].metrics[0]]
+    if not rows:
+        return ['No case runs PostgreSQL\'s plan: the planner chooses the scan on every case.']
+    rows.sort(key=lambda f: (['cost', 'feature', 'declined', 'unmeasured'].index(gap(f)), f['case'].id))
+    why = lambda t: t.replace('|', '\\|') or '-'  # noqa: E731
+    head = ['| case | shape | gap | owner | PostgreSQL | forced scan | forced scan vs PostgreSQL | why the planner declines (`sift.explain_why`, default) | why the scan cannot run (forced) |', '|---|---|---|---|---:|---:|---:|---|---|']
+    body = ['| `%s` | %s | %s | %s | %s | %s | %s | %s | %s |' % (f['case'].id, f['case'].label.replace('|', '\\|'), {'cost': 'cost-model gap', 'feature': 'feature gap', 'declined': 'planner right', 'unmeasured': 'not measured'}[gap(f)],
+            owner[gap(f)], figure(f['native']), *(('-', '-') if gap(f) in ('feature', 'unmeasured') else (figure(f['forced']), speed(f['native'] / f['forced']))), why(f['why']),
+            why(f['forced_note'][len('no scan: '):]) if gap(f) == 'feature' else '-') for f in rows]
+    return ['Where the planner keeps PostgreSQL\'s plan the case is not a comparison of pg_sift with PostgreSQL (the same plan against itself): the default lane is listed without a ratio and a second pg_sift lane forces the scan (`sift.agg_force = on`).', '',
+            'A **cost-model gap** is a case where the forced scan beats PostgreSQL and the planner still declines it; a **feature gap** a shape the scan cannot run (the reason is the one `sift.explain_why` gives); **planner right**: the forced scan is not faster.', ''] + head + body
 
 
 def rounds(meta):
@@ -112,11 +166,11 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
     body = []
     for f in figs:
         r = verdict(f)
-        sp = same_plan(f) if f['kept'] else '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
+        sp = declined(f) if f['kept'] else '-' if r is None else '**%s**' % speed(r) if r >= 1 + TIE else '%s (slower)' % speed(1 / r) if r <= 1 - TIE else 'tie (%s)' % speed(r)
         if r and isinstance(f['others'].get('bulk_off'), float) and f['sift']:
             sp += ' (`sift.table_bulk_groups` on vs off: %s lower)' % speed(f['others']['bulk_off'] / f['sift'])
         first = f['metric'] == f['case'].metrics[0]
-        body.append('| `%s` | %s | %s | %s | %s | %s | %s | %s |' % (f['case'].id, f['case'].label.replace('|', '\\|') if first else '(the same case)', UNIT[f['metric']], figure(f['native']), figure(f['sift']), cell_others(f), sp,
+        body.append('| `%s` | %s | %s | %s | %s | %s | %s | %s |' % (f['case'].id, f['case'].label.replace('|', '\\|') if first else '(the same case)', UNIT[f['metric']], figure(f['native']), 'PostgreSQL\'s plan' if f['kept'] else figure(f['sift']), cell_others(f), sp,
                                                                   ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
@@ -193,7 +247,7 @@ def scale_lines(meta, rows, registry):
                 cells.append('-')
                 continue
             r = ratio(p)
-            verdict_ = ('same plan' + (', %s slower' % speed(1 / r) if r <= 1 - TIE else '')) if p['kept'] else '**%s**' % speed(r) if r >= 1 + TIE else '%s slower' % speed(1 / r) if r <= 1 - TIE else 'tie'
+            verdict_ = 'PostgreSQL\'s plan' if p['kept'] else '**%s**' % speed(r) if r >= 1 + TIE else '%s slower' % speed(1 / r) if r <= 1 - TIE else 'tie'
             cells.append('%s / %s ms %s%s' % (figure(p['native']), figure(p['sift']), verdict_, ' (busy)' if p['noisy'] else ''))
         body.append('| `%s` | %s | %s | %s |' % (c['case'].id, c['case'].label.replace('|', '\\|'), ' | '.join(cells), crossover(c['points'])))
     top = [c for c in cs if ratio(c['points'][-1]) <= 1 - TIE]
@@ -230,9 +284,9 @@ def featured(rows, registry, scale_rows):
         if not c.headline or not f or c.metrics[0] != 'ms':
             continue
         r = verdict(f)
-        sp = same_plan(f) if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
+        sp = declined(f) if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
         sl = ['%.2f' % bench_charts.slope(*zip(*sorted(ser[c.id][a]))) if len(ser.get(c.id, {}).get(a, [])) >= 3 else '-' for a in ('native', 'sift')]
-        body.append(['[`%s`](bench/cases/%s.sql)' % (c.id, c.id), c.label.replace('|', '\\|'), figure(f['native']), figure(f['sift']), sp, ' / '.join(sl)])
+        body.append(['[`%s`](bench/cases/%s.sql)' % (c.id, c.id), c.label.replace('|', '\\|'), figure(f['native']), "PostgreSQL's plan" if f['kept'] else figure(f['sift']), sp, ' / '.join(sl)])
     return (extras.table(head, body, ['---', '---', '---:', '---:', '---:', '---:']) + ([''] + flips if flips else [])) if body else []
 
 
@@ -280,6 +334,8 @@ def render(results, readme, benchmarks):
         for doc, body in ((benchmarks, lines(meta, rows, registry, 'results', '../bench')), (readme, readme_lines(meta, rows, registry, scale_rows))):
             if doc and os.path.exists(doc) and '<!-- bench:faster33:begin' in open(doc).read():
                 extras.replace_block(doc, 'faster33', body)
+        if benchmarks and os.path.exists(benchmarks) and '<!-- bench:gaps:begin' in open(benchmarks).read():
+            extras.replace_block(benchmarks, 'gaps', gap_lines(collect(rows, registry)))
     scale = os.path.join(results, 'cases-scale.tsv')
     meta, rows = extras.read(scale) if os.path.exists(scale) else ({}, [])
     for doc in (benchmarks, readme):

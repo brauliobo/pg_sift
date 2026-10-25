@@ -125,10 +125,12 @@ def cases_summary(results):
     meta, rows = extras.read(path)
     figs = [f for f in cases_render.collect(rows, cases_mod.read_registry()) if f['metric'] == f['case'].metrics[0] and f['metric'] == 'ms' and f['native'] and f['sift']]
     wins = [f['native'] / f['sift'] for f in figs if not f['kept'] and f['native'] / f['sift'] >= 1 + TIE]
-    lose = [f for f in figs if f['native'] / f['sift'] <= 1 - TIE]
+    lose = [f for f in figs if not f['kept'] and f['native'] / f['sift'] <= 1 - TIE]
     kept = [f for f in figs if f['kept']]
+    g = cases_render.by_gap(figs)
+    gaps = 'with the scan forced: faster on %d, not faster on %d, cannot run on %d' % tuple(len(g.get(k, [])) for k in ('cost', 'declined', 'feature')) + (', not measured on %d' % len(g['unmeasured']) if g.get('unmeasured') else '')
     out = (f'Across {len(figs)} query shapes on {int(meta["orders"]):,} rows (reports with grouping sets and window functions, top-N, semi and anti joins, keyset pages, JSON arrays, lookups by key) pg_sift is faster than '
-           f'PostgreSQL on the same table on {len(wins)} (median {x(statistics.median(wins))}, up to {x(max(wins))}); the planner kept PostgreSQL\'s plan on {len(kept)}, and pg_sift is slower on {len(lose)}'
+           f'PostgreSQL on the same table on {len(wins)} (median {x(statistics.median(wins))}, up to {x(max(wins))}); the planner kept PostgreSQL\'s plan on {len(kept)} (no ratio; {gaps}), and pg_sift is slower on {len(lose)}'
            + (' (' + ', '.join(f'{f["case"].id} {x(f["sift"] / f["native"])}' for f in lose) + ')' if lose else '') + '.')
     p4 = os.path.join(results, 'cases-wm4g.tsv')
     if os.path.exists(p4):

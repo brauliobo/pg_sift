@@ -417,7 +417,9 @@ def case_ratios(results):
         if f['case'].id in seen:
             continue
         seen.add(f['case'].id)
-        out.append((f['case'].id, f['native'] / f['sift'] if f['native'] and f['sift'] else None, f['kept'], f['native'], f['sift'], f['metric']))
+        g = cases_render.gap(f) if f['kept'] else ''   # a case that runs PostgreSQL's plan has no ratio of its own: the bar is the lane with the scan forced
+        scan = f['sift'] if not g else f['forced'] if g in ('cost', 'declined') else None
+        out.append((f['case'].id, f['native'] / scan if scan else None, g, f['native'], scan, f['metric']))
     return meta, out
 
 
@@ -425,7 +427,7 @@ def cases_speedup(results, theme):
     meta, cs = case_ratios(results)
     c = Wide(theme)
     c.head(f'{len(cs)} cases of query shapes: pg_sift against PostgreSQL on the same rows',
-           f'PostgreSQL\'s median time over pg_sift\'s, {int(meta["orders"]):,} orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the planner kept PostgreSQL\'s plan (the bar shows the cost of deciding, if any).')
+           f'PostgreSQL\'s median time over pg_sift\'s, {int(meta["orders"]):,} orders, one backend, logarithmic axis. Blue: faster, orange: slower. Gray: the planner kept PostgreSQL\'s plan, the bar is the scan forced (`sift.agg_force`); no bar: the scan cannot run the case.')
     groups = {}
     for case in cs:
         groups.setdefault(family(case[0]), []).append(case)
@@ -449,13 +451,15 @@ def cases_speedup(results, theme):
         for cid, r, kept, nat, sf, metric in sorted(groups[name], key=lambda t: -(t[1] or 0)):
             cy = y + rowh / 2
             c.text(34, cy + 4, cid, 12)
+            if r is None and kept:
+                c.text(X(1) + 6, cy + 4, 'the scan cannot run it' if kept == 'feature' else 'forced scan not measured', 12, fill=c.t['ink'])
             if r is not None:
                 fill = c.t['neutral'] if kept or 0.95 < r < 1.05 else c.t['up'] if r >= 1 else c.t['down']
                 x0, x1 = X(1), X(r)
-                c.rect(min(x0, x1), y + 3, abs(x1 - x0) or 2, rowh - 6, fill, 2, f'{cid}: PostgreSQL {ms_text(nat)} ms, pg_sift {ms_text(sf)} ms ({factor_text(r)})' + (' (same plan)' if kept else ''))
+                c.rect(min(x0, x1), y + 3, abs(x1 - x0) or 2, rowh - 6, fill, 2, f'{cid}: PostgreSQL {ms_text(nat)} ms, pg_sift {ms_text(sf)} ms ({factor_text(r)})' + (' (scan forced; the planner runs PostgreSQL\'s plan)' if kept else ''))
                 label = (factor_text(r) + (' less WAL' if metric == 'wal_bytes' else '')) if r >= 1 else f'{factor_text(1 / r)} slower'
                 if kept:
-                    label = 'same plan' + ('' if abs(math.log10(r)) < math.log10(1.05) else f', {label}')
+                    label = f'forced scan {label}'
                 if r >= 1:
                     c.text(x1 + 6, cy + 4, label, 12, fill=c.t['ink'], weight=None if kept else 'bold')
                 else:
@@ -487,7 +491,7 @@ def shapes_tier(results):
 
 def cases_ecdf(results, theme):
     meta, cs = case_ratios(results)
-    cvals = [r for _, r, kept, _, _, metric in cs if r and metric == 'ms']
+    cvals = [r for _, r, kept, _, _, metric in cs if r and not kept and metric == 'ms']
     svals = [r for _, _, r in shape_ratios(results)]
     c = Wide(theme)
     c.head('How many cases get how much faster',
