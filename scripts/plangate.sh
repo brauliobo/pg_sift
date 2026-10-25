@@ -9,11 +9,12 @@
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings)
 #   --shapes RE   only the shapes whose name matches
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
-#                 lose still fails, but the plan and the cost band are those of the stock lane, so a different plan there is read, not failed
-#   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the heap with a
-#                 sift_col index, so a different plan there is read, not failed
+#                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan there is read, not failed
+#   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
+#                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan there is read, not failed
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
-#   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff
+#   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff. In another
+#                 lane (--lane tuned, --table) it rewrites the rows of that lane in test/plan/bands.tsv (the plan the lane chooses and the band around its ratio)
 #   --keep        keeps the database sift_plangate
 # Fails (exit 1) on a result that differs between the paths, a plan other than the expected one, a cost ratio outside its band and (without
 # --warn-time) a lose. Needs the scripts/pgtest.sh cluster installed and started (SIFT_TMP, SIFT_PORT).
@@ -45,17 +46,32 @@ case $LANE in
 	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
 	*) log "unknown lane $LANE (stock or tuned)"; exit 1 ;;
 esac
+# the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned or tabletuned
+LK=${TABLE:+table}$([[ $LANE != tuned ]] || echo tuned)
+[[ -z $LK ]] || settings+=("plangate.lane=$LK")
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
 sql -qAt -c "CREATE EXTENSION pg_sift" >/dev/null
 log "tables: $ROWS events, seed $SEED"
 sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/plan/gen.sql" ${TABLE:+-f "$REPO/test/plan/table.sql"} -f "$REPO/test/plan/run.sql" >/dev/null
 log "shapes"
+sql -q <<-SQL >/dev/null
+	\\copy plangate.bands FROM '$REPO/test/plan/bands.tsv'
+SQL
 sql -q -v runs="$RUNS" -v pattern="$ONLY" >/dev/null <<-SQL
 	\\set text \`cat '$REPO/test/plan/shapes.sql'\`
 	SELECT plangate.run_all(:'text', :runs, :'pattern');
 SQL
 
-if [[ -n $UPDATE ]]; then
+if [[ -n $UPDATE && -n $LK ]]; then
+	# the plan this lane chooses (either stays) and the band of a factor of 2 around its ratio, in 2 significant digits
+	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
+		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
+		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
+	{ grep -v "^$LK"$'\t' "$REPO/test/plan/bands.tsv" || true; cat "${SIFT_TMP}/plangate-bands.tsv"; } | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 >"${SIFT_TMP}/plangate-all.tsv"
+	cat "${SIFT_TMP}/plangate-all.tsv" >"$REPO/test/plan/bands.tsv"
+	rm -f "${SIFT_TMP}/plangate-bands.tsv" "${SIFT_TMP}/plangate-all.tsv"
+	log "updated the $LK rows of test/plan/bands.tsv"
+elif [[ -n $UPDATE ]]; then
 	sql -qAt -F $'\t' -c "SELECT name, expect FROM plangate.suggestions" >"${SIFT_TMP}/plangate-expect.tsv"
 	awk -F'\t' 'NR == FNR { e[$1] = $2; next }
 		/^-- name: / { n = substr($0, 10) }

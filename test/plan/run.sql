@@ -13,6 +13,9 @@ CREATE TABLE plangate.results (
 	name text PRIMARY KEY, shape text, plan text, chosen text, ratio float8, lo float8, hi float8, native_ms float8, scan_ms float8,
 	verdict text,               -- the scan against native: win, tie, lose (more than 1 ms and 20% slower); miss: not chosen, but wins on both counts
 	problems text[] NOT NULL DEFAULT '{}');
+-- the expectation of a shape in a lane other than stock (test/plan/bands.tsv, the lane in the setting plangate.lane): its plan and band replace the tag of the shape.
+-- A band is a factor of 2 around the ratio at 30000 rows; where the ratio moves with the rows (20000 to 50000, the size of the full CI tier), the smallest and largest of the three divided and multiplied by 1.3
+CREATE TABLE plangate.bands (lane text, name text, plan text, lo text, hi text);
 
 CREATE FUNCTION plangate.path(p text) RETURNS void LANGUAGE sql AS $$
 	SELECT set_config('sift.enable_agg', (p <> 'native')::text, false), set_config(s, (p <> 'scan')::text, false)
@@ -44,8 +47,10 @@ CREATE FUNCTION plangate.run(txt text, runs int) RETURNS void LANGUAGE plpgsql A
 DECLARE
 	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; tags text[] := string_to_array(coalesce(h ->> 'expect', 'untagged -'), ' '); plan text := tags[1]; band text[] := tags[2:3];
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
-	problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
+	lane_band plangate.bands; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
 BEGIN
+	SELECT * INTO lane_band FROM plangate.bands WHERE lane = current_setting('plangate.lane', true) AND name = nm;
+	IF FOUND THEN plan := lane_band.plan; band := ARRAY[lane_band.lo, nullif(lane_band.hi, '-')]; END IF;
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
 	err := coldiff.materialize(q, 'pg_native');
