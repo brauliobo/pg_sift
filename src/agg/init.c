@@ -271,9 +271,15 @@ register_key(AggExec *ex, int ki)
 	{
 		k->expr = init_expr(ex, sk->expr);
 		k->param = find_param(sk->expr);
-		k->bucket = (int64) sk->bucket * USECS_PER_SEC;
-		k->zone = sk->zoned ? zone_open(ex->cxt, session_timezone) : NULL;
-		k->zcut = sk->zoned == SIFT_ZONE_CUT;
+		/* the steps were planned for the UTC clock: with another meaning of UTC in this session's zone each value of the leaf is a step of its own, on no zone's clock (a key can name UTC over a call of the session zone's clock) */
+		if (sk->bucket > 0 && sift_aggexpr_utc_shadowed(sk->expr))
+			k->bucket = 1;
+		else
+		{
+			k->bucket = (int64) sk->bucket * USECS_PER_SEC;
+			k->zone = sk->zoned ? zone_open(ex->cxt, session_timezone) : NULL;
+			k->zcut = sk->zoned == SIFT_ZONE_CUT;
+		}
 		k->cal = k->param != NULL && k->param->paramtype == DATEOID;
 	}
 	else if (sk->kind == SAK_NUM)

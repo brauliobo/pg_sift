@@ -694,6 +694,7 @@ typedef struct SiftAggPaShape
  */
 enum {SAC_NOT, SAC_OK, SAC_ZONE, SAC_FINE};
 extern int	sift_aggexpr_cal(Node *e, uint8 *mask);
+extern bool sift_aggexpr_utc_shadowed(Node *e);
 extern int	sift_aggkey_cal(const SiftAggKey *k, uint8 *mask);
 extern bool sift_aggspec_preagg(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const SiftSrcPreagg *pa, SiftAggPaShape *out);
 

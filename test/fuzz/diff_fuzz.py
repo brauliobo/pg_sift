@@ -1186,7 +1186,8 @@ def dml_gorder(r, ctx):
 ZK_ZONES = ['UTC', 'America/New_York', 'Europe/London', 'Asia/Kolkata', 'Asia/Kathmandu', 'Australia/Lord_Howe', 'Pacific/Chatham', 'America/Sao_Paulo', 'Europe/Amsterdam', 'UTC+3', '+05:45', 'PST8PDT']
 ZK_KEYS = ["date_trunc('{u}', {e}.z)" for u in ('second', 'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year', 'decade', 'century', 'millennium')] + \
     ["extract({f} from {e}.z)" for f in ('hour', 'minute', 'day', 'dow', 'isodow', 'doy', 'week', 'month', 'year', 'isoyear', 'century')] + \
-    ['{e}.z::date', "date_trunc('day', {e}.z)::date", "extract(dow from date_trunc('week', {e}.z))", "date_trunc('hour', {e}.z)::time", "date_trunc('day', {e}.z, 'Etc/UTC')"]
+    ['{e}.z::date', "date_trunc('day', {e}.z)::date", "extract(dow from date_trunc('week', {e}.z))", "date_trunc('hour', {e}.z)::time", "date_trunc('day', {e}.z, 'Etc/UTC')",
+     "date_trunc('day', {e}.z, 'UTC')", "date_trunc('hour', {e}.z AT TIME ZONE 'GMT')", "({e}.z AT TIME ZONE 'UTC')::date", "date_trunc('day', date_trunc('day', {e}.z) AT TIME ZONE 'UTC')"]
 
 
 def gen_zonekey(r, ctx):

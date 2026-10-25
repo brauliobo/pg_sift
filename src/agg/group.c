@@ -832,6 +832,9 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 			case USECS_PER_DAY:
 				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, 0, &mn, &mx);
 				break;
+			case 1:				/* each value is a step of its own (init.c): the hash table of values */
+				table = false;
+				break;
 			default:
 				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
 		}

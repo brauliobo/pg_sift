@@ -12,6 +12,7 @@
 #include "nodes/miscnodes.h"
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
+#include "pgtime.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/numeric.h"
@@ -196,6 +197,25 @@ sift_plain_index_scans_restore(RelOptInfo *rel, uint64 saved)
 #define sift_pathkey_descending(pk)	((pk)->pk_cmptype == COMPARE_GT)
 /* SortGroupClause.reverse_sort is PostgreSQL 18's: before it the direction is the sort operator's own (> for descending) */
 #define sift_sortclause_reverse(sgc, pk)	((sgc)->reverse_sort = sift_pathkey_descending(pk))
+
+/*
+ * A zone name in date_trunc(unit, timestamptz, name) and AT TIME ZONE is read as an abbreviation of the session's zone first (the POSIX zone UTC+3 has the abbreviation
+ * UTC, at -03), so UTC or GMT is the UTC clock only where the session zone does not define it with another meaning. PostgreSQL 17 reads the abbreviations table alone.
+ */
+static inline bool
+sift_session_abbrev_not_utc(const char *name)
+{
+	char		up[TZ_STRLEN_MAX + 1];
+	bool		fixed;
+	long int	gmtoff;
+	int			isdst;
+
+	strlcpy(up, name, sizeof(up));
+	for (char *p = up; *p; p++)
+		*p = pg_toupper((unsigned char) *p);
+	return session_timezone != NULL && pg_timezone_abbrev_is_known(up, &fixed, &gmtoff, &isdst, session_timezone) && !(fixed && gmtoff == 0);
+}
+
 /* The operator that orders values of type typ as the pathkey does (make_sort_from_pathkeys) */
 #define sift_pathkey_sortop(pk, typ)	get_opfamily_member_for_cmptype((pk)->pk_opfamily, (typ), (typ), (pk)->pk_cmptype)
 
@@ -223,6 +243,7 @@ sift_tbm_next(SiftTbmIter *it, BlockNumber *blockno, bool *lossy, OffsetNumber *
 #define PG_MODULE_MAGIC_EXT(...)	PG_MODULE_MAGIC
 
 #define sift_count_search(scan)		((void) 0)
+#define sift_session_abbrev_not_utc(name)	false
 #define sift_pathkey_descending(pk)	((pk)->pk_strategy == BTGreaterStrategyNumber)
 #define sift_sortclause_reverse(sgc, pk)	((void) 0)
 #define sift_pathkey_sortop(pk, typ)	get_opfamily_member((pk)->pk_opfamily, (typ), (typ), (pk)->pk_strategy)

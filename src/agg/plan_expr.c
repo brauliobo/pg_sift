@@ -622,9 +622,9 @@ bucket_groups(AggCtx *c, Node *e, double span)
 	return bucket_groups(c, linitial(((FuncExpr *) e)->args), span);
 }
 
-/* a time zone name of UTC: the three-argument date_trunc and AT TIME ZONE with it give the same value in every session */
+/* a time zone name of UTC (the three-argument date_trunc and AT TIME ZONE with it give the same value in every session, but for a session zone that defines the bare name) */
 static bool
-utc_name(Node *e)
+utc_spelling(Node *e, char **name)
 {
 	static const char *const names[] = {"UTC", "Etc/UTC", "GMT", "Etc/GMT", "UCT", "Etc/UCT", "Zulu", "Etc/Zulu"};
 	Const	   *k;
@@ -636,8 +636,56 @@ utc_name(Node *e)
 	z = TextDatumGetCString(k->constvalue);
 	for (int i = 0; i < lengthof(names); i++)
 		ok |= pg_strcasecmp(z, names[i]) == 0;
-	pfree(z);
+	if (name != NULL && ok)
+		*name = z;
+	else
+		pfree(z);
 	return ok;
+}
+
+static bool
+utc_name(Node *e)
+{
+	char	   *z;
+	bool		ok = utc_spelling(e, &z);
+
+	if (ok)
+	{
+		ok = strchr(z, '/') != NULL || !sift_session_abbrev_not_utc(z);
+		pfree(z);
+	}
+	return ok;
+}
+
+static bool
+utc_shadowed_walker(Node *e, void *arg)
+{
+	char	   *z;
+
+	if (e == NULL)
+		return false;
+	if (IsA(e, FuncExpr))
+	{
+		FuncExpr   *f = (FuncExpr *) e;
+		Node	   *n = f->funcid == F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT ? lthird(f->args) : f->funcid == F_TIMEZONE_TEXT_TIMESTAMPTZ ? linitial(f->args) : NULL;
+
+		if (n != NULL && utc_spelling(n, &z))
+		{
+			bool		shadowed = strchr(z, '/') == NULL && sift_session_abbrev_not_utc(z);
+
+			pfree(z);
+			if (shadowed)
+				return true;
+		}
+	}
+	return expression_tree_walker(e, utc_shadowed_walker, arg);
+}
+
+/* the key's expression names UTC or GMT and the session zone gives the name another meaning: it is no step of the UTC clock in this session (a plan made in another zone) */
+bool
+sift_aggexpr_utc_shadowed(Node *e)
+{
+	return utc_shadowed_walker(e, NULL);
 }
 
 /* the integer, float or numeric cast of the number a field of a date was turned into: its value is a function of that number */
