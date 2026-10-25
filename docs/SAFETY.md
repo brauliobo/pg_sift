@@ -1,7 +1,7 @@
 # Memory safety in C for pg_sift
 
-The column engine and the BM25 readers decode bytes from disk. Rust-style safety in C means: every byte read goes through a length-carrying
-type (`SiftSpan`, src/core/span.h), arithmetic on stored sizes is checked, the compiler inserts what it can, and tools find the rest.
+The column engine and the BM25 readers decode bytes from disk. Every byte read goes through a length-carrying type (`SiftSpan`, src/core/span.h), arithmetic on stored
+sizes is checked, the compiler inserts what it can, and tools find the rest.
 
 ## Threat model
 
@@ -12,9 +12,9 @@ type (`SiftSpan`, src/core/span.h), arithmetic on stored sizes is checked, the c
 | Concurrent modification | a page changes between two reads of one header | copy the header once into a local, then parse the copy; buffer locks (not a C-language issue) |
 | Own bugs | off-by-one in a SIMD tail, use after free in a memory context | ASan/UBSan CI, fuzzers, Valgrind, PG debug build, static analysis |
 
-A data file an attacker can write also owns the server (PostgreSQL trusts its data directory); the goal is corruption becomes an `ERROR`
-(ERRCODE_DATA_CORRUPTED), never a wild read or write. Layers do not replace each other: Span checks what the code asks, ASan sees heap and
-stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds of known size and pointer wrap, fuzzers find what nobody thought of.
+An attacker who can write a data file already owns the server (PostgreSQL trusts its data directory); the goal is that corruption becomes an `ERROR`
+(ERRCODE_DATA_CORRUPTED), never a wild read or write. The layers complement each other: Span checks what the code asks, ASan sees heap and
+stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds of known size and pointer wrap, fuzzers find the unexpected.
 
 ## Ranking (safety gain / cost; cost is instructions by cpu_gate, below; "pkg" is shipped in packages)
 
@@ -29,14 +29,13 @@ stack but not an overrun inside one palloc chunk, trap UBSan sees array bounds o
 | 7 | `pointer-overflow` trap (`SIFT_POINTER_OVERFLOW=1`) | pointer wrap | +9 to +36% | separate opt-in, off in `1` |
 | 8 | Static analysis (scripts/static.sh) | shallow bugs, widening multiplies | none at run time | CI `static`, non-blocking |
 | 9 | Structural verifier (sift.verify) sharing the Span code | offline detection | none at run time | phase 2 |
-| 10 | CBMC on Span and the chunk header parser; clang `-fbounds-safety` | proof for small code; compiler-enforced bounds | CBMC not installed here; bounds-safety blocked | later |
+| 10 | CBMC on Span and the chunk header parser; clang `-fbounds-safety` | proof for small code; compiler-enforced bounds | CBMC not used; bounds-safety blocked | later |
 | 11 | `debug_discard_caches = 1` on a server with assertions (tests `cache_discard`, `verify_relcache`) | a pointer into the relcache's cached state (`rd_amcache`) kept across a lock or a catalog read: the entry is reloaded at every such point and the freed state is overwritten. Found the crash of , of `sift.col_verify` and of the cost estimate of a scan; each dies in seconds on a few rows | `cache_discard` 48 s (0.5 s without the setting, about 30 ms per row), `verify_relcache` 2 s; 0 at run time | the PostgreSQL 19 job of CI (a build with assertions) and the `assert` lane |
 
 ## Measured overhead
 
-`bench/steps/cpu_gate.sh`, user-mode instructions per operation (8 rounds, 20k rows, 95% intervals under 1%), build with and without; wall
-time was not used. BM25 cells are bulk, merge and the query classes count, rank, and, or, phrase. Column-scan
-cells are 5 pushdown queries (bench/cpu-query.sh, 100 queries, 5 rounds). The single checks ran on top of `init`.
+`bench/steps/cpu_gate.sh`: user-mode instructions per operation (8 rounds, 20k rows, 95% intervals under 1%), build with and without; wall time was not used (loaded host).
+BM25 cells: bulk, merge and the query classes count, rank, and, or, phrase. Column-scan cells: 5 pushdown queries (bench/cpu-query.sh, 100 queries, 5 rounds). Single checks ran on top of `init`.
 
 | Flag set | BM25 cells | Column scan | Verdict |
 |---|---|---|---|
@@ -49,55 +48,57 @@ cells are 5 pushdown queries (bench/cpu-query.sh, 100 queries, 5 rounds). The si
 | `pointer-overflow` | +9 to +36% (bulk +36, merge +27) | not run | opt-in only |
 | ASan+UBSan (SANITIZE=1) | not gated | not gated | CI sanitize flavor |
 
-Flags above 1% on hot loops are off by default, on in the `hardened` flavor (`pointer-overflow` only on request). `signed-integer-overflow` is not in the trap
-set (`-fwrapv` makes it defined). The Span is not measured yet (no decoder uses it): phase 2 measures each converted decoder with the same cells.
-Reproduce: `bench/steps/cpu_gate.sh --env LABEL=SIFT_HARDEN=1`.
+Flags above 1% on hot loops are off by default and on in the `hardened` flavor (`pointer-overflow` only on request). `signed-integer-overflow` is not trapped (`-fwrapv` defines it).
+The Span is not measured yet (no decoder uses it); phase 2 measures each converted decoder with the same cells. Reproduce: `bench/steps/cpu_gate.sh --env LABEL=SIFT_HARDEN=1`.
 
 ## What each knob is
 
-`SIFT_HARDEN=pkg|init|1` (scripts/harden.mk, included by the Makefile) probes every flag with the host compiler and drops unknown ones.
-`SIFT_UBSAN_SET="bounds shift"` (or comma list) picks the trap checks, `SIFT_POINTER_OVERFLOW=1` adds the pointer-wrap trap; scripts/pgtest.sh passes them. Others: `-Wvla -Walloca -Warray-bounds=2
--Wstringop-overflow=4 -Wformat=2 -Wundef` in `pkg`. `-Wconversion` (474 hits) and `-Wsign-conversion` (1306) are too noisy to enable;
-`-Wnull-dereference` (36) and `-Wclobbered` (2, see the findings) are worth a one-time read.
-`scripts/check-memory.sh` (lint, with a selftest; `check-memory: allow <why>` on a site) flags what a grep can decide: `rd_amcache` outside the files that own an accessor of it, and an inclusive `for` loop over a 64-bit counter (it never ends when the bound is the largest value, the key loop of the point directory).
-CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SIFT_HARDEN=1`, 16 decoder regress tests, all pass), `static`, `span-test`
-(sqlite/tests/span_test.c, ASan/UBSan, SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from source (`make pg-assert`, `make pg-valgrind`,
-`PG_ASSERT_MAJOR=17` for the 17 branch; scripts/pg-assert.sh pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, `-DCATCACHE_FORCE_RELEASE` (every syscache lookup builds a fresh entry and frees it at release, so a `HeapTuple` kept past its `ReleaseSysCache` is garbage; found F-MCX-1), plus `-DUSE_VALGRIND` for
-the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`): `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh: 13 regression tests and
-2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11) and `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh: 4 tests under memcheck with the
-server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has no debug symbols runs it in a pinned Debian bookworm container, see the header of the script; skips when neither works). Weekly, non-blocking on GitHub: .github/workflows/assert.yml.
-The quick tier of `ci.yml` has one entry on this server ("PostgreSQL 18 (assertions)", the 30 `installcheck-agg_*` regress tests of the planner paths: cte, cost, scope, lateral, subplan, placeholder; the whole `installcheck-agg*` set takes 61 minutes on this server): the planner asserts (a `foreach_node` cast of the wrong node type, found on PostgreSQL 19 first) exist only in a `--enable-cassert` build, which the distribution packages of 17 and 18 lack.
+`SIFT_HARDEN=pkg|init|1` (scripts/harden.mk, included by the Makefile) probes every flag with the host compiler and drops unknown ones. `SIFT_UBSAN_SET="bounds shift"` (or comma list)
+picks the trap checks and `SIFT_POINTER_OVERFLOW=1` adds the pointer-wrap trap; scripts/pgtest.sh passes them. `pkg` also adds `-Wvla -Walloca -Warray-bounds=2 -Wstringop-overflow=4
+-Wformat=2 -Wundef`. `-Wconversion` (474 hits) and `-Wsign-conversion` (1306) are too noisy to enable; `-Wnull-dereference` (36) and `-Wclobbered` (2, see the findings) merit a one-time read.
 
-## Tools on this host (gcc 16.2, clang 23.1)
+`scripts/check-memory.sh` (lint, with a selftest; `check-memory: allow <why>` on a site) flags what a grep can decide: `rd_amcache` outside the files that own an accessor of it, and an
+inclusive `for` loop over a 64-bit counter (it never ends when the bound is the largest value, the key loop of the point directory).
 
-Installed: clang-tidy, scan-build, gcc -fanalyzer, libFuzzer, MSan and UBSan-minimal runtimes, valgrind 3.25, perf. Not installed: cppcheck
-(scripts/static.sh skips it), CBMC, ESBMC, Frama-C, CodeQL, AFL++.
-- clang `-fbounds-safety` (`__counted_by`, `__sized_by`, `__indexable`): clang 23 here only has `-Xclang -fexperimental-bounds-safety`, no
+CI (scripts/ci.sh): `hardened` (scripts/hardened.sh: private copy built with `SIFT_HARDEN=1`, 16 decoder regress tests), `static`, `span-test` (sqlite/tests/span_test.c, ASan/UBSan,
+SIMD=none), `fuzz` (scripts/fuzz.sh). Opt-in lanes on a PostgreSQL built from source (`make pg-assert`, `make pg-valgrind`, `PG_ASSERT_MAJOR=17` for the 17 branch; scripts/pg-assert.sh
+pins 18.6 and 17.11 with cassert, debug, `-DRANDOMIZE_ALLOCATED_MEMORY`, `-DCATCACHE_FORCE_RELEASE` (every syscache lookup builds a fresh entry and frees it at release, so a `HeapTuple`
+kept past its `ReleaseSysCache` is garbage; found F-MCX-1), plus `-DUSE_VALGRIND` for the valgrind prefix; cached in `$SIFT_PG_CACHE`, default `~/.cache/sift/pg`):
+- `SIFT_CI_JOBS=assert scripts/ci.sh quick` (scripts/assert.sh): 13 regression tests and 2 quick-tier TAP tests; fails on a TRAP or a memory-context warning in any server log; passes on 18.6 and 17.11.
+- `SIFT_CI_JOBS=valgrind` (scripts/valgrind.sh): 4 tests under memcheck with the server's valgrind.supp and `--error-exitcode`, bounded by `SIFT_VALGRIND_TIMEOUT`; a host whose glibc has
+  no debug symbols runs it in a pinned Debian bookworm container (see the script header); skips when neither works.
+- Weekly and non-blocking on GitHub: .github/workflows/assert.yml. The quick tier of `ci.yml` has one assertions entry ("PostgreSQL 18 (assertions)", the 30 `installcheck-agg_*` regress
+  tests of the planner paths: cte, cost, scope, lateral, subplan, placeholder; the whole `installcheck-agg*` set takes 61 minutes there): planner asserts (a `foreach_node` cast of the wrong
+  node type, found on PostgreSQL 19 first) exist only in a `--enable-cassert` build, which the distribution packages of 17 and 18 lack.
+
+## Tools (gcc 16.2, clang 23.1)
+
+Used: clang-tidy, scan-build, gcc -fanalyzer, libFuzzer, MSan and UBSan-minimal runtimes, valgrind 3.25, perf. Not used: cppcheck (scripts/static.sh skips it when absent), CBMC, ESBMC, Frama-C, CodeQL, AFL++.
+- clang `-fbounds-safety` (`__counted_by`, `__sized_by`, `__indexable`): clang 23 only has `-Xclang -fexperimental-bounds-safety`, no
   `<ptrcheck.h>`, and a one-function probe did not build; Apple's clang ships it. Not usable on the Debian/RPM/AUR toolchains.
-- `counted_by` on flexible array members: gcc 15+ and clang 18+; with `-fsanitize=bounds` the access traps (verified with gcc 16). Applies to 5
-  sites only (src/core/page.h x3, src/bm25/parallel.h, src/col/batch.c); the pgsql-hackers thread "Add counted_by attribute" is the
-  PostgreSQL-side attempt (it found write-order problems under bounds checking). Low value for sift: decoders mostly walk byte buffers.
+- `counted_by` on flexible array members: gcc 15+ and clang 18+; with `-fsanitize=bounds` the access traps (verified with gcc 16). Applies to 5 sites only (src/core/page.h x3,
+  src/bm25/parallel.h, src/col/batch.c); the pgsql-hackers thread "Add counted_by attribute" is the PostgreSQL-side attempt (it found write-order problems under bounds checking). Low value: decoders mostly walk byte buffers.
 - PostgreSQL aids: `--enable-cassert` implies MEMORY_CONTEXT_CHECKING and CLOBBER_FREED_MEMORY (they catch palloc overruns ASan cannot); the
   `assert` and `valgrind` lanes above use them. amcheck is the model for sift.verify.
 - MSan: only for the standalone fuzz targets, with every dependency instrumented (zstd/lz4/libpgcommon are not: `DEFS= COLZ=`, false positives in libc wrappers).
-- MTE (arm64) and CHERI: hardware tag/capability checks; mention only, no toolchain in the distro targets.
-- Rust: not recommended now. pgrx is real but would replace the C ABI of the access methods and the portable core shared with SQLite and MariaDB;
-  possible later for a new standalone decoder crate behind a C ABI and `cbindgen`, with the Span semantics as its contract.
+- MTE (arm64) and CHERI: hardware tag/capability checks; no toolchain in the distro targets.
+- Rust: not recommended now. pgrx would replace the C ABI of the access methods and the portable core shared with SQLite and MariaDB;
+  possible later for a standalone decoder crate behind a C ABI and `cbindgen`, with the Span semantics as its contract.
 
 Packages (Debian/RPM/AUR) use `SIFT_HARDEN=pkg` (FORTIFY needs -O2; aarch64 gets `-mbranch-protection` instead of CET); `init` and above stay off.
 
 ## Coverity Scan
 
 .github/workflows/coverity.yml (weekly and on demand) builds under `cov-build` and uploads to scan.coverity.com; without the secrets it does nothing and
-passes. The owner: (1) sign in at https://scan.coverity.com with the GitHub account and add the public repository as a project (C/C++; the project name
-is `owner/repo`, or set the repository variable `COVERITY_SCAN_PROJECT`); (2) copy the project token from Project Settings; (3) add the Actions secrets
-`COVERITY_SCAN_TOKEN` (that token) and `COVERITY_SCAN_EMAIL` (the email of the Coverity account that owns the project); (4) run the workflow once from the
-Actions tab (`workflow_dispatch` needs the workflow on the default branch); (5) triage the defects at scan.coverity.com. Coverity limits builds per day.
+passes. Setup: (1) sign in at https://scan.coverity.com with the GitHub account and add the public repository as a project (C/C++; project name `owner/repo`, or set the repository
+variable `COVERITY_SCAN_PROJECT`); (2) copy the project token from Project Settings; (3) add the Actions secrets `COVERITY_SCAN_TOKEN` (that token) and `COVERITY_SCAN_EMAIL` (the email of the
+account that owns the project); (4) run the workflow once from the Actions tab (`workflow_dispatch` needs the workflow on the default branch); (5) triage the defects at scan.coverity.com.
+Coverity limits builds per day.
 
 ## Phase 2: conversion list (31 entries)
 
-P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct hand-written checks to move onto Span, P4 hygiene. Each item:
-raw offset arithmetic becomes `sift_span_sub/array/take/read_*`, validate before allocate, raise DATA_CORRUPTED.
+P1 out-of-bounds from stored data, P2 unbounded loop or allocation, P3 correct hand-written checks to move onto Span, P4 hygiene. Each item: raw offset arithmetic becomes
+`sift_span_sub/array/take/read_*`, validate before allocate, raise DATA_CORRUPTED.
 
 | Id | File:function | Gap and replacement |
 |---|---|---|

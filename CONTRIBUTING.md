@@ -11,33 +11,31 @@ scripts/ci.sh affected --focus      # while developing: of the changed functions
 make check-full                     # full tier: ASan build, long soak and fuzz runs, all mutants
 ```
 
-`make check` and the scripts it runs need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only. Where a host cannot run a stage it says so and skips it: the Perl TAP tests (Homebrew's PostgreSQL has no `src/test/perl`), the compatibility tests that build a release older than 3.2.0 (x86-64 only) and the benchmark generators (Python 3.12).
+`make check` and its scripts need bash 4 or newer: on macOS `brew install bash` and put it first on `PATH` (the stock bash 3.2 stops with `needs bash 4+`). The memory checks of the leak gate (`/proc`) and the CPU column of `scripts/ci.sh --times` are Linux only. A host that cannot run a stage says so and skips it: the Perl TAP tests (Homebrew's PostgreSQL has no `src/test/perl`), the compatibility tests that build a release older than 3.2.0 (x86-64 only) and the benchmark generators (Python 3.12).
 
-`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing
-installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
-The gate runs the PostgreSQL of `pg_config` on `PATH` only, and GitHub CI also runs 17: PostgreSQL 17 installs sift into the server's own directories (`SIFT_SUDO` when they are not writable), so run it on a private copy of the installation
-(`cp -a /opt/pgsql-17 /tmp/pg17`, the `postgresql-old-upgrade` package of Arch) with `PATH=/tmp/pg17/bin:$PATH SIFT_TMP=/tmp/sift-pg17 SIFT_PORT=56180 scripts/ci.sh affected`, or one job of it with `SIFT_CI_JOBS`. That build has no Perl TAP modules: the `tap-*.pl` jobs need a server built with `--enable-tap-tests`.
+`scripts/pgtest.sh install && scripts/pgtest.sh start` gives a throwaway cluster (ports 56100-56299, nothing installed system-wide); `scripts/pgtest.sh psql` connects to it and `scripts/pgtest.sh destroy` removes it.
+The local gate runs only the PostgreSQL of `pg_config` on `PATH`; GitHub CI also runs 17. PostgreSQL 17 installs sift into the server's own directories (`SIFT_SUDO` when they are not writable), so run it on a private copy of the installation
+(`cp -a /opt/pgsql-17 /tmp/pg17`, or the `postgresql-old-upgrade` package of Arch) with `PATH=/tmp/pg17/bin:$PATH SIFT_TMP=/tmp/sift-pg17 SIFT_PORT=56180 scripts/ci.sh affected`, or one job of it with `SIFT_CI_JOBS`. That build has no Perl TAP modules: the `tap-*.pl` jobs need a server built with `--enable-tap-tests`.
 `make check` cuts the suites into jobs that one lane per core (at most 8, `SIFT_LANES=N`) takes from a queue; `SIFT_CI_JOBS=REGEX`
-runs just the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
-`scripts/coldiff.sh` is the differential test of the aggregate pushdown, plain SQL aggregates with `sift.enable_agg` off and on, the results compared,
+runs only the jobs whose name matches (`SIFT_CI_JOBS='installcheck-facets|tap-001' make check`).
+`scripts/coldiff.sh` is the differential test of the aggregate pushdown: plain SQL aggregates with `sift.enable_agg` off and on, results compared,
 with fixtures, scenarios and a self-test (also part of `make check`, docs/AGG.md).
-The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB, at the price of about a quarter more time, as the two big WAL tests then run one after the other): a lane starts a job when
+The scratch directory (`$TMPDIR/sift-ci-PID`, `SIFT_CI_TMP` picks another) peaks at about 1.1 GB (the same with `SANITIZE=1`; `CI_BUDGET_MB=900` brings it to 1 GB at the price of about a quarter more time, as the two big WAL tests then run one after the other). A lane starts a job when
 the estimated scratch of the running ones plus its own fits `CI_BUDGET_MB` (`EST_MB` in `scripts/ci.sh`), and a job's data goes when it passes.
 `SIFT_CI_STATS=1 make check` prints the peak by component (WAL, tables, temp files), lane and job, and the memory of the servers; run it when
-you add a heavy test and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
+you add a heavy test, and give the job an estimate. The clusters are small (1 MB WAL segments, 48 MB `max_wal_size`, 32-64 MB buffers); the
 crash, recovery and replication tests (`WAL_CONF` in `test/t/lib.bash`, `tap.sh` for the Perl ones) keep the default WAL segments and
 settings, since the WAL is what they test.
 `scripts/replication.sh` (also part of `make check`) tests physical and logical replication on temporary clusters;
 `scripts/replication.sh --container` runs it with every node in its own docker container (`PG_IMAGE`, default `postgres:18`).
-`SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the
-`sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
-The regression tests listed in `TESTING_REGRESS` (Makefile) need those functions and are skipped by a release build; every other one
-(but the slow ones of `SLOW_REGRESS` in `scripts/ci.sh`) runs twice in `make check`, against the testing build and against the release library (`SIFT_TESTING` unset, built in a copy of the tree,
+`SIFT_TESTING=1` (the default for `pgtest.sh` and `make check`) also builds the test-only `pg_sift_test` extension and the `sift._test_*` functions; a normal `make install` never installs them. Switching it needs `make clean`.
+The regression tests in `TESTING_REGRESS` (Makefile) need those functions and are skipped by a release build; every other one
+(except the slow ones of `SLOW_REGRESS` in `scripts/ci.sh`) runs twice in `make check`: against the testing build and against the release library (`SIFT_TESTING` unset, built in a copy of the tree,
 job `release-library-regress`, `scripts/release-library-check.sh`). Tests of limits, privileges and the planner belong in the second group (do not use
-`sift._test_*` or the `sift.test_*` settings in them), so that they run against the library users get. `SIFT_TESTING= scripts/pgtest.sh install`
+`sift._test_*` or the `sift.test_*` settings in them), so they run against the library users get. `SIFT_TESTING= scripts/pgtest.sh install`
 builds it by hand.
 
-Every suite runs under one leak gate, `scripts/leakcheck.sh`, without any test referring to it: the server logs of every
+Every suite runs under one leak gate, `scripts/leakcheck.sh`, which no test refers to: the server logs of every
 cluster and node are scanned for what PostgreSQL logs when a transaction or backend leaks (buffer, relcache, TupleDesc,
 snapshot, lock and file references, `you don't own a lock`), for assertion failures, crashes and sanitizer reports; a
 `SANITIZE=1` server also reports malloc leaks as each process exits (LeakSanitizer, `scripts/lsan.supp`); every cluster is
@@ -45,27 +43,26 @@ checked when it stops (no session left in a transaction or holding locks, no pre
 no long-lived process grown); the soak fails on a backend whose memory keeps growing. `make check` ends with the scan of
 everything it ran. A test that crashes or leaks on purpose declares it with `scripts/leakcheck.sh expect COUNT REGEX`.
 
-The SQLite extension in `sqlite/` is tested on its own and needs no PostgreSQL: `sqlite/test.sh` (about 40 s; `SIFT_SANITIZE=1 sqlite/test.sh` adds
-ASan/UBSan and the TSan stress test) needs `cc`, `make`, the SQLite development files (3.38 or newer) and python3 with loadable `sqlite3`
-extensions and FTS5; `make -C sqlite isa-check` proves the baseline objects use no POPCNT or vector instruction, and `scripts/package-sqlite.sh`
-builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`)
-unmodified against the host implementation in `sqlite/host/`.
+The SQLite extension in `sqlite/` is tested on its own, without PostgreSQL: `sqlite/test.sh` (about 40 s; `SIFT_SANITIZE=1 sqlite/test.sh` adds ASan/UBSan and the TSan stress test) needs
+`cc`, `make`, the SQLite development files (3.38 or newer) and python3 with loadable `sqlite3` extensions and FTS5. `make -C sqlite isa-check` proves the baseline objects use no POPCNT or
+vector instruction; `scripts/package-sqlite.sh` builds and tests the release tarball in containers. It compiles the portable core of `src/` (the files of `src/portable.list`) unmodified
+against the host implementation in `sqlite/host/`.
 
-**Errors say what to do.** An ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) carries an `errhint` or an `errdetail`; no ERROR is
-XX000: a condition the code rules out is `SIFT_INVARIANT(cond, "text")` (`core/host.h`, an `Assert` in an assert build), anything a user or the data can reach is an `ereport`
-with its own errcode (XX001/XX002 for damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the lint job and in `scripts/ci.sh`; a test-only hook
-outside a `*_test.c` file says `check-errors: allow` in a comment on the call.
+**Errors say what to do.** An ERROR with SQLSTATE 54000 (limit), 0A000 (unsupported) or 55000 (wrong state) carries an `errhint` or `errdetail`; no ERROR is XX000. A condition the code
+rules out is `SIFT_INVARIANT(cond, "text")` (`core/host.h`, an `Assert` in an assert build); anything a user or the data can reach is an `ereport` with its own errcode (XX001/XX002 for
+damaged data, 40001 for a retry). `scripts/check-errors.sh` enforces it in the lint job and `scripts/ci.sh`; a test-only hook outside a `*_test.c` file says `check-errors: allow` in a
+comment on the call.
 
 **Portable files include only the host header.** A file of `src/portable.list` includes the C library, compiler intrinsics, other files of the list and
 `src/core/host.h`, never a PostgreSQL, SQLite or other host header: new code there uses the vocabulary of `core/host.h` (documented at the top of that file) and, when
-it needs something the host must provide, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
+it needs something from the host, adds it to that vocabulary and to every host (`sqlite/host/host.h`), not a `#include`. `scripts/check-portable.sh` fails
 a file that breaks the rule; it is a stage of `scripts/ci.sh` (so of `make check`) and the first step of `sqlite/test.sh` (the SQLite job). A change to a portable file
 that uses another host API or a global mutable variable needs the host or the Makefile to follow, so run `sqlite/test.sh` as well as `make check` when you touch
 them. Code shared by two hosts goes into the portable core, not into both. `make check` and `scripts/ci.sh` never
-build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md) and its version is `sqlite/VERSION`, which must equal the
+build or run `sqlite/`. Its changes are listed in [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md); its version is `sqlite/VERSION`, which must equal the
 release tag.
 
-`src/` has one folder per area. A source includes another by its path from `src/` (`#include "bm25/query.h"`), a file is named for what it holds without the `sift_` prefix or its folder's name, and a new file goes to the folder of its area (`scripts/restructure-src.sh --check` fails for a file outside them or a stale path).
+`src/` has one folder per area. Sources include each other by path from `src/` (`#include "bm25/query.h"`); a file is named for what it holds, without the `sift_` prefix or its folder's name, and goes to the folder of its area (`scripts/restructure-src.sh --check` fails for a file outside them or a stale path).
 
 `scripts/check-neutral.sh` keeps the repository generic. It fails a tracked file (name or text), a commit of the branch (subject or body) or the title or body of the pull request that holds a name of the private vocabulary (product, machine and application-domain names; it is read from `NEUTRAL_VOCAB_FILE` or the `NEUTRAL_VOCAB` secret, and without it only the structural rules run), a name that the naming vocabulary of `test/README.md` replaced, an address of a private range, a local domain name or the home directory of a person. Data, tests, benchmarks and docs use generic names (orders, events, docs, facts, `dim_a_id`, `tenant_id`). A generic use of a listed word goes into the private vocabulary with a path, a text pattern and the reason; the inet and cidr test data may use `10.0.0.x` and `192.168.x.x` (`scripts/neutral.allow`). `scripts/ci.sh affected` runs the guard first, whatever the diff touches; `.github/workflows/neutral.yml` runs it on every pull request, also when only the title or body is edited (they reach the script through the environment).
 
@@ -80,6 +77,6 @@ Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest
 
 ## Releasing
 
-Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, keep the notes of the release under `## Unreleased` of the CHANGELOGs, push `main`, then
-`scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`: it takes the green full CI run of the commit, checks the upgrade from the previous release and
+Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
+`scripts/release.sh X.Y.Z --dry-run` and `scripts/release.sh X.Y.Z`. It takes the green full CI run of the commit, checks the upgrade from the previous release and
 `AUR_SSH_KEY`).
