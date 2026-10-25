@@ -252,8 +252,8 @@ sift_col_init(void)
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_col_scan",
 							 "Lets the planner use a sift_col index with the sift.col_*_ops operator classes as a bitmap index scan.",
-							 "Off by default: the bitmap scan returns rows (the column scans of SiftAgg aggregate them), see docs/COL-SCAN.md.",
-							 &sift_enable_col_scan, false, PGC_USERSET, 0, NULL, NULL, NULL);
+							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",
+							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",

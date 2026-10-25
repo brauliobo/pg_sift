@@ -51,7 +51,7 @@
 #define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
 #define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
 
-bool		sift_enable_col_scan = false;
+bool		sift_enable_col_scan = true;
 double		sift_plan_scale = 1.0;
 
 /*

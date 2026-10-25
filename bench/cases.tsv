@@ -167,3 +167,4 @@ calendar_session_zone	`date_trunc`, `extract` and `date()` (`::date`) of a `time
 numeric_image_sum	built from the digits of the stored image, not from its text through `numeric_in`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by default	orders	default	Units Pruned: [1-9]	native	-	ms	faster33	no
 sum_product_47	each pair is multiplied in 256 bits	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (Only )?Scan using orders_sc_col|Bitmap Heap Scan on orders_sc	native	-	ms	faster33	no

@@ -297,7 +297,8 @@ RESET enable_indexscan;
 RESET sift.enable_col_scan;
 RESET sift.enable_agg;
 
--- off by default: the planner builds no bitmap path on the column index, even when the sequential scan is disabled
+-- off: the planner builds no bitmap path on the column index, even when the sequential scan is disabled
+SET sift.enable_col_scan = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 SELECT sc_uses_col('SELECT * FROM sc WHERE v = 5 AND g = 2') AS scan_off;

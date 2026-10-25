@@ -18,8 +18,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 91 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
+| [default](#default) | 92 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -415,6 +415,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a period (200 to 60000 ms). Maintenance itself is turned off with sift.async_maintenance = off. Change it in postgresql.conf and reload.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave 2000 ms. The worker stays this long after it starts and holds a worker slot; table passes ask at most once per naptime. Range 200 to 60000; reload to change.
+
+#### sift.enable_col_scan
+
+`sift_col` · default · since 3.3 · default on
+
+- **What it does:** a sift_col index with the sift.col_*_ops classes as a bitmap index scan that returns rows
+- **Gain:** b-trees dropped, 1,000,000 rows, wall ms off / on: id = x 29.5 / 0.21, k = x (10 rows) 31.3 / 0.77, id BETWEEN 100 rows 32.8 / 0.31, id IN (100) 43.4 / 0.62, ts range 1,000 rows 40.6 / 2.9; b-trees present: the same plan in 24 of 26 shapes at 100,000 and 1,000,000 rows (count(*) WHERE v = x 0.38 ms SiftAgg, 0.46 ms bitmap, at 100,000)
+- **Impact:** index size: one sift_col index 29.1 MB against 170.2 MB for six b-trees (1,000,000 rows, 7 columns); build, merge and writes: n/a: a planner switch for reads; it writes nothing; other: on: the planner prices the bitmap scan and the Index Scan against the b-trees and the sequential scan; with the b-trees present the plans are the b-tree's
+- **When:** Planner paths on a sift_col index with the sift.col_*_ops classes: bitmap scan, Index Scan and Index Only Scan of rows (point lookups, IN, ranges, top-N), chosen by cost. SiftAgg aggregate scans do not depend on it.
+- **Default:** on — On: a few count(*) shapes that SiftAgg answered take the bitmap scan by cost, up to 0.16 ms slower (1,000,000 rows, count(*) WHERE k = x 1.08 / 1.24 ms).
+- **Turn off:** SET sift.enable_col_scan = off (session, ALTER ROLE/DATABASE, postgresql.conf): the planner builds no bitmap path on a sift_col index. Nothing stored changes.
+- **Upgrade from 3.3:** Changed default (off to on), no REINDEX: after ALTER EXTENSION UPDATE the planner may choose the bitmap scan or Index Scan of a sift_col index; SET sift.enable_col_scan = off (or in postgresql.conf) keeps the earlier plans.
+- **Advice:** Leave on: with the b-trees the planner keeps them; without them a point, range or IN lookup reads the index instead of the table. Turn it off to keep the planner from bitmap scans of a sift_col index.
 
 #### sift.vis_page_cache
 
@@ -1405,20 +1418,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave off. Set per role (superuser) only when a role under row-level security needs ranked scans; scores then use whole-index statistics, hidden rows included, so they depend on unseen rows.
 
-#### sift.enable_col_scan
-
-`sift_col` · opt-in · since 3.3 · default off
-
-- **What it does:** a sift_col index with the sift.col_*_ops classes as a bitmap index scan that returns rows
-- **Gain:** against a b-tree: count of a 20% range 13.6 to 1.1 ms, DISTINCT/GROUP BY 82.6 to 7.5 ms, but point lookups 5x to 480x slower (1,000,000 rows)
-- **Impact:** index size: one sift_col index 29.1 MB against 170.2 MB for six b-trees (1,000,000 rows, 7 columns); build, merge and writes: n/a: a planner switch for reads; it writes nothing; other: off because the bitmap scan is 40-2000x slower than a btree for point lookups on random, text and uuid keys
-- **When:** Planner paths on a sift_col index with the sift.col_*_ops classes: bitmap scan, Index Scan and Index Only Scan of rows (point lookups, IN, ranges, top-N). SiftAgg aggregate scans do not depend on it.
-- **Default:** off — Off: the bitmap scan is 5x to 480x slower than a b-tree on point lookups, failing the gain test there; it wins on ranges (count of a 20% range 13.6 to 1.1 ms) and aggregates, to drop b-trees that serve only those.
-- **Why not the default:** under 5% on a relevant class
-- **Turn off:** Off is the default: SET sift.enable_col_scan = off (or RESET) in a session, or ALTER ROLE/DATABASE, postgresql.conf. Nothing stored changes.
-- **Upgrade from 3.3:** unchanged
-- **Advice:** Off by default: the bitmap scan returns rows and loses to a b-tree on point lookups, IN lists, text/uuid equality, prefixes and top-N. Turn it on to drop b-trees that only serve ranges or aggregates.
-
 #### sift.col_auto_merge_partition_kb
 
 `sift_col` · opt-in · since 3.3 · default 0
@@ -1946,7 +1945,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(order_array_group)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+Defaults changed: sift.enable_col_scan since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(order_array_group)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1964,6 +1963,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_dead_delta`, `sif
 | `sift_col(order_array_group)` | new | '' | minor 21, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (order_array_group = x) applies to the segments written afterwards and a REINDEX gives the older ones their grouped arrays; the segments are column format minor 21, which a 3.3 library cannot read. |
 | `sift_col(hll_columns)` | new | '' | minor 20, unreadable by 3.3 | New, unset: nothing changes. ALTER INDEX .. SET (hll_columns) applies to the units written afterwards and a REINDEX gives the older ones their sketch; a segment with sketches is column format minor 20, which a 3.3 library cannot read (sift.upgrade_commands() lists it). |
 | `sift.maintenance_cost_delay` | 0 | 0 |  | The worker that rewrites a sift_col index by partitions now waits as long as the delay asks (it used to sleep less). Nothing to do. |
+| `sift.enable_col_scan` | off | on |  | Changed default (off to on), no REINDEX: after ALTER EXTENSION UPDATE the planner may choose the bitmap scan or Index Scan of a sift_col index; SET sift.enable_col_scan = off (or in postgresql.conf) keeps the earlier plans. |
 | `sift.vis_page_cache` | new | on |  | New, on: it only affects a scan of an index with key_cut. Nothing to do. |
 | `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
