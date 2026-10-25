@@ -154,6 +154,13 @@ sift_tbl_is_table(Relation rel)
 	return rel->rd_tableam == sift_tbl_routine();
 }
 
+void
+sift_tbl_require(Relation rel)
+{
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+}
+
 /* The first layout of the relation: meta, directory, the tombstone segment */
 typedef struct InitArg
 {

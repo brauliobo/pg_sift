@@ -56,8 +56,7 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	SiftTblRel *st = sift_tbl_rel(rel);
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; i < st->dir.nsegs; i++)
@@ -119,6 +118,20 @@ sift_table_segments(PG_FUNCTION_ARGS)
 }
 
 #ifdef SIFT_TESTING
+/* The next column segment of the table from directory entry *i on, open (the caller closes it); NULL after the last */
+static SiftColSegment *
+next_column_segment(Relation rel, SiftTblRel *st, int *i)
+{
+	while (*i < st->dir.nsegs)
+	{
+		const SiftSegEntry *e = &st->dir.segs[(*i)++];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+			return sift_cseg_open(rel, e, CurrentMemoryContext);
+	}
+	return NULL;
+}
+
 PG_FUNCTION_INFO_V1(sift_test_tbl_bulk_refusal);
 
 /* Why the bulk load of the table keeps the write buffers; NULL when it qualifies */
@@ -128,8 +141,7 @@ sift_test_tbl_bulk_refusal(PG_FUNCTION_ARGS)
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	const char *why;
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	why = sift_tbl_bulk_refusal(rel);
 	table_close(rel, AccessShareLock);
 	if (why == NULL)
@@ -145,8 +157,7 @@ sift_test_tbl_hold_maint(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	(void) sift_maint_lock(rel, true);
 	table_close(rel, NoLock);
 	PG_RETURN_VOID();
@@ -160,6 +171,7 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftColSegment *seg;
 	int			maxunits = PG_GETARG_INT32(1);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
 	SiftTestDamage r = {0};
@@ -167,18 +179,10 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 	Datum		v[8];
 	bool		nulls[8] = {false};
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-	{
-		const SiftSegEntry *e = &st->dir.segs[i];
-		SiftColSegment *seg;
-
-		if (e->kind != SIFT_SEG_IMMUTABLE)
-			continue;
-		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb && r.blobs < maxunits; u++)
 		{
 			uint32		len;
@@ -187,8 +191,6 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 			if (blob != NULL)
 				sift_test_cube_damage(seg->schema, NULL, blob, len, NULL, 0, cx, &r);
 		}
-		sift_cseg_close(seg);
-	}
 	table_close(rel, AccessShareLock);
 	v[0] = Int64GetDatum(r.blobs);
 	v[1] = Int64GetDatum(r.intact);
@@ -209,24 +211,17 @@ sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftColSegment *seg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cal grains", ALLOCSET_DEFAULT_SIZES);
 	int64		n[4] = {0};
 	TupleDesc	tupdesc;
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-	{
-		const SiftSegEntry *e = &st->dir.segs[i];
-		SiftColSegment *seg;
-
-		if (e->kind != SIFT_SEG_IMMUTABLE)
-			continue;
-		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb; u++)
 		{
 			uint32		len;
@@ -245,8 +240,6 @@ sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 				}
 			n[3] += !any;
 		}
-		sift_cseg_close(seg);
-	}
 	table_close(rel, AccessShareLock);
 	for (int k = 0; k < 4; k++)
 		v[k] = Int64GetDatum(n[k]);
@@ -261,21 +254,13 @@ sift_test_tbl_preagg_bytes(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftColSegment *seg;
 	int64		bytes = 0;
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-	{
-		SiftColSegment *seg;
-
-		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
-			continue;
-		seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		bytes += sift_cseg_preagg_bytes(seg);
-		sift_cseg_close(seg);
-	}
 	table_close(rel, AccessShareLock);
 	PG_RETURN_INT64(bytes);
 }
@@ -288,21 +273,13 @@ sift_test_tbl_verify(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
+	SiftColSegment *seg;
 	int64		live = 0;
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
-	for (int i = 0; i < st->dir.nsegs; i++)
-	{
-		SiftColSegment *seg;
-
-		if (st->dir.segs[i].kind != SIFT_SEG_IMMUTABLE)
-			continue;
-		seg = sift_cseg_open(rel, &st->dir.segs[i], CurrentMemoryContext);
+	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		live += sift_cseg_verify(seg);
-		sift_cseg_close(seg);
-	}
 	table_close(rel, AccessShareLock);
 	PG_RETURN_INT64(live);
 }
@@ -317,8 +294,7 @@ sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 	SiftTblRel *st = sift_tbl_rel(rel);
 	int32		n = 0;
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; i < st->dir.nsegs; i++)
 		n += sift_tbl_seg_unfrozen(&st->dir.segs[i]);
@@ -395,8 +371,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 	Datum		v[6];
 	bool		nulls[6] = {0};
 
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh_full(rel, st);
 	fs = sift_store_free_stats(rel);
@@ -435,8 +410,7 @@ sift_table_maintain(PG_FUNCTION_ARGS)
 
 		if (rel == NULL)
 			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", relid)));
-		if (!sift_tbl_is_table(rel))
-			ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+		sift_tbl_require(rel);
 		if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
 			aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 		sift_tbl_maintain(rel, false, true, &r);

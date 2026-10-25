@@ -562,8 +562,7 @@ sift_table_paths_check(PG_FUNCTION_ARGS)
 
 	if (!object_ownercheck(RelationRelationId, RelationGetRelid(rel), GetOuterUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
-	if (!sift_tbl_is_table(rel))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+	sift_tbl_require(rel);
 	if (attno <= 0 || TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("\"%s\" is not a jsonb column of \"%s\"", col, RelationGetRelationName(rel))));
 	if (spec && spec[0])

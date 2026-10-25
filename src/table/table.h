@@ -221,6 +221,8 @@ extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
 extern bool sift_tbl_is_table(Relation rel);
+/* An error unless rel is a sift_table */
+extern void sift_tbl_require(Relation rel);
 extern const TableAmRoutine *sift_tbl_routine(void);
 extern uint64 sift_tbl_nvblocks(Relation rel);
 
