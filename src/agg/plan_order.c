@@ -926,7 +926,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
-	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
 	agg_arm_path(&cp->path);
 	add_path(output_rel, &cp->path);
 }

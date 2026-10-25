@@ -837,7 +837,7 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	/* the groups after the n-th of the sort key are not emitted (a tie keeps more): the sort above sees about n of them */
 	if (s->gtopn_k > 0 && cp->path.rows > 4.0 * s->gtopn_k)
 		cp->path.rows = 2.0 * s->gtopn_k;
-	cp->custom_private = list_make2(sift_aggspec_pack(s), scan_tlist);
+	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		/* a path of c->root cannot be planned as a child of the node, which PostgreSQL does with the root of the statement: it is a sub-plan of its own level */

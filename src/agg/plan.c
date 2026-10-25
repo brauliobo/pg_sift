@@ -1148,6 +1148,19 @@ group_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Pa
 	agg_finish(c, s, root, input_rel, output_rel, target, ow.keys, scan_tlist);
 }
 
+/*
+ * The spec of a path, as it is when the path is made (the next path of the pair, with workers, changes the one the planner holds): packed when the path
+ * becomes a plan (agg_plan_path). A path that loses is most of them, and packing a spec costs more than building the path.
+ */
+SiftAggSpec *
+agg_spec_keep(const SiftAggSpec *s)
+{
+	SiftAggSpec *keep = palloc(sizeof(SiftAggSpec));
+
+	*keep = *s;
+	return keep;
+}
+
 int			agg_index_pick;
 int			agg_index_usable;
 double		agg_stage_normal = HUGE_VAL;
@@ -1312,7 +1325,7 @@ static Plan *
 agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
-	List	   *pack = linitial(best->custom_private);
+	List	   *pack = sift_aggspec_pack(linitial(best->custom_private));
 	List	   *scan_tlist = lsecond(best->custom_private);
 	SiftAggSpec *spec = sift_aggspec_unpack(pack);
 	GroupPathExtraData *gextra = NULL;

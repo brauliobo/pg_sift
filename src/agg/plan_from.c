@@ -414,12 +414,28 @@ typedef struct PartFacts
 	PartCand	pc;				/* pc.lay NULL: not read (yet) */
 } PartFacts;
 
+/* what is read of the column index of a table scanned in one piece: its statistics and pre-aggregates, as of a stamp, with the zones copied into facts_cx */
+typedef struct SrcFacts
+{
+	Oid			indexoid;
+	SiftSrcStamp stamp;
+	FactsWatch *index,
+			   *table;
+	uint32		index_gen,
+				table_gen,
+				all_gen;
+	bool		read;
+	SiftSrcStats stats;			/* as the index gave them: sift.plan_scale is applied to the copy a plan takes */
+	SiftSrcPreagg pa;
+} SrcFacts;
+
 #define FACTS_CACHE		SIFT_AGG_MAX_PARTS	/* the indexes of the largest scan */
 
 static MemoryContext part_memo_cx;
 static HTAB *part_memo;
 static MemoryContext facts_cx;
 static HTAB *facts;
+static HTAB *src_facts;
 static HTAB *facts_watch;
 static uint32 facts_all;		/* bumped by an invalidation of every relation */
 static int	facts_replaced;		/* entries read again since the cache was emptied: their old facts stay until it is */
@@ -440,7 +456,7 @@ facts_empty(void)
 {
 	if (facts_cx != NULL)
 		MemoryContextReset(facts_cx);
-	facts = facts_watch = NULL;
+	facts = src_facts = facts_watch = NULL;
 	facts_replaced = 0;
 }
 
@@ -460,7 +476,7 @@ sift_agg_memo_begin(void)
 {
 	if (part_memo_cx != NULL)
 		return NULL;
-	if (facts != NULL && hash_get_num_entries(facts) + facts_replaced >= FACTS_CACHE)
+	if (facts != NULL && hash_get_num_entries(facts) + (src_facts ? hash_get_num_entries(src_facts) : 0) + facts_replaced >= FACTS_CACHE)
 		facts_empty();
 	part_memo_cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan memo", ALLOCSET_DEFAULT_SIZES);
 	return part_memo_cx;
@@ -505,6 +521,119 @@ read_facts(Relation rel, MemoryContext cx, PartCand *pc)
 	pfree(full);
 }
 
+static void
+facts_init(void)
+{
+	HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(PartFacts)};
+
+	if (facts != NULL)
+		return;
+	if (facts_cx == NULL)
+	{
+		facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
+		CacheRegisterRelcacheCallback(facts_inval, (Datum) 0);
+	}
+	ctl.hcxt = facts_cx;
+	facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ctl.entrysize = sizeof(SrcFacts);
+	src_facts = hash_create("sift index facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ctl.entrysize = sizeof(FactsWatch);
+	facts_watch = hash_create("sift partition facts watch", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
+static const SiftSrcZones *
+zones_copy(const SiftSrcZones *z, MemoryContext cx)
+{
+	SiftSrcZones *c;
+
+	if (z == NULL)
+		return NULL;
+	c = MemoryContextAllocZero(cx, sizeof(SiftSrcZones));
+	*c = *z;
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (z->lo[i] != NULL)
+		{
+			c->lo[i] = memcpy(MemoryContextAlloc(cx, z->n * sizeof(int64)), z->lo[i], z->n * sizeof(int64));
+			c->hi[i] = memcpy(MemoryContextAlloc(cx, z->n * sizeof(int64)), z->hi[i], z->n * sizeof(int64));
+		}
+	return c;
+}
+
+/* The statistics of the first n leaves: the struct is 30 KB for the 128 leaves an index can have, and an index has a few (the rest of dst is zero) */
+static void
+stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
+{
+	size_t		d = n * sizeof(double),
+				b = n * sizeof(bool);
+
+	dst->nrows = src->nrows;
+	dst->nunits = src->nunits;
+	dst->bytes = src->bytes;
+	dst->allvisible_frac = src->allvisible_frac;
+	dst->exact_frac = src->exact_frac;
+	dst->rows_miss = src->rows_miss;
+	dst->zones = src->zones;
+	memcpy(dst->dim_miss, src->dim_miss, d);
+	memcpy(dst->mm_miss, src->mm_miss, d);
+	memcpy(dst->roll_miss, src->roll_miss, d);
+	memcpy(dst->ndistinct, src->ndistinct, d);
+	memcpy(dst->min, src->min, d);
+	memcpy(dst->max, src->max, d);
+	memcpy(dst->point_cover, src->point_cover, d);
+	memcpy(dst->set_cover, src->set_cover, d);
+	memcpy(dst->set_keys, src->set_keys, d);
+	memcpy(dst->zone_span, src->zone_span, d);
+	memcpy(dst->elems_per_row, src->elems_per_row, d);
+	memcpy(dst->ovf_units, src->ovf_units, d);
+	memcpy(dst->ovf_frac, src->ovf_frac, d);
+	memcpy(dst->ovf, src->ovf, b);
+	memcpy(dst->jnull, src->jnull, b);
+	memcpy(dst->nokinds, src->nokinds, b);
+}
+
+/*
+ * The statistics and pre-aggregates of the column index of a table scanned in one piece (sift.plan_scale applied), as of the stamp of the index: read when
+ * the index has changed since a plan of this backend took them, not by every plan: they cost more than the plan of a statement that the normal plan answers.
+ */
+static void
+index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
+{
+	Oid			indexoid = RelationGetRelid(rel);
+	SiftSrcStamp stamp;
+	SrcFacts   *e;
+	bool		found;
+
+	facts_init();
+	sift_colsrc_stamp(rel, &stamp);
+	e = hash_search(src_facts, &indexoid, HASH_ENTER, &found);
+	if (!found || !e->read || memcmp(&e->stamp, &stamp, sizeof(stamp)) != 0 || e->index->gen != e->index_gen || e->table->gen != e->table_gen || e->all_gen != facts_all)
+	{
+		SiftSrcStats fresh;
+
+		/* the generations as of before the facts are read: an invalidation while they are is seen at the next plan */
+		e->index = facts_watch_of(indexoid);
+		e->table = facts_watch_of(rel->rd_index->indrelid);
+		e->index_gen = e->index->gen;
+		e->table_gen = e->table->gen;
+		e->all_gen = facts_all;
+		e->read = false;
+		sift_colsrc_stats(rel, &fresh);
+		fresh.zones = zones_copy(fresh.zones, facts_cx);
+		e->stats = fresh;
+		sift_colsrc_preagg(rel, &e->pa);
+		e->stamp = stamp;
+		e->read = true;
+	}
+	/* the context of a plan is zero until its first source (a second source of the same context, by another index, is the exception) */
+	if (st->nrows != 0 || st->nunits != 0 || st->bytes != 0 || st->zones != NULL)
+		memset(st, 0, sizeof(*st));
+	stats_copy(st, &e->stats, Min(nleaves, SIFT_COLSRC_MAX_LEAVES));
+	*pa = e->pa;
+	st->nrows *= sift_plan_scale;
+	st->nunits *= sift_plan_scale;
+	st->bytes *= sift_plan_scale;
+}
+
 static PartCand *
 cached_facts(Relation rel)
 {
@@ -514,20 +643,7 @@ cached_facts(Relation rel)
 	PartCand	fresh;
 	bool		found;
 
-	if (facts == NULL)
-	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(PartFacts)};
-
-		if (facts_cx == NULL)
-		{
-			facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
-			CacheRegisterRelcacheCallback(facts_inval, (Datum) 0);
-		}
-		ctl.hcxt = facts_cx;
-		facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		ctl.entrysize = sizeof(FactsWatch);
-		facts_watch = hash_create("sift partition facts watch", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
+	facts_init();
 	sift_colsrc_stamp(rel, &stamp);
 	e = hash_search(facts, &indexoid, HASH_ENTER, &found);
 	if (found && e->pc.lay != NULL && memcmp(&e->stamp, &stamp, sizeof(stamp)) == 0 && e->index->gen == e->index_gen &&
@@ -901,8 +1017,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		return false;
 	rel = index_open((*ixout)->indexoid, AccessShareLock);
 	c->lay = sift_colsrc_layout(rel);
-	stats_scaled(rel, &c->stats);
-	sift_colsrc_preagg(rel, &c->pa);
+	index_facts(rel, c->lay->nleaves, &c->stats, &c->pa);
 	index_close(rel, AccessShareLock);
 	c->indexoid = (*ixout)->indexoid;
 	return true;
