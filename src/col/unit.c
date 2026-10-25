@@ -50,10 +50,24 @@ page_offsets(const SiftCUnitView *v, uint32 p, const uint8 *bitmap, uint16 *offs
 static bool
 sparse_valid(const uint8 *bm, uint32 mo, uint32 cnt)
 {
-	uint32		pop = 0;
+	uint32		nb = (mo + 7) / 8,
+				pop = 0,
+				i = 0;
 
-	for (uint32 i = 0; i < (mo + 7) / 8; i++)
-		pop += sift_pc64(bm[i]);
+	for (; i + 8 <= nb; i += 8)
+	{
+		uint64		w;
+
+		memcpy(&w, bm + i, sizeof(w));
+		pop += sift_pc64(w);
+	}
+	if (i < nb)
+	{
+		uint64		w = 0;
+
+		memcpy(&w, bm + i, nb - i);
+		pop += sift_pc64(w);
+	}
 	return pop == cnt && ((bm[(mo - 1) / 8] >> ((mo - 1) % 8)) & 1) && (mo % 8 == 0 || (bm[(mo - 1) / 8] >> (mo % 8)) == 0);
 }
 
