@@ -41,6 +41,7 @@
 #include "bm25/maint.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
+#include "core/sql.h"
 #include "table/table.h"
 #include "table/seg_int.h"
 
@@ -175,12 +176,10 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 	int			maxunits = PG_GETARG_INT32(1);
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cube damage", ALLOCSET_DEFAULT_SIZES);
 	SiftTestDamage r = {0};
-	TupleDesc	tupdesc;
 	Datum		v[8];
 	bool		nulls[8] = {false};
 
 	sift_tbl_require(rel);
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb && r.blobs < maxunits; u++)
@@ -200,7 +199,7 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 	v[5] = Int64GetDatum(r.damaged);
 	v[6] = Int64GetDatum(r.accepted);
 	v[7] = Int64GetDatum(r.unsound);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 PG_FUNCTION_INFO_V1(sift_test_tbl_cal_grains);
@@ -214,12 +213,10 @@ sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 	SiftColSegment *seg;
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "cal grains", ALLOCSET_DEFAULT_SIZES);
 	int64		n[4] = {0};
-	TupleDesc	tupdesc;
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
 	sift_tbl_require(rel);
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb; u++)
@@ -243,7 +240,7 @@ sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 	table_close(rel, AccessShareLock);
 	for (int k = 0; k < 4; k++)
 		v[k] = Int64GetDatum(n[k]);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 PG_FUNCTION_INFO_V1(sift_test_tbl_preagg_bytes);
@@ -366,13 +363,11 @@ sift_table_space(PG_FUNCTION_ARGS)
 {
 	Relation	rel = table_open(PG_GETARG_OID(0), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
-	TupleDesc	tupdesc;
 	SiftFreeStats fs;
 	Datum		v[6];
 	bool		nulls[6] = {0};
 
 	sift_tbl_require(rel);
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	sift_tbl_refresh_full(rel, st);
 	fs = sift_store_free_stats(rel);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(rel));
@@ -382,7 +377,7 @@ sift_table_space(PG_FUNCTION_ARGS)
 	v[4] = Int64GetDatum(fs.records);
 	v[5] = Int64GetDatum((int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir.meta));
 	table_close(rel, AccessShareLock);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 PG_FUNCTION_INFO_V1(sift_table_maintain);
@@ -396,12 +391,10 @@ Datum
 sift_table_maintain(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
-	TupleDesc	tupdesc;
 	SiftTblMaintain r = {0};
 	Datum		v[6];
 	bool		nulls[6] = {0};
 
-	SIFT_INVARIANT(get_call_result_type(fcinfo, NULL, &tupdesc) == TYPEFUNC_COMPOSITE, "return type must be a row type");
 	PreventCommandIfReadOnly("sift.table_maintain()");
 	PreventCommandDuringRecovery("sift.table_maintain()");
 	if (ConditionalLockRelationOid(relid, ShareUpdateExclusiveLock))
@@ -424,5 +417,5 @@ sift_table_maintain(PG_FUNCTION_ARGS)
 	v[3] = Int32GetDatum(r.merged);
 	v[4] = Int64GetDatum(r.blocks_before);
 	v[5] = Int64GetDatum(r.blocks_after);
-	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), v, nulls)));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
