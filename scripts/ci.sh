@@ -188,6 +188,7 @@ declare -A JOB_WEIGHT=(
 	[tap-shell-maint_fanin]=112 [tap-shell-col_crash_matrix]=111 [installcheck-agg_set_array]=111 [installcheck-build_large_docs]=107
 	[tap-017_tbl_autodefrag]=102 [installcheck-agg_preagg_filter]=102 [tap-shell-col_wbuf_crash]=101 [tap-shell-compat_31_column]=99
 	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
+	[plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
 )
 JOB_WEIGHT_DEFAULT=10
 # the jobs whose size the deep tier changes: lane seconds of the deep run 40165541682 on PostgreSQL 18 (the col slices are the mean of their eight)
