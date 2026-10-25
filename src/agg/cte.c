@@ -824,7 +824,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	same = planning_second && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
 		first_plan.scans == v.scans.total && first_plan.work == v.work;
 	won = inline_wins(&v, 0, 0);
-	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work)
+	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && CTE_INLINE_MARGIN * v.scans.total >= v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
 	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, v.inlined->planTree->total_cost, v.plain->planTree->total_cost);
 	if (!planning_second)
