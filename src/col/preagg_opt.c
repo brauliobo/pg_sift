@@ -98,7 +98,7 @@ default_meas(const SiftColSchema *s, int dim, int16 *meas)
 	int			nm = 0;
 
 	for (int pass = 0; pass < 2; pass++)
-		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_MORE_MEAS; c++)
+		for (int c = 0; c < s->ncols && nm < SIFT_PAGG_DEF_MEAS; c++)
 		{
 			const SiftColDef *d = &s->cols[c];
 			bool		first = d->type == SIFT_COLT_NUMERIC || d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
@@ -145,7 +145,6 @@ add_dim(const SiftColSchema *s, SiftCPaggSpec *spec, int c, bool cal)
 	sd->leaf = c;
 	sd->cal = cal;
 	sd->nmeas = default_meas(s, c, sd->meas);
-	sd->lean = SIFT_PAGG_DEF_MEAS;
 }
 
 void
@@ -725,7 +724,7 @@ parse_calendar(const char *opt, const SiftColSchema *s, const char *const *names
 		make_room(s, spec, 1);
 		if (spec->ndims == SIFT_PAGG_MAX_DIMS)
 			return "too many dimensions";
-		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true, .lean = SIFT_PAGG_DEF_MEAS};
+		spec->dim[spec->ndims] = (SiftCPaggDim) {.leaf = leaf, .cal = true};
 		spec->dim[spec->ndims].nmeas = default_meas(s, leaf, spec->dim[spec->ndims].meas);
 		spec->ndims++;
 	} while (eat(c, ','));

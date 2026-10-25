@@ -39,17 +39,18 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_CAL_DAY			1			/* the grains of a cell, finest first: a day, a month, a year; the key of a cell is its first day, as days since 2000-01-01 (a date) */
 #define SIFT_CAL_MONTH			2
 #define SIFT_CAL_YEAR			3
-#define SIFT_PAGG_DEF_MEAS		3			/* measures of a default dim that a unit always keeps */
-#define SIFT_PAGG_MORE_MEAS		8			/* ... and the ones it keeps when its byte budget has room for them */
+#define SIFT_PAGG_DEF_MEAS		8			/* measures of a default dim */
 #define SIFT_PAGG_DEF_GROUPS	256			/* default: a dim with more groups in a unit has no histogram in that unit */
 #define SIFT_PAGG_CAL_GROUPS	1024		/* the cells of a calendar dim in a unit: 2.8 years of days, 85 of months */
 #define SIFT_PAGG_CAL_ROWS		8			/* a cell stands for this many rows or more on average, else the unit goes on to the next grain: answering from cells has to read far fewer than the rows */
 #define SIFT_PAGG_CUBE_GROUPS	4096		/* explicit cube(...): the same bound */
-#define SIFT_PAGG_DEF_PERMILLE	20			/* default: the cube of a unit takes at most 2% of the unit's bytes ... */
+#define SIFT_PAGG_DEF_PERMILLE	400			/* default: the dims of a unit's cube take at most this share of its encoded bytes, counted as built (on disk the index holds about a quarter of that for dims of few groups, more for many) */
+#define SIFT_PAGG_ROLLUP_PERMILLE	20			/* the rollups of one list of elements take at most this share of the unit's bytes */
 #define SIFT_PAGG_EXC_DIV		100			/* a leaf with at most 1/100 of a unit's rows not NULL has exceptions (docs/COL-PREAGG.md 11) */
 #define SIFT_PAGG_EXC_SHARE		2			/* ... kept when they take at most 1/2 of the bytes of the unit's own cube and element blob */
-#define SIFT_PAGG_MIN_BUDGET	2048		/* ... but always may take this many bytes */
-#define SIFT_PAGG_CAL_PERMILLE	50			/* the calendar dims of a unit together may take this much of its bytes (at least twice the minimum budget) */
+#define SIFT_PAGG_MIN_BUDGET	2048		/* a unit's rollups of a list always may take this many bytes */
+#define SIFT_PAGG_CUBE_MIN_BUDGET	8192		/* ... and its cube's dims (and calendar cells) this many, or the tail of a table would keep none under the share */
+#define SIFT_PAGG_CAL_PERMILLE	100		/* the calendar dims of a unit together may take this much of its bytes, counted as built (at least the cube's minimum budget) */
 
 /* flags of SiftCLeafAgg / SiftCAgg */
 #define SIFT_CAGG_SUMSQ_OVF		0x1			/* the sum of squares left int128 (never: the sum cannot) */
@@ -83,7 +84,6 @@ typedef struct SiftCPaggDim
 	uint8		nmeas;
 	bool		cal;					/* leaf is a date or timestamp leaf and the dim groups it by calendar cells: each unit stores the finest grain (SIFT_CAL_*) that fits, the key of a cell being its first day */
 	uint8		grain;					/* cal: 0, the writer chooses the grain; else exactly this grain (a stored dim, which the verify recomputes) */
-	uint8		lean;					/* default cube: the first measures a unit always keeps with the dim; the others only when the unit's byte budget has room (0: all) */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
 
@@ -153,7 +153,7 @@ extern int	sift_cpagg_cal_count(const SiftColSchema *s);
 /* The date, timestamp and timestamptz leaves of the top level with no calendar dim in spec, in leaf order, at most max of them in out; returns how many there are */
 extern int	sift_cpagg_cal_missing(const SiftColSchema *s, const SiftCPaggSpec *spec, int *out, int max);
 
-/* 'default': every top level dim candidate with up to SIFT_PAGG_MORE_MEAS measures (the first SIFT_PAGG_DEF_MEAS of them always) (numeric and floats first, then integers), and the rollup of every list. Never fails */
+/* 'default': every top level dim candidate with up to SIFT_PAGG_DEF_MEAS measures (numeric and floats first, then integers), and the rollup of every list. Never fails */
 extern void sift_cpagg_spec_default(const SiftColSchema *s, SiftCPaggSpec *spec);
 /*
  * The option: "" / "default", "off", or "cube(dim: m1, m2; dim2: m3; dim3)" for the top level and "rollup(d1, d2: m1, m2; ...)" for lists (one entry per list,
