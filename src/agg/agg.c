@@ -784,6 +784,15 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 				return NULL;
 		return g;
 	}
+	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < ex->nbase && (g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0)
+	{
+		g->kind = STG_NOTNULL;
+		g->lead = p->leaf == keyleaf;
+		g->pinned = pinned;
+		g->leaf = p->leaf;
+		g->typid = ex->lay->leaf[p->leaf].typid;
+		return g;
+	}
 	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&
 		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{

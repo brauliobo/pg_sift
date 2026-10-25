@@ -428,6 +428,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		derived_rel_rows(root, rel);
 	if (rte->rtekind == RTE_SUBQUERY)
 		agg_subquery_ordered(root, rel, rti);
+	if (rte->rtekind == RTE_RELATION)
+		sift_agg_minmax_paths(root, rel);
 	if (rte->rtekind == RTE_CTE)
 		derived_cte_rows(root, rel);
 	if (!scannable(root, rel, rte))

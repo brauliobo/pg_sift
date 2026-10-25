@@ -1211,7 +1211,7 @@ def gen_gorder_group(r, ctx):
     elif kind < 0.6:
         cond += f" AND g.id {r.choice(['<', '>'])} {go_const(r, 'id')}"
     return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300]), cond=cond, tbl='gog',
-                second=r.random() < 0.3, dir2=r.choice(['', ' DESC']), where=[], keys=[], aggs=[], having=[], ordered=True)
+                second=r.random() < 0.3, dir2=r.choice(['', ' DESC']), agg=r.choice(['', '', 'min', 'max']), where=[], keys=[], aggs=[], having=[], ordered=True)
 
 
 def gen_gorder(r, ctx):
@@ -1232,13 +1232,15 @@ def gen_gorder(r, ctx):
             return f"g.{col} {r.choice(['<', '<=', '>', '>=', '=', '<>'])} {go_const(r, col)}"
         cond = r.choice([cmp, lambda: f"{cmp()} AND {cmp()}", lambda: f"({cmp()} OR {cmp()})", lambda: f"g.{col} BETWEEN {go_const(r, col)} AND {go_const(r, col)}"])()
     return dict(col=col, dir=r.choice(['', ' DESC']), nulls=r.choice(['', ' NULLS FIRST', ' NULLS LAST']), limit=r.choice([1, 5, 10, 50, 300, 1500]),
-                cond=cond, second=keyset != '' or (col != 'id' and r.random() < 0.15), dir2=r.choice(['', ' DESC']),
+                cond=cond, second=keyset != '' or (col != 'id' and r.random() < 0.15), dir2=r.choice(['', ' DESC']), agg=r.choice(['', '', 'min', 'max']),
                 where=[], keys=[], aggs=[], having=[], ordered=True)
 
 
 def render_gorder(p):
     where = f" WHERE {p['cond']}" if p['cond'] else ''
     tbl = p.get('tbl', 'gof')
+    if p['agg']:  # min(k) / max(k): PostgreSQL plans the first row, in the order of k, of the rows where k is not NULL
+        return f"SELECT {p['agg']}(g.{p['col']}) FROM {tbl} g{where}", True
     if p['second'] and p['col'] != 'id':
         return f"SELECT g.{p['col']}, g.id FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']}, g.id{p['dir2']} LIMIT {p['limit']}", True
     return f"SELECT g.{p['col']} FROM {tbl} g{where} ORDER BY g.{p['col']}{p['dir']}{p['nulls']} LIMIT {p['limit']}", True
@@ -1344,6 +1346,7 @@ def variants(r, fam):
         v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
     if fam == 'gorder':  # the scan of the units, which the arrays stand for
         v.append(('nogorder', 'sift.enable_agg=on;sift.test_topn_gorder=off;max_parallel_workers_per_gather=0'))
+        v += [('gpar%d' % n, 'sift.enable_agg=on;' + PAR % (n, 'on')) for n in (2, 4)]
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks
         v.append(('nodistinct', 'sift.enable_agg=on;sift.agg_preagg_distinct=off;max_parallel_workers_per_gather=0'))
     if fam in ('twolevel', 'union', 'lookup', 'oneleaf', 'setkeys'):

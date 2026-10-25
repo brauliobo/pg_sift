@@ -3367,6 +3367,13 @@ gcond_box(const SiftTopGPred *p)
 {
 	GBox		r = {false, false, false, 0, 0};
 
+	/* a value is not NULL: the entries of the values, whatever the key (those of the NULLs come after them) */
+	if (p->kind == STG_NOTNULL)
+	{
+		r.has_lo = p->lead;
+		r.lo = PG_INT64_MIN;
+		return r;
+	}
 	if (p->kind == STG_CMP)
 	{
 		if (!p->lead)
@@ -3432,6 +3439,13 @@ gcond_box(const SiftTopGPred *p)
 static bool
 gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 {
+	if (p->kind == STG_NOTNULL)
+	{
+		bool		isnull;
+
+		(void) slot_getattr(slot, p->attno, &isnull);
+		return !isnull;
+	}
 	if (p->kind == STG_CMP)
 	{
 		bool		isnull;
@@ -3577,6 +3591,8 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 {
 	int			n = 0;
 
+	if (p->kind == STG_NOTNULL)
+		return p->lead || p->pinned ? 0 : 1;
 	if (p->kind == STG_CMP)
 		return p->lead || p->pinned || (top && p->op == SCMP_EQ && p->leaf == gl) ? 0 : 1;
 	for (int i = 0; i < p->nchild; i++)

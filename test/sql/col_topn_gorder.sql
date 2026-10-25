@@ -74,12 +74,32 @@ SELECT gt_plan(q) AS plan, q FROM unnest(ARRAY[
 ]) q;
 DROP FUNCTION gt_plan(text);
 
+-- min(x) and max(x) are the first row, in the order of x, of the rows where x is not NULL: the scan reads the array for it, and the answer is the heap's whatever the type, the
+-- NULLs, the ties, a range or a filter on another column (which the units answer)
+CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE q INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	EXECUTE q INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
+END $$;
+CREATE FUNCTION gt_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gt_mm(format('SELECT %s(%s) FROM gt WHERE %s', f, c, w)), count(*)
+   FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c,
+		unnest(ARRAY['true', 'b > 100', 'b < 100', 'b = 77', 'b BETWEEN 100 AND 120', 'b > 1000', 'a > 0']) w
+   GROUP BY 1 ORDER BY 1 $$;
+SELECT * FROM gt_mm_all();
+
 -- rows after the index: the write buffer joins the merge, deleted rows and rows of other versions are skipped
 INSERT INTO gt (id, a, b, c, d, t, z) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, DATE '2021-01-01' + i % 300, TIMESTAMP '2021-01-01' + i * interval '1 minute', NULL FROM generate_series(1, 1500) i;
 DELETE FROM gt WHERE id % 11 = 0;
 UPDATE gt SET a = coalesce(a, 0) + 1, b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1, d = d + 1, t = t + interval '1 day', z = z + interval '1 day' WHERE id % 7 = 0;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
 VACUUM gt;
+SELECT * FROM gt_mm_all();
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
 SELECT sift.col_promote('gt_i'::regclass) >= 0 AS promoted;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
@@ -152,5 +172,5 @@ CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_op
 SELECT gt_chk('t', 'DESC', 'LAST', 1) AS keycut_1, gt_chk('t', 'DESC', 'LAST', 10) AS keycut_10, gt_chk('t', 'ASC', 'FIRST', 32) AS keycut_32, gt_chk('t', 'DESC', 'LAST', 500) AS keycut_500;
 
 DROP TABLE gt CASCADE;
-DROP FUNCTION gt_chk(text, text, text, int, text), gt_all(int[]);
+DROP FUNCTION gt_chk(text, text, text, int, text), gt_all(int[]), gt_mm(text), gt_mm_all();
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

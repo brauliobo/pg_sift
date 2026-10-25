@@ -905,6 +905,8 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 				return false;
 		return true;
 	}
+	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0)
+		return p->leaf == key || pinned;
 	if (p->kind != SAP_CMP || p->level != 0 || p->late || p->leaf >= c->lay->nleaves || leaf_of(c, p->leaf)->parent >= 0 ||
 		!sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
 		return false;
@@ -915,6 +917,8 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 static bool
 topn_array_bounded(const SiftAggPred *p, int key)
 {
+	if (p->kind == SAP_NULL)
+		return p->leaf == key && p->op == 1;
 	if (p->kind == SAP_CMP)
 		return p->leaf == key && p->op != SCMP_NE;
 	for (int i = 0; i < p->nchild; i++)
@@ -978,7 +982,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	}
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
-	cp->path.pathtarget = root->upper_targets[UPPERREL_ORDERED];
+	cp->path.pathtarget = c->topn_target;
 	cp->path.parallel_safe = false;
 	cp->path.pathkeys = nordered < list_length(root->sort_pathkeys) ? list_copy_head(root->sort_pathkeys, nordered) : root->sort_pathkeys;
 	cp->methods = &agg_path_methods;
@@ -1141,6 +1145,32 @@ topn_ties(AggCtx *c, PlannerInfo *root, int nlead, const int *leaf, const SiftTo
 	return true;
 }
 
+/*
+ * PostgreSQL plans min(k) and max(k) as the first row, in the order of k, of the rows where k is not NULL (planagg.c): a query of one table with ORDER BY k LIMIT 1 whose
+ * paths are those of the scan, planned before the ordered rel exists. The top-N is offered there for such a query, so that a scan which reads the order array of k
+ * (one entry of the group, not its units) competes with the aggregate that reads the units. The subroot of the planner is a level below the query (parent_root), so the query
+ * itself must be the top one: a sub-select of another query keeps the aggregate (the scan that starts over for each row of the outer query is the lookup tables' to plan,
+ * agg/plan_child.c).
+ */
+void
+sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel)
+{
+	Query	   *parse = root->parse;
+	Node	   *key;
+
+	if (!sift_enable_agg || !sift_enable_topn || rel->reloptkind != RELOPT_BASEREL || root->parent_root == NULL || root->parent_root->parent_root != NULL || root->upper_targets[UPPERREL_ORDERED] != NULL || parse->limitOffset != NULL ||
+		parse->limitCount == NULL || !IsA(parse->limitCount, Const) || list_length(parse->sortClause) != 1 || parse->hasAggs || parse->jointree->quals == NULL ||
+		!IsA(parse->jointree->quals, List))
+		return;
+	key = (Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist);
+	foreach_ptr(Node, q, (List *) parse->jointree->quals)
+		if (IsA(q, NullTest) && ((NullTest *) q)->nulltesttype == IS_NOT_NULL && equal(((NullTest *) q)->arg, key))
+		{
+			sift_agg_upper_paths(root, UPPERREL_ORDERED, rel, rel, NULL);
+			return;
+		}
+}
+
 void
 topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 {
@@ -1176,8 +1206,9 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	int			nkey = list_length(parse->sortClause),
 				nlead = nkey,
 				slack = 0;
-	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
+	PathTarget *target = root->upper_targets[UPPERREL_ORDERED] ? root->upper_targets[UPPERREL_ORDERED] : window_rel->reltarget;
 
+	c->topn_target = target;
 	if (!sift_enable_agg || !sift_enable_topn || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || parse->limitCount == NULL ||
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual)
 		return;

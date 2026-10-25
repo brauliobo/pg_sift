@@ -80,14 +80,35 @@ SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
 ]) q;
 DROP FUNCTION gg_plan(text);
 
+-- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
+-- keys, ties, a range, deleted and updated rows and a write buffer give the heap's answer)
+CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE q INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	EXECUTE q INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
+END $$;
+CREATE FUNCTION gg_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
+   FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['k', 't']) c,
+		unnest(ARRAY['g = 3', 'g = 0', 'g = 100', 'g = 101', 'g = 500', 'g = 8 AND k > 250', 'g = 8 AND k <= 40', 'g = 8 AND k = 77', 'g = 4 AND k > 1000']) w
+   GROUP BY 1 ORDER BY 1 $$;
+SELECT * FROM gg_mm_all();
+
 -- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge
 INSERT INTO gg (id, g, k, t) SELECT 30000 + i, i % 11, (i * 13) % 300 - 20, TIMESTAMP '2003-01-01' + i * interval '1 minute' FROM generate_series(1, 2500) i;
 DELETE FROM gg WHERE id % 11 = 0;
 UPDATE gg SET g = coalesce(g, 0) + 1 WHERE id % 7 = 0;
 UPDATE gg SET k = coalesce(k, 0) + 1000 WHERE id % 19 = 0;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+SELECT * FROM gg_mm_all();
 VACUUM gg;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
+SELECT * FROM gg_mm_all();
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
 SELECT sift.col_verify('gg_i');
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
@@ -110,5 +131,5 @@ CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_
 CREATE INDEX gg_bad ON gg USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops, k sift.col_int4_ops) WITH (order_columns = 'k', order_array_columns = 'k', order_array_group = 'pad');
 
 DROP TABLE gg CASCADE;
-DROP FUNCTION gg_chk(text), gg_all();
+DROP FUNCTION gg_chk(text), gg_all(), gg_mm(text), gg_mm_all();
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

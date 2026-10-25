@@ -105,7 +105,8 @@ typedef enum SiftTopGKind
 {
 	STG_AND,
 	STG_OR,
-	STG_CMP
+	STG_CMP,
+	STG_NOTNULL					/* the column is not NULL (op, val unused) */
 } SiftTopGKind;
 
 typedef struct SiftTopGPred
