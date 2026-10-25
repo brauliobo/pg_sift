@@ -67,10 +67,7 @@ if [[ ,$ENGINES, == *,pg_duckdb,* ]]; then
   ports_free "$DUCK_PORT" 1 || exit 1
   pull_missing "$STORE_DUCKDB_IMAGE"
   mapfile -t CAPS < <(docker_caps "$CPUS" 8g)
-  docker rm -fv "$DUCK" >/dev/null 2>&1 || true
-  docker run -d --name "$DUCK" "${CAPS[@]}" --shm-size 1g -p "127.0.0.1:$DUCK_PORT:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$STORE_DUCKDB_IMAGE" postgres "${PG_FLAGS[@]}" \
-    -c max_parallel_workers_per_gather=$((CPUS - 1)) -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1)) >/dev/null
-  for _ in $(seq 60); do psql -X -qAt -h 127.0.0.1 -p "$DUCK_PORT" -U postgres -d postgres -c 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
+  pg_container "$DUCK" "$DUCK_PORT" "$STORE_DUCKDB_IMAGE" "${PG_FLAGS[@]}" -c max_parallel_workers_per_gather=$((CPUS - 1)) -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
   psql -X -q -h 127.0.0.1 -p "$DUCK_PORT" -U postgres -d postgres -c "DROP DATABASE IF EXISTS bench WITH (FORCE)" -c "CREATE DATABASE bench"
   PY+=(--duck-port "$DUCK_PORT" --engines "$ENGINES")
 fi

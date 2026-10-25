@@ -51,17 +51,9 @@ pull_missing "$STORE_DUCKDB_IMAGE"
 # the same flags and the same thread budget for both servers; pg_duckdb gets its own settings for the same budget
 FLAGS=("${PG_FLAGS[@]}" -c max_parallel_workers_per_gather=$((CPUS - 1)) -c max_parallel_maintenance_workers=$((CPUS - 1)))
 mapfile -t CAPS < <(docker_caps "$CPUS" "$MEMORY")
-run() { # NAME PORT IMAGE [SERVER SETTINGS...]
-  local n=$1 p=$2 i=$3; shift 3
-  docker run -d --name "$n" --label "sift-duckdb=$NAME" "${CAPS[@]}" --shm-size 1g -p "127.0.0.1:$p:5432" -e POSTGRES_HOST_AUTH_METHOD=trust "$i" postgres "${FLAGS[@]}" "$@" >/dev/null
-}
-docker rm -fv "$NAME-sift" "$NAME-duck" >/dev/null 2>&1 || true
-run "$NAME-sift" "$PORT" "$SIFT_IMAGE"
-run "$NAME-duck" $((PORT + 1)) "$STORE_DUCKDB_IMAGE" -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
-for p in "$PORT" $((PORT + 1)); do
-  for (( t = 0; t < 300; t++ )); do pg_isready -q -h 127.0.0.1 -p "$p" && break; sleep 1; done
-  pg_isready -q -h 127.0.0.1 -p "$p" || die "the server on port $p did not start (docker logs $NAME-*)"
-done
+PG_LABEL="sift-duckdb=$NAME"
+pg_container "$NAME-sift" "$PORT" "$SIFT_IMAGE" "${FLAGS[@]}"
+pg_container "$NAME-duck" $((PORT + 1)) "$STORE_DUCKDB_IMAGE" "${FLAGS[@]}" -c duckdb.threads="$CPUS" -c duckdb.threads_for_postgres_scan="$CPUS" -c duckdb.max_workers_per_postgres_scan=$((CPUS - 1))
 
 pgv() { psql -X -qAt -h 127.0.0.1 -p "$1" -U postgres -d postgres -c "SHOW server_version"; }
 digest=$(docker image inspect -f '{{index .RepoDigests 0}}' "$STORE_DUCKDB_IMAGE" | sed 's/.*@sha256:/sha256:/' | cut -c1-19)
