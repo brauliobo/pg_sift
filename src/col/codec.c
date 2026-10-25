@@ -75,6 +75,28 @@ count_range(const uint64 *bits, uint32 from, uint32 to)
 		dst[i] = (expr); \
 	}
 
+/* A width of 3, 5, 6 or 7 bytes: one 8-byte load and a mask per value (a memcpy of B bytes is a library call per row); the last values, whose load would run past the node, are copied */
+#define CC_ODD_LOOP(w, expr) \
+	{ \
+		const uint32 B_ = (w), \
+					fast = n > 8 ? n - (8 + B_ - 1) / B_ : 0; \
+		const uint64 mask = (UINT64CONST(1) << (8 * B_)) - 1; \
+		uint32		i = 0; \
+		for (; i < fast; i++) \
+		{ \
+			uint64		x; \
+			memcpy(&x, s + (size_t) i * B_, 8); \
+			x &= mask; \
+			dst[i] = (expr); \
+		} \
+		for (; i < n; i++) \
+		{ \
+			uint64		x = 0; \
+			memcpy(&x, s + (size_t) i * B_, B_); \
+			dst[i] = (expr); \
+		} \
+	}
+
 static void
 forbyte_u32(const CcNode *nd, uint32 off, uint32 *dst)
 {
@@ -89,6 +111,8 @@ forbyte_u32(const CcNode *nd, uint32 off, uint32 *dst)
 			CC_BYTES_LOOP(uint16, off + x) break;
 		case 4:
 			CC_BYTES_LOOP(uint32, off + x) break;
+		case 3:
+			CC_ODD_LOOP(3, off + (uint32) x) break;
 		default:
 			for (uint32 i = 0; i < n; i++)
 			{
@@ -117,14 +141,16 @@ forbyte_i64(const CcNode *nd, int64 *dst)
 			CC_BYTES_LOOP(uint32, (int64) (base + x)) break;
 		case 8:
 			CC_BYTES_LOOP(uint64, (int64) (base + x)) break;
+		case 3:
+			CC_ODD_LOOP(3, (int64) (base + x)) break;
+		case 5:
+			CC_ODD_LOOP(5, (int64) (base + x)) break;
+		case 6:
+			CC_ODD_LOOP(6, (int64) (base + x)) break;
+		case 7:
+			CC_ODD_LOOP(7, (int64) (base + x)) break;
 		default:
-			for (uint32 i = 0; i < n; i++)
-			{
-				uint64		x = 0;
-
-				memcpy(&x, s + (size_t) i * nd->B, nd->B);
-				dst[i] = (int64) (base + x);
-			}
+			Assert(false);
 	}
 }
 

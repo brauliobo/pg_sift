@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Changed: pg_sift: a column chunk of plain 3, 5, 6 or 7-byte values (a timestamp with microseconds spread over years) is decoded with one 8-byte load per value and not a library copy per value. No format change.
 - Fixed: pg_sift: an `ORDER BY` a text column `LIMIT n` over a `sift_table` whose column was added with `ALTER TABLE .. ADD COLUMN` after its column groups were written ended the backend with a segmentation fault: the column of those groups, all NULL, had no dictionary (test `tbl_topn_absent`).
 - Improved: pg_sift: a short IN list of integers that has runs of consecutive members (`id IN (7, 8, 9)`) is one range test of the column engine, not one pass over the chunk a member, and the AVX2 range kernel compares in registers (`filter_few_rows`, 1,000,000 rows: 24.4 to 15.0 million instructions a query, 2.07 to 1.66 ms).
 - Fixed: pg_sift: an aggregate scan of a key-cut index (`key_cut`) vetted every row of a unit with dead rows through the heap even when every page of its block range was all-visible (a table VACUUMed after its updates): such a unit is now counted from its liveness alone and the scan fetches no heap page (a group-by over a table with 9% of its rows dead in the oldest units fetched all 29,628 pages of the heap).
