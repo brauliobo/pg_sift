@@ -2126,47 +2126,28 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	return true;
 }
 
-/*
- * A unit of which every row passes, asked for at most as many rows as the head of the run of the first key holds: the n best rows of the unit
- * are the first n entries of the head from the end the sort wants, with their keys and heap addresses, so the unit is not read. Asked for more, the head still
- * answers once the heap is full and the last entry of the head is after its bar: the rows after the head are not before that entry, so none can enter the result.
- * A row that is dead or changed since the unit was written fails the mask (the visibility check clears its bit), and the unit is read as before.
- */
+/* Can the heads of the runs of the first key answer: one integer key, no expression, no skipped or reordered input */
 static bool
-head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
+heads_ok(const SiftTopN *t)
 {
 	const TopKey *k0 = &t->key[0];
-	SiftSrcHead lo[SIFT_SRC_HEAD_MAX],
-				hi[SIFT_SRC_HEAD_MAX];
-	const SiftSrcHead *h;
-	uint32		nlo,
-				nhi,
-				nvals,
-				nnull,
-				n;
-	uint64		id;
-	uint16		part;
-	Rank		bar;
-	bool		barred;
 
-	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
-		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0)
-		return false;
-	for (int i = 0; i < nrow / 64; i++)
-		if (rmask[i] != ~UINT64CONST(0))
-			return false;
-	if (nrow % 64 && rmask[nrow / 64] != (UINT64CONST(1) << (nrow % 64)) - 1)
-		return false;
-	if (!sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id) || nvals != (uint32) nrow || nnull != 0)
-		return false;
-	if (sift_colsrc_run_heads(src, unit, k0->leaf, lo, &nlo, hi, &nhi) == 0)
-		return false;
-	h = k0->desc ? hi : lo;
-	n = k0->desc ? nhi : nlo;
-	barred = bar_rank(t, &bar);
+	return sift_topn_heads && sift_topn_runs && t->nkey == 1 && t->nexpr == 0 && !t->all && !t->sort && !t->revisit && k0->xk == TXK_NONE && k0->leaf >= 0 && !k0->blob &&
+		!k0->nenum && (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) && t->limit > 0;
+}
+
+/* The entries of the head from the end the sort wants go to the result, up to the limit and the bar; false when the head is too short to answer */
+static bool
+heads_take(SiftTopN *t, const SiftSrcHead *lo, uint32 nlo, const SiftSrcHead *hi, uint32 nhi, uint16 part)
+{
+	const TopKey *k0 = &t->key[0];
+	const SiftSrcHead *h = k0->desc ? hi : lo;
+	uint32		n = k0->desc ? nhi : nlo;
+	Rank		bar;
+	bool		barred = bar_rank(t, &bar);
+
 	if (n < (uint32) t->limit && !(barred && n > 0 && rank_after(rank_of(k0, false, h[n - 1].key), bar)))
 		return false;
-	part = unit_part(t, src);
 	for (uint32 i = 0; i < Min(n, (uint32) t->limit); i++)
 	{
 		TopEnt		e = {0};
@@ -2184,6 +2165,38 @@ head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 	return true;
 }
 
+/*
+ * A unit of which every row passes, asked for at most as many rows as the head of the run of the first key holds: the n best rows of the unit
+ * are the first n entries of the head from the end the sort wants, with their keys and heap addresses, so the unit is not read. Asked for more, the head still
+ * answers once the heap is full and the last entry of the head is after its bar: the rows after the head are not before that entry, so none can enter the result.
+ * A row that is dead or changed since the unit was written fails the mask (the visibility check clears its bit), and the unit is read as before.
+ */
+static bool
+head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
+{
+	const TopKey *k0 = &t->key[0];
+	SiftSrcHead lo[SIFT_SRC_HEAD_MAX],
+				hi[SIFT_SRC_HEAD_MAX];
+	uint32		nlo,
+				nhi,
+				nvals,
+				nnull;
+	uint64		id;
+
+	if (!heads_ok(t))
+		return false;
+	for (int i = 0; i < nrow / 64; i++)
+		if (rmask[i] != ~UINT64CONST(0))
+			return false;
+	if (nrow % 64 && rmask[nrow / 64] != (UINT64CONST(1) << (nrow % 64)) - 1)
+		return false;
+	if (!sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id) || nvals != (uint32) nrow || nnull != 0)
+		return false;
+	if (sift_colsrc_run_heads(src, unit, k0->leaf, lo, &nlo, hi, &nhi) == 0)
+		return false;
+	return heads_take(t, lo, nlo, hi, nhi, unit_part(t, src));
+}
+
 static bool walk_in_head(const SiftTopN *t, uint32 sb);
 
 bool
@@ -2192,37 +2205,14 @@ sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb)
 	const TopKey *k0 = &t->key[0];
 	SiftSrcHead lo[SIFT_SRC_HEAD_MAX],
 				hi[SIFT_SRC_HEAD_MAX];
-	const SiftSrcHead *h;
 	uint32		nlo,
-				nhi,
-				n;
-	Rank		bar;
-	bool		barred;
+				nhi;
 
-	if (!sift_topn_heads || !sift_topn_runs || t->nkey != 1 || t->nexpr > 0 || t->all || t->sort || t->revisit || k0->xk != TXK_NONE || k0->leaf < 0 || k0->blob ||
-		k0->nenum || (k0->vtype != SCV_I32 && k0->vtype != SCV_I64) || t->limit <= 0)
+	if (!heads_ok(t))
 		return false;
 	if (!t->wkeep || walk_in_head(t, sb) || !sift_colsrc_sb_heads(src, sb, k0->leaf, lo, &nlo, hi, &nhi))
 		return false;
-	h = k0->desc ? hi : lo;
-	n = k0->desc ? nhi : nlo;
-	barred = bar_rank(t, &bar);
-	if (n < (uint32) t->limit && !(barred && n > 0 && rank_after(rank_of(k0, false, h[n - 1].key), bar)))
-		return false;
-	for (uint32 i = 0; i < Min(n, (uint32) t->limit); i++)
-	{
-		TopEnt		e = {0};
-
-		if (barred && rank_after(rank_of(k0, false, h[i].key), bar))
-			break;
-		e.k[0] = h[i].key;
-		ItemPointerSet(&e.tid, (BlockNumber) (h[i].addr >> 16), (OffsetNumber) (h[i].addr & 0xFFFF));
-		e.tie = tie_key(&e.tid, 0);
-		res_push(t, &e, NULL, NULL);
-	}
-	share_bar(t);
-	t->nrhead++;
-	return true;
+	return heads_take(t, lo, nlo, hi, nhi, 0);
 }
 
 /* the first 8 bytes of an entry (after the varlena header of a bytea), most significant first, zero padded: it orders the entries as they are up to a tie */
