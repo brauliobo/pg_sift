@@ -122,6 +122,7 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 18 | `order_columns` (option, off): the sorted runs also hold their heads (the best keys at each end of a unit with their heap addresses) | `ALTER INDEX x RESET (order_columns)` and `REINDEX`, or `sift.col_format_minor` 14 or less (the runs are written without heads, minor 13) and `REINDEX` |
 | 19 | a leaf NULL in nearly every row of a unit (a soft-delete stamp): the unit also keeps the pre-aggregates of the non-NULL rows, so `leaf IS NULL` is answered from them | `REINDEX` (a merge writes them too), or `sift.col_format_minor` 14 or less (written without) and `REINDEX` |
 | 20 | `hll_columns` (option, off): a HyperLogLog sketch of a column in every unit, for `sift.approx_count_distinct` | `ALTER INDEX x RESET (hll_columns)` and `REINDEX` (the setting does not apply: the option stamps the minor) |
+| 21 | `order_array_columns`, `order_array_group` (options, off): a global order array of the keys of a segment | `ALTER INDEX x RESET (order_array_columns)` (and `order_array_group`) and `REINDEX`; the setting does not apply: the option stamps the minor |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the server (`ALTER SYSTEM`, as in "Going back to 3.2") or the database, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
@@ -173,6 +174,8 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
 - **`hll_columns` (minor 20).** 3.3 and older refuse minor 20 segments with a format error and the `REINDEX` hint. `sift.upgrade_check('3.3')` lists the index as a blocker with
   `ALTER INDEX x RESET (hll_columns)` and the `REINDEX`; `sift.approx_count_distinct` exists only from 3.4, so a query that calls it fails on an older library whatever the index. It and
   `count(DISTINCT)` are different aggregates: no setting turns one into the other.
+- **`order_array_columns` (minor 21).** 3.3 and older refuse minor 21 segments with a format error and the `REINDEX` hint. `sift.upgrade_check('3.3')` lists the index as a blocker with
+  `ALTER INDEX x RESET (order_array_columns)` (and `order_array_group`) and the `REINDEX`.
 - For 3.1 use 4 and for 3.0 use 3 in step 2, and `--to 3.1` or `--to 3.0` in steps 1 and 4 (the matrix test checks that those releases read what the settings 4 and 3 write, not the full sequence).
 
 ### After the downgrade: the catalog, pg_dump and the way forward
@@ -197,7 +200,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16 and 3.4 up to 20; the default setting is 15, and minors 16, 17, 18 and 20 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns` or `hll_columns`, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16 and 3.4 up to 21; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
