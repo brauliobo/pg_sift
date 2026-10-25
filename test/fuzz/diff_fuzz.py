@@ -1044,11 +1044,27 @@ PAR = 'max_parallel_workers_per_gather=%d;parallel_setup_cost=0;parallel_tuple_c
 POINT = 'sift.enable_col_scan=on;sift.enable_agg=off;enable_seqscan=off;max_parallel_workers_per_gather=0;'
 
 
+def simd_levels():
+    """The levels of sift.simd below the top one this host runs, scalar first (the top is the default of every other variant); the host's CPU flags decide."""
+    flags = ''
+    try:
+        flags = re.search(r'^(?:flags|Features)\s*:(.*)$', open('/proc/cpuinfo').read(), re.M).group(1).split()
+    except (OSError, AttributeError):
+        pass
+    mid = ['avx2'] if 'avx512f' in flags and 'avx2' in flags else []
+    return ['scalar'] + mid
+
+
+SIMD_LEVELS = simd_levels()
+
+
 def variants(r, fam):
     if fam == 'point':  # the access method: an index scan, a bitmap scan; the reference is the normal plan
         return [('idx', POINT + 'enable_bitmapscan=off'), ('bmp', POINT + 'enable_indexscan=off;enable_indexonlyscan=off')]
     v = [('pre', 'sift.enable_agg=on;max_parallel_workers_per_gather=0'),
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
+    # every SIMD level below the top one the host supports, on the scan: the answers are the same bit for bit
+    v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
     if fam == 'topn':  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
