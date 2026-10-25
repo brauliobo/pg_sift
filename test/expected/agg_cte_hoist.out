@@ -1,5 +1,5 @@
 -- A CTE that several aggregates read is planned inline (agg_cte_inline_nested), which copies its body into every reader. A sub-select of that body that
--- computes something (the attributes with the most rows: two aggregates of the table) would then run once per copy: it becomes a CTE of the same WITH,
+-- computes something (the keys with the most rows: two aggregates of the table) would then run once per copy: it becomes a CTE of the same WITH,
 -- which PostgreSQL computes once. Only an IN sub-select that reads nothing of the query around it moves; the CTEs it reads (periods) stay the ones
 -- of the WITH. The rows are the normal plan's.
 CREATE EXTENSION pg_sift;
@@ -13,7 +13,7 @@ SELECT g, 1 + g % 50, date '2025-01-01' + (g * 7919 % 360),
 FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, ts, payload) WITH (paths = 'payload.parts[]{cat text, sub text, score float8}');
 VACUUM (FREEZE, ANALYZE) events;
--- part_rows is read by the two arms of per_cat; filter is the sub-select of its WHERE (the attributes of the request)
+-- part_rows is read by the two arms of per_cat; filter is the sub-select of its WHERE (the keys of the request)
 CREATE FUNCTION series_query(filter text) RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('cur', daterange(DATE '2025-03-01', DATE '2025-12-31', '[]')),
 	                                                        ('prev', daterange(DATE '2024-03-01', DATE '2024-12-31', '[]'))) p(period, range)),

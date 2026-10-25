@@ -14,7 +14,7 @@ FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, ts, payload) WITH (paths = 'payload.parts[]{cat text, sub text, score float8}');
 VACUUM (FREEZE, ANALYZE) events;
 
--- part_rows is read by the two arms of per_cat; filter is the sub-select of its WHERE (the attributes of the request)
+-- part_rows is read by the two arms of per_cat; filter is the sub-select of its WHERE (the keys of the request)
 CREATE FUNCTION series_query(filter text) RETURNS text LANGUAGE sql AS $$
 	SELECT format($q$WITH periods AS (SELECT * FROM (VALUES ('cur', daterange(DATE '2025-03-01', DATE '2025-12-31', '[]')),
 	                                                        ('prev', daterange(DATE '2024-03-01', DATE '2024-12-31', '[]'))) p(period, range)),
