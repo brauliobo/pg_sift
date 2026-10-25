@@ -542,6 +542,32 @@ def render_latest(p):
     return f"{pre}SELECT {sel} FROM {frm} WHERE {cond}", False
 
 
+def gen_toplat(r, ctx):
+    orders = ['f.ts', 'f.amount', 'f.val', 'f.a', 'f.big', 'f.kind', 'f.num', 'f.parent_id']
+    key = r.choice([['grp'], ['parent_id'], ['a'], ['flag'], ['big'], ['kind'], ['grp', 'a'], ['ts']])
+    ties = [f'f.{k} = e.{k}' for k in key]
+    if key == ['ts']:
+        ties = [r.choice(['f.ts >= e.ts', 'f.ts < e.ts', 'f.ts = e.ts'])]
+    elif key[0] in ('grp', 'parent_id', 'a', 'big') and r.random() < 0.15:
+        ties = [f'f.{key[0]} = e.{key[0]} + 0']
+    return dict(form=r.choice(['lateral', 'lateral', 'left', 'scalar', 'sum']), ties=ties,
+                order=[o + r.choice(['', ' DESC', ' NULLS FIRST', ' DESC NULLS LAST']) for o in r.sample(orders, r.randrange(1, 3))],
+                limit=r.choice([1, 1, 2, 3, 5, 12, 400]), offset=r.choice([0, 0, 0, 2, 7]), pick=r.choice([7, 11, 40]), outer=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)),
+                inner=preds(r, 'f', ctx['rows'], EVENTS, r.randrange(0, 3)))
+
+
+def render_toplat(p):
+    sub = lambda cols: (f"SELECT {cols} FROM events f WHERE {' AND '.join(p['ties'] + p['inner'])} ORDER BY {', '.join(p['order'])}, f.id "
+                        f"LIMIT {1 if p['form'] == 'scalar' else p['limit']}" + ('' if p['form'] == 'scalar' else ' OFFSET %d' % p['offset']))
+    wh = ' AND '.join([f"e.id % {p['pick']} = 0"] + p['outer'])
+    if p['form'] == 'scalar':
+        return f"SELECT e.id, ({sub('f.id')}) AS top FROM events e WHERE {wh} ORDER BY e.id", True
+    if p['form'] == 'sum':
+        return f"SELECT e.id, (SELECT count(*) + coalesce(sum(s.amount), 0) FROM ({sub('f.id, f.amount')}) s) AS t FROM events e WHERE {wh} ORDER BY e.id", True
+    join = 'LEFT JOIN' if p['form'] == 'left' else 'JOIN'
+    return f"SELECT e.id, x.id AS xid, x.amount FROM events e {join} LATERAL ({sub('f.id, f.amount')}) x ON true WHERE {wh} ORDER BY e.id, x.id", True
+
+
 # a cast of a jsonb path that raises on a jsonb null, in a condition of the outer rows next to a condition on the sub-select: PostgreSQL may test the sub-select first and never
 # reach the cast, or the reverse (a join order), so the error is not the plan's to reproduce
 CAST_PATH = re.compile(r"metrics ->>? '\w+'\)::")
@@ -1232,7 +1258,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'toplat': (gen_toplat, render_toplat, 4), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
@@ -1267,7 +1293,7 @@ def variants(r, fam):
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     # every SIMD level below the top one the host supports, on the scan: the answers are the same bit for bit
     v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
-    if fam in ('topn', 'trail'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
+    if fam in ('topn', 'trail', 'toplat'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'dead':  # the dead rows scanned, and any share of them netted
         v.append(('nodelta', 'sift.enable_agg=on;sift.agg_dead_delta=0;max_parallel_workers_per_gather=0'))

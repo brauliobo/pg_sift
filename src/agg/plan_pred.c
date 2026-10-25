@@ -182,7 +182,10 @@ short_array_const(Const *k)
 	return (Node *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(psprintf("%s,...} (%d elements)", txt, ARR_DIMS(a)[0])), false, false);
 }
 
-/* a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows) */
+/*
+ * a placeholder and the guard of an absent nullable input show as the expression they stand for (the guard's Param is no parameter the deparser knows); a
+ * parameter of an enclosing query level shows as `$n`, as an external one does (the deparser asserts on an executor parameter no plan node sets)
+ */
 static Node *
 display_expr_mutator(Node *n, void *context)
 {
@@ -196,6 +199,13 @@ display_expr_mutator(Node *n, void *context)
 		return display_expr_mutator((Node *) ((PlaceHolderVar *) n)->phexpr, context);
 	if ((arm = null_guarded_arm(n)) != NULL)
 		return display_expr_mutator(arm, context);
+	if (level_param(n))
+	{
+		Param	   *shown = copyObject((Param *) n);
+
+		shown->paramkind = PARAM_EXTERN;
+		return (Node *) shown;
+	}
 	return expression_tree_mutator(n, display_expr_mutator, context);
 }
 

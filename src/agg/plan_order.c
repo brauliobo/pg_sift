@@ -926,7 +926,7 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 		topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
-	cp->custom_private = list_make2(agg_spec_keep(s), scan_tlist);
+	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
 	agg_arm_path(&cp->path);
 	/* TOPN_TIES: the rows come in the order of the first keys only; the Sort puts the others in order, and the Limit above it takes the first */
 	if (nordered < list_length(root->sort_pathkeys))
@@ -989,6 +989,36 @@ window_input(RelOptInfo *rel)
 			p = NULL;
 	}
 	return p ? p->parent : NULL;
+}
+
+typedef struct LevelParams
+{
+	PlannerInfo *root;
+	List	   *found;			/* the Params as PostgreSQL has them: the plan declares them (custom_exprs), so it is rescanned when they change */
+} LevelParams;
+
+/*
+ * The Params of the clauses that an enclosing query level sets for each row it passes down (the plan_params of the levels above: a LATERAL
+ * reference, a correlated sub-select) are marked as constants the scan evaluates when it starts: it starts over when the plan is rescanned.
+ */
+static Node *
+mark_level_params(Node *n, LevelParams *lp)
+{
+	Param	   *p = (Param *) n;
+
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Param) && p->paramkind == PARAM_EXEC)
+		for (PlannerInfo *r = lp->root->parent_root; r != NULL; r = r->parent_root)
+			foreach_node(PlannerParamItem, pi, r->plan_params)
+				if (pi->paramId == p->paramid)
+				{
+					p = copyObject(p);
+					lp->found = list_append_unique(lp->found, copyObject(p));
+					p->location = SIFT_AGG_LEVEL_LOC;
+					return (Node *) p;
+				}
+	return expression_tree_mutator(n, mark_level_params, lp);
 }
 
 /* topn_key for a key after the first, whose failure is not the plan's: the Sort above takes it */
@@ -1106,6 +1136,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
+	if (root->parent_root != NULL && agg_child_planning == 0)
+	{
+		LevelParams lp = {root, NIL};
+
+		fs.quals = (List *) mark_level_params((Node *) fs.quals, &lp);
+		c->level_params = lp.found;
+	}
 	s = agg_spec_new(c);
 	if (c->nparts == 0)
 		c->search = sift_search_extract(root, c->rel, &fs.quals, c->indexoid, c->heapoid, true);
@@ -1176,6 +1213,13 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		agg_refused(TOPN_SHAPE);
 		return;
 	}
+	/* the scan starts over for each value of the parameters: its other inputs (joined plans, partitions, window functions, expressions) are read once */
+	if (c->level_params != NIL &&
+		(c->joins != NIL || c->nparts > 0 || parse->hasWindowFuncs || s->naggs > 0 || has_exec_param_walker((Node *) root->processed_tlist, NULL)))
+	{
+		agg_refused_on(TOPN_SHAPE, "a condition reads a parameter that an enclosing query sets, and the scan has joins, partitions, window functions or expressions of it");
+		return;
+	}
 	rows = count + offset;
 	/* the Limit node throws the first OFFSET rows away unread: when the output is the scan tuple, they are not read from the heap (not when a Sort is between) */
 	skip_offset = nlead == nkey;
@@ -1200,7 +1244,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
-		nworkers = c->joins == NIL && s->naggs == 0 && !c->topn_xserial && nlead == nkey && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
+		nworkers = c->joins == NIL && c->level_params == NIL && s->naggs == 0 && !c->topn_xserial && nlead == nkey && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers, nlead, count + offset);
 		if (rows <= TOPN_SORT_ROWS)

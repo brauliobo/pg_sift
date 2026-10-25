@@ -1193,18 +1193,30 @@ engine_close(AggExec *ex)
 		table_close(ex->heap, NoLock);
 }
 
+/* the scan's memory, and the spec in it: a scan that starts over (agg_rescan) drops both */
+static void
+scan_spec(AggExec *ex, MemoryContext parent)
+{
+	MemoryContext old;
+
+	engine_contexts(ex, parent);
+	old = MemoryContextSwitchTo(ex->cxt);
+	ex->spec = sift_aggspec_unpack(ex->pack);
+	MemoryContextSwitchTo(old);
+}
+
 static void
 agg_begin(CustomScanState *node, EState *estate, int eflags)
 {
 	AggExec    *ex = (AggExec *) node;
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 
-	ex->spec = sift_aggspec_unpack(cs->custom_private);
 	ex->pack = cs->custom_private;
 	ex->params = estate->es_param_list_info;
 	ex->snap = estate->es_snapshot;
 	ex->rescannable = (eflags & (EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)) != 0;
-	engine_contexts(ex, estate->es_query_cxt);
+	ex->param_scan = cs->custom_exprs != NIL;
+	scan_spec(ex, estate->es_query_cxt);
 	/* the child plans of the joins (a sub-select, VALUES list or function) are the provider's to start and end; the scan reads each once */
 	foreach_ptr(Plan, child, cs->custom_plans)
 		node->custom_ps = lappend(node->custom_ps, ExecInitNode(child, estate, eflags & ~(EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)));
@@ -1310,11 +1322,39 @@ agg_end(CustomScanState *node)
 		ExecEndNode(child);
 }
 
+/*
+ * The conditions of the scan read parameters an enclosing query level has set anew (a LATERAL reference, a correlated sub-select): the scan starts
+ * over, so its zones, key lists and heap follow the operands. Its inputs are the table alone (topn_paths); the relations are opened again.
+ */
+static void
+agg_restart(AggExec *ex)
+{
+	bool		rescannable = ex->rescannable;
+
+	if (ex->started)
+		stats_run(ex);
+	engine_close(ex);
+	MemoryContextDelete(ex->cxt);
+	memset((char *) ex + sizeof(CustomScanState), 0, sizeof(AggExec) - sizeof(CustomScanState));
+	ex->pack = ((CustomScan *) ex->css.ss.ps.plan)->custom_private;
+	ex->params = ex->css.ss.ps.state->es_param_list_info;
+	ex->snap = ex->css.ss.ps.state->es_snapshot;
+	ex->rescannable = rescannable;
+	ex->param_scan = true;
+	scan_spec(ex, ex->css.ss.ps.state->es_query_cxt);
+	engine_rels(ex);
+}
+
 static void
 agg_rescan(CustomScanState *node)
 {
 	AggExec    *ex = (AggExec *) node;
 
+	if (ex->param_scan)
+	{
+		agg_restart(ex);
+		return;
+	}
 	/* the plan has no parameter the scan reads (unsupported_clause), so the groups are the same: replay them */
 	if (spill_rescan(ex))
 		return;

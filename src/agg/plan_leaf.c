@@ -127,6 +127,13 @@ null_input_param(Node *n)
 		((Param *) n)->paramid == SIFT_AGG_NULL_INPUT && ((Param *) n)->location == SIFT_AGG_NULL_INPUT_LOC;
 }
 
+/* A condition's parameter that the scan reads from the executor when it starts: the rows an enclosing query level passes down set it (topn_level_params) */
+bool
+level_param(Node *n)
+{
+	return IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC && ((Param *) n)->location == SIFT_AGG_LEVEL_LOC;
+}
+
 /* `CASE WHEN <input absent> THEN NULL ELSE x END`, what a placeholder computed inside the nullable input becomes: x, else NULL */
 Node *
 null_guarded_arm(Node *n)
@@ -143,7 +150,7 @@ null_guarded_arm(Node *n)
 }
 
 /*
- * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter. A non-NULL context (the query's
+ * An expression the executor may evaluate once per scan: no Vars, no volatile function, no executor parameter (but those level_param marked). A non-NULL context (the query's
  * AggCtx) lets the EXISTS sub-plans through, and the outputs of the ARRAY sub-selects a lookup table asks once: the clause was compiled, and
  * compile_exists and array_initplan_ok proved the ones it kept.
  */
@@ -153,6 +160,8 @@ has_exec_param_walker(Node *node, void *context)
 	if (node == NULL)
 		return false;
 	if (IsA(node, SubPlan) && context)
+		return false;
+	if (level_param(node))
 		return false;
 	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
 		return !context || !array_initplan_ok(context, (Param *) node);

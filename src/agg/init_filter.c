@@ -452,7 +452,7 @@ wide_operand(AggExec *ex, const SiftAggPred *p, SiftSrcWideTest *t)
 
 	if (p->op == SWT_ISNULL || p->op == SWT_NOTNULL)
 		return;
-	e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+	e = operand_state(ex, p->expr);
 	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
 	get_typlenbyvalalign(p->argtype, &len, &byval, &align);
 	t->nvals = 1;

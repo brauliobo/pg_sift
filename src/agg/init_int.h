@@ -11,6 +11,8 @@
 
 /* init.c */
 void extend_layout(AggExec *ex);
+ExprState *operand_state(AggExec *ex, Node *expr);
+extern bool level_param(Node *n);
 void init_states(AggExec *ex);
 void register_preds(AggExec *ex);
 void prune_init(AggExec *ex);

@@ -29,6 +29,7 @@
 #define SIFT_AGG_MAX_JIDX	3		/* equalities of a column of the joined table with a value, for an index scan that loads it */
 #define SIFT_AGG_NULL_INPUT	(SIFT_AGG_MAX_CLEAVES + SIFT_AGG_MAX_JCOLS)
 #define SIFT_AGG_NULL_INPUT_LOC (-0x51F7)
+#define SIFT_AGG_LEVEL_LOC (-0x51F8)	/* location of a Param an enclosing query level sets for each row it passes down (a LATERAL or correlated reference): the scan reads the executor's value */
 #define SIFT_AGG_MAX_PARAMS	(SIFT_AGG_NULL_INPUT + 1)
 #define SIFT_AGG_INIT_PARAM	(1 << 24)	/* added to the id of an ARRAY sub-select's output Param in a lookup table expression (Param 0 is the leaf's value) */
 #define SIFT_AGG_MAX_COMBOS	128

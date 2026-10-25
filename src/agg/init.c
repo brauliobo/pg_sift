@@ -38,7 +38,8 @@ find_param(Node *expr)
 
 /*
  * The output of an ARRAY sub-select (an InitPlan of the query, its Param offset by SIFT_AGG_INIT_PARAM) is the constant of the expression: the sub-select
- * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's.
+ * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's. A
+ * parameter an enclosing query level sets (level_param) is the constant it has now.
  */
 static Node *
 init_param_mutator(Node *n, AggExec *ex)
@@ -51,13 +52,20 @@ init_param_mutator(Node *n, AggExec *ex)
 
 	if (n == NULL)
 		return NULL;
-	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || p->paramid < SIFT_AGG_INIT_PARAM)
+	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || (p->paramid < SIFT_AGG_INIT_PARAM && !level_param(n)))
 		return expression_tree_mutator(n, init_param_mutator, ex);
-	prm = &estate->es_param_exec_vals[p->paramid - SIFT_AGG_INIT_PARAM];
+	prm = &estate->es_param_exec_vals[p->paramid - (level_param(n) ? 0 : SIFT_AGG_INIT_PARAM)];
 	if (prm->execPlan != NULL)
 		ExecSetParamPlan(prm->execPlan, GetPerTupleExprContext(estate));
 	get_typlenbyval(p->paramtype, &len, &byval);
 	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, len, prm->value, prm->isnull, byval);
+}
+
+/* the operand of a condition, evaluated when the scan starts */
+ExprState *
+operand_state(AggExec *ex, Node *expr)
+{
+	return ExecInitExpr((Expr *) init_param_mutator(expr, ex), EXPR_PARENT(ex));
 }
 
 /*

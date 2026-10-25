@@ -1414,6 +1414,9 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 		const_keys_as_columns(root, cs);
 #endif
 	cs->custom_private = plan_correlated_children(root, best, spec) ? sift_aggspec_pack(spec) : pack;
+	/* declared, so that PostgreSQL knows the plan depends on them and rescans it when the enclosing level sets new values (agg_rescan) */
+	if (list_length(best->custom_private) > 2)
+		cs->custom_exprs = copyObject(lthird(best->custom_private));
 	cs->methods = &sift_agg_plan_methods;
 	if (root->hasHavingQual && root->parse->havingQual)
 		cs->scan.plan.qual = (List *) copyObject(root->parse->havingQual);

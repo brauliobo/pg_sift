@@ -138,6 +138,7 @@ typedef struct AggCtx
 	List	   *rtable;			/* the range table expr_text resolves Vars in; NIL: the query's */
 	Bitmapset  *elem_used;		/* leaves read inside an existential predicate (SAP_ANY_ELEM) */
 	List	   *oparams;		/* OuterParam of the EXISTS sub-plan whose test is being compiled */
+	List	   *level_params;	/* top-N: the Params of the scanned table's conditions that an enclosing query level sets (the scan starts over for each value) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
@@ -269,7 +270,9 @@ extern int	agg_index_usable;	/* ... and how many of them the stage has met (a ta
 extern SiftSrcLeaf *leaf_of(AggCtx *c, int id);
 extern int leaf_level(AggCtx *c, int id);
 extern const char *leaf_name(AggCtx *c, int id);
+extern int	agg_child_planning;
 extern bool null_input_param(Node *n);
+extern bool level_param(Node *n);
 extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);

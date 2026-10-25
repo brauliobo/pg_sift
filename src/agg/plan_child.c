@@ -308,6 +308,30 @@ member_arg(AggCtx *c, Node *arg)
 }
 
 /* The parameters of a child and what the scan gives for each. */
+int			agg_child_planning;
+
+/*
+ * The planner of the sub-select a scan reads as a lookup table: its own paths (a top-N started over for each row, topn_paths) are not offered, the
+ * scan calls the child plan for each row it passes and a btree on the key answers that better
+ */
+static PlannerInfo *
+child_planner(PlannerInfo *parent, Query *q, const char *name)
+{
+	PlannerInfo *sub;
+
+	agg_child_planning++;
+	PG_TRY();
+	{
+		sub = sift_subquery_planner(parent->glob, q, parent, name);
+	}
+	PG_FINALLY();
+	{
+		agg_child_planning--;
+	}
+	PG_END_TRY();
+	return sub;
+}
+
 static void
 child_params(AggCtx *c, JoinCtx *jc, List *items)
 {
@@ -582,7 +606,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		item->paramId = list_nth_int(x.params, i);
 		c->root->plan_params = lappend(c->root->plan_params, item);
 	}
-	jc->subroot = sift_subquery_planner(c->root->glob, q, c->root, e->eref->aliasname);
+	jc->subroot = child_planner(c->root, q, e->eref->aliasname);
 	child_params(c, jc, c->root->plan_params);
 	c->root->plan_params = saved;
 	if (jc->j.params == NIL)
@@ -704,7 +728,7 @@ scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args)
 	}
 	jc->j.params = x.params;
 	jc->j.sig = sift_agg_child_sig((Node *) lifted, x.params);
-	jc->subroot = sift_subquery_planner(c->root->glob, lifted, c->root, jc->j.desc);
+	jc->subroot = child_planner(c->root, lifted, jc->j.desc);
 	c->root->plan_params = saved;
 	child_scan_path(c->rel, jc);
 	*args = x.args;
