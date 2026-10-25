@@ -375,6 +375,12 @@ col_source_layout(const void *impl)
 	return ((const ColSource *) impl)->lay;
 }
 
+static bool
+col_sb_heap(void *impl)
+{
+	return sift_col_sb_heap(((ColSource *) impl)->cs);
+}
+
 static uint32
 col_nsb(void *impl)
 {
@@ -813,6 +819,7 @@ static const SiftSrcProvider col_provider = {
 	.read_into = col_read_into,
 	.select = col_select,
 	.tids = col_tids,
+	.sb_heap = col_sb_heap,
 	.zone = col_zone,
 	.zone_range = col_zone_range,
 	.zone_range_segs = col_zone_range_segs,

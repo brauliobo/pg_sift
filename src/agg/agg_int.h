@@ -176,6 +176,8 @@ typedef struct AggExec
 	bool		recheck_late;	/* ... and a row that holds one raises where it reaches the aggregate, after the lookups (SRK_CAST), not after its own conjuncts */
 	bool		recheck_after_late;	/* ... a row whose list SQL cannot read (SRK_RECORDSET) raises after the conjuncts that may raise, which drop or fail it first (check_overflow_after_late) */
 	int			nwide;			/* the SAP_WIDE conjuncts: the source keeps the rows that pass (wide_init) */
+	bool		sb_heap;		/* the unit numbers are heap superblocks (sift_colsrc_sb_heap): a range of them is a range of the heap, for a TID range and for a match set */
+	const SiftFilter *search_all;	/* the match set of every unit (not sb_heap), made on first use */
 	int			tid_pred;		/* the first SAP_TID conjunct, which tests the range of all of them (tid_init); -1: none */
 	uint64		tid_lo;			/* the TID keys [tid_lo, tid_hi) of the range (sift_aggspec_tid_range) */
 	uint64		tid_hi;

@@ -238,6 +238,15 @@ scan_range(AggExec *ex, uint32 lo, uint32 hi)
 		scan_units(ex, lo, hi);
 		return;
 	}
+	if (!ex->sb_heap)
+	{
+		/* units that are not superblocks of the heap hold rows of any block: the match set is the whole table's, made once by a participant */
+		if (ex->search_all == NULL)
+			ex->search_all = sift_search_range(ex->search, 0, sift_colsrc_nsb(ex->src));
+		sift_colsrc_select(ex->src, ex->search_all);
+		scan_units(ex, lo, hi);
+		return;
+	}
 	for (uint32 a = lo; a < hi; a += sift_search_chunk_sbs)
 	{
 		sift_colsrc_select(ex->src, sift_search_range(ex->search, a, Min(a + sift_search_chunk_sbs, hi)));

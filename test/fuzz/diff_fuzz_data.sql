@@ -140,6 +140,15 @@ CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount
 CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn', key_cut_rows = 64);
 CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki', key_cut_rows = 64);
 
+-- a plain index over rows of 3 kB (two to a page, so a table of a few thousand rows has a dozen superblocks): the promotions that churn leaves are cut by TID range into units of the
+-- floor
+CREATE FUNCTION fz.gen_ufl(lo bigint, hi bigint, salt int) RETURNS SETOF kcut_a LANGUAGE sql AS $$
+	SELECT id, ki, kd, kt, kn, kf, amount, val, kind, repeat('x', 3000) FROM fz.gen_kcut(lo, hi, salt) $$;
+CREATE TABLE ufl (LIKE kcut_a) WITH (autovacuum_enabled = false);
+ALTER TABLE ufl ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ufl SELECT * FROM fz.gen_ufl(1, @ROWS@, 80);
+CREATE INDEX ufl_idx ON ufl USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind);
+
 -- units with a sorted run of the range leaves (order_columns): a range is answered from the run when it is short; a unit is 256 pages, so the rows of a few thousand fill one unit of more than 1,024 rows
 CREATE TABLE kcut_w (LIKE kcut_a) WITH (autovacuum_enabled = false);
 INSERT INTO kcut_w SELECT * FROM fz.gen_kcut(1, @ROWS@, 60);

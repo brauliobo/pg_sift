@@ -649,6 +649,12 @@ topn_scan(AggExec *ex, uint32 lo, uint32 hi, uint32 nsb, TopnChunk *ch)
 
 			ch->lo = sift_topn_reverse(ex->topn) ? (hi > width ? hi - width : 0) : lo;
 			ch->hi = sift_topn_reverse(ex->topn) ? hi : Min(lo + width, nsb);
+			/* units that are not superblocks of the heap hold rows of any block: the match set is the whole table's, made once */
+			if (!ex->sb_heap)
+			{
+				ch->lo = 0;
+				ch->hi = nsb;
+			}
 			ch->flt = sift_search_range(ex->search, ch->lo, ch->hi);
 		}
 		sift_colsrc_select(ex->src, ch->flt);

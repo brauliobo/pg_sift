@@ -285,6 +285,8 @@ typedef struct SegPriv
 	bool		pt_checked;		/* the point directories at the end of the DICT section were looked for */
 	uint64		dict_end;		/* where the dictionaries end in the DICT section (before the point directories, if any) */
 	PointLeaf  *pt;				/* [ncols] (nslots 0: none) */
+	SiftCSbSpan *spans;			/* the superblocks the units have rows of, once asked (sift_cseg_sb_spans) */
+	uint32		nspans;
 	GOrdLeaf   *go;				/* [ncols] (bytes 0: none) */
 } SegPriv;
 

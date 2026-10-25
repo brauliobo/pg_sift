@@ -236,10 +236,10 @@ VACUUM ap;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 53
+ Units: 36
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
  Units Without The Sketch: 34
- Units From Pre-aggregates: 19
+ Units From Pre-aggregates: 2
  Rows Scanned: 60000
 (5 rows)
 

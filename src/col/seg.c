@@ -1343,6 +1343,71 @@ sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm)
 	return true;
 }
 
+static int
+sb_span_cmp(const void *a, const void *b)
+{
+	uint32		x = ((const SiftCSbSpan *) a)->lo,
+				y = ((const SiftCSbSpan *) b)->lo;
+
+	return x < y ? -1 : x > y;
+}
+
+uint32
+sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (pv->spans == NULL)
+	{
+		SiftCSbSpan *r = MemoryContextAlloc(seg->mcxt, Max(seg->nsb, 1) * sizeof(SiftCSbSpan));
+		bool		keyed = sift_cseg_keyed(&seg->entry);
+		uint32		n = 0;
+
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			uint64		pm[SIFT_PAGEMASK_WORDS];
+
+			if (!keyed)
+				r[u] = (SiftCSbSpan) {seg->sbdir[u].sb, seg->sbdir[u].sb};
+			else if (sift_cseg_unit_pagemask(seg, u, pm))
+				r[u] = (SiftCSbSpan) {(uint32) pm[0] / SIFT_SB_PAGES, (uint32) (pm[0] >> 32) / SIFT_SB_PAGES};
+			else
+				r[u] = (SiftCSbSpan) {0, PG_UINT32_MAX};
+		}
+		if (keyed)
+			qsort(r, seg->nsb, sizeof(SiftCSbSpan), sb_span_cmp);
+		for (uint32 u = 0; u < seg->nsb; u++)
+			if (n > 0 && r[u].lo <= (uint64) r[n - 1].hi + 1)
+				r[n - 1].hi = Max(r[n - 1].hi, r[u].hi);
+			else
+				r[n++] = r[u];
+		pv->spans = r;
+		pv->nspans = n;
+	}
+	*spans = pv->spans;
+	return pv->nspans;
+}
+
+bool
+sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb)
+{
+	const SiftCSbSpan *r;
+	uint32		lo = 0,
+				hi = sift_cseg_sb_spans(seg, &r),
+				n = hi;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (r[mid].hi < sb)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < n && r[lo].lo <= sb;
+}
+
 bool
 sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a)
 {

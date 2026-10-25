@@ -47,6 +47,7 @@
 int			sift_test_col_rollup_panic_armed = 0;
 bool		sift_test_col_merge_panic = false;
 int			sift_test_col_refresh_sleep_armed = 0;
+int			sift_test_col_floor_sbs = 0;
 #endif
 
 #define WHY_BUFFER	"write buffer rows"
@@ -60,6 +61,7 @@ double		sift_col_auto_merge_wal_pct = 5.0;
 int			sift_col_auto_merge_max_active = 0;
 int			sift_col_auto_merge_partition_kb = 0;
 int			sift_col_auto_merge_max_workers = 0;
+int			sift_col_unit_floor = 2048;
 
 #define MAX_PARTS		16		/* segments one merge cuts its output into */
 #define REWRITE_SLOT_KEY	0x53520000	/* with 0x51F7 in the advisory lock space: slot s of sift.col_auto_merge_max_workers is key + s */
@@ -103,12 +105,48 @@ throttle(SiftWriteTarget *wt)
 	}
 }
 
+/*
+ * Churn lands a few dozen rows in each superblock it touches, and a unit costs a scan about as much as a thousand rows, however few it holds. Rows that
+ * reach sbs superblocks (16 or more) with under half of a unit's rows each are therefore cut by TID range into units of sift.col_unit_floor rows (no more
+ * than a superblock of the table holds), the units of a key-cut segment without a key, where the superblock cut would give a unit of a few dozen. Rows
+ * that fill half a unit in every superblock, as those of a merge of everything do, and a table of fewer superblocks keep a unit for each. 0: the rule is off.
+ */
+static uint32
+floor_rows(Relation index)
+{
+	uint32		aim;
+
+	if (sift_col_unit_floor == 0 || !sift_col_is_index(index) || sift_col_key_cut(sift_col_rel(index)) || sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
+		return 0;
+	aim = sift_colk_aim_rows(index);
+	return Max(aim > 0 ? Min(aim, (uint32) sift_col_unit_floor) : (uint32) sift_col_unit_floor, 64);
+}
+
+static bool
+rows_sparse(uint64 rows, uint64 sbs, uint32 unit)
+{
+	return unit > 0 && rows < sbs * unit / 2;
+}
+
+static bool
+unit_floor_applies(uint32 unit, uint64 rows, uint64 sbs)
+{
+	uint64		least = 16;
+
+#ifdef SIFT_TESTING
+	if (sift_test_col_floor_sbs > 0)
+		least = sift_test_col_floor_sbs;
+#endif
+	return sbs >= least && rows_sparse(rows, sbs, unit);
+}
+
 static void
 promote_one(Relation index, const SiftSegEntry *sealed)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col promote", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	const SiftColSchema *schema = sift_col_rel(index)->schema;
+	const SiftColRel *r = sift_col_rel_private(index, cx);	/* the floor reads the heap's statistics, a catalog read that reloads the cached state */
+	const SiftColSchema *schema = r->schema;
 	SiftColBatch **batches;
 	int			nb;
 	SiftWriteTarget *wt = NULL;
@@ -124,19 +162,29 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
+		uint32		unit = floor_rows(index);
+		uint64		nbrows = 0;
 
 		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6, 7 or 8 */
 		for (int i = 0; i < nb; i++)
+		{
+			nbrows += batches[i]->nrows;
 			if (!sift_cbatch_kinds_exact(batches[i]))
 				format = Min(format, SIFT_COL_FORMAT_TAGS);
+		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, sift_col_rel(index)->policy, format, cx);
-		sift_colw_set_preagg(w, &sift_col_rel(index)->pagg);
-		if (sift_col_key_cut(sift_col_rel(index)))
+		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
+		sift_colw_set_preagg(w, &r->pagg);
+		if (sift_col_key_cut(r))
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
-			sift_colk_write(w, batches, nb, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index), cx);
+			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(index), cx);
+		}
+		else if (unit_floor_applies(unit, nbrows, nb))
+		{
+			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
+			sift_colk_write(w, batches, nb, schema, NULL, 0, unit, cx);
 		}
 		else
 			for (int i = 0; i < nb; i++)
@@ -188,7 +236,16 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	return dead;
 }
 
-static bool share_superblock(const SiftColSegment *a, const SiftColSegment *b, int allowed);
+/* The superblocks a segment holds rows of (sift_cseg_sb_spans) */
+typedef struct SbSpans
+{
+	uint32		n;
+	const SiftCSbSpan *r;
+	bool		by_tid;			/* the units are cut by TID range (sift.col_unit_floor) */
+} SbSpans;
+
+static SbSpans seg_spans(SiftColSegment *seg);
+static bool share_superblock(const SbSpans *a, const SbSpans *b, int allowed);
 
 /*
  * The tier merge of segments that are clean and share at most the superblock at their edge gain a reader nothing (the same units with the same pre-aggregates, one file
@@ -199,6 +256,7 @@ static bool
 clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel, int n)
 {
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
+	SbSpans		span[SIFT_MAX_SEGMENTS];
 	uint64		bytes = 0;
 	bool		apart = true;
 
@@ -213,10 +271,13 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 	if (bytes <= ((uint64) sift_vacuum_rewrite_limit << 20))
 		return false;
 	for (int i = 0; i < n; i++)
+	{
 		seg[i] = sift_cseg_open(index, &sel[i], CurrentMemoryContext);
+		span[i] = seg_spans(seg[i]);
+	}
 	for (int i = 0; i < n && apart; i++)
 		for (int j = i + 1; j < n && apart; j++)
-			apart = !share_superblock(seg[i], seg[j], 1);
+			apart = !share_superblock(&span[i], &span[j], 1);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
 	return apart;
@@ -261,22 +322,48 @@ dirty_units(SiftColSegment *seg)
 	return d;
 }
 
-/* Do the two segments hold a unit of more than `allowed` superblocks in common? */
-static bool
-share_superblock(const SiftColSegment *a, const SiftColSegment *b, int allowed)
+static SbSpans
+seg_spans(SiftColSegment *seg)
 {
-	int			shared = 0;
+	SbSpans		sp = {0};
+	bool		key_cut = sift_col_is_index(seg->index) && sift_col_key_cut(sift_col_rel(seg->index));
 
-	for (uint32 i = 0, j = 0; i < a->nsb && j < b->nsb;)
+	if (!key_cut)
 	{
-		uint32		x = a->sbdir[i].sb,
-					y = b->sbdir[j].sb;
+		sp.n = sift_cseg_sb_spans(seg, &sp.r);
+		sp.by_tid = sift_cseg_keyed(&seg->entry);
+		return sp;
+	}
+	/* the units of a key-cut index are told by their sequence, as they always were: the rows of a key range lie in any block */
+	{
+		SiftCSbSpan *r = palloc(Max(seg->nsb, 1) * sizeof(SiftCSbSpan));
 
-		if (x == y && ++shared > allowed)
+		for (uint32 u = 0; u < seg->nsb; u++)
+			if (sp.n > 0 && seg->sbdir[u].sb <= r[sp.n - 1].hi + 1)
+				r[sp.n - 1].hi = Max(r[sp.n - 1].hi, seg->sbdir[u].sb);
+			else
+				r[sp.n++] = (SiftCSbSpan) {seg->sbdir[u].sb, seg->sbdir[u].sb};
+		sp.r = r;
+	}
+	return sp;
+}
+
+/* Do the two segments hold rows of more than `allowed` superblocks in common? */
+static bool
+share_superblock(const SbSpans *a, const SbSpans *b, int allowed)
+{
+	uint64		shared = 0;
+
+	for (uint32 i = 0, j = 0; i < a->n && j < b->n;)
+	{
+		uint32		lo = Max(a->r[i].lo, b->r[j].lo),
+					hi = Min(a->r[i].hi, b->r[j].hi);
+
+		if (lo <= hi && (shared += (uint64) hi - lo + 1) > allowed)
 			return true;
-		if (x <= y)
+		if (a->r[i].hi <= b->r[j].hi)
 			i++;
-		if (x >= y)
+		else
 			j++;
 	}
 	return false;
@@ -292,6 +379,7 @@ typedef struct RewriteView
 	int			n;
 	SiftSegEntry imm[SIFT_MAX_SEGMENTS];
 	SiftColSegment *seg[SIFT_MAX_SEGMENTS];
+	SbSpans		span[SIFT_MAX_SEGMENTS];
 	bool		over[SIFT_MAX_SEGMENTS];
 } RewriteView;
 
@@ -305,17 +393,18 @@ view_open(Relation index, const SiftDirSnapshot *snap, MemoryContext cx)
 		{
 			v->imm[v->n] = snap->segs[i];
 			v->seg[v->n] = sift_cseg_open(index, &v->imm[v->n], cx);
+			v->span[v->n] = seg_spans(v->seg[v->n]);
 			v->over[v->n] = !is_partition(&v->imm[v->n]);
 			v->n++;
 		}
 	for (int i = 0; i < v->n; i++)
 		for (int j = 0; j < v->n && !v->over[i]; j++)
 		{
-			/* rows per unit, compared as products; the older of two alike is the one to keep */
+			/* rows per unit, compared as products; the older of two alike is the one to keep. A segment of the floor's units is an overlay by its size alone */
 			uint64		di = v->imm[i].ndocs * v->seg[j]->nsb,
 						dj = v->imm[j].ndocs * v->seg[i]->nsb;
 
-			v->over[i] = j != i && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(v->seg[i], v->seg[j], 0);
+			v->over[i] = j != i && !v->span[j].by_tid && (dj > di || (dj == di && v->imm[j].gen > v->imm[i].gen)) && share_superblock(&v->span[i], &v->span[j], 0);
 		}
 	return v;
 }
@@ -374,7 +463,7 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	else if (nover == 1 && (double) listed >= sift_col_auto_merge_fragmentation * (double) sift_cseg_dir_units(snap))
 	{
 		for (int i = 0; i < v->n; i++)
-			take[i] = i == over || dirty_part[i] || share_superblock(v->seg[i], v->seg[over], 0);
+			take[i] = i == over || dirty_part[i] || share_superblock(&v->span[i], &v->span[over], 0);
 		*cut = true;
 	}
 	else if (worst >= 0)
@@ -387,6 +476,46 @@ pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, boo
 	MemoryContextDelete(cx);
 	/* one clean segment is the end state */
 	return nsel > 1 || (nsel == 1 && (sel[0].flags & SIFT_SEG_DIRTY)) ? nsel : 0;
+}
+
+/*
+ * An input cut by TID range (a promotion or merge that stayed sparse, see unit_floor_applies): its units follow each other in the order of the TIDs and a
+ * superblock may run over two of them, so the loop below, which takes the rows of one superblock from every input at a time, reads the rows out of the unit in hand
+ */
+typedef struct TidIn
+{
+	SiftColSegment *seg;
+	SiftColBatch *buf;
+	uint32		next;			/* the next unit of seg to decode */
+	uint32		pos;			/* the next row of buf */
+	uint32		last;			/* the last superblock taken: the next one must be above it */
+} TidIn;
+
+/* The superblock of the next row of the input, PG_UINT32_MAX at its end */
+static uint32
+tid_peek(TidIn *t, SiftColFreezeFn freeze, void *freeze_arg)
+{
+	while (t->pos >= t->buf->nrows)
+	{
+		if (t->next >= t->seg->nsb)
+			return PG_UINT32_MAX;
+		sift_cbatch_reset(t->buf, 0);
+		sift_cseg_decode_unit_freeze(t->seg, t->next++, t->buf, freeze, freeze_arg);
+		t->pos = 0;
+	}
+	return sift_key_block(t->buf->keys[t->pos]) / SIFT_SB_PAGES;
+}
+
+/* The rows of superblock sb of the input, in part */
+static void
+tid_take(TidIn *t, uint32 sb, SiftColBatch *part, SiftColFreezeFn freeze, void *freeze_arg)
+{
+	if (t->last != PG_UINT32_MAX && sb <= t->last)
+		corrupt(t->seg->index, "Segment %llu is not in the order of the TIDs.", (unsigned long long) t->seg->entry.gen);
+	t->last = sb;
+	sift_cbatch_reset(part, sb);
+	while (tid_peek(t, freeze, freeze_arg) == sb)
+		sift_cbatch_add_from(part, t->buf, t->pos++);
 }
 
 /*
@@ -404,6 +533,8 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	SiftColBatch **part = palloc(n * sizeof(SiftColBatch *));
 	SiftColBatch **use = palloc(n * sizeof(SiftColBatch *));
 	uint32	   *cur = palloc0(n * sizeof(uint32));
+	TidIn	   *tin = palloc0(n * sizeof(TidIn));
+	uint32	   *at = palloc(n * sizeof(uint32));
 	SiftMaintInputs mi = sift_maint_inputs(index, in, n);
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
 	SiftWriteTarget *wt = NULL;
@@ -415,7 +546,12 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 				live_bytes = 0,
 				live_units = 0;
 	TimestampTz start = GetCurrentTimestamp();
-	bool		exact = true;
+	bool		exact = true,
+				key_cut = sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)),
+				by_tid = false;
+	uint64		live_rows = 0,
+				heap_sbs;
+	uint32		unit;
 
 	for (int i = 0; i < n; i++)
 	{
@@ -432,6 +568,7 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			units += seg[i]->sbdir[u].len;
 		live_bytes += (uint64) (in[i].bytes * live);
 		live_units += (uint64) (units * live);
+		live_rows += sift_cseg_live_rows(seg[i]);
 	}
 	/*
 	 * Equal partitions (a short last one would be an overlay of every later rewrite): as many as the live bytes of the inputs make of part_bytes, cut by
@@ -445,18 +582,24 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	/* the NULL slots and astext values of a segment that did not keep their kinds come out of the merge without them: its minor says so */
 	if (!exact)
 		format = Min(format, SIFT_COL_FORMAT_TAGS);
-	if (sift_col_is_index(index) && sift_col_key_cut(sift_col_rel(index)))
+	/*
+	 * Rows that stay sparse (no input denser than the floor in the superblocks it reaches, a segment cut by TID range reaching any of the heap's, nor
+	 * all of them together) stay in units of sift.col_unit_floor rows, in one segment: the rewrite of a partition is of rows that are not
+	 */
+	unit = floor_rows(index);
+	heap_sbs = unit > 0 ? sift_colk_heap_sbs(index) : 0;
+	by_tid = parts == 1 && unit_floor_applies(unit, live_rows, heap_sbs);
+	for (int i = 0; i < n && by_tid; i++)
+		by_tid = rows_sparse(sift_cseg_live_rows(seg[i]), sift_cseg_keyed(&in[i]) ? heap_sbs : seg[i]->nsb, unit);
+	if (key_cut || by_tid)
 	{
 		/*
 		 * An index with an order key: the live rows of the inputs, merged in the order of the key, are cut again into units of a key range, so the
 		 * overlays of promotions and of the churn since the last merge fold back into the range they belong to. One segment, written through the
-		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/order.c), not held.
+		 * throttled target of the maintenance worker like any merge; the rows are streamed (col/order.c), not held. Without a key the rows are in the
+		 * order of the TIDs and the units are of sift.col_unit_floor rows.
 		 */
-		uint64		rows = 0;
-
-		for (int i = 0; i < n; i++)
-			rows += sift_cseg_live_rows(seg[i]);
-		if (rows > 0)
+		if (live_rows > 0)
 		{
 			pcx = AllocSetContextCreate(cx, "sift_col merge partition", ALLOCSET_DEFAULT_SIZES);
 			wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
@@ -466,27 +609,36 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 			if (pagg)
 				sift_colw_set_preagg(w, pagg);
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index));
-			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, sift_col_rel(index)->cut, sift_col_rel(index)->ncut, sift_colk_unit_rows(index),
-							maintenance_work_mem, pcx);
+			sift_colk_merge(w, in, seg, n, freeze, freeze_arg, schema, key_cut ? sift_col_rel(index)->cut : NULL, key_cut ? sift_col_rel(index)->ncut : 0,
+							key_cut ? sift_colk_unit_rows(index) : unit, maintenance_work_mem, pcx);
 		}
 		for (int i = 0; i < n; i++)
 			cur[i] = seg[i]->nsb;
 	}
+	else
+		for (int i = 0; i < n; i++)
+			if (sift_cseg_keyed(&in[i]))
+				tin[i] = (TidIn) {.seg = seg[i], .buf = sift_cbatch_create(cx, schema), .last = PG_UINT32_MAX};
 	for (;;)
 	{
 		uint32		sb = PG_UINT32_MAX;
 		int			nuse = 0;
 
 		for (int i = 0; i < n; i++)
-			if (cur[i] < seg[i]->nsb)
-				sb = Min(sb, seg[i]->sbdir[cur[i]].sb);
+		{
+			at[i] = tin[i].buf ? tid_peek(&tin[i], freeze, freeze_arg) : cur[i] < seg[i]->nsb ? seg[i]->sbdir[cur[i]].sb : PG_UINT32_MAX;
+			sb = Min(sb, at[i]);
+		}
 		if (sb == PG_UINT32_MAX)
 			break;
 		for (int i = 0; i < n; i++)
 		{
-			if (cur[i] >= seg[i]->nsb || seg[i]->sbdir[cur[i]].sb != sb)
+			if (at[i] != sb)
 				continue;
-			sift_cseg_decode_unit_freeze(seg[i], cur[i]++, part[i], freeze, freeze_arg);
+			if (tin[i].buf)
+				tid_take(&tin[i], sb, part[i], freeze, freeze_arg);
+			else
+				sift_cseg_decode_unit_freeze(seg[i], cur[i]++, part[i], freeze, freeze_arg);
 			if (part[i]->nrows > 0)
 				use[nuse++] = part[i];
 		}
@@ -548,6 +700,15 @@ void
 sift_col_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 						int format, SiftColFreezeFn freeze, void *freeze_arg)
 {
+	/* the floor reads the heap's statistics, a catalog read that reloads the cached state the arguments of an index point into */
+	if (sift_col_is_index(index))
+	{
+		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+
+		schema = r->schema;
+		policy = r->policy;
+		pagg = &r->pagg;
+	}
 	merge_segments(index, schema, policy, pagg, in, n, format, freeze, freeze_arg, 0, 1);
 }
 
@@ -573,7 +734,9 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 		/* the cached schema is read after the option is written: the write reloads it */
 		bool		keyed = n == nimm && sift_col_auto_keys_merge(index, sel, n);
 
-		merge_segments(index, sift_col_rel(index)->schema, sift_col_rel(index)->policy, &sift_col_rel(index)->pagg, sel, n, sift_col_format_minor, NULL, NULL,
+		const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
+
+		merge_segments(index, r->schema, r->policy, &r->pagg, sel, n, sift_col_format_minor, NULL, NULL,
 					   cut ? (uint64) part_kb * 1024 : 0, Max(room, 1));
 		if (keyed)
 			sift_col_auto_keys_report(index);

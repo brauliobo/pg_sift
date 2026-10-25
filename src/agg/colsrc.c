@@ -265,6 +265,12 @@ sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows
 	src->prov->tids(src->impl, unit, rows, n, tids);
 }
 
+bool
+sift_colsrc_sb_heap(SiftSrcSource *src)
+{
+	return src->prov->sb_heap == NULL || src->prov->sb_heap(src->impl);
+}
+
 void
 sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 {

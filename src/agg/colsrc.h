@@ -579,6 +579,8 @@ typedef struct SiftSrcProvider
 	 * of the unit the source is at, over the unit as stored.
 	 */
 	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+	/* Optional (NULL: yes): is the number of every unit the heap superblock its rows are in? Not when a segment cuts its units by key or TID range: a TID range then selects no units by number */
+	bool		(*sb_heap) (void *impl);
 	void		(*zone) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 	/* zone_range: the zone of a leaf over all the units of the superblocks [lo, hi) together, without opening them; returns how many units it counts (required with tids) */
 	uint32		(*zone_range) (void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
@@ -773,6 +775,7 @@ extern bool sift_colsrc_can_select(Oid relam, bool index);
 /* Can the source of this access method give the TIDs of its rows and the zones of its units (SiftSrcProvider.tids, zone)? */
 extern bool sift_colsrc_can_tids(Oid relam, bool index);
 extern void sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+extern bool sift_colsrc_sb_heap(SiftSrcSource *src);
 extern void sift_colsrc_zone(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 extern uint32 sift_colsrc_zone_range(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
 extern uint32 sift_colsrc_zone_range_segs(SiftSrcSource *src, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);

@@ -84,6 +84,7 @@ extern int	sift_test_col_rollup_panic_armed;
 extern bool sift_test_col_merge_panic;
 extern int	sift_test_col_refresh_sleep_ms;		/* sift.test_col_refresh_sleep_ms: the refresh of a segment sleeps this long once the new segment is written */
 extern int	sift_test_col_refresh_sleep_armed;
+extern int	sift_test_col_floor_sbs;		/* sift.test_col_floor_sbs: the superblocks a promotion or merge must reach for sift.col_unit_floor to apply (0 = 16) */
 #endif
 
 /* Raises ERRCODE_INVALID_PARAMETER_VALUE unless value is a preagg option ("default", "off", "cube(dim: measure, ...; ...)"), as far as it can tell without the index */
@@ -125,6 +126,7 @@ extern SiftColRel *sift_col_rel_private(Relation index, MemoryContext mcxt);
 extern bool sift_col_index_keyed(Oid indexoid);
 extern uint32 sift_colk_unit_rows(Relation index);
 extern uint32 sift_colk_aim_rows(Relation index);
+extern uint64 sift_colk_heap_sbs(Relation index);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
 							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx);
@@ -224,6 +226,7 @@ extern PGDLLIMPORT double sift_col_auto_merge_wal_pct;
 extern PGDLLIMPORT int sift_col_auto_merge_max_active;
 extern PGDLLIMPORT int sift_col_auto_merge_partition_kb;
 extern PGDLLIMPORT int sift_col_auto_merge_max_workers;
+extern PGDLLIMPORT int sift_col_unit_floor;
 /* The VACUUM that churn, and scans that check many rows in the heap, ask a worker for under sift.col_auto_merge (col/vacreq.c) */
 extern void sift_col_vacuum_notice(Relation heap, Relation index);
 /* what the automatic rewrite waits for (sift.col_maintenance_status) */

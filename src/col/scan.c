@@ -199,6 +199,15 @@ sift_col_def(const SiftColSource *src, int col)
 	return &src->schema->cols[col];
 }
 
+bool
+sift_col_sb_heap(const SiftColSource *src)
+{
+	for (int i = 0; i < src->nseg; i++)
+		if (sift_cseg_keyed(&src->seg[i].seg->entry))
+			return false;
+	return true;
+}
+
 uint32
 sift_col_heap_sbs(const SiftColSource *src)
 {

@@ -104,14 +104,14 @@ SELECT sift.col_promote('zc_idx') >= 0 AS promoted_again;
 (1 row)
 
 SELECT * FROM run_all('vacuumed');
- after_step | n |                                              result                                               
-------------+---+---------------------------------------------------------------------------------------------------
- vacuumed   | 1 | same | Superblocks Skipped By Top-N: 115 Units: 11 Rows Scanned: 1174 | kept order skips the same
- vacuumed   | 2 | same | Superblocks Skipped By Top-N: 109 Units: 21 Rows Scanned: 2341 | kept order skips the same
- vacuumed   | 3 | same | Superblocks Skipped By Top-N: 102 Units: 37 Rows Scanned: 4199 | kept order skips the same
- vacuumed   | 4 | same | Superblocks Skipped By Top-N: 96 Units: 49 Rows Scanned: 5596 | kept order skips the same
- vacuumed   | 5 | same | Superblocks Skipped By Top-N: 1 Units: 121 Rows Scanned: 13975 | kept order skips the same
- vacuumed   | 6 | same | Superblocks Skipped By Top-N: 115 Units: 11 Rows Scanned: 1174 | kept order skips the same
+ after_step | n |                                              result                                              
+------------+---+--------------------------------------------------------------------------------------------------
+ vacuumed   | 1 | same | Superblocks Skipped By Top-N: 60 Units: 7 Rows Scanned: 1315 | kept order skips the same
+ vacuumed   | 2 | same | Superblocks Skipped By Top-N: 59 Units: 11 Rows Scanned: 2157 | kept order skips the same
+ vacuumed   | 3 | same | Superblocks Skipped By Top-N: 47 Units: 22 Rows Scanned: 4571 | kept order skips the same
+ vacuumed   | 4 | same | Superblocks Skipped By Top-N: 41 Units: 29 Rows Scanned: 6092 | kept order skips the same
+ vacuumed   | 5 | same | Superblocks Skipped By Top-N: 1 Units: 66 Rows Scanned: 13975 | kept order skips the same
+ vacuumed   | 6 | same | Superblocks Skipped By Top-N: 60 Units: 7 Rows Scanned: 1315 | kept order skips the same
 (6 rows)
 
 SELECT sift.col_merge('zc_idx', true) >= 0 AS merged;

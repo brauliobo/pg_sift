@@ -43,7 +43,7 @@ ref_null(const RowRef *x, int leaf)
 static int
 key_cmp(const RowRef *x, const RowRef *y, const OrderCtx *c, int upto)
 {
-	for (int i = 0; i < upto; i++)
+	for (int i = 0; i < upto && i < c->nleaf; i++)
 	{
 		int			leaf = c->leaf[i];
 		bool		nx = ref_null(x, leaf),
@@ -104,6 +104,21 @@ sift_colk_aim_rows(Relation index)
 	return n;
 }
 
+/* The superblocks of the heap as of its last VACUUM or ANALYZE, which a merge compares its rows with to tell whether they are sparse (0 without statistics) */
+uint64
+sift_colk_heap_sbs(Relation index)
+{
+	HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(index->rd_index->indrelid));
+	uint64		sbs = 0;
+
+	if (tp != NULL)
+	{
+		sbs = Max(((Form_pg_class) GETSTRUCT(tp))->relpages, 0) / SIFT_SB_PAGES;
+		ReleaseSysCache(tp);
+	}
+	return sbs;
+}
+
 uint32
 sift_colk_unit_rows(Relation index)
 {
@@ -138,7 +153,8 @@ cut_stream(SiftColSegWriter *w, RowNext next, void *state, const SiftColSchema *
 			   *spare = sift_cbatch_create(cx, schema),
 			   *out = sift_cbatch_create(cx, schema);
 	uint32	   *ord = palloc_array(uint32, want);
-	uint32		seq = 0;
+	uint32		seq = 0,
+				num = 0;
 	bool		eof = false;
 
 	win->keyed = spare->keyed = win->unsorted = spare->unsorted = true;
@@ -160,7 +176,7 @@ cut_stream(SiftColSegWriter *w, RowNext next, void *state, const SiftColSchema *
 		if (avail == 0)
 			break;
 		end = Min(avail, unit_rows);
-		if (end < avail)
+		if (end < avail && ctx->nleaf > 0)
 		{
 			uint64		best = 0;
 
@@ -190,7 +206,16 @@ cut_stream(SiftColSegWriter *w, RowNext next, void *state, const SiftColSchema *
 		for (uint64 i = 0; i < end; i++)
 			ord[i] = i;
 		qsort_arg(ord, end, sizeof(uint32), win_tid_cmp, win);
-		sift_cbatch_reset(out, seq++);
+		/*
+		 * The number of a unit is the sequence of the cut by a key. Without a key the units are in the order of the TIDs and take the superblock of their first
+		 * row (or the one after the unit before it), so that a walk of the superblocks meets an overlay next to the units of the heap it overlays
+		 */
+		if (ctx->nleaf == 0)
+			num = Max(num + (seq > 0), sift_key_block(win->keys[ord[0]]) / SIFT_SB_PAGES);
+		else
+			num = seq;
+		sift_cbatch_reset(out, num);
+		seq++;
 		out->keyed = true;
 		for (uint64 i = 0; i < end; i++)
 			sift_cbatch_add_from(out, win, ord[i]);
@@ -394,7 +419,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 	for (int i = 0; i < n; i++)
 	{
-		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = sift_cseg_keyed(&ent[i]),
+		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]),
 							 .buf = {sift_cbatch_create(cx, schema), sift_cbatch_create(cx, schema)}};
 		m.in[i].pos = m.in[i].n = 0;
 	}

@@ -530,13 +530,13 @@ eval_tid(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
 {
 	uint64		first = (uint64) ex->unit.sb * SIFT_SB_PAGES << 16,
 				last = first + ((uint64) SIFT_SB_PAGES << 16) - 1;
-	if (p->id != ex->tid_pred || (ex->tid_lo <= first && last < ex->tid_hi))
+	if (p->id != ex->tid_pred || (ex->sb_heap && ex->tid_lo <= first && last < ex->tid_hi))
 	{
 		fill_ones(out, n);
 		return;
 	}
 	clear_words(out, n);
-	if (ex->tid_hi <= first || ex->tid_lo > last)
+	if (ex->sb_heap && (ex->tid_hi <= first || ex->tid_lo > last))
 		return;
 	for (int i = 0; i < n; i++)
 		ex->tid_rows[i] = start + i;

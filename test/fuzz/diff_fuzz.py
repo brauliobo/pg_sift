@@ -956,6 +956,16 @@ def render_keycut(p):
     return f"SELECT {cols} FROM {p['table']} e {where(p)} {tail}", True
 
 
+# ---------- units cut by TID range: the overlays of churn in a plain index, the rows of the normal plan after every kind of promotion and merge ----------
+def gen_floor(r, ctx):
+    p = gen_keycut(r, ctx)
+    p['table'] = 'ufl'
+    if r.random() < 0.4:
+        lo = r.randrange(0, 600)
+        p['where'].append(f"e.ctid >= '({lo},1)' AND e.ctid < '({lo + r.randrange(1, 900)},1)'")
+    return p
+
+
 # ---------- a range on a leaf with a sorted run (order_columns): a unit takes the rows of the range from the run, not from a test of every row ----------
 WINDOW_COLS = ['ki', 'kd', 'kt', 'kn']
 
@@ -1124,7 +1134,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
@@ -1289,6 +1299,35 @@ def dml_kcut(r, ctx):
     return [f'ANALYZE {t}']
 
 
+def dml_floor(r, ctx):
+    """Statements on ufl, a plain index whose promotions are cut by TID range once the least number of superblocks and the floor are lowered for the session (a testing-build setting): sparse
+    updates and deletes, inserts, VACUUM, every way the units are written again, and a promotion with the floor off between the others, so that both cuts are among the segments."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(14)
+    st = ['SET sift.test_col_floor_sbs = 2', f'SET sift.col_unit_floor = {r.choice([64, 128, 256, 1024])}']
+    if e < 4:
+        c = r.choice(KCUT_KEYS)
+        return st + [f'UPDATE ufl SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
+    if e == 4:
+        return st + [f'UPDATE ufl SET amount = amount + {r.randrange(1, 9)}, val = val + 1 WHERE {ids}']
+    if e in (5, 6):
+        return st + [f'DELETE FROM ufl WHERE {ids}']
+    if e in (7, 8):
+        n = r.choice([5, 40, 200])
+        lo = ctx['next_kc']; ctx['next_kc'] += n
+        return st + [f'INSERT INTO ufl SELECT * FROM fz.gen_ufl({lo}, {lo + n - 1}, {r.randrange(1, 9)})']
+    if e == 9:
+        return st + ['VACUUM ufl']
+    if e == 10:
+        return st + ["SELECT sift.col_promote('ufl_idx')"]
+    if e == 11:
+        return st + ["SET sift.col_unit_floor = 0", f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.col_promote('ufl_idx')"]
+    if e == 12:
+        return st + [r.choice(["SELECT sift.col_merge('ufl_idx', true)", "SELECT sift.col_merge('ufl_idx', false)", "SELECT count(*) FROM sift.col_refresh('ufl_idx')", 'REINDEX INDEX ufl_idx'])]
+    return st + ['ANALYZE ufl']
+
+
 def dml_window(r, ctx):
     """Statements on kcut_w, whose units keep a sorted run of the range leaves: updates that move rows in and out of a range, deletes, inserts and every way the units are written again."""
     m = r.choice([13, 40, 97, 211])
@@ -1382,6 +1421,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rx = random.Random(seed * 15485863 + 7)
     rt = random.Random(seed * 32452843 + 17)
     rw = random.Random(seed * 32452843 + 11)
+    ru = random.Random(seed * 49979687 + 13)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
@@ -1398,6 +1438,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         if not TABLE and (not only or 'window' in only):
             st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
+        if not only or 'floor' in only:
+            st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         qs = []
         for _ in range(min(nq - done, r.randrange(4, 11))):
             fam, parts, vs, nl = gen_query(seed, done, ctx, only)

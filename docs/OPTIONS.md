@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 88 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 89 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -519,6 +519,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a threshold. 100 never fires it; lower it to promote the buffer sooner. sift.col_auto_merge = off stops the worker. Server or database level.
 - **Upgrade from 3.3:** unchanged
 - **Advice:** Leave at 1.0: the write buffer holding more than this percent of the rows is promoted (alone, without a whole-index rewrite when it is the only reason). Lower it to keep the buffer smaller.
+
+#### sift.col_unit_floor
+
+`sift_col` · default · since 3.4 · default 2048
+
+- **What it does:** after churn the promotions of the write buffer land a few dozen rows in each superblock they touch, and every one of them is a unit that a scan pays for like a thousand rows: rows that reach 16 superblocks or more with under half a unit each are cut by TID range into units of this many rows instead, so a steady state of overlays has a few hundred units where it had tens of thousands (3,000,000 rows, 20% of the rows changed a month: 10,552 units to 721; 10,000,000 rows: 35,107 to 2,415)
+- **Gain:** 60 days of the churn simulator (bench/churn), both arms on one build (integration at 6d9da73 and the change, PostgreSQL 18.6, x86-64): 3,000,000 rows, 20% of the rows changed a month: a grouped sum 64.5 to 24.6 ms, a float sum over a json path 29.4 to 11.4 ms, a key lookup 35.0 to 7.5 ms; 10,000,000 rows, 20%: 231 to 97 ms, 88.3 to 34.1 ms, 141.6 to 40.2 ms; 10,000,000 rows, 5% a month: 135.7 to 68.7 ms, 45.1 to 24.4 ms, 67.2 to 11.2 ms; the same rows after a forced merge and VACUUM answer in the same time (0.07 to 0.13 ms)
+- **Impact:** index size: the dirty index 71.8 to 28.7 MB (3,000,000 rows, 20%), 241.8 to 101.4 MB (10,000,000, 20%) and 143.3 to 66.8 MB (10,000,000, 5%); after a merge of everything the index is the size it was without the setting (30.24 and 30.18 MB, 106.95 and 107.22 MB, 93.13 and 93.41 MB: -0.2% to +0.3%); build, merge and writes: total WAL 834.5 to 759.8 MB (3,000,000 rows, 20%), 2,706 to 2,469 MB (10,000,000, 20%) and 707 to 638 MB (10,000,000, 5%) over 60 days, the maintenance share 367 to 292, 1,142 to 905 and 315 to 246 MB; other: a segment cut by TID range is minor 17 (a 3.3 library refuses it, REINDEX with the setting at 14 or less writes the superblock cut); a scan that reads the newest rows of a large table reads the 2,048-row unit that holds them, not a unit of a few rows (ORDER BY ts DESC LIMIT 20: +0.3 ms at 3,000,000 rows and 20% a month, +0.1 ms at 10,000,000 and 20%, +0.4 ms at 10,000,000 and 5%)
+- **When:** A plain sift_col index over a table of 16 superblocks (4,096 pages) or more whose promotions reach 16 superblocks or more with under half a unit's rows in each, and the tier merges of such overlays. Not a key_cut index, not a sift_table, not a rewrite of a partition, and not once a merge holds half a unit's rows in every superblock.
+- **Default:** 2048 — It passes the 3.3 rule on the classes it is for (a grouped sum 2.0 to 2.6 times faster in the dirty state, a float sum 1.9 to 2.6 times, a key lookup 3.5 to 6.0 times, all over the 5%), grows no index (smaller while dirty, within 0.3% after a merge, under the 3%) and writes less WAL, not more; the one class it costs, the newest rows by an ORDER BY .. LIMIT, costs 0.1 to 0.4 ms
+- **Turn off:** SET sift.col_unit_floor = 0 (or ALTER SYSTEM / ALTER DATABASE for the maintenance worker): a promotion writes a unit for each superblock it reaches, as 3.3 does.
+- **Upgrade from 3.3:** New in 3.4: nothing to do after ALTER EXTENSION UPDATE; the promotions and the merges that follow write the new cut, the units already there are read as they are and a merge of everything cuts them by superblock again.
+- **Advice:** Leave at 2048. Raise it for fewer, larger overlay units on a table whose churn is spread over the whole heap; 0 writes a unit for each superblock a promotion reaches, as 3.3 does.
 
 #### sift.enable_agg
 
@@ -1907,7 +1920,7 @@ all · deprecated · since 1.0 · default 4096
 `ALTER EXTENSION pg_sift UPDATE` runs `pg_sift--3.3--3.4.sql`, which replaces `sift.upgrade_commands()` and `sift.cluster_advice()` and comments `sift.suggest_paths()`: it changes no setting, no default and no stored data. The 3.4 library reads every index of 3.3 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). What the update changes is what the new library does with the data it reads, and what it writes from then on; an index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. This table is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.3 reads, and from the options whose behavior the 3.4 changelog changes; the check fails when one of the first three has no line.
 
 <!-- sift-upgrade:start -->
-No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
+No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, `sift.verdict_cache_kb`, `sift.col_unit_floor`, `sift_col(dict_stored)`, `sift_col(key_cut)`, `sift_col(key_cut_rows)`, `sift_col(order_array_columns)`, `sift_col(hll_columns)`, `sift.vis_page_cache`.
 
 | Option | 3.3 | 3.4 | Column format | What a 3.3 user gets after the update |
 |---|---|---|---|---|
@@ -1929,6 +1942,7 @@ No default changed since 3.3; new: `sift.agg_force`, `sift.agg_lookup_columns`, 
 | `sift.cluster_advice` | on | on |  | sift.cluster_advice() also names key_cut (and key_columns for a key of over 256 values). Nothing to do. |
 | `sift.col_format_minor` | 15 | 15 |  | Default stays 15, so the update changes no write format by itself. The library reads minors up to 18; point_tid_columns (16), key_cut (17) and the run heads of order_columns (18) stamp their own minor, which a 3.3 library refuses; keep the setting at 14 or less before creating such indexes if a 3.3 library may still read them. |
 | `sift.col_auto_merge` | on | on |  | On since 3.3, unchanged. VACUUM no longer moves the large segments of an index that is due for the rewrite, so the WAL budget of the rewrite is not started over by it. Nothing to do. |
+| `sift.col_unit_floor` | new | 2048 |  | New in 3.4: nothing to do after ALTER EXTENSION UPDATE; the promotions and the merges that follow write the new cut, the units already there are read as they are and a merge of everything cuts them by superblock again. |
 | `sift.agg_lookup_columns` | new | on |  | Nothing to do after ALTER EXTENSION UPDATE: the setting is read by the library, no REINDEX, the format is unchanged. |
 | `sift.verdict_cache_kb` | new | 256 kB |  | Nothing to do after ALTER EXTENSION UPDATE: the table is allocated by the first backend that plans a statement with a shared CTE, in the shared memory of the server; no REINDEX. |
 | `sift.plan_scale` | 1 | 1 |  | Now also scales the normal side of a plan on PostgreSQL 19 (3.3 did nothing there, as PostgreSQL 19 removed the hook it used); nothing to do. |

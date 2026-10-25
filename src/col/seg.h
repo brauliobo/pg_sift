@@ -191,6 +191,19 @@ extern const uint8 *sift_cseg_dim_cube(SiftColSegment *seg, uint32 u, int dim, u
  */
 extern uint32 sift_cseg_super_fan(SiftColSegment *seg);
 extern bool sift_cseg_unit_pagemask(SiftColSegment *seg, uint32 u, uint64 *pm);
+
+/*
+ * The superblocks the rows of a segment are in, as ascending disjoint ranges [lo, hi], read once and kept with the segment. A unit cut by superblock gives its own; a unit cut by key or
+ * by TID range, the blocks from the first to the last of its summary (the whole heap when the segment has none)
+ */
+typedef struct SiftCSbSpan
+{
+	uint32		lo;
+	uint32		hi;
+} SiftCSbSpan;
+extern uint32 sift_cseg_sb_spans(SiftColSegment *seg, const SiftCSbSpan **spans);
+/* Is superblock sb inside one of the spans? */
+extern bool sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb);
 extern void sift_cseg_super_pagemask(SiftColSegment *seg, uint32 k, uint32 n, uint64 *pm);
 extern bool sift_cseg_super_agg(SiftColSegment *seg, int col, uint32 k, SiftCAgg *a);
 extern const uint8 *sift_cseg_super_cube(SiftColSegment *seg, uint32 k, uint32 *len);

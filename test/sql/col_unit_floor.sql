@@ -1,0 +1,111 @@
+-- sift.col_unit_floor: the rows of a promotion that reach many superblocks with few rows in each are cut by TID range into units of that many rows, not one unit
+-- per superblock, and a merge that stays that sparse does the same; a merge that reaches the floor in every superblock cuts by superblock again, whatever the
+-- cut of its inputs. The answers never change and the index verifies after every step. 40,000 rows of 1 kB are 22 superblocks; the least number of
+-- superblocks the rule needs is lowered from 16 to 4 for the test.
+-- A plain VACUUM skips a page another backend holds pinned and leaves its dead row version in the index, which a merge then counts: the VACUUMs here wait for the page.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET sift.col_auto_merge = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_col_floor_sbs = 4;
+
+CREATE TABLE fl (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false);
+INSERT INTO fl SELECT g, g % 7, g % 1000, repeat('x', 1000) FROM generate_series(1, 40000) g;
+CREATE INDEX fl_col ON fl USING sift_col (id, grp, amount) WITH (write_buffer_limit = 64);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) fl;
+
+-- whether the three ways to answer (pre-aggregates, scan, heap) agree, for a group by and for a range of ctid (units cut by TID range hold rows of any block)
+CREATE FUNCTION fl_same() RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE q text; a text; b text; c text;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['SELECT grp, count(*), sum(amount) FROM fl GROUP BY grp', 'SELECT count(*), sum(amount) FROM fl WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''] LOOP
+		SET LOCAL sift.enable_agg = on;
+		SET LOCAL sift.agg_preagg = on;
+		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
+		SET LOCAL sift.agg_preagg = off;
+		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
+		SET LOCAL sift.enable_agg = off;
+		EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
+		IF a IS DISTINCT FROM b OR b IS DISTINCT FROM c THEN RETURN false; END IF;
+	END LOOP;
+	RETURN true;
+END $$;
+
+-- the segments: how many are immutable, their rows and units, and the rows still in the write buffer
+CREATE FUNCTION fl_segs() RETURNS TABLE (n int, rows int8, units int8, buffer_rows int8) LANGUAGE sql AS $$
+	SELECT (count(*) FILTER (WHERE kind = 'immutable'))::int, sum(rows) FILTER (WHERE kind = 'immutable'), sum(units) FILTER (WHERE kind = 'immutable'),
+	       coalesce(sum(rows) FILTER (WHERE kind <> 'immutable'), 0)
+	FROM sift.col_segments('fl_col') $$;
+CREATE FUNCTION fl_newest() RETURNS TABLE (rows int8, units int4) LANGUAGE sql AS $$
+	SELECT rows, units FROM sift.col_segments('fl_col') WHERE kind = 'immutable' ORDER BY gen DESC LIMIT 1 $$;
+
+SELECT * FROM fl_segs();
+
+-- a promotion of 4,000 rows over 22 superblocks: two units of the floor, not 22
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 0;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+SELECT * FROM fl_newest();
+SELECT fl_same();
+SELECT sift.col_verify('fl_col', true);
+
+-- the floor off: a unit for each superblock reached
+SET sift.col_unit_floor = 0;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+SELECT * FROM fl_newest();
+SELECT fl_same();
+RESET sift.col_unit_floor;
+
+-- fewer superblocks than the least the rule needs (16, here raised to 30): a unit for each
+SET sift.test_col_floor_sbs = 30;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 2;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+SELECT * FROM fl_newest();
+SET sift.test_col_floor_sbs = 4;
+
+-- the merge of all of them (the overlays are cut by TID range and by superblock) reaches the floor in every superblock: a unit for each again (its rows are not counted:
+-- a VACUUM that a checkpoint or another backend delays leaves a few recently dead row versions in the index, which the answers vet)
+SELECT sift.col_merge('fl_col', true) >= 0 AS merged;
+SELECT n, units = ceil(pg_relation_size('fl') / 8192.0 / 256) AS unit_per_superblock FROM fl_segs();
+SELECT fl_same();
+SELECT sift.col_verify('fl_col', true);
+
+-- rounds of churn: each promotion is an overlay of the floor, the tier merge of eight of them stays sparse and stays cut by TID range
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 3 AND id % 7 = 3;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 4 AND id % 7 = 4;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 5 AND id % 7 = 5;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 6 AND id % 7 = 6;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 7 AND id % 7 = 0;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 8 AND id % 7 = 1;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 9 AND id % 7 = 2;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 0 AND id % 7 = 3;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1 AND id % 7 = 4;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+SELECT n < 10 AS tier_merged, buffer_rows FROM fl_segs();
+SELECT (SELECT max(units) FROM sift.col_segments('fl_col') WHERE kind = 'immutable' AND rows < 20000) <= 4 AS overlays_in_few_units;
+SELECT fl_same();
+SELECT sift.col_verify('fl_col', true);
+
+-- deletes and inserts through the same cut
+DELETE FROM fl WHERE id % 97 = 0;
+INSERT INTO fl SELECT 100000 + g, g % 7, g % 1000, repeat('x', 1000) FROM generate_series(1, 500) g;
+VACUUM (DISABLE_PAGE_SKIPPING) fl;
+SELECT fl_same();
+SELECT sift.col_merge('fl_col', true) >= 0 AS merged;
+SELECT fl_same();
+SELECT sift.col_verify('fl_col', true);
+SELECT n FROM fl_segs();
+
+DROP FUNCTION fl_same(), fl_segs(), fl_newest();
+DROP TABLE fl;
+DROP EXTENSION pg_sift;

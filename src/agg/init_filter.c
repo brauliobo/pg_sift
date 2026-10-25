@@ -494,6 +494,7 @@ tid_init(AggExec *ex, Snapshot snapshot)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
+	ex->sb_heap = sift_colsrc_sb_heap(ex->src);
 	ex->tid_pred = -1;
 	ex->tid_sb_hi = PG_UINT32_MAX;
 	for (int i = 0; i < s->npred && ex->tid_pred < 0; i++)
@@ -511,6 +512,12 @@ tid_init(AggExec *ex, Snapshot snapshot)
 			ex->tid_bhi = (ex->tid_hi - 1) >> 16;
 			ex->tid_sb_lo = ex->tid_blo / SIFT_SB_PAGES;
 			ex->tid_sb_hi = ex->tid_bhi / SIFT_SB_PAGES + 1;
+		}
+		/* units cut by TID range hold rows of any block: they are all read, and the rows tested */
+		if (!ex->sb_heap)
+		{
+			ex->tid_sb_lo = 0;
+			ex->tid_sb_hi = PG_UINT32_MAX;
 		}
 		if (!ex->lay->is_table)
 		{

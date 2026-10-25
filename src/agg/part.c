@@ -221,6 +221,19 @@ count_sbs(PartSource *ps)
 	ps->have_off = true;
 }
 
+static bool
+part_sb_heap(void *impl)
+{
+	PartSource *ps = impl;
+
+	count_sbs(ps);
+	open_rest(ps);				/* a worker takes its offsets from the leader and has opened nothing yet */
+	for (int i = 0; i < ps->n; i++)
+		if ((ps->skip == NULL || !ps->skip[i]) && !sift_colsrc_sb_heap(ps->src[i]))
+			return false;
+	return true;
+}
+
 static uint32
 part_nsb(void *impl)
 {
@@ -1343,6 +1356,7 @@ static const SiftSrcProvider part_provider = {
 	.close = part_close,
 	.source_layout = part_source_layout,
 	.nsb = part_nsb,
+	.sb_heap = part_sb_heap,
 	.begin = part_begin,
 	.next = part_next,
 	.read = part_read,

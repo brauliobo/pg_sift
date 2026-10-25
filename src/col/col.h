@@ -552,6 +552,8 @@ extern const SiftColDef *sift_col_def(const SiftColSource *src, int col);
 
 /* Superblocks of the heap now: the range [0, heap_sbs) for a morsel counter (a later insert may add rows past it: they are not visible to the snapshot) */
 extern uint32 sift_col_heap_sbs(const SiftColSource *src);
+/* Is the number of each stored unit the heap superblock of its rows? Not once a segment cuts its units by key or TID range */
+extern bool sift_col_sb_heap(const SiftColSource *src);
 
 /*
  * Starts (or restarts) the iteration over the units of superblocks [sb_lo, sb_hi) (sb_hi exclusive, PG_UINT32_MAX = to the end). Units whose

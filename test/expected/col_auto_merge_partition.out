@@ -3,6 +3,8 @@
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
+-- the overlays are cut by superblock here: the units a TID-range overlay (sift.col_unit_floor, col_unit_floor) lists are no fragmentation to fold
+SET sift.col_unit_floor = 0;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE items (id int, key int, kind text, amount numeric(10,2), pad text, tag text, tag2 text) WITH (autovacuum_enabled = false);

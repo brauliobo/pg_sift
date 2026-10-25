@@ -261,8 +261,16 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 	for (int i = 0; i < src->nseg; i++)
 	{
 		SiftColSegment *s = src->seg[i].seg;
-		uint32		k = sift_cseg_find_unit(s, sb);
+		uint32		k;
 
+		/* a segment cut by key or TID range numbers its units by sequence: the blocks its units reach say whether it holds rows of the superblock, and then it is not the only unit */
+		if (sift_cseg_keyed(&s->entry))
+		{
+			if (sift_cseg_sb_in_spans(s, sb))
+				return false;
+			continue;
+		}
+		k = sift_cseg_find_unit(s, sb);
 		if (k >= s->nsb || s->sbdir[k].sb != sb)
 			continue;
 		if (seg != NULL)
@@ -270,7 +278,7 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 		seg = s;
 		u = k;
 	}
-	if (seg == NULL || sift_cseg_keyed(&seg->entry) || !sift_cseg_sbhead(seg, u, col, &h))
+	if (seg == NULL || !sift_cseg_sbhead(seg, u, col, &h))
 		return false;
 	src->visibility.sb_mask(src->visibility.arg, sb, av);
 	for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
