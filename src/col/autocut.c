@@ -35,6 +35,7 @@
 
 #include "col/am.h"
 #include "col/codec.h"
+#include "col/enc.h"
 #include "col/col.h"
 #include "col/setsum.h"
 
@@ -47,9 +48,8 @@
 #define AUTOCUT_ROWS		400000	/* rows sampled, at most */
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
-#define AUTOCUT_TID_BYTES	0.65	/* what the address of a row takes in a unit, at most */
+#define AUTOCUT_DIR_ROWS	256		/* rows of a unit of the cut whose directory is encoded from the sample, at least */
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
-#define AUTOCUT_DIR_BYTES	0.5		/* what the directory of a unit takes for a row */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 #define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
 #define AUTOCUT_QUICK_SLACK	4		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough */
@@ -83,6 +83,7 @@ typedef struct Samp
 	uint32		n;				/* sampled rows */
 	uint32		start[AUTOCUT_SBS + 1];	/* the rows of sampled superblock s are start[s] to start[s + 1] */
 	int			nsb;
+	SiftKey	   *tid;			/* the address of each sampled row, the sampled superblocks side by side (superblock s starts at block s * SIFT_SB_PAGES) */
 } Samp;
 
 static int
@@ -334,6 +335,15 @@ row_cmp(const void *a, const void *b, void *arg)
 }
 
 static int
+u64_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+static int
 u32_cmp(const void *a, const void *b)
 {
 	uint32		x = *(const uint32 *) a,
@@ -343,29 +353,58 @@ u32_cmp(const void *a, const void *b)
 }
 
 /*
- * The bytes of the integer leaves of the rows of at most AUTOCUT_TRIAL_SBS of the sampled superblocks (every k-th) in the units of the superblock cut
- * (key < 0) or of the cut by the leaf key, in units of as many rows, per sampled row.
+ * The bytes of the integer leaves and of the row directories of the rows of at most AUTOCUT_TRIAL_SBS of the sampled superblocks (every k-th) in the units of the
+ * superblock cut (key < 0) or of the cut by the leaf key, per sampled row. The integer leaves are encoded by the codec in units of as many rows as a superblock
+ * holds. The row directory is encoded as enc.c writes it: a unit of the cut holds the rows of the whole heap in a range of the key and lists their addresses,
+ * and the sample holds a share of the heap, so a unit is the sampled rows in the range, n / nsb of them. When that is fewer than AUTOCUT_DIR_ROWS, the unit is
+ * that many rows and the gaps between its blocks, then smaller than the whole heap gives, are widened by the bits of the difference.
  */
 static double
-layout_bytes(const Track *tr, int ntr, const Samp *s, int key)
+layout_bytes(const Track *tr, int ntr, const Samp *s, int key, double nsb, double heap_pages, double rows_per_unit)
 {
 	StringInfoData buf;
 	int64	   *tmp = palloc_array(int64, s->n + 1);
 	uint32	   *rows = palloc_array(uint32, s->n + 1);
 	uint32	   *sel = palloc_array(uint32, s->n + 1);
+	SiftKey    *tid = palloc_array(SiftKey, s->n + 1);	/* by sampled row: its address with the taken superblocks side by side */
+	SiftKey    *keys = palloc_array(SiftKey, s->n + 1);
 	uint32		nsel = 0,
 				stride = (s->nsb + AUTOCUT_TRIAL_SBS - 1) / AUTOCUT_TRIAL_SBS,
-				unit;
+				unit,
+				pages;
 	int			nused = 0;
 	double		bytes = 0;
 
 	for (int u = 0; u < s->nsb; u += stride, nused++)
+	{
+		uint32		from = nsel;
+
 		for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
+		{
 			sel[nsel++] = i;
+			tid[i] = s->tid[i] - (((SiftKey) (u - nused) * SIFT_SB_PAGES) << 16);
+		}
+		if (key < 0)
+			bytes += sift_cunit_directory_bytes(tid + s->start[u], nsel - from, false, nused, &pages);
+	}
 	unit = Max(1, nsel / nused);
 	initStringInfo(&buf);
 	if (key >= 0)
+	{
+		uint32		dir_rows = Max(nsel / nsb, AUTOCUT_DIR_ROWS);
+		double		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / dir_rows)));
+
 		qsort_arg(sel, nsel, sizeof(uint32), row_cmp, (void *) &tr[key]);
+		for (uint32 from = 0; from < nsel; from += dir_rows)
+		{
+			uint32		n = Min(dir_rows, nsel - from);
+
+			for (uint32 i = 0; i < n; i++)
+				keys[i] = tid[sel[from + i]];
+			qsort(keys, n, sizeof(SiftKey), u64_cmp);
+			bytes += sift_cunit_directory_bytes(keys, n, true, 0, &pages) + wider * pages / 8;
+		}
+	}
 	for (int t = 0; t < ntr; t++)
 	{
 		if (key < 0)
@@ -389,6 +428,8 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key)
 	pfree(tmp);
 	pfree(rows);
 	pfree(sel);
+	pfree(tid);
+	pfree(keys);
 	return bytes / Max(nsel, 1);
 }
 
@@ -488,6 +529,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
 	samp = palloc0(sizeof(Samp));
+	samp->tid = palloc_array(SiftKey, AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS);
 	for (int t = 0; t < ntr; t++)
 	{
 		tr[t].v = palloc_array(int64, AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS);
@@ -508,6 +550,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));
 		while (nrow++ < SIFT_COL_UNIT_MAX_ROWS && table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		{
+			samp->tid[samp->n] = ((SiftKey) (samp->nsb * SIFT_SB_PAGES + ItemPointerGetBlockNumber(&slot->tts_tid) - start) << 16) | ItemPointerGetOffsetNumber(&slot->tts_tid);
 			for (int t = 0; t < ntr; t++)
 			{
 				bool		isnull;
@@ -565,7 +608,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	}
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
-	def_row = layout_bytes(tr, ntr, samp, -1) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES;
+	def_row = layout_bytes(tr, ntr, samp, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
 	for (int pass = 0; pass < 2; pass++)
 		for (int t = 0; t < ntr; t++)
@@ -624,7 +667,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	{
 		for (int i = first_open; i < nfire; i++)
 			if (!blocked[i] && tr[fire[i]].time &&
-				100.0 * (layout_bytes(tr, ntr, samp, fire[i]) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES + AUTOCUT_TID_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
+				100.0 * (layout_bytes(tr, ntr, samp, fire[i], nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
 			{
 				blocked[i] = true;
 				if (i == 0)
@@ -645,7 +688,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 
 		if (blocked[i])
 			continue;
-		kc_row = layout_bytes(tr, ntr, samp, pick) + untracked * AUTOCUT_LEAF_BYTES + AUTOCUT_DIR_BYTES + AUTOCUT_TID_BYTES;
+		kc_row = layout_bytes(tr, ntr, samp, pick, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
 		growth = 100.0 * (kc_row - def_row) / def_row;
 		if (tr[pick].time && growth > AUTOCUT_GROWTH_PCT)
 		{
