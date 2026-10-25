@@ -188,13 +188,13 @@ const SiftCcKernels sift_cc_kernels_scalar = {
 #if defined(SIFT_HAVE_NEON)
 const SiftCcKernels sift_cc_kernels_neon = {
 	.unpack32 = sift_cc_unpack32_neon,
-	.unpack_range32 = unpack_range32_scalar,
+	.unpack_range32 = sift_cc_unpack_range32_neon,
 	.prefix32 = prefix32_scalar,
 	.prefix64 = prefix64_scalar,
 	.max32 = max32_scalar,
 	.alp_keys_f8 = alp_keys_f8_scalar,
-	.alp_keys_f4 = alp_keys_f4_scalar,
-	.rle_expand32 = rle_expand32_scalar,
+	.alp_keys_f4 = sift_cc_alp_keys_f4_neon,
+	.rle_expand32 = sift_cc_rle_expand32_neon,
 	.scale32 = scale32_scalar,
 	.scale64 = scale64_scalar,
 	.alp_f8 = alp_f8_scalar,

@@ -434,6 +434,35 @@ test_kernels_level(SiftRng *r, SiftSimdLevel level, int iters)
 		S->alp_keys_f4(q1, u4, n, dbase4, sift_cc_p10f[e4]);
 		K->alp_keys_f4(q2, u4, n, dbase4, sift_cc_p10f[e4]);
 		CMP(q1, q2, 8 * (size_t) n, "%s alp_keys_f4 e=%d n=%u", name, e4, n);
+		{
+			double	   *f1 = xalloc(8 * n),
+					   *f2 = xalloc(8 * n);
+			uint32	   *s1 = xalloc(4 * n),
+					   *s2 = xalloc(4 * n);
+			int64	   *t1 = xalloc(8 * n),
+					   *t2 = xalloc(8 * n);
+			uint32		sb = (uint32) sift_rng_next(r),
+						sm = sift_rng_below(r, 2) ? (uint32) sift_rng_next(r) : sift_rng_below(r, 100);
+			int64		tb = (int64) sift_rng_next(r),
+						tm = sift_rng_below(r, 2) ? (int64) sift_rng_next(r) : (int64) sift_rng_below(r, 100000);
+
+			S->alp_f8(f1, u8, n, dbase8, sift_cc_p10[e8]);
+			K->alp_f8(f2, u8, n, dbase8, sift_cc_p10[e8]);
+			CMP(f1, f2, 8 * (size_t) n, "%s alp_f8 e=%d n=%u", name, e8, n);
+			S->alp_f4(f1, u4, n, dbase4, sift_cc_p10f[e4]);
+			K->alp_f4(f2, u4, n, dbase4, sift_cc_p10f[e4]);
+			CMP(f1, f2, 8 * (size_t) n, "%s alp_f4 e=%d n=%u", name, e4, n);
+			memcpy(s1, u8, 4 * n), memcpy(s2, u8, 4 * n);
+			S->scale32(s1, n, sb, sm);
+			K->scale32(s2, n, sb, sm);
+			CMP(s1, s2, 4 * (size_t) n, "%s scale32 n=%u", name, n);
+			for (uint32 i = 0; i < n; i++)
+				t1[i] = t2[i] = (int64) ((uint64) u8[i] << (i % 33)) ^ (int64) (i * UINT64CONST(0x9E3779B97F4A7C15));
+			S->scale64(t1, n, tb, tm);
+			K->scale64(t2, n, tb, tm);
+			CMP(t1, t2, 8 * (size_t) n, "%s scale64 n=%u", name, n);
+			free(f1), free(f2), free(s1), free(s2), free(t1), free(t2);
+		}
 		free(u8), free(u4), free(q1), free(q2);
 	}
 	for (int it = 0; it < iters; it++)
