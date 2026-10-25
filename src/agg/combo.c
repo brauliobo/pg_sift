@@ -323,6 +323,13 @@ combo_prior_vid(AggExec *ex, int ci, int p, uint32 out)
 	return prior_vid_new(ex, ci, p, out);
 }
 
+/* a placeholder of the nullable side reads NULL for a row nothing matched: the missing rows of a join, and the tuples of a LEFT lateral's rows with no element */
+static inline bool
+combo_null_input(const AggExec *ex)
+{
+	return ex->null_input || ex->nullpass;
+}
+
 /* the leaf values of an entry (v: ids) as the Params of the combo's expressions */
 void
 combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
@@ -330,7 +337,7 @@ combo_bind_leaves(AggExec *ex, int ci, const uint64 *v)
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	ComboSt    *cs = &ex->cs[ci];
 
-	bind_param(ex, SIFT_AGG_NULL_INPUT, BoolGetDatum(ex->null_input), false);
+	bind_param(ex, SIFT_AGG_NULL_INPUT, BoolGetDatum(combo_null_input(ex)), false);
 
 	for (int p = 0; p < cb->nleaves; p++)
 	{
@@ -1074,17 +1081,17 @@ combo_ent(AggExec *ex, int ci, const uint64 *v)
 	if (cs->by_id)
 		return combo_ent_by_id(ex, ci, (uint32) v[0]);
 	/* one input with a small id (a dictionary code, a small integer): the entry is an array index, no hash */
-	direct = cs->ninputs == 1 && !ex->null_input && v[0] < COMBO_DIR_MAX;
+	direct = cs->ninputs == 1 && !combo_null_input(ex) && v[0] < COMBO_DIR_MAX;
 	if (direct && v[0] < cs->dircap && cs->dir[v[0]])
 		return cs->dir[v[0]] - 1;
-	h = combo_hash(v, cs->ninputs, ex->null_input) & (cs->nht - 1);
+	h = combo_hash(v, cs->ninputs, combo_null_input(ex)) & (cs->nht - 1);
 	for (; (e = cs->ht[h]) != 0; h = (h + 1) & (cs->nht - 1))
-		if (cs->null_input[e - 1] == ex->null_input &&
+		if (cs->null_input[e - 1] == combo_null_input(ex) &&
 			combo_same(&cs->vid[(size_t) (e - 1) * cs->ninputs], v, cs->ninputs))
 			return e - 1;
 	combo_grow_ent(cs);
 	memcpy(&cs->vid[(size_t) cs->nent * cs->ninputs], v, cs->ninputs * sizeof(uint64));
-	cs->null_input[cs->nent] = ex->null_input;
+	cs->null_input[cs->nent] = combo_null_input(ex);
 	combo_make(ex, ci, v, &cs->ent[cs->nent]);
 	cs->ht[h] = ++cs->nent;
 	if (direct)
@@ -1255,7 +1262,7 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
-	if (cb->nleaves == 1 && cb->leaf[0] >= 0 && !cs->by_id && !ex->null_input)
+	if (cb->nleaves == 1 && cb->leaf[0] >= 0 && !cs->by_id && !combo_null_input(ex))
 	{
 		const SiftSrcLeaf *lf = &ex->lay->leaf[cb->leaf[0]];
 		const SiftSrcVec *v = get_vec(ex, cb->leaf[0]);

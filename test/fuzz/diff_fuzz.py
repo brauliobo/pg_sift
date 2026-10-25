@@ -763,7 +763,9 @@ def gen_twolevel(r, ctx):
                 # the total arm counts the rows the lookup has none for: its join is an outer one next to the inner joins of the arms with the NOT NULL test
                 unmatched=r.random() < 0.4,
                 # the lookup behind a lateral sub-select of its own, over the parts with a score: its WHERE sits at the inner join of the arms with the NOT NULL test
-                wrapped=r.random() < 0.4)
+                wrapped=r.random() < 0.4,
+                # ... joined with LEFT JOIN LATERAL: a part-less row is a NULL tuple, and the category the lookup defaults reads NULL there
+                leftmo=r.random() < 0.4)
 
 
 def render_twolevel(p):
@@ -778,9 +780,9 @@ def render_twolevel(p):
             c = 'mo.category' if cat else 'NULL::text'
             g = 'GROUP BY s.id, s.parent_id, s.kind, s.span' + (', s.dim' if dim else '') + (f', {c}' if cat else '')
             return (f"SELECT s.id, s.parent_id, s.kind, s.span, {'s.dim, ' if dim else ''}{c} AS category, avg(mo.score) AS score, count(s.id) AS n FROM scoped s "
-                    f"INNER JOIN LATERAL (SELECT rm.derived_cat AS category, o.score FROM LATERAL (SELECT cat, dir_a, score FROM jsonb_to_recordset(s.doc -> 'parts') q(cat text, dir_a text, score float8) "
+                    f"{'LEFT' if p['leftmo'] else 'INNER'} JOIN LATERAL (SELECT rm.derived_cat AS category, o.score FROM LATERAL (SELECT cat, dir_a, score FROM jsonb_to_recordset(s.doc -> 'parts') q(cat text, dir_a text, score float8) "
                     f"WHERE q.score IS NOT NULL) o LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true) mo ON true "
-                    + ("" if p['unmatched'] and not cat else "WHERE mo.category IS NOT NULL ") + g)
+                    + ("" if p['leftmo'] or (p['unmatched'] and not cat) else "WHERE mo.category IS NOT NULL ") + g)
         if p['lookup']:
             lk = (f"LEFT JOIN LATERAL (SELECT derived_cat FROM {p['lookup']} m WHERE m.kind = s.kind AND m.cat = o.cat LIMIT 1) rm ON true "
                   + ("" if p['unmatched'] and not cat else "WHERE rm.derived_cat IS NOT NULL"))

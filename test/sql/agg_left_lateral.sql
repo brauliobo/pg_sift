@@ -67,6 +67,23 @@ SELECT * FROM check_same($q$SELECT s.parent_id, count(s.id) AS n, avg(s.weight) 
   (SELECT i.id, i.parent_id, max(i.weight) AS weight, avg(p.n) AS score
    FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true GROUP BY i.id, i.parent_id) s GROUP BY s.parent_id$q$);
 
+-- the elements joined to a lookup inside the lateral: a row with no element is one NULL tuple, a placeholder that defaults a missing match reads NULL there
+CREATE TABLE kinds (k text PRIMARY KEY, flag_a text);
+INSERT INTO kinds VALUES ('a', 'x'), ('b', 'y');
+SELECT * FROM check_same($q$SELECT i.id, count(*) AS tuples, avg(m.n) AS n, avg(m.n) FILTER (WHERE m.c = 'x') AS xs, count(m.c) AS cs
+  FROM items i LEFT JOIN LATERAL (SELECT coalesce(kk.flag_a, 'none') AS c, p.n
+    FROM jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) LEFT JOIN LATERAL (SELECT flag_a FROM kinds WHERE kinds.k = p.k LIMIT 1) kk ON true
+    WHERE p.n IS NOT NULL) m ON true GROUP BY i.id$q$);
+SELECT * FROM check_same($q$SELECT s.parent_id, count(s.id) AS n, round(avg(s.score)::numeric, 6) AS score, round(avg(s.xs)::numeric, 6) AS xs FROM
+  (SELECT i.id, i.parent_id, avg(m.n) AS score, avg(m.n) FILTER (WHERE m.c IN ('x', 'none')) AS xs
+   FROM items i LEFT JOIN LATERAL (SELECT coalesce(kk.flag_a, 'none') AS c, p.n
+     FROM jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) LEFT JOIN LATERAL (SELECT flag_a FROM kinds WHERE kinds.k = p.k LIMIT 1) kk ON true
+     WHERE p.n IS NOT NULL) m ON true GROUP BY i.id, i.parent_id) s GROUP BY s.parent_id$q$);
+SELECT * FROM check_same($q$SELECT m.c, count(*) AS tuples, count(DISTINCT i.id) AS ids
+  FROM items i LEFT JOIN LATERAL (SELECT coalesce(kk.flag_a, 'none') AS c
+    FROM jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) LEFT JOIN LATERAL (SELECT flag_a FROM kinds WHERE kinds.k = p.k LIMIT 1) kk ON true) m ON true GROUP BY m.c$q$);
+DROP TABLE kinds;
+
 -- a condition above the join on an element column that is not strict sees the NULL tuple: the normal plan (equal rows)
 SELECT * FROM check_same($q$SELECT i.parent_id, count(*) AS tuples
   FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true WHERE p.n IS NULL GROUP BY i.parent_id$q$);

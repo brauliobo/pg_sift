@@ -308,6 +308,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	}
 	if (c->relid == 0)
 		return agg_refuse_on(FROM_SHAPE, "the FROM list has no table to scan");
+	if (!bms_is_subset(fs->nested, bms_make_singleton(c->func_rti)))
+		return agg_refuse_on(FROM_SHAPE, "a LEFT JOIN holds a join of tables on its right side");
 	/* a plan joined to the scan by an outer join keeps its own rows: the scanned table is never the nullable side */
 	foreach_ptr(LeftJoin, lj, fs->lefts)
 		if (lj->rti == c->relid)

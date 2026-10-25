@@ -252,6 +252,7 @@ typedef struct FromScan
 	int			ntables;		/* the tables the FROM list has */
 	Bitmapset  *ojrels;			/* the outer joins that preserve the other side */
 	Bitmapset  *hidden;			/* the tables of the trees on the right of semi and anti joins besides the one the join reads: their plan is the child's */
+	Bitmapset  *nested;			/* the first items of the right sides of LEFT JOINs that are joins themselves: only a list the scan unnests may be one */
 	Bitmapset  *outer;			/* the tables an inner join joins that the scan joins as an outer one: another arm of the two-level scan keeps the rows that have no match */
 } FromScan;
 

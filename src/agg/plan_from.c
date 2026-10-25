@@ -75,6 +75,15 @@ right_table(Node *n)
 	return IsA(n, RangeTblRef) ? (RangeTblRef *) n : NULL;
 }
 
+/* the first item of a join's right side that is itself a LEFT JOIN of items (a list a row unnests, with the lookups of its elements): the one the outer join is of */
+static RangeTblRef *
+lateral_head(Node *n)
+{
+	JoinExpr   *j = IsA(n, JoinExpr) ? (JoinExpr *) n : NULL;
+
+	return j != NULL && j->jointype == JOIN_LEFT && IsA(j->larg, RangeTblRef) ? (RangeTblRef *) j->larg : NULL;
+}
+
 /* a condition that reads no column of the preserved table rti, and no sub-select or volatile function */
 static bool
 right_only(Node *q, Index rti)
@@ -268,6 +277,22 @@ scan_from(Node *n, FromScan *f)
 	}
 	else if (IsA(n, JoinExpr) && (((JoinExpr *) n)->jointype == JOIN_SEMI || ((JoinExpr *) n)->jointype == JOIN_ANTI) && scan_semi_tree((JoinExpr *) n, f))
 		return;
+	else if (IsA(n, JoinExpr) && ((JoinExpr *) n)->jointype == JOIN_LEFT && lateral_head(((JoinExpr *) n)->rarg) != NULL)
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+		RangeTblRef *head = lateral_head(j->rarg);
+		LeftJoin   *lj = palloc(sizeof(LeftJoin));
+
+		scan_from(j->larg, f);
+		scan_from(j->rarg, f);
+		lj->kind = SJ_LEFT;
+		lj->rti = head->rtindex;
+		lj->quals = j->quals == NULL ? NIL : IsA(j->quals, List) ? list_copy((List *) j->quals) : list_make1(j->quals);
+		lj->tree = NULL;
+		f->lefts = lappend(f->lefts, lj);
+		f->nested = bms_add_member(f->nested, head->rtindex);
+		f->ojrels = bms_add_member(f->ojrels, j->rtindex);
+	}
 	else if (IsA(n, JoinExpr) && ((JoinExpr *) n)->jointype == JOIN_INNER)
 	{
 		JoinExpr   *j = (JoinExpr *) n;
