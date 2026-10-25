@@ -151,3 +151,5 @@ hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental So
 lookup_keyed_probe	is loaded by a btree probe for each of those keys while the descents and the pages of the rows they find cost less	orders	default	Lookup Index Scans: [1-9]	native	lookup_off:sift.agg_lookup_pushdown = off	ms	faster33	no
 two_level_lookup_arms	the arms of a two-level aggregate that read the columns of a lateral `LIMIT 1` lookup (`rm.derived_cat AS category`, no `CASE` around it) are one scan	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 two_level_join_types	the arms of a two-level scan may differ in the type of the join of a lateral `LIMIT 1` child	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+cte_shared_series	the shared plan of a CTE that several aggregates read is made with `enable_memoize` off	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
+cte_hoisted_in	no longer repeats an aggregating `IN` sub-select of the CTE body in every arm	events	-	sift_hoisted	native	-	ms	faster33	no
