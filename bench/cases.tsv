@@ -128,6 +128,7 @@ ts_latest_device	ts_latest_device	tseries	-	fallback:Index Scan	native	-	ms	fast
 oltp_insert_index	oltp_insert_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no
 oltp_update_index	oltp_update_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no
 run_window	a range on a leaf with a sorted run (`order_columns`), or an equality on it	orders	default	Units Filtered By Sorted Run: [1-9]	native,pg_duckdb	no_run:search_path = run_window_plain	ms	faster33	no
+range_wide_bytes	plain 3, 5, 6 or 7-byte values	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 two_level_cell_conditions	the conditions of the outer aggregates of a two-level scan read the value of each cell once	orders	default	Pushed Aggregates	native	-	ms	faster33	no
 dict_small_request	the ids of a dictionary's entries (the key of a group by a text column	orders	default	Group Keys: tag	native	-	ms	faster33	no
 dict_first_scan	made when a tuple first reads the entry	orders	default+id+title	fallback:Index Scan using orders_pkey	native,pg_duckdb	warm_forced:sift.agg_force = on	ms	faster33	no
