@@ -120,24 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - run: for f in scripts/*.sh test/t/*.sh bench/bench bench/*.sh; do bash -n "$f"; done
-      - run: scripts/check-portable.sh
-      - run: scripts/check-neutral.sh
-      - run: scripts/gen-limits.sh --check
-      - run: scripts/gen-reference.sh --check
-      - run: scripts/gen-options.sh --check
-      - run: scripts/check-errors.sh
-      - run: scripts/check-approx.sh
-      - run: scripts/check-memory.sh && scripts/check-memory.sh --selftest
-      - run: scripts/check-bench-fresh.sh
-      - run: git fetch -q --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" || true; scripts/check-bench-cases.sh
-      - run: scripts/gen-refusals.sh --check
-      - run: scripts/coverage.sh --docs
-      - run: scripts/gen-docs.py --check
-      - run: scripts/ci.sh --selftest
-      - run: scripts/leakcheck.sh selftest
-      - run: make -s -C sqlite B="$RUNNER_TEMP/span" span-test span-test-asan
-      - run: test/fuzz/diff_fuzz.py --selftest
+      - run: scripts/lint.sh
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
 

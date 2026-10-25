@@ -242,7 +242,7 @@ if [[ $MODE == --selftest ]]; then
 	[[ -z $focus_hot || $(focus_regex "$focus_hot") == "$(focus_regex "${focus_hot%%:*}:*")" ]] || { echo "FAIL: focus: the hot function $focus_hot does not select the tests of its area"; bad=1; }
 	[[ $(focus_regex src/agg/cte.c:no_such_function) == '^(coverage|isolation-emulated)$' ]] || { echo "FAIL: focus: a function no row has selects tests"; bad=1; }
 	# the fast tier: a source file runs the tests of its own area (src/agg: not the ones only the table area owns), a core file all of them
-	fast_agg=$(areas_fast_regex src/agg/x.c) fast_core=$(areas_fast_regex src/core/ops.c)
+	fast_agg=$(areas_fast_regex src/agg/agg.c) fast_core=$(areas_fast_regex src/core/ops.c)
 	while read -r id _; do
 		[[ $id == installcheck-* ]] || continue
 		[[ $id =~ $fast_core ]] || { echo "FAIL: areas: src/core/ops.c does not select the fast job $id"; bad=1; }
