@@ -796,7 +796,7 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 		}
 	}
 	for (int j = 0; has_nan && j < nsel; j++)
-		if (NFLAG(0)[j])
+		if (NFLAG(0)[j] || (p->dig > SIFT_NUM_MAX_DIGITS && NFLAG(1)[j]))
 			NSTK(0)[j] = SIFT_NX_NAN;
 	return ex->nstk;
 }

@@ -1217,6 +1217,26 @@ compile_nx(AggCtx *c, Node *e, int maxdig, SiftAggNum *o)
 	return nx_walk(c, e, o, &o->scale, &dig) && dig <= maxdig && (o->dig = dig, true);
 }
 
+/*
+ * The product of two numeric expressions of at most SIFT_NUM_MAX_DIGITS digits each whose digits together exceed them (a price times one minus a discount
+ * times one plus a tax, 47 digits for three decimal(15,2)): the program leaves the two factors on the stack and no multiplication, the sum multiplies
+ * each pair in 256 bits (agg_sum_add_product). The digits proven are those of the product, up to SIFT_NUM_PRODUCT_DIGITS: the carries of the sum, in 64 bits, hold 2^31 rows of the largest such value.
+ */
+bool
+compile_nx_product(AggCtx *c, Node *e, SiftAggNum *o)
+{
+	Node	   *n = strip_relabel(e);
+	int			s1,
+				d1,
+				s2,
+				d2;
+
+	o->n = 0;
+	o->step = palloc(SIFT_AGG_MAX_VX * sizeof(SiftAggNx));
+	return func_of(n) == F_NUMERIC_MUL && nx_walk(c, linitial(func_args(n)), o, &s1, &d1) && nx_walk(c, lsecond(func_args(n)), o, &s2, &d2) &&
+		d1 + d2 > SIFT_NUM_MAX_DIGITS && d1 + d2 <= SIFT_NUM_PRODUCT_DIGITS && (o->scale = s1 + s2, o->dig = d1 + d2, true);
+}
+
 /* + - * of int8, int4 and int2 operands (int8pl, int84pl, int48pl ...): the SNX op of the function, -1 for any other */
 static int
 int8_arith_op(Oid fid)

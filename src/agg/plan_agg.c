@@ -510,7 +510,7 @@ compile_numeric_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	bool		sum = fid == F_SUM_NUMERIC || fid == F_AVG_NUMERIC;
 
 	/* the sum of values of up to 38 digits is kept in 128 bits and the carries out of them (agg_sum_add): no bound on the rows */
-	if (!compile_nx(c, arg, SIFT_NUM_MAX_DIGITS, &out->num))
+	if (!compile_nx(c, arg, SIFT_NUM_MAX_DIGITS, &out->num) && !(sum && a->aggdistinct == NIL && compile_nx_product(c, arg, &out->num)))
 		return compile_mapped(c, a, arg, out, ai);
 	out->kind = fid == F_SUM_NUMERIC ? SAA_SUM_NUM : fid == F_AVG_NUMERIC ? SAA_AVG_NUM :
 		fid == F_MIN_NUMERIC ? SAA_MIN : fid == F_MAX_NUMERIC ? SAA_MAX : a->aggdistinct ? SAA_COUNT_DISTINCT : SAA_COUNT;

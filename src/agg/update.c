@@ -565,20 +565,25 @@ upd_sum_num(const AggUpd *u)
 	const uint64 *ok = u->ok;
 	int			nsel = u->nsel;
 	AggAcc	   *acc = u->acc;
-	const sift_i128 *nx;
+	const sift_i128 *nx,
+			   *ny;
+	bool		product = u->a->num.dig > SIFT_NUM_MAX_DIGITS;
 
-	if (!u->a->distinct && vnum_program_ok(&u->a->num))
+	if (!product && !u->a->distinct && vnum_program_ok(&u->a->num))
 	{
 		vnum_sum_update(ex, u->ai, &u->a->num, nsel, ok);
 		upd_count(u);
 		return;
 	}
 	nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+	ny = nx + (VEC + PADW);
 	for (int j = 0; j < nsel; j++)
 		if ((!ok || sift_colsrc_bit(ok, j)) && (!u->a->distinct || num_first(ex, u->ai, ex->gid[j], nx[j])))
 		{
 			if (nx[j] == SIFT_NX_NAN)
 				acc->nf[ex->gid[j]] = 1;
+			else if (product)
+				agg_sum_add_product(acc, ex->gid[j], nx[j], ny[j]);
 			else
 				agg_sum_add(acc, ex->gid[j], nx[j]);
 			acc->n[ex->gid[j]]++;

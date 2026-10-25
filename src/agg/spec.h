@@ -34,6 +34,7 @@
 #define SIFT_AGG_MAX_COMBOS	128
 #define SIFT_AGG_MAX_JOINS	32
 #define SIFT_AGG_MAX_VLEAVES	16
+#define SIFT_NUM_PRODUCT_DIGITS	48	/* digits of a product of two decimal expressions that a sum adds in 256 bits (agg_sum_add_product) */
 #define SIFT_NUM_MAX_DIGITS	38		/* digits an int128 holds whatever they are */
 
 /* a number of 38 digits at most, 8-byte aligned: palloc'd memory is not 16-byte aligned, the compiler must not assume it */

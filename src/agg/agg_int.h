@@ -429,6 +429,37 @@ agg_sum_add(AggAcc *acc, uint32 g, sift_i128 v)
 		acc->i[g] += v > 0 ? 1 : -1;
 }
 
+/*
+ * The product of two 38-digit integers (a sum of a decimal product of up to 76 digits) added to the sum of group g: the 256-bit product is hi * 2^128 + lo,
+ * lo taken as a signed 128-bit value (so that agg_sum_add counts its wraps) and the high word, corrected by the sign of lo, added to the carries.
+ */
+static inline void
+agg_sum_add_product(AggAcc *acc, uint32 g, sift_i128 a, sift_i128 b)
+{
+	typedef unsigned __int128 u128;
+	u128		ua = a < 0 ? -(u128) a : (u128) a,
+				ub = b < 0 ? -(u128) b : (u128) b;
+	uint64		a0 = (uint64) ua,
+				a1 = (uint64) (ua >> 64),
+				b0 = (uint64) ub,
+				b1 = (uint64) (ub >> 64);
+	u128		p01 = (u128) a0 * b1,
+				p10 = (u128) a1 * b0,
+				p00 = (u128) a0 * b0,
+				mid = (p00 >> 64) + (uint64) p01 + (uint64) p10,
+				lo = (p00 & UINT64_MAX) | (mid << 64),
+				hi = (u128) a1 * b1 + (p01 >> 64) + (p10 >> 64) + (mid >> 64);
+
+	if ((a < 0) != (b < 0))
+	{
+		lo = ~lo + 1;
+		hi = ~hi + (lo == 0);
+	}
+	agg_sum_add(acc, g, (sift_i128) lo);
+	if (unlikely(__builtin_add_overflow(acc->i[g], (int64) (sift_i128) hi + (int64) (lo >> 127), &acc->i[g])))
+		ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("value overflows numeric format")));
+}
+
 /* the sum (w, carry) of a partial state added to group g */
 static inline void
 agg_sum_merge(AggAcc *acc, uint32 g, sift_i128 w, int64 carry)

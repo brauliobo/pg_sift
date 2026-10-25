@@ -161,5 +161,5 @@ elem_member_null	are the null test and the count of the typed leaf of the member
 topn_scattered_time	answers a superblock (and a unit) from the head of its sorted run	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes
 calendar_session_zone	`date_trunc`, `extract` and `date()` (`::date`) of a `timestamptz` in the session's time zone are grouped by the step of the zone's clock	orders	default	\(per day\)	native	-	ms	faster33	no
 numeric_image_sum	built from the digits of the stored image, not from its text through `numeric_in`	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-
 keycut_auto	cut its units by a key (`key_cut`, column format minor 17) by default	orders	default	Units Pruned: [1-9]	native	-	ms	faster33	no
+sum_product_47	each pair is multiplied in 256 bits	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
