@@ -949,6 +949,100 @@ plan_leaf_rows(PlannerInfo *subroot, Plan *plan, bool *reads)
 	return below ? Max(rows, plan->plan_rows) : rows;
 }
 
+typedef struct KeyList
+{
+	List	   *tlist;
+	Node	   *clause;
+} KeyList;
+
+/* the arguments of an equality of a column and a constant, or of a column and any of the constants of an array */
+static List **
+key_clause_args(Node *clause)
+{
+	if (IsA(clause, OpExpr))
+		return &((OpExpr *) clause)->args;
+	if (IsA(clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) clause)->useOr)
+		return &((ScalarArrayOpExpr *) clause)->args;
+	return NULL;
+}
+
+/* a column the CTE returns equal to a constant or to any of the constants of an array: the clause of a literal list, which is an OpExpr for one key */
+static bool
+key_list_walker(Node *node, KeyList *kl)
+{
+	List	  **args;
+
+	if (node == NULL)
+		return false;
+	if ((args = key_clause_args(node)) != NULL && list_length(*args) == 2 && IsA(linitial(*args), Var) && IsA(lsecond(*args), Const) &&
+		op_mergejoinable(IsA(node, OpExpr) ? ((OpExpr *) node)->opno : ((ScalarArrayOpExpr *) node)->opno, exprType(linitial(*args))))
+		foreach_node(TargetEntry, te, kl->tlist)
+			if (IsA(te->expr, Var) && ((Var *) te->expr)->varno == ((Var *) linitial(*args))->varno &&
+				((Var *) te->expr)->varattno == ((Var *) linitial(*args))->varattno)
+			{
+				kl->clause = node;
+				return true;
+			}
+	return expression_tree_walker(node, key_list_walker, kl);
+}
+
+/*
+ * A CTE of the keys a request names (a literal list, kept to the keys a sub-select allows) is estimated at the rows of two selectivities
+ * multiplied: a hundred keys joined to a hundred come out as one, and everything that reads the keys (the plan that keeps the CTE) is
+ * priced for one key, whatever the keys own. The rows are lifted to the keys the list is worth for the table with a column index that the
+ * keys are joined to: its selectivity from the statistics of that column (the share of the table the listed keys own, a key of the
+ * most common values with its own frequency), over the share of one key. A list of keys with few rows stays at the rows PostgreSQL expects.
+ */
+static void
+key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
+{
+	PlannerInfo *top = root;
+	KeyList		kl = {body->parse->targetList, NULL};
+	Node	   *list;
+	Var		   *key = NULL;
+	VariableStatData vardata;
+	bool		isdefault;
+	double		nd,
+				rows;
+
+	if (body->parse->jointree == NULL)
+		return;
+	key_list_walker((Node *) body->parse->jointree, &kl);
+	if ((list = kl.clause) == NULL)
+		return;
+	foreach_node(EquivalenceClass, ec, root->eq_classes)
+	{
+		if (!bms_is_member(rel->relid, ec->ec_relids))
+			continue;
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+		{
+			RangeTblEntry *rte;
+
+			if (!IsA(em->em_expr, Var) || ((Var *) em->em_expr)->varlevelsup != 0)
+				continue;
+			rte = planner_rt_fetch(((Var *) em->em_expr)->varno, root);
+			if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
+				key = (Var *) em->em_expr;
+		}
+	}
+	if (key == NULL || key->vartype != exprType(linitial(*key_clause_args(list))) || key->varcollid != exprCollation(linitial(*key_clause_args(list))))
+		return;
+	examine_variable(root, (Node *) key, 0, &vardata);
+	nd = get_variable_numdistinct(&vardata, &isdefault);
+	ReleaseVariableStats(vardata);
+	list = copyObject(list);
+	linitial(*key_clause_args(list)) = key;
+	rows = clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+	while (top->parent_root)
+		top = top->parent_root;
+	if (isdefault || rows <= rel->rows || !reads_column_index((Node *) top->parse, NULL))
+		return;
+	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (the keys of its list own that share of the table)", rows, rel->rows);
+	rel->rows = rows;
+	foreach_ptr(Path, p, rel->pathlist)
+		p->rows = rows;
+}
+
 /*
  * How many times derived_cte_rows raised the rows of a CTE scan in the plan being made (the largest ratio): plan_variants takes it after the
  * shared plan and passes it on, so what is left here after an error or a nested plan is not read.
@@ -987,8 +1081,13 @@ derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 	if (ndx >= list_length(cteroot->cte_plan_ids) || (plan_id = list_nth_int(cteroot->cte_plan_ids, ndx)) <= 0)
 		return;
 	leaf = plan_leaf_rows(list_nth(root->glob->subroots, plan_id - 1), list_nth(root->glob->subplans, plan_id - 1), &reads);
+	if (!reads)
+	{
+		key_list_lift(root, rel, list_nth(root->glob->subroots, plan_id - 1));
+		return;
+	}
 	rows = clamp_row_est(sqrt(rel->rows * leaf));
-	if (!reads || rows <= rel->rows)
+	if (rows <= rel->rows)
 		return;
 	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (its body builds %.0f from a table with a column index)", rows, rel->rows, leaf);
 	agg_cte_lift = Max(agg_cte_lift, rows / rel->rows);
