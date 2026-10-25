@@ -1079,6 +1079,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	ex->pack = cs->custom_private;
 	ex->params = estate->es_param_list_info;
 	ex->snap = estate->es_snapshot;
+	ex->rescannable = (eflags & (EXEC_FLAG_REWIND | EXEC_FLAG_BACKWARD | EXEC_FLAG_MARK)) != 0;
 	engine_contexts(ex, estate->es_query_cxt);
 	/* the child plans of the joins (a sub-select, VALUES list or function) are the provider's to start and end; the scan reads each once */
 	foreach_ptr(Plan, child, cs->custom_plans)

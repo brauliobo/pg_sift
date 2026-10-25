@@ -59,6 +59,7 @@ typedef struct AggSpill
 	TupleTableSlot *mslot;
 	int64		nread;
 	int64		nwritten;
+	bool		replayed;		/* the node was scanned again: the store is read as well as written (the groups made since are stepped over) */
 	bool		done;
 	MemoryContext tmp;			/* the temporaries of one blob, dumped or merged (agg/blob.c keeps them for the life of a process) */
 	SpillSet   *set;			/* the level 0 partitions the scan writes */
@@ -246,10 +247,14 @@ spill_table(AggExec *ex)
 	if (sp->set == NULL)
 	{
 		double		groups = Max(ex->spec->est_groups, 1.0),
-					held = Max((double) (ex->hash ? ex->ngroups : ex->gcap), 1.0);
+					held = 0;
 		int			want = SPILL_MIN_PARTS,
 					cap = Max((int) sift_limit(group_spill_parts, SPILL_MAX_PARTS), SPILL_MIN_PARTS);
 
+		/* the groups this much memory held (a direct table counts the groups the scan made, not the range it has room for) */
+		for (uint32 g = 0; g < (ex->hash ? ex->ngroups : ex->gcap); g++)
+			held += ex->seen[g] > 0;
+		held = Max(held, 1.0);
 		/* partitions that each fit hash memory: the groups the planner expects over the groups this much memory held, twice over */
 		while (want < cap && want < 2.0 * groups / held)
 			want *= 2;
@@ -386,7 +391,7 @@ spill_output(AggExec *ex, TupleTableSlot *slot, bool (*next) (AggExec *, TupleTa
 {
 	AggSpill   *sp = ex->spill;
 
-	if (sp->out == NULL)
+	if (sp->out == NULL && ex->rescannable)
 	{
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
@@ -409,14 +414,19 @@ spill_output(AggExec *ex, TupleTableSlot *slot, bool (*next) (AggExec *, TupleTa
 		sp->done = true;
 		return NULL;
 	}
-	tuplestore_puttupleslot(sp->out, slot);
-	tuplestore_advance(sp->out, true);
-	sp->nwritten++;
-	sp->nread++;
+	if (sp->out)
+	{
+		/* until the node is scanned again the store is only appended to: a read after every write is a system call each */
+		tuplestore_puttupleslot(sp->out, slot);
+		if (sp->replayed)
+			tuplestore_advance(sp->out, true);
+		sp->nwritten++;
+		sp->nread++;
+	}
 	return slot;
 }
 
-/* the node is scanned again: the groups returned so far are replayed, the others made when they are asked for */
+/* the node is scanned again: the groups returned so far are replayed, the others made when they are asked for (a node that cannot be scanned again keeps none) */
 bool
 spill_rescan(AggExec *ex)
 {
@@ -424,6 +434,7 @@ spill_rescan(AggExec *ex)
 		return false;
 	tuplestore_rescan(ex->spill->out);
 	ex->spill->nread = 0;
+	ex->spill->replayed = true;
 	return true;
 }
 

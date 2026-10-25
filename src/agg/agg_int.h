@@ -107,6 +107,7 @@ typedef struct AggExec
 	DictSlot	dslot[NDICT_SLOTS];
 	int			dnext;
 	bool		started;
+	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */
 	/* groups */
 	bool		hash;
 	uint32		direct_max;		/* groups above which the table is a hash table */

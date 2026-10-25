@@ -490,8 +490,9 @@ ident_go_wide(AggExec *ex, KeyState *k)
 {
 	uint32		n = k->nident;
 
+	/* a table after a spill starts with room for the keys of the one written, as its group arrays do (spill_keep) */
 	k->wcap = 1024;
-	while (k->wcap < 4 * n)
+	while (k->wcap < 4 * Max(n, spill_keep(ex)))
 		k->wcap *= 2;
 	k->wval = MemoryContextAlloc(ex->tcxt, k->wcap * sizeof(int64));
 	k->wid = MemoryContextAllocZero(ex->tcxt, k->wcap * sizeof(uint32));
