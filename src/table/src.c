@@ -442,22 +442,24 @@ leaf_buf(TblSource *t, int leaf, SiftSrcVecType vt, size_t n)
 	return b;
 }
 
-/* The one-entry dictionary of the text default of a column that older segments lack; its id is stable for the life of the source */
+/* The dictionary of the text default of a column that older segments lack (one entry; none when the default is NULL); its id is stable for the life of the source */
 static const SiftSrcDict *
-absent_dict(TblSource *t, int leaf, Datum d)
+absent_dict(TblSource *t, int leaf, Datum d, bool isnull)
 {
 	SiftSrcDict *dict = &t->adict[leaf];
 
 	if (dict->id == NULL)
 	{
-		text	   *tx = DatumGetTextPP(d);
-		uint32	   *off = MemoryContextAlloc(t->cxt, 2 * sizeof(uint32));
-		char	   *bytes = MemoryContextAlloc(t->cxt, VARSIZE_ANY_EXHDR(tx) + 1);
+		text	   *tx = isnull ? NULL : DatumGetTextPP(d);
+		uint32	   *off = MemoryContextAllocZero(t->cxt, 2 * sizeof(uint32));
+		char	   *bytes = MemoryContextAlloc(t->cxt, (tx ? VARSIZE_ANY_EXHDR(tx) : 0) + 1);
 
-		off[0] = 0;
-		off[1] = VARSIZE_ANY_EXHDR(tx);
-		memcpy(bytes, VARDATA_ANY(tx), off[1]);
-		*dict = (SiftSrcDict) {dict, 1, off, bytes};
+		if (tx)
+		{
+			off[1] = VARSIZE_ANY_EXHDR(tx);
+			memcpy(bytes, VARDATA_ANY(tx), off[1]);
+		}
+		*dict = (SiftSrcDict) {dict, tx != NULL, off, bytes};
 	}
 	return dict;
 }
@@ -483,6 +485,8 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 	{
 		memset(b->isnull, 1, n);
 		vec->isnull = b->isnull;
+		if (l->vtype == SCV_CODE)
+			vec->dict = absent_dict(t, leaf, d, true);
 		return;
 	}
 	for (size_t i = 0; i < n; i++)
@@ -519,7 +523,7 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 					((int32 *) b->data)[i] = (int32) DatumGetObjectId(d);
 		}
 	if (l->vtype == SCV_CODE)
-		vec->dict = absent_dict(t, leaf, d);
+		vec->dict = absent_dict(t, leaf, d, false);
 }
 
 /* The engine's vector of a leaf as the executor's, in the leaf's buffers */
