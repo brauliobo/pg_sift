@@ -662,6 +662,12 @@ sift_col_vet(const SiftColUnit *unit, SiftColSel *sel)
 #endif
 	if (sift_col_unit_allvisible(unit))
 		return sift_col_sel_count(sel) > 0;
+	/* no mask for a key-cut unit means every page of its block range is all-visible, dead rows or not */
+	if (cu->v.keyed && av == NULL)
+#ifdef SIFT_TESTING
+		if (!sift_test_col_paranoid)
+#endif
+			return sift_col_sel_count(sel) > 0;
 	sift_cunit_keyed_load(&cu->v);
 	pw_init(&pw, &cu->v);
 	for (uint32 p = 0; p < cu->v.npages; p++)
