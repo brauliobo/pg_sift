@@ -309,6 +309,10 @@ def update_engine(eid, args, rows, ref):
     point('after maintenance')
     for q in qs.values():
         read_latency(w, q, args, rows, 'after maintenance')
+        if eid in PG_ENGINES:   # what the scan did (units answered from the pre-aggregates, rows scanned and vetted) is kept next to the milliseconds
+            rows.add(eid, q.id, 'after maintenance', 'explain', 'text', value=w.c.run('EXPLAIN (ANALYZE, VERBOSE, BUFFERS) ' + q.statement(eid, args.rows), True)[1].strip())
+    if eid in PG_ENGINES and eid.startswith('sift') and eid != 'sift_table' and eid != 'sift_table_maint':
+        rows.add(eid, '-', 'after maintenance', 'col_segments', 'text', value=w.c.run("SELECT format('%s gen=%s rows=%s units=%s dirty=%s dead_rows=%s format=%s bytes=%s preagg_bytes=%s', kind, gen, rows, units, dirty, dead_rows, format, bytes, preagg_bytes) FROM sift.col_segments('orders_col') ORDER BY gen", True)[1].strip())
     w.close()
 
 

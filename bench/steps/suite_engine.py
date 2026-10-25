@@ -181,6 +181,16 @@ def canon(rows):
     return [[norm(c) for c in r] for r in rows]
 
 
+STAMP = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+$')
+
+
+def close(u, v):
+    """floats within 1e-5, and timestamps equal to the millisecond: Elasticsearch tenants dates in milliseconds, PostgreSQL in microseconds"""
+    if isinstance(u, float) and isinstance(v, float):
+        return abs(u - v) <= 1e-5 * max(1.0, abs(u))
+    return isinstance(u, str) and isinstance(v, str) and STAMP.match(u) and STAMP.match(v) and u[:23] == v[:23]
+
+
 def same(a, b):
     if len(a) != len(b):
         return False
@@ -188,7 +198,7 @@ def same(a, b):
         if len(x) != len(y):
             return False
         for u, v in zip(x, y):
-            if u != v and not (isinstance(u, float) and isinstance(v, float) and abs(u - v) <= 1e-5 * max(1.0, abs(u))):
+            if u != v and not close(u, v):
                 return False
     return True
 
