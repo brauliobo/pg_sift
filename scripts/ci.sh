@@ -46,7 +46,7 @@
 #
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
 # server logs of every cluster and node, the sanitizer and LeakSanitizer reports, and the cluster checks
-# recorded when each one stopped. leakcheck-selftest first proves that the gate fails on each kind of leak.
+# recorded when each one stopped. The harness checks (scripts/lint.sh, the span tests) run beside the lanes in shard 1; the leakcheck selftest in lint proves that the gate fails on each kind of leak.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }   # first: bash 3.2 (stock macOS) fails on the syntax below and exits 0
 set -uo pipefail
 
@@ -189,6 +189,7 @@ weight_of() { if [[ -n ${2:-} && -v JOB_WEIGHT_DEEP[$1] ]]; then echo "${JOB_WEI
 # PostgreSQL major (SIFT_CI_PG_MAJOR overrides the server's) against the rule that no job installs a library flavor while the lanes run
 if [[ $MODE == --selftest ]]; then
 	bad=0
+	unset SIFT_CI_JOBS SIFT_CI_AFFECTED SIFT_CI_SHARD   # a run of ci.sh that selected jobs starts this check (lint) with them set: the plans below are the whole plans
 	for pg in 16 17 18; do
 		for m in quick full; do
 			plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_PG_MAJOR=$pg "$0" --plan $m) || { echo "FAIL: --plan $m on PostgreSQL $pg"; bad=1; continue; }
@@ -712,40 +713,24 @@ step() {
 LANE=main
 export SIFT_TMP=$BASE/main SIFT_PORT=$BASE_PORT
 mkdir -p "$SIFT_TMP"
-HARNESS=(leakcheck-selftest plan-selftest portable-core span-test neutral errors reference bench-fresh bench-cases options)
+HARNESS=(lint span-test)
 if (( SHARD == 1 )) && [[ -z ${SIFT_CI_NO_HARNESS:-} ]]; then
-	step leakcheck-selftest leakcheck-selftest "$S/leakcheck.sh" selftest &
-	selftest=$!
-	step plan-selftest plan-selftest "$S/ci.sh" --selftest &
-	plantest=$!
-	step portable-core portable-core "$S/check-portable.sh" &
-	portable=$!
-	step neutral neutral "$S/check-neutral.sh" &
-	neutral=$!
-	step errors errors bash -c "\"$S/check-errors.sh\" && \"$S/check-memory.sh\" && \"$S/check-memory.sh\" --selftest && \"$S/check-approx.sh\"" &
-	errors=$!
-	step reference reference "$S/gen-reference.sh" --check &
-	reference=$!
-	step bench-fresh bench-fresh "$S/check-bench-fresh.sh" &
-	benchfresh=$!
-	step bench-cases bench-cases "$S/check-bench-cases.sh" &
-	benchcases=$!
-	step options options "$S/gen-options.sh" --check &
-	options=$!
+	step lint lint "$S/lint.sh" &
+	lint=$!
 	step span-test span-test bash -c 'make -s -C "$0/sqlite" B="$SIFT_TMP/span" span-test span-test-asan' "$REPO" &
 	spantest=$!
 else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { wait ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step build build "$S/pgtest.sh" install || { wait ${lint:-} ${spantest:-}; cat "$LOG/build.log"; failed=1; exit 1; }
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
 	( lane "$n" ) &
 	pids+=($!)
 done
-wait "${pids[@]}" ${selftest:-} ${plantest:-} ${portable:-} ${spantest:-} ${neutral:-} ${errors:-} ${reference:-} ${benchfresh:-} ${benchcases:-} ${options:-}
+wait "${pids[@]}" ${lint:-} ${spantest:-}
 # the jobs that install a flavor of the server's own library (flavor_job) run alone, now that no worker of a lane is left to load it
 for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && run_job "$id" && tidy "$id"; done
 step leakcheck leakcheck "$S/leakcheck.sh" scan "$BASE"
