@@ -19,8 +19,9 @@ extern const SiftAggKernels sift_aggkern_neon;
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
 	X(cmp_f64) X(cmp2_i32) X(cmp2_i64) X(cmp2_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
-	X(sum_i32) X(absmax_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
-	X(count_gid) X(sum_gid_i32) X(sum_gid_f64)
+	X(sum_i32) X(absmax_f64) X(absmax_i64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
+	X(lin_i64) X(mulw_i64) \
+	X(count_gid) X(sum_gid_i32) X(sum_gid_f64) X(sum_gid_i64)
 
 /* The scalar function of every slot (agg/kern.c): a level that does not implement a slot uses it */
 #define AGK_DECLARE(s)	extern __typeof__(*((SiftAggKernels *) 0)->s) agk_##s##_scalar;
@@ -31,6 +32,13 @@ static inline double
 agk_canon_minmax(double x)
 {
 	return x != x ? __builtin_nan("") : x == 0 ? 0.0 : x;
+}
+
+/* One term of lin_i64 (the scalar specification, and the tails of the vector levels) */
+static inline int64
+agk_lin_term(int64 x, int32 k)
+{
+	return k == 1 ? x : k == -1 ? (int64) (0 - (uint64) x) : (int64) (int32) x * (int64) k;
 }
 
 #define AGK_UNROLL(n)	SIFT_COLK_UNROLL(n)

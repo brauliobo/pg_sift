@@ -261,6 +261,7 @@ typedef struct AggExec
 	double	   *vstk;			/* float8 aggregate arguments: SIFT_AGG_MAX_VX vectors */
 	sift_i128  *nstk;			/* numeric programs: SIFT_AGG_MAX_VX vectors */
 	uint8	   *nflag;			/* ... and the NaN flag of each of their values */
+	struct VnCache *vn;			/* the leaves of the chunk as int64 vectors for the numeric sums (agg/vnum.c) */
 	uint32	   *pix;			/* the data index of the rows a predicate evaluates: start + i */
 	uint64	   *okm;
 	uint64	   *tmpm;

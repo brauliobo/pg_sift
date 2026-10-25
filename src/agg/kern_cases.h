@@ -492,6 +492,33 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 		agk_step(res, "minmax_f64");
 	}
 
+	{
+		/* unaligned starts (the kernels load through unaligned pointers) and the ± 1 and power of ten multipliers of the numeric programs */
+		static const int32 ks[] = {1, -1, 100, -10000, 1000000000, INT32_MIN, INT32_MAX};
+		int64	   *d = AGK_ALLOC((size_t) (n > 0 ? n : 1) * 8);
+
+		for (int off = 0; off < 2 && off <= n; off++)
+		{
+			AGK_HV(res, k->absmax_i64(c->i64 + off, n - off));
+			agk_step(res, "absmax_i64");
+			for (int q = 0; q < lengthof(ks) * 2; q++)
+			{
+				const int32 ka = ks[q % lengthof(ks)],
+							kb = q < lengthof(ks) ? 1 : ks[(q + 3) % lengthof(ks)];
+
+				memset(d, 0xA5, (size_t) n * 8);
+				k->lin_i64(d + off, c->i64 + off, ka, c->i64, kb, n - off);
+				agk_hash(res, d + off, (size_t) (n - off) * 8);
+				agk_step(res, "lin_i64");
+			}
+			memset(d, 0xA5, (size_t) n * 8);
+			k->mulw_i64(d + off, c->i64 + off, c->i64, n - off);
+			agk_hash(res, d + off, (size_t) (n - off) * 8);
+			agk_step(res, "mulw_i64");
+		}
+		AGK_FREE(d);
+	}
+
 	for (int m = 0; m < 2; m++)
 	{
 		const uint64 *mm = masks[m];
@@ -514,6 +541,16 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 			facc[g] = facc[g] != facc[g] ? agk_bits_f64(UINT64CONST(0x7FF8000000000000)) : facc[g];
 		agk_hash(res, facc, (size_t) c->ngrp * 8);
 		agk_step(res, "sum_gid_f64");
+		{
+			int64	   *q = AGK_ALLOC((size_t) c->ngrp * 4 * 8);
+
+			for (int g = 0; g < 4; g++)
+				memcpy(q + (size_t) g * c->ngrp, c->iacc0, (size_t) c->ngrp * 8);
+			k->sum_gid_i64(q, c->ngrp, c->gid, c->i64, mm, n);
+			agk_hash(res, q, (size_t) c->ngrp * 4 * 8);
+			agk_step(res, "sum_gid_i64");
+			AGK_FREE(q);
+		}
 		AGK_FREE(cnt);
 		AGK_FREE(iacc);
 		AGK_FREE(facc);

@@ -10,6 +10,7 @@
 
 #include "col/kern.h"
 #include "agg/dense_int.h"
+#include "agg/vnum.h"
 
 /* the id (1..) over all dictionaries of entry c of d, for the values count(DISTINCT) of aggregate ai counts */
 uint32
@@ -512,8 +513,15 @@ upd_sum_num(const AggUpd *u)
 	const uint64 *ok = u->ok;
 	int			nsel = u->nsel;
 	AggAcc	   *acc = u->acc;
-	const sift_i128 *nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
+	const sift_i128 *nx;
 
+	if (!u->a->distinct && vnum_program_ok(&u->a->num))
+	{
+		vnum_sum_update(ex, u->ai, &u->a->num, nsel, ok);
+		upd_count(u);
+		return;
+	}
+	nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 	for (int j = 0; j < nsel; j++)
 		if ((!ok || sift_colsrc_bit(ok, j)) && (!u->a->distinct || num_first(ex, u->ai, ex->gid[j], nx[j])))
 		{
@@ -801,6 +809,7 @@ agg_tuples(AggExec *ex, Tup *t)
 			compute_gids(ex, st->n);
 		ex->ncnt[0] = ex->seen;
 		ex->nncnt = 1;
+		vnum_chunk_reset(ex);
 		for (int i = 0; i < s->naggs; i++)
 			if (!s->setaggs || (s->setaggs[i] >> set & 1))
 				agg_update(ex, i, ex->cstart, ex->cn, st->n);

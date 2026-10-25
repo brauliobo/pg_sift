@@ -348,6 +348,7 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 #pragma GCC target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")
 #endif
 #define AKV_VB 64
+#define AKV_WIDEN(a, b) _mm512_mul_epi32((__m512i) (a), (__m512i) (b))
 #define AKV_BITS32(m) ((uint64) _mm512_movepi32_mask((__m512i) (m)))
 #define AKV_BITS64(m) ((uint64) _mm512_movepi64_mask((__m512i) (m)))
 #define AKV_FN(x) x##_avx512
@@ -363,10 +364,12 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 const SiftAggKernels sift_aggkern_avx512 = {
 	AGK_INIT5(cmp_f64) AGK_INIT5(cmp2_i32) AGK_INIT5(cmp2_i64) AGK_INIT5(cmp2_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
 	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
-	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(absmax_i64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(lin_i64) AGK_INIT5(mulw_i64)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,
+	.sum_gid_i64 = agk_sum_gid_i64_scalar,
 };
 
 #endif							/* __x86_64__ */

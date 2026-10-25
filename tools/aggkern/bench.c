@@ -86,7 +86,10 @@ main(void)
 			   *m50;
 	uint8	   *lut2;
 	int64	   *cnt,
-			   *iacc;
+			   *iacc,
+			   *i64b,
+			   *i6acc;
+	uint32	   *gid6;
 	double	   *facc;
 
 	kt_pin(getenv("KT_CPU") ? atoi(getenv("KT_CPU")) : 2);
@@ -115,6 +118,9 @@ main(void)
 	cnt = arr(64 * 8);
 	iacc = arr(64 * 8);
 	facc = arr(64 * 8);
+	i64b = arr(N * 8);
+	i6acc = arr(32 * 8);
+	gid6 = arr(N * 4);
 	for (int l = SIFT_SIMD_SCALAR; l <= SIFT_SIMD_AVX512; l++)
 		if (l == 0 || sift_aggkern_for(l) != levels[nlevels - 1])
 		{
@@ -134,6 +140,7 @@ main(void)
 		v2[i] = 7 + sift_rng_below(&rng, 1200);
 		k32[i] = -5 + sift_rng_below(&rng, 1000);
 		gid[i] = sift_rng_below(&rng, 64);
+		gid6[i] = sift_rng_below(&rng, 6);
 		gid0[i] = sift_rng_below(&rng, 100);
 		parent[i] = i / 4;
 	}
@@ -190,6 +197,13 @@ main(void)
 		ROW("minmax_f64 all rows", sink = k->minmax_f64(&e, &f, f64, NULL, N));
 		ROW("minmax_f64 50 %", sink = k->minmax_f64(&e, &f, f64, m50, N));
 	}
+	ROW("absmax_i64 all rows", sink = k->absmax_i64(i64, N));
+	ROW("lin_i64 a + b", k->lin_i64(i64b, i64, 1, i64, 1, N));
+	ROW("lin_i64 100 * a - b", k->lin_i64(i64b, i64, 100, i64, -1, N));
+	ROW("mulw_i64", k->mulw_i64(i64b, i64, i64, N));
+	ROW("sum_gid_i64 all rows (6 groups, 4 copies)", k->sum_gid_i64(i6acc, 8, gid6, i64, NULL, N));
+	ROW("sum_gid_i64 50 % (6 groups, 4 copies)", k->sum_gid_i64(i6acc, 8, gid6, i64, m50, N));
+	ROW("sum_gid_i32 all rows (6 groups)", k->sum_gid_i32(iacc, gid6, i32, NULL, N));
 	ROW("count_gid all rows (64 groups)", k->count_gid(cnt, gid, NULL, N));
 	ROW("count_gid 50 %", k->count_gid(cnt, gid, m50, N));
 	ROW("sum_gid_i32 50 %", k->sum_gid_i32(iacc, gid, i32, m50, N));

@@ -355,6 +355,17 @@ def render_oneleaf(p):
     return grouped(p, oneleaf_from(p)), bool(p['keys'])
 
 
+# sums and averages of numeric programs (+ - * of numeric(12,2), int columns and constants: 38 digits and more, large and negative operands, NULLs, NaN-free): the int64 vector blocks and the int128 interpreter
+NUMSUM = ['sum(e.num * (100 - e.b) * (100 + e.a))', 'sum(e.num * (1 - e.b) * (1 + e.a))', 'sum(e.num * (1 - e.num) * (1 + e.num))', 'sum(e.num)', 'avg(e.num * e.amount)', 'sum(e.amount * e.amount * e.a)',
+          'sum(e.num * e.num * e.num)', 'sum(e.num - e.amount * 2)', 'sum(-e.num * 3)', 'avg(e.num + e.a - e.b)', 'sum(e.num * (e.amount + 1)) FILTER (WHERE e.a > 3)', 'sum(DISTINCT e.num * 2)',
+          'sum(e.num * 4294967296)', 'sum(e.amount * 2147483647 * e.a)', 'sum(e.wnum * e.a)', 'sum(e.wnum * 3 - e.num)']
+
+
+def gen_numsum(r, ctx):
+    return dict(table='events', keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])), aggs=['count(*)'] + r.sample(NUMSUM, r.randrange(1, 5)),
+                where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)), having=[], ordered=True)
+
+
 # two columns of one row compared (`a < b`): the cmp2 kernels of every SIMD level; the int4 columns of the events table pair up (the int8 one is the generic expression's; the types are in test agg_leaf_cmp)
 COLCMP = ['e.a', 'e.b', 'e.amount', 'e.grp', 'e.parent_id', 'e.big']
 
@@ -1158,7 +1169,7 @@ FAMILIES = {
     'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
-    'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
+    'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1193,6 +1204,8 @@ def variants(r, fam):
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
+    if fam == 'numsum':  # every SIMD level of the host (a level it lacks runs the next lower one): the sums must be the same bytes
+        v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
     if fam == 'colcmp':  # every SIMD level of the host (a level it lacks runs the next lower one): the bitmaps must be the same
         v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
     if fam == 'gorder':  # the scan of the units, which the arrays stand for
