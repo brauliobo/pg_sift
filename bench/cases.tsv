@@ -41,7 +41,7 @@ filter_few_rows	when the filters of the source keep under a 32nd of a unit's row
 list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes
 topn_sorted_runs_filter	a top-N scan with `order_columns` reads the sorted run of a unit also when a `WHERE` leaves few of its rows	orders	default WITH (order_columns = 'customer_id')	Units Read By Sorted Run: [1-9]	native,pg_duckdb	runs_off:sift.topn_runs = off	ms	faster33	no
 superunit_total	the merged sums and cube of every group of that many consecutive units of a segment are stored once more	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
-numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	fallback:Seq Scan on orders	native	-	ms	faster33	no
+numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 topn_six_keys	each key past the first is read at every row (4.8 operators a row	orders	default	fallback:Seq Scan	native	-	ms	faster33	no
 partitions_tiny	A query over 5,000 partitions of 6 rows each	orders	default	fallback:Seq Scan	native	-	ms	faster33	no
 dirty_share_few	A table with a few percent of dirty documents keeps the scan	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
