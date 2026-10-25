@@ -454,7 +454,10 @@ typedef struct CteVerdict
 	bool		cacheable,		/* the statement has a key */
 				known,			/* the cache has the verdict (won, and the totals of the plan it was made from) */
 				from_shared,	/* another backend made it */
-				won;
+				won,
+				prior_seen,		/* the plan in full that follows a read that ended an entry's checks: the choice that entry had (prior_won) and how often the plans in full confirmed it (streak) */
+				prior_won;
+	int			streak;
 	double		scans,
 				shared,
 				inl,			/* the total cost of the inline plan and of the plan with the shared CTEs, as they were planned in full; 0: not known */

@@ -6,7 +6,8 @@
  * sift.agg_scale_horizon, the flattened form), where a backend that serves one application sees the same few statements again and again with
  * other constants. The verdict is kept under the statement without its constants (the query jumble), the size class of each table it reads, and
  * the settings that move a plan; a hit plans the chosen variant only. Every eighth hit of an entry plans in full again and compares, so a verdict
- * that went stale (the constants of a statement select other rows) is replaced, and sift.stats() counts the ones that changed.
+ * that went stale (the constants of a statement select other rows) is replaced, and sift.stats() counts the ones that changed. A plan in full costs 4 to 6
+ * times a hit, so each one that confirms the entry doubles the hits to the next (8, 16, 32, 64: VERDICT_STREAK_MAX); one that changes it starts again at 8.
  *
  * A stale verdict is a plan of the other variant, never other rows: both variants are plans of the same query. An entry is dropped when a table it
  * names is invalidated (DDL, an index created or dropped, ANALYZE, VACUUM), and the least recently used one goes when the cache holds VERDICT_MAX.
@@ -49,8 +50,9 @@
 /* about 200 bytes an entry: under 1 MB */
 #define VERDICT_MAX		4096
 
-/* hits of an entry between two plans in full */
+/* hits of an entry between two plans in full; each plan in full that confirms the choice doubles it, up to VERDICT_STREAK_MAX times (8, 16, 32, 64) */
 #define VERDICT_RECHECK	8
+#define VERDICT_STREAK_MAX	3
 
 /* a verdict is not taken when the plan it names costs more than this many times, or less than this many times, what it cost when the verdict was made */
 #define VERDICT_BAND	4.0
@@ -60,6 +62,7 @@ typedef struct VerdictEntry
 	uint64		key;
 	dlist_node	lru;
 	bool		won;
+	uint8		streak;
 	uint32		age;
 	double		scans,
 				shared,
@@ -93,6 +96,7 @@ typedef struct VerdictShmEnt
 	uint32		age,
 				tick;
 	bool		won;
+	uint8		streak;
 } VerdictShmEnt;
 
 typedef struct VerdictShm
@@ -112,7 +116,7 @@ typedef struct VerdictShm
 #endif
 
 /* the name carries the layout: a library of another one, loaded by new backends while old ones run, meets a segment it does not know as a size or a name that does not match */
-#define VSHM_NAME		"sift_agg_verdicts_1"
+#define VSHM_NAME		"sift_agg_verdicts_2"
 
 static VerdictShm *vshm;
 
@@ -222,7 +226,7 @@ vshm_read(uint64 key, CteVerdict *vd)
 	for (int i = 0; i < VSHM_WAYS; i++)
 		if (set[i].key == key)
 		{
-			if (set[i].age < VERDICT_RECHECK - 1)
+			if (set[i].age < (VERDICT_RECHECK << set[i].streak) - 1)
 			{
 				set[i].age++;
 				set[i].tick = ++s->tick;
@@ -231,7 +235,14 @@ vshm_read(uint64 key, CteVerdict *vd)
 				vd->shared = set[i].shared;
 				vd->inl = set[i].inl;
 				vd->pln = set[i].pln;
+				vd->streak = set[i].streak;
 				found = true;
+			}
+			else
+			{
+				vd->prior_seen = true;
+				vd->prior_won = set[i].won;
+				vd->streak = set[i].streak;
 			}
 			break;
 		}
@@ -263,6 +274,7 @@ vshm_write(uint64 key, const CteVerdict *vd)
 	}
 	e->key = key;
 	e->won = vd->won;
+	e->streak = vd->streak;
 	e->age = 0;
 	e->tick = ++s->tick;
 	e->scans = vd->scans;
@@ -493,6 +505,7 @@ local_enter(uint64 key, const CteVerdict *vd, bool count_flips)
 	else
 		dlist_push_head(&recent, &e->lru);
 	e->won = vd->won;
+	e->streak = vd->streak;
 	e->age = 0;
 	e->scans = vd->scans;
 	e->shared = vd->shared;
@@ -512,8 +525,13 @@ entry_read(uint64 key, CteVerdict *vd)
 
 	if (e != NULL)
 	{
-		if (e->age >= VERDICT_RECHECK - 1)
+		if (e->age >= (VERDICT_RECHECK << e->streak) - 1)
+		{
+			vd->prior_seen = true;
+			vd->prior_won = e->won;
+			vd->streak = e->streak;
 			return false;
+		}
 		e->age++;
 		dlist_move_head(&recent, &e->lru);
 		vd->won = e->won;
@@ -521,6 +539,7 @@ entry_read(uint64 key, CteVerdict *vd)
 		vd->shared = e->shared;
 		vd->inl = e->inl;
 		vd->pln = e->pln;
+		vd->streak = e->streak;
 		vd->from_shared = false;
 		return true;
 	}
@@ -607,6 +626,7 @@ verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double i
 
 	if (!vd->cacheable)
 		return;
+	vd->streak = vd->prior_seen && vd->prior_won == won ? Min(vd->streak + 1, VERDICT_STREAK_MAX) : 0;
 	vd->won = won;
 	vd->scans = scans;
 	vd->shared = shared;

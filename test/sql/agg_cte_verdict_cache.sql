@@ -60,10 +60,13 @@ RESET enable_hashagg;
 SELECT plan_it(series_query(10));
 SELECT counts();
 
--- an entry is checked again every eighth hit
+-- an entry is checked again every eighth hit, and each check that confirms it doubles the hits to the next (a new key: other work_mem): plans in full at the
+-- 1st, 9th and 25th statement of the 41
+SET work_mem = '65MB';
 SELECT sift.stats_reset();
-SELECT count(plan_it(series_query(10 + i))) FROM generate_series(0, 16) i;
+SELECT count(plan_it(series_query(10 + i))) FROM generate_series(0, 40) i;
 SELECT counts();
+RESET work_mem;
 
 -- the choice between the flattened form of a statement (a lateral aggregate as a table grouped by its tie) and the form as written is kept the same way: the
 -- second statement is planned in the form that won, and gives the rows of the plan without the scans
