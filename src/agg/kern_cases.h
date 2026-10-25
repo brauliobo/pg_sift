@@ -21,8 +21,11 @@ typedef struct AgkCase
 	int			n;
 	int			nw;
 	int32	   *i32;
+	int32	   *i32b;			/* a second column of the same row: cmp2_* */
 	int64	   *i64;
+	int64	   *i64b;
 	double	   *f64;
+	double	   *f64b;
 	uint32	   *code;			/* < ncode */
 	uint64	   *mask;			/* n bits */
 	int			ncode;
@@ -258,8 +261,11 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 	c->nw = AGK_NW(n);
 
 	c->i32 = AGK_ARR(c, r, int32, n);
+	c->i32b = AGK_ARR(c, r, int32, n);
 	c->i64 = AGK_ARR(c, r, int64, n);
+	c->i64b = AGK_ARR(c, r, int64, n);
 	c->f64 = AGK_ARR(c, r, double, n);
+	c->f64b = AGK_ARR(c, r, double, n);
 	c->code = AGK_ARR(c, r, uint32, n);
 	c->parent = AGK_ARR(c, r, uint32, n);
 	c->gid = AGK_ARR(c, r, uint32, n);
@@ -287,6 +293,24 @@ agk_case_gen(SiftRng *r, AgkCase *c, int n)
 		c->i32[i] = agk_i32(r, m32);
 		c->i64[i] = agk_i64(r, m64);
 		c->f64[i] = agk_f64(r, mf);
+		/* the second column equals the first in about a third of the rows (ties), is near it or is another draw */
+		switch (sift_rng_below(r, 3))
+		{
+			case 0:
+				c->i32b[i] = c->i32[i];
+				c->i64b[i] = c->i64[i];
+				c->f64b[i] = c->f64[i];
+				break;
+			case 1:
+				c->i32b[i] = (int32) ((uint32) c->i32[i] + (uint32) (int) sift_rng_below(r, 3) - 1);
+				c->i64b[i] = (int64) ((uint64) c->i64[i] + (uint64) (int) sift_rng_below(r, 3) - 1);
+				c->f64b[i] = sift_rng_below(r, 2) ? -c->f64[i] : agk_special(r);
+				break;
+			default:
+				c->i32b[i] = agk_i32(r, m32);
+				c->i64b[i] = agk_i64(r, m64);
+				c->f64b[i] = agk_f64(r, mf);
+		}
 	}
 
 	/* dictionary codes: uniform, runs, near the top of the LUT, sorted */
@@ -409,6 +433,14 @@ agk_run(const SiftAggKernels *k, const AgkCase *c, AgkRes *res)
 	{
 		BM("cmp_f64", k->cmp_f64(bm, c->f64, n, ops[o], c->cf));
 		BM("cmp_f64 special", k->cmp_f64(bm, c->f64, n, ops[o], c->cf2));
+	}
+	for (int o = 0; o < lengthof(ops); o++)
+	{
+		BM("cmp2_i32", k->cmp2_i32(bm, c->i32, c->i32b, n, ops[o]));
+		BM("cmp2_i64", k->cmp2_i64(bm, c->i64, c->i64b, n, ops[o]));
+		BM("cmp2_f64", k->cmp2_f64(bm, c->f64, c->f64b, n, ops[o]));
+		/* the same column twice (a = a: NaN, -0 and the ends of the range) */
+		BM("cmp2_f64 same", k->cmp2_f64(bm, c->f64, c->f64, n, ops[o]));
 	}
 	BM("lut_i32", k->lut_i32(bm, c->v2, n, c->gbase, c->nlut, c->lut2));
 	BM("gather_bits", k->gather_bits(bm, c->rowmask, c->parent, n));

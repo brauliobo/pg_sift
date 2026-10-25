@@ -352,6 +352,19 @@ def render_oneleaf(p):
     return grouped(p, oneleaf_from(p)), bool(p['keys'])
 
 
+# two columns of one row compared (`a < b`): the cmp2 kernels of every SIMD level; the int4 columns of the events table pair up (the int8 one is the generic expression's; the types are in test agg_leaf_cmp)
+COLCMP = ['e.a', 'e.b', 'e.amount', 'e.grp', 'e.parent_id', 'e.big']
+
+
+def gen_colcmp(r, ctx):
+    cmps = []
+    for _ in range(r.randrange(1, 4)):
+        x, y = r.sample(COLCMP, 2)
+        cmps.append(f"{x} {r.choice(['<', '<=', '=', '<>', '>=', '>'])} {y}" if r.random() < 0.8 else f"NOT ({x} {r.choice(['<', '>'])} {y})")
+    return dict(table='events', keys=keys(r, 'e', EVENTS, r.choice([0, 1, 1, 2])), aggs=['count(*)'] + r.sample(['sum(e.amount)', 'max(e.a)', 'avg(e.val)', 'count(DISTINCT e.grp)'], r.randrange(0, 3)),
+                where=cmps + preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 2)), having=[], ordered=True)
+
+
 # grouping sets over keys of many values (the group table is a hash table) and a lookup's column: the sets that read the same tuples share their key ids
 SETKEYS = ['e.kind', 'e.grp', 'e.a', 'e.b', 'd.tag', 'e.ts', 'e.a % 7']
 
@@ -1137,7 +1150,7 @@ FAMILIES = {
     'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'latest': (gen_latest, render_latest, 3), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
-    'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
+    'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1172,6 +1185,8 @@ def variants(r, fam):
         v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'window':  # the index scan alone, with the pushdown off: the run answers a range in the access method too
         v.append(('amscan', 'sift.enable_agg=off;sift.enable_col_scan=on;max_parallel_workers_per_gather=0'))
+    if fam == 'colcmp':  # every SIMD level of the host (a level it lacks runs the next lower one): the bitmaps must be the same
+        v += [('simd_' + lv, f'sift.enable_agg=on;sift.agg_preagg=off;sift.simd={lv};max_parallel_workers_per_gather=0') for lv in ('scalar', 'avx2', 'avx512', 'neon')]
     if fam == 'gorder':  # the scan of the units, which the arrays stand for
         v.append(('nogorder', 'sift.enable_agg=on;sift.test_topn_gorder=off;max_parallel_workers_per_gather=0'))
     if fam == 'keys':  # the units' key lists and bitmaps off: the pre-aggregate scan reads the key chunks

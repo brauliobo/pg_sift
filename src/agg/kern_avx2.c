@@ -406,10 +406,27 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("avx2,bmi,bmi2,popcnt"))), apply_to = function)
+#else
+#pragma GCC push_options
+#pragma GCC target("avx2,bmi,bmi2,popcnt")
+#endif
+#define AKV_VB 32
+#define AKV_BITS32(m) ((uint64) (uint32) _mm256_movemask_ps((__m256) (m)))
+#define AKV_BITS64(m) ((uint64) (uint32) _mm256_movemask_pd((__m256d) (m)))
+#define AKV_FN(x) x##_avx2
+#include "agg/kern_vec.h"
+#if defined(__clang__)
+#pragma clang attribute pop
+#else
+#pragma GCC pop_options
+#endif
+
 #define AGK_INIT2(s)	.s = s##_avx2,
 
 const SiftAggKernels sift_aggkern_avx2 = {
-	AGK_INIT2(cmp_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
+	AGK_INIT2(cmp_f64) AGK_INIT2(cmp2_i32) AGK_INIT2(cmp2_i64) AGK_INIT2(cmp2_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
 	AGK_INIT2(sum_i32) AGK_INIT2(absmax_f64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
 	.gid_code = agk_gid_code_scalar,
 	.gid_i32 = agk_gid_i32_scalar,

@@ -11,7 +11,7 @@ LIB      = $(SRC)/agg/kern.c $(SRC)/agg/kern_avx2.c $(SRC)/agg/kern_avx512.c $(S
            $(SRC)/col/kern.c $(SRC)/col/kern_avx2.c $(SRC)/col/kern_avx512.c $(SRC)/col/kern_neon.c \
            $(SRC)/bm25/kernels.c $(SRC)/bm25/kernels_avx2.c $(SRC)/bm25/kernels_avx512.c $(SRC)/bm25/kernels_neon.c \
            $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c $(SRC)/bm25/bitmap_neon.c
-HDR      = $(SRC)/agg/kern.h $(SRC)/agg/kern_int.h $(SRC)/agg/kern_cases.h $(SRC)/col/kern.h $(SRC)/col/kern_int.h harness.h
+HDR      = $(SRC)/agg/kern.h $(SRC)/agg/kern_int.h $(SRC)/agg/kern_vec.h $(SRC)/agg/kern_cases.h $(SRC)/col/kern.h $(SRC)/col/kern_int.h harness.h
 
 include ../tools.mk
 

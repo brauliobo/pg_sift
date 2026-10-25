@@ -1,0 +1,100 @@
+-- A comparison of two columns of one row (`end_at > start_at`, `l_shipdate < l_commitdate`) is a predicate of the scan, evaluated on the vectors of
+-- both columns by the cmp2 kernels of the SIMD level, not one expression resolved for each tuple. Every operator, int2, int4, int8, date, timestamp,
+-- float4 and float8 columns with NULLs, ties, NaN and infinities and -0, a table that is not a multiple of a vector long; each query is run by
+-- Custom Scan (SiftAgg) at every level and with sift.enable_agg off, and the results must be the same.
+CREATE EXTENSION pg_sift;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL,
+                a2 int2, b2 int2, a4 int, b4 int, a8 bigint, b8 bigint, da date, db date, ta timestamp, tb timestamp, tza timestamptz, tzb timestamptz,
+                fa4 float4, fb4 float4, fa8 float8, fb8 float8, f4x float4, f8y float8);
+INSERT INTO t
+SELECT i, i % 5,
+       CASE WHEN i % 17 = 0 THEN NULL ELSE (i * 7 % 11 - 5)::int2 END, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 5 % 11 - 5)::int2 END,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE i * 7 % 23 - 11 END, CASE WHEN i % 23 = 0 THEN NULL ELSE i * 5 % 23 - 11 END,
+       CASE WHEN i % 29 = 0 THEN NULL WHEN i % 31 = 0 THEN 9223372036854775807 WHEN i % 37 = 0 THEN -9223372036854775808 ELSE (i * 7 % 41 - 20)::bigint * 4294967296 END,
+       CASE WHEN i % 43 = 0 THEN NULL WHEN i % 31 = 1 THEN 9223372036854775807 ELSE (i * 5 % 41 - 20)::bigint * 4294967296 END,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE date '2020-01-01' + (i * 7 % 30) END, CASE WHEN i % 7 = 0 THEN NULL ELSE date '2020-01-01' + (i * 5 % 30) END,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE timestamp '2020-01-01' + (i * 7 % 30) * interval '1 hour 1 second' END,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE timestamp '2020-01-01' + (i * 5 % 30) * interval '1 hour 1 second' END,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE timestamptz '2020-01-01 00:00:00+00' + (i * 7 % 30) * interval '1 minute' END,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE timestamptz '2020-01-01 00:00:00+00' + (i * 5 % 30) * interval '1 minute' END,
+       CASE WHEN i % 17 = 0 THEN NULL WHEN i % 41 = 0 THEN 'NaN' WHEN i % 43 = 0 THEN 'Infinity' WHEN i % 47 = 0 THEN '-Infinity' ELSE (i * 7 % 13 - 6) / 4.0 END,
+       CASE WHEN i % 19 = 0 THEN NULL WHEN i % 41 = 1 THEN 'NaN' WHEN i % 43 = 1 THEN 'Infinity' ELSE (i * 5 % 13 - 6) / 4.0 END,
+       CASE WHEN i % 17 = 0 THEN NULL WHEN i % 41 = 0 THEN 'NaN' WHEN i % 53 = 0 THEN '-0' WHEN i % 43 = 0 THEN 'Infinity' ELSE (i * 7 % 13 - 6) / 4.0 END,
+       CASE WHEN i % 19 = 0 THEN NULL WHEN i % 41 = 0 THEN 'NaN' WHEN i % 53 = 0 THEN '0' WHEN i % 47 = 0 THEN '-Infinity' ELSE (i * 5 % 13 - 6) / 4.0 END,
+       (i % 5)::float4, (i % 5)::float8
+FROM generate_series(1, 3001) i;
+CREATE INDEX t_col ON t USING sift_col (id, g, a2, b2, a4, b4, a8, b8, da, db, ta, tb, tza, tzb, fa4, fb4, fa8, fb8, f4x, f8y);
+NOTICE:  sift_col index t_col: the cube holds 16 dimensions and left out the histograms of 4 columns: "ta", "tb", "tza", "tzb"
+DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
+HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
+VACUUM (ANALYZE) t;
+EXPLAIN (COSTS OFF) SELECT g, count(*) FROM t WHERE da < db GROUP BY g;
+          QUERY PLAN           
+-------------------------------
+ Custom Scan (SiftAgg)
+   Index: t_col
+   Filters: da < db
+   Group Keys: g
+   Pushed Aggregates: count(*)
+(5 rows)
+
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE n int;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_sift ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_pg ON COMMIT DROP AS SELECT row_to_json(t)::text AS j FROM (' || q || ') t';
+	SELECT count(*) INTO n FROM ((TABLE r_sift EXCEPT ALL TABLE r_pg) UNION ALL (TABLE r_pg EXCEPT ALL TABLE r_sift)) d;
+	DROP TABLE r_sift, r_pg;
+	RETURN n = 0;
+END $$;
+-- one query for each pair of columns and operator, counted by group, then a few mixed filters
+CREATE TABLE cases (name text PRIMARY KEY, q text NOT NULL);
+INSERT INTO cases
+SELECT p.n || ' ' || o.op, format('SELECT g, count(*), sum(id) FROM t WHERE %s %s %s GROUP BY g', p.a, o.op, p.b)
+FROM (VALUES ('int2', 'a2', 'b2'), ('int4', 'a4', 'b4'), ('int8', 'a8', 'b8'), ('date', 'da', 'db'), ('timestamp', 'ta', 'tb'), ('timestamptz', 'tza', 'tzb'),
+             ('float4', 'fa4', 'fb4'), ('float8', 'fa8', 'fb8'), ('float8 itself', 'fa8', 'fa8'), ('float4 and float8 ties', 'f4x', 'f8y')) p(n, a, b),
+     (VALUES ('<'), ('<='), ('='), ('<>'), ('>='), ('>')) o(op);
+INSERT INTO cases VALUES
+('and', 'SELECT g, count(*) FROM t WHERE da < db AND ta >= tb AND a4 <> b4 GROUP BY g'),
+('or and constant', 'SELECT g, count(*) FROM t WHERE (da < db OR fa8 > fb8) AND id > 1000 GROUP BY g'),
+('not', 'SELECT g, count(*) FROM t WHERE NOT (a4 < b4) GROUP BY g'),
+('filter', 'SELECT g, count(*) FILTER (WHERE a8 < b8), count(*) FILTER (WHERE fa8 >= fb8), sum(a4) FILTER (WHERE da = db) FROM t GROUP BY g'),
+('no groups', 'SELECT count(*), min(id), max(id) FROM t WHERE tza <= tzb'),
+('mixed width', 'SELECT g, count(*) FROM t WHERE a4 < b8 AND a2 > b4 GROUP BY g'),
+('swapped', 'SELECT g, count(*) FROM t WHERE db > da AND b4 <= a4 GROUP BY g');
+SELECT count(*) AS cases FROM cases;
+ cases 
+-------
+    67
+(1 row)
+
+-- the level the CPU has, then the scalar kernels, then each level that is not the top one
+SELECT count(*) FILTER (WHERE same(q)) AS equal, count(*) FILTER (WHERE NOT same(q)) AS different FROM cases;
+ equal | different 
+-------+-----------
+    67 |         0
+(1 row)
+
+SET sift.simd = 'scalar';
+SELECT count(*) FILTER (WHERE same(q)) AS equal, count(*) FILTER (WHERE NOT same(q)) AS different FROM cases;
+ equal | different 
+-------+-----------
+    67 |         0
+(1 row)
+
+SET sift.simd = 'avx2';
+SELECT count(*) FILTER (WHERE same(q)) AS equal, count(*) FILTER (WHERE NOT same(q)) AS different FROM cases;
+ equal | different 
+-------+-----------
+    67 |         0
+(1 row)
+
+DROP TABLE cases, t;
+DROP FUNCTION same(text);
+DROP EXTENSION pg_sift;

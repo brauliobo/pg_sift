@@ -369,6 +369,28 @@ float_order(double a, double b)
 	return isnan(a) ? !isnan(b) : isnan(b) ? -1 : (a > b) - (a < b);
 }
 
+/* two columns of one row: the cmp2 kernel of the vector type, the NULL rows of either out */
+static void
+eval_leaf_cmp(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *a = get_vec(ex, p->leaf),
+			   *b = get_vec(ex, p->leaf2);
+
+	switch (ex->lay->leaf[p->leaf].vtype)
+	{
+		case SCV_I32:
+			sift_aggk->cmp2_i32(out, (const int32 *) a->data + start, (const int32 *) b->data + start, n, (SiftCmpOp) p->op);
+			break;
+		case SCV_I64:
+			sift_aggk->cmp2_i64(out, (const int64 *) a->data + start, (const int64 *) b->data + start, n, (SiftCmpOp) p->op);
+			break;
+		default:
+			sift_aggk->cmp2_f64(out, (const double *) a->data + start, (const double *) b->data + start, n, (SiftCmpOp) p->op);
+	}
+	clear_nulls(ex, a, start, n, out);
+	clear_nulls(ex, b, start, n, out);
+}
+
 /* an element leaf against a leaf of its row: the value of the row for each element is gathered by the owner of the element, NULL on either side is not true */
 static void
 eval_elem_row(AggExec *ex, SiftAggPred *p, int start, int n, uint64 *out)
@@ -778,6 +800,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 			break;
 		case SAP_ANY_ELEM:
 			memcpy(out, row_bitmap(ex, p) + start / 64, nw * sizeof(uint64));
+			break;
+		case SAP_LEAFCMP:
+			eval_leaf_cmp(ex, p, start, n, out);
 			break;
 		case SAP_ELEM_ROW:
 			eval_elem_row(ex, p, start, n, out);

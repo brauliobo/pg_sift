@@ -104,6 +104,7 @@ typedef enum SiftAggPredKind
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
 	SAP_WIDE,					/* leaf op operand (SWT_* op, SiftCmpOp or IN / NOT IN / IS [NOT] NULL) on a wide leaf: numeric of more than 18 digits, money, interval; a conjunct of the query only, tested by the source (sift_colsrc_filter_wide), the executor does not evaluate it */
+	SAP_LEAFCMP,				/* leaf op leaf2: two scalar leaves of one row (int2/int4, int8, date, timestamp or float columns of one type class and width); NULL on either side is not true */
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */

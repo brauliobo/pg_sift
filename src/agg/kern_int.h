@@ -18,7 +18,7 @@ extern const SiftAggKernels sift_aggkern_neon;
 
 /* Every slot of the table, in the order of the header */
 #define AGK_SLOTS(X) \
-	X(cmp_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
+	X(cmp_f64) X(cmp2_i32) X(cmp2_i64) X(cmp2_f64) X(lut_i32) X(gather_bits) X(gid_code) X(gid_i32) \
 	X(sum_i32) X(absmax_f64) X(minmax_i32) X(minmax_i64) X(minmax_f64) \
 	X(count_gid) X(sum_gid_i32) X(sum_gid_f64)
 

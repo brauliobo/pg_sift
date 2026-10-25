@@ -71,6 +71,9 @@ main(void)
 			   *v2,
 			   *k32;
 	int64	   *i64;
+	int32	   *i32b;
+	int64	   *j64b;
+	double	   *f64b;
 	double	   *f64;
 	uint32	   *code,
 			   *map,
@@ -95,6 +98,9 @@ main(void)
 	v2 = arr(N * 4);
 	k32 = arr(N * 4);
 	i64 = arr(N * 8);
+	i32b = arr(N * 4);
+	j64b = arr(N * 8);
+	f64b = arr(N * 8);
 	f64 = arr(N * 8);
 	code = arr(N * 4);
 	map = arr(1024 * 4);
@@ -121,6 +127,9 @@ main(void)
 		i32[i] = sift_rng_below(&rng, 1000000);
 		i64[i] = (int64) (sift_rng_next(&rng) >> 24);
 		f64[i] = sift_rng_unit(&rng) * 1000;
+		i32b[i] = sift_rng_below(&rng, 1000000);
+		j64b[i] = (int64) (sift_rng_next(&rng) >> 24);
+		f64b[i] = sift_rng_unit(&rng) * 1000;
 		code[i] = sift_rng_below(&rng, 1024);
 		v2[i] = 7 + sift_rng_below(&rng, 1200);
 		k32[i] = -5 + sift_rng_below(&rng, 1000);
@@ -150,6 +159,10 @@ main(void)
 
 	ROW("cmp_f64 <", k->cmp_f64(out, f64, N, SCMP_LT, 500));
 	ROW("cmp_f64 >", k->cmp_f64(out, f64, N, SCMP_GT, 500));
+	ROW("cmp2_i32 <", k->cmp2_i32(out, i32, i32b, N, SCMP_LT));
+	ROW("cmp2_i32 <=", k->cmp2_i32(out, i32, i32b, N, SCMP_LE));
+	ROW("cmp2_i64 <", k->cmp2_i64(out, i64, j64b, N, SCMP_LT));
+	ROW("cmp2_f64 <", k->cmp2_f64(out, f64, f64b, N, SCMP_LT));
 	ROW("lut_i32 (1000 entries)", k->lut_i32(out, v2, N, 10, 1000, lut2));
 	ROW("gather_bits (4 elements per row)", k->gather_bits(out, rowmask, parent, N));
 	ROW("gid_code", k->gid_code(gid0, code, map, N, 4));

@@ -70,6 +70,37 @@ agk_cmp_f64_scalar(uint64 *out, const double *v, int n, SiftCmpOp op, double c)
 	}
 }
 
+#define CMP2(OPS, T, ORDER) \
+	switch (op) \
+	{ \
+		case SCMP_EQ: PRED_BITS(out, n, i, ORDER(a[i], b[i]) == 0); break; \
+		case SCMP_NE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) != 0); break; \
+		case SCMP_LT: PRED_BITS(out, n, i, ORDER(a[i], b[i]) < 0); break; \
+		case SCMP_LE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) <= 0); break; \
+		case SCMP_GT: PRED_BITS(out, n, i, ORDER(a[i], b[i]) > 0); break; \
+		case SCMP_GE: PRED_BITS(out, n, i, ORDER(a[i], b[i]) >= 0); break; \
+	}
+
+#define INT_ORDER(x, y)	(((x) > (y)) - ((x) < (y)))
+
+void
+agk_cmp2_i32_scalar(uint64 *out, const int32 *a, const int32 *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, int32, INT_ORDER)
+}
+
+void
+agk_cmp2_i64_scalar(uint64 *out, const int64 *a, const int64 *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, int64, INT_ORDER)
+}
+
+void
+agk_cmp2_f64_scalar(uint64 *out, const double *a, const double *b, int n, SiftCmpOp op)
+{
+	CMP2(OPS, double, f8_cmp)
+}
+
 void
 agk_lut_i32_scalar(uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut)
 {

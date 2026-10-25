@@ -608,6 +608,7 @@ routable(const SiftAggPred *p)
 		case SAP_LUT:
 		case SAP_ANY_ELEM:
 		case SAP_ELEM_ROW:
+		case SAP_LEAFCMP:
 			break;
 		default:
 			return false;

@@ -64,6 +64,13 @@ typedef struct SiftAggKernels
 	/* ---- predicates: bit i of out = (v[i] op c) ---- */
 	/* doubles in PostgreSQL's order, not the integer keys of the column kernels */
 	void		(*cmp_f64) (uint64 *out, const double *v, int n, SiftCmpOp op, double c);
+	/*
+	 * Two columns of one row: bit i of out = (a[i] op b[i]), signed integers, or doubles in PostgreSQL's order (as cmp_f64). NULLs are the caller's.
+	 * The NEON table keeps the scalar loop for the 64-bit lanes: two lanes do not beat it on an arm64 core.
+	 */
+	void		(*cmp2_i32) (uint64 *out, const int32 *a, const int32 *b, int n, SiftCmpOp op);
+	void		(*cmp2_i64) (uint64 *out, const int64 *a, const int64 *b, int n, SiftCmpOp op);
+	void		(*cmp2_f64) (uint64 *out, const double *a, const double *b, int n, SiftCmpOp op);
 	/* bit i = (uint32) (v[i] - base) < nlut && lut[v[i] - base] != 0 (wrapping subtraction in uint32); a bound check fused with a byte LUT */
 	void		(*lut_i32) (uint64 *out, const int32 *v, int n, int32 base, uint32 nlut, const uint8 *lut);
 
