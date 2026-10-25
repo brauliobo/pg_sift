@@ -404,6 +404,25 @@ dict_load(SiftColSegment *seg, int col, MemoryContext mcxt)
 	SiftCDict  *d;
 
 	dict_region(seg, col, &off, &len);
+	/* the plain form is read into the arrays of the dictionary, not into a buffer that is copied (a scan of a leaf reads it whole once for each backend) */
+	if (len >= DICT_HEAD)
+	{
+		uint32		head[2];
+		uint64		at = sec(seg, SIFT_SEC_DICT)->off + off;
+
+		seg_read(seg, at, sizeof(head), head);
+		if (head[0] == DICT_PLAIN && (len - DICT_HEAD) / sizeof(uint32) >= (uint64) head[1] + 1)
+		{
+			d = sift_cdict_plain_begin(mcxt, head[1]);
+			seg_read(seg, at + DICT_HEAD, ((Size) head[1] + 1) * sizeof(uint32), d->off);
+			if (!sift_cdict_plain_bytes(d, mcxt, len - DICT_HEAD - ((uint64) head[1] + 1) * sizeof(uint32)))
+				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			seg_read(seg, at + DICT_HEAD + ((uint64) head[1] + 1) * sizeof(uint32), d->nbytes, d->bytes);
+			if (!sift_cdict_plain_valid(d))
+				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			return d;
+		}
+	}
 	data = palloc(len);
 	seg_read(seg, sec(seg, SIFT_SEC_DICT)->off + off, len, data);
 	d = sift_cdict_parse(mcxt, data, len, &used);

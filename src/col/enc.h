@@ -123,6 +123,9 @@ extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 f
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);
 /* Copy of a serialized dictionary; NULL when malformed. *used = bytes consumed */
+extern SiftCDict *sift_cdict_plain_begin(MemoryContext mcxt, uint32 n);
+extern bool sift_cdict_plain_bytes(SiftCDict *d, MemoryContext mcxt, uint64 room);
+extern bool sift_cdict_plain_valid(const SiftCDict *d);
 extern SiftCDict *sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used);
 extern void sift_cdict_view(const SiftCDict *d, uint64 id, SiftColDict *view);
 
