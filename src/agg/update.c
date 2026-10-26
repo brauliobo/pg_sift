@@ -903,12 +903,25 @@ semi_stage(AggExec *ex, int s, Tup *in)
 	const int32 *x = pass ? NULL : (const int32 *) v->data;
 	Tup		   *own = stage_tuples(ex, s);
 	int			k = 0;
+	int			i;
 
-	for (int i = 0; i < in->n; i++)
+#define SEMI_HIT(i) (pass || (!(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo]))
+	/* a request that names every key of the table (a wide request) keeps every tuple: they go on as they are, nothing is copied */
+	for (i = 0; i < in->n && SEMI_HIT(i) == want; i++)
+		;
+	if (i == in->n)
 	{
-		bool		hit = pass || (!(v->isnull && v->isnull[idx[i]]) && (uint64) ((int64) x[idx[i]] - cs->slo) < cs->snlut && cs->slut[(int64) x[idx[i]] - cs->slo]);
+		Tup			al = *in;
 
-		if (hit != want)
+		memset(own->cout[ci], 0, in->n * sizeof(uint32));
+		al.cout = memcpy(ex->alcout[s], in->cout, ex->spec->ncombo * sizeof(uint32 *));
+		al.cout[ci] = own->cout[ci];
+		join_stage(ex, s + 1, &al);
+		return;
+	}
+	for (i = 0; i < in->n; i++)
+	{
+		if (SEMI_HIT(i) != want)
 			continue;
 		own->sel[k] = in->sel[i];
 		own->tidx[k] = in->tidx[i];
@@ -919,6 +932,7 @@ semi_stage(AggExec *ex, int s, Tup *in)
 		k++;
 	}
 	own->n = k;
+#undef SEMI_HIT
 	if (k > 0)
 		join_stage(ex, s + 1, own);
 }
