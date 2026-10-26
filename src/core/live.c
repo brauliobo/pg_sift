@@ -175,13 +175,18 @@ sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwo
 	pfree(raw);
 }
 
+#ifndef MAX_GENERIC_XLOG_PAGES
+#define MAX_GENERIC_XLOG_PAGES	4
+#endif
+
+/* the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills */
 void
 sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 {
 	uint64		start = SIFT_LIVE_START(l->nsb);
-	uint32		pg[3];
-	Buffer		buf[3];
-	Page		page[3];
+	uint32		pg[MAX_GENERIC_XLOG_PAGES];
+	Buffer		buf[MAX_GENERIC_XLOG_PAGES];
+	Page		page[MAX_GENERIC_XLOG_PAGES];
 	int			n = 1;
 	GenericXLogState *state;
 	SiftLiveHeaderData *lh;
@@ -194,7 +199,7 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 		if (pg[n - 1] != p)
 			pg[n++] = p;
 	}
-	Assert(n <= 3);
+	Assert(n <= MAX_GENERIC_XLOG_PAGES);
 	for (int i = 0; i < n; i++)
 	{
 		buf[i] = ReadBuffer(l->index, l->first + pg[i]);
@@ -220,10 +225,6 @@ sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(buf[i]);
 }
-
-#ifndef MAX_GENERIC_XLOG_PAGES
-#define MAX_GENERIC_XLOG_PAGES	4
-#endif
 
 #define LIVE2_BYTES(h)	((uint64) (h)->tbl_off + (uint64) (h)->nslots * sizeof(uint32))
 
