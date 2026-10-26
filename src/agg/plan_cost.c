@@ -640,6 +640,63 @@ lookup_rows(AggCtx *c, const JoinCtx *jc)
 	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
 }
 
+/*
+ * The keys of a lookup's plan, for the pick between the scan and the normal plan. PostgreSQL clamps an estimate at one row and takes a join of two
+ * lists to a fraction of the smaller one (10 ids semi-joined to 32 rows: 2 of them), so the plan is read down to its inputs: a join has as many keys as
+ * the smaller of its inputs (a nested loop: as its outer side, the inner one is per row) and a CTE as the plan of its query.
+ */
+static double
+child_keys(PlannerInfo *root, Path *p)
+{
+	double		rows = child_rows(p);
+	JoinPath   *jp;
+
+	for (;;)
+	{
+		if (IsA(p, SubqueryScanPath))
+			p = ((SubqueryScanPath *) p)->subpath;
+		else if (IsA(p, ProjectionPath))
+			p = ((ProjectionPath *) p)->subpath;
+		else if (IsA(p, UpperUniquePath))
+			p = ((UpperUniquePath *) p)->subpath;
+		else if (IsA(p, SortPath))
+			p = ((SortPath *) p)->subpath;
+		else
+			break;
+	}
+	if (p->pathtype == T_CteScan)
+	{
+		RangeTblEntry *rte = planner_rt_fetch(p->parent->relid, root);
+		PlannerInfo *cr = rte->rtekind == RTE_CTE ? cte_root(root, rte) : NULL;
+
+		return cr ? Max(rows, child_keys(cr, fetch_upper_rel(cr, UPPERREL_FINAL, NULL)->cheapest_total_path)) : rows;
+	}
+	if (!(IsA(p, NestPath) || IsA(p, MergePath) || IsA(p, HashPath)))
+		return rows;
+	jp = (JoinPath *) p;
+	switch (jp->jointype)
+	{
+		case JOIN_INNER:
+		case JOIN_SEMI:
+#if PG_VERSION_NUM >= 180000
+		case JOIN_RIGHT_SEMI:
+#endif
+			return Max(rows, IsA(p, NestPath) ? child_keys(root, jp->outerjoinpath) :
+					   Min(child_keys(root, jp->outerjoinpath), child_keys(root, jp->innerjoinpath)));
+		case JOIN_LEFT:
+		case JOIN_ANTI:
+			return Max(rows, child_keys(root, jp->outerjoinpath));
+		default:
+			return rows;
+	}
+}
+
+static double
+lookup_sure(AggCtx *c, const JoinCtx *jc)
+{
+	return jc->cpath ? Max(child_keys(c->root, jc->cpath), 1.0) : lookup_rows(c, jc);
+}
+
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
 
 /* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
@@ -733,7 +790,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 		const SiftAggCombo *cb = &s->combo[jc->combo];
 		const SiftAggJoin *j = &s->join[cb->join];
 		const JoinCtx *dj = dependent_join(c, s, jc);
-		double		keys = Min(lookup_rows(c, jc), dj ? lookup_rows(c, dj) : HUGE_VAL);
+		double		keys = Min(lookup_rows(c, jc), dj ? lookup_rows(c, dj) : HUGE_VAL),
+					sure = Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL);
 
 		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
 			continue;
@@ -748,10 +806,10 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
-			if (keys / nd < selective && !lookup_guessed(c, jc) && (dj == NULL || !lookup_guessed(c, dj)))
+			if (sure / nd < selective && !lookup_guessed(c, jc) && (dj == NULL || !lookup_guessed(c, dj)))
 			{
-				selective = keys / nd;
-				*sel_keys = keys;
+				selective = sure / nd;
+				*sel_keys = sure;
 			}
 			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
 			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));

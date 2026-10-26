@@ -100,7 +100,7 @@ typedef struct ArmIn
 } ArmIn;
 
 /* the root of the common table expression a CTE scan of `root` reads; NULL if it is not one the scan can look through */
-static PlannerInfo *
+PlannerInfo *
 cte_root(PlannerInfo *root, RangeTblEntry *rte)
 {
 	PlannerInfo *cteroot = root;

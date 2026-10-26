@@ -3,7 +3,8 @@
 -- jsonb document was charged the excess of the table's rows over that count (and the keys over it) as a lost estimate, which made every
 -- request for one or a few parents take the scan at a price above the normal plan's, and lose. A few keys keep the normal plan; a
 -- long list of them, where the probes outnumber the scan's start, keeps the scan. Every statement is also run with sift.enable_agg = off:
--- the rows must be the same.
+-- the rows must be the same. A CTE of ids that PostgreSQL takes through a join estimates at a fraction of the smaller of the lists it joins (ten ids semi-joined
+-- to forty: one) is not a request for one parent: the normal plan then reads the rows of ten of them and the scan is taken.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
@@ -19,14 +20,22 @@ INSERT INTO fk_scope SELECT 1, 11;
 INSERT INTO fk_scope SELECT 2, p FROM generate_series(21, 23) p;
 INSERT INTO fk_scope SELECT 3, p FROM generate_series(101, 140) p;
 CREATE INDEX ON fk_scope (scope_id);
-VACUUM (FREEZE, ANALYZE) fk_facts, fk_scope;
+CREATE TABLE fk_parents (id int PRIMARY KEY, name text);
+INSERT INTO fk_parents SELECT i, 'p' || i FROM generate_series(1, 600) i;
+CREATE TABLE fk_group (grp int NOT NULL, parent_id int NOT NULL);
+INSERT INTO fk_group SELECT 4, p FROM generate_series(201, 240) p;
+CREATE INDEX ON fk_group (grp);
+VACUUM (FREEZE, ANALYZE) fk_facts, fk_scope, fk_parents, fk_group;
 
 CREATE FUNCTION fk_q(sub int) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
-WITH parent_ids AS MATERIALIZED (SELECT DISTINCT parent_id AS id FROM fk_scope WHERE scope_id = %s)
+WITH parent_ids AS MATERIALIZED (%s),
+     parents AS MATERIALIZED (SELECT p.id FROM fk_parents p JOIN parent_ids i ON i.id = p.id)
 SELECT split_part(r.key, '_', 1) AS kind, round(avg((r.value #>> '{}')::float8)::numeric, 6) AS score, count(*) AS n
-FROM fk_facts v JOIN parent_ids p ON p.id = v.parent_id, jsonb_each(v.metrics_a) r
+FROM fk_facts v JOIN parents p ON p.id = v.parent_id, jsonb_each(v.metrics_a) r
 WHERE v.deleted_at IS NULL AND v.ts >= date '2024-03-01' AND v.ts < date '2025-03-01'
-GROUP BY 1 ORDER BY 1$f$, sub) $$;
+GROUP BY 1 ORDER BY 1$f$, CASE WHEN sub < 4 THEN format('SELECT DISTINCT parent_id AS id FROM fk_scope WHERE scope_id = %s', sub)
+       ELSE $s$SELECT DISTINCT p.id FROM fk_parents p WHERE p.id = ANY ('{201,205,210,215,220,225,230,233,236,239}'::int[])
+       AND p.id IN (SELECT parent_id FROM fk_group WHERE grp = 4)$s$ END) $$;
 
 CREATE FUNCTION fk_plan(sub int, agg text DEFAULT 'on') RETURNS TABLE (plan text, total_cost float8) LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
@@ -51,10 +60,10 @@ BEGIN
 END $$;
 
 -- the plan taken, and whether it costs no more than 1.2 times the plan with the scan off
-SELECT sub AS scope, (SELECT count(*) FROM fk_scope WHERE scope_id = sub) AS parents, a.plan,
+SELECT sub AS scope, (SELECT CASE WHEN sub < 4 THEN (SELECT count(*) FROM fk_scope WHERE scope_id = sub) ELSE 10 END) AS parents, a.plan,
        a.total_cost <= 1.2 * n.total_cost AS within_normal_cost, fk_same(sub) AS rows_unlike_normal
-FROM generate_series(1, 3) sub, LATERAL fk_plan(sub, 'on') a, LATERAL fk_plan(sub, 'off') n;
+FROM generate_series(1, 4) sub, LATERAL fk_plan(sub, 'on') a, LATERAL fk_plan(sub, 'off') n;
 
 DROP FUNCTION fk_q(int), fk_plan(int, text), fk_same(int);
-DROP TABLE fk_facts, fk_scope;
+DROP TABLE fk_facts, fk_scope, fk_parents, fk_group;
 DROP EXTENSION pg_sift;
