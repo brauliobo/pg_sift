@@ -106,8 +106,85 @@ join_own_rows(AggExec *ex, int ci, bool *live)
 	return live;
 }
 
+/* the sorted distinct keys of a filter */
+typedef struct JoinKeys
+{
+	int			leaf;
+	int			n;
+	int64	   *v;
+	SiftAggPred *pred;
+} JoinKeys;
+
+static int
+cmp_int64(const void *a, const void *b)
+{
+	int64		x = *(const int64 *) a,
+				y = *(const int64 *) b;
+
+	return (x > y) - (x < y);
+}
+
+static bool
+keys_subset(const JoinKeys *a, const JoinKeys *b)
+{
+	int			j = 0;
+
+	for (int i = 0; i < a->n; i++)
+	{
+		while (j < b->n && b->v[j] < a->v[i])
+			j++;
+		if (j == b->n || b->v[j] != a->v[i])
+			return false;
+	}
+	return true;
+}
+
+/*
+ * `leaf IN A AND leaf IN B` with A within B is `leaf IN A`: a chain A.id = B.id through two tables gives a filter for each, and the wider one only
+ * costs a pass over the rows. True: an earlier filter of the leaf holds the keys already; else the wider ones of the earlier filters are dropped.
+ */
+static bool
+join_keys_covered(List **seen, List **add, int leaf, const int64 *vals, int nv, JoinKeys **out)
+{
+	JoinKeys   *jk = palloc(sizeof(JoinKeys));
+	int			n = 0;
+	ListCell   *lc;
+
+	jk->leaf = leaf;
+	jk->v = palloc(Max(nv, 1) * sizeof(int64));
+	memcpy(jk->v, vals, nv * sizeof(int64));
+	qsort(jk->v, nv, sizeof(int64), cmp_int64);
+	for (int i = 0; i < nv; i++)
+		if (i == 0 || jk->v[i] != jk->v[i - 1])
+			jk->v[n++] = jk->v[i];
+	jk->n = n;
+	foreach(lc, *seen)
+	{
+		JoinKeys   *o = lfirst(lc);
+
+		if (o->leaf == leaf && keys_subset(o, jk))
+		{
+			pfree(jk->v);
+			pfree(jk);
+			return true;
+		}
+	}
+	foreach(lc, *seen)
+	{
+		JoinKeys   *o = lfirst(lc);
+
+		if (o->leaf == leaf && keys_subset(jk, o))
+		{
+			*add = list_delete_ptr(*add, o->pred);
+			*seen = foreach_delete_current(*seen, lc);
+		}
+	}
+	*out = jk;
+	return false;
+}
+
 static SiftAggPred *
-join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
+join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live, List **seen, List **add)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -118,6 +195,7 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 	int64		lo = PG_INT64_MAX,
 				hi = PG_INT64_MIN;
 	int			nv = 0;
+	JoinKeys   *jk = NULL;
 
 	for (uint32 r = 0; r < m->nrow; r++)
 	{
@@ -128,6 +206,12 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 		vals[nv++] = v;
 		lo = Min(lo, v);
 		hi = Max(hi, v);
+	}
+	/* a top-N is only these filters: each stays */
+	if (!ex->spec->topn && join_keys_covered(seen, add, leaf, vals, nv, &jk))
+	{
+		pfree(vals);
+		return NULL;
 	}
 	in_build(st, vals, nv, lo, hi);
 	if (ex->spec->nparts > 0 && !IsParallelWorker() && ex->lay->leaf[leaf].path == NIL)
@@ -141,6 +225,11 @@ join_filter_pred(AggExec *ex, int ci, int k, int leaf, int id, const bool *live)
 	p->leaf2 = -1;
 	p->argtype = ex->lay->leaf[leaf].typid;
 	p->desc = psprintf("%s IN (keys of %s)", ex->lay->leaf[leaf].name, j->desc);
+	if (jk)
+	{
+		jk->pred = p;
+		*seen = lappend(*seen, jk);
+	}
 	return p;
 }
 
@@ -150,6 +239,7 @@ join_filters(AggExec *ex, MemoryContext caller)
 	SiftAggSpec *s = ex->spec;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 	List	   *add = NIL;
+	List	   *seen = NIL;
 	int			total = s->npreds_total;
 
 	/* the joins of a top-N are only these filters: whatever the setting says */
@@ -185,12 +275,12 @@ join_filters(AggExec *ex, MemoryContext caller)
 			live = join_live_rows(ex, ci, caller);
 			if (s->topn)
 				live = join_own_rows(ex, ci, live);
-			if ((p = join_filter_pred(ex, ci, k, leaf, total, live)) != NULL)
+			if ((p = join_filter_pred(ex, ci, k, leaf, total, live, &seen, &add)) != NULL)
 			{
 				add = lappend(add, p);
 				total++;
-				ex->cs[ci].kfilt = j->nkey == 1 && (ex->cs[ci].map->filtered || j->fslot < 0);
 			}
+			ex->cs[ci].kfilt = j->nkey == 1 && (ex->cs[ci].map->filtered || j->fslot < 0);
 			if (live)
 				pfree(live);
 		}

@@ -137,19 +137,32 @@ SELECT * FROM same($$SELECT e.grp, count(*) AS n FROM ev JOIN ents8 e ON e.id = 
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = e.id GROUP BY 1$$);
                 plan                | result_rows | vs_no_filter | vs_normal_plan 
 ------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 2 units pruned |           4 |            0 |              0
+ SiftAgg key filters 1 units pruned |           4 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000)) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON ev.dim_a_id = e.id JOIN ks ON e.id = ks.id GROUP BY 1$$);
                 plan                | result_rows | vs_no_filter | vs_normal_plan 
 ------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 2 units pruned |           2 |            0 |              0
+ SiftAgg key filters 1 units pruned |           2 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000)), ks2 AS MATERIALIZED (SELECT id FROM ks) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = e.id JOIN ks2 ON ks2.id = ks.id GROUP BY 1$$);
                 plan                | result_rows | vs_no_filter | vs_normal_plan 
 ------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 3 units pruned |           2 |            0 |              0
+ SiftAgg key filters 1 units pruned |           2 |            0 |              0
+(1 row)
+
+-- two tables keyed by the same scanned column: the narrower keys are the only conjunct, whichever join comes first
+SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = ev.dim_a_id GROUP BY 1$$);
+                plan                | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |           4 |            0 |              0
+(1 row)
+
+SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n FROM ev JOIN ks ON ks.id = ev.dim_a_id JOIN ents e ON e.id = ev.dim_a_id GROUP BY 1$$);
+                plan                | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |           4 |            0 |              0
 (1 row)
 
 -- a key of another type, a key of another column and a LEFT join in the chain keep the chain: the same rows
@@ -229,7 +242,7 @@ SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('a', daterange('202
  SELECT all_dates.period, count(DISTINCT rev.id) AS n, sum(rev.amount) AS total FROM all_dates LEFT JOIN rev ON rev.bucket = all_dates.period GROUP BY 1$$);
                 plan                | result_rows | vs_no_filter | vs_normal_plan 
 ------------------------------------+-------------+--------------+----------------
- SiftAgg key filters 2 units pruned |           3 |            0 |              0
+ SiftAgg key filters 1 units pruned |           3 |            0 |              0
 (1 row)
 
 -- a divisor that is zero only on entities outside the table's rows is never evaluated for their events, as in the normal plan; a zero on a matching one raises the same error

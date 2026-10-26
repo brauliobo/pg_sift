@@ -84,6 +84,9 @@ SELECT * FROM same($$SELECT e.grp, count(*) AS n FROM ev JOIN ents8 e ON e.id = 
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = e.id GROUP BY 1$$);
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000)) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON ev.dim_a_id = e.id JOIN ks ON e.id = ks.id GROUP BY 1$$);
 SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000)), ks2 AS MATERIALIZED (SELECT id FROM ks) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = e.id JOIN ks2 ON ks2.id = ks.id GROUP BY 1$$);
+-- two tables keyed by the same scanned column: the narrower keys are the only conjunct, whichever join comes first
+SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ks ON ks.id = ev.dim_a_id GROUP BY 1$$);
+SELECT * FROM same($$WITH ks AS MATERIALIZED (SELECT id FROM ents WHERE id IN (5, 4000, 11)) SELECT e.label, count(*) AS n FROM ev JOIN ks ON ks.id = ev.dim_a_id JOIN ents e ON e.id = ev.dim_a_id GROUP BY 1$$);
 -- a key of another type, a key of another column and a LEFT join in the chain keep the chain: the same rows
 SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN ents8 e8 ON e8.id = e.id WHERE e8.id IN (5, 4000) GROUP BY 1$$);
 SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id LEFT JOIN ents e2 ON e2.id = e.id AND e2.id IN (5, 4000) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5$$);
