@@ -1,7 +1,7 @@
 -- Workers of a scan whose joins PostgreSQL counts at a handful of rows. The lookups are a CTE of ids it has no statistics for, so it expects
 -- the rows of the join few and the price of the scan with them: a few milliseconds, and the workers (3 to 4 ms to start) never pay. The path with
 -- workers is priced for the rows the scan reads (the price of the scan without workers stays what the plan above is priced with), and a scan
--- of fewer units than sift.agg_par_min_units keeps one process when it starts, whatever the plan asked for. sift.plan_scale plans the table at
+-- of fewer rows than sift.agg_par_min_rows keeps one process when it starts, whatever the plan asked for. sift.plan_scale plans the table at
 -- a size where the scan is long enough for the workers to pay.
 CREATE EXTENSION pg_sift;
 
@@ -44,7 +44,7 @@ BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || (SELECT q FROM w_q) LOOP
 			IF l ~ 'Workers Launched: [0-9]' THEN n := greatest(n, substring(l FROM 'Workers Launched: ([0-9]+)')::int); END IF;
 		END LOOP;
-		EXIT WHEN n > 0 OR (SELECT current_setting('sift.agg_par_min_units')::int) > 0;
+		EXIT WHEN n > 0 OR (SELECT current_setting('sift.agg_par_min_rows')::int) > 0;
 		PERFORM pg_sleep(0.1);
 	END LOOP;
 	RETURN n;
@@ -68,10 +68,10 @@ SELECT w_priced_for_rows() > 1 AS some_scale_prices_workers_for_rows;
 SELECT set_config('sift.plan_scale', w_priced_for_rows()::text, false) IS NOT NULL AS scale_set;
 SELECT w_planned() AS planned_at_scale;
 
--- 6 units: the leader scans alone; with the threshold off the workers start
+-- 12,000 rows: the leader scans alone; with the threshold off the workers start
 SELECT w_launched() AS launched_default;
-SET sift.agg_par_min_units = 0;
-SELECT w_launched() AS launched_unit_floor_off;
+SET sift.agg_par_min_rows = 0;
+SELECT w_launched() AS launched_row_floor_off;
 
 -- the rows are those of the normal plan
 RESET sift.plan_scale;

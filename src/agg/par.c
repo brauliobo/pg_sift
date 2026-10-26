@@ -653,11 +653,12 @@ select_stmt(AggExec *ex, Plan *tree)
 
 /*
  * The units the zones and the keys of the lookups leave are known when the workers start. A scan whose workers the planner priced for the rows it
- * reads (workers_ratio: PostgreSQL counts the join of its lookups at a handful of rows) keeps one process when it keeps fewer units than
- * sift.agg_par_min_units: a few units take less than the workers do to start and merge, and the lists the planner has no statistics for may keep
- * a handful of units. 300,000 rows of 900 bytes, 60 units kept: 40 ms alone, 58 with 4 workers; 276 units: 493 and 328.
+ * reads (workers_ratio: PostgreSQL counts the join of its lookups at a handful of rows) keeps one process when the units it keeps hold fewer rows than
+ * sift.agg_par_min_rows: a few rows take less than the workers do to start and merge, and the lists the planner has no statistics for may keep
+ * a handful of units. 300,000 rows of 900 bytes, 60 units kept (65,000 rows): 40 ms alone, 58 with 4 workers; 276 units: 493 and 328; 101,000 rows
+ * of unnested documents: 990 ms alone, 750 with 4.
  */
-int			sift_agg_par_min_units = 128;
+int			sift_agg_par_min_rows = 80000;
 
 static bool
 par_scan_small(AggExec *ex)
@@ -665,14 +666,14 @@ par_scan_small(AggExec *ex)
 	SkipMap    *m;
 	uint32		kept = 0;
 
-	if (!ex->spec->wide_workers)
+	if (ex->spec->wide_unit_rows <= 0)
 		return false;
 	m = skip_map(ex);
 	if (!m->ok)
 		return false;
 	for (uint32 w = 0; w < (m->nsb + 63) / 64; w++)
 		kept += pg_popcount64(m->kept[w]);
-	return kept < sift_agg_par_min_units;
+	return kept * ex->spec->wide_unit_rows < sift_agg_par_min_rows;
 }
 
 /* Starts the workers of the plan; the leader scans alone when none could be launched */

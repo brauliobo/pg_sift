@@ -32,7 +32,7 @@ extern PGDLLIMPORT bool sift_agg_left_lateral;
 extern PGDLLIMPORT bool sift_enable_topn;
 extern PGDLLIMPORT bool sift_topn_walk;
 extern PGDLLIMPORT int sift_agg_param_set_size;
-extern PGDLLIMPORT int sift_agg_par_min_units;
+extern PGDLLIMPORT int sift_agg_par_min_rows;
 extern PGDLLIMPORT bool sift_agg_key_skew;
 extern PGDLLIMPORT int sift_agg_lookup_max_rows;
 extern PGDLLIMPORT int sift_agg_lookup_max_kb;

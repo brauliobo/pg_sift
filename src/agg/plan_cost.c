@@ -2705,7 +2705,7 @@ workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double 
 	{
 		p->total_cost = total;
 		p->startup_cost = Max(total - out_cost, 0.0);
-		s->wide_workers = true;
+		s->wide_unit_rows = Max(c->stats.nrows / Max(c->stats.nunits, 1.0), 1.0);
 	}
 }
 
