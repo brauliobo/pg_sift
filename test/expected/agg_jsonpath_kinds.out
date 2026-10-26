@@ -342,7 +342,7 @@ VACUUM kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 3,6
+ 3,7
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -363,7 +363,7 @@ VACUUM (FULL) kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 6
+ 7
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -422,7 +422,7 @@ VACUUM FULL kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 6
+ 7
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;

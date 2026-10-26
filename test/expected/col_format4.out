@@ -162,7 +162,7 @@ SELECT kind, format, count(*) FROM sift.table_segments('ft') GROUP BY 1, 2 ORDER
 ------------+--------+-------
  buffer     |        |     1
  columns    |      3 |     1
- columns    |      4 |     1
+ columns    |      7 |     1
  tombstones |        |     1
 (4 rows)
 
