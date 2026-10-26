@@ -130,6 +130,8 @@
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
 #define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
 #define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
+#define AGG_WIDE_COPY		5.0		/* ... when its readers only copy the entry (array_agg, string_agg, count of the column, a group key): 0 to 100 ns an entry measured over numeric images, 128-bit numerics, uuid, interval and bytea, 1,000,000 rows in 4 groups (a list of 550,000 two-decimal values 54 ms more than one of 1,000 values) */
+#define AGG_WIDE_KEYSUM		25.0	/* ... and a sum or average of the column is added in the same scan (42 ns an entry more than the key alone) */
 #define AGG_WIDE_COLD		35.0	/* a row of such an image leaf, read by a worker: the unit's dictionary of images is inflated (zstd) and indexed in the worker, whose cache is empty, where the backend that repeats a scan finds it decoded (2,000,000 rows of almost unique values: 24 ns inflated, 6 ns of fresh pages, 3 ns indexed, a row) */
 #define AGG_WIDE_BIG		10.0	/* ... and, for each million distinct values the column has past 2,000,000, this many more up to AGG_WIDE_BIG_MAX: the dictionary of a segment outgrows the cache and a row is a miss for its entry (975 cycles a row in one segment of 10,000,000 almost unique values, 573 in 2,000,000), so the parallel scan of 5,000,000 or 10,000,000 such rows takes 1.5 to 2.3 times as long as PostgreSQL's plan with 4 or 8 workers */
 #define AGG_WIDE_BIG_MAX	40.0
@@ -142,6 +144,7 @@
 #define AGG_IN_TABLE_BYTE	0.75	/* a byte of the table of an IN list over a range of values, allocated and cleared when the scan starts: 1.9 ns measured (a 1 MB table costs 1.9 ms, 4 KB nothing visible), the pages it faults in */
 #define AGG_INLINE_TEST		3.0		/* a row of it tested on the encoded strings (the prefixes decide most rows) */
 #define AGG_KEY_ENTRY		40.0	/* an entry of a unit's dictionary given the id of a group key (the text built, hashed and looked up) in a table of 2,000 ids: 39 ns measured, which the read of the leaf prices; 90 ns at 20,000 ids and 200 ns at 200,000, as the table outgrows the caches (the 0.35 power of the ids over AGG_KEY_IDS): the excess over the first is charged */
+#define AGG_KEY_WIDE		45.0	/* an entry of a unit's dictionary of a wide column, given the id of a group key, in a table of 30,000 ids (107 ns measured on a numeric of two decimals); it grows with the 0.42 power of the ids (460 ns at 1,000,000 ids) */
 #define AGG_KEY_IDS			2000.0
 #define AGG_ID_SWEEP		8.0		/* an id of the key table, per spill of the group table: the table is walked and its arrays reset whatever number of its groups hold rows (45 ns measured), in cpu_operator_cost */
 
@@ -1675,6 +1678,69 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 }
 
 /* The rows read and tested, the zones kept and the units opened */
+/* is every reader of the leaf a list (array_agg, string_agg), a count of its values or a group key: its dictionary entries are copied, not computed on? */
+static bool
+leaf_copy_only(const SiftAggSpec *s, int leaf, bool *sums, bool *keyed)
+{
+	bool		copied = false;
+
+	*sums = *keyed = false;
+
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		const SiftAggAgg *a = &s->agg[ai];
+
+		bool		reads = a->leaf == leaf || bms_is_member(leaf, a->reads);
+
+		if (a->kind == SAA_GEN)
+			for (int j = 0; j < a->gen->nargs; j++)
+				for (int l = 0; l < a->gen->arg[j].nleaves; l++)
+					reads |= a->gen->arg[j].leaf[l] == leaf;
+		if (!reads)
+			continue;
+		if (a->filter != NULL && pred_uses_leaf(a->filter, leaf))
+			return false;
+		if (a->wsum == leaf + 1)
+			*sums = copied = true;
+		else if (a->kind == SAA_COUNT && a->leaf == leaf)
+			copied = true;
+		else if (a->kind == SAA_GEN && !a->gen->distinct && !a->gen->ordered && !a->gen->sorted && !a->gen->hyp &&
+				 (castNode(Aggref, a->gen->aggref)->aggfnoid == F_ARRAY_AGG_ANYNONARRAY || castNode(Aggref, a->gen->aggref)->aggfnoid == F_STRING_AGG_TEXT_TEXT ||
+				  castNode(Aggref, a->gen->aggref)->aggfnoid == F_STRING_AGG_BYTEA_BYTEA))
+			copied = true;
+		else
+			return false;
+	}
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s->pred[i], leaf))
+			return false;
+	for (int k = 0; k < s->nkeys; k++)
+		if (s->key[k].kind == SAK_COMBO || s->key[k].leaf == leaf)
+			copied |= s->key[k].kind != SAK_COMBO;
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int p = 0; p < s->combo[ci].nleaves; p++)
+			if (s->combo[ci].leaf[p] == leaf)
+			{
+				bool		key = false;
+
+				if (s->combo[ci].nleaves > 1 || s->combo[ci].join >= 0)
+					return false;
+				for (int k = 0; k < s->nkeys; k++)
+					key |= s->key[k].kind == SAK_COMBO && s->key[k].leaf == ci;
+				for (int ai = 0; ai < s->naggs; ai++)
+					if (s->agg[ai].combo == ci && s->agg[ai].kind >= SAA_X_COUNT && s->agg[ai].kind <= SAA_X_AVG)
+					{
+						if (s->agg[ai].wsum == 0)
+							return false;
+						*sums = true;
+					}
+				if (!key)
+					return false;
+				copied = *keyed = true;
+			}
+	return copied;
+}
+
 /* is every reader of the leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum)? */
 static bool
 leaf_wsum_only(const SiftAggSpec *s, int leaf)
@@ -1738,6 +1804,11 @@ wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
 static double
 wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
 {
+	bool		sums,
+				keyed;
+
+	if (leaf_copy_only(s, leaf, &sums, &keyed))
+		return wide_entry_frac(c, leaf, k) * (sums ? (keyed ? AGG_WIDE_KEYSUM : AGG_WIDE_NUM) : AGG_WIDE_COPY);
 	return wide_entry_frac(c, leaf, k) * (numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
 }
 
@@ -1772,23 +1843,40 @@ key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, doub
 	for (int i = 0; i < s->nkeys; i++)
 	{
 		const SiftSrcLeaf *lf;
+		int			leaf = -1;
 		double		frac,
 					nd,
 					entries;
 
-		if ((s->key[i].kind != SAK_LEAF && s->key[i].kind != SAK_LUT) || s->key[i].leaf < 0)
+		/* a wide column is a key through the combo of its leaf */
+		if (s->key[i].kind == SAK_COMBO && s->combo[s->key[i].leaf].nleaves == 1 && s->combo[s->key[i].leaf].join < 0)
+			leaf = s->combo[s->key[i].leaf].leaf[0];
+		else if (s->key[i].kind == SAK_LEAF || s->key[i].kind == SAK_LUT)
+			leaf = s->key[i].leaf;
+		if (leaf < 0)
 			continue;
-		lf = &c->lay->leaf[s->key[i].leaf];
+		lf = &c->lay->leaf[leaf];
 		/* without statistics the values are not known to be many */
-		if (lf->vtype != SCV_CODE || lf->wide)
+		if (lf->vtype != SCV_CODE || lf->wide != (s->key[i].kind == SAK_COMBO))
 			continue;
-		frac = leaf_stat_frac(c, s->key[i].leaf, k->rows);
+		frac = leaf_stat_frac(c, leaf, k->rows);
 		if (frac <= 0)
 			continue;
 		nd = Max(frac * k->rows, 1.0);
-		entries = nd * -expm1(-k->rows / units / nd) * read;
+		if (lf->wide)
+		{
+			/* the units the column has, not a guess of 2,000 rows each */
+			double		wunits = c->stats.nunits > 0 ? c->stats.nunits : units;
+
+			entries = nd * -expm1(-k->rows / wunits / nd) * Max(k->zone_kept, 1.0 / wunits) * wunits;
+		}
+		else
+			entries = nd * -expm1(-k->rows / units / nd) * read;
 		total += entries;
-		*ops += entries * AGG_KEY_ENTRY * (pow(Max(Min(entries, nd) / AGG_KEY_IDS, 1.0), 0.35) - 1.0);
+		if (lf->wide)
+			*ops += entries * AGG_KEY_WIDE * pow(Min(entries, nd) / 30000.0, 0.42);
+		else
+			*ops += entries * AGG_KEY_ENTRY * (pow(Max(Min(entries, nd) / AGG_KEY_IDS, 1.0), 0.35) - 1.0);
 		*ids = Max(*ids, Min(entries, nd));
 	}
 	return total;
