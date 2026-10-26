@@ -381,10 +381,9 @@ typedef struct HeapPage
  * tests of HeapTupleSatisfiesMVCC, without the chain walk, the predicate lock and the conflict check heap_hot_search_buffer adds. Every
  * other tuple goes the full way. A serializable transaction takes the full way too: the lock and the check are its.
  */
-static bool
-quick_visible(const HeapPage *p, ItemPointer tid)
+static pg_attribute_always_inline bool
+quick_visible(const HeapPage *p, OffsetNumber off)
 {
-	OffsetNumber off = ItemPointerGetOffsetNumber(tid);
 	ItemId		lp;
 	HeapTupleHeader th;
 
@@ -396,17 +395,22 @@ quick_visible(const HeapPage *p, ItemPointer tid)
 	th = (HeapTupleHeader) PageGetItem(p->page, lp);
 	if (!(th->t_infomask & HEAP_XMAX_INVALID) || (th->t_infomask & HEAP_XMIN_COMMITTED) == 0)
 		return false;
-	return HeapTupleHeaderXminFrozen(th) || TransactionIdPrecedes(HeapTupleHeaderGetRawXmin(th), p->v->snapshot->xmin);
+	/* a committed xmin that is not frozen is a normal xid: the compare of TransactionIdPrecedes, without its call (it is a call a row) */
+	return HeapTupleHeaderXminFrozen(th) || (int32) (HeapTupleHeaderGetRawXmin(th) - p->v->snapshot->xmin) < 0;
 }
 
-static bool
-heap_tid_visible(void *arg, ItemPointer tid)
+/* The TID is built for the full way only: a call through a TID test, per row, costs more than the test */
+static pg_attribute_always_inline bool
+row_visible(const HeapPage *p, BlockNumber blk, OffsetNumber off)
 {
-	HeapPage   *p = arg;
+	ItemPointerData tid;
 	HeapTupleData tuple;
 	bool		all_dead;
 
-	return quick_visible(p, tid) || heap_hot_search_buffer(tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
+	if (quick_visible(p, off))
+		return true;
+	ItemPointerSet(&tid, blk, off);
+	return heap_hot_search_buffer(&tid, p->v->heap, p->buf, p->v->snapshot, &tuple, &all_dead, true);
 }
 
 /*
@@ -481,13 +485,8 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 	{
 		memset(e->vis, 0, sizeof(e->vis));
 		for (OffsetNumber off = FirstOffsetNumber; off <= page.maxoff && off <= SIFT_OFFMASK_WORDS * 64; off++)
-		{
-			ItemPointerData tid;
-
-			ItemPointerSet(&tid, blk, off);
-			if (heap_tid_visible(&page, &tid))
+			if (row_visible(&page, blk, off))
 				e->vis[(off - 1) / 64] |= UINT64CONST(1) << ((off - 1) % 64);
-		}
 		e->full = true;
 		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
 		{
@@ -496,7 +495,14 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 		}
 	}
 	else
-		left = sift_vis_filter_mask(blk, offmask, heap_tid_visible, &page);
+		for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+			for (uint64 m = offmask[wd]; m; m &= m - 1)
+			{
+				if (row_visible(&page, blk, wd * 64 + __builtin_ctzll(m) + 1))
+					left++;
+				else
+					offmask[wd] &= ~(m & -m);
+			}
 	UnlockReleaseBuffer(page.buf);
 	return left;
 }
