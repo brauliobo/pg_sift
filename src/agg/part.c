@@ -31,6 +31,7 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 #include "agg/part.h"
@@ -541,9 +542,13 @@ static MemoryContext bound_cx;
 static HTAB *bound_cache;
 static bool bound_stale;
 
-/* a relation changed (a partition, an ancestor, the table): the bounds are read again, as PostgreSQL does for its own copy; dropped by the next part_bound, not under a caller that still reads one */
+/*
+ * A row of pg_class changed (a partition attached or detached, a column added, a table rewritten): the bounds are read again, as PostgreSQL does for its own
+ * copy; dropped by the next part_bound, not under a caller that still reads one. A syscache callback, not a relcache one: a backend has ten relcache
+ * callback slots for all its libraries, and the callbacks of the syscaches have sixty-four.
+ */
 static void
-bound_inval(Datum arg, Oid relid)
+bound_inval(Datum arg, int cacheid, uint32 hashvalue)
 {
 	bound_stale = true;
 }
@@ -596,7 +601,7 @@ part_bound(PartSource *ps, int i, Oid parent)
 		if (bound_cx == NULL)
 		{
 			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition bounds", ALLOCSET_DEFAULT_SIZES);
-			CacheRegisterRelcacheCallback(bound_inval, (Datum) 0);
+			CacheRegisterSyscacheCallback(RELOID, bound_inval, (Datum) 0);
 		}
 		ctl.hcxt = bound_cx;
 		bound_cache = hash_create("sift partition bounds", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);

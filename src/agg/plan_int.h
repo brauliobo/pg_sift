@@ -474,8 +474,7 @@ typedef struct CteVerdict
 				shared,
 				inl,			/* the total cost of the inline plan and of the plan with the shared CTEs, as they were planned in full; 0: not known */
 				pln;
-	int			nrels;
-	Oid			rels[VERDICT_RELS];
+	Oid			rels[VERDICT_RELS];	/* the relations of the statement, as the walk over its sizes finds them */
 }			CteVerdict;
 
 #define VERDICT_CTE		0		/* inline or shared CTE (cte.c plan_cte) */
