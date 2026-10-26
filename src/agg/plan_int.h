@@ -226,7 +226,7 @@ typedef struct ComboWalk
 	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
 } ComboWalk;
 
-#define AGG_GEN_ROW			12.0	/* a transition function call through fmgr, and the Datum of a leaf (the function's own procost comes on top) */
+#define AGG_GEN_ROW			4.0	/* a transition function call through fmgr, and the Datum of a leaf (the function's own procost comes on top): 32 to 88 ns a row measured for bool_and, min(text), variance, array_agg, string_agg and corr over 1,000,000 rows, about 3 to 7 operators by the cost of the normal plan's own rows (it was 12, and the scan lost the choice at 5 times the real cost) */
 #define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
 #define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */
 #define AGG_GEN_FIRST		1.0		/* a row of a DISTINCT ON column: the compare of its sort keys with the best row of the group, the value read when it wins */
