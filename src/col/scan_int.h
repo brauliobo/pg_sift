@@ -32,6 +32,9 @@ typedef struct ColCursor
 	uint32		cur;
 	uint32		end;
 	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
+	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
+	uint64		count_rows;
+	uint32		count_unit_rows;	/* the rows of the segment's units */
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
@@ -107,6 +110,8 @@ typedef struct ColUnit
 	uint32		u;
 	uint32		nsu;			/* a superunit: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
 	bool		whole;			/* ... of the whole segment, which has only the key table of src->whole - 1 (col/ktab.h) */
+	bool		counted;		/* ... of the whole segment, which has only the rows that pass the test of sift_col_count_range: crows of them */
+	uint64		crows;
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -172,6 +177,9 @@ struct SiftColSource
 	SiftColVisibility visibility;
 	bool		super;			/* sift_col_super */
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
+	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
+	SiftColOp	pcnt_op;
+	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
 	int			wmeas[SIFT_PAGG_MAX_MEAS];
 	int			nseg;
@@ -210,6 +218,7 @@ struct SiftColSource
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
+extern bool col_count_segment(SiftColSource *src, ColCursor *c);
 /* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
 extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 

@@ -874,6 +874,21 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->end = pr.uhi;
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	c->ps = NULL;
+	c->count_ok = false;
+	if (src->pcnt && c->full && col_count_segment(src, c))
+	{
+		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
+		c->prow = NULL;
+		c->ptids = false;
+		c->ptidv = NULL;
+		c->nptidv = 0;
+		c->keep = palloc(nw * sizeof(uint64));
+		memset(c->keep, 0xFF, nw * sizeof(uint64));
+		if (seg->nsb % 64)
+			c->keep[seg->nsb / 64] = (UINT64CONST(1) << (seg->nsb % 64)) - 1;
+		c->setcut = palloc0(nw * sizeof(uint64));
+		return;
+	}
 	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
 	{
 		c->prow = NULL;
@@ -1216,7 +1231,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		load_memory(cu, src->order[src->ocur++]);
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
-	else if (!((src->super || src->whole) && col_super_take(src, best, cu)))
+	else if (!((src->super || src->whole || src->pcnt) && col_super_take(src, best, cu)))
 	{
 		load_stored(cu, best->seg, best->cur);
 		if (best->prow != NULL)
@@ -1297,6 +1312,15 @@ sift_col_super(SiftColSource *src, bool on)
 {
 	src->super = on;
 	src->whole = 0;
+	src->pcnt = 0;
+}
+
+void
+sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
+{
+	src->pcnt = leaf + 1;
+	src->pcnt_op = op;
+	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
 }
 
 void
@@ -1334,6 +1358,8 @@ sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
 	/* the table could not answer: the segment's own superunits and units, and no other segment is tried */
 	if (cu->whole)
 		src->whole = 0;
+	if (cu->counted)
+		src->pcnt = 0;
 	for (int i = 0; i < src->nseg; i++)
 		if (src->seg[i].seg == cu->seg)
 		{

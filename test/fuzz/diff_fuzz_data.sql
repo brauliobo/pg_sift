@@ -96,6 +96,16 @@ BEGIN
 	END LOOP;
 END $$;
 -- @end
+-- row counts of a text dictionary (column format minor 24): s has about a tenth of the rows distinct values, with NULLs, empty strings, a wildcard character, and strings over 255 bytes in the rows the run adds (a segment of them has no counts)
+CREATE TABLE dcf (id int, s text, n int) WITH (autovacuum_enabled = false, fillfactor = 10);
+CREATE FUNCTION fz.gen_dcf(lo bigint, hi bigint, salt int) RETURNS SETOF dcf LANGUAGE sql AS $$
+	SELECT i::int, CASE fz.h(i, 170 + salt) % 400 WHEN 0 THEN NULL WHEN 1 THEN '' WHEN 2 THEN 'a_b' || (fz.h(i, 171 + salt) % 50) WHEN 3 THEN '100%' || (fz.h(i, 172 + salt) % 50)
+	       WHEN 4 THEN 'k' || md5(i::text) || CASE WHEN salt > 0 THEN repeat('z', 260) ELSE '' END
+	       ELSE 'k' || substr(md5((fz.h(i, 173 + salt) % (@ROWS@ / 8 + 1))::text), 1, 4 + fz.h(i, 174 + salt) % 9) END,
+	       fz.h(i, 175 + salt) % 1000
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO dcf SELECT * FROM fz.gen_dcf(1, @ROWS@ * 2, 0);
+CREATE INDEX dcf_idx ON dcf USING sift_col (id, s, n) WITH (count_columns = 's', write_buffer_limit = 4096);
 -- key tables (column format minor 22): grp_id has 300 values, above the 256 groups of a unit's cube, over 40 times the rows of the other tables so that a table fits 3% of a segment
 CREATE TABLE ktf (id int, grp_id int, ts timestamp, amt numeric(12,2), val int, pad text) WITH (autovacuum_enabled = false, fillfactor = 10);
 CREATE FUNCTION fz.gen_ktf(lo bigint, hi bigint, salt int) RETURNS SETOF ktf LANGUAGE sql AS $$
@@ -322,4 +332,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;

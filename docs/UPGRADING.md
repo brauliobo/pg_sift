@@ -124,6 +124,8 @@ column. Only what was written with the settings below stays at minor 4 or 6, the
 | 20 | `hll_columns` (option, off): a HyperLogLog sketch of a column in every unit, for `sift.approx_count_distinct` | `ALTER INDEX x RESET (hll_columns)` and `REINDEX` (the setting does not apply: the option stamps the minor) |
 | 21 | `order_array_columns`, `order_array_group` (options, off): a global order array of the keys of a segment | `ALTER INDEX x RESET (order_array_columns)` (and `order_array_group`) and `REINDEX`; the setting does not apply: the option stamps the minor |
 | 22 | `key_table` (option, on) of an index, `sift.table_key_table` (setting, on) of a `sift_table`: the key table of a leaf of `key_columns`, or of a foreign key or `*_id` column of a table, in a segment | `ALTER INDEX x SET (key_table = off)` and `REINDEX`; for a table `SET sift.table_key_table = off` and `VACUUM FULL t`; before the older files are installed (a setting below 15 also suppresses key tables) |
+| 23 | `key_columns` lists of runs of consecutive keys (on when it pays) | `ALTER INDEX x SET (key_columns = 'off')` and `REINDEX`, before the older files are installed (a 23 segment makes 3.4 refuse the index) |
+| 24 | `count_columns` (option, opt-in): the rows of each string of a text leaf's dictionary | `ALTER INDEX x RESET (count_columns)` and `REINDEX`, before the older files are installed (a 24 segment may also hold key tables: `key_table = off` too, for 3.4) |
 
 So `WITH (cube_minmax = false, superunit = 0, calendar_columns = 'off')` at creation, or `sift.col_format_minor = 6` for the server (`ALTER SYSTEM`, as in "Going back to 3.2") or the database, writes what 3.2 reads (4 for a schema
 without JSON paths, 6 with them; 4 for 3.1, 3 for 3.0 with the setting at 4 or 3). An index with wide leaves (column format 5) is written for 3.2 and later at every setting.
@@ -179,6 +181,7 @@ psql -d app -c "SELECT sift.verify('docs_idx', true)"            # each sift ind
   `ALTER INDEX x RESET (order_array_columns)` (and `order_array_group`) and the `REINDEX`.
 - **`key_table` (minor 22, on by default).** A 3.4 library refuses a segment of minor 22 with the format error (`index "x" has a segment of column format 1.22, this build reads 1.3 to 1.21`) and the `REINDEX` hint, in a scan, `VACUUM`, `sift.col_verify` and `sift.col_segments`; an `INSERT` into the table fails with `invalid directory update: unknown segment format`; nothing crashes (checked with the 3.4.2 library on a database written by 3.5). A `REINDEX` on the 3.4 library rebuilds the index without key tables (it does not know the option), so it fixes it too; an index written with `key_table = off` is read by 3.4.2 without error. `sift.upgrade_check('3.4')` lists the index as a blocker with
   `ALTER INDEX x SET (key_table = off)` and the `REINDEX` (for a `sift_table`: `SET sift.table_key_table = off` and `VACUUM FULL t`, which rewrites the segments without tables); run both on the 3.5 library, before the files of the older release are installed (an older library does not know the option, but ignores it in `pg_class`, as it ignores the others in this list). The setting does not apply: `sift.col_format_minor` is 15 at most, and a table is written under 15 only. A segment written under a lower setting has none.
+- **`count_columns` (minor 24, opt-in).** A 3.4 library refuses a segment of minor 24 as it does minor 22: the format error (`index "x" has a segment of column format 1.24, this build reads 1.3 to 1.21`) with the `REINDEX` hint, in a scan, `VACUUM`, `sift.col_verify` and `sift.col_segments`, and an `INSERT` fails with `invalid directory update: unknown segment format`. `sift.upgrade_check('3.4')` lists the index as a blocker with the advice `ALTER INDEX x RESET (count_columns), SET (key_table = off)` and `REINDEX`. Only an index with the option has such a segment.
 - For 3.1 use 4 and for 3.0 use 3 in step 2, and `--to 3.1` or `--to 3.0` in steps 1 and 4 (the matrix test checks that those releases read what the settings 4 and 3 write, not the full sequence).
 
 ### After the downgrade: the catalog, pg_dump and the way forward
@@ -203,7 +206,7 @@ Every `blocker` row of the preflight says how to write what the release reads:
 
 | Object | Advice |
 |---|---|
-| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16, 3.4 up to 21 and 3.5 up to 22; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, minor 22 for an index with `key_columns` leaves unless `key_table = off` and for a `sift_table` with a foreign key or `*_id` column unless `sift.table_key_table = off`, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
+| `sift_col` index | `SET sift.col_format_minor = N` (3 for 3.0, 4 for 3.1, 6 for 3.2; 3.3 reads every minor up to 16, 3.4 up to 21 and 3.5 up to 24; the default setting is 15, and minors 16, 17, 18, 20 and 21 are written only for an index with `point_tid_columns`, `key_cut` or `order_columns`, `hll_columns` or `order_array_columns`, minor 22 for an index with `key_columns` leaves unless `key_table = off` and for a `sift_table` with a foreign key or `*_id` column unless `sift.table_key_table = off`, minor 24 for an index with `count_columns`, and 19 only for a leaf NULL in nearly every row) and `REINDEX INDEX x`; an index with wide leaves (column format 5) is written for 3.2 and later at every setting: drop it for 3.1 |
 | `sift_table` | with `sift.col_format_minor` set, `VACUUM FULL t` rewrites it in that format (`ALTER TABLE t SET ACCESS METHOD heap` and back fails with `row is too big` on a row over the heap page limit) |
 | `sift` (BM25) index | the segment format is the library's: drop the index and create it again with the older release, or keep the newer library |
 
@@ -235,6 +238,7 @@ An existing index or table keeps what it holds; the new default applies to units
 | column format 16 (`point_tid_columns`) | 3.3 |
 | column format 17 (`key_cut`), 18 (heads of the sorted runs), 19 (the exceptions of a NULL-heavy leaf), 20 (`hll_columns`), 21 (`order_array_columns`) | 3.4 |
 | column format 22 (`key_table`, the key table of a segment) | 3.5 |
+| column format 24 (`count_columns`, the row counts of a text dictionary) | 3.5 |
 
 `scripts/upgrade_check.sql` holds this table; a release that adds a format adds its row there.
 

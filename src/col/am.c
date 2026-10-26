@@ -226,6 +226,15 @@ sift_col_validate_point_columns(const char *value)
 }
 
 void
+sift_col_validate_count_columns(const char *value)
+{
+	const char *err = sift_cpoint_syntax(value);
+
+	if (err)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option \"%s\": %s", value, err)));
+}
+
+void
 sift_col_validate_point_tid_columns(const char *value)
 {
 	const char *err = sift_cpoint_syntax(value);
@@ -430,6 +439,9 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "point_columns",
 						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "count_columns",
+						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order, so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 4 bytes for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default none)",
+						 "", sift_col_validate_count_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
 						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 16, which only 3.3 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
@@ -469,6 +481,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
 	{"point_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_columns)},
+	{"count_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, count_columns)},
 	{"point_tid_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, point_tid_columns)},
 };
 
@@ -587,6 +600,14 @@ sift_col_options_point_columns(Relation index)
 	const SiftColOptions *o = sift_col_options(index);
 
 	return o->point_columns ? (const char *) o + o->point_columns : "";
+}
+
+const char *
+sift_col_options_count_columns(Relation index)
+{
+	const SiftColOptions *o = sift_col_options(index);
+
+	return o->count_columns ? (const char *) o + o->count_columns : "";
 }
 
 const char *
@@ -827,8 +848,13 @@ build_rel(Relation index, MemoryContext mcxt)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_columns option: %s", err)));
 		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid point_tid_columns option: %s", err)));
+		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: %s", err)));
 		for (int i = 0; i < n; i++)
-			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON ||
+			if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: \"%s\" is not a text column", names[i])));
+		for (int i = 0; i < n; i++)
+			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||
 				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)

@@ -329,7 +329,7 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
-verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCKtab *kt)
+verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCKtab *kt, uint32 **crows)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	const SiftColSchema *sc = seg->schema;
@@ -401,10 +401,17 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 			SiftCDict  *d = sift_cseg_dict(seg, c);
 
 			for (uint32 i = 0; i < ch.n; i++)
-				if (!(ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1)) && (uint64) vals[i] >= d->n)
-					corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->sb,
-							(long long) vals[i], d->n);
+				if (!(ch.nulls && (ch.nulls[i / 64] >> (i % 64) & 1)))
+				{
+					if ((uint64) vals[i] >= d->n)
+						corrupt(seg, "Leaf %d of the unit of SB %u holds code %lld of a dictionary of %u.", c, r->sb,
+								(long long) vals[i], d->n);
+					if (crows[c] != NULL)
+						crows[c][vals[i]]++;
+				}
 		}
+		if (crows[c] != NULL && (ch.enc == SIFT_COLENC_ISTR || ch.ovf != NULL))
+			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings, but the unit of SB %u stores them inline or has an overflow value.", c, r->sb);
 		if (need[c])
 			kept[c] = vals;
 		else if (kt)
@@ -678,6 +685,8 @@ verify_dicts(SiftColSegment *seg)
 		d = sift_cseg_dict(seg, c);
 		if (!d->blocked)
 			continue;
+		if (sift_cseg_dict_counted(seg, c) && seg->entry.format < SIFT_COL_FORMAT_COUNT)
+			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings in a segment of column format 1.%d.", c, seg->entry.format);
 		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
 			corrupt(seg, "The dictionary of leaf %d is stored in blocks in a segment of column format 1.%d.", c, seg->entry.format);
 		if (!d->stored_order)
@@ -718,13 +727,18 @@ sift_cseg_verify(SiftColSegment *seg)
 	for (int c = 0; c < seg->schema->ncols; c++)
 		haskt[c] = sift_cseg_ktab(seg, c) != NULL;
 	kt = sift_ktab_begin(seg->schema, haskt, CurrentMemoryContext);
+	uint32	   *crows[SIFT_COL_MAX_COLS] = {NULL};
+
 	verify_vers(seg);
 	verify_dicts(seg);
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (sift_cseg_dict_counted(seg, c))
+			crows[c] = palloc0(Max(sift_cseg_dict(seg, c)->n, 1) * sizeof(uint32));
 	sift_cseg_verify_points(seg);
 	sift_cseg_verify_lst(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		verify_unit(seg, u, keys, listed, kt);
+		verify_unit(seg, u, keys, listed, kt, crows);
 		CHECK_FOR_INTERRUPTS();
 	}
 	for (int c = 0; c < seg->schema->ncols; c++)
@@ -733,6 +747,12 @@ sift_cseg_verify(SiftColSegment *seg)
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (haskt[c] && !sift_ktab_check(kt, sift_cseg_ktab(seg, c)))
 			corrupt(seg, "The key table of leaf %d differs from the units.", c);
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (crows[c] != NULL)
+		{
+			sift_cseg_dict_count_check(seg, c, crows[c]);
+			pfree(crows[c]);
+		}
 	sift_cseg_verify_super(seg);
 	verify_set_kinds(seg);
 	verify_run_kinds(seg);

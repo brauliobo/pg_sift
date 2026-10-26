@@ -47,6 +47,14 @@ typedef struct PointAcc
 	StringInfoData tab;
 } PointAcc;
 
+/* The rows of each code of the dictionary of a leaf of the option count_columns, over the units added; bad: a unit stores strings inline or has an overflow value, so the rows would not add up */
+typedef struct CountAcc
+{
+	uint32	   *rows;
+	uint32		cap;
+	bool		bad;
+} CountAcc;
+
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
 #define LST_MIN_UNITS		64		/* a segment of fewer units keeps no leaf statistics: its zone arrays are a few pages */
@@ -106,7 +114,7 @@ struct SiftColSegWriter
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
 	bool		anysets;
 	bool		anypres;		/* some unit keeps a key list or bitmap of a leaf (minor 15) */
-	bool		anyrunl;		/* ... and one of them as runs of consecutive keys (minor 23) */
+	bool		anyrunl;		/* ... and one of them as runs of consecutive keys (minor 24) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
 	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
@@ -114,6 +122,7 @@ struct SiftColSegWriter
 	bool		anyhll;
 	SiftCKtab  *kt;				/* the key tables of the leaves the index keeps key lists for (minor 22), NULL when the segment has none to keep */
 	StringInfoData ktab;
+	CountAcc   *cnt;			/* [ncols], NULL unless the segment counts the rows of the codes of some leaf (option count_columns, minor 24) */
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anyord;			/* some leaf has a global order block to write (minor 21) */
@@ -206,6 +215,37 @@ map_dicts(SiftColSegWriter *w, const SiftColBatch *b, const bool *inl)
 	}
 }
 
+/* The rows of each segment code of the leaves that count them (option count_columns): a unit that stores its strings inline, has an overflow value or belongs to a child leaf makes the leaf's counts unusable */
+static void
+count_rows(SiftColSegWriter *w, const SiftColBatch *b)
+{
+	for (int c = 0; w->cnt != NULL && c < w->schema->ncols; c++)
+	{
+		CountAcc   *a = &w->cnt[c];
+		const SiftCVals *v = &b->col[c];
+		uint32		n = w->dict[c] != NULL ? w->dict[c]->n : 0;
+
+		if (!w->pagg.count[c] || a->bad)
+			continue;
+		if (w->dict[c] == NULL || w->inl[c] || v->ovf != NULL || v->n != b->nrows)
+		{
+			a->bad = true;
+			continue;
+		}
+		if (a->cap < n)
+		{
+			uint32		cap = Max(n, 2 * a->cap);
+
+			a->rows = a->rows ? repalloc(a->rows, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(w->mcxt, (Size) cap * sizeof(uint32));
+			memset(a->rows + a->cap, 0, (Size) (cap - a->cap) * sizeof(uint32));
+			a->cap = cap;
+		}
+		for (uint32 i = 0; i < v->n; i++)
+			if (!(v->nulls && sift_col_bit_test(v->nulls, i)))
+				a->rows[w->dictmap[c][v->key[i]]]++;
+	}
+}
+
 /* The accumulators of the leaves flagged in want, NULL when there are none */
 static SetAcc *
 acc_new(SiftColSegWriter *w, const bool *want)
@@ -282,6 +322,14 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	{
 		w->kt = sift_ktab_begin(w->schema, spec->set, w->mcxt);
 	}
+	/* the rows of each string are written with the order of its dictionary: the option stamps minor 24, the setting stays at 15 */
+	if (w->setting >= SIFT_COL_FORMAT_PRESENCE && w->cnt == NULL)
+		for (int c = 0; c < w->schema->ncols; c++)
+			if (spec->count[c])
+			{
+				if (w->cnt == NULL)
+					w->cnt = MemoryContextAllocZero(w->mcxt, w->schema->ncols * sizeof(CountAcc));
+			}
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
@@ -701,6 +749,7 @@ sift_colw_add(SiftColSegWriter *w, const SiftColBatch *b)
 	for (int c = 0; c < ncols; c++)
 		w->inl[c] = w->dict[c] != NULL && sift_cbatch_str_inline(b, c, w->dict[c], SIFT_COL_DICT_MAX_BYTES);
 	map_dicts(w, b, w->inl);
+	count_rows(w, b);
 	resetStringInfo(&w->buf);
 	sift_cunit_encode(b, w->dictmap, w->inl, w->pol, w->format >= 4, &w->buf, &start, w->zones + (Size) w->nsb * ncols);
 	add_preagg(w, b, w->buf.len - start);
@@ -1478,6 +1527,11 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 			{
 				w->dform[c] = DICT_LOOKUP;
 				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+				if (w->cnt != NULL && w->pagg.count[c] && !w->cnt[c].bad && w->cnt[c].cap >= w->dict[c]->n)
+				{
+					w->dict[c]->rows = w->cnt[c].rows;
+					w->format = Max(w->format, SIFT_COL_FORMAT_COUNT);
+				}
 			}
 	}
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};

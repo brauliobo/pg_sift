@@ -45,6 +45,7 @@ TABLE_SKIP = {
     'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
     'zonekey': 'zkf is read through its sift_col index only',
     'keytable': 'ktf is read through its sift_col index only',
+    'dictcount': 'dcf is read through its sift_col index only',
 }
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
@@ -1353,6 +1354,43 @@ def dml_keytable(r, ctx):
     return r.choice(["SELECT sift.col_promote('ktf_idx')", "SELECT sift.col_merge('ktf_idx', true)"])
 
 
+# ---------- row counts of a text dictionary (column format minor 24): count(*) WHERE s is tested by a prefix, an equality or a range, against the normal plan ----------
+def dc_value(r, ctx):
+    n = ctx['rows'] // 8 + 1
+    return r.choice(['k' + __import__('hashlib').md5(str(r.randrange(n)).encode()).hexdigest()[:r.randrange(1, 14)], 'k', '', 'a', 'a_b', 'a_b1', '100', '100%', 'k0', 'kf', 'zz'])
+
+
+def gen_dictcount(r, ctx):
+    v = dc_value(r, ctx)
+    q = lambda s: "'" + s.replace("'", "''") + "'"
+    op = r.choice(['=', '<', '<=', '>', '>=', 'LIKE', 'LIKE', 'LIKE'])
+    esc = v.replace('\\', '\\\\').replace('_', '\\_').replace('%', '\\%')
+    test = f'e.s COLLATE "C" LIKE {q(esc + "%")}' if op == 'LIKE' else f'e.s COLLATE "C" {op} {q(v)}'
+    where = [test] + ([r.choice([f'e.n < {r.randrange(50, 950)}', f'e.id > {r.randrange(ctx["rows"])}', 'e.n IS NOT NULL'])] if r.randrange(5) == 0 else [])
+    ag = ['count(*)'] + (r.sample(['sum(e.n)', 'max(e.id)', 'count(e.s)'], r.randrange(0, 3)) if r.randrange(4) == 0 else [])
+    return dict(table='dcf', keys=[], aggs=ag, where=where, having=[], ordered=False)
+
+
+def dml_dictcount(r, ctx):
+    """Updates, deletes, inserts into the write buffer, VACUUM, promotion, merge, REINDEX and the option on dcf."""
+    m = r.choice([13, 40, 97, 211, 509, 997])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(13)
+    if e < 3:
+        return r.choice([f"UPDATE dcf SET s = 'k' || md5(id::text) WHERE {ids}", f'UPDATE dcf SET s = NULL WHERE {ids}', f"UPDATE dcf SET s = 'a_b' || (id % 50) WHERE {ids}", f'UPDATE dcf SET n = n + 1 WHERE {ids}'])
+    if e in (3, 4, 5):
+        return f'DELETE FROM dcf WHERE {ids}'
+    if e in (6, 7):
+        n = r.choice([5, 40, 300, 1500])
+        lo = ctx['next_dc']; ctx['next_dc'] += n
+        return f'INSERT INTO dcf SELECT * FROM fz.gen_dcf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 8:
+        return r.choice(['VACUUM dcf', 'VACUUM (FREEZE) dcf'])
+    if e == 9:
+        return r.choice([f"ALTER INDEX dcf_idx SET (count_columns = {r.choice(['s', 's', ''])!r})", 'REINDEX INDEX dcf_idx'])
+    return r.choice(["SELECT sift.col_promote('dcf_idx')", "SELECT sift.col_merge('dcf_idx', true)"])
+
+
 def base_of(parts, nl):
     return BASE + (';enable_nestloop=off' if nl else '') + (';TimeZone=%s' % parts['tz'] if parts.get('tz') else '')
 
@@ -1366,7 +1404,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
-    'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4),
+    'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1691,6 +1729,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     ru = random.Random(seed * 49979687 + 13)
     rd = random.Random(seed * 67867979 + 19)
     rq = random.Random(seed * 86028121 + 23)
+    rq2 = random.Random(seed * 94906249 + 29)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
@@ -1709,6 +1748,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
         if not TABLE and (not only or 'keytable' in only):
             st += [dml_keytable(rq, ctx) for _ in range(rq.randrange(dmls + 1))]
+        if not TABLE and (not only or 'dictcount' in only):
+            st += [dml_dictcount(rq2, ctx) for _ in range(rq2.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:
@@ -1882,7 +1923,7 @@ def main():
     TABLE = a.table
     if a.selftest:
         for TABLE in (False, True):
-            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000}
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
             sql = data_sql(1, a.rows, a.parts)
             if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
@@ -1918,7 +1959,7 @@ def main():
         tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

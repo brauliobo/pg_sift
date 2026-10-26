@@ -40,6 +40,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_read);
 PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_types);
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
+PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
@@ -1672,6 +1673,44 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_dict_count(index, leaf, op, value): for each immutable segment whether its dictionary of the leaf holds row counts and the rows it says pass op ('eq', 'lt', 'le', 'gt', 'ge', 'prefix') against value */
+Datum
+sift_test_col_dict_count(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	int			leaf = PG_GETARG_INT32(1);
+	char	   *opname = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	text	   *val = PG_GETARG_TEXT_PP(3);
+	SiftColValue c = {.len = VARSIZE_ANY_EXHDR(val), .v.s = VARDATA_ANY(val)};
+	SiftColOp	op = strcmp(opname, "eq") == 0 ? SIFT_COLOP_EQ : strcmp(opname, "lt") == 0 ? SIFT_COLOP_LT : strcmp(opname, "le") == 0 ? SIFT_COLOP_LE :
+		strcmp(opname, "gt") == 0 ? SIFT_COLOP_GT : strcmp(opname, "ge") == 0 ? SIFT_COLOP_GE : SIFT_COLOP_PREFIX;
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint64		rows = 0;
+		bool		counted;
+		Datum		v[3];
+		bool		nulls[3] = {false};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		counted = sift_cseg_dict_count(seg, leaf, op, &c, &rows);
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = BoolGetDatum(counted);
+		v[2] = Int64GetDatum(rows);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

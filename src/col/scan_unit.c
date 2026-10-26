@@ -592,6 +592,37 @@ col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 }
 
 /*
+ * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns) answers the count for all its units
+ * at once when every one is exact on its own, as col_whole_take wants of a segment: every page all-visible, no dead row or exception, the directory current.
+ * The checks come in the order of col_super_take (all-visible bits, directory, liveness). Then col_super_take hands the segment over as one unit.
+ */
+bool
+col_count_segment(SiftColSource *src, ColCursor *c)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		fan = sift_cseg_super_fan(seg),
+				rows = 0;
+	uint64		n;
+
+	if (fan == 0 || seg->nsb == 0 || !sift_cseg_dict_counted(seg, src->pcnt - 1))
+		return false;
+	for (uint32 u = 0; u < seg->nsb; u += fan)
+		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
+			return false;
+	if (!(src->flags & COLO_TABLE) && !segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	if (!units_clean(seg, 0, seg->nsb, &rows))
+		return false;
+	if (!sift_cseg_dict_count(seg, src->pcnt - 1, src->pcnt_op, &src->pcnt_val, &n))
+		return false;
+	c->count_ok = true;
+	c->count_rows = n;
+	c->count_unit_rows = rows;
+	return true;
+}
+
+/*
  * The group of units at the cursor as one unit. Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
  * all-visible (the masks of the units are in the summary, so no unit record is read) and no dead row, read in the order of unit_allvisible and
  * unit_clean: the all-visible bits first, then the directory, then the liveness.
@@ -604,6 +635,14 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 				n,
 				rows = 0;
 
+	if (c->count_ok && src->pcnt)
+	{
+		c->count_ok = false;
+		take_units(c, cu, 0, seg->nsb, c->count_unit_rows);
+		cu->counted = true;
+		cu->crows = c->count_rows;
+		return true;
+	}
 	if (src->whole && col_whole_take(src, c, cu))
 		return true;
 	if (!src->super)
@@ -632,11 +671,20 @@ sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
 {
 	ColUnit    *cu = unit->priv;
 
-	if (cu->nsu == 0 || cu->whole)
+	if (cu->nsu == 0 || cu->whole || cu->counted)
 		return false;
 	*seg = cu->seg;
 	*k = cu->u / sift_cseg_super_fan(cu->seg);
 	return true;
+}
+
+bool
+sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows)
+{
+	ColUnit    *cu = unit->priv;
+
+	*rows = cu->crows;
+	return cu->counted;
 }
 
 bool

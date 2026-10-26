@@ -491,6 +491,29 @@ col_whole(void *impl, int leaf, const int *meas, int nmeas)
 	return false;
 }
 
+static void
+col_count_range(void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len)
+{
+	ColSource  *src = impl;
+	static const SiftColOp ops[] = {[SSTR_EQ] = SIFT_COLOP_EQ, [SSTR_LT] = SIFT_COLOP_LT, [SSTR_LE] = SIFT_COLOP_LE, [SSTR_GT] = SIFT_COLOP_GT,
+	[SSTR_GE] = SIFT_COLOP_GE, [SSTR_PREFIX] = SIFT_COLOP_PREFIX};
+
+	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
+	if (src->sel.keep == NULL && ops[op] != 0)
+		sift_col_count_range(src->cs, leaf, ops[op], s, len);
+}
+
+static bool
+col_unit_count(void *impl, const SiftSrcUnit *unit, int64 *rows)
+{
+	uint64		n;
+
+	if (!sift_col_unit_counted(&((ColSource *) impl)->unit, &n))
+		return false;
+	*rows = (int64) n;
+	return true;
+}
+
 static uint32
 col_super_span(void *impl)
 {
@@ -784,6 +807,8 @@ static const SiftSrcProvider col_provider = {
 	.next = col_next,
 	.super = col_super,
 	.whole = col_whole,
+	.count_range = col_count_range,
+	.unit_count = col_unit_count,
 	.split = col_split,
 	.super_span = col_super_span,
 	.read = col_read,

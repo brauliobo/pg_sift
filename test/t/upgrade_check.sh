@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 65
+plan 67
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -123,6 +123,11 @@ check "to 3.4: the same index with the lists off is ok" test -z "$(row "$(uc --t
 q clean "ALTER INDEX facts_runs SET (key_columns = 'off', key_table = off)" "REINDEX INDEX facts_runs" >/dev/null
 check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs)"
 q clean "DROP TABLE run_facts" >/dev/null
+# the row counts of a text dictionary (count_columns) are column format 24: 3.4 refuses it too
+q clean "CREATE INDEX facts_cnt ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, count_columns = 'pad')" >/dev/null
+check "an index with row counts is column format 24" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 24' <<<"$(uc clean)"
+check "to 3.4: an index with row counts is a blocker that says to reset count_columns" grep -q -E "^blocker +facts_cnt .*ALTER INDEX facts_cnt RESET \(count_columns\), SET \(key_columns = 'off', key_table = off\), then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
+q clean "DROP INDEX facts_cnt" >/dev/null
 q clean "DROP TABLE key_facts" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null

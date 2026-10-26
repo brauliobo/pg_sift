@@ -119,6 +119,7 @@ typedef struct SiftColOptions
 	int			order_columns;	/* offset of the "order_columns" string, 0 = none */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
+	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
@@ -144,6 +145,7 @@ extern const char *sift_col_options_calendar_columns(Relation index);	/* "" when
 extern const char *sift_col_options_key_columns(Relation index);	/* NULL when the option is not set (CREATE INDEX before its default is chosen, or an index written without it) */
 extern const char *sift_col_options_point_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_array_columns(Relation index);	/* "" when none */

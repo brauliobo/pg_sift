@@ -1,0 +1,142 @@
+-- count_columns (column format minor 24): the dictionary of a text leaf stores the rows of each string in byte order, and a count(*) of one test of the leaf (a prefix, a range or an
+-- equality) over segments with no dead row and every page all-visible is read from it: two bisections a segment, no row. The count never depends on it: every shape, against the heap,
+-- through a write buffer, promotion, merge, delete, VACUUM, update, REINDEX, a transaction in flight, strings stored inline and the option off.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.agg_force = on;
+
+CREATE TABLE dc (id int, s text, n int) WITH (autovacuum_enabled = off);
+INSERT INTO dc SELECT g, 'key ' || md5((g % 12000)::text), g FROM generate_series(1, 30000) g;
+INSERT INTO dc VALUES (30001, 'a_b1', 1), (30002, 'a_bc', 2), (30003, 'axb', 3), (30004, '100%x', 4), (30005, '100abc', 5), (30006, '', 6), (30007, NULL, 7), (30008, 'key ', 8);
+CREATE INDEX dc_idx ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, n sift.col_int4_ops) WITH (count_columns = 's', write_buffer_limit = 4096);
+VACUUM dc;
+SELECT format FROM sift._test_col_formats('dc_idx'::regclass) ORDER BY gen;
+SELECT bool_and(counted) AS every_segment_counts, sum(rows) AS rows_of_prefix FROM sift._test_col_dict_count('dc_idx'::regclass, 1, 'prefix', 'key 0');
+
+-- the index's count of a test against the heap's, for strings that are there, ones that are not, and the edges of the order
+CREATE FUNCTION dc_check(tag text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	k text;
+	t record;
+	got bigint;
+	want bigint;
+	bad int := 0;
+	n int := 0;
+BEGIN
+	FOR k IN SELECT 'key ' || md5((1 + (g * 7919) % 12500)::text) FROM generate_series(1, 12) g
+			 UNION ALL SELECT 'key ' || substr(md5(g::text), 1, 3 + g % 12) FROM generate_series(1, 6) g
+			 UNION ALL VALUES (''), ('a'), ('a_b'), ('100'), ('key '), ('key 0'), ('key f'), ('key ffffffffffffffffffffffffffffffffff'), ('zzz') LOOP
+		FOR t IN SELECT * FROM (VALUES ('='), ('<'), ('<='), ('>'), ('>='), ('^')) v(op) LOOP
+			EXECUTE format('SELECT count(*) FROM dc WHERE s COLLATE "C" %s %L', CASE t.op WHEN '^' THEN 'LIKE' ELSE t.op END,
+						   CASE t.op WHEN '^' THEN replace(replace(k, '_', '\_'), '%', '\%') || '%' ELSE k END) INTO got;
+			EXECUTE format('SELECT count(*) FROM (SELECT s FROM dc OFFSET 0) x WHERE s COLLATE "C" %s %L', CASE t.op WHEN '^' THEN 'LIKE' ELSE t.op END,
+						   CASE t.op WHEN '^' THEN replace(replace(k, '_', '\_'), '%', '\%') || '%' ELSE k END) INTO want;
+			n := n + 1;
+			IF got IS DISTINCT FROM want THEN
+				bad := bad + 1;
+				RAISE NOTICE '% % %: index %, heap %', tag, t.op, k, got, want;
+			END IF;
+		END LOOP;
+	END LOOP;
+	RETURN tag || ': ' || n || ' counts, ' || bad || ' differ';
+END $$;
+
+-- the rows the scan read: 0 when the dictionaries answered
+CREATE FUNCTION dc_rows_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Rows Scanned: ' THEN
+			RETURN substr(l, position(':' IN l) + 2)::int;
+		END IF;
+	END LOOP;
+	RETURN -1;
+END $$;
+
+SELECT dc_check('built');
+SELECT dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" LIKE 'key 0%'$$) AS prefix_rows_scanned,
+       dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" = 'key c20ad4d76fe97759aa27a0c99bff6710'$$) AS eq_rows_scanned,
+       dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" >= 'key a'$$) AS range_rows_scanned;
+-- a second test, another aggregate or a row level test of another column is not a count of the dictionary
+SELECT dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" LIKE 'key 0%' AND n > 100$$) > 0 AS with_another_test_scans,
+       dc_rows_scanned($$SELECT count(*), sum(n) FROM dc WHERE s COLLATE "C" LIKE 'key 0%'$$) > 0 AS with_a_sum_scans;
+SELECT sift.col_verify('dc_idx', true);
+
+-- written again: the write buffer next to the segments, a promotion, a merge
+INSERT INTO dc SELECT g, 'key ' || md5((g % 12000)::text), g FROM generate_series(30101, 31000) g;
+SELECT dc_check('write buffer');
+SELECT sift.col_promote('dc_idx') >= 0 AS promoted;
+VACUUM dc;
+SELECT dc_check('promoted');
+SELECT sift.col_merge('dc_idx', true) >= 0 AS merged;
+SELECT dc_check('merged');
+
+-- a delete leaves dead rows in a unit: its segment is read, the others answer
+DELETE FROM dc WHERE id % 7 = 0;
+SELECT dc_check('deleted, not vacuumed');
+VACUUM dc;
+SELECT dc_check('vacuumed');
+SELECT sift.col_verify('dc_idx', true);
+
+-- an update, a transaction in flight, a rollback
+UPDATE dc SET s = 'key ' || md5((id + 1)::text) WHERE id % 11 = 0;
+SELECT dc_check('updated');
+BEGIN;
+DELETE FROM dc WHERE s COLLATE "C" LIKE 'key 1%';
+SELECT dc_check('deleting in this transaction');
+ROLLBACK;
+SELECT dc_check('rolled back');
+BEGIN;
+INSERT INTO dc SELECT 40000 + g, 'key 1' || md5(g::text), g FROM generate_series(1, 500) g;
+SELECT dc_check('inserting in this transaction');
+ROLLBACK;
+VACUUM dc;
+SELECT dc_check('vacuumed again');
+SELECT sift.col_merge('dc_idx', true) >= 0 AS merged_again;
+SELECT dc_check('merged again');
+-- a few dead rows after VACUUM stay in their unit (a rewrite waits for more): the segment is read, not counted
+DELETE FROM dc WHERE id % 997 = 0;
+VACUUM dc;
+SELECT bool_or(dirty) AS a_unit_has_dead_rows FROM sift.col_segments('dc_idx');
+SELECT dc_check('few dead rows');
+REINDEX INDEX dc_idx;
+SELECT dc_check('reindexed');
+SELECT bool_and(counted) AS every_segment_counts FROM sift._test_col_dict_count('dc_idx'::regclass, 1, 'prefix', 'key 0');
+SELECT sift.col_verify('dc_idx', true);
+
+-- strings of 300 bytes are stored inline in the unit that holds them: that segment has no counts, and the counts are still the heap's
+INSERT INTO dc SELECT 50000 + g, 'key ' || md5(g::text) || repeat('x', 300), g FROM generate_series(1, 200) g;
+SELECT sift.col_promote('dc_idx') >= 0 AS promoted_inline;
+VACUUM dc;
+SELECT count(*) FILTER (WHERE counted) < count(*) AS the_inline_segment_has_no_counts, count(*) FILTER (WHERE counted) > 0 AS the_others_have FROM sift._test_col_dict_count('dc_idx'::regclass, 1, 'prefix', 'key 0');
+SELECT dc_check('inline strings');
+SELECT sift.col_verify('dc_idx', true);
+
+-- the option off, the setting below 15, a leaf of too few strings: the format stays what it was and the counts are the heap's
+ALTER INDEX dc_idx RESET (count_columns);
+REINDEX INDEX dc_idx;
+SELECT max(format) AS format_without_the_option FROM sift._test_col_formats('dc_idx'::regclass);
+SELECT dc_check('option off');
+SELECT dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" LIKE 'key 0%'$$) > 0 AS option_off_scans;
+ALTER INDEX dc_idx SET (count_columns = 's');
+SET sift.col_format_minor = 14;
+REINDEX INDEX dc_idx;
+SELECT max(format) AS format_under_setting_14 FROM sift._test_col_formats('dc_idx'::regclass);
+SELECT dc_check('setting 14');
+RESET sift.col_format_minor;
+CREATE TABLE dcs (id int, s text) WITH (autovacuum_enabled = off);
+INSERT INTO dcs SELECT g, 'k' || (g % 50) FROM generate_series(1, 20000) g;
+CREATE INDEX dcs_idx ON dcs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 's');
+SELECT max(format) AS format_of_few_strings FROM sift._test_col_formats('dcs_idx'::regclass);
+SELECT count(*) FILTER (WHERE counted) AS counted_segments FROM sift._test_col_dict_count('dcs_idx'::regclass, 1, 'prefix', 'k1');
+SELECT count(*) FROM dcs WHERE s COLLATE "C" LIKE 'k1%';
+
+-- the option takes text columns only
+CREATE INDEX dc_bad ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'id');
+CREATE INDEX dc_bad2 ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'nope');
+
+DROP FUNCTION dc_check(text);
+DROP FUNCTION dc_rows_scanned(text);
+DROP TABLE dcs, dc;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

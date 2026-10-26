@@ -135,6 +135,12 @@ extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
  * match may be used, and it is valid for the life of the segment.
  */
 extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
+/* sift.col_verify: the counts of the leaf's dictionary against the rows of each code that the units hold */
+extern void sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows);
+/* Whether the dictionary of the leaf holds the counts */
+extern bool sift_cseg_dict_counted(SiftColSegment *seg, int col);
+/* The rows whose string of the leaf passes op (EQ, LT, LE, GT, GE, PREFIX) against c, from the counts a dictionary of the option count_columns holds; false: none stored */
+extern bool sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint64 *rows);
 /*
  * The strings of a few codes without parsing the dictionary of the leaf: whether that is cheaper for want more strings (the dictionary is not at
  * hand, is stored plain or for a lookup, and has more than DICT_LAZY_RATIO times as many codes as the strings read so far from this open segment),

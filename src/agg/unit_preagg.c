@@ -165,6 +165,17 @@ preagg_fold(AggExec *ex, uint32 g, int64 rows, const PaVal *v)
 		preagg_add(ex, ai, g, &v[ai]);
 }
 
+/* count(*) and nothing else, over rows of a unit that all pass, one group */
+static void
+preagg_count(AggExec *ex, int64 rows)
+{
+	PaVal	   *v = MemoryContextAllocZero(ex->ucxt, ex->spec->naggs * sizeof(PaVal));
+
+	for (int ai = 0; ai < ex->spec->naggs; ai++)
+		v[ai].rows = v[ai].nn = rows;
+	preagg_fold(ex, 0, rows, v);
+}
+
 /* the unit's zone of every leaf the conjuncts compare lies inside the comparison, and holds no NULL: they hold for all the rows */
 static bool
 preagg_zones(AggExec *ex)
@@ -1075,6 +1086,16 @@ preagg_unit_try(AggExec *ex)
 	int			dead;
 
 	ex->pa_xleaf = -1;
+	/* a segment the dictionary of the leaf counts the rows of: the rows that pass the one test, as the source read them from it */
+	if (ex->pcount && ex->unit.nsu > 0)
+	{
+		int64		rows;
+
+		if (!sift_colsrc_unit_count(ex->src, &ex->unit, &rows))
+			return false;
+		preagg_count(ex, rows);
+		return true;
+	}
 	if (ex->pa.ktab && ex->unit.nsu == 0)
 		return false;
 	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
@@ -1118,7 +1139,6 @@ preagg_null_count(AggExec *ex)
 	const SiftAggSpec *s = ex->spec;
 	const SiftAggPred *p;
 	SiftSrcUnitAgg a;
-	PaVal *v;
 	uint32 rows;
 
 	if (s->nkeys != 0 || ex->pa.list >= 0 || s->npred != 1)
@@ -1132,10 +1152,7 @@ preagg_null_count(AggExec *ex)
 	if (!sift_colsrc_unit_agg(ex->src, &ex->unit, p->leaf, &a) || a.has_nan || a.nvals != ex->unit.nrow)
 		return false;
 	rows = p->op ? a.nvals - a.nnull : a.nnull;
-	v = MemoryContextAllocZero(ex->ucxt, s->naggs * sizeof(PaVal));
-	for (int ai = 0; ai < s->naggs; ai++)
-		v[ai].rows = v[ai].nn = rows;
-	preagg_fold(ex, 0, rows, v);
+	preagg_count(ex, rows);
 	return true;
 }
 
@@ -1247,6 +1264,21 @@ preagg_init(AggExec *ex)
 				ex->pa_on = ex->pa_dead = false;
 				ex->pa_why = SPW_ZONE;
 			}
+		}
+	}
+	/* a count(*) of one text test (equality, range or prefix): the source may count a segment from its dictionary (option count_columns) */
+	ex->pcount = false;
+	if (ex->super_on && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred == 1 && !ex->spec->left_lateral && ex->nfilter == 0 && ex->ntype == 0 && ex->nwide == 0)
+	{
+		const SiftSrcStrTest *t = ex->ps[ex->spec->pred[0]->id].str;
+		bool		only = t != NULL && t->nvals == 1 && (!ex->pushed || !ex->pushed[0]);
+
+		for (int ai = 0; only && ai < ex->spec->naggs; ai++)
+			only = ex->spec->agg[ai].kind == SAA_COUNT_STAR && ex->spec->agg[ai].filter == NULL;
+		if (only && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX))
+		{
+			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0], t->lens[0]);
+			ex->pcount = true;
 		}
 	}
 	/* the key table of the leaf the histogram is of answers for a segment, when the comparisons are all on that leaf */

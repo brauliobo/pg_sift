@@ -112,6 +112,7 @@ extern void sift_col_validate_order_array_group(const char *value);
 extern void sift_col_validate_hll_columns(const char *value);
 extern void sift_col_validate_point_columns(const char *value);
 extern void sift_col_validate_point_tid_columns(const char *value);
+extern void sift_col_validate_count_columns(const char *value);
 extern void sift_col_validate_return_columns(const char *value);
 /* Whether attribute a (leaves of it, a shredded jsonb or not) is a text, varchar or uuid column a tuple scan can return */
 extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);

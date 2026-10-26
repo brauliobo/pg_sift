@@ -354,6 +354,8 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		cdict_sort(d);
 	if (zip)
 		z = palloc(zcap);
+	if (form == DICT_LOOKUP && d->rows != NULL)
+		form = DICT_LOOKUP_COUNT;
 	put_val(out, form);
 	put_val(out, d->n);
 	put_val(out, fixed);
@@ -393,11 +395,22 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
 	}
 	memcpy(out->data + tab, boff, (nblk + 1) * sizeof(uint32));
-	if (form == DICT_LOOKUP)
+	if (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT)
 	{
 		while ((out->len - start) % sizeof(uint32))
 			appendStringInfoChar(out, '\0');
 		put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
+		if (form == DICT_LOOKUP_COUNT)
+		{
+			uint32		cum = 0;
+
+			put_val(out, cum);
+			for (uint32 i = 0; i < d->n; i++)
+			{
+				cum += d->rows[d->sorted[i]];
+				put_val(out, cum);
+			}
+		}
 	}
 	pfree(boff);
 	pfree(raw);
@@ -618,8 +631,10 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	boff = palloc(((Size) nblk + 1) * sizeof(uint32));
 	memcpy(boff, p + DICT_HEAD_LOOKUP, ((Size) nblk + 1) * sizeof(uint32));
 	total = blk0 + boff[nblk];
-	if (form == DICT_LOOKUP)
+	if (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT)
 		total = (total + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) n * sizeof(uint32);
+	if (form == DICT_LOOKUP_COUNT)
+		total += ((uint64) n + 1) * sizeof(uint32);
 	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
 		pfree(boff);
@@ -704,7 +719,7 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	}
 	d->stored_order = true;
 	d->sorted = MemoryContextAlloc(mcxt, (Size) n * sizeof(uint32));
-	memcpy(d->sorted, p + (total - (uint64) n * sizeof(uint32)), (Size) n * sizeof(uint32));
+	memcpy(d->sorted, p + (total - (uint64) n * sizeof(uint32) - (form == DICT_LOOKUP_COUNT ? ((uint64) n + 1) * sizeof(uint32) : 0)), (Size) n * sizeof(uint32));
 	for (uint32 i = 0; i < n; i++)
 		if (d->sorted[i] >= n)
 			return NULL;
@@ -722,7 +737,7 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (len < DICT_HEAD)
 		return NULL;
 	memcpy(head, p, DICT_HEAD);
-	if (head[0] == DICT_LOOKUP || head[0] == DICT_BLOCKS)
+	if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT || head[0] == DICT_BLOCKS)
 		return parse_blocks(mcxt, p, len, head[0], used);
 	p += DICT_HEAD;
 	len -= DICT_HEAD;

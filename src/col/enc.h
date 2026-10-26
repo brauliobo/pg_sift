@@ -53,6 +53,7 @@ typedef struct SiftCDict
 	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
+	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
 } SiftCDict;
 
 /* The two searches a test makes of a dictionary, for one that stays in the stream */
@@ -106,6 +107,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_STRS		1
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
+#define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) u32 cum[n + 1]: the rows of the strings below each place in byte order (column format minor 24) */
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 #define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
@@ -117,7 +119,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
  * is read in place: u32 form 3 (DICT_BLOCKS), u32 n, u32 length of every string (0: they differ), u32 bytes of the strings,
  * u32 boff[blocks + 1], the blocks of DICT_BLOCK strings each in code order (a length byte for each string unless they have one length, then the strings,
  * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned),
- * which the search of a string reads
+ * which the search of a string reads; form 4 (DICT_LOOKUP_COUNT, d->rows set) adds u32 cum[n + 1] after code[]: the rows of the codes at the places below i
  */
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */

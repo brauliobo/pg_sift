@@ -267,6 +267,7 @@ typedef struct DictLookHead
 	uint64		blk_at;
 	uint64		blk_len;
 	uint64		perm_at;
+	uint64		cum_at;			/* the cumulative rows u32 cum[n + 1] (DICT_LOOKUP_COUNT), 0: none */
 } DictLookHead;
 
 typedef struct SiftCBisect
@@ -293,6 +294,7 @@ typedef struct DictLook
 	uint64		blk_at;
 	uint64		blk_len;
 	uint64		perm_at;
+	uint64		cum_at;			/* form 4: u32 cum[n + 1] after code[n], the rows of the codes at the places below i; 0: none */
 	uint32		blkno;			/* the block in blkraw (UINT32_MAX: none) */
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */

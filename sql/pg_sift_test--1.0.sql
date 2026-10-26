@@ -204,6 +204,8 @@ CREATE FUNCTION sift._test_col_types(index regclass, leaf int4, tagmask int4, de
 	AS 'MODULE_PATHNAME', 'sift_test_col_types' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_formats(index regclass, OUT gen int8, OUT format int4, OUT lstats bool) RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_test_col_formats' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_col_dict_count(index regclass, leaf int4, op text, val text, OUT gen int8, OUT counted bool, OUT rows int8) RETURNS SETOF record
+	AS 'MODULE_PATHNAME', 'sift_test_col_dict_count' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_col_counters(index regclass, preds text DEFAULT '', flags int4 DEFAULT 0,
 										OUT rows int8, OUT segments int8, OUT wbuf_rows int8, OUT units int8,
 										OUT units_pruned int8, OUT rows_scanned int8, OUT rows_vetted int8,

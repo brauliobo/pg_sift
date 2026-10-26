@@ -692,6 +692,7 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->blk_at = bc->head.blk_at;
 	l->blk_len = bc->head.blk_len;
 	l->perm_at = bc->head.perm_at;
+	l->cum_at = bc->head.cum_at;
 	l->blocked = true;
 	l->blkno = UINT32_MAX;
 	l->look = (SiftCDictLook) {look_find, look_match};
@@ -726,7 +727,7 @@ dict_look(SiftColSegment *seg, int col)
 	if (len < DICT_HEAD)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	seg_read(seg, off, DICT_HEAD, head);
-	if (head[0] != DICT_LOOKUP && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
+	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = look_alloc(seg);
 	l->seg = seg;
@@ -759,18 +760,24 @@ dict_look(SiftColSegment *seg, int col)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
 		l->blk_len = blen;
-		if (head[0] == DICT_LOOKUP)
+		if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT)
 		{
 			l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
 			if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
 				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			if (head[0] == DICT_LOOKUP_COUNT)
+			{
+				l->cum_at = l->perm_at + (uint64) l->n * sizeof(uint32);
+				if (l->cum_at + ((uint64) l->n + 1) * sizeof(uint32) > off + len)
+					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			}
 			l->look = (SiftCDictLook) {look_find, look_match};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
 			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
 			{
-				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at};
+				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at};
 				bc->have_head = true;
 				l->bc = bc;
 				l->bc_tried = true;
@@ -781,6 +788,77 @@ dict_look(SiftColSegment *seg, int col)
 	}
 	pv->look[col] = l;
 	return l;
+}
+
+/* Whether the dictionary of leaf col holds row counts (sift_cseg_dict_count) */
+bool
+sift_cseg_dict_counted(SiftColSegment *seg, int col)
+{
+	DictLook   *l;
+
+	return seg->schema->cols[col].store == SIFT_COLS_STR && (l = dict_look(seg, col)) != NULL && l->cum_at != 0;
+}
+
+/* sift.col_verify: the counts of the dictionary of leaf col are, at every place of its order, the rows of the code there that the units hold (rows[code]), from zero */
+void
+sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows)
+{
+	DictLook   *l = dict_look(seg, col);
+	uint32		prev = 0;
+
+	Assert(l != NULL && l->cum_at != 0);
+	seg_read(seg, l->cum_at, sizeof(uint32), &prev);
+	if (prev != 0)
+		corrupt(seg, "The row counts of the dictionary of leaf %d do not start at 0.", col);
+	for (uint32 pos = 0; pos < l->n;)
+	{
+		uint32		codes[256],
+					cum[256],
+					k = Min(l->n - pos, lengthof(codes));
+
+		seg_read(seg, l->perm_at + (uint64) pos * sizeof(uint32), k * sizeof(uint32), codes);
+		seg_read(seg, l->cum_at + ((uint64) pos + 1) * sizeof(uint32), k * sizeof(uint32), cum);
+		for (uint32 i = 0; i < k; i++)
+		{
+			if (codes[i] >= l->n || cum[i] - prev != rows[codes[i]] || cum[i] < prev)
+				corrupt(seg, "The row count of the string at place %u of the dictionary of leaf %d is not the rows of its code.", pos + i, col);
+			prev = cum[i];
+		}
+		pos += k;
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/*
+ * The rows of the segment whose string of leaf col passes op (EQ, LT, LE, GT, GE or PREFIX, bytewise) against c, from the cumulative counts that a dictionary
+ * of the option count_columns stores with its order: two bisections and two reads, whatever the rows. false: the leaf has no counts in this segment.
+ */
+bool
+sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint64 *rows)
+{
+	DictLook   *l;
+	SiftCSorted so;
+	uint32		from,
+				to,
+				cum[2];
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR || (l = dict_look(seg, col)) == NULL || l->cum_at == 0)
+		return false;
+	so = (SiftCSorted) {l->n, look_sorted_str, l};
+	look_cache(l);
+	if (op == SIFT_COLOP_EQ)
+	{
+		from = sift_csorted_bound(&so, c, false);
+		to = from < l->n && sift_csorted_cmp(&so, from, c) == 0 ? from + 1 : from;
+	}
+	else
+		sift_csorted_range(&so, op, c, &from, &to);
+	seg_read(seg, l->cum_at + (uint64) from * sizeof(uint32), sizeof(uint32), &cum[0]);
+	seg_read(seg, l->cum_at + (uint64) to * sizeof(uint32), sizeof(uint32), &cum[1]);
+	if (cum[1] < cum[0] || cum[1] > seg->entry.ndocs)
+		corrupt(seg, "The row counts of the dictionary of leaf %d are not ascending.", col);
+	*rows = cum[1] - cum[0];
+	return true;
 }
 
 SiftCDict *
