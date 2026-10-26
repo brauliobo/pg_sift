@@ -74,6 +74,10 @@ typedef struct ComboSt
 	bool		resettable;		/* no join, no dictionary leaf: nothing outside the cache holds its ids */
 	bool		by_id;			/* one 64-bit leaf, no join: the entry of a tuple is the id of its value, there is no table of entries */
 	MapTab	   *map;
+	MapTab	   *fmap;			/* a hybrid first-row lookup: the table by the child's key (agg/first.c), asked before the child runs */
+	uint32	   *fruns;			/* the child runs for the keys while the table is not read, over the arms that read it */
+	uint32		fthresh;		/* ... after which it is */
+	ExprState  *fpq;			/* ... and the child's condition on its parameters, over the combo's leaves */
 	uint32	   *kmemo[SIFT_AGG_MAX_JKEYS];	/* per text key of the join: the id of the table's value of each interned value of the leaf (COMBO_UNEVAL: not looked up yet, 0: no row has it) */
 	uint32		nmemo[SIFT_AGG_MAX_JKEYS];
 	uint8	   *slut;			/* a semi or anti join that is a plain filter on one integer leaf: a table over [slo, slo + snlut) of its keys */

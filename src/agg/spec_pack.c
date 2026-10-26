@@ -284,7 +284,10 @@ put_joins(Pack *p, const SiftAggSpec *s)
 		if (j->first.ok)
 		{
 			put_int(p, j->first.use);
+			put_int(p, j->first.hybrid);
+			put_node(p, j->first.pqual);
 			put_int(p, (int) j->first.relid);
+			put_int(p, j->first.rows);
 			put_int(p, j->first.nkey);
 			for (int k = 0; k < j->first.nkey; k++)
 			{
@@ -713,7 +716,10 @@ get_joins(Unpack *u, SiftAggSpec *s)
 		if ((j->first.ok = get_int(u)))
 		{
 			j->first.use = get_int(u);
+			j->first.hybrid = get_int(u);
+			j->first.pqual = get_node(u);
 			j->first.relid = (Oid) get_int(u);
+			j->first.rows = get_int(u);
 			j->first.nkey = get_int(u);
 			for (int k = 0; k < j->first.nkey; k++)
 			{

@@ -429,6 +429,16 @@ combo_child_rows(AggExec *ex, int ci, const uint64 *v, uint32 **rows)
 		prm->value = ExecEvalExprSwitchContext(lfirst(la), ex->lutcx, &prm->isnull);
 		Assert(prm->execPlan == NULL);
 	}
+	if (cs->fruns)
+	{
+		int			r;
+
+		MemoryContextSwitchTo(ex->cxt);
+		r = map_first_row(ex, ci, estate);
+		MemoryContextSwitchTo(caller);
+		if (r >= 0)
+			goto done;
+	}
 	if (memo)
 	{
 		uint32		nstored;

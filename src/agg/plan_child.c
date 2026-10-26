@@ -403,10 +403,14 @@ first_filter_bad(Node *n, void *context)
 	{
 		case T_Var:
 			return ((Var *) n)->varno != 1 || ((Var *) n)->varlevelsup != 0 || ((Var *) n)->varattno <= 0;
+		case T_Param:
+			/* context: the child's parameters, when the condition may read them */
+			return context == NULL || ((Param *) n)->paramkind != PARAM_EXEC || !list_member_int((List *) context, ((Param *) n)->paramid);
 		case T_Const:
 		case T_RelabelType:
 		case T_BoolExpr:
 		case T_NullTest:
+		case T_BooleanTest:
 			break;
 		case T_OpExpr:
 			if (builtin_cmp(((OpExpr *) n)->opno, &lt, &rt) < 0 || (type_class(lt) == TC_NONE && lt != TEXTOID) || (type_class(rt) == TC_NONE && rt != TEXTOID))
@@ -460,6 +464,8 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	RelOptInfo *brel;
 	List	   *conj;
 	int			atts[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_FORD];
+	List	   *pquals = NIL;
+	bool		unique;
 
 	memset(f, 0, sizeof(*f));
 	if (jc->j.scoped || q->commandType != CMD_SELECT || q->setOperations != NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs ||
@@ -488,6 +494,12 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		if (!first_filter_bad(qual, NULL))
 		{
 			f->qual = lappend(f->qual, qual);
+			continue;
+		}
+		/* a condition of the parameters alone (one the sub-select derived from a call on the row): it holds for the input, or the child has no row */
+		if (!contain_var_clause(qual) && !first_filter_bad(qual, jc->j.params))
+		{
+			pquals = lappend(pquals, qual);
 			continue;
 		}
 		if (!IsA(qual, OpExpr) || list_length(op->args) != 2 || f->nkey == SIFT_AGG_MAX_JKEYS)
@@ -520,13 +532,17 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 		f->keytype[f->nkey] = v->vartype;
 		f->keyarg[f->nkey++] = pos;
 	}
-	if (!first_order(q, f))
+	if (f->nkey == 0 || !first_order(q, f))
 		return;
 	for (int k = 0; k < f->nkey; k++)
 		atts[k] = f->keyatt[k];
 	for (int k = 0; k < f->nord; k++)
 		atts[f->nkey + k] = f->ordatt[k];
-	if (!sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts, NULL))
+	/* a key the table may repeat is read as a lookup table too when the rows of a key agree on the columns the query reads (agg/first.c); not with an ORDER BY, which needs the tie broken */
+	unique = sift_agg_unique_key(rte->relid, f->nkey, f->nord, atts, NULL);
+	if (!unique && f->nord == 0)
+		f->hybrid = true;
+	else if (!unique)
 	{
 		if (sift_explain_refusals)
 		{
@@ -555,7 +571,13 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	}
 	f->relid = rte->relid;
 	f->ok = true;
+	if (pquals != NIL)
+	{
+		f->pqual = (Node *) make_ands_explicit(pquals);
+		f->hybrid = true;
+	}
 	jc->frows = Max(brel->tuples, 1.0);
+	f->rows = (int) Min(jc->frows, (double) INT_MAX);
 }
 
 /*
@@ -610,7 +632,7 @@ correlated_child(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, JoinCtx *jc)
 		return false;
 	jc->j.sig = sift_agg_child_sig((Node *) q, jc->j.params);
 	child_scan_path(rel, jc);
-	if (e->rtekind == RTE_SUBQUERY && x.calls == NIL)
+	if (e->rtekind == RTE_SUBQUERY)
 		first_lookup(c, jc);
 	return true;
 }

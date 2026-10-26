@@ -384,6 +384,8 @@ register_combos(AggExec *ex)
 		if (cb->join >= 0)
 			foreach_ptr(Node, arg, s->join[cb->join].args)
 				cs->args = lappend(cs->args, init_expr(ex, arg));
+		if (cb->join >= 0 && ex->fjoin && ex->fjoin[cb->join] && s->join[cb->join].first.pqual)
+			cs->fpq = init_expr(ex, first_param_expr(&s->join[cb->join]));
 		for (int k = 0; cb->join >= 0 && k < s->join[cb->join].nkey; k++)
 			if (s->join[cb->join].keyexpr[k])
 				cs->kx[k] = init_expr(ex, (Node *) s->join[cb->join].keyexpr[k]);
@@ -426,6 +428,11 @@ scan_buffers(AggExec *ex)
 		{
 			if (ex->cs[ci].map == NULL)
 				ex->cs[ci].map = map_load(ex, ci);
+			if (ex->fjoin && ex->fjoin[s->combo[ci].join] && ex->cs[ci].fmap == NULL)
+			{
+				ex->cs[ci].fmap = map_first_peek(ex, ci);
+				ex->cs[ci].fthresh = Max(s->join[s->combo[ci].join].first.rows / 8, 1024);
+			}
 			if (s->join[s->combo[ci].join].params == NIL)
 				semi_lut_build(ex, ci);
 		}

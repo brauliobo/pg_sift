@@ -277,6 +277,8 @@ col_ref_id(MapTab *m, MapCol *mc, Datum d)
 	return mc->n;
 }
 
+static void map_col_put(MapTab *m, int c, Datum d, bool cnull);
+
 static void
 map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 {
@@ -316,24 +318,32 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 		ResetExprContext(m->kcx);
 	for (int c = 0; c < m->ncol; c++)
 	{
-		MapCol	   *mc = &m->mcol[c];
 		bool		cnull;
 		Datum		d = slot_getattr(slot, j->colatt[c], &cnull);
 
-		if (mc->byval)
-		{
-			mc->val[m->nrow] = cnull ? (Datum) 0 : d;
-			if (cnull && mc->isnull == NULL)
-				mc->isnull = MemoryContextAllocZero(m->cxt, m->cap);
-			if (mc->isnull)
-				mc->isnull[m->nrow] = cnull;
-		}
-		else if (cnull)
-			mc->id[m->nrow] = 0;
-		else
-			mc->id[m->nrow] = col_ref_id(m, mc, mc->len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) : datumCopy(d, false, mc->len));
+		map_col_put(m, c, d, cnull);
 	}
 	m->nrow++;
+}
+
+/* the value of column c of the row being added (row m->nrow) */
+static void
+map_col_put(MapTab *m, int c, Datum d, bool cnull)
+{
+	MapCol	   *mc = &m->mcol[c];
+
+	if (mc->byval)
+	{
+		mc->val[m->nrow] = cnull ? (Datum) 0 : d;
+		if (cnull && mc->isnull == NULL)
+			mc->isnull = MemoryContextAllocZero(m->cxt, m->cap);
+		if (mc->isnull)
+			mc->isnull[m->nrow] = cnull;
+	}
+	else if (cnull)
+		mc->id[m->nrow] = 0;
+	else
+		mc->id[m->nrow] = col_ref_id(m, mc, mc->len == -1 ? PointerGetDatum(PG_DETOAST_DATUM_COPY(d)) : datumCopy(d, false, mc->len));
 }
 
 void
@@ -549,6 +559,75 @@ map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o)
 			kid[0] = 0;
 	}
 	pfree(at);
+}
+
+/* do rows a and b hold the same value in every column (a NULL is the NULL's equal)? The values of a column kept once per distinct value are the same when their ids are */
+static bool
+map_rows_agree(const MapTab *m, uint32 a, uint32 b)
+{
+	for (int c = 0; c < m->ncol; c++)
+	{
+		const MapCol *mc = &m->mcol[c];
+
+		if (mc->byval)
+		{
+			bool		na = mc->isnull != NULL && mc->isnull[a],
+						nb = mc->isnull != NULL && mc->isnull[b];
+
+			if (na != nb || (!na && mc->val[a] != mc->val[b]))
+				return false;
+		}
+		else if (mc->id[a] != mc->id[b])
+			return false;
+	}
+	return true;
+}
+
+/*
+ * A child `LIMIT 1` of a table that may hold a key more than once returns one of its rows, whichever its plan meets first. Where the rows of a key
+ * hold the same columns the query reads, that is no choice: one of them is in the chain. The others (and none of a key whose rows differ) stay,
+ * and a key with more than one row in the chain is the one the child must run for (map_first_row).
+ */
+static void
+map_keep_agreeing(MapTab *m)
+{
+	uint32		nslot = 64;
+	uint32	   *rep,
+			   *same;
+	bool	   *differ;
+
+	while (nslot < 2 * m->nrow)
+		nslot *= 2;
+	rep = palloc0(nslot * sizeof(uint32));
+	differ = palloc0(nslot);
+	same = palloc(Max(m->nrow, 1) * sizeof(uint32));
+	for (uint32 r = 0; r < m->nrow; r++)
+	{
+		uint32	   *kid = m->kid + (size_t) r * m->nkey;
+		uint32		h;
+		bool		anynull = false;
+
+		same[r] = 0;
+		for (int k = 0; k < m->nkey; k++)
+			anynull |= kid[k] == 0;
+		if (anynull)
+			continue;
+		for (h = map_hash_ids(m->nkey, kid) & (nslot - 1); rep[h] != 0; h = (h + 1) & (nslot - 1))
+			if (memcmp(m->kid + (size_t) (rep[h] - 1) * m->nkey, kid, m->nkey * sizeof(uint32)) == 0)
+				break;
+		same[r] = h + 1;
+		if (rep[h] == 0)
+			rep[h] = r + 1;
+		else if (!map_rows_agree(m, rep[h] - 1, r))
+			differ[h] = true;
+	}
+	/* a row after the first of a key that agrees is out of the chains (a row with its first key id 0 is in none, map_index_rows) */
+	for (uint32 r = 0; r < m->nrow; r++)
+		if (same[r] != 0 && rep[same[r] - 1] != r + 1 && !differ[same[r] - 1])
+			m->kid[(size_t) r * m->nkey] = 0;
+	pfree(rep);
+	pfree(differ);
+	pfree(same);
 }
 
 /* the hash chains of the rows: the rows of a key are the chain of its slot (a row of the same key is another link: a join repeats a tuple per match); the arrays are cut to the rows */
@@ -794,7 +873,7 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 		return map_view(m, &have, j, cxt);
 	}
 	/* sessions that run the same query at once: one loads the rows, the others wait for them */
-	if (lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
+	if (!ex->first_peek && lookshm_claim(t->key, cxt) && (m = lookcache_find(t->key, t->before, &need, &have, cxt)) != NULL)
 	{
 		ex->ncached++;
 		sift_stat_add(SIFT_STAT_LOOKUP_HITS, 1);
@@ -1000,6 +1079,16 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		map_loaded(ex, 0, t0);
 		return m;
 	}
+	if (ex->first_peek)
+	{
+		/* the table is asked for when it costs nothing: not in a cache, it is read when the child has run enough (map_first_row) */
+		if (idx)
+			index_close(idx, AccessShareLock);
+		MemoryContextSwitchTo(old);
+		ExecDropSingleTupleTableSlot(slot);
+		table_close(rel, NoLock);
+		return NULL;
+	}
 	/* a table kept for other arms too is loaded with the columns of them all */
 	if (kept.cols.n > 0)
 	{
@@ -1075,6 +1164,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		map_keep_first(m, &j->first, &ord);
 		MemoryContextDelete(ord.cx);
 	}
+	if (j->first.hybrid)
+		map_keep_agreeing(m);
 	map_index_rows(m);
 	if (m->kcx)
 	{
@@ -1168,6 +1259,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
+	if (j->first.hybrid)
+		appendStringInfoString(&k, "|agree");
 	for (int i = 0; i < j->first.nord; i++)
 		appendStringInfo(&k, "|ord %d/%d/%d", j->first.ordatt[i], j->first.orddesc[i], j->first.ordnullsfirst[i]);
 	for (int i = 0; sift_agg_lookup_pushdown && i < j->nidx; i++)
@@ -1205,6 +1298,169 @@ map_load_shared(AggExec *ex, int ci)
 	shared_maps = lappend(shared_maps, sm);
 	MemoryContextSwitchTo(old);
 	return sm->map;
+}
+
+/* the table of a first-row lookup that may repeat a key (SiftAggFirst.hybrid): loaded as the lookup table its columns and keys make (agg/first.c) */
+MapTab *
+map_load_first(AggExec *ex, int ci)
+{
+	int			ji = ex->spec->combo[ci].join;
+	SiftAggJoin keep = ex->spec->join[ji];
+	MapTab	   *m;
+
+	if (ex->pfmaps && ex->pfmaps[ci])
+		return map_share_attach(ex->pfmaps[ci], ex->fjoin[ji], ex->cxt);
+	ex->spec->join[ji] = *ex->fjoin[ji];
+	PG_TRY();
+	{
+		m = map_load(ex, ci);
+	}
+	PG_FINALLY();
+	{
+		ex->spec->join[ji] = keep;
+	}
+	PG_END_TRY();
+	return m;
+}
+
+/* the child runs of the first-row lookups of a statement that read the same table, over its arms (a worker counts its own) */
+typedef struct FirstCount
+{
+	EState	   *estate;
+	char	   *key;
+	uint32		n;
+	MemoryContextCallback cb;
+} FirstCount;
+
+static List *first_counts = NIL;
+
+static void
+first_count_forget(void *arg)
+{
+	first_counts = list_delete_ptr(first_counts, arg);
+}
+
+static uint32 *
+first_count(AggExec *ex, const char *key)
+{
+	EState	   *estate = ex->css.ss.ps.state;
+	FirstCount *fc;
+	MemoryContext old;
+
+	if (estate == NULL)
+		return MemoryContextAllocZero(ex->cxt, sizeof(uint32));
+	foreach_ptr(FirstCount, e, first_counts)
+		if (e->estate == estate && strcmp(e->key, key) == 0)
+			return &e->n;
+	fc = MemoryContextAllocZero(estate->es_query_cxt, sizeof(FirstCount));
+	fc->estate = estate;
+	fc->key = MemoryContextStrdup(estate->es_query_cxt, key);
+	fc->cb.func = first_count_forget;
+	fc->cb.arg = fc;
+	MemoryContextRegisterResetCallback(estate->es_query_cxt, &fc->cb);
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	first_counts = lappend(first_counts, fc);
+	MemoryContextSwitchTo(old);
+	return &fc->n;
+}
+
+/* the table of a hybrid first-row lookup if a cache holds it (or the leader shared it): NULL otherwise */
+MapTab *
+map_first_peek(AggExec *ex, int ci)
+{
+	int			ji = ex->spec->combo[ci].join;
+	SiftAggJoin keep = ex->spec->join[ji];
+	MapTab	   *m;
+
+	if (ex->pfmaps && ex->pfmaps[ci])
+	{
+		ex->cs[ci].fruns = MemoryContextAllocZero(ex->cxt, sizeof(uint32));
+		return map_share_attach(ex->pfmaps[ci], ex->fjoin[ji], ex->cxt);
+	}
+	ex->spec->join[ji] = *ex->fjoin[ji];
+	ex->first_peek = true;
+	PG_TRY();
+	{
+		ex->cs[ci].fruns = first_count(ex, shared_map_key(ex, ci, true));
+		m = map_load_table(ex, ci, ex->cxt);
+	}
+	PG_FINALLY();
+	{
+		ex->first_peek = false;
+		ex->spec->join[ji] = keep;
+	}
+	PG_END_TRY();
+	return m;
+}
+
+/*
+ * The row a first-row lookup gives for the child's parameters, when the table can say: 1 (appended to the join's rows), 0 (the child has none), or
+ * -1 (the key has rows that differ on the columns read: the child runs, as without the table).
+ */
+int
+map_first_row(AggExec *ex, int ci, EState *estate)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	ComboSt    *cs = &ex->cs[ci];
+	const MapTab *fm = cs->fmap;
+	MapTab	   *m = cs->map;
+	uint32		kid[SIFT_AGG_MAX_JKEYS];
+	uint32	   *rows;
+	int			nm;
+
+	/* a table that is no cache's costs a pass over its rows: the child runs for the keys until that is what it costs (a few eighths of the rows), then the table is read */
+	if (fm == NULL)
+	{
+		if (++*cs->fruns < cs->fthresh)
+			return -1;
+		fm = cs->fmap = map_load_first(ex, ci);
+	}
+	if (cs->fpq)
+	{
+		bool		isnull;
+		Datum		d = ExecEvalExprSwitchContext(cs->fpq, ex->lutcx, &isnull);
+
+		if (isnull || !DatumGetBool(d))
+			return 0;
+	}
+	for (int k = 0; k < fm->nkey; k++)
+	{
+		const ParamExecData *prm = &estate->es_param_exec_vals[list_nth_int(j->params, j->first.keyarg[k])];
+
+		if (prm->isnull)
+			return 0;			/* a comparison with NULL is never true */
+		if (fm->ktext[k])
+		{
+			struct varlena *t = PG_DETOAST_DATUM_PACKED(prm->value);
+
+			kid[k] = map_key_id(fm, k, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), 0);
+		}
+		else
+			kid[k] = map_key_id(fm, k, NULL, 0, sift_aggspec_operand_int(exprType(list_nth(j->args, j->first.keyarg[k])), prm->value));
+		if (kid[k] == 0)
+			return 0;
+	}
+	nm = map_find_ids(fm, kid, &rows);
+	if (nm == 0)
+		return 0;
+	if (nm > 1)
+	{
+		ex->first_differ++;
+		return -1;
+	}
+	if (m->nrow == m->cap)
+		map_grow(m);
+	for (int c = 0; c < m->ncol; c++)
+	{
+		bool		isnull;
+		Datum		d = map_col(fm, rows[0], c, &isnull);
+
+		map_col_put(m, c, d, isnull);
+	}
+	m->nrow++;
+	ex->first_hit++;
+	return 1;
 }
 
 /* the rows of the joined table or plan, hashed by key */

@@ -1,5 +1,6 @@
 -- A correlated LIMIT 1 lookup of a table by a unique key is read by the scan as a lookup table (its rows hashed by key); the rows are those
--- of PostgreSQL's plan of it. A key the table can repeat, an order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
+-- of PostgreSQL's plan of it. A key the table can repeat is read the same way only where the rows of a key agree on the columns read, and the child runs
+-- for the other keys (test agg_first_row_dup). An order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- a LATERAL child can only run as a nested loop: without one the scan is the plan, with the child or its table as lookup
@@ -161,7 +162,7 @@ SELECT * FROM check_first($q$
  LEFT JOIN LATERAL (SELECT score FROM dims_label WHERE dims_label.label = d.label LIMIT 1) e ON true GROUP BY 1
 $q$);
 -- the rows a plan finds first for a key that is repeated depend on the plan (here the index and the heap disagree): the lookup table cannot
--- tell which the child returns, so the child runs
+-- tell which the child returns, so the child runs for that key (the table is read only after the child has run for many keys: agg_first_row_dup)
 SELECT * FROM check_first($q$
  SELECT d.label, count(*) AS n
  FROM facts f LEFT JOIN LATERAL (SELECT label FROM pick WHERE pick.a = f.a LIMIT 1) d ON true GROUP BY 1

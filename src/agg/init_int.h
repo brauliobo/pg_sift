@@ -26,6 +26,7 @@ void tid_init(AggExec *ex, Snapshot snapshot);
 void register_key(AggExec *ex, int ki);
 void register_combos(AggExec *ex);
 void join_first_rows(AggExec *ex);
+Node *first_param_expr(const SiftAggJoin *j);
 void join_filters(AggExec *ex, MemoryContext caller);
 bool join_none(AggExec *ex);
 void table_init(AggExec *ex);

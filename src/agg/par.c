@@ -327,6 +327,7 @@ final_checks(AggExec *g, int64 ntuples)
 #define KEY_SPINE	UINT64CONST(0x53494654A006)
 #define KEY_CHILD	UINT64CONST(0x53494654C000)	/* + the join: the statement whose plan is its correlated child */
 #define KEY_SUB	UINT64CONST(0x53494654E000)	/* the statement whose sub-plans the expressions of the spec start */
+#define KEY_FMAP	UINT64CONST(0x53494654F000)	/* + the combo: the table of a hybrid first-row lookup (agg/first.c) */
 #define KEY_MEMO	UINT64CONST(0x53494654D000)	/* + the join: the rows of its child by parameter values (agg/memo.c) */
 
 /* the rows of a preserved side that a worker's tuples matched: nrow flags of the table of combo ci */
@@ -480,8 +481,12 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ex->mqh = shm_mq_attach(mq, seg, NULL);
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
 	ex->pmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
+	ex->pfmaps = palloc0(Max(ex->spec->ncombo, 1) * sizeof(char *));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
+	{
 		ex->pmaps[ci] = shm_toc_lookup(toc, KEY_MAP + ci, true);
+		ex->pfmaps[ci] = shm_toc_lookup(toc, KEY_FMAP + ci, true);
+	}
 	engine_contexts(ex, CurrentMemoryContext);
 	engine_rels(ex);
 	ex->snap = snap;
@@ -650,7 +655,8 @@ par_launch(AggExec *ex)
 	int			nw = ex->spec->nworkers;
 	ScanShared  *ps;
 	AggPar	   *par;
-	MapShared  *ml;
+	MapShared  *ml,
+			   *mlf;
 	Size		msize = 0;
 	int			nmaps = 0,
 				ncorr = 0;
@@ -682,6 +688,7 @@ par_launch(AggExec *ex)
 		sub_txt = nodeToString(select_stmt(ex, (Plan *) makeNode(Result)));
 	/* the tables of the joins are the leader's: it has them (it ran the child plans), and a worker reads them from the shared memory */
 	ml = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
+	mlf = palloc0(Max(ex->spec->ncombo, 1) * sizeof(MapShared));
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 	{
 		const SiftAggCombo *cb = &ex->spec->combo[ci];
@@ -689,9 +696,16 @@ par_launch(AggExec *ex)
 
 		if (cb->join < 0)
 			continue;
-		/* a correlated child runs per worker, for the inputs the worker meets (its rows are the worker's own) */
+		/* a correlated child runs per worker, for the inputs the worker meets (its rows are the worker's own); the table of a first-row lookup is the leader's */
 		if (ex->spec->join[cb->join].params != NIL)
+		{
+			if (ex->fjoin && ex->fjoin[cb->join] && ex->cs[ci].fmap)
+			{
+				msize += map_share_size(ex->cs[ci].fmap, ex->fjoin[cb->join], &mlf[ci]);
+				nmaps++;
+			}
 			continue;
+		}
 		if (m == NULL)
 			return;
 		msize += map_share_size(m, &ex->spec->join[cb->join], &ml[ci]);
@@ -709,6 +723,8 @@ par_launch(AggExec *ex)
 	for (int ci = 0; ci < ex->spec->ncombo; ci++)
 		if (ex->spec->combo[ci].join >= 0 && ex->spec->join[ex->spec->combo[ci].join].params == NIL)
 			shm_toc_estimate_chunk(&pcxt->estimator, ml[ci].size);
+		else if (ex->spec->combo[ci].join >= 0 && ex->fjoin && ex->fjoin[ex->spec->combo[ci].join] && ex->cs[ci].fmap)
+			shm_toc_estimate_chunk(&pcxt->estimator, mlf[ci].size);
 	for (int ji = 0; ji < ex->spec->njoin; ji++)
 		if (child_txt[ji])
 		{
@@ -759,6 +775,14 @@ par_launch(AggExec *ex)
 		const SiftAggCombo *cb = &ex->spec->combo[ci];
 		char	   *mp;
 
+		if (cb->join >= 0 && ex->spec->join[cb->join].params != NIL && ex->fjoin && ex->fjoin[cb->join] && ex->cs[ci].fmap)
+		{
+			mp = shm_toc_allocate(pcxt->toc, mlf[ci].size);
+			map_share_write(ex->cs[ci].fmap, ex->fjoin[cb->join], &mlf[ci], mp);
+			shm_toc_insert(pcxt->toc, KEY_FMAP + ci, mp);
+			ex->lookup_shared += mlf[ci].nrow;
+			continue;
+		}
 		if (cb->join < 0 || ex->spec->join[cb->join].params != NIL)
 			continue;
 		mp = shm_toc_allocate(pcxt->toc, ml[ci].size);

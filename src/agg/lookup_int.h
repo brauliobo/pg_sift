@@ -162,6 +162,9 @@ bool map_load_cols_possible(Relation rel, const SiftAggJoin *j);
 bool map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);
+MapTab *map_load_first(AggExec *ex, int ci);
+MapTab *map_first_peek(AggExec *ex, int ci);
+int map_first_row(AggExec *ex, int ci, EState *estate);
 bool map_unique(const MapTab *m);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 

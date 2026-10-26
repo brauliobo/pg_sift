@@ -196,6 +196,11 @@ typedef struct AggExec
 	int			nshared;		/* the lookup tables another node of the statement had loaded (map_load_shared) */
 	int			ncached;		/* the lookup tables an earlier query had loaded (lookcache_find) */
 	int			nfirst;			/* the correlated children read as lookup tables (join_first_rows) */
+	struct SiftAggJoin **fjoin;	/* per join: the lookup table a hybrid first-row lookup loads (first_table_join), NULL for the others */
+	char	  **pfmaps;			/* worker: the leader's table of each hybrid first-row lookup, by combo */
+	bool		first_peek;		/* map_first_peek: a table is asked for only if a cache holds it */
+	uint64		first_hit;		/* the rows hybrid first-row lookups gave, and the inputs whose key has rows that differ (the child ran) */
+	uint64		first_differ;
 	int			nsemi;			/* the semi and anti joins answered from a byte table (semi_lut_build) */
 	Size		semi_bytes;		/* and their size */
 	uint64		lookup_read;	/* rows of the joined tables the scan read (map_load), those that went into a table, the loads through an index, the time */

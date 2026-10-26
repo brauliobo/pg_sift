@@ -21,6 +21,7 @@
 #include "access/table.h"
 #include "catalog/pg_attribute.h"
 #include "catalog/pg_index.h"
+#include "nodes/nodeFuncs.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -108,6 +109,60 @@ first_cols_ok(const SiftAggJoin *j)
 	return true;
 }
 
+/* the join as the lookup of the table its first-row form reads: its columns, the keys the parameters were compared with, no parameters */
+static SiftAggJoin *
+first_table_join(const SiftAggJoin *j)
+{
+	SiftAggJoin *t = palloc(sizeof(SiftAggJoin));
+	const SiftAggFirst *f = &j->first;
+
+	*t = *j;
+	for (int c = 0; c < t->ncol; c++)
+		t->colatt[c] = f->col[j->colatt[c] - 1];
+	t->relid = f->relid;
+	t->child = -1;
+	t->nkey = f->nkey;
+	for (int k = 0; k < f->nkey; k++)
+	{
+		t->keyatt[k] = f->keyatt[k];
+		t->keytype[k] = f->keytype[k];
+		t->keypos[k] = -1;
+		t->keyexpr[k] = list_nth(j->args, f->keyarg[k]);
+		t->keynull[k] = false;
+	}
+	t->first.params = j->params;
+	t->params = NIL;
+	t->args = NIL;
+	t->sig = NULL;
+	return t;
+}
+
+typedef struct ParamArgs
+{
+	const SiftAggJoin *j;
+} ParamArgs;
+
+/* the child's parameters in an expression are what the scan gives for them: the expressions over the combo's leaves */
+static Node *
+args_for_params(Node *n, ParamArgs *x)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+		for (int at = 0; at < list_length(x->j->params); at++)
+			if (list_nth_int(x->j->params, at) == ((Param *) n)->paramid)
+				return copyObject(list_nth(x->j->args, at));
+	return expression_tree_mutator(n, args_for_params, x);
+}
+
+Node *
+first_param_expr(const SiftAggJoin *j)
+{
+	ParamArgs	x = {j};
+
+	return args_for_params(j->first.pqual, &x);
+}
+
 /*
  * The joins the planner priced as lookups of a table become that: the table's columns, the keys the parameters were compared with (the
  * expressions the scan evaluated for the child, per distinct input) and no parameters. The child's plan stays in the statement, never run.
@@ -123,7 +178,17 @@ join_first_rows(AggExec *ex)
 		const SiftAggFirst *f = &j->first;
 
 		if (!f->ok || !f->use || j->params == NIL || j->scoped || j->nidx > 0 || sift_aggjoin_preserves(j->kind) || !first_cols_ok(j) ||
-			list_length(j->args) <= 0 || !first_unique(f))
+			list_length(j->args) <= 0)
+			continue;
+		if (f->hybrid)
+		{
+			if (ex->fjoin == NULL)
+				ex->fjoin = palloc0(Max(s->njoin, 1) * sizeof(SiftAggJoin *));
+			ex->fjoin[i] = first_table_join(j);
+			ex->nfirst++;
+			continue;
+		}
+		if (!first_unique(f))
 			continue;
 		for (int c = 0; c < j->ncol; c++)
 			j->colatt[c] = f->col[j->colatt[c] - 1];

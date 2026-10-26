@@ -1553,6 +1553,11 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		ExplainPropertyInteger("Cached Lookup Tables", NULL, c->ncached, es);
 	if (c->nfirst > 0)
 		ExplainPropertyInteger("First Row Lookup Tables", NULL, c->nfirst, es);
+	if (c->first_hit > 0 || c->first_differ > 0)
+	{
+		ExplainPropertyInteger("First Row Lookups", NULL, c->first_hit, es);
+		ExplainPropertyInteger("First Row Keys Differ", NULL, c->first_differ, es);
+	}
 	if (c->nsemi > 0)
 	{
 		ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);

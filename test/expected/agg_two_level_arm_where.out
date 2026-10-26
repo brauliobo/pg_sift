@@ -273,8 +273,6 @@ BEGIN
 		NULL;
 	END LOOP;
 END $$;
-NOTICE:  SiftAgg not used: lateral_limit: a LATERAL sub-select with LIMIT 1 stays a child that runs for each key: no unique index holds its key, or its ORDER BY leaves ties (no unique index on kind: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE col IS NOT NULL for a sub-select with that condition (an index on an expression of them does not count); CLUSTER on it and VACUUM keep the lookups on adjacent pages)
-DETAIL:  arm: L2:lookup
 NOTICE:  SiftAgg not used: two_arms: the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id (arm 1 is not a plain aggregate (it has DISTINCT, ORDER BY, LIMIT, windows, grouping sets, a CTE list or no GROUP BY))
 DETAIL:  arm: L2:two_level
 NOTICE:  SiftAgg not used: two_arms: the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id (arm 2 does not read the scan of arm 1: its tables or joins differ)

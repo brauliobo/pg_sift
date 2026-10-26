@@ -493,7 +493,7 @@ sift_aggspec_workers_only(const SiftAggSpec *s)
 	bool		only = s->spine;
 
 	for (int i = 0; i < s->njoin; i++)
-		only |= s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use);
+		only |= s->join[i].params != NIL && !(s->join[i].first.ok && s->join[i].first.use && !s->join[i].first.hybrid);
 	return only;
 }
 

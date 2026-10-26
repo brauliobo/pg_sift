@@ -409,6 +409,7 @@ typedef struct SiftAggFirst
 	bool		ok;				/* the child has that form (planner) */
 	bool		use;			/* the planner expects the lookup table to cost less than running the child per input */
 	Oid			relid;
+	int			rows;			/* the planner's rows of the table: the child runs this many eighths of before the table is read (hybrid) */
 	int			nkey;
 	int			keyatt[SIFT_AGG_MAX_JKEYS];	/* column of the table */
 	Oid			keytype[SIFT_AGG_MAX_JKEYS];
@@ -420,6 +421,8 @@ typedef struct SiftAggFirst
 	Oid			ordtype[SIFT_AGG_MAX_FORD];
 	bool		orddesc[SIFT_AGG_MAX_FORD];
 	bool		ordnullsfirst[SIFT_AGG_MAX_FORD];
+	bool		hybrid;			/* the key may repeat (no unique index) or the child tests its parameters alone: the table is loaded with the rows of a key that agree on the columns read, and the child runs for the keys that do not */
+	Node	   *pqual;			/* what the child tests of its parameters alone (a condition without a column of the table): the child has no row where it does not hold */
 	List	   *qual;			/* what else the child tests of its row (comparisons of columns with constants, null tests), over the table's Vars: the lookup table holds the rows that pass */
 	List	   *params;			/* executor only: the child's parameters once the join is a lookup table (EXPLAIN names them) */
 } SiftAggFirst;

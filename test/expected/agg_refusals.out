@@ -91,7 +91,7 @@ INSERT INTO shapes VALUES
  ('top n window', 'topn', 'SELECT id, row_number() OVER () FROM events ORDER BY parent_id, id LIMIT 3'),
  ('top n limit', 'topn', 'SELECT id FROM events ORDER BY parent_id, id LIMIT 3 OFFSET -1'),
  ('top n no index', 'topn', 'SELECT id FROM plain ORDER BY val, id LIMIT 3'),
- ('limit 1 lookup', 'lookup', 'SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id LIMIT 1) d ON true GROUP BY 1'),
+ ('limit 1 lookup', 'lookup', 'SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id ORDER BY x.val LIMIT 1) d ON true GROUP BY 1'),
  ('two level', 'two_level', 'SELECT category, avg(score), sum(n)::int FROM ' || arms() || ' GROUP BY 1'),
  ('two level arms', 'two_level', 'SELECT m.kind, sum(m.n) FROM (SELECT id, kind, 1 AS n FROM events UNION ALL SELECT id, kind, 2 FROM plain) m GROUP BY 1'),
  ('two level key', 'two_level', 'SELECT category || ''x'', sum(n) FROM ' || arms() || ' GROUP BY 1'),
@@ -291,7 +291,7 @@ SHOW sift.explain_refusals;
 RESET client_min_messages;
 -- the refusal of a LIMIT 1 child says what makes its key unique
 SELECT slug, reason ~ 'no unique index on [a-z_, ]+: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE .* CLUSTER on it and VACUUM' AS advice
-FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id LIMIT 1) d ON true GROUP BY 1$q$) WHERE slug = 'lateral_limit';
+FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id ORDER BY x.val LIMIT 1) d ON true GROUP BY 1$q$) WHERE slug = 'lateral_limit';
      slug      | advice 
 ---------------+--------
  lateral_limit | t
