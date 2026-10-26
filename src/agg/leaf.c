@@ -280,9 +280,11 @@ text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len)
 	return InputFunctionCall(&f, pnstrdup(bytes, len), ioparam, typmod);
 }
 
+/* the expression is the user's, evaluated once for each entry of a dictionary or value of a range: a statement timeout must not wait for the last of them */
 static Datum
 eval_with(AggExec *ex, ExprState *e, Datum in, bool in_null, bool *isnull)
 {
+	CHECK_FOR_INTERRUPTS();
 	ex->lutparams[0].value = in;
 	ex->lutparams[0].isnull = in_null;
 	return ExecEvalExprSwitchContext(e, ex->lutcx, isnull);
