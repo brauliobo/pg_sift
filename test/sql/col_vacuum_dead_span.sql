@@ -1,24 +1,27 @@
--- VACUUM of a sift_col index and of a BM25 index with deleted rows in units of the most rows, 74,496 (14 of them in 1,042,944 rows): an index on a column that is NULL in
--- every row has the widest units, and the liveness bits of such a unit (9,312 bytes) lie on three pages, which with the header page fill one GenericXLog record
--- (the same bound as tbl_vacuum_dead_span, for the other two kinds of index).
+-- VACUUM of a sift_col index and of a BM25 index with deleted rows in units of the most rows, 74,496 (14 of them in 1,042,944 rows): a table of one column that is NULL in every row
+-- has 291 rows on a heap page, the most, so its units of 256 pages hold 74,496, and the liveness bits of such a unit (9,312 bytes) lie on three pages, which with the header page fill one
+-- GenericXLog record (the same bound as tbl_vacuum_dead_span, for the other two kinds of index). The rows deleted are those at every 20th offset of a page, so that every unit has dead rows over its whole length.
+-- One builder writes the sift_col segment, of 14 units: two builders write two of seven, whose bits lie on three pages at most. With the arrays of sift_live_clear at three entries, this test fails for both indexes.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
-CREATE TABLE lc (a int, b int, t text) WITH (autovacuum_enabled = off);
-INSERT INTO lc SELECT NULL, g, NULL FROM generate_series(1, 1042944) g;
+CREATE TABLE lc (a int) WITH (autovacuum_enabled = off);
+INSERT INTO lc SELECT NULL FROM generate_series(1, 1042944);
 VACUUM (FREEZE, ANALYZE) lc;
+SELECT max((ctid::text::point)[1]) AS rows_on_a_page FROM lc;
+SET max_parallel_maintenance_workers = 0;
 CREATE INDEX lc_col ON lc USING sift_col (a);
-DELETE FROM lc WHERE b % 20 = 5;
+DELETE FROM lc WHERE (ctid::text::point)[1]::int % 20 = 5;
 VACUUM lc;
-SELECT count(*) AS live, sum(b) AS sum_b FROM lc;
-DELETE FROM lc WHERE b % 20 = 6;
+SELECT count(*) AS live FROM lc;
+-- and again, in units whose liveness was cleared once
+DELETE FROM lc WHERE (ctid::text::point)[1]::int % 20 = 6;
 VACUUM (FREEZE) lc;
-SELECT count(*) AS live, sum(b) AS sum_b FROM lc;
+SELECT count(*) AS live FROM lc;
 SELECT count(*) AS live_by_a_scan_of_the_index FROM lc WHERE a IS NULL;
 SELECT sift.col_verify('lc_col', true);
 DROP INDEX lc_col;
-INSERT INTO lc SELECT NULL, g, NULL FROM generate_series(2000001, 2042944) g;
-CREATE INDEX lc_bm ON lc USING sift ((coalesce(t, 'x')));
-DELETE FROM lc WHERE b % 20 = 7;
+CREATE INDEX lc_bm ON lc USING sift ((coalesce(a::text, 'x')));
+DELETE FROM lc WHERE (ctid::text::point)[1]::int % 20 = 7;
 VACUUM lc;
 SELECT count(*) AS live FROM lc;
 SELECT sift.verify('lc_bm');
