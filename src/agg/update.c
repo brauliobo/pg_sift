@@ -433,6 +433,8 @@ upd_count(const AggUpd *u)
 {
 	if (u->ok == NULL)
 		u->ex->ncnt[u->ex->nncnt++] = u->acc->n;
+	else if (u->ex->spec->nkeys == 0)
+		u->acc->n[0] += sift_colk->bits_count(u->ok, (u->nsel + 63) / 64);
 	else
 		sift_aggk->count_gid(u->acc->n, u->ex->gid, u->ok, u->nsel);
 }
@@ -443,7 +445,10 @@ upd_sum_int(const AggUpd *u)
 	AggExec    *ex = u->ex;
 
 	sift_colk->gather_u32((const uint32 *) u->v->data, u->idx, u->nsel, ex->cu32);
-	sift_aggk->sum_gid_i32(u->acc->i, ex->gid, (const int32 *) ex->cu32, u->ok, u->nsel);
+	if (ex->spec->nkeys == 0)
+		u->acc->i[0] += sift_aggk->sum_i32((const int32 *) ex->cu32, u->ok, u->nsel);
+	else
+		sift_aggk->sum_gid_i32(u->acc->i, ex->gid, (const int32 *) ex->cu32, u->ok, u->nsel);
 	upd_count(u);
 }
 
@@ -873,7 +878,11 @@ agg_tuples(AggExec *ex, Tup *t)
 		for (int i = 0; i < s->naggs; i++)
 			if (!s->setaggs || (s->setaggs[i] >> set & 1))
 				agg_update(ex, i, ex->cstart, ex->cn, st->n);
-		sift_aggk_count_gid_n(ex->ncnt, ex->nncnt, ex->gid, NULL, st->n);
+		if (s->nkeys == 0)
+			for (int k = 0; k < ex->nncnt; k++)
+				ex->ncnt[k][0] += st->n;
+		else
+			sift_aggk_count_gid_n(ex->ncnt, ex->nncnt, ex->gid, NULL, st->n);
 	}
 	ex->arm_mask = ~(uint32) 0;
 }
