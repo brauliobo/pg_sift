@@ -1,0 +1,48 @@
+-- The verdict of a statement with a shared CTE of the keys a request names is kept under the statement without its constants, and the lists of the requests
+-- are of other sizes: a key of the mean keeps the lookups of the normal plan, two keys take one scan, five or more take both. The size of a request counts the
+-- loops of a nested loop (the scan on its inner side reads its rows for each key). Each list is planned as it is planned alone, in whatever order the lists are met.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100;
+SET random_page_cost = 4;
+CREATE TABLE sites (id int PRIMARY KEY);
+INSERT INTO sites SELECT g FROM generate_series(1, 5000) g;
+CREATE TABLE grants (site_id int NOT NULL);
+INSERT INTO grants SELECT g FROM generate_series(1, 5000) g;
+CREATE TABLE events (id int PRIMARY KEY, site_id int NOT NULL REFERENCES sites, ts date NOT NULL);
+-- site 1 owns 30% of the events, site 2 one in a thousand, the others are spread evenly
+INSERT INTO events SELECT g, CASE WHEN g % 100 < 30 THEN 1 WHEN g % 1000 = 999 THEN 2 ELSE 3 + g % 4997 END, date '2025-01-01' + g % 360 FROM generate_series(1, 200000) g;
+CREATE INDEX events_col ON events USING sift_col (id, site_id, ts);
+CREATE INDEX events_site ON events (site_id);
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE sites, grants;
+
+CREATE FUNCTION keys_query(ids text) RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$WITH keys AS MATERIALIZED (SELECT DISTINCT id FROM sites WHERE id IN (%s) AND id IN (SELECT site_id FROM grants))
+	SELECT (SELECT count(*) FROM events e JOIN keys k ON k.id = e.site_id), (SELECT max(ts) FROM events e JOIN keys k ON k.id = e.site_id)$q$, ids) $f$;
+CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the lists planned in full
+CREATE TABLE lists (name text, ids text, scans int);
+INSERT INTO lists (name, ids) SELECT 'n' || n, (SELECT string_agg(g::text, ',') FROM generate_series(1000, 999 + n) g) FROM unnest(ARRAY[1, 2, 3, 5, 100]) n;
+INSERT INTO lists VALUES ('hot', '1');
+SET sift.verdict_cache_kb = 0;
+UPDATE lists SET scans = scans_of(keys_query(ids));
+RESET sift.verdict_cache_kb;
+SELECT name, scans FROM lists ORDER BY name;
+
+-- 48 plannings in the order of an md5, from the verdicts the earlier ones made
+ANALYZE events;
+SELECT count(*) FILTER (WHERE scans_of(keys_query(ids)) <> scans) AS plans_of_another_list, count(*) AS plannings
+FROM (SELECT l.ids, l.scans FROM lists l, generate_series(1, 8) k ORDER BY md5(l.name || ':' || k)) s;
+
+DROP FUNCTION scans_of, keys_query;
+DROP TABLE lists, events, grants, sites;
+DROP EXTENSION pg_sift;

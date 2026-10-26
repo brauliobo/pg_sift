@@ -34,7 +34,8 @@ CREATE FUNCTION counts() RETURNS text LANGUAGE sql AS
 $$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' ORDER BY name) FROM sift.stats() WHERE name LIKE 'verdict_cache_%' AND name <> 'verdict_cache_shared_hits' $$;
 CREATE FUNCTION shared_hits() RETURNS bigint LANGUAGE sql AS
 $$ SELECT value FROM sift.stats() WHERE name = 'verdict_cache_shared_hits' $$;
--- the first statement is planned in full, the next with other constants from its verdict
+-- the first statement is planned in full, the next with other constants from its verdict while its request is of about the same size (agg_cte_verdict_sizes
+-- has the others)
 SELECT sift.stats_reset();
  stats_reset 
 -------------
@@ -47,13 +48,13 @@ SELECT plan_it(series_query(10));
  
 (1 row)
 
-SELECT plan_it(series_query(20));
+SELECT plan_it(series_query(11));
  plan_it 
 ---------
  
 (1 row)
 
-SELECT plan_it(series_query(29));
+SELECT plan_it(series_query(12));
  plan_it 
 ---------
  
@@ -158,7 +159,7 @@ SELECT sift.stats_reset();
  
 (1 row)
 
-SELECT count(plan_it(series_query(10 + i))) FROM generate_series(0, 40) i;
+SELECT count(plan_it(series_query(10 + i % 3))) FROM generate_series(0, 40) i;
  count 
 -------
     41
@@ -190,7 +191,7 @@ SELECT plan_it(lateral_query(10));
  
 (1 row)
 
-SELECT plan_it(lateral_query(20));
+SELECT plan_it(lateral_query(11));
  plan_it 
 ---------
  

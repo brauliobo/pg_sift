@@ -54,7 +54,7 @@
 #define VERDICT_STREAK_MAX	3
 
 /* a verdict is not taken when the plan it names costs more than this many times, or less than this many times, what it cost when the verdict was made */
-#define VERDICT_BAND	4.0
+#define VERDICT_BAND	1.4
 
 typedef struct VerdictEntry
 {
@@ -65,8 +65,7 @@ typedef struct VerdictEntry
 	uint32		age;
 	double		scans,
 				shared,
-				inl,
-				pln;
+				size;
 } VerdictEntry;
 
 static HTAB *cache;
@@ -83,8 +82,7 @@ typedef struct VerdictShmEnt
 	uint64		key;			/* 0: free */
 	double		scans,
 				shared,
-				inl,
-				pln;
+				size;
 	uint32		age,
 				tick;
 	bool		won;
@@ -108,7 +106,7 @@ typedef struct VerdictShm
 #endif
 
 /* the name carries the layout: a library of another one, loaded by new backends while old ones run, meets a segment it does not know as a size or a name that does not match */
-#define VSHM_NAME		"sift_agg_verdicts_2"
+#define VSHM_NAME		"sift_agg_verdicts_3"
 
 static VerdictShm *vshm;
 
@@ -225,8 +223,7 @@ vshm_read(uint64 key, CteVerdict *vd)
 				vd->won = set[i].won;
 				vd->scans = set[i].scans;
 				vd->shared = set[i].shared;
-				vd->inl = set[i].inl;
-				vd->pln = set[i].pln;
+				vd->size = set[i].size;
 				vd->streak = set[i].streak;
 				found = true;
 			}
@@ -271,8 +268,7 @@ vshm_write(uint64 key, const CteVerdict *vd)
 	e->tick = ++s->tick;
 	e->scans = vd->scans;
 	e->shared = vd->shared;
-	e->inl = vd->inl;
-	e->pln = vd->pln;
+	e->size = vd->size;
 	SpinLockRelease(&s->mutex);
 }
 
@@ -472,8 +468,7 @@ local_enter(uint64 key, const CteVerdict *vd, bool count_flips)
 	e->age = 0;
 	e->scans = vd->scans;
 	e->shared = vd->shared;
-	e->inl = vd->inl;
-	e->pln = vd->pln;
+	e->size = vd->size;
 }
 
 /* the verdict kept under key, in this backend or in the table of all of them (then it is kept here too): into vd; an entry is read VERDICT_RECHECK - 1 times, the next read is a miss */
@@ -496,8 +491,7 @@ entry_read(uint64 key, CteVerdict *vd)
 		vd->won = e->won;
 		vd->scans = e->scans;
 		vd->shared = e->shared;
-		vd->inl = e->inl;
-		vd->pln = e->pln;
+		vd->size = e->size;
 		vd->streak = e->streak;
 		vd->from_shared = false;
 		return true;
@@ -543,30 +537,32 @@ verdict_lookup(Query *q, int kind, CteVerdict *vd)
 	}
 }
 
-/* the cost in bands of VERDICT_BAND: the constants of a request move the cost of its plan over decades, and a verdict is made for the plans of one band */
+/* the size in bands of VERDICT_BAND: the constants of a request move the rows of its CTEs over decades, and a verdict is made for the requests of one band */
 static uint64
-band_key(uint64 key, double cost)
+band_key(uint64 key, double size)
 {
-	return hash_combine64(key, (uint64) (log(Max(cost, 1.0)) / log(VERDICT_BAND))) | 1;
+	/* shifted, as the key is odd: the combine of two bands next to each other can differ in the lowest bit only */
+	return (hash_combine64(key, (uint64) (log(Max(size, 1.0)) / log(VERDICT_BAND))) << 1) | 1;
 }
 
 /*
- * The plan of the variant the verdict names is planned, and costs cost. Within VERDICT_BAND of the cost of the plan the verdict was made from, the verdict
- * holds: VERDICT_TAKE. Else the verdict made for plans of that cost is looked up (remember keeps one for each band): it names the variant to take
- * (VERDICT_SWITCH where it is the other one, vd is then its verdict), or there is none and the statement is planned in full (VERDICT_FULL).
+ * The largest CTE of the plan with the shared CTEs is expected to hold size rows. The choice between that plan and the inline one turns on the size of
+ * the request (its scans read a share of the table, the CTEs they replace hold its rows), so a verdict holds within VERDICT_BAND of the size it was made
+ * for, whichever of the two plans the hit goes on to plan: VERDICT_TAKE. Else the verdict made for requests of that size is looked up (remember keeps one
+ * for each band): it names the variant to take (VERDICT_SWITCH where it is the other one, vd is then its verdict), or there is none and the statement
+ * is planned in full (VERDICT_FULL).
  */
 int
-verdict_accept(CteVerdict *vd, double cost)
+verdict_accept(CteVerdict *vd, double size)
 {
-	double		kept = vd->won ? vd->inl : vd->pln;
 	int			r = VERDICT_TAKE;
 
-	if (kept > 0 && !(cost <= kept * VERDICT_BAND && cost * VERDICT_BAND >= kept))
+	if (vd->size > 0 && !(size <= vd->size * VERDICT_BAND && size * VERDICT_BAND >= vd->size))
 	{
 		bool		won = vd->won;
 
 		r = VERDICT_FULL;
-		if (entry_read(band_key(vd->key, cost), vd))
+		if (entry_read(band_key(vd->key, size), vd))
 			r = vd->won == won ? VERDICT_TAKE : VERDICT_SWITCH;
 	}
 	sift_stat_add(r == VERDICT_FULL ? SIFT_STAT_VERDICT_MISSES : SIFT_STAT_VERDICT_HITS, 1);
@@ -575,11 +571,11 @@ verdict_accept(CteVerdict *vd, double cost)
 	return r;
 }
 
-/* the verdict of a plan in full is kept under the statement, and under the band of the cost of each plan, in this backend and in the table of all of them */
+/* the verdict of a plan in full is kept under the statement, and under the band of the cost of the plan with the shared CTEs, in this backend and in the table of all of them */
 void
-verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double inl, double pln)
+verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double size)
 {
-	uint64		keys[3] = {vd->key};
+	uint64		keys[2] = {vd->key};
 	int			n = 1;
 
 	if (!vd->cacheable)
@@ -588,13 +584,9 @@ verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double i
 	vd->won = won;
 	vd->scans = scans;
 	vd->shared = shared;
-	vd->inl = inl;
-	vd->pln = pln;
-	if (inl > 0 && pln > 0)
-	{
-		keys[n++] = band_key(vd->key, inl);
-		keys[n++] = band_key(vd->key, pln);
-	}
+	vd->size = size;
+	if (size > 0)
+		keys[n++] = band_key(vd->key, size);
 	for (int i = 0; i < n; i++)
 	{
 		local_enter(keys[i], vd, i == 0);

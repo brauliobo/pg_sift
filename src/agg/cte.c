@@ -405,6 +405,48 @@ cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs)
 }
 
 /*
+ * the most rows PostgreSQL expects of a scan of a table that has a column index, in a plan and its subplans (the CTEs); loops: how many times the plan
+ * is run (a scan on the inner side of a nested loop reads its rows for each row of the outer side)
+ */
+static double
+scan_rows(PlannedStmt *stmt, Plan *plan, double loops)
+{
+	double		rows = 0;
+	double		left;
+	double		right;
+
+	if (plan == NULL)
+		return 0;
+	if ((IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan)) &&
+		has_column_source(rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable)->relid))
+		rows = plan->plan_rows * loops;
+	foreach_ptr(Plan, p, child_plans(plan))
+	{
+		double		below = scan_rows(stmt, p, loops);
+
+		rows = Max(rows, below);
+	}
+	left = scan_rows(stmt, plan->lefttree, loops);
+	right = scan_rows(stmt, plan->righttree, IsA(plan, NestLoop) && plan->lefttree != NULL ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops);
+	return Max(rows, Max(left, right));
+}
+
+/* the size of the request for the verdict (verdict.c): the rows of its largest scan of an indexed table */
+static double
+cte_size(PlannedStmt *stmt)
+{
+	double		rows = scan_rows(stmt, stmt->planTree, 1.0);
+
+	foreach_ptr(Plan, sub, stmt->subplans)
+	{
+		double		below = scan_rows(stmt, sub, 1.0);
+
+		rows = Max(rows, below);
+	}
+	return Max(rows, 1.0);
+}
+
+/*
  * PostgreSQL charges the plan the cost of every CTE it computes, also of one that no node reads: a SiftAgg node that aggregates the
  * arms of a UNION ALL in one scan of the index (or reads the table of the CTE itself) leaves the CTE unread, and it is not run.
  */
@@ -798,13 +840,30 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	if (vd.known && !replan)
 	{
 		/*
-		 * The shared plan consumes the tree and the inline plan a copy of it: where the plan costs far from what the verdict was made from (verdict_accept), the
-		 * statement is planned again from the tree that is left (the inline plan) or from a copy made for it (the shared plan).
+		 * The shared plan consumes the tree and the inline plan a copy of it. The verdict is checked against the size of the shared plan (verdict_accept),
+		 * which a hit that goes on with the inline plan has to plan as well; where it is far from what the verdict was made for, the statement is
+		 * planned again from the tree that is left (the inline plan) or from a copy made for it (the shared plan).
 		 */
-		Query	   *again = vd.won ? parse : vd.inl > 0 ? copyObject(parse) : NULL;
-		PlannedStmt *stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
-		int			r = verdict_accept(&vd, stmt->planTree->total_cost);
+		Query	   *again = copyObject(parse);
+		PlannedStmt *stmt;
+		double		size;
+		int			r;
 
+		if (vd.won)
+		{
+			MemoryContext shared_cx;
+			double		lift;
+
+			stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
+			size = cte_size(plan_shared(SIFT_PLANNER_ARGS(parse), &shared_cx, &lift));
+			discard_plan(shared_cx);
+		}
+		else
+		{
+			stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
+			size = cte_size(stmt);
+		}
+		r = verdict_accept(&vd, size);
 		if (r == VERDICT_TAKE)
 			return stmt;
 		discard_plan(*cx);
@@ -826,7 +885,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && CTE_INLINE_MARGIN * v.scans.total >= v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
-	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, v.inlined->planTree->total_cost, v.plain->planTree->total_cost);
+	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, cte_size(v.plain));
 	if (!planning_second)
 	{
 		first_plan.set = true;
@@ -928,8 +987,19 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		if (has_shared_cte(parse))
 		{
 			verdict_lookup(parse, VERDICT_FLAT, &fv);
-			if (fv.known && verdict_accept(&fv, 0) == VERDICT_TAKE)
-				return fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
+			if (fv.known)
+			{
+				/* a verdict holds for the size of the request it was made for: the plan of the form that won is checked against it, else the statement is planned in full */
+				Query	   *again = copyObject(parse);
+				PlannedStmt *stmt = fv.won ? plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx) : plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
+
+				if (verdict_accept(&fv, cte_size(stmt)) == VERDICT_TAKE)
+					return stmt;
+				discard_plan(fv.won ? flat_cx : plain_cx);
+				parse = again;
+				flat = copyObject(parse);
+				by_cost = sift_agg_flatten_laterals(flat);
+			}
 		}
 		flatplan = plan_cte(SIFT_PLANNER_ARGS(flat), &flat_cx);
 		flat_inlined = inline_won;
@@ -938,7 +1008,10 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 * table grouped in place of an index lookup for each row of the outer query: the lookups cost less for a few rows.
 		 */
 		if (!by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
+		{
+			verdict_remember(&fv, true, 0, 0, cte_size(flatplan));
 			return flatplan;
+		}
 		planning_second = true;
 	}
 	plain = plan_cte(SIFT_PLANNER_ARGS(parse), &plain_cx);
@@ -949,7 +1022,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		if (flatplan != NULL)
 		{
 			discard_plan(flat_cx);
-			verdict_remember(&fv, false, 0, 0, 0, 0);
+			verdict_remember(&fv, false, 0, 0, cte_size(plain));
 		}
 		return plain;
 	}
@@ -962,11 +1035,11 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 flatplan->planTree->total_cost + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
-		verdict_remember(&fv, true, 0, 0, 0, 0);
+		verdict_remember(&fv, true, 0, 0, cte_size(flatplan));
 		return flatplan;
 	}
 	discard_plan(flat_cx);
-	verdict_remember(&fv, false, 0, 0, 0, 0);
+	verdict_remember(&fv, false, 0, 0, cte_size(plain));
 	return plain;
 }
 

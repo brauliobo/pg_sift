@@ -1,0 +1,51 @@
+-- The choice between a shared CTE and its inline plan (cte.c, verdict.c) is kept under the statement without its constants, and the constants of a
+-- statement change the size of its request: the verdict holds only within a band of the rows its largest scan of an indexed table is expected to
+-- read. The sizes of one statement, met in any order, are planned as each is planned in full: owners <= 1 keeps the shared CTE, more take the scans.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE kinds (id int PRIMARY KEY, enabled bool NOT NULL);
+INSERT INTO kinds SELECT g, g <= 20 FROM generate_series(1, 8000) g;
+CREATE TABLE events (id int PRIMARY KEY, set_id int NOT NULL, kind_id int NOT NULL, ts date NOT NULL, doc jsonb);
+INSERT INTO events
+SELECT g, 1 + g % 30, 1 + g % 20, date '2025-01-01' + (g * 7919 % 360),
+       jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || (g + j) % 4, 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 3) j))
+FROM generate_series(1, 8000) g;
+CREATE INDEX events_col ON events USING sift_col (id, set_id, kind_id, ts, doc) WITH (paths = 'doc.parts[]{cat astext, score float8}');
+VACUUM (FREEZE, ANALYZE) events;
+ANALYZE kinds;
+
+CREATE FUNCTION series_query(key_sets int) RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$WITH r AS (SELECT e.* FROM events e INNER JOIN kinds k ON k.id = e.kind_id AND k.enabled IS TRUE WHERE e.set_id <= %s),
+	a AS (SELECT r.ts, o.cat, avg(o.score) AS s, count(DISTINCT r.id) AS n FROM r, jsonb_to_recordset(r.doc['parts']) AS o(cat text, score float) GROUP BY r.ts, o.cat),
+	b AS (SELECT r.ts, count(DISTINCT r.id) AS n, avg(o.score) AS s FROM r, jsonb_to_recordset(r.doc['parts']) AS o(cat text, score float) GROUP BY r.ts),
+	c AS (SELECT r.ts, r.set_id, count(DISTINCT r.id) AS n FROM r GROUP BY r.ts, r.set_id)
+SELECT 'a' AS src, ts, cat, s, n FROM a UNION ALL SELECT 'b', ts, NULL, s, n FROM b UNION ALL SELECT 'c', ts, set_id::text, NULL, n FROM c$q$, key_sets) $f$;
+CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- every size planned in full (ANALYZE drops the verdicts of the table before each)
+CREATE TABLE size_truth (key_sets int, scans int);
+DO $$
+DECLARE o int;
+BEGIN
+	FOREACH o IN ARRAY '{1,2,3,4,5,6,8,10,15,20,30}'::int[] LOOP
+		ANALYZE events;
+		INSERT INTO size_truth VALUES (o, scans_of(series_query(o)));
+	END LOOP;
+END $$;
+SELECT key_sets, scans FROM size_truth ORDER BY key_sets;
+
+-- 44 plannings in the order of an md5, from the verdicts the earlier ones made
+ANALYZE events;
+SELECT count(*) FILTER (WHERE scans_of(series_query(key_sets)) <> scans) AS plans_of_another_size, count(*) AS plannings
+FROM (SELECT t.key_sets, t.scans FROM size_truth t, generate_series(1, 4) k ORDER BY md5(t.key_sets || ':' || k)) s;
+
+DROP FUNCTION scans_of, series_query;
+DROP TABLE size_truth, events, kinds;
+DROP EXTENSION pg_sift;

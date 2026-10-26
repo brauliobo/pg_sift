@@ -32,11 +32,12 @@ $$ SELECT string_agg(replace(name, 'verdict_cache_', '') || '=' || value, ' ' OR
 CREATE FUNCTION shared_hits() RETURNS bigint LANGUAGE sql AS
 $$ SELECT value FROM sift.stats() WHERE name = 'verdict_cache_shared_hits' $$;
 
--- the first statement is planned in full, the next with other constants from its verdict
+-- the first statement is planned in full, the next with other constants from its verdict while its request is of about the same size (agg_cte_verdict_sizes
+-- has the others)
 SELECT sift.stats_reset();
 SELECT plan_it(series_query(10));
-SELECT plan_it(series_query(20));
-SELECT plan_it(series_query(29));
+SELECT plan_it(series_query(11));
+SELECT plan_it(series_query(12));
 SELECT counts();
 -- explain_why says so: the verdict of the table at this size is the shared CTE
 SELECT arms(series_query(15));
@@ -64,7 +65,7 @@ SELECT counts();
 -- 1st, 9th and 25th statement of the 41
 SET work_mem = '65MB';
 SELECT sift.stats_reset();
-SELECT count(plan_it(series_query(10 + i))) FROM generate_series(0, 40) i;
+SELECT count(plan_it(series_query(10 + i % 3))) FROM generate_series(0, 40) i;
 SELECT counts();
 RESET work_mem;
 
@@ -77,7 +78,7 @@ SELECT k.id, x.s, y.n FROM kinds k
 	LEFT JOIN LATERAL (SELECT count(*) AS n FROM r WHERE r.kind_id = k.id) y ON true$q$, key_sets) $$;
 SELECT sift.stats_reset();
 SELECT plan_it(lateral_query(10));
-SELECT plan_it(lateral_query(20));
+SELECT plan_it(lateral_query(11));
 SELECT counts();
 DROP FUNCTION lateral_query;
 
