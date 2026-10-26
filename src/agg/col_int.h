@@ -93,7 +93,6 @@ typedef struct ColSource
 	SiftColValue *fvals;		/* the constants of one filter_str call */
 	int			fcap;
 	SiftAggPre	pre;			/* the histogram or rollup of the last unit_hist / unit_rollup */
-	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];	/* the dictionaries of the dims of the last unit_rollup */
 } ColSource;
 #define COL_MAX_WIDE		8		/* the wide conjuncts of a scan (SIFT_AGG_MAX_WIDE) */
 

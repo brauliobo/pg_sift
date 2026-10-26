@@ -123,6 +123,67 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 }
 
 bool
+sift_aggpre_unit_rollup(SiftAggPre *pre, const SiftColUnit *unit, const SiftColSchema *schema, int list, const SiftSrcRollupNeed *need, const int *col_of_leaf,
+						const int *leaf_of_col, SiftSrcRollup *h)
+{
+	SiftCRollup r;
+	SiftCRollupNeed cn;
+	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
+
+	cn.ndims = need->ndims;
+	cn.nmeas = need->nmeas;
+	for (int j = 0; j < need->ndims; j++)
+		if ((cn.dim[j] = col_of_leaf ? col_of_leaf[need->dim[j]] : need->dim[j]) < 0)
+			return false;
+	for (int m = 0; m < need->nmeas; m++)
+	{
+		if ((cn.meas[m].leaf = col_of_leaf ? col_of_leaf[need->meas[m].leaf] : need->meas[m].leaf) < 0)
+			return false;
+		cn.meas[m].sums = need->meas[m].sums;
+		cn.meas[m].minmax = need->meas[m].minmax;
+	}
+	if (list >= 0 && col_of_leaf && (list = col_of_leaf[list]) < 0)
+		return false;
+	if (pre->pcx == NULL)
+		pre->pcx = AllocSetContextCreate(pre->cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
+	MemoryContextReset(pre->pcx);
+	if (!sift_col_unit_rollup(unit, list, pre->pcx, need->all ? NULL : &cn, &r, dict))
+		return false;
+	memset(h, 0, sizeof(*h));
+	h->ntuples = r.ntuples;
+	h->ndims = r.ndims;
+	h->count = r.count;
+	h->nmeas = r.nmeas;
+	for (int j = 0; j < r.ndims; j++)
+	{
+		h->dim[j] = leaf_of_col ? leaf_of_col[r.dim[j]] : r.dim[j];
+		if (h->dim[j] < 0)
+			return false;
+		h->key[j] = r.key[j];
+		h->isnull[j] = r.isnull[j];
+		if (schema->cols[r.dim[j]].store == SIFT_COLS_STR)
+		{
+			pre->rdict[j] = (SiftSrcDict) {(const void *) (uintptr_t) dict[j].id, dict[j].n, dict[j].off, dict[j].bytes};
+			h->dict[j] = &pre->rdict[j];
+		}
+	}
+	for (int m = 0; m < r.nmeas; m++)
+	{
+		h->meas[m] = leaf_of_col ? leaf_of_col[r.meas[m]] : r.meas[m];
+		if (h->meas[m] < 0)
+			return false;
+		h->nn[m] = r.nn[m];
+		h->sum[m] = r.sum[m];
+		h->sumf[m] = r.sumf[m];
+		h->min[m] = r.min[m];
+		h->max[m] = r.max[m];
+		h->minf[m] = r.minf[m];
+		h->maxf[m] = r.maxf[m];
+	}
+	return true;
+}
+
+bool
 sift_aggpre_unit_presence(const SiftColUnit *unit, int col, SiftSrcPresence *p)
 {
 	SiftCPresence c;

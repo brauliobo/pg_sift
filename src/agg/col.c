@@ -743,53 +743,8 @@ static bool
 col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h)
 {
 	ColSource  *src = impl;
-	SiftCRollup r;
-	SiftCRollupNeed cn;
-	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
 
-	cn.ndims = need->ndims;
-	cn.nmeas = need->nmeas;
-	for (int j = 0; j < need->ndims; j++)
-		cn.dim[j] = need->dim[j];
-	for (int m = 0; m < need->nmeas; m++)
-	{
-		cn.meas[m].leaf = need->meas[m].leaf;
-		cn.meas[m].sums = need->meas[m].sums;
-		cn.meas[m].minmax = need->meas[m].minmax;
-	}
-	if (src->pre.pcx == NULL)
-		src->pre.pcx = AllocSetContextCreate(src->pre.cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
-	MemoryContextReset(src->pre.pcx);
-	if (!sift_col_unit_rollup(&src->unit, list, src->pre.pcx, need->all ? NULL : &cn, &r, dict))
-		return false;
-	memset(h, 0, sizeof(*h));
-	h->ntuples = r.ntuples;
-	h->ndims = r.ndims;
-	h->count = r.count;
-	h->nmeas = r.nmeas;
-	for (int j = 0; j < r.ndims; j++)
-	{
-		h->dim[j] = r.dim[j];
-		h->key[j] = r.key[j];
-		h->isnull[j] = r.isnull[j];
-		if (sift_col_def(src->cs, r.dim[j])->store == SIFT_COLS_STR)
-		{
-			src->rdict[j] = (SiftSrcDict) {(const void *) (uintptr_t) dict[j].id, dict[j].n, dict[j].off, dict[j].bytes};
-			h->dict[j] = &src->rdict[j];
-		}
-	}
-	for (int m = 0; m < r.nmeas; m++)
-	{
-		h->meas[m] = r.meas[m];
-		h->nn[m] = r.nn[m];
-		h->sum[m] = r.sum[m];
-		h->sumf[m] = r.sumf[m];
-		h->min[m] = r.min[m];
-		h->max[m] = r.max[m];
-		h->minf[m] = r.minf[m];
-		h->maxf[m] = r.maxf[m];
-	}
-	return true;
+	return sift_aggpre_unit_rollup(&src->pre, &src->unit, sift_col_schema(src->cs), list, need, NULL, NULL, h);
 }
 
 static bool

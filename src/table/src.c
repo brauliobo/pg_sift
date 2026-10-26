@@ -888,6 +888,28 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return col >= 0 && sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, col + (cal ? SIFT_PAGG_CAL : 0), &p->schema->cols[col], p->leaf_of_col, h);
 }
 
+static uint32
+tbl_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list)
+{
+	TblPart    *p = unit->priv;
+
+	return list < 0 || p->col[list] >= 0 ? sift_col_unit_rollup_tuples(&p->unit, list < 0 ? list : p->col[list]) : 0;
+}
+
+static bool
+tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *h)
+{
+	TblPart    *p = unit->priv;
+
+	return sift_aggpre_unit_rollup(&((TblSource *) impl)->pre, &p->unit, p->schema, list, need, p->col, p->leaf_of_col, h);
+}
+
+static bool
+tbl_unit_rollup_miss(void *impl, const SiftSrcUnit *unit)
+{
+	return sift_col_unit_rollup_miss(&((TblPart *) unit->priv)->unit);
+}
+
 static bool
 tbl_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
 {
@@ -953,6 +975,9 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.unit_rollup_tuples = tbl_unit_rollup_tuples,
+	.unit_rollup = tbl_unit_rollup,
+	.unit_rollup_miss = tbl_unit_rollup_miss,
 	.unit_presence = tbl_unit_presence,
 	.run_info = tbl_run_info,
 	.run_heads = tbl_run_heads,

@@ -15,12 +15,13 @@
 /* The histograms a spec writes, as the planner sees them (SiftSrcPreagg.aggs is always set: every unit has the sums of its integer leaves) */
 extern void sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);
 
-/* The histogram of the last sift_aggpre_unit_hist and the dictionary of its keys */
+/* The histogram of the last sift_aggpre_unit_hist and the dictionary of its keys; the rollup of the last sift_aggpre_unit_rollup and the dictionaries of its dims */
 typedef struct SiftAggPre
 {
 	MemoryContext cxt;
 	MemoryContext pcx;
 	SiftSrcDict hdict;
+	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];
 } SiftAggPre;
 
 /* mcxt holds the memory of the histograms for the life of the source */
@@ -35,6 +36,14 @@ extern bool sift_aggpre_unit_agg(const SiftColUnit *unit, int col, const SiftCol
  * layout has its own columns); NULL: the same numbers. Memory valid until the next call.
  */
 extern bool sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const SiftColDef *def, const int *leaf_of_col, SiftSrcHist *h);
+
+/*
+ * SiftSrcProvider.unit_rollup of the list list (a leaf of the source; negative: the rows of the unit) of the unit, whose columns are those of schema.
+ * col_of_leaf and leaf_of_col, when set, translate the leaves of the source to the columns of the unit and back (as in sift_aggpre_unit_hist); NULL: the same numbers.
+ * Memory valid until the next call.
+ */
+extern bool sift_aggpre_unit_rollup(SiftAggPre *pre, const SiftColUnit *unit, const SiftColSchema *schema, int list, const SiftSrcRollupNeed *need,
+									const int *col_of_leaf, const int *leaf_of_col, SiftSrcRollup *h);
 
 /* SiftSrcProvider.unit_presence of leaf col of the unit: the key list or bitmap of an exact unit, valid until the next call; false when it has none */
 extern bool sift_aggpre_unit_presence(const SiftColUnit *unit, int col, SiftSrcPresence *p);

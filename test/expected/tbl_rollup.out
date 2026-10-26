@@ -1,0 +1,126 @@
+-- The rollups of the elements of a jsonb list of a sift_table (docs/COL-PREAGG.md section 3): the units of a table that has the paths of the list declared keep, per list, the
+-- distinct tuples of the values of its low-cardinality leaves with their counts and sums, and a GROUP BY over the unnested elements adds the tuples up instead of reading
+-- the elements. The answers are the heap plan's, with deletes, updates, rows of the write buffer, a column added and one dropped (units of an older layout) in between.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+\ir test/agg_check_query.sql
+\set ECHO none
+CREATE TABLE tr (id int, g int, tag text, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('tr', 'doc', 'doc.items[]{k int4, p float8, s astext, n int4}');
+ table_set_paths 
+-----------------
+ 
+(1 row)
+
+INSERT INTO tr
+SELECT i, i % 9, 't' || (i % 5),
+       jsonb_build_object('items', jsonb_build_array(
+           jsonb_build_object('k', i % 7, 'p', (i % 13)::float8, 's', 'e' || (i % 4), 'n', i % 100),
+           jsonb_build_object('k', i % 5, 'p', (i % 11)::float8, 's', 'e' || (i % 3), 'n', NULL)))
+FROM generate_series(1, 40000) i;
+VACUUM (FULL, ANALYZE) tr;
+-- the units of a query that were answered from their rollups
+CREATE FUNCTION trr_units(q text, OUT units int, OUT preagg int) LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, FORMAT JSON) ' || q INTO j;
+	units := coalesce(jsonb_path_query_first(j, '$.**."Units"')::int, 0);
+	preagg := coalesce(jsonb_path_query_first(j, '$.**."Units From Pre-aggregates"')::int, 0);
+END $$;
+CREATE FUNCTION trr_most_units(q text) RETURNS bool LANGUAGE sql AS $$ SELECT preagg * 100 >= units * 80 AND units > 0 FROM trr_units(q) $$;
+CREATE TABLE trr_q (n int, shape text, q text);
+INSERT INTO trr_q VALUES
+	(1, 'by an integer', 'SELECT e.k, count(*) AS c, sum(e.p) AS sp FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int, p float8) GROUP BY 1'),
+	(2, 'by a text', 'SELECT e.s, count(*) AS c, sum(e.p) AS sp FROM tr, jsonb_to_recordset(doc->''items'') AS e(s text, p float8) GROUP BY 1'),
+	(3, 'by two keys', 'SELECT e.k, e.s, count(*) AS c FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int, s text) GROUP BY 1, 2'),
+	(4, 'a filter on a dim', 'SELECT e.s, sum(e.p) AS sp FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int, s text, p float8) WHERE e.k IN (1, 3) GROUP BY 1'),
+	(5, 'min and max', 'SELECT e.k, min(e.n) AS lo, max(e.n) AS hi, count(e.n) AS c FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int, n int) GROUP BY 1'),
+	(6, 'whole list', 'SELECT count(*) AS c, sum(e.p) AS sp FROM tr, jsonb_to_recordset(doc->''items'') AS e(p float8)'),
+	(7, 'with a key of the row', 'SELECT tr.g, e.k, count(*) AS c FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int) GROUP BY 1, 2'),
+	(8, 'a filter on the row', 'SELECT e.k, count(*) AS c FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int) WHERE tr.id > 30000 GROUP BY 1');
+-- which queries are answered from the rollups of the units
+SELECT n, shape, trr_most_units(q) AS from_rollup FROM trr_q ORDER BY n;
+ n |         shape         | from_rollup 
+---+-----------------------+-------------
+ 1 | by an integer         | t
+ 2 | by a text             | t
+ 3 | by two keys           | t
+ 4 | a filter on a dim     | t
+ 5 | min and max           | t
+ 6 | whole list            | t
+ 7 | with a key of the row | f
+ 8 | a filter on the row   | f
+(8 rows)
+
+-- the answers are the heap plan's
+CREATE FUNCTION trr_compare(OUT queries int, OUT pushed int, OUT differences bigint) LANGUAGE plpgsql AS $$
+DECLARE q record; c record;
+BEGIN
+	queries := 0; pushed := 0; differences := 0;
+	FOR q IN SELECT * FROM trr_q ORDER BY n LOOP
+		SELECT * INTO c FROM check_query(q.q);
+		queries := queries + 1;
+		pushed := pushed + c.pushed::int;
+		differences := differences + c.differences;
+	END LOOP;
+END $$;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+-- rows deleted, updated and buffered: the units with a dead row or a buffered row are read
+DELETE FROM tr WHERE id % 11 = 0;
+UPDATE tr SET doc = jsonb_set(doc, '{items,0,k}', '6') WHERE id % 13 = 0;
+INSERT INTO tr SELECT 100000 + i, i % 9, 'new', jsonb_build_object('items', jsonb_build_array(jsonb_build_object('k', i % 3, 'p', i::float8, 's', 'z', 'n', 1))) FROM generate_series(1, 300) i;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+BEGIN;
+DELETE FROM tr WHERE id % 5 = 0;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+ROLLBACK;
+-- units of an older layout: a column added after the units were written, then one dropped
+ALTER TABLE tr ADD COLUMN extra int DEFAULT 7;
+INSERT INTO tr SELECT 200000 + i, i % 9, 'later', jsonb_build_object('items', jsonb_build_array(jsonb_build_object('k', i % 7, 'p', 1.5, 's', 'e1', 'n', 2))), i FROM generate_series(1, 500) i;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+ALTER TABLE tr DROP COLUMN tag;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+VACUUM (FULL, ANALYZE) tr;
+SELECT * FROM trr_compare();
+ queries | pushed | differences 
+---------+--------+-------------
+       8 |      8 |           0
+(1 row)
+
+SELECT trr_most_units('SELECT e.k, count(*) FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int) GROUP BY 1') AS most_units_after_rewrite;
+ most_units_after_rewrite 
+--------------------------
+ t
+(1 row)
+
+DROP TABLE tr, trr_q;
+DROP FUNCTION trr_units(text), trr_most_units(text), trr_compare();
+DROP FUNCTION check_query(text);
+DROP EXTENSION pg_sift;

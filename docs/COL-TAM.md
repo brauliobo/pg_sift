@@ -374,8 +374,7 @@ Run by `scripts/ci.sh` on PostgreSQL 17, 18 and 19; `SANITIZE=1` (ASan + UBSan) 
   carries its schema), and the write buffer is shredded as rows are read. The planner uses the paths only when every segment it reads has them, so the
   plan stays the normal one until `VACUUM FULL` has rewritten the older segments (`sift.table_set_paths` says so, in a NOTICE, when the table has column groups), and a rewrite of the table that is not `VACUUM FULL` (`ALTER TABLE ...
   TYPE`) drops the leaves until the next one. A value of another JSON type than its path declares is kept exactly (overflow) and a query that reads
-  that path keeps the normal plan while such a row exists; the `jsonb_typeof` forms still run (`filter_types`). Not done: rollups of the elements for a
-  table (the scan reads the elements), and ANALYZE gives the paths no statistics.
+  that path keeps the normal plan while such a row exists; the `jsonb_typeof` forms still run (`filter_types`). Not done: ANALYZE gives the paths no statistics. The units keep the rollups of the elements of a list (docs/COL-PREAGG.md section 2) and a GROUP BY of its element leaves adds them up.
 - The logical record doubles WAL for published tables; a custom rmgr for all page changes would remove the double write but demands
   preload everywhere.
 
@@ -412,7 +411,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Key lists and bitmaps of a leaf (`key_columns`) | works | works | a table writes them for its int2, int4 and date foreign key and `*_id` columns that are not unique (the default of an index), within 3% of a unit; `count(DISTINCT)` of a unit that has one reads no row |
 | HyperLogLog sketch (`hll_columns`, `approx_count_distinct`) | works | missing | `sift.approx_count_distinct` is pushed down and reads the rows; no sketch of the units |
 | Exceptions of a leaf that is NULL in nearly every row (soft-delete stamp) | works | missing | `IS NULL` / `IS NOT NULL` read the unit's NULL count either way |
-| Rollups of the elements of a list (`rollup`, paths) | works | missing | declared paths (`sift.table_set_paths`) make leaves of a table, not rollups |
+| Rollups of the elements of a list (`rollup`, paths) | works | works | a table keeps the rollups of the lists of its declared paths (`sift.table_set_paths`), written with the units and read by the source of the index; rollups of the rows (`rollup_dims`) are an option of the index |
 | Zone pruning of units by the filters of the statement | works | works | range, equality, `IN`, `IS NULL`, `OR` of those |
 | Skip map for parallel morsels | works | missing | a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map |
 | Parallel scan workers | works | works | partitions of a partitioned table too |
