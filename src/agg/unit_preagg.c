@@ -1183,7 +1183,7 @@ preagg_init(AggExec *ex)
 	ex->pa_why = SPW_OFF;
 	if (!sift_agg_preagg)
 		return;
-	sift_colsrc_preagg(ex->index ? ex->index : ex->heap, &pa);
+	sift_colsrc_preagg(ex->index ? ex->index : ex->spec->nparts > 0 ? sift_aggpart_heap(ex->src, 0) : ex->heap, &pa);
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
 	ex->pa_dead = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex);

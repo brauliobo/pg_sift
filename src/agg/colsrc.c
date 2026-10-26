@@ -99,9 +99,9 @@ sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext
 }
 
 bool
-sift_colsrc_can_part(Oid indexrelam)
+sift_colsrc_can_part(Oid relam, bool index)
 {
-	const SiftSrcProvider *prov = provider_of(indexrelam, true);
+	const SiftSrcProvider *prov = provider_of(relam, index);
 
 	return prov != NULL && prov->open_part != NULL;
 }
@@ -109,7 +109,7 @@ sift_colsrc_can_part(Oid indexrelam)
 SiftSrcSource *
 sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
 {
-	const SiftSrcProvider *prov = provider_of_rel(index);
+	const SiftSrcProvider *prov = provider_of_rel(index ? index : heap);
 	SiftSrcSource *src = MemoryContextAlloc(mcxt, sizeof(SiftSrcSource));
 
 	src->prov = prov;

@@ -897,6 +897,7 @@ static const SiftSrcProvider tbl_provider = {
 	.layout = tbl_layout,
 	.stats = tbl_stats,
 	.open = tbl_open,
+	.open_part = tbl_open,
 	.close = tbl_close,
 	.source_layout = tbl_source_layout,
 	.nsb = tbl_nsb,

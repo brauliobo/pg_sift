@@ -758,8 +758,8 @@ extern void sift_colsrc_stamp(Relation index, SiftSrcStamp *stamp);
  */
 extern SiftSrcSource *sift_colsrc_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 
-/* Can the sources of an index of this access method be read as the partitions of one table (src/agg/part.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
-extern bool sift_colsrc_can_part(Oid indexrelam);
+/* Can the sources of an index (or, with index false, a table) of this access method be read as the partitions of one table (src/agg/part.h)? sift_colsrc_open_part is sift_colsrc_open for one of them */
+extern bool sift_colsrc_can_part(Oid relam, bool index);
 extern SiftSrcSource *sift_colsrc_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
 extern void sift_colsrc_close(SiftSrcSource *src);
 extern void sift_colsrc_unpin(SiftSrcSource *src);

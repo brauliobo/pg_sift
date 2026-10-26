@@ -1470,7 +1470,11 @@ agg_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist,
 	if (OidIsValid(spec->indexoid))
 		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->indexoid);
 	for (int i = 0; i < spec->nparts; i++)
-		root->glob->relationOids = lappend_oid(lappend_oid(root->glob->relationOids, spec->partheap[i]), spec->partindex[i]);
+	{
+		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->partheap[i]);
+		if (OidIsValid(spec->partindex[i]))
+			root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->partindex[i]);
+	}
 	for (int i = 0; i < spec->njoin; i++)
 		if (OidIsValid(spec->join[i].relid))
 			root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->join[i].relid);

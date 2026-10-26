@@ -160,7 +160,7 @@ or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b)
 static bool
 source_can_jnull(AggCtx *c)
 {
-	return OidIsValid(c->indexoid) ? sift_colsrc_can_jnull(get_rel_relam(c->indexoid), true) : sift_colsrc_can_jnull(get_rel_relam(c->heapoid), false);
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_jnull(get_rel_relam(c->indexoid), true) : sift_colsrc_can_jnull(get_rel_relam(agg_src_table(c)), false);
 }
 
 /* the NULL slots of an element leaf by what they are (SAP_NULL ops); a JSON null and a missing key need the kinds of the source */

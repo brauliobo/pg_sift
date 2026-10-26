@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/relation.h"
 #include "access/sysattr.h"
 #include "access/stratnum.h"
 #include "access/table.h"
@@ -391,6 +392,14 @@ parent_attno(AppendRelInfo *ai, AttrNumber att)
 }
 
 /* A column of a partition as the column of the partitioned table, through every level (the attribute numbers differ after a dropped column) */
+static AttrNumber
+part_attno(PartVars *pv, AttrNumber att)
+{
+	for (Index r = pv->rti; r != pv->top && att > 0; r = pv->root->append_rel_array[r]->parent_relid)
+		att = parent_attno(pv->root->append_rel_array[r], att);
+	return att;
+}
+
 static Node *
 part_vars_mutator(Node *n, PartVars *pv)
 {
@@ -401,8 +410,7 @@ part_vars_mutator(Node *n, PartVars *pv)
 	if (!IsA(n, Var))
 		return expression_tree_mutator(n, part_vars_mutator, pv);
 	v = copyObject((Var *) n);
-	for (Index r = pv->rti; r != pv->top && v->varattno > 0; r = pv->root->append_rel_array[r]->parent_relid)
-		v->varattno = parent_attno(pv->root->append_rel_array[r], v->varattno);
+	v->varattno = part_attno(pv, v->varattno);
 	pv->ok &= v->varattno > 0;
 	return (Node *) v;
 }
@@ -539,7 +547,7 @@ read_facts(Relation rel, MemoryContext cx, PartCand *pc)
 
 	stats_scaled(rel, full);
 	old = MemoryContextSwitchTo(cx);
-	pc->indexoid = RelationGetRelid(rel);
+	pc->indexoid = rel->rd_rel->relkind == RELKIND_INDEX ? RelationGetRelid(rel) : InvalidOid;
 	pc->lay = sift_colsrc_layout(rel);
 	pc->stats = sift_aggpart_pack_stats(full, pc->lay->nleaves);
 	pc->pa = pa = palloc(sizeof(SiftSrcPreagg));
@@ -693,9 +701,9 @@ cached_facts(Relation rel)
 	return &e->pc;
 }
 
-/* what is read of a partition's index, in the memo when there is one; its layout's expressions are those of the partition and nothing of it is to be changed */
+/* what is read of a partition's index or, for a sift_table, of the partition; in the memo when there is one. Its layout's expressions are those of the partition and nothing of it is to be changed */
 static const PartCand *
-part_index_facts(Oid indexoid)
+part_facts(Oid relid, bool table)
 {
 	PartMemo   *m = NULL;
 	PartCand   *pc;
@@ -711,12 +719,13 @@ part_index_facts(Oid indexoid)
 
 			part_memo = hash_create("sift plan memo", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		}
-		m = hash_search(part_memo, &indexoid, HASH_ENTER, &found);
+		m = hash_search(part_memo, &relid, HASH_ENTER, &found);
 		if (found)
 			return m->pc;
 	}
-	rel = index_open(indexoid, AccessShareLock);
-	if (part_memo_cx != NULL && (facts == NULL || hash_get_num_entries(facts) < FACTS_CACHE))
+	rel = table ? table_open(relid, AccessShareLock) : index_open(relid, AccessShareLock);
+	/* the facts of a table have no stamp to tell when they are stale: they are read for each plan */
+	if (!table && part_memo_cx != NULL && (facts == NULL || hash_get_num_entries(facts) < FACTS_CACHE))
 		pc = cached_facts(rel);
 	else
 	{
@@ -725,40 +734,102 @@ part_index_facts(Oid indexoid)
 		pc = MemoryContextAllocZero(cx, sizeof(PartCand));
 		read_facts(rel, cx, pc);
 	}
-	index_close(rel, AccessShareLock);
+	relation_close(rel, AccessShareLock);
 	if (m != NULL)
 		m->pc = pc;
 	return pc;
 }
 
-/* a partition a column index can be read through: a heap table without row security, and an index of the kind that is usable now */
+/* a partition a column index or the table itself can be read through: a heap table without row security, or a sift_table */
 static bool
 part_readable(AggCtx *c, RelOptInfo *leaf)
 {
 	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
 
-	return rte->relkind == RELKIND_RELATION && get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID && rte->securityQuals == NIL;
+	return rte->relkind == RELKIND_RELATION && (get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID || sift_colsrc_can_part(get_rel_relam(rte->relid), false)) &&
+		rte->securityQuals == NIL;
+}
+
+static bool
+part_is_table(AggCtx *c, RelOptInfo *leaf)
+{
+	return get_rel_relam(planner_rt_fetch(leaf->relid, c->root)->relid) != HEAP_TABLE_AM_OID;
 }
 
 static bool
 part_index_usable(const IndexOptInfo *ii)
 {
-	return sift_colsrc_can_part(ii->relam) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK);
+	return sift_colsrc_can_part(ii->relam, true) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK);
 }
 
-/* does the partition have a column index at all? Only its list of indexes is looked at, nothing of the index is read */
+/* does the partition have a column index at all (a sift_table is its own source)? Only its list of indexes is looked at, nothing of the index is read */
 static bool
 part_has_index(AggCtx *c, RelOptInfo *leaf)
 {
 	if (!part_readable(c, leaf))
 		return false;
+	if (part_is_table(c, leaf))
+		return true;
 	foreach_node(IndexOptInfo, ii, leaf->indexlist)
 		if (part_index_usable(ii))
 			return true;
 	return false;
 }
 
-/* The candidates of a leaf partition: its sift_col indexes, with the layouts in the terms of the partitioned table; none when it cannot be read */
+/* the per-attribute expressions of a sift_table, which stand at the attribute numbers of its partition, at those of the partitioned table (NULL: dropped) */
+static List *
+part_attlist(List *in, PartVars *pv, int natts)
+{
+	Node	  **at = palloc0(natts * sizeof(Node *));
+	List	   *out = NIL;
+
+	foreach_ptr(Node, e, in)
+		if (e != NULL)
+		{
+			AttrNumber	att = part_attno(pv, foreach_current_index(e) + 1);
+
+			if (att > 0)
+				at[att - 1] = part_vars_mutator(e, pv);
+			else
+				pv->ok = false;
+		}
+	for (int i = 0; i < natts; i++)
+		out = lappend(out, at[i]);
+	return out;
+}
+
+/* the facts of a partition's source, with the layout in the terms of the partitioned table; added to cands unless they cannot be */
+static List *
+part_cand(AggCtx *c, RelOptInfo *leaf, List *cands, Oid relid, bool table)
+{
+	const PartCand *facts = part_facts(relid, table);
+	PartCand   *pc = palloc(sizeof(PartCand));
+	PartVars	pv = {c->root, leaf->relid, c->relid, true};
+	SiftSrcLayout *lay = palloc(sizeof(SiftSrcLayout));
+
+	*pc = *facts;
+	pc->lay = lay;
+	*lay = *facts->lay;
+	if (table)
+	{
+		lay->natts = c->rel->max_attr;
+		lay->attexprs = part_attlist(facts->lay->attexprs, &pv, lay->natts);
+		lay->attalias = facts->lay->attalias ? part_attlist(facts->lay->attalias, &pv, lay->natts) : NIL;
+		lay->leaf = memcpy(palloc(lay->nleaves * sizeof(SiftSrcLeaf)), facts->lay->leaf, lay->nleaves * sizeof(SiftSrcLeaf));
+		for (int i = 0; i < lay->nleaves; i++)
+			if ((lay->leaf[i].attno = part_attno(&pv, lay->leaf[i].attno)) <= 0)
+				pv.ok = false;
+	}
+	else
+	{
+		lay->attexprs = NIL;
+		foreach_ptr(Node, e, facts->lay->attexprs)
+			lay->attexprs = lappend(lay->attexprs, part_vars_mutator(e, &pv));
+	}
+	return pv.ok ? lappend(cands, pc) : cands;
+}
+
+/* The candidates of a leaf partition: its sift_col indexes or the sift_table itself, with the layouts in the terms of the partitioned table; none when it cannot be read */
 static List *
 part_candidates(AggCtx *c, RelOptInfo *leaf)
 {
@@ -766,26 +837,11 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 
 	if (!part_readable(c, leaf))
 		return NIL;
+	if (part_is_table(c, leaf))
+		return part_cand(c, leaf, NIL, planner_rt_fetch(leaf->relid, c->root)->relid, true);
 	foreach_node(IndexOptInfo, ii, leaf->indexlist)
-	{
-		const PartCand *facts;
-		PartCand   *pc;
-		PartVars	pv = {c->root, leaf->relid, c->relid, true};
-		List	   *exprs = NIL;
-
-		if (!part_index_usable(ii))
-			continue;
-		facts = part_index_facts(ii->indexoid);
-		pc = palloc(sizeof(PartCand));
-		*pc = *facts;
-		pc->lay = palloc(sizeof(SiftSrcLayout));
-		*pc->lay = *facts->lay;
-		foreach_ptr(Node, e, facts->lay->attexprs)
-			exprs = lappend(exprs, part_vars_mutator(e, &pv));
-		pc->lay->attexprs = exprs;
-		if (pv.ok)
-			cands = lappend(cands, pc);
-	}
+		if (part_index_usable(ii))
+			cands = part_cand(c, leaf, cands, ii->indexoid, false);
 	return cands;
 }
 
@@ -986,7 +1042,7 @@ part_source(AggCtx *c)
 			PartCand   *m = NULL;
 
 			foreach_ptr(PartCand, pc, part_candidates(c, list_nth_node(RelOptInfo, leaves, i)))
-				if (sift_aggpart_same_layout(f->lay, pc->lay) && part_preagg_common(&common, pc->pa))
+				if (OidIsValid(pc->indexoid) == OidIsValid(f->indexoid) && sift_aggpart_same_layout(f->lay, pc->lay) && part_preagg_common(&common, pc->pa))
 				{
 					m = pc;
 					break;

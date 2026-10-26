@@ -181,7 +181,6 @@ struct SiftColSource
 	MemoryContext sigcx;		/* the predicates of the last begin and the bitmaps the cursors made under them */
 	SiftColPred *sig;
 	int			nsig;
-	const SiftColPrune *sigzone;	/* the zone trees of the last begin: made once for the entries of a scan, so a pointer tells them */
 	uint32		sig_gen;
 	uint32		counted;		/* the sig_gen whose pruned units sift_col_kept_map counted for the whole scan: a cursor counts none of them (0: none) */
 	int			ntests;			/* made so far; the slot of the next is ntests % COL_TEST_CACHE */

@@ -96,6 +96,14 @@ BEGIN
 	END LOOP;
 END $$;
 -- @end
+-- @table
+DO $$
+BEGIN
+	FOR i IN 0..@PARTS@ - 1 LOOP
+		EXECUTE format('CREATE TABLE ev_part_%s PARTITION OF ev_part FOR VALUES WITH (MODULUS %s, REMAINDER %s) USING sift_table', i, @PARTS@, i);
+	END LOOP;
+END $$;
+-- @end
 CREATE FUNCTION fz.gen_part(lo bigint, hi bigint, salt int) RETURNS SETOF ev_part LANGUAGE sql AS $$
 	SELECT id, parent_id, kind, grp, ts, amount, val FROM fz.gen_events(lo, hi, salt) $$;
 INSERT INTO ev_part SELECT * FROM fz.gen_part(1, @ROWS@ / 2, 7);
@@ -269,8 +277,7 @@ CREATE INDEX zkf_idx ON zkf USING sift_col (id sift.col_int4_ops, org sift.col_i
 
 -- @table
 -- the fact tables rewritten as sift_tables (the --table mode of the driver, which also drops the sift_col indexes above): the jsonb paths of those indexes are
--- declared per column, a VACUUM FULL writes their leaves; ev_part is one table here (the pushdown reads a partitioned table through the sift_col indexes of its
--- partitions only)
+-- declared per column, a VACUUM FULL writes their leaves; ev_part has sift_table partitions
 ALTER TABLE events SET ACCESS METHOD sift_table;
 SELECT sift.table_set_paths('events', 'doc', 'doc.parts[]{cat text, dir_a text, score float8}');
 SELECT sift.table_set_paths('events', 'metrics', 'metrics.* float8');

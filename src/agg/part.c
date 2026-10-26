@@ -54,7 +54,7 @@ typedef struct PartSource
 	Relation	parent;
 	Oid		   *heapoid;
 	Relation   *heap;			/* NULL until a partition is opened or its bound read the first time; the pruned ones are not opened at all (the first's always is: the layout) */
-	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads */
+	Relation   *index;			/* NULL until open_rest, as src, for a partition the scan reads; always NULL for a sift_table */
 	SiftSrcSource **src;
 	Oid		   *indexoid;
 	Snapshot	snapshot;
@@ -127,7 +127,8 @@ open_part(PartSource *ps, int i)
 		return;
 	if (ps->heap[i] == NULL)
 		ps->heap[i] = table_open(ps->heapoid[i], AccessShareLock);
-	ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
+	if (OidIsValid(ps->indexoid[i]))
+		ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
 	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, ps->mcxt);
 }
 
@@ -184,7 +185,8 @@ part_close(void *impl)
 		if (ps->src[i])
 		{
 			sift_colsrc_close(ps->src[i]);
-			index_close(ps->index[i], NoLock);
+			if (ps->index[i])
+				index_close(ps->index[i], NoLock);
 		}
 		if (ps->heap[i])
 			table_close(ps->heap[i], NoLock);

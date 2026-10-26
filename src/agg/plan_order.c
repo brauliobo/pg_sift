@@ -619,7 +619,7 @@ topn_raw_key(AggCtx *c, int leaf, int xkind)
 		return false;
 	lf = leaf_of(c, leaf);
 	return lf->wide && (lf->typid == UUIDOID || lf->typid == BYTEAOID) &&
-		sift_colsrc_can_raw(get_rel_relam(OidIsValid(c->indexoid) ? c->indexoid : c->nparts > 0 ? c->partheap[0] : c->heapoid), OidIsValid(c->indexoid));
+		sift_colsrc_can_raw(get_rel_relam(OidIsValid(c->indexoid) ? c->indexoid : agg_src_table(c)), OidIsValid(c->indexoid));
 }
 
 /* The sort column i of the query as a leaf the top-N can order by, in the direction of its operator; *cmp, *collid: how the entries of a key of byte strings compare */
@@ -1224,7 +1224,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		return;
 	if (c->func_rti != 0 || !topn_lefts_ok(fs.lefts) ||
 		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) :
-		  sift_colsrc_can_tids(get_rel_relam(c->nparts > 0 ? c->partheap[0] : c->heapoid), false)))
+		  sift_colsrc_can_tids(get_rel_relam(agg_src_table(c)), false)))
 	{
 		agg_refused(TOPN_SHAPE);
 		return;

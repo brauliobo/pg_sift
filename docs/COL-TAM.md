@@ -415,8 +415,9 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Rollups of the elements of a list (`rollup`, paths) | works | missing | declared paths (`sift.table_set_paths`) make leaves of a table, not rollups |
 | Zone pruning of units by the filters of the statement | works | works | range, equality, `IN`, `IS NULL`, `OR` of those |
 | Skip map for parallel morsels | works | missing | a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map |
-| Parallel scan workers | works | works | partitions of a partitioned table: index only (`open_part`) |
-| Partitioned table pushdown | works | missing | partitions of `sift_table` are scanned by PostgreSQL's own plan |
+| Parallel scan workers | works | works | partitions of a partitioned table too |
+| Partitioned table pushdown | works | works | the partitions of one kind (all `sift_table`, or all with a `sift_col` index) are one source; partitions with their columns in another order keep the normal plan |
+| Partition facts kept across statements, pages released between partitions | works | missing | the facts of a `sift_table` partition are read at each plan, and its source has no release between partitions |
 | Text tests on the encoded form (prefix zones, dictionary codes) | works | works | prefix zones skip groups, dictionary codes and encoded strings answer `=`, `<>`, ranges, `IN`, `NOT IN`, `LIKE 'p%'` (a column a group lacks stays with the executor) |
 | Integer comparisons on encoded chunks | works | works | the table takes a filter when every segment layout holds the column as an integer leaf (agg/chunkfilter.c) |
 | Decoding only the rows a filter keeps | works | works | a unit with few kept rows decodes them, and one the integer filters left few rows is narrowed to them |

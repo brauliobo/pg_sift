@@ -115,7 +115,7 @@ typeof_leaf(AggCtx *c, Node *e)
 bool
 source_can_types(AggCtx *c)
 {
-	return OidIsValid(c->indexoid) ? sift_colsrc_can_types(get_rel_relam(c->indexoid), true) : sift_colsrc_can_types(get_rel_relam(c->heapoid), false);
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_types(get_rel_relam(c->indexoid), true) : sift_colsrc_can_types(get_rel_relam(agg_src_table(c)), false);
 }
 
 /* the constant text operand of `jsonb_typeof(..) = 'a'` as a name list, with the call in *call; either side */
@@ -246,7 +246,7 @@ wide_leaf(AggCtx *c, Node *e)
 static bool
 source_can_wide(AggCtx *c)
 {
-	return OidIsValid(c->indexoid) ? sift_colsrc_can_wide(get_rel_relam(c->indexoid), true) : sift_colsrc_can_wide(get_rel_relam(c->heapoid), false);
+	return OidIsValid(c->indexoid) ? sift_colsrc_can_wide(get_rel_relam(c->indexoid), true) : sift_colsrc_can_wide(get_rel_relam(agg_src_table(c)), false);
 }
 
 /* the operator, leaf and operand of `leaf op operand` (or the commuted form), `leaf IN / NOT IN (operands)` and `leaf IS [NOT] NULL` on a wide leaf; false for any other clause */
@@ -375,7 +375,7 @@ compile_tid(AggCtx *c, Node *n)
 		return NULL;
 #endif
 	if (!IsA(n, OpExpr) || c->nparts > 0 || list_length(((OpExpr *) n)->args) != 2 || (op = tid_cmp(func_of(n))) < 0 ||
-		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(c->heapoid), false)))
+		!(OidIsValid(c->indexoid) ? sift_colsrc_can_tids(get_rel_relam(c->indexoid), true) : sift_colsrc_can_tids(get_rel_relam(agg_src_table(c)), false)))
 		return NULL;
 	l = strip_relabel(linitial(((OpExpr *) n)->args));
 	r = strip_relabel(lsecond(((OpExpr *) n)->args));

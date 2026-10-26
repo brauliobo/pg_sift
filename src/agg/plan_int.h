@@ -166,6 +166,13 @@ typedef struct AggCtx
 	Index		parent_rti;
 } AggCtx;
 
+/* the table whose access method reads the source when no index does: the table, or its first partition */
+static inline Oid
+agg_src_table(const AggCtx *c)
+{
+	return c->nparts > 0 ? c->partheap[0] : c->heapoid;
+}
+
 /* Planner-only paths of correlated children are planned in their own query level. */
 typedef struct SiftAggPath
 {

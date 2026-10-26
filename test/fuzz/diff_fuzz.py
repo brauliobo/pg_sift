@@ -74,7 +74,6 @@ def data_sql(seed, rows, parts):
     for mode, keep in (('table', TABLE), ('heap', not TABLE)):
         t = re.sub(rf'^-- @{mode}\n(.*?)^-- @end\n', (lambda m: m.group(1)) if keep else '', t, flags=re.S | re.M)
     if TABLE:
-        t = t.replace(') PARTITION BY HASH (id);', ') USING sift_table;')
         t = re.sub(r'^CREATE INDEX \w+ ON \w+ USING sift_col.*?;\n', '', t, flags=re.S | re.M)
     return t.replace('@SEED@', str(seed)).replace('@ROWS@', str(rows)).replace('@PARTS@', str(parts))
 
@@ -1839,7 +1838,7 @@ def main():
         for TABLE in (False, True):
             ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
             sql = data_sql(1, a.rows, a.parts)
-            if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE or ('PARTITION BY' in sql) == TABLE:
+            if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
             fams = {f: v for f, v in FAMILIES.items() if not (TABLE and f in TABLE_SKIP)}
             for fam, (gen, render, _) in fams.items():
