@@ -22,7 +22,7 @@
 =cheap	^(coverage|isolation-emulated)$
 
 # the whole build and every harness: a change here can break anything
-^(Makefile|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
+^(Makefile|BUILD_ID|\.gitattributes|scripts/build-id\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/((ci|pgtest|tap|leakcheck|cpu_time|ci_stats|areas|pg19-build|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/ci\.yml|actions/pg19/))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}

@@ -116,6 +116,14 @@ endif
 
 -include $(wildcard src/*/*.d)
 
+# The module version the library reports (scripts/build-id.sh); build_id.h is rewritten only when the id changes, so that handler.o is rebuilt then and no other file.
+SIFT_BUILD_ID ?= $(shell $(srcdir)/scripts/build-id.sh $(or $(srcdir),.))
+$(SRC)/core/build_id.h: FORCE
+	@echo '#define SIFT_BUILD_ID "$(SIFT_BUILD_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
+$(SRC)/core/handler.o: $(SRC)/core/build_id.h
+.PHONY: FORCE
+FORCE:
+
 # Suites beyond installcheck, run against the scripts/pgtest.sh cluster
 # (install and start it first). scripts/ci.sh runs all of them.
 .PHONY: isolationcheck tapcheck difftest fuzz soak gpu-shaders limits

@@ -57,7 +57,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=80
+UPG_CHECKS=81
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 node_init life 6
 node_start life || bail "start failed"
@@ -92,6 +92,8 @@ if (( PG_MAJOR >= 18 )); then
 		"SELECT default_version FROM pg_available_extensions WHERE name = 'pg_sift'")" == 3.5
 	check "the library loads through dynamic_library_path" test "$(vq life src \
 		"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift'")" == 1
+	check "the module version names the release and the commit (scripts/build-id.sh)" test "$(vq life src \
+		"SELECT count(*) FROM pg_get_loaded_modules() WHERE module_name = 'pg_sift' AND version ~ '^[0-9]+\.[0-9]+[^+]*\+[0-9a-f]{7,}\$'")" == 1
 	check "without the path the extension is not found" test "$(q life postgres "SET extension_control_path = '/nonexistent'" \
 		"SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift'")" == 0
 

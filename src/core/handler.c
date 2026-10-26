@@ -49,8 +49,9 @@
 #include "col/shred.h"
 #include "core/parbuild.h"
 #include "core/sql.h"
+#include "core/build_id.h"
 
-PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_MODULE_VERSION);
+PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
 PG_FUNCTION_INFO_V1(sift_handler);
 PG_FUNCTION_INFO_V1(sift_match);
