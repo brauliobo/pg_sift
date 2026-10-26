@@ -132,7 +132,7 @@ sift_agg_init(void)
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.agg_force",
 							 "A diagnostic: takes the aggregate scan wherever one is possible, whatever the plans cost (an arm that is refused for its shape stays refused).",
-							 "The scan is priced as free and the inline plan of a shared CTE is kept when it has a scan, to time the plan the cost model refused.",
+							 "The scan is priced at a millionth of its cost (the paths with workers and without keep their order) and the inline plan of a shared CTE is kept when it has a scan, to time the plan the cost model refused.",
 							 &sift_agg_force, false,
 							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomRealVariable("sift.agg_scale_horizon",

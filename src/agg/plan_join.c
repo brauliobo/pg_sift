@@ -820,6 +820,8 @@ child_pos(List *vars, int att)
 	SIFT_INVARIANT(false, "sift: column %d is not an output of the joined plan", att);
 }
 
+#define AGG_FORCE_SCALE	1e-6	/* sift.agg_force: the price of a path against the normal plan's */
+
 /* A path with the given number of workers: the spec travels with it, and the cheaper of the paths wins */
 void
 add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel, PathTarget *target, List *scan_tlist, int nworkers, List *pathkeys)
@@ -856,8 +858,12 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
 	if (c->spine != NULL)
 		cp->custom_paths = lappend(cp->custom_paths, c->spine);
 	agg_arm_path(&cp->path);
+	/* free, but in the order of their prices: the paths with workers and the ones without still compete */
 	if (sift_agg_force)
-		cp->path.startup_cost = cp->path.total_cost = 0;
+	{
+		cp->path.startup_cost *= AGG_FORCE_SCALE;
+		cp->path.total_cost *= AGG_FORCE_SCALE;
+	}
 	add_path(output_rel, &cp->path);
 }
 

@@ -44,6 +44,28 @@ SELECT same(shared()) AS shared_same;
 RESET sift.agg_force;
 SELECT plan_of(probe()) AS probe_again;
 
-DROP FUNCTION plan_of(text), same(text), probe(), shared();
+-- the forced scan keeps the order of the prices of its paths: where the scan with workers is the cheaper of the two, it gets them
+CREATE FUNCTION workers_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		n := n + coalesce(substring(l from 'Workers Planned: (\d+)')::int, 0);
+	END LOOP;
+	RETURN n;
+END $$;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET sift.agg_force = on;
+SELECT workers_of('SELECT kind, count(*) AS n, sum(amount) AS s FROM events GROUP BY 1') AS forced_workers;
+SET sift.agg_force = off;
+SELECT workers_of('SELECT kind, count(*) AS n, sum(amount) AS s FROM events GROUP BY 1') > 0 AS natural_workers;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+SELECT workers_of('SELECT kind, count(*) AS n, sum(amount) AS s FROM events GROUP BY 1') AS forced_serial;
+RESET sift.agg_force;
+
+DROP FUNCTION plan_of(text), same(text), probe(), shared(), workers_of(text);
 DROP TABLE events;
 DROP EXTENSION pg_sift;
