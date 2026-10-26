@@ -604,7 +604,8 @@ compile_leaf_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out, int ai)
 	Oid			fid = a->aggfnoid;
 	int			leaf = match_leaf(c, arg);
 
-	if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT)
+	/* the distinct values of a leaf that has no set of its own (a 64-bit integer, float or uuid) get ids from a combo, which the workers merge as they do those of a joined column */
+	if (leaf < 0 || leaf_of(c, leaf)->kind == SCL_OBJECT || (fid == F_COUNT_ANY && a->aggdistinct != NIL && !lut_leaf_ok(c, leaf)))
 		return compile_mapped(c, a, arg, out, ai);
 	if (leaf_of(c, leaf)->wide && fid != F_COUNT_ANY)
 		return false;

@@ -6,7 +6,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;
-CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), price numeric, qty int, big bigint, wide bigint) WITH (autovacuum_enabled = false);
+CREATE TABLE facts (id int PRIMARY KEY, grp int, kind text, amount numeric(10,2), price numeric, qty int, big bigint, wide bigint, f float8, ts timestamptz, u uuid) WITH (autovacuum_enabled = false);
 INSERT INTO facts
 SELECT i, i % 7, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4],
        CASE WHEN i % 29 = 0 THEN NULL WHEN i % 997 = 0 THEN 'NaN'::numeric ELSE ((hashint4(i) & 2147483647) % 3000)::numeric / 10 END,
@@ -14,9 +14,12 @@ SELECT i, i % 7, (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4],
        CASE WHEN i % 13 = 0 THEN NULL ELSE (hashint4(i + 2) & 2147483647) % 400 END,
        (hashint4(i + 3) & 2147483647) % 50000 * 100003::bigint,
        CASE WHEN i % 11 = 0 THEN NULL WHEN i % 503 = 0 THEN 9223372036854775807 WHEN i % 509 = 0 THEN -9223372036854775807 - 1
-            ELSE (hashint4(i + 4) & 2147483647) % 30000 - 15000 END
+            ELSE (hashint4(i + 4) & 2147483647) % 30000 - 15000 END,
+       CASE WHEN i % 23 = 0 THEN NULL WHEN i % 101 = 0 THEN 'NaN' WHEN i % 103 = 0 THEN 'Infinity' WHEN i % 107 = 0 THEN '-0'::float8 WHEN i % 109 = 0 THEN 0 ELSE ((hashint4(i + 5) & 2147483647) % 2000) / 8.0 END,
+       CASE WHEN i % 37 = 0 THEN NULL WHEN i % 211 = 0 THEN 'infinity' WHEN i % 223 = 0 THEN '-infinity' ELSE timestamptz '2024-01-01' + ((hashint4(i + 6) & 2147483647) % 20000) * interval '1 minute' END,
+       CASE WHEN i % 41 = 0 THEN NULL ELSE md5(((hashint4(i + 7) & 2147483647) % 3000)::text)::uuid END
 FROM generate_series(1, 20000) i;
-CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, price, qty, big, wide);
+CREATE INDEX facts_col ON facts USING sift_col (id, grp, kind, amount, price, qty, big, wide, f, ts, u);
 VACUUM ANALYZE facts;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -41,7 +44,12 @@ INSERT INTO shapes (name, q) VALUES
 	('bigint global',     'SELECT count(DISTINCT wide), count(DISTINCT big), count(DISTINCT id::bigint) FROM facts'),
 	('bigint extremes',   'SELECT kind, count(DISTINCT wide), count(wide) FROM facts GROUP BY kind'),
 	('bigint filter',     'SELECT kind, count(DISTINCT wide) FILTER (WHERE qty > 100), count(DISTINCT big) FROM facts GROUP BY kind'),
-	('bigint expression', 'SELECT grp, count(DISTINCT big + 1), count(DISTINCT big * 2) FROM facts GROUP BY grp');
+	('bigint expression', 'SELECT grp, count(DISTINCT big + 1), count(DISTINCT big * 2) FROM facts GROUP BY grp'),
+	('count float',       'SELECT grp, count(DISTINCT f) FROM facts GROUP BY grp'),
+	('count timestamptz', 'SELECT grp, count(DISTINCT ts) FROM facts GROUP BY grp'),
+	('leaf global',       'SELECT count(DISTINCT f), count(DISTINCT ts), count(DISTINCT u) FROM facts'),
+	('leaf filter',       'SELECT kind, count(DISTINCT f) FILTER (WHERE qty > 100), count(DISTINCT ts) FILTER (WHERE grp < 3) FROM facts GROUP BY kind'),
+	('leaf mixed',        'SELECT kind, count(DISTINCT f), sum(DISTINCT amount), count(DISTINCT qty), count(DISTINCT ts) FROM facts GROUP BY kind');
 CREATE FUNCTION rows_of(q text, push bool, workers int, leader bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -88,7 +96,12 @@ FROM shapes s ORDER BY s.n;
  bigint extremes   | parallel | t       | t       | t       | t
  bigint filter     | parallel | t       | t       | t       | t
  bigint expression | parallel | t       | t       | t       | t
-(17 rows)
+ count float       | parallel | t       | t       | t       | t
+ count timestamptz | parallel | t       | t       | t       | t
+ leaf global       | parallel | t       | t       | t       | t
+ leaf filter       | parallel | t       | t       | t       | t
+ leaf mixed        | parallel | t       | t       | t       | t
+(22 rows)
 
 -- the sets of a worker go through a sort when work_mem is small: the same rows
 SET work_mem = '64kB';
@@ -106,7 +119,7 @@ FROM shapes s WHERE s.name IN ('count amount', 'count global', 'sum amount', 'su
 RESET work_mem;
 RESET hash_mem_multiplier;
 -- a scan that reads rows in the write buffer and rows of updated tuples
-INSERT INTO facts SELECT 20000 + i, i % 7, 'cat_a', (i % 400)::numeric / 4, i % 9, i % 300, i, i - 350 FROM generate_series(1, 700) i;
+INSERT INTO facts SELECT 20000 + i, i % 7, 'cat_a', (i % 400)::numeric / 4, i % 9, i % 300, i, i - 350, (i % 90) / 4.0, timestamptz '2024-01-01' + i * interval '7 minutes', md5((i % 500)::text)::uuid FROM generate_series(1, 700) i;
 UPDATE facts SET amount = amount + 0.5 WHERE id % 17 = 0;
 DELETE FROM facts WHERE id % 61 = 0;
 SELECT s.name, rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS dirty_w0, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS dirty_w2,
@@ -131,7 +144,12 @@ FROM shapes s ORDER BY s.n;
  bigint extremes   | t        | t        | t
  bigint filter     | t        | t        | t
  bigint expression | t        | t        | t
-(17 rows)
+ count float       | t        | t        | t
+ count timestamptz | t        | t        | t
+ leaf global       | t        | t        | t
+ leaf filter       | t        | t        | t
+ leaf mixed        | t        | t        | t
+(22 rows)
 
 -- what stays on the leader says why in EXPLAIN VERBOSE: the aggregate whose partial state the leader cannot merge
 CREATE FUNCTION serial_because(q text) RETURNS text LANGUAGE plpgsql AS $$
