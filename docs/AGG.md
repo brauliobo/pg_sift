@@ -46,7 +46,7 @@ An inner or semi lookup join whose key is one integer (`int8` too) or date leaf 
 
 Tests `agg_join_filter`, `agg_join_key_types`, isolation spec `agg_join_filter`, fixtures `j_join_filter_*`, row J28.
 
-A combo of one input (a join key, a one-leaf grouping expression) finds the entry of an id below 65,536 by array index; larger or negative ids and multi-input combos use the hash table.
+A combo of one input (a join key, a one-leaf grouping expression) finds the entry of an id below 65,536 by array index; larger or negative ids and multi-input combos use the hash table. A combo whose inputs are columns of one earlier lookup's output row (and the one leaf that lookup is keyed by, as the month calendar of a period join) finds its entry by that row: the row names the leaf's value, so a tuple costs one array read.
 
 **Sharing.** `UNION ALL` arms (or a CTE read several times) of one statement that join the same table with the same key, output columns and conditions read the same rows in one snapshot: the first node loads them into a statement context and the others reuse the table (`sift.agg_share_lookups`, `Shared Lookup Tables`). Arms with other columns or conditions, a plan as table, a preserved side, and parallel workers load their own. Test `agg_share_lookups`, isolation spec `agg_share_lookups`, fixture `j_share_arms`, row J29.
 

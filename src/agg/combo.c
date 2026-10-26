@@ -1145,6 +1145,10 @@ combo_forget_priors(AggExec *ex, int ci)
 		memset(&cs->pv[p], 0, sizeof(cs->pv[p]));
 		memset(&cs->id64[p], 0, sizeof(cs->id64[p]));
 	}
+	if (cs->byrow)
+		pfree(cs->byrow);
+	cs->byrow = NULL;
+	cs->nbyrow = 0;
 }
 
 /* the cache starts again: the entries, the outputs of the slots, the values and the ids of the leaves (nothing else holds them) */
@@ -1169,6 +1173,8 @@ combo_reset(AggExec *ex, int ci)
 	cs->nht = 64;
 	cs->dir = NULL;
 	cs->dircap = 0;
+	cs->byrow = NULL;
+	cs->nbyrow = 0;
 	old = MemoryContextSwitchTo(cs->cxt);
 	cs->ht = palloc0(cs->nht * sizeof(uint32));
 	for (int p = 0; p < cb->nleaves; p++)
@@ -1264,8 +1270,8 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
  * eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx. A tuple that is not
  * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
  */
-void
-combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
+static void
+combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
 {
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	ComboSt    *cs = &ex->cs[ci];
@@ -1337,6 +1343,78 @@ combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const 
 		for (int p = 1; p < cb->nleaves; p++)
 			v[p] = ex->cvid[p][i];
 		eid[i] = combo_ent(ex, ci, v);
+	}
+}
+
+/*
+ * The earlier lookup whose output row alone decides the entries of combo ci, or -1: every input of ci is a column of that lookup's output row or the
+ * one leaf the lookup itself is keyed by (so the row names the leaf's value too). A tuple's entry is then an array index by the row (byrow).
+ */
+static int
+combo_row_parent(AggExec *ex, int ci)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	int			par = -1;
+
+	for (int p = 0; p < cb->nleaves; p++)
+		if (cb->leaf[p] < 0)
+		{
+			if (par >= 0 && par != cb->refcombo[p])
+				return -1;
+			par = cb->refcombo[p];
+		}
+	if (par < 0 || ex->spec->combo[par].join < 0 || ex->spec->combo[par].nleaves != 1)
+		return -1;
+	for (int p = 0; p < cb->nleaves; p++)
+		if (cb->leaf[p] >= 0 && cb->leaf[p] != ex->spec->combo[par].leaf[0])
+			return -1;
+	return par;
+}
+
+void
+combo_resolve(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, const uint32 *ridx, uint32 *eid, const uint64 *alive, const Tup *tuples)
+{
+	ComboSt    *cs = &ex->cs[ci];
+	const uint32 *row;
+	bool		fill = true;
+
+	if (cs->prow == 0)
+	{
+		int			par = combo_row_parent(ex, ci);
+
+		cs->prow = par < 0 ? -1 : par + 1;
+	}
+	if (cs->prow < 0 || tuples == NULL || combo_null_input(ex))
+	{
+		combo_resolve_gen(ex, ci, qlevel, n, tidx, ridx, eid, alive, tuples);
+		return;
+	}
+	row = tuples->cout[cs->prow - 1];
+	for (int i = 0; i < n && fill; i++)
+		if (alive && !sift_colsrc_bit(alive, i))
+			eid[i] = COMBO_NONE;
+		else if (row[i] < cs->nbyrow && cs->byrow[row[i]])
+			eid[i] = cs->byrow[row[i]] - 1;
+		else
+			fill = false;
+	if (fill)
+		return;
+	combo_resolve_gen(ex, ci, qlevel, n, tidx, ridx, eid, alive, tuples);
+	for (int i = 0; i < n; i++)
+	{
+		if (eid[i] == COMBO_NONE || row[i] == COMBO_NONE)
+			continue;
+		if (row[i] >= cs->nbyrow)
+		{
+			uint32		cap = Max(cs->nbyrow, 1024);
+
+			while (cap <= row[i])
+				cap *= 2;
+			cs->byrow = cs->byrow ? repalloc(cs->byrow, (Size) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (Size) cap * sizeof(uint32));
+			memset(cs->byrow + cs->nbyrow, 0, (Size) (cap - cs->nbyrow) * sizeof(uint32));
+			cs->nbyrow = cap;
+		}
+		cs->byrow[row[i]] = eid[i] + 1;
 	}
 }
 

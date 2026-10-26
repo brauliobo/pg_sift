@@ -344,9 +344,9 @@ hash_add(AggExec *ex, const uint32 *ids, uint32 pos)
 
 /* the probe for `nk` ids, a constant where it is inlined: the hash and the comparison unroll */
 static pg_attribute_always_inline uint32
-hash_probe(AggExec *ex, const uint32 *ids, const int nk)
+hash_probe(AggExec *ex, const uint32 *ids, const int nk, uint32 h)
 {
-	uint32		pos = ids_hash(ids, nk, ex->nhslot);
+	uint32		pos = h & (ex->nhslot - 1);
 
 	for (; ex->hslot[pos]; pos = (pos + 1) & (ex->nhslot - 1))
 		if (memcmp(&ex->hkey[(Size) (ex->hslot[pos] - 1) * nk], ids, nk * sizeof(uint32)) == 0)
@@ -356,7 +356,8 @@ hash_probe(AggExec *ex, const uint32 *ids, const int nk)
 
 /* one probe function per number of keys (`ex->hashg`): the hash and the comparison of the ids are unrolled, as the hot loop wants */
 #define HASH_GROUP_FN(n) \
-	static uint32 hash_group_##n(AggExec *ex, const uint32 *ids) { return hash_probe(ex, ids, n); }
+	static uint32 hash_group_h##n(AggExec *ex, const uint32 *ids, uint32 h) { return hash_probe(ex, ids, n, h); } \
+	static uint32 hash_group_##n(AggExec *ex, const uint32 *ids) { return hash_group_h##n(ex, ids, ids_hash32(ids, n)); }
 HASH_GROUP_FN(1)
 HASH_GROUP_FN(2)
 HASH_GROUP_FN(3)
@@ -368,12 +369,20 @@ HASH_GROUP_FN(8)
 
 static uint32 (*const hash_group_fns[]) (AggExec *, const uint32 *) =
 {hash_group_1, hash_group_2, hash_group_3, hash_group_4, hash_group_5, hash_group_6, hash_group_7, hash_group_8};
+static uint32 (*const hash_group_hfns[]) (AggExec *, const uint32 *, uint32) =
+{hash_group_h1, hash_group_h2, hash_group_h3, hash_group_h4, hash_group_h5, hash_group_h6, hash_group_h7, hash_group_h8};
 
 /* Wider tuples use the same hash and equality with the plan's actual width. */
 static uint32
+hash_group_generic_h(AggExec *ex, const uint32 *ids, uint32 h)
+{
+	return hash_probe(ex, ids, ex->spec->nkeys, h);
+}
+
+static uint32
 hash_group_generic(AggExec *ex, const uint32 *ids)
 {
-	return hash_probe(ex, ids, ex->spec->nkeys);
+	return hash_group_generic_h(ex, ids, ids_hash32(ids, ex->spec->nkeys));
 }
 
 void
@@ -383,6 +392,7 @@ hash_init(AggExec *ex, uint32 groups)
 
 	ex->hash = true;
 	ex->hashg = nk <= lengthof(hash_group_fns) ? hash_group_fns[nk - 1] : hash_group_generic;
+	ex->hashgh = nk <= lengthof(hash_group_hfns) ? hash_group_hfns[nk - 1] : hash_group_generic_h;
 	ex->nhslot = groups > 1024 ? pg_nextpower2_32(groups * 2) : 1024;
 	ex->hslot = MemoryContextAllocZero(ex->tcxt, ex->nhslot * sizeof(uint32));
 	ex->ngroups = 0;
@@ -1066,10 +1076,23 @@ compute_kids(AggExec *ex, int nsel, uint32 *kid)
 	}
 }
 
+/* the hash of tuple i of the chunk's key ids, into hv, and the prefetch of its slot */
+static void
+hash_ahead(AggExec *ex, int nk, int i, uint32 *hv)
+{
+	uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
+
+	for (int j = 0; j < nk; j++)
+		ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
+	hv[i] = ids_hash32(ids, nk);
+	__builtin_prefetch(&ex->hslot[hv[i] & (ex->nhslot - 1)]);
+}
+
 void
 compute_gids(AggExec *ex, int nsel)
 {
 	int			nk = ex->spec->nkeys;
+	uint32		hv[VEC + PADW];
 
 	if (nk == 0)
 	{
@@ -1120,19 +1143,18 @@ compute_gids(AggExec *ex, int nsel)
 		/* the table just replaced the arrays: recompute below, in hash mode */
 	}
 	compute_kids(ex, nsel, ex->tmpu32);
+	/* a tuple's hash is made GROUP_AHEAD tuples early, to prefetch its slot, and kept for its probe */
+	for (int i = 0; i < Min(GROUP_AHEAD, nsel); i++)
+		hash_ahead(ex, nk, i, hv);
 	for (int i = 0; i < nsel; i++)
 	{
-		uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
+		uint32		ids[SIFT_AGG_MAX_KEYS];
 
 		if (i + GROUP_AHEAD < nsel)
-		{
-			for (int j = 0; j < nk; j++)
-				ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i + GROUP_AHEAD];
-			__builtin_prefetch(&ex->hslot[ids_hash(ids, nk, ex->nhslot)]);
-		}
+			hash_ahead(ex, nk, i + GROUP_AHEAD, hv);
 		for (int j = 0; j < nk; j++)
 			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
-		ex->gid[i] = hash_group(ex, ids);
+		ex->gid[i] = ex->hashgh(ex, ids, hv[i]);
 	}
 	if (ex->ngroups > ex->gcap)
 		groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);

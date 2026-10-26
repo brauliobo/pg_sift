@@ -126,6 +126,7 @@ typedef struct AggExec
 	AggAcc	   *acc;
 	uint32	   *hkey;			/* hash mode: nkeys ids per group */
 	uint32		(*hashg) (struct AggExec *, const uint32 *);	/* hash mode: the probe for nkeys ids */
+	uint32		(*hashgh) (struct AggExec *, const uint32 *, uint32);	/* ... for ids whose hash (ids_hash32) the caller has */
 	uint32		hkcap;
 	uint32	   *hslot;
 	uint32		nhslot;

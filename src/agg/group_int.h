@@ -49,7 +49,7 @@ key_used(KeyState *k)
 }
 
 static inline uint32
-ids_hash(const uint32 *ids, int nk, uint32 nslot)
+ids_hash32(const uint32 *ids, int nk)
 {
 	uint64		h = 0;
 
@@ -58,7 +58,13 @@ ids_hash(const uint32 *ids, int nk, uint32 nslot)
 		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
 		h ^= h >> 32;
 	}
-	return (uint32) h & (nslot - 1);
+	return (uint32) h;
+}
+
+static inline uint32
+ids_hash(const uint32 *ids, int nk, uint32 nslot)
+{
+	return ids_hash32(ids, nk) & (nslot - 1);
 }
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */

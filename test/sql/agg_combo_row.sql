@@ -1,0 +1,59 @@
+-- A lookup join keyed by the output row of an earlier lookup (and by the one leaf that lookup is keyed by) resolves a tuple by that row: a calendar of
+-- periods that overlap, joined by the day, and a calendar of months joined by the period and the month of the day. The rows must be the normal plan's:
+-- a day in two periods is in two rows, a month nothing fell in is a row of NULLs, and a cache that starts again (a small hash memory spills the groups) does not
+-- keep the entries of the rows it forgot.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+CREATE TABLE ev (id int, day date, k int, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, date '2023-06-01' + (i * 7) % 900, i % 40, (i % 1000) / 10.0 FROM generate_series(1, 60000) i;
+INSERT INTO ev VALUES (60001, NULL, 1, 5), (60002, date '2031-01-01', 2, 7);
+CREATE INDEX ev_col ON ev USING sift_col (id, day, k, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	plan := plan_of(q);
+	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	result_rows := (SELECT count(*) FROM r_on);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	RETURN NEXT;
+END $$;
+
+-- the periods overlap from 2024-06-01 to 2024-12-31
+SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('current', daterange('2024-06-01', '2025-06-01', '[]'), interval '0 day'), ('previous', daterange('2023-06-01', '2024-12-31', '[]'), interval '1 year')) p (period, range, "interval")),
+ all_dates AS (SELECT period FROM periods),
+ rev AS (SELECT ev.id, ev.amount, periods.period AS bucket FROM ev JOIN periods ON ev.day <@ range)
+ SELECT all_dates.period, count(DISTINCT rev.id) AS n, sum(rev.amount) AS total FROM all_dates LEFT JOIN rev ON rev.bucket = all_dates.period GROUP BY 1$$);
+-- the month of the day moved by the period's interval is the key of the calendar: three inputs, two of them columns of the period's row
+SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('current', daterange('2024-06-01', '2025-06-01', '[]'), interval '0 day'), ('previous', daterange('2023-06-01', '2024-12-31', '[]'), interval '1 year')) p (period, range, "interval")),
+ all_dates AS (SELECT period, generate_series(date_trunc('month', lower(range))::date + "interval", date_trunc('month', upper(range) - 1)::date + "interval", interval '1 month')::date AS date FROM periods),
+ rev AS (SELECT ev.id, ev.k, ev.amount, periods.period AS bucket_period, (date_trunc('month', ev.day)::date + periods."interval")::date AS bucket_date FROM ev JOIN periods ON ev.day <@ range)
+ SELECT all_dates.period, all_dates.date, count(DISTINCT rev.id) AS n, count(DISTINCT rev.k) AS ks, sum(rev.amount) AS total
+ FROM all_dates LEFT JOIN rev ON rev.bucket_period = all_dates.period AND rev.bucket_date = all_dates.date GROUP BY 1, 2$$);
+-- the same by the groups of the events as well, with the group table kept small so that it spills and the caches start again
+SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
+SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('current', daterange('2024-06-01', '2025-06-01', '[]'), interval '0 day'), ('previous', daterange('2023-06-01', '2024-12-31', '[]'), interval '1 year')) p (period, range, "interval")),
+ all_dates AS (SELECT period, generate_series(date_trunc('month', lower(range))::date + "interval", date_trunc('month', upper(range) - 1)::date + "interval", interval '1 month')::date AS date FROM periods),
+ rev AS (SELECT ev.id, ev.k, ev.amount, periods.period AS bucket_period, (date_trunc('month', ev.day)::date + periods."interval")::date AS bucket_date FROM ev JOIN periods ON ev.day <@ range)
+ SELECT all_dates.period, all_dates.date, rev.k, count(DISTINCT rev.id) AS n, sum(rev.amount) AS total
+ FROM all_dates LEFT JOIN rev ON rev.bucket_period = all_dates.period AND rev.bucket_date = all_dates.date GROUP BY 1, 2, 3$$);
+RESET work_mem; RESET hash_mem_multiplier;
+
+DROP FUNCTION same(text);
+DROP FUNCTION plan_of(text);
+DROP TABLE ev;
+DROP EXTENSION pg_sift;

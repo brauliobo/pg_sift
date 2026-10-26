@@ -108,6 +108,9 @@ typedef struct ComboSt
 	uint32	   *ht;				/* ent + 1 */
 	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
 	uint32	   *dir;
+	uint32	   *byrow;			/* a combo of one earlier lookup's output row (and of that lookup's own leaf): entry + 1 by that row, 0 not seen (combo_resolve) */
+	uint32		nbyrow;
+	int8		prow;			/* the earlier lookup that byrow is by, plus one; -1: none, 0: not asked yet (combo_row_parent) */
 	uint32		nout;
 	uint32		outcap;
 	uint32	   *val;			/* [out * nslots + slot]: key id (0 NULL) or boolean */
