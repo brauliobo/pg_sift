@@ -361,6 +361,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_segment_kb",
 							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem).",
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_max_segments",
+							"Testing: segments a participant of a sift_col build with key_cut may hold before it merges runs (0 = what the directory has room for).",
+							NULL, &sift_test_col_max_segments, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 #endif
 	col_relopt_kind = add_reloption_kind();
 	add_int_reloption(col_relopt_kind, "write_buffer_limit",

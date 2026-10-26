@@ -418,6 +418,19 @@ sift_wt_abort(SiftWriteTarget *wt)
 	wt->ntaken = wt->nspare = 0;
 }
 
+/*
+ * Gives back blocks that the target wrote and nothing published, a segment whose rows a merge of the same build moved on: they are the target's no more, so that
+ * neither the finish nor an abort gives them back again once another stream took them
+ */
+void
+sift_wt_release(SiftWriteTarget *wt, SiftExtent *ext, int n)
+{
+	Assert(wt->mode == SIFT_WRITE_SHARED);
+	store_update(wt->index, &(SiftDirChange) {.release = ext, .nrelease = n, .extra = InvalidBuffer}, false, NULL);
+	wt->taken = extents_subtract(wt, wt->taken, &wt->ntaken, ext, n);
+	wt->maxtaken = wt->ntaken;
+}
+
 SiftStreamWriter *
 sift_sw_begin(SiftWriteTarget *wt, uint64 gen)
 {

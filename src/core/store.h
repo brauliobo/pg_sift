@@ -320,6 +320,9 @@ extern void sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec);
  */
 extern void sift_wt_abort(SiftWriteTarget *wt);
 
+/* SHARED targets: gives back extents of blocks the target took and wrote, that nothing published (a build merging its own runs); they are not the target's any more */
+extern void sift_wt_release(SiftWriteTarget *wt, SiftExtent *ext, int n);
+
 /*
  * Extents of a stream, the same bookkeeping in every store: the writer collects the blocks of its pages into extents
  * (runs of contiguous blocks), the reader maps a logical page to its block through the first logical page of each extent.

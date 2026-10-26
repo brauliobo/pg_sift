@@ -7,7 +7,6 @@
 
 #include "access/amapi.h"
 #include "datatype/timestamp.h"
-#include "nodes/execnodes.h"
 
 #include "col/pg.h"
 #include "col/seg.h"
@@ -65,7 +64,7 @@ typedef enum SiftAutoCut
 	SIFT_AUTOCUT_CUT,			/* key_cut = 'auto: col' was written */
 	SIFT_AUTOCUT_ADVISED		/* a key is worth cutting by, but the index would grow: the NOTICE says so */
 } SiftAutoCut;
-extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index, IndexInfo *info);
+extern SiftAutoCut sift_col_auto_cut(Relation heap, Relation index);
 extern bool sift_col_options_key_cut_auto(Relation index);
 /* a column name that looks rewritten often (a timestamp of the last change, a counter, a version): an UPDATE of it is not a HOT update while the index covers it (col/build.c) */
 extern bool sift_col_volatile_name(const char *name);

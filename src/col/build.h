@@ -27,8 +27,7 @@
 typedef struct ColBuild ColBuild;
 
 extern Size sift_colb_budget(int nslots);
-/* Counts the runs of a key_cut build before the table is read; false: they do not fit and may_decline, else an error that names the setting */
-extern bool sift_colb_plan_runs(Relation heap, Relation index, IndexInfo *info, bool may_decline);
+extern void sift_colb_init_meta(Relation index);
 
 /*
  * segs has room for maxsegs entries. A segment is cut when its writer holds more than budget bytes, except the last one that
@@ -52,11 +51,12 @@ extern IndexBuildResult *sift_colp_build(Relation heap, Relation index, IndexInf
 #ifdef SIFT_TESTING
 /*
  * Parallel workers the last sift_col build of this session launched; the superblock (1 = the first) whose participant fails (0 = none);
- * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem)
+ * kB the writer of a segment holds before the segment is cut (0 = by maintenance_work_mem); the segments a participant may hold (0 = the directory's room)
  */
 extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
+extern PGDLLIMPORT int sift_test_col_max_segments;
 #endif
 
 #endif							/* SIFT_COL_BUILD_H */

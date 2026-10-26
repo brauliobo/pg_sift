@@ -103,10 +103,7 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 static void
 open_gate(ColShared *sh, Relation index, int nlaunched)
 {
-	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_BULK);
-
-	sift_store_init_meta_ex(wt, 0, 0, sift_col_rel(index)->schema->hash, SIFT_COL_META_FLAG);
-	sift_wt_finish(wt);
+	sift_colb_init_meta(index);
 	sh->nlaunched = nlaunched;
 	sh->budget = sift_colb_budget(nlaunched + 1);	/* fewer participants than planned share the memory between fewer */
 	pg_atomic_write_u32(&sh->next, nlaunched + 1);

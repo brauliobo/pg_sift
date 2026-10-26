@@ -114,19 +114,19 @@ SELECT (SELECT count(*) || ' ' || sum(amount) FROM kl WHERE cust = 42) = (SELECT
 SELECT sift.col_verify('kc_idx', true);
 DROP TABLE kl;
 
--- the rows of a table make runs, and the directory holds a fixed number of them: a build whose runs cannot fit stops before it reads the table, and says the setting it needs
+-- the rows of a table make runs (one for each superblock here), and the directory holds a fixed number of segments: the build merges the runs as it writes them
+-- (a row is written once for each level it reaches), so the memory it was given is enough for a table of any size: the runs that the memory makes are 8
+-- segments, and with room for 6 the build leaves fewer, holding the same rows
 SET sift.test_col_segment_kb = 16;
-DO $$
-DECLARE hint text;
-BEGIN
-	CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
-EXCEPTION WHEN program_limit_exceeded THEN
-	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
-	RAISE INFO '%', regexp_replace(SQLERRM, '[0-9.]+', 'N', 'g');
-	RAISE INFO '%', regexp_replace(hint, '[0-9.]+', 'N', 'g');
-END $$;
+CREATE INDEX kc_runs ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+SET sift.test_col_max_segments = 6;
+CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+RESET sift.test_col_max_segments;
 RESET sift.test_col_segment_kb;
-SELECT to_regclass('kc_big') IS NULL AS no_index;
+SELECT count(*) AS runs, sum(rows) AS rows FROM sift.col_segments('kc_runs') WHERE kind = 'immutable';
+SELECT count(*) < 6 AS merged, bool_and(format = 17) AS key_cut_format, sum(rows) AS rows FROM sift.col_segments('kc_big') WHERE kind = 'immutable';
+SELECT sift.col_verify('kc_big', true);
+DROP INDEX kc_big, kc_runs;
 
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
