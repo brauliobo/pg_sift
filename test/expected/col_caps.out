@@ -15,12 +15,11 @@ CREATE INDEX caps_a ON caps USING sift_col (id, few, many, wide) WITH (preagg = 
 NOTICE:  sift_col index caps_a: the cube dim "many" has no histogram in 100% of 3 units, which hold more than 4096 groups of it
 DETAIL:  A query that groups or filters by it scans those units (sift.col_rollup_misses counts them).
 HINT:  Group by a leaf with fewer values per unit, or sort the table by it before REINDEX.
-NOTICE:  sift_col index caps_a: the keys of "wide" are a bloom filter, not a list, in 100% of 3 units, which hold more than 32 distinct keys
-DETAIL:  The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to 3000 distinct keys.
 -- the same for a column of 3,000 keys, alone
 CREATE INDEX caps_b ON caps USING sift_col (id, few, wide) WITH (key_columns = 'wide');
-NOTICE:  sift_col index caps_b: the keys of "wide" are a bloom filter, not a list, in 100% of 3 units, which hold more than 32 distinct keys
-DETAIL:  The filter skips the units that lack the key of an equality or IN test; a count(DISTINCT) of the column scans them. A unit holds up to 3000 distinct keys.
+NOTICE:  sift_col index caps_b: key_columns wrote no key list or bitmap of "wide" in 34% of 3 units, where it would take more than 3% of the bytes of the unit
+DETAIL:  A count(DISTINCT) of the column scans those units; their keys are a bloom filter where there are more than 32, else exact or, where they fill their range, nothing.
+HINT:  Leave "wide" out of key_columns, or sort the table by it before REINDEX.
 -- the caps hold: nothing to tell (the 7 keys of few are a bitmap)
 CREATE INDEX caps_c ON caps USING sift_col (id, few, many, mid) WITH (preagg = 'cube(few: id)', key_columns = 'few');
 -- the default spec asks for no dim by name, and no set: silent

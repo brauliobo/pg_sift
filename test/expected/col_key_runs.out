@@ -218,6 +218,24 @@ FROM sift._test_col_set_damage('kf_i', 40);
 (1 row)
 
 DROP TABLE kf;
+-- a unit of a few keys that no list fits keeps a filter of at least 64 bits (a shorter one is refused by the decoder: the summary of a promotion of 14 rows is malformed)
+CREATE TABLE kt (tenant_id int, a float8, b float8, c float8, d float8);
+INSERT INTO kt SELECT n * 100003, hashint4(n) / 7.0, hashint4(n + 1) / 7.0, hashint4(n + 2) / 7.0, hashint4(n + 3) / 7.0 FROM generate_series(1, 14) n;
+CREATE INDEX kt_i ON kt USING sift_col (tenant_id, a, b, c, d) WITH (key_columns = 'auto: tenant_id');
+SELECT sift.col_verify('kt_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT blobs > 0 AS has_blobs, bloom > 0 AS has_bloom, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks, cut_accepted = 0 AS cuts_refused, missed = 0 AS accepted_differ_from_chunk
+FROM sift._test_col_set_damage('kt_i', 5);
+ has_blobs | has_bloom | intact_decodes | intact_match_chunks | cuts_refused | accepted_differ_from_chunk 
+-----------+-----------+----------------+---------------------+--------------+----------------------------
+ t         | t         | t              | t                   | t            | t
+(1 row)
+
+DROP TABLE kt;
 -- 'off' writes none
 DROP INDEX kr_i;
 CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id', key_columns = 'off');

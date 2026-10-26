@@ -208,7 +208,11 @@ sift_cset_build_filter(const int64 *keys, uint32 nd, Size max_bytes, StringInfo 
 	bits = Min((uint64) (max_bytes - SIFT_CSET_HDR) * 8 / nd, SIFT_CSET_BLOOM_BITS);
 	if (bits < SIFT_CSET_BLOOM_MIN_BITS)
 		return false;
-	nbits = ((uint64) nd * bits + 7) / 8 * 8;
+	/* the decoder refuses a filter of fewer than 64 bits (as sift_cset_build makes it at least that), which a unit of a few keys would be */
+	nbits = Max(64, ((uint64) nd * bits + 7) / 8 * 8);
+	if (SIFT_CSET_HDR + nbits / 8 > max_bytes)
+		return false;
+	bits = Min(nbits / nd, SIFT_CSET_BLOOM_BITS);
 	filter = palloc0(nbits / 8);
 	for (uint32 i = 0; i < nd; i++)
 		bloom_add(filter, nbits, (uint32) ((bits * 7 + 5) / 10), keys[i]);
