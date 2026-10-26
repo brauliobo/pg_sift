@@ -2009,7 +2009,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_ROW;
 		k->scan_cost += k->agg_rows * (num_cost(&s->agg[i].num) + direct_agg_cost(&s->agg[i])) + k->rows * pred_num_cost(s->agg[i].filter);
 		if (s->agg[i].kind == SAA_GEN)
-			k->gen_cost += k->agg_rows * s->agg[i].gen->cost + k->rows_out * AGG_GEN_GROUP;
+			k->gen_cost += k->agg_rows * s->agg[i].gen->cost + k->rows_out * (s->agg[i].gen->ordered || s->agg[i].gen->sorted || s->agg[i].gen->hyp ? AGG_GEN_GROUP : AGG_GEN_STATE);
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);

@@ -234,7 +234,8 @@ typedef struct ComboWalk
 #define AGG_GEN_FOLLOW		0.3		/* a row of the other DISTINCT ON columns: the answer of the first one */
 #define AGG_GEN_HYP			200.0	/* a row of a hypothetical-set aggregate: sorted by the scan for its groups, then again by the aggregate (no gain over the normal plan) */
 #define AGG_GEN_ORDERED		24.0	/* a value of an ordered-set aggregate: the tuplesort put */
-#define AGG_GEN_GROUP		150.0	/* a group's final function and state, or the sort of an ordered-set group */
+#define AGG_GEN_GROUP		150.0	/* the sort of an ordered-set or sorted group */
+#define AGG_GEN_STATE		20.0	/* a group's state and final function of any other generic aggregate: 40 to 200 ns a group measured for min(text), bool_and, max(timestamptz), variance and array_agg over 100,000 to 620,000 groups (it was priced with the sort, 1.8 us) */
 #define AGG_GROUP_KEY_BYTES	40.0	/* a group key's share of the table: its id maps and the ids of the group (agg/group.c), without the value's own bytes */
 #define AGG_GROUP_SLACK		1.3		/* the group arrays grow by doubling: on average a third is room, measured 185 bytes a group for 5 aggregates and one key */
 
