@@ -30,6 +30,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/ktab.h"
 #include "col/pagg.h"
 #include "col/preagg.h"
 #include "col/seg.h"
@@ -273,6 +274,47 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 		set_chosen(index, &list);
 	pfree(list.data);
 	return added;
+}
+
+/*
+ * The spec of a rewrite of the segments in (a merge, sift.col_refresh, the rollup worker) of an index whose key_columns is 'auto' (or absent): the one the options
+ * make, and a key list or bitmap for each leaf that a segment holds them of. The report after a build drops from the option a column the cube holds and keeps its lists
+ * in the units written (sift_col_auto_keys_report), so a spec made from the option wrote the units of the rewrite without them: an equality on the key then read
+ * every unit whose zone held it, a refresh after ALTER INDEX turned a segment of minor 22 into one of minor 14, and the planner priced the scan above a btree plan.
+ * Nothing is written to the option (the build writes the lists again at every REINDEX, whatever the option says). An explicit key_columns, a leaf of hll_columns
+ * and sift.col_format_minor under 15 write what the options say.
+ */
+void
+sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSpec *spec)
+{
+	const SiftColRel *rel = sift_col_rel_private(index, CurrentMemoryContext);
+	MemoryContext cx;
+	bool		kept = false;
+
+	*spec = rel->pagg;
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || (sift_col_options_key_columns(index) != NULL && !spec->keyauto))
+		return;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col rewrite keys", ALLOCSET_DEFAULT_SIZES);
+	for (int i = 0; i < n; i++)
+	{
+		SiftColSegment *seg = sift_cseg_open(index, &in[i], cx);
+
+		for (int l = 0; l < rel->schema->ncols; l++)
+			if (!spec->set[l] && !spec->hll[l] && sift_cset_pres_leaf_ok(rel->schema, &rel->schema->cols[l]) && sift_cseg_set_kinds(seg, l) != 0)
+			{
+				spec->set[l] = spec->pres[l] = true;
+				spec->lookup[l] |= sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO;
+				kept = true;
+			}
+		sift_cseg_close(seg);
+		MemoryContextReset(cx);
+	}
+	MemoryContextDelete(cx);
+	if (kept)
+	{
+		spec->keyauto = true;
+		sift_ktab_spec(rel->schema, spec);
+	}
 }
 
 static void

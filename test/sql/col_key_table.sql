@@ -183,6 +183,16 @@ SELECT 'on' AS idx, remaining > 0 AS stale FROM sift.col_refresh('kr_on', 0)
 UNION ALL SELECT 'off', remaining > 0 FROM sift.col_refresh('kr_off', 0) ORDER BY 1;
 SELECT remaining AS left_on FROM sift.col_refresh('kr_on');
 SELECT sift.col_verify('kr_on', true);
+-- the rewrite keeps the key lists and the table (the option names no column: the build dropped kk_id from it for the cube and kept its lists), and the answers
+SELECT 'on' AS idx, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on')
+UNION ALL SELECT 'off', array_agg(DISTINCT format ORDER BY format) FROM sift._test_col_formats('kr_off') ORDER BY 1;
+SELECT 'on' AS idx, coalesce(sum(bytes), 0) > 0 AS has_lists FROM sift.col_sections('kr_on') WHERE section = 'sets'
+UNION ALL SELECT 'off', coalesce(sum(bytes), 0) > 0 FROM sift.col_sections('kr_off') WHERE section = 'sets' ORDER BY 1;
+SET sift.enable_agg = on;
+SELECT count(*), sum(val), count(DISTINCT id) FROM kr WHERE kk_id = 7;
+SET sift.enable_agg = off;
+SELECT count(*), sum(val), count(DISTINCT id) FROM kr WHERE kk_id = 7;
+RESET sift.enable_agg;
 DROP TABLE kr;
 
 -- a bit flipped, one at a time, in the section of the tables in the stream (every 5th byte of a table): the reader or the check against the units refuses each.

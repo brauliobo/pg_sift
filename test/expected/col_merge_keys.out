@@ -1,6 +1,7 @@
 -- key_columns = 'auto' is decided again when every segment of the index is merged: after churn (new row versions in the tail of the heap) a unit holds many keys, the
 -- cube no longer holds the column in it, and the merge adds the key list that a REINDEX would have chosen. A column the cube holds in 40% of the units or more is not
--- added, an explicit key_columns is never touched, and a second merge changes nothing.
+-- added, an explicit key_columns is never touched, and a second merge changes nothing. The lists that the build wrote for a column the cube holds (the option
+-- does not name it) are written again by a merge, so that the units of the rewrite do not read every unit whose zone holds a key.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.col_auto_merge = off;
@@ -85,7 +86,48 @@ SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
  t
 (2 rows)
 
+-- the lists of a column the cube holds survive a merge of every segment
+CREATE FUNCTION mk_lists(idx regclass) RETURNS bool LANGUAGE sql AS $$ SELECT coalesce(sum(bytes), 0) > 0 FROM sift.col_sections(idx) WHERE section = 'sets' $$;
+CREATE TABLE mk2 (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO mk2 SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(0, 29999) i;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) mk2;
+CREATE INDEX mk2_auto ON mk2 USING sift_col (id, set_id, v);
+SELECT mk_opt('mk2_auto') AS auto, mk_lists('mk2_auto') AS lists;
+       auto       | lists 
+------------------+-------
+ key_columns=auto | t
+(1 row)
+
+INSERT INTO mk2 SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(30000, 59999) i;
+VACUUM mk2;
+SELECT sift.col_promote('mk2_auto') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('mk2_auto', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT mk_opt('mk2_auto') AS auto, mk_lists('mk2_auto') AS lists;
+       auto       | lists 
+------------------+-------
+ key_columns=auto | t
+(1 row)
+
+SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
+	('SELECT count(DISTINCT id), count(*) FROM mk2 WHERE set_id = 5'),
+	('SELECT set_id, count(DISTINCT id) FROM mk2 WHERE set_id IN (3, 77, 110) GROUP BY 1')) t(q);
+ same 
+------
+ t
+ t
+(2 rows)
+
 SET client_min_messages = warning;
-DROP TABLE mk;
-DROP FUNCTION mk_opt(regclass), mk_held(regclass), mk_rows(text, bool);
+DROP TABLE mk, mk2;
+DROP FUNCTION mk_opt(regclass), mk_held(regclass), mk_rows(text, bool), mk_lists(regclass);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

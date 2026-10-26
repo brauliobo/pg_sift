@@ -394,6 +394,38 @@ SELECT sift.col_verify('kr_on', true);
  
 (1 row)
 
+-- the rewrite keeps the key lists and the table (the option names no column: the build dropped kk_id from it for the cube and kept its lists), and the answers
+SELECT 'on' AS idx, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on')
+UNION ALL SELECT 'off', array_agg(DISTINCT format ORDER BY format) FROM sift._test_col_formats('kr_off') ORDER BY 1;
+ idx | minors 
+-----+--------
+ off | {15}
+ on  | {22}
+(2 rows)
+
+SELECT 'on' AS idx, coalesce(sum(bytes), 0) > 0 AS has_lists FROM sift.col_sections('kr_on') WHERE section = 'sets'
+UNION ALL SELECT 'off', coalesce(sum(bytes), 0) > 0 FROM sift.col_sections('kr_off') WHERE section = 'sets' ORDER BY 1;
+ idx | has_lists 
+-----+-----------
+ off | t
+ on  | t
+(2 rows)
+
+SET sift.enable_agg = on;
+SELECT count(*), sum(val), count(DISTINCT id) FROM kr WHERE kk_id = 7;
+ count |  sum  | count 
+-------+-------+-------
+  1000 | 47000 |  1000
+(1 row)
+
+SET sift.enable_agg = off;
+SELECT count(*), sum(val), count(DISTINCT id) FROM kr WHERE kk_id = 7;
+ count |  sum  | count 
+-------+-------+-------
+  1000 | 47000 |  1000
+(1 row)
+
+RESET sift.enable_agg;
 DROP TABLE kr;
 -- a bit flipped, one at a time, in the section of the tables in the stream (every 5th byte of a table): the reader or the check against the units refuses each.
 -- Each flip opens and verifies the whole segment, so the cost grows with the square of the rows: two units of the table

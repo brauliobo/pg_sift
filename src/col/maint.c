@@ -553,7 +553,13 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	uint64		live_rows = 0,
 				heap_sbs;
 	uint32		unit;
+	SiftCPaggSpec rewrite;
 
+	if (sift_col_is_index(index))
+	{
+		sift_col_pagg_rewrite(index, in, n, &rewrite);
+		pagg = &rewrite;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		double		live;
