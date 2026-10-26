@@ -1,0 +1,89 @@
+-- Workers of a scan whose joins PostgreSQL counts at a handful of rows. The lookups are a CTE of ids it has no statistics for, so it expects
+-- the rows of the join few and the price of the scan with them: a few milliseconds, and the workers (3 to 4 ms to start) never pay. The path with
+-- workers is priced for the rows the scan reads (the price of the scan without workers stays what the plan above is priced with), and a scan
+-- of fewer units than sift.agg_par_min_units keeps one process when it starts, whatever the plan asked for. sift.plan_scale plans the table at
+-- a size where the scan is long enough for the workers to pay.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE props (id int PRIMARY KEY, grp int, kind text);
+INSERT INTO props SELECT i, i % 7, 'k' || i % 5 FROM generate_series(1, 300) i;
+CREATE TABLE ev (id int PRIMARY KEY, prop_id int, day date, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 1 + i % 300, '2026-01-01'::date + i % 90,
+       (SELECT jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 11), 'n', (i * k) % 9)) FROM generate_series(1, 1 + i % 6) k)
+FROM generate_series(1, 12000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, prop_id, day, items) WITH (paths = 'items[]{kind text, n int4}');
+VACUUM ANALYZE ev;
+ANALYZE props;
+
+SET max_parallel_workers_per_gather = 2;
+SET sift.agg_preagg = off;
+
+CREATE TABLE w_q (q text);
+INSERT INTO w_q VALUES ($q$
+WITH ids AS MATERIALIZED (SELECT DISTINCT id FROM props WHERE kind = ANY (string_to_array('k1,k2,k3,k4,k0', ',')))
+SELECT p.grp, i.kind, count(*) AS n, sum(i.n) AS s, count(DISTINCT e.id) AS d
+FROM ev e JOIN ids ON ids.id = e.prop_id JOIN props p ON p.id = ids.id
+CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int)
+WHERE e.day >= '2026-01-10' GROUP BY 1, 2
+$q$);
+
+-- the workers the plan asks for, and the most that a run starts (a launch can fail when other sessions hold the workers: tried again)
+CREATE FUNCTION w_planned() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM w_q) LOOP
+		IF l ~ 'Workers Planned: [0-9]' THEN n := substring(l FROM 'Workers Planned: ([0-9]+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION w_launched() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR i IN 1..20 LOOP
+		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || (SELECT q FROM w_q) LOOP
+			IF l ~ 'Workers Launched: [0-9]' THEN n := greatest(n, substring(l FROM 'Workers Launched: ([0-9]+)')::int); END IF;
+		END LOOP;
+		EXIT WHEN n > 0 OR (SELECT current_setting('sift.agg_par_min_units')::int) > 0;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the size at which the plan asks for workers priced for the rows the scan reads (the scale is a diagnostic: the table is planned that many times larger)
+CREATE FUNCTION w_priced_for_rows() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR s IN 1..60 LOOP
+		PERFORM set_config('sift.plan_scale', s::text, true);
+		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM w_q) LOOP
+			IF l ~ 'Workers Priced For' THEN RETURN s; END IF;
+		END LOOP;
+	END LOOP;
+	RETURN 0;
+END $$;
+
+SELECT w_planned() AS planned_as_is;
+SELECT w_priced_for_rows() > 1 AS some_scale_prices_workers_for_rows;
+SELECT set_config('sift.plan_scale', w_priced_for_rows()::text, false) IS NOT NULL AS scale_set;
+SELECT w_planned() AS planned_at_scale;
+
+-- 6 units: the leader scans alone; with the threshold off the workers start
+SELECT w_launched() AS launched_default;
+SET sift.agg_par_min_units = 0;
+SELECT w_launched() AS launched_unit_floor_off;
+
+-- the rows are those of the normal plan
+RESET sift.plan_scale;
+CREATE FUNCTION w_rows(push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', (SELECT q FROM w_q)) INTO r;
+	RETURN r;
+END $$;
+SELECT w_rows(true) = w_rows(false) AS same_rows;
+
+DROP FUNCTION w_planned(), w_launched(), w_priced_for_rows(), w_rows(bool);
+DROP TABLE w_q, ev, props;
+DROP EXTENSION pg_sift;

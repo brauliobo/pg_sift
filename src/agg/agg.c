@@ -255,6 +255,10 @@ sift_agg_init(void)
 							"Elements assumed for an array parameter of a set filter (col = ANY($1)) in a generic plan, to cost the index and bitmap scans against Custom Scan (SiftAgg); 0 keeps the planner's own guess.",
 							NULL, &sift_agg_param_set_size, 1000, 0, 100000000,
 							PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.agg_par_min_units",
+							"Units a scan must keep (after the zones and the keys of its lookups) to start the workers its plan asks for, when the planner priced them for the rows the scan reads rather than for the join rows PostgreSQL expects; 0 starts them for any scan.",
+							NULL, &sift_agg_par_min_units, 128, 0, 1000000,
+							PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_lookup_max_kb",
 							"Memory of the rows a sub-select, VALUES list, function or spine joined to Custom Scan (SiftAgg) may return, as the planner estimates them: the rows go into a lookup table in memory when the scan starts; a larger one keeps the normal join.",
 							NULL, &sift_agg_lookup_max_kb, 256 * 1024, 0, MAX_KILOBYTES,
@@ -1746,6 +1750,8 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			explain_correlated(node, i, es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Planned", NULL, s->nworkers, es);
+	if (s->wide_workers)
+		ExplainPropertyText("Workers Priced For", "the rows the scan reads", es);
 	if (es->analyze && ex->started)
 		explain_run(ex, es);
 }

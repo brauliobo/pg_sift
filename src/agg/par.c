@@ -35,6 +35,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "port/pg_bitutils.h"
 #include "portability/instr_time.h"
 #include "parser/parse_agg.h"
 #include "storage/predicate.h"
@@ -647,6 +648,30 @@ select_stmt(AggExec *ex, Plan *tree)
 	return ps;
 }
 
+/*
+ * The units the zones and the keys of the lookups leave are known when the workers start. A scan whose workers the planner priced for the rows it
+ * reads (workers_ratio: PostgreSQL counts the join of its lookups at a handful of rows) keeps one process when it keeps fewer units than
+ * sift.agg_par_min_units: a few units take less than the workers do to start and merge, and the lists the planner has no statistics for may keep
+ * a handful of units. 300,000 rows of 900 bytes, 60 units kept: 40 ms alone, 58 with 4 workers; 276 units: 493 and 328.
+ */
+int			sift_agg_par_min_units = 128;
+
+static bool
+par_scan_small(AggExec *ex)
+{
+	SkipMap    *m;
+	uint32		kept = 0;
+
+	if (!ex->spec->wide_workers)
+		return false;
+	m = skip_map(ex);
+	if (!m->ok)
+		return false;
+	for (uint32 w = 0; w < (m->nsb + 63) / 64; w++)
+		kept += pg_popcount64(m->kept[w]);
+	return kept < sift_agg_par_min_units;
+}
+
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
 void
 par_launch(AggExec *ex)
@@ -667,7 +692,7 @@ par_launch(AggExec *ex)
 	char	  **child_txt;
 	char	   *sub_txt = NULL;
 
-	if (nw <= 0 || IsParallelWorker())
+	if (nw <= 0 || IsParallelWorker() || par_scan_small(ex))
 		return;
 	spec_txt = nodeToString(ex->pack);
 	/* the rows of the spine are those of a plan the leader runs once, before the workers start: they read the rows from the shared memory */

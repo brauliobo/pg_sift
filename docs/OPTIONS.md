@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 97 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 98 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -766,6 +766,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.agg_param_set_size = 0 gives back the planner's own guess of 10 elements (the bitmap scan is kept); 10 suits sets of about 100 keys. Session, role, database or postgresql.conf.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Default 1000. A set of about 100 keys is 2.3 ms slower on the scan: use a custom plan or SET sift.agg_param_set_size = 10. 0 gives the planner's own guess (10) back.
+
+#### sift.agg_par_min_units
+
+`sift_col`, `sift_table` · default · since 3.5 · default 128
+
+- **What it does:** a scan whose workers the planner priced for the rows it reads starts them only when it keeps this many units after the zones and the keys of its lookups
+- **Gain:** lookup joins PostgreSQL counts at a handful of rows, 353,000 rows (171 units kept): 793 ms without workers, 262 ms with 4; 300,000 rows of 900 bytes, 60 units kept: 36.7 ms with the threshold, 58.1 ms with 4 workers (1.5 ms against 7.1 for the smallest scan)
+- **Impact:** index size: -; build, merge and writes: -; other: none; one process for a scan of fewer units (0 starts the workers whatever it keeps)
+- **When:** Only a scan whose path with workers was priced for the rows it reads (the lookups are a CTE or sub-select of ids PostgreSQL has no statistics for, and the price of the scan with its join rows is a few milliseconds); the workers of every other scan start as they did.
+- **Default:** 128 — 128 units are a quarter of a million rows: at 60 units kept the workers were 1.5x slower (40 against 58 ms), at 228 equal, at 276 1.5x faster (493 against 328 ms).
+- **Turn off:** SET sift.agg_par_min_units = 0 starts the workers of those scans for any number of units. Session, role, database or postgresql.conf.
+- **Upgrade from 3.4:** new in 3.5
+- **Advice:** Default 128. 0 starts the workers for any scan the plan asks them for.
 
 #### sift.agg_key_skew
 
@@ -2010,11 +2023,12 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: `sift_col(key_table)`.
+No default changed since 3.4; new: `sift.agg_par_min_units`, `sift_col(key_table)`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
+| `sift.agg_par_min_units` | new | 128 |  | new in 3.5 |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |

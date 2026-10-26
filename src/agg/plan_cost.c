@@ -2113,14 +2113,20 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->cold_ops *= Max(k->zone_kept, 1.0 / k->units);
 }
 
+/* agg_cost prices a path again for the tuples its lookup joins would not filter (workers_ratio): nothing it reports comes from that pass */
+static bool pricing_wide,
+			pricing_scratch;
+
 /* The tuples that reach the groups and what each takes */
 static void
 cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 {
 	k->agg_rows = k->sel_rows * (s->group >= 0 ? k->elems : 1.0);
 	/* the lookup joins filter before the groups: no more tuples reach them than the rows PostgreSQL expects of the join */
-	if (c->joins != NIL)
+	if (c->joins != NIL && !pricing_wide)
 		k->agg_rows = Min(k->agg_rows, Max(input_rel->rows, 1.0));
+	else if (pricing_wide)
+		k->agg_rows *= sqrt(Max(Min(k->zone_kept, 1.0), 1.0 / k->units));
 	k->scan_rows = k->agg_rows;
 	/* the rows of a preserved side no tuple matches are tuples too */
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -2659,6 +2665,50 @@ agg_open_cost(int nparts)
  * the most rows of elements a scan of the plan being made reads: what a plan that keeps the shared CTE has to produce (cte.c). A filter without
  * statistics keeps a default guess of the table's rows: the rows are the geometric mean of the guess and the table's, as filter_rows_ratio has them.
  */
+/* the tuples the cap of cost_tuples removes, as a share of those the scan reads, above which workers are judged on the tuples that are read */
+#define AGG_WIDE_CAP		0.5
+
+/*
+ * PostgreSQL's count of a join of lookups that it has no statistics for (a CTE or sub-select of ids is estimated through its own defaults: 100 rows where
+ * 1,000,000 pass) caps the tuples that reach the groups (cost_tuples), and the scan is priced at milliseconds when it takes hundreds, so the workers it
+ * would need (3 to 4 ms to start) never pay. The price of the scan stays the capped one, which is what the plan above and the normal plan are priced
+ * with; the path with workers is priced at the share of it that the workers take of the scan when the tuples are the rows the scan reads: the
+ * same scan, serial and with workers, priced without the cap, and the capped serial price times their ratio.
+ */
+static void
+workers_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_out, double out_cost)
+{
+	SiftAggSpec serial = *s;
+	Path		sc = {0},
+				sw = {0},
+				pw = {0};
+	double		total;
+
+	serial.nworkers = 0;
+	pricing_scratch = true;
+	PG_TRY();
+	{
+		agg_cost(c, &serial, input_rel, &sc, rows_out);
+		pricing_wide = true;
+		agg_cost(c, &serial, input_rel, &sw, rows_out);
+		agg_cost(c, s, input_rel, &pw, rows_out);
+	}
+	PG_FINALLY();
+	{
+		pricing_wide = pricing_scratch = false;
+	}
+	PG_END_TRY();
+	if (sw.total_cost <= 0 || pw.total_cost >= sw.total_cost)
+		return;
+	total = sc.total_cost * pw.total_cost / sw.total_cost;
+	if (total < p->total_cost)
+	{
+		p->total_cost = total;
+		p->startup_cost = Max(total - out_cost, 0.0);
+		s->wide_workers = true;
+	}
+}
+
 double		agg_read_rows;
 
 void
@@ -2680,7 +2730,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.rows =Max(c->stats.nrows, Max(c->rel->tuples, 1.0));
 	k.elems = s->group >= 0 ? elems_of(c, s->group) : 1.0;
 	k.sel_rows = Min(Max(c->rel->rows, 1.0), k.rows);
-	agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
+	if (!pricing_scratch)
+		agg_read_rows = Max(agg_read_rows, k.sel_rows * filter_rows_ratio(c) * k.elems);
 	k.units = Max(c->stats.nunits, ceil(k.rows / 2000.0));
 	k.rows_out = rows_out;
 	k.open_cost = c->search ? sift_search_open_cost(c->search, k.rows) : 0;
@@ -2735,8 +2786,11 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	share = s->part_final && s->nparts > 0 && s->nworkers == 0 ? s->nparts : 1;
 	spill = group_spill_cost(s, groups / share, Min(ids, entries / (s->nworkers + 1)) * (s->topn ? c->topn_frac : 1.0) / share, k.agg_rows / (s->nworkers + 1), &table);
 	k.scan_cost += spill;
-	agg_arm_spill(spill, groups, table);
-	agg_arm_vet(vet, vis * 100.0);
+	if (!pricing_scratch)
+	{
+		agg_arm_spill(spill, groups, table);
+		agg_arm_vet(vet, vis * 100.0);
+	}
 	/* no unit is read where the order array gives the rows (sift_topn_gorder): the heap confirms the n of them */
 	if (s->topn && c->topn_array && s->nworkers == 0)
 	{
@@ -2757,4 +2811,6 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 */
 	if (s->narms > 0 && !s->topn)
 		p->rows = Min(p->rows, Max(s->est_rows, 1.0));
+	if (s->nworkers > 0 && !pricing_scratch && parallel_setup_cost > 0 && c->joins != NIL && k.agg_rows * AGG_WIDE_CAP < k.sel_rows * k.elems)
+		workers_ratio(c, s, input_rel, p, rows_out, k.rows_out * cpu_tuple_cost);
 }
