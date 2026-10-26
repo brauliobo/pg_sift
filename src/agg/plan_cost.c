@@ -620,9 +620,9 @@ zone_overlap(AggCtx *c, int leaf, double f)
 	return f + (1.0 - f) * (1.0 - corr * corr);
 }
 
-/* the lookup join whose key is the earlier lookup's column `col` (a later inner or semi join: its rows are the only ones that complete a tuple) */
+/* the lookup join whose key is the earlier lookup's column `col` (a later inner or semi join: its rows are the only ones that complete a tuple); *key: that key of it */
 static const JoinCtx *
-dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
+dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc, int *key)
 {
 	foreach_ptr(JoinCtx, dj, c->joins)
 	{
@@ -637,7 +637,10 @@ dependent_join(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
 			int			pos = kx && IsA(kx, Param) ? ((Param *) kx)->paramid : -1;
 
 			if (pos >= 0 && pos < cb->nleaves && cb->leaf[pos] == -1 && cb->refcombo[pos] == jc->combo)
+			{
+				*key = k;
 				return dj;
+			}
 		}
 	}
 	return NULL;
@@ -708,7 +711,7 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 }
 
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
-static double cte_list_keys(AggCtx *c, const JoinCtx *jc);
+static double cte_list_keys(AggCtx *c, const JoinCtx *jc, int key);
 
 /* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
 static bool
@@ -801,7 +804,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
 		const SiftAggJoin *j = &s->join[cb->join];
-		const JoinCtx *dj = dependent_join(c, s, jc);
+		int			dkey = 0;
+		const JoinCtx *dj = dependent_join(c, s, jc, &dkey);
 		double		keys = Min(lookup_rows(c, jc), dj ? lookup_rows(c, dj) : HUGE_VAL),
 					sure = Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL);
 
@@ -823,7 +827,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 				selective = sure / nd;
 				*sel_keys = sure;
 			}
-			nkeys = Min(keys, Min(cte_list_keys(c, jc), dj ? cte_list_keys(c, dj) : HUGE_VAL));
+			nkeys = Min(keys, Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL));
 			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
 			(*n)++;
 		}
@@ -1137,9 +1141,12 @@ cte_plan_id(PlannerInfo *root, RangeTblEntry *rte)
 	return ndx < list_length(cteroot->cte_plan_ids) ? list_nth_int(cteroot->cte_plan_ids, ndx) : 0;
 }
 
-/* the keys a lookup that is a CTE of a literal list (key_list_walker) can hold: the constants of the list; HUGE_VAL for any other lookup */
+/*
+ * The keys a lookup that is a CTE of a literal list (key_list_walker) can hold, when its key `key` is the column the list is of: the constants of
+ * the list. HUGE_VAL for any other lookup, and for a key that is another column of the CTE (the list says nothing of its values).
+ */
 static double
-cte_list_keys(AggCtx *c, const JoinCtx *jc)
+cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 {
 	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
 	int			plan_id = rte->rtekind == RTE_CTE ? cte_plan_id(c->root, rte) : 0;
@@ -1147,6 +1154,7 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc)
 	KeyList		kl = {NULL, NULL};
 	List	  **args;
 	ArrayType  *arr;
+	bool		found = false;
 
 	if (plan_id <= 0)
 		return HUGE_VAL;
@@ -1156,6 +1164,17 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc)
 		return HUGE_VAL;
 	key_list_walker((Node *) body->parse->jointree, &kl);
 	if (kl.clause == NULL || (args = key_clause_args(kl.clause)) == NULL || ((Const *) lsecond(*args))->constisnull)
+		return HUGE_VAL;
+	foreach_node(TargetEntry, te, kl.tlist)
+		if (te->resno == jc->j.keyatt[key])
+		{
+			Var		   *listed = linitial(*args);
+
+			if (!IsA(te->expr, Var) || ((Var *) te->expr)->varno != listed->varno || ((Var *) te->expr)->varattno != listed->varattno)
+				return HUGE_VAL;
+			found = true;
+		}
+	if (!found)
 		return HUGE_VAL;
 	if (IsA(kl.clause, OpExpr))
 		return 1.0;
@@ -1986,7 +2005,8 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
 	{
 		const SiftAggCombo *cc = &s->combo[dj->combo];
 		const SiftAggJoin *d = &dj->j;
-		int			att = 0;
+		int			att = 0,
+					dkey;
 		Oid			typ = InvalidOid;
 		double		keys,
 					rpk;
@@ -1995,7 +2015,7 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows)
 
 		if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
 			continue;
-		if (dependent_join(c, s, jc) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
+		if (dependent_join(c, s, jc, &dkey) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
 		{
 			int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
 
