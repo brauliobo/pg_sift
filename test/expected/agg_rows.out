@@ -110,6 +110,21 @@ SELECT * FROM check_report('workers', report('count(DISTINCT c.id) AS ids, count
  workers | t         | f        | t             | t           | 9
 (1 row)
 
+-- a worker starts the sub-plans of its statement, those with the node among them (a CTE that holds it, beside a scan whose filter starts a sub-plan)
+SELECT format($q$WITH r AS MATERIALIZED (%s) SELECT (SELECT count(*) FROM r) AS groups, count(*), sum(f.id) FROM facts f
+                 WHERE f.dim_a_id IN (SELECT i FROM generate_series(1, 20) i WHERE i %% 3 <> 0) OR f.bucket = 1$q$, report('count(DISTINCT c.id) AS ids')) AS q \gset
+SELECT plan_has(:'q', 'SiftAggRows') AS node, plan_has(:'q', 'Workers Planned') AS workers;
+ node | workers 
+------+---------
+ t    | t
+(1 row)
+
+:q;
+ groups | count |    sum    
+--------+-------+-----------
+      9 | 12772 | 127700804
+(1 row)
+
 SET max_parallel_workers_per_gather = 0;
 -- more pairs than hash_mem holds: the pairs go through a sort and the answer is the same
 SET work_mem = '64kB';

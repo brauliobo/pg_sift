@@ -63,6 +63,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
+#include "agg/rows.h"
 #include "agg/wide.h"
 #include "agg/back.h"
 #include "agg/kern.h"
@@ -489,8 +490,9 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	PushActiveSnapshot(snap);
 	ex->partoff = ex->spec->nparts > 0 ? sh->partoff : NULL;
 	wparams = RestoreParamList(&params);
-	/* the statements below may hold scans of this kind in their other sub-plans */
+	/* the statements below may hold the nodes of this extension in their other sub-plans (SiftAgg scans, SiftAggRows) */
 	RegisterCustomScanMethods(&sift_agg_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_rows_plan_methods);
 	/* the sub-plans of the expressions (a hashed IN (SELECT ..)) start in an executor state of the statement, whose plan has no node of its own */
 	if ((subtxt = shm_toc_lookup(toc, KEY_SUB, true)) != NULL)
 	{
