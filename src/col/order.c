@@ -449,7 +449,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		}
 		for (uint32 r = 0; r < in->n; r++)
 			in->ord[r] = (RowRef) {b, r, cur};
-		qsort_arg(in->ord, in->n, sizeof(RowRef), ref_cmp, (void *) m->ctx);
+		sort_refs(in->ord, in->n, m->ctx);
 		if (in->keyed && prev >= 0 && m->chunk[prev].b->nrows > 0)
 		{
 			RowRef		last = {m->chunk[prev].b, m->chunk[prev].b->nrows - 1};
