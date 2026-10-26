@@ -788,7 +788,10 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * a comparison. A CTE of a literal list has no more keys than the list holds: key_list_lift raises its rows to those its keys own, so a key of many
  * rows counts as many keys there, and the zones of the units hold keys, not rows. *n: the filters the scan applies; *sel_keys: the keys of the most
  * selective one (a share of the leaf's distinct values),
- * HUGE_VAL without a filter.
+ * HUGE_VAL without a filter. The keys of a lookup PostgreSQL has no statistics for (a CTE or sub-select of ids) are its floor of one row,
+ * whatever the list holds: they stay as estimated where they leave a handful of units (an index cut by the key reads a few for any key),
+ * and are the geometric mean of them and the leaf's distinct values where they leave more (the planner cannot tell a key of ten rows from
+ * one of ten thousand, and an index not cut by the key reads tens of units for one, so the scan is priced for a guess that is not a floor).
  */
 static double
 join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
@@ -817,7 +820,9 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 			double		nd,
-						nkeys;
+						nkeys,
+						list_keys,
+						kept_keys;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
@@ -827,8 +832,15 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 				selective = sure / nd;
 				*sel_keys = sure;
 			}
-			nkeys = Min(keys, Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL));
-			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
+			list_keys = Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL);
+			nkeys = Min(keys, list_keys);
+			kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
+			if (nd > keys && !lookup_counted(c, jc) && kept_keys * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS)
+			{
+				nkeys = Min(sqrt(keys * nd), list_keys);
+				kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
+			}
+			kept = Min(kept, kept_keys);
 			(*n)++;
 		}
 	}
