@@ -108,6 +108,9 @@ add(SiftAggWide *w, const uint64 *k, uint32 at, const char *bytes, uint32 len)
 	return w->nd;
 }
 
+/* rows ahead whose dictionary entry is prefetched */
+#define WIDE_AHEAD	16
+
 static const uint32 pow10_pad[4] = {1, 10, 100, 1000};
 
 /* the numeric v / 10^scale in the short format numeric_in gives it (4 bytes of length, a 2 byte header, the base 10000 digits), 0 when it needs the long one */
@@ -241,6 +244,17 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 		uint32		at = 0,
 					e;
 
+		/* the strings of a dictionary of millions of entries are cache misses (the images of a segment of 10,000,000 almost unique numbers: 975 cycles a row, 486 in segments of a tenth of that): the offset of a row 2 steps ahead is fetched, then its string */
+		if ((image || opaque) && i + 2 * WIDE_AHEAD < n)
+		{
+			const SiftColDict *d = lanes[0].dict;
+			uint32		far = lanes[0].codes[i + 2 * WIDE_AHEAD],
+						near = lanes[0].codes[i + WIDE_AHEAD];
+
+			__builtin_prefetch(&d->off[far]);
+			if (near < d->n)
+				__builtin_prefetch(d->bytes + d->off[near]);
+		}
 		w->isnull[i] = isnull && !nan;
 		if (w->isnull[i])
 		{
