@@ -438,6 +438,16 @@ point_keys(const SiftCTest *t, int *nkeys)
  */
 #define SIFT_CTID_FILTER 64
 
+/* are the units of `keep` all among those of `held` */
+static bool
+units_within(const uint64 *keep, const uint64 *held, uint32 nw)
+{
+	for (uint32 w = 0; w < nw; w++)
+		if (keep[w] & ~held[w])
+			return false;
+	return true;
+}
+
 static bool
 prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
@@ -451,16 +461,17 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 	uint64	   *has,
 			   *done;
 
-	if (c->pc_tids != NULL && c->pc_gen == seg->entry.gen && c->pc_col == col && c->pc_nkeys == nkeys && memcmp(c->pc_keys, keys, nkeys * sizeof(int64)) == 0)
+	if (c->pc_tids != NULL && c->pc_gen == seg->entry.gen && c->pc_col == col && c->pc_nkeys == nkeys && memcmp(c->pc_keys, keys, nkeys * sizeof(int64)) == 0 &&
+		units_within(keep, c->pc_keep, nw))
 	{
 		tids = c->pc_tids;
 		n = c->pc_n;
 	}
 	else
 	{
-		/* the begins of a scan ask the same keys again (the zones of the top-N bar change between them) and the list is decoded entry by entry */
+		/* the begins of a scan ask the same keys again (the zones of the top-N bar change between them) and the list is decoded entry by entry: only the addresses in the units still read */
 		MemoryContext old = MemoryContextSwitchTo(src->mcxt);
-		bool		found = sift_cseg_point_tids(seg, col, keys, nkeys, &tids, &n);
+		bool		found = sift_cseg_point_tids(seg, col, keys, nkeys, keep, &tids, &n);
 
 		if (found)
 		{
@@ -468,8 +479,12 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 				pfree(c->pc_tids);
 			if (c->pc_keys)
 				pfree(c->pc_keys);
+			if (c->pc_keep)
+				pfree(c->pc_keep);
 			c->pc_keys = palloc(Max(nkeys, 1) * sizeof(int64));
 			memcpy(c->pc_keys, keys, nkeys * sizeof(int64));
+			c->pc_keep = palloc(nw * sizeof(uint64));
+			memcpy(c->pc_keep, keep, nw * sizeof(uint64));
 			c->pc_gen = seg->entry.gen;
 			c->pc_col = col;
 			c->pc_nkeys = nkeys;
@@ -772,6 +787,30 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 	MemoryContextSwitchTo(old);
 }
 
+/* The units of the words w0..w1 that no begin has tested yet, each run of them at once, against the predicates and the zones */
+static void
+prune_new_words(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 w0, uint32 w1)
+{
+	SiftColSegment *seg = c->seg;
+
+	for (uint32 w = w0, e; w < w1; w = e)
+	{
+		PruneRange	br;
+
+		if (sift_col_bit_test(c->cdone, w))
+		{
+			e = w + 1;
+			continue;
+		}
+		for (e = w; e < w1 && !sift_col_bit_test(c->cdone, e); e++)
+			sift_col_bit_set(c->cdone, e);
+		br = (PruneRange) {w * 64, Min(e * 64, seg->nsb), c->csetcut, NULL};
+		prune_preds(src, seg, preds, npreds, c->ckeep, &br);
+		for (int i = 0; i < nzones; i++)
+			prune_zone(src, seg, &zones[i], c->ckeep, &br);
+	}
+}
+
 static void
 prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi, bool cached)
 {
@@ -806,25 +845,19 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 			c->cseg = seg;
 			c->cseg_gen = seg->entry.gen;
 			if (src->flags & SIFT_COLO_POINT_ROWS)
+			{
+				bool		listed = false;
+
+				for (int i = 0; i < npreds; i++)
+					listed |= sift_cseg_point_count(seg, preds[i].col) > 0;
+				/* the directory decodes the addresses of a key: the units the zones leave are known before, so those of the others are skipped */
+				if (listed)
+					prune_new_words(src, c, preds, npreds, zones, nzones, 0, (seg->nsb + 63) / 64);
 				prune_points_once(src, seg, c, preds, npreds);
+			}
 		}
 		/* the words of units the range holds that no begin has tested yet, each run of them at once */
-		for (uint32 w = pr.ulo / 64, w1 = (pr.uhi + 63) / 64, e; w < w1; w = e)
-		{
-			PruneRange	br;
-
-			if (sift_col_bit_test(c->cdone, w))
-			{
-				e = w + 1;
-				continue;
-			}
-			for (e = w; e < w1 && !sift_col_bit_test(c->cdone, e); e++)
-				sift_col_bit_set(c->cdone, e);
-			br = (PruneRange) {w * 64, Min(e * 64, seg->nsb), c->csetcut, NULL};
-			prune_preds(src, seg, preds, npreds, c->ckeep, &br);
-			for (int i = 0; i < nzones; i++)
-				prune_zone(src, seg, &zones[i], c->ckeep, &br);
-		}
+		prune_new_words(src, c, preds, npreds, zones, nzones, pr.ulo / 64, (pr.uhi + 63) / 64);
 		c->keep = c->ckeep;
 		c->setcut = c->csetcut;
 		return;

@@ -255,7 +255,7 @@ extern bool sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 
  * rows counted into listed. Every address is checked to lie in a unit of the segment.
  */
 extern bool sift_cseg_point_is_tid(SiftColSegment *seg, int col);
-extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, SiftKey **tids, uint32 *ntids);
+extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, SiftKey **tids, uint32 *ntids);
 extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const uint64 *nulls, const SiftKey *tid, uint32 n, uint64 *listed);
 /* The rows the point directory of leaf col lists (0: it has none), and the check of the blocks of every leaf: slots and lists in range, ascending, as many keys, rows and words as the records say */
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);

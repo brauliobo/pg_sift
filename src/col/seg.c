@@ -2402,6 +2402,10 @@ typedef struct TidAcc
 	uint32		slots;			/* the slots whose addresses were taken: one slot's list is ascending and lists no address twice */
 	uint32		last_sb;		/* the superblock of the last address and its unit: the addresses of a list ascend, so a unit repeats */
 	uint32		last_u;
+	bool		seen;			/* last_sb and last_u are those of an address */
+	bool		some;			/* keep has a unit */
+	const uint64 *keep;			/* the units the caller still reads (NULL: all): the addresses of the others are not kept, and a list ends at the last of these */
+	uint32		last_keep;
 } TidAcc;
 
 #define TID_PAYLOAD(slot)	((slot) & ((UINT64CONST(1) << 48) - 1))
@@ -2413,7 +2417,7 @@ tid_push(TidAcc *a, SiftKey key)
 	uint32		sb = (uint32) (key >> 16) >> SIFT_SB_SHIFT,
 				u;
 
-	if (a->n > 0 && sb == a->last_sb)
+	if (a->seen && sb == a->last_sb)
 		u = a->last_u;
 	else
 	{
@@ -2422,9 +2426,12 @@ tid_push(TidAcc *a, SiftKey key)
 			corrupt(seg, "The point directory of leaf %d lists the address %llx, which is in no unit of the segment.", a->col, (unsigned long long) key);
 		a->last_sb = sb;
 		a->last_u = u;
+		a->seen = true;
 	}
 	if ((key & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF || (key & 0xFFFF) == 0)
 		corrupt(seg, "The point directory of leaf %d lists the address %llx, which is in no unit of the segment.", a->col, (unsigned long long) key);
+	if (a->keep && !sift_col_bit_test(a->keep, u))
+		return;
 	if (a->n == a->cap)
 		a->t = a->t ? repalloc_huge(a->t, (a->cap *= 2) * sizeof(SiftKey)) : palloc((a->cap = 16) * sizeof(SiftKey));
 	a->t[a->n++] = key;
@@ -2483,6 +2490,12 @@ tid_slot_read(TidAcc *a, uint64 slot)
 			corrupt(a->seg, "The point directory of leaf %d has a list at word %u that does not hold %u ascending addresses.", a->col, off, hdr[0]);
 		prev += d;
 		tid_push(a, sift_cpoint_tid_key(prev));
+		/* the units ascend with the addresses: the rest of the list is in units past the last one read */
+		if (a->keep && a->last_u > a->last_keep)
+		{
+			pfree(buf);
+			return;
+		}
 	}
 	if (p != end)
 		corrupt(a->seg, "The point directory of leaf %d has a list at word %u that is longer than its %u addresses.", a->col, off, hdr[0]);
@@ -2516,15 +2529,33 @@ sift_cseg_point_is_tid(SiftColSegment *seg, int col)
 }
 
 bool
-sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, SiftKey **tids, uint32 *ntids)
+sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, SiftKey **tids, uint32 *ntids)
 {
 	const PointLeaf *pl = points_read(seg);
-	TidAcc		a = {.seg = seg,.col = col,.limit = SIFT_CPOINT_MAX_ROWS};
+	TidAcc		a = {.seg = seg,.col = col,.limit = SIFT_CPOINT_MAX_ROWS,.keep = keep};
 	uint32		u = 0;
 
 	if (pl == NULL || pl[col].nslots == 0 || !pl[col].tids)
 		return false;
 	a.pl = pl + col;
+	/* the bits past the last unit of the bitmap are not units */
+	for (uint32 w = 0; keep && w < (seg->nsb + 63) / 64; w++)
+	{
+		uint64		bits = w == seg->nsb / 64 ? keep[w] & ((UINT64CONST(1) << (seg->nsb % 64)) - 1) : keep[w];
+
+		if (bits)
+		{
+			a.last_keep = w * 64 + 63 - __builtin_clzll(bits);
+			a.some = true;
+		}
+	}
+	/* no unit to read: no address is needed */
+	if (keep && !a.some)
+	{
+		*tids = NULL;
+		*ntids = 0;
+		return true;
+	}
 	for (int k = 0; k < nkeys && !a.over; k++)
 		point_probe(seg, col, a.pl, sift_cpoint_hash(keys[k]), point_add_tids, &a);
 	if (a.over)

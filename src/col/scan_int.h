@@ -46,6 +46,7 @@ typedef struct ColCursor
 	int64	   *pc_keys;
 	SiftKey    *pc_tids;
 	uint32		pc_n;
+	uint64	   *pc_keep;		/* the units the list holds addresses of (the others were skipped as no begin read them) */
 } ColCursor;
 
 /* the ids of the in-memory units of sift_col_unit_batch start here, above any write buffer batch */
