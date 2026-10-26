@@ -13,6 +13,7 @@
 #include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "executor/tuptable.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -186,6 +187,15 @@ sift_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	return result;
 }
 
+/* Did the current transaction make the row (the integrity trigger of a foreign key asks of the old row of an UPDATE)? A frozen row, and a row not stored yet, did not come from it */
+static bool
+sift_slot_is_current_xact_tuple(TupleTableSlot *slot)
+{
+	bool		isnull;
+
+	return TransactionIdIsCurrentTransactionId(DatumGetTransactionId(sift_slot_getsysattr(slot, MinTransactionIdAttributeNumber, &isnull)));
+}
+
 /* Decodes what is left: the callbacks below read tts_values of every attribute */
 static void
 realize(TupleTableSlot *slot)
@@ -242,6 +252,7 @@ sift_tbl_slot_init(void)
 	sift_slot_ops.clear = slot_clear;
 	sift_slot_ops.getsomeattrs = sift_slot_getsomeattrs;
 	sift_slot_ops.getsysattr = sift_slot_getsysattr;
+	sift_slot_ops.is_current_xact_tuple = sift_slot_is_current_xact_tuple;
 	sift_slot_ops.materialize = slot_materialize;
 	sift_slot_ops.copy_heap_tuple = slot_copy_heap_tuple;
 	sift_slot_ops.copy_minimal_tuple = slot_copy_minimal_tuple;
