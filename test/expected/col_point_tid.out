@@ -619,6 +619,30 @@ SELECT p.units > 0 AS units_answer, p.rows = f.rows AS same_rows FROM sift._test
 (1 row)
 
 DROP TABLE pb;
+-- the bitmap path of a lookup that another relation keys (a join on a column with a directory of addresses) needs that relation, as the index path under it does:
+-- a merge join over the partitions read the key of the outer relation from a plan that did not wait for it
+CREATE TABLE pj_i (id int PRIMARY KEY, kind text);
+INSERT INTO pj_i SELECT i, 'k' || i % 5 FROM generate_series(0, 599) i;
+CREATE TABLE pj (id int, parent_id int, kind text, amount int) PARTITION BY HASH (id);
+CREATE TABLE pj_0 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE pj_1 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE pj_2 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE pj_3 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+INSERT INTO pj SELECT i, (i * 7) % 600, 'k' || i % 5, i % 1000 FROM generate_series(1, 1500) i;
+SET client_min_messages = warning;
+CREATE INDEX pj_pt ON pj USING sift_col (id sift.col_int4_ops, parent_id sift.col_int4_ops, kind sift.col_text_ops, amount sift.col_int4_ops) WITH (point_tid_columns = 'id, parent_id, kind');
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) pj, pj_i;
+BEGIN;
+SET LOCAL seq_page_cost = 1000; SET LOCAL random_page_cost = 1000; SET LOCAL max_parallel_workers_per_gather = 0; SET LOCAL sift.enable_agg = off;
+SELECT count(DISTINCT e.parent_id) FROM pj e WHERE EXISTS (SELECT 1 FROM pj_i i WHERE i.id = e.parent_id AND i.kind = 'k4') AND e.id % 16 = 0;
+ count 
+-------
+    15
+(1 row)
+
+COMMIT;
+DROP TABLE pj, pj_i;
 -- not a leaf that can be listed, and a bad list
 CREATE TABLE pe (id int, f float8, d date);
 CREATE INDEX pe_f ON pe USING sift_col (f sift.col_float8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'f');

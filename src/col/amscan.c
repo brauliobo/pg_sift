@@ -1176,7 +1176,7 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
 		if (bp->path.total_cost >= ip->path.total_cost)
 			continue;
 		added = lappend(added, bp);
-		added = lappend(added, create_bitmap_heap_path(root, rel, (Path *) bp, rel->lateral_relids, 1.0, 0));
+		added = lappend(added, create_bitmap_heap_path(root, rel, (Path *) bp, bms_union(rel->lateral_relids, PATH_REQ_OUTER(&bp->path)), 1.0, 0));
 	}
 	foreach_ptr(Path, p, added)
 		add_path(rel, p);
