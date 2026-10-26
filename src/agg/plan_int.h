@@ -226,6 +226,7 @@ typedef struct ComboWalk
 	List	   *subparams;		/* the output Params of the hashed sub-plans met (as LeafWalk) */
 } ComboWalk;
 
+#define AGG_LIFT_GROUPS		1024.0	/* the groups the lift of a lookup's rows (spec_finish) adds to the plan's own: a plan above hashes or materializes a node of a thousand rows more than it expects, and a join of two lifted nodes (their rows multiplied by a default join selectivity) priced the scans above the plan that keeps one of them normal */
 #define AGG_GEN_ROW			1.0	/* a transition function call through fmgr (the function's own procost and the leaf's Datum, 2 operators, come on top): 32 to 88 ns a row measured for bool_and, min(text), variance, array_agg, string_agg and corr over 1,000,000 rows, about 3 to 7 operators by the cost of the normal plan's own rows (it was 4: a scan 10 to 50% faster than PostgreSQL's plan lost the choice) */
 #define AGG_GEN_DISTINCT	10.0	/* the (group, value) pair of a DISTINCT aggregate: a hash probe */
 #define AGG_GEN_SORTED		30.0	/* a row of an aggregate with ORDER BY: the tuplesort put, and its share of the sort and the read back */

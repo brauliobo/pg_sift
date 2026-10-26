@@ -85,6 +85,30 @@ SELECT a.parent_id, a.bucket, va, vb FROM a FULL JOIN b ON a.parent_id = b.paren
 (1 row)
 
 DROP FUNCTION expr_shape(text);
+-- the lift is bounded: the groups of a lookup list PostgreSQL cannot count are reported up to the plan's own plus a thousand, where more only
+-- multiplies in the join above (two scans of a large table, their rows times a default join selectivity, priced the plan that keeps one of them normal)
+SET sift.plan_scale = 1000;
+CREATE FUNCTION lifted_rows(q text) RETURNS TABLE (scan_rows_within_bound boolean, join_rows_within_bound boolean) LANGUAGE plpgsql AS $$
+DECLARE
+	j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (COSTS ON, FORMAT JSON) ' || q INTO j;
+	scan_rows_within_bound := (SELECT bool_and((x ->> 'Plan Rows')::numeric <= 2048) FROM jsonb_path_query(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') x);
+	join_rows_within_bound := (SELECT bool_and((x ->> 'Plan Rows')::numeric <= 20000) FROM jsonb_path_query(j, '$.** ? (@."Node Type" like_regex "Join")') x);
+	RETURN NEXT;
+END $$;
+SELECT * FROM lifted_rows($$
+WITH scope AS (SELECT DISTINCT d.id FROM gr_dims d WHERE d.settings ->> 'kind' = 'cat_a' AND d.settings ->> 'slot' IN ('0', '3')),
+a AS (SELECT f.parent_id % 8 AS blk, f.kind, (f.ts - date '2024-01-01') / 7 AS bucket, sum(f.amount) AS va FROM gr_facts f WHERE f.parent_id IN (SELECT id FROM scope) GROUP BY 1, 2, 3),
+b AS (SELECT f.parent_id % 8 AS blk, f.kind, (f.ts - date '2024-01-01') / 7 AS bucket, avg(f.amount) AS vb FROM gr_facts f WHERE f.parent_id IN (SELECT id FROM scope) GROUP BY 1, 2, 3)
+SELECT a.blk, va, vb FROM a FULL JOIN b ON jsonb_build_array(a.blk, a.kind, a.bucket) = jsonb_build_array(b.blk, b.kind, b.bucket)$$);
+ scan_rows_within_bound | join_rows_within_bound 
+------------------------+------------------------
+ t                      | t
+(1 row)
+
+RESET sift.plan_scale;
+DROP FUNCTION lifted_rows(text);
 DROP FUNCTION shape(text), scoped_shape(text);
 DROP TABLE gr_facts, gr_dims;
 DROP EXTENSION pg_sift;

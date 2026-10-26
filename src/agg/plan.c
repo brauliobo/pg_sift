@@ -826,7 +826,7 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	 * statistics keeps a guess of the rows as well (filter_rows_ratio).
 	 */
 	lists = sqrt(lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c));
-	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists, true) : 0;
+	c->path_rows = lists > 1.0 ? Min(set_groups(c, root, s, keys, input_rel->rows * lists, true), s->est_groups + AGG_LIFT_GROUPS) : 0;
 	if (c->search)
 		s->search = c->search->spec;
 
