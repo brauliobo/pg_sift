@@ -1198,8 +1198,8 @@ write_pagg(SiftColSegWriter *w)
 		{
 			PAGG_XECUBEDIR(h) = at;
 			PAGG_XECUBE_BYTES(h) = w->xecube.len;
+			at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xecube.len);
 		}
-		at = ALIGN8(at + (nsb + 1) * sizeof(uint64) + w->xecube.len);
 	}
 	if (ver > 6 && w->anyhll)
 	{

@@ -269,6 +269,33 @@ SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct
 (1 row)
 
 RESET max_parallel_workers_per_gather;
+-- a leaf that is NULL in nearly every row (exceptions, docs/COL-PREAGG.md 11) beside a sketched one, with no element lists: the sketches follow the exception cubes in the section
+CREATE TABLE ap_exc (id int, u int, soft int) WITH (autovacuum_enabled = off);
+INSERT INTO ap_exc SELECT g, (hashint4(g) & 2147483647) % 5000, CASE WHEN g % 997 = 0 THEN 1 END FROM generate_series(1, 60000) g;
+CREATE INDEX ap_exc_i ON ap_exc USING sift_col (id, u, soft) WITH (hll_columns = 'u');
+VACUUM ap_exc;
+SELECT sift.col_verify('ap_exc_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', true, true) = ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', false, true) AS exceptions_same;
+ exceptions_same 
+-----------------
+ t
+(1 row)
+
+SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(u) FROM ap_exc');
+                                             line                                             
+----------------------------------------------------------------------------------------------
+ Units: 2
+ Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
+ Units Without The Sketch: 0
+ Units From Pre-aggregates: 2
+ Rows Scanned: 0
+(5 rows)
+
 -- the option checks: a column that cannot be hashed the way PostgreSQL does, a name that is not a column, a key_columns leaf
 CREATE TABLE ap_bad (id int, c char(5), nm name, f float8, j jsonb);
 CREATE INDEX ap_bad_c ON ap_bad USING sift_col (id, c) WITH (hll_columns = 'c');
@@ -289,6 +316,6 @@ SELECT sift.approx_count_distinct(f) FROM (VALUES (0.0::float8), (-0.0), ('NaN')
                      3
 (1 row)
 
-DROP TABLE ap, ap_off, ap_old, ap_q, ap_bad;
+DROP TABLE ap, ap_off, ap_old, ap_q, ap_bad, ap_exc;
 DROP FUNCTION ap_rows(text, bool, bool), ap_explain(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

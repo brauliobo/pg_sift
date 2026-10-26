@@ -125,6 +125,15 @@ SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct
      = ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t) FROM ap', false, false) AS workers_same;
 RESET max_parallel_workers_per_gather;
 
+-- a leaf that is NULL in nearly every row (exceptions, docs/COL-PREAGG.md 11) beside a sketched one, with no element lists: the sketches follow the exception cubes in the section
+CREATE TABLE ap_exc (id int, u int, soft int) WITH (autovacuum_enabled = off);
+INSERT INTO ap_exc SELECT g, (hashint4(g) & 2147483647) % 5000, CASE WHEN g % 997 = 0 THEN 1 END FROM generate_series(1, 60000) g;
+CREATE INDEX ap_exc_i ON ap_exc USING sift_col (id, u, soft) WITH (hll_columns = 'u');
+VACUUM ap_exc;
+SELECT sift.col_verify('ap_exc_i', true);
+SELECT ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', true, true) = ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', false, true) AS exceptions_same;
+SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(u) FROM ap_exc');
+
 -- the option checks: a column that cannot be hashed the way PostgreSQL does, a name that is not a column, a key_columns leaf
 CREATE TABLE ap_bad (id int, c char(5), nm name, f float8, j jsonb);
 CREATE INDEX ap_bad_c ON ap_bad USING sift_col (id, c) WITH (hll_columns = 'c');
@@ -135,6 +144,6 @@ CREATE INDEX ap_bad_s ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'id,'
 CREATE INDEX ap_ok_f ON ap_bad USING sift_col (id, f) WITH (hll_columns = 'f');
 SELECT sift.approx_count_distinct(f) FROM (VALUES (0.0::float8), (-0.0), ('NaN'), ('NaN'), (1)) t(f);
 
-DROP TABLE ap, ap_off, ap_old, ap_q, ap_bad;
+DROP TABLE ap, ap_off, ap_old, ap_q, ap_bad, ap_exc;
 DROP FUNCTION ap_rows(text, bool, bool), ap_explain(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
