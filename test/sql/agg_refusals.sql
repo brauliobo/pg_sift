@@ -172,6 +172,19 @@ RESET client_min_messages;
 -- the refusal of a LIMIT 1 child says what makes its key unique
 SELECT slug, reason ~ 'no unique index on [a-z_, ]+: end the ORDER BY with the primary key, or create a unique index on those columns, a partial one with WHERE .* CLUSTER on it and VACUUM' AS advice
 FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id ORDER BY x.val LIMIT 1) d ON true GROUP BY 1$q$) WHERE slug = 'lateral_limit';
+-- a min() planned as a LIMIT 1 sub-select leaves nothing behind for the next statement of the session (the next plan used the freed list of its arms)
+CREATE TABLE minmax_leftover AS SELECT i AS v FROM generate_series(1, 20000) i;
+CREATE INDEX minmax_leftover_col ON minmax_leftover USING sift_col (v);
+VACUUM (FREEZE, ANALYZE) minmax_leftover;
+SET sift.explain_refusals = on;
+SET client_min_messages = error;
+EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
+SET sift.enable_agg = off;
+EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
+RESET sift.enable_agg;
+RESET sift.explain_refusals;
+RESET client_min_messages;
+DROP TABLE minmax_leftover;
 DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift;

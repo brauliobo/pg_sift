@@ -297,6 +297,33 @@ FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL
  lateral_limit | t
 (1 row)
 
+-- a min() planned as a LIMIT 1 sub-select leaves nothing behind for the next statement of the session (the next plan used the freed list of its arms)
+CREATE TABLE minmax_leftover AS SELECT i AS v FROM generate_series(1, 20000) i;
+CREATE INDEX minmax_leftover_col ON minmax_leftover USING sift_col (v);
+VACUUM (FREEZE, ANALYZE) minmax_leftover;
+SET sift.explain_refusals = on;
+SET client_min_messages = error;
+EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
+          QUERY PLAN          
+------------------------------
+ Custom Scan (SiftAgg)
+   Index: minmax_leftover_col
+   Pushed Aggregates: min(v)
+(3 rows)
+
+SET sift.enable_agg = off;
+EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
+            QUERY PLAN             
+-----------------------------------
+ Aggregate
+   ->  Seq Scan on minmax_leftover
+         Disabled: true
+(3 rows)
+
+RESET sift.enable_agg;
+RESET sift.explain_refusals;
+RESET client_min_messages;
+DROP TABLE minmax_leftover;
 DROP TABLE shapes, guarded, events, dims, plain, parted, ticks, facts;
 DROP FUNCTION arms(), spine_q(text, text, text), repeated(int), plan_of(text, bool);
 DROP EXTENSION pg_sift;

@@ -92,6 +92,7 @@ static double path_vet_pct;
 static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of: in vet_cx, for the plans of a statement are planned in contexts that are deleted before the choice between them is made */
 static MemoryContext vet_cx;		/* kept for the backend, reset after each statement's plans (the leak report allows the names "sift cache ...") */
 static List *done;
+static MemoryContext final_cx;		/* the context final_wait lives in */
 static List *final_wait;			/* (root, ArmNote) of the arms that were used before the LIMIT of the query was costed: reported when the final paths are known */
 static bool stage_volatile;			/* the query of the stage calls a volatile function */
 static int	stage_level;			/* query_level of the planner root of the stage: a sub-select is planned in its own */
@@ -346,6 +347,14 @@ agg_variant_push(const char *v)
 	return outer;
 }
 
+/* the context of the list of waiting arms went away (a plan that never costed its final paths, like the LIMIT 1 sub-select a min() lost with, leaves the list behind) */
+static void
+final_wait_gone(void *arg)
+{
+	final_wait = NIL;
+	final_cx = NULL;
+}
+
 /* an error in the middle of a plan leaves the arm and its list in a context that is gone */
 static void
 forget_arms(void)
@@ -486,7 +495,17 @@ agg_stage_end(AggStage *st)
 		if (pick_of(a->name) != a)
 			continue;
 		else if (a->used && a->limited && st->root->parse->limitCount != NULL)
+		{
+			if (final_cx != CurrentMemoryContext)
+			{
+				MemoryContextCallback *gone = palloc0(sizeof(MemoryContextCallback));
+
+				gone->func = final_wait_gone;
+				final_cx = CurrentMemoryContext;
+				MemoryContextRegisterResetCallback(final_cx, gone);
+			}
 			final_wait = lappend(final_wait, list_make2(st->root, a));
+		}
 		else
 			report(a);
 	arm = st->outer_arm;
