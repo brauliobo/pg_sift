@@ -53,8 +53,8 @@ SELECT * FROM same($$day >= '2020-03-31' AND day <= '2020-03-01' OR day >= '2020
 -- other leaves: a disjunct on the owner and one on the day
 SELECT * FROM same($$set_id = 2 OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
 SELECT * FROM same($$set_id IN (1, 12) OR set_id = 6$$);
--- an IN list with gaps travels with its zone test up to 256 members (the units of the owners between 1 and 12 are pruned); a longer one is tested by its range,
--- since the members are sorted again at each begin of a range of units and a list that long meets the zone of almost every unit
+-- an IN list with gaps travels with its zone test up to 65,536 members (the units of the owners between 1 and 12 are pruned, however long the list: the point directory
+-- of the source needs the members of a long one)
 SELECT * FROM same(format('set_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 120) g)));
 SELECT * FROM same(format('set_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 400) g)));
 -- an AND of ORs, and an OR of ANDs of two leaves: every conjunct, every disjunct is tested on its own

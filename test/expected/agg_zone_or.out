@@ -96,11 +96,11 @@ SELECT * FROM same($$set_id = 2 OR day >= '2021-03-01' AND day <= '2021-03-31'$$
 SELECT * FROM same($$set_id IN (1, 12) OR set_id = 6$$);
            plan            | result_rows | vs_normal_plan 
 ---------------------------+-------------+----------------
- SiftAgg read 12 pruned 25 |           3 |              0
+ SiftAgg read 37 pruned 25 |           3 |              0
 (1 row)
 
--- an IN list with gaps travels with its zone test up to 256 members (the units of the owners between 1 and 12 are pruned); a longer one is tested by its range,
--- since the members are sorted again at each begin of a range of units and a list that long meets the zone of almost every unit
+-- an IN list with gaps travels with its zone test up to 65,536 members (the units of the owners between 1 and 12 are pruned, however long the list: the point directory
+-- of the source needs the members of a long one)
 SELECT * FROM same(format('set_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 120) g)));
            plan           | result_rows | vs_normal_plan 
 --------------------------+-------------+----------------
@@ -110,7 +110,7 @@ SELECT * FROM same(format('set_id IN (1, 12, %s)', (SELECT string_agg(g::text, '
 SELECT * FROM same(format('set_id IN (1, 12, %s)', (SELECT string_agg(g::text, ', ') FROM generate_series(100, 400) g)));
            plan           | result_rows | vs_normal_plan 
 --------------------------+-------------+----------------
- SiftAgg read 37 pruned 0 |           2 |              0
+ SiftAgg read 8 pruned 29 |           2 |              0
 (1 row)
 
 -- an AND of ORs, and an OR of ANDs of two leaves: every conjunct, every disjunct is tested on its own
