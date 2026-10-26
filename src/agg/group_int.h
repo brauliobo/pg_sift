@@ -48,17 +48,20 @@ key_used(KeyState *k)
 	return (k->numk ? k->im.n : k->ident ? k->nident : k->ot.n) + 1;
 }
 
+/* 32 bits, so that compute_gids hashes a chunk key by key (hash_cols) with the same result */
+#define IDS_HASH_MUL 0x9E3779B1U
+
 static inline uint32
 ids_hash32(const uint32 *ids, int nk)
 {
-	uint64		h = 0;
+	uint32		h = 0;
 
 	for (int j = 0; j < nk; j++)
 	{
-		h = (h ^ ids[j]) * UINT64CONST(0x9E3779B97F4A7C15);
-		h ^= h >> 32;
+		h = (h ^ ids[j]) * IDS_HASH_MUL;
+		h ^= h >> 16;
 	}
-	return (uint32) h;
+	return h;
 }
 
 static inline uint32

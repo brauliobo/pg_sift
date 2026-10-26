@@ -917,9 +917,21 @@ key_prepare(AggExec *ex, int ki, int nsel, const uint32 *idx, uint32 **map_out, 
 	if (sk->kind == SAK_COMBO)
 	{
 		const uint32 *out = combo_outs(ex, sk->leaf);
+		const uint32 *val = ex->cs[sk->leaf].val;
+		const int	ns = ex->spec->combo[sk->leaf].nslots;
 
+		/* an evaluation may reallocate the table */
 		for (int i = 0; i < nsel; i++)
-			vals_out[i] = combo_val(ex, sk->leaf, out[i], sk->slot);
+		{
+			uint32		r = val[(size_t) out[i] * ns + sk->slot];
+
+			if (r == COMBO_UNEVAL)
+			{
+				r = combo_eval_slot(ex, sk->leaf, out[i], sk->slot);
+				val = ex->cs[sk->leaf].val;
+			}
+			vals_out[i] = r;
+		}
 		return;
 	}
 	if (sk->kind == SAK_NUM)
@@ -1063,10 +1075,13 @@ compute_kids(AggExec *ex, int nsel, uint32 *kid)
 		if (lf)
 			gather_idx(ex, ex->spec->key[j].leaf, nsel, &idx);
 		key_prepare(ex, j, nsel, idx, &maps[j], &bases[j], vals);
-		memset(out, 0, nsel * sizeof(uint32));
 		if (maps[j] == NULL)
+		{
 			memcpy(out, vals, nsel * sizeof(uint32));
-		else if (lf->vtype == SCV_CODE)
+			continue;
+		}
+		memset(out, 0, nsel * sizeof(uint32));
+		if (lf->vtype == SCV_CODE)
 			sift_aggk->gid_code(out, vals, maps[j], nsel, 1);
 		else
 		{
@@ -1076,16 +1091,22 @@ compute_kids(AggExec *ex, int nsel, uint32 *kid)
 	}
 }
 
-/* the hash of tuple i of the chunk's key ids, into hv, and the prefetch of its slot */
+/* ids_hash32 of every tuple of the chunk's key ids (kid, as compute_kids lays them out), key by key */
 static void
-hash_ahead(AggExec *ex, int nk, int i, uint32 *hv)
+hash_cols(const uint32 *kid, int nk, int nsel, uint32 *hv)
 {
-	uint32		ids[SIFT_AGG_MAX_KEYS] = {0};
-
+	memset(hv, 0, nsel * sizeof(uint32));
 	for (int j = 0; j < nk; j++)
-		ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
-	hv[i] = ids_hash32(ids, nk);
-	__builtin_prefetch(&ex->hslot[hv[i] & (ex->nhslot - 1)]);
+	{
+		const uint32 *col = kid + (Size) j * (VEC + PADW);
+
+		for (int i = 0; i < nsel; i++)
+		{
+			uint32		h = (hv[i] ^ col[i]) * IDS_HASH_MUL;
+
+			hv[i] = h ^ (h >> 16);
+		}
+	}
 }
 
 void
@@ -1143,15 +1164,16 @@ compute_gids(AggExec *ex, int nsel)
 		/* the table just replaced the arrays: recompute below, in hash mode */
 	}
 	compute_kids(ex, nsel, ex->tmpu32);
-	/* a tuple's hash is made GROUP_AHEAD tuples early, to prefetch its slot, and kept for its probe */
+	/* the slot of a tuple is prefetched GROUP_AHEAD tuples early */
+	hash_cols(ex->tmpu32, nk, nsel, hv);
 	for (int i = 0; i < Min(GROUP_AHEAD, nsel); i++)
-		hash_ahead(ex, nk, i, hv);
+		__builtin_prefetch(&ex->hslot[hv[i] & (ex->nhslot - 1)]);
 	for (int i = 0; i < nsel; i++)
 	{
 		uint32		ids[SIFT_AGG_MAX_KEYS];
 
 		if (i + GROUP_AHEAD < nsel)
-			hash_ahead(ex, nk, i + GROUP_AHEAD, hv);
+			__builtin_prefetch(&ex->hslot[hv[i + GROUP_AHEAD] & (ex->nhslot - 1)]);
 		for (int j = 0; j < nk; j++)
 			ids[j] = ex->tmpu32[(Size) j * (VEC + PADW) + i];
 		ex->gid[i] = ex->hashgh(ex, ids, hv[i]);
