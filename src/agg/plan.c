@@ -960,9 +960,10 @@ static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	/* a few keys are probes of the btree, which the normal plan prices as they run: the rows the table holds for them are no lost estimate */
-	bool		few_keys = few_keys_lookup(c, s);
+	double		key_rows;
+	bool		few_keys = few_keys_lookup(c, s, &key_rows);
 	double		f = param_set_ratio(c) * (few_keys ? 1.0 : lookup_set_ratio(c, s, input_rel, false)),
-				rows = few_keys ? 1.0 : input_rows_ratio(c, s, input_rel);
+				rows = input_rows_ratio(c, s, input_rel, few_keys ? key_rows : c->rel->rows);
 
 	if (f <= 1.0 && rows <= 1.0)
 		return;

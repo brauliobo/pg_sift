@@ -715,6 +715,8 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
 static double cte_list_keys(AggCtx *c, const JoinCtx *jc, int key);
+static double cte_list_worth(AggCtx *c, const JoinCtx *jc, Var *key);
+static double list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key);
 
 /* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
 static bool
@@ -797,13 +799,14 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * one of ten thousand, and an index not cut by the key reads tens of units for one, so the scan is priced for a guess that is not a floor).
  */
 static double
-join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
+join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share)
 {
 	double		kept = 1.0,
 				selective = 1.0;
 
 	*n = 0;
 	*sel_keys = HUGE_VAL;
+	*share = 1.0;
 	if (!sift_agg_join_filter || s->topn)
 		return kept;
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -830,12 +833,13 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
+			list_keys = Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL);
 			if (sure / nd < selective && !lookup_guessed(c, jc) && (dj == NULL || !lookup_guessed(c, dj)))
 			{
 				selective = sure / nd;
 				*sel_keys = sure;
+				*share = Max(selective, list_keys < HUGE_VAL ? cte_list_worth(c, jc, (Var *) e) / nd : 0);
 			}
-			list_keys = Min(cte_list_keys(c, jc, k), dj ? cte_list_keys(c, dj, dkey) : HUGE_VAL);
 			nkeys = Min(keys, list_keys);
 			kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
 			if (nd > keys && !lookup_counted(c, jc) && kept_keys * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS)
@@ -1082,23 +1086,37 @@ key_list_walker(Node *node, KeyList *kl)
  * keys are joined to: its selectivity from the statistics of that column (the share of the table the listed keys own, a key of the
  * most common values with its own frequency), over the share of one key. A list of keys with few rows stays at the rows PostgreSQL expects.
  */
+static double
+list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key)
+{
+	KeyList		kl = {body->parse->targetList, NULL};
+	Node	   *list;
+	VariableStatData vardata;
+	bool		isdefault;
+	double		nd;
+
+	if (body->parse->jointree == NULL)
+		return 0;
+	key_list_walker((Node *) body->parse->jointree, &kl);
+	if ((list = kl.clause) == NULL || key->vartype != exprType(linitial(*key_clause_args(list))) || key->varcollid != exprCollation(linitial(*key_clause_args(list))))
+		return 0;
+	examine_variable(root, (Node *) key, 0, &vardata);
+	nd = get_variable_numdistinct(&vardata, &isdefault);
+	ReleaseVariableStats(vardata);
+	if (isdefault)
+		return 0;
+	list = copyObject(list);
+	linitial(*key_clause_args(list)) = key;
+	return clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+}
+
 static void
 key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 {
 	PlannerInfo *top = root;
-	KeyList		kl = {body->parse->targetList, NULL};
-	Node	   *list;
 	Var		   *key = NULL;
-	VariableStatData vardata;
-	bool		isdefault;
-	double		nd,
-				rows;
+	double		rows;
 
-	if (body->parse->jointree == NULL)
-		return;
-	key_list_walker((Node *) body->parse->jointree, &kl);
-	if ((list = kl.clause) == NULL)
-		return;
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
 	{
 		if (!bms_is_member(rel->relid, ec->ec_relids))
@@ -1114,17 +1132,12 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 				key = (Var *) em->em_expr;
 		}
 	}
-	if (key == NULL || key->vartype != exprType(linitial(*key_clause_args(list))) || key->varcollid != exprCollation(linitial(*key_clause_args(list))))
+	if (key == NULL)
 		return;
-	examine_variable(root, (Node *) key, 0, &vardata);
-	nd = get_variable_numdistinct(&vardata, &isdefault);
-	ReleaseVariableStats(vardata);
-	list = copyObject(list);
-	linitial(*key_clause_args(list)) = key;
-	rows = clamp_row_est(nd * clause_selectivity(root, list, 0, JOIN_INNER, NULL));
+	rows = list_keys_worth(root, body, key);
 	while (top->parent_root)
 		top = top->parent_root;
-	if (isdefault || rows <= rel->rows || !reads_column_index((Node *) top->parse, NULL))
+	if (rows <= rel->rows || !reads_column_index((Node *) top->parse, NULL))
 		return;
 	elog(DEBUG1, "sift: rows of a CTE scan %.0f, not %.0f (the keys of its list own that share of the table)", rows, rel->rows);
 	rel->rows = rows;
@@ -1195,6 +1208,16 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 		return 1.0;
 	arr = DatumGetArrayTypeP(((Const *) lsecond(*args))->constvalue);
 	return ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+}
+
+/* the keys of the table the literal list a lookup CTE holds is worth (list_keys_worth): 0 for any other lookup */
+static double
+cte_list_worth(AggCtx *c, const JoinCtx *jc, Var *key)
+{
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+	int			plan_id = rte->rtekind == RTE_CTE ? cte_plan_id(c->root, rte) : 0;
+
+	return plan_id > 0 ? list_keys_worth(c->root, list_nth(c->root->glob->subroots, plan_id - 1), key) : 0;
 }
 
 /*
@@ -1395,9 +1418,11 @@ static double
 zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
 	double		sel_keys,
-				kept = join_key_zone(c, s, nkeyfilters, &sel_keys);
+				share,
+				kept;
 	List	   *rest;
 
+	kept = join_key_zone(c, s, nkeyfilters, &sel_keys, &share);
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
 	kept = Min(kept, set_kept(c, s));
 	foreach_ptr(SiftAggPred, p, rest)
@@ -1595,15 +1620,17 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
-/* does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? */
+/* does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? *rows: the rows of the table those keys own */
 bool
-few_keys_lookup(AggCtx *c, SiftAggSpec *s)
+few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows)
 {
 	double		sel_keys,
+				share,
 				kept;
 	int			n;
 
-	kept = join_key_zone(c, s, &n, &sel_keys);
+	kept = join_key_zone(c, s, &n, &sel_keys, &share);
+	*rows = c->rel->rows * Min(share, 1.0);
 	return sel_keys <= AGG_PROBE_KEYS && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
 }
 
@@ -1615,11 +1642,11 @@ few_keys_lookup(AggCtx *c, SiftAggSpec *s)
  * Rows without an unnest keep PostgreSQL's estimate: the statistics of the joined tables are the ones it counts them by.
  */
 double
-input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, double rows)
 {
 	if (s->group < 0 || rel_has_param_qual(c->rel))
 		return 1.0;
-	return Max(sqrt(Max(c->rel->rows, 1.0) * elems_of(c, s->group) / Max(input_rel->rows, 1.0)), 1.0);
+	return Max(sqrt(Max(rows, 1.0) * elems_of(c, s->group) / Max(input_rel->rows, 1.0)), 1.0);
 }
 
 /* does a btree index of the joined table start with columns that the table's `column = value` conditions give (map_load picks the same) */
