@@ -87,6 +87,7 @@ typedef struct SiftAggKernels
 	 * Integer sums are exact (the caller bounds n so that no overflow happens in int64: |v| < 2^31, n <= SIFT_AGG_VEC).
 	 */
 	int64		(*sum_i32) (const int32 *v, const uint64 *mask, int n);
+	int64		(*sum_i64) (const int64 *v, const uint64 *mask, int n);		/* wrapping modulo 2^64: the caller proves that the sum fits */
 	/*
 	 * The largest absolute value of the selected rows, 0 when none is: true with *mx set, or false (*mx untouched) when a selected
 	 * row is not finite (NaN, +-Inf). The float guard of a sum (sum_gid_f64): only a finite input may overflow it.

@@ -5,11 +5,12 @@
 #
 #   scripts/instr-budget-ungrouped.sh          (SIFT_TMP and SIFT_PORT as scripts/pgtest.sh; needs valgrind and an installed build: scripts/pgtest.sh install)
 #
-# Measured at 200,000 rows: 18,136,000 instructions with the counts and sums scattered through the group ids, 10,987,000 with one pass; BUDGET is 14,500,000.
+# Measured at 200,000 rows: 18,136,000 instructions with the counts and sums scattered through the group ids, 10,987,000 with one pass, 9,990,000 with the numeric sum of a
+# block added by one kernel (sum_i64); BUDGET is 10,500,000.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-BUDGET=${BUDGET:-14500000}
+BUDGET=${BUDGET:-10500000}
 command -v valgrind >/dev/null || { echo "instr-budget-ungrouped: valgrind is not installed, skipped"; exit 0; }
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-instr} SIFT_PORT=${SIFT_PORT:-56232}
 cd "$REPO"

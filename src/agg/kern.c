@@ -136,6 +136,15 @@ agk_sum_i32_scalar(const int32 *v, const uint64 *mask, int n)
 	return s;
 }
 
+int64
+agk_sum_i64_scalar(const int64 *v, const uint64 *mask, int n)
+{
+	uint64		s = 0;
+
+	FOREACH_ROW(mask, n, i, s += (uint64) v[i]);
+	return (int64) s;
+}
+
 bool
 agk_absmax_f64_scalar(const double *v, const uint64 *mask, int n, double *mx)
 {

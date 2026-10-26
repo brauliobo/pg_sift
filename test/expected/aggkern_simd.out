@@ -17,7 +17,7 @@ SELECT sift._test_aggkern_digest(1, 300) AS scalar_digest \gset
 SELECT :scalar_digest;
        ?column?       
 ----------------------
- -5035932987590109123
+ -4826527095251085887
 (1 row)
 
 SET sift.simd = avx2;

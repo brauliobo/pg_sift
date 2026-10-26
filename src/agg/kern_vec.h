@@ -246,6 +246,38 @@ AKV_RFN(sum_i32)(const int32 *v, const uint64 *mask, int n)
 }
 #endif
 
+#ifndef AKV_NO_SUM_I64
+/* The sum of int64 rows modulo 2^64; the rows past the last whole vector are added one by one */
+AKV_INL int64
+AKV_RFN(sum_i64_t)(const int64 *v, const uint64 *mask, int n, const bool masked)
+{
+	akv_u		acc = {};
+	uint64		s = 0;
+	int			i = 0;
+
+	for (; i + AKV_L <= n; i += AKV_L)
+	{
+		akv_u		x = AKV_LD(v + i);
+
+		if (masked)
+			x &= (akv_u) AKV_LANES64(AKV_SEL(mask, i, n, AKV_L));
+		acc += x;
+	}
+	for (int k = 0; k < AKV_L; k++)
+		s += acc[k];
+	for (; i < n; i++)
+		if (!masked || (mask[i >> 6] >> (i & 63) & 1))
+			s += (uint64) v[i];
+	return (int64) s;
+}
+
+static int64
+AKV_RFN(sum_i64)(const int64 *v, const uint64 *mask, int n)
+{
+	return mask ? AKV_RFN(sum_i64_t)(v, mask, n, true) : AKV_RFN(sum_i64_t)(v, mask, n, false);
+}
+#endif
+
 /* Unselected lanes are +0.0; a lane is finite when |x| <= DBL_MAX (false for NaN and Inf) */
 #define AKV_ABS_STEP(m, b, p) \
 	do { \

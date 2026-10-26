@@ -166,6 +166,23 @@ sum_i32_avx512(const int32 *v, const uint64 *mask, int n)
 	return mask ? sum_i32_t(v, mask, n, true) : sum_i32_t(v, mask, n, false);
 }
 
+/* 8 rows per step under their mask bits (the tail has its own mask: no load past n); the sum wraps modulo 2^64 */
+K5 int64
+sum_i64_t(const int64 *v, const uint64 *mask, int n, const bool masked)
+{
+	__m512i		a = _mm512_setzero_si512();
+
+	for (int i = 0; i < n; i += 8)
+		a = _mm512_add_epi64(a, _mm512_maskz_loadu_epi64((__mmask8) (masked ? SEL16(mask, i) : (uint32) AGK_LANES(n - i, 8)), v + i));
+	return _mm512_reduce_add_epi64(a);
+}
+
+F5 int64
+sum_i64_avx512(const int64 *v, const uint64 *mask, int n)
+{
+	return mask ? sum_i64_t(v, mask, n, true) : sum_i64_t(v, mask, n, false);
+}
+
 /* Unselected lanes are loaded as +0.0; VFPCLASS 0x99 is QNaN, SNaN, +Inf, -Inf */
 K5 bool
 absmax_f64_t(const double *v, const uint64 *mask, int n, double *mx, const bool masked)
@@ -365,7 +382,7 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 const SiftAggKernels sift_aggkern_avx512 = {
 	AGK_INIT5(cmp_f64) AGK_INIT5(cmp2_i32) AGK_INIT5(cmp2_i64) AGK_INIT5(cmp2_f64) AGK_INIT5(lut_i32) AGK_INIT5(gather_bits)
 	AGK_INIT5(gid_code) AGK_INIT5(gid_i32)
-	AGK_INIT5(sum_i32) AGK_INIT5(absmax_f64) AGK_INIT5(absmax_i64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
+	AGK_INIT5(sum_i32) AGK_INIT5(sum_i64) AGK_INIT5(absmax_f64) AGK_INIT5(absmax_i64) AGK_INIT5(minmax_i32) AGK_INIT5(minmax_i64) AGK_INIT5(minmax_f64)
 	AGK_INIT5(lin_i64) AGK_INIT5(mulw_i64)
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,

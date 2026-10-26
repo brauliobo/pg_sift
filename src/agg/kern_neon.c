@@ -114,6 +114,7 @@ agk_sum_i32_neon(const int32 *v, const uint64 *mask, int n)
 #define AKV_VB 16
 #define AKV_RFN(x) agk_##x##_v_neon
 #define AKV_NO_SUM_I32
+#define AKV_NO_SUM_I64
 #define AKV_BLEND(T, m, a, b) ((T) vbslq_u8((uint8x16_t) (m), (uint8x16_t) (a), (uint8x16_t) (b)))
 #define AKV_LANES64(k) ((akv_s) vtstq_u64(vdupq_n_u64(k), (uint64x2_t) akv_w64))
 #define AKV_LANES32(k) ((akv_i32) vtstq_u32(vdupq_n_u32(k), (uint32x4_t) akv_w32))
@@ -129,6 +130,7 @@ static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
 #include "agg/kern_vec.h"
 
 #define agk_absmax_i64_neon		agk_absmax_i64_scalar
+#define agk_sum_i64_neon		agk_sum_i64_scalar
 #define agk_cmp2_i64_neon		agk_cmp2_i64_scalar
 #define agk_minmax_i64_neon		agk_minmax_i64_scalar
 #define agk_minmax_f64_neon		agk_minmax_f64_v_neon

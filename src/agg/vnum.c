@@ -252,7 +252,9 @@ vnum_sum_update(AggExec *ex, int ai, const SiftAggNum *p, int nsel, const uint64
 		if (vn_block(ex, p, nsel, off, stk, &x, &bound))
 		{
 			/* a block whose sum may not fit int64 is added to the groups as it is (a bound of 2^54 on 512 values, never reached by a sum of prices) */
-			if (use_part && (u128) bound * cnt < (u128) 1 << 62)
+			if (ex->spec->nkeys == 0 && (u128) bound * cnt < (u128) 1 << 62)
+				agg_sum_add(acc, 0, sift_aggk->sum_i64(x, okb, cnt));	/* one group: the sum of the block, not a scatter through the group ids */
+			else if (use_part && (u128) bound * cnt < (u128) 1 << 62)
 			{
 				if (pbound + (u128) bound * cnt >= (u128) 1 << 63)
 				{
