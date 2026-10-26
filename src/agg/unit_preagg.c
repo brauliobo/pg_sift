@@ -1111,11 +1111,41 @@ preagg_unit_try(AggExec *ex)
 	return ok;
 }
 
+/* A single NULL test needs only its zone count, even when the unit has no histogram of the leaf. */
+static bool
+preagg_null_count(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+	const SiftAggPred *p;
+	SiftSrcUnitAgg a;
+	PaVal *v;
+	uint32 rows;
+
+	if (s->nkeys != 0 || ex->pa.list >= 0 || s->npred != 1)
+		return false;
+	p = s->pred[0];
+	if (p->kind != SAP_NULL || p->op > 1)
+		return false;
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (s->agg[ai].kind != SAA_COUNT_STAR || s->agg[ai].filter)
+			return false;
+	if (!sift_colsrc_unit_agg(ex->src, &ex->unit, p->leaf, &a) || a.has_nan || a.nvals != ex->unit.nrow)
+		return false;
+	rows = p->op ? a.nvals - a.nnull : a.nnull;
+	v = MemoryContextAllocZero(ex->ucxt, s->naggs * sizeof(PaVal));
+	for (int ai = 0; ai < s->naggs; ai++)
+		v[ai].rows = v[ai].nn = rows;
+	preagg_fold(ex, 0, rows, v);
+	return true;
+}
+
 static bool
 preagg_unit_exact(AggExec *ex)
 {
 	if (preagg_rechecked(ex) || !preagg_arith(ex))
 		return false;
+	if (preagg_null_count(ex))
+		return true;
 	/* the rollup of the rows tests the comparisons on its tuples, so the unit need not lie inside them; a unit without it waits for a merge, nothing is asked for */
 	if (ex->pa.rows)
 	{

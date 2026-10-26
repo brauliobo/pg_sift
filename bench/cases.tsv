@@ -175,3 +175,4 @@ keycut_or_ranges	no longer starts the setup of a scan for each morsel	orders	def
 topn_keyset_run	reads a unit from the first entry of the range without running the unit's filters	orders	default	Units Read Without Filters: [1-9]	native	no_run:search_path = topn_keyset_run_plain	ms	faster33	no
 topn_desc_window	reads the superblocks of each window of the walk from the window's best end	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no
 key_table_point	a key table per segment (column format minor 22, the reloption `key_table`	orders	default WITH (key_columns = 'segment_id')	Rows Scanned: 0	native,pg_duckdb	units:sift.agg_super = off	ms	faster33	yes
+null_count_zone	reads the null counts of the zones of the units	events	-	Units From Pre-aggregates: [1-9]	native	scan:sift.agg_preagg = off	ms	faster33	no

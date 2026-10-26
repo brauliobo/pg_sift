@@ -167,6 +167,30 @@ CREATE INDEX an_col ON an USING sift_col (id, grp, amt, qty) WITH (preagg = 'cub
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) an;
 SELECT * FROM pa_check('an', 22, 26);
 
+-- Mixed NULL counts of a high-cardinality leaf use its zone counts without a histogram.
+CREATE TABLE az (id int, val int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO az SELECT g, CASE WHEN g % 3 = 0 THEN NULL ELSE g END, repeat('p', 200) FROM generate_series(1, 12000) g;
+CREATE INDEX az_col ON az USING sift_col (id, val);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) az;
+INSERT INTO pa_q VALUES
+	(27, 'zone null count', 'SELECT count(*) FROM %s WHERE val IS NULL'),
+	(28, 'zone nonnull count', 'SELECT count(*) FROM %s WHERE val IS NOT NULL'),
+	(29, 'null count of leaf', 'SELECT count(val) FROM %s WHERE val IS NULL'),
+	(30, 'null and range', 'SELECT count(*) FROM %s WHERE val IS NULL AND id < 2000');
+SELECT * FROM pa_check('az', 27, 30);
+BEGIN;
+UPDATE az SET val = NULL WHERE id BETWEEN 20 AND 50;
+DELETE FROM az WHERE id % 97 = 0;
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('az', 27, 30);
+ROLLBACK;
+DELETE FROM az WHERE id % 97 = 0;
+VACUUM (FREEZE, INDEX_CLEANUP ON, DISABLE_PAGE_SKIPPING) az;
+SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('az', 27, 30);
+SELECT sift.col_merge('az_col', true) >= 0 AS merged;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) az;
+SELECT * FROM pa_check('az', 27, 30);
+DROP TABLE az;
+
 -- the switches
 SET sift.agg_preagg = off;
 SELECT pre IS NULL AS off FROM pa_units('SELECT grp, count(*) FROM ac GROUP BY grp');
