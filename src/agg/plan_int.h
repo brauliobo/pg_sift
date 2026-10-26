@@ -412,6 +412,7 @@ extern bool spelled_wide(const SiftSrcLeaf *lf);
 extern double agg_stage_normal;
 extern double agg_read_rows;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
+extern bool few_keys_lookup(AggCtx *c, SiftAggSpec *s);
 extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double filter_rows_ratio(AggCtx *c);
 extern void derived_rel_rows(PlannerInfo *root, RelOptInfo *rel);

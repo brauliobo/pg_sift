@@ -20,7 +20,15 @@
 /* The segments a build may write: the directory keeps room for the write buffer and a merge */
 #define SIFT_COL_BUILD_SEGMENTS	(SIFT_MAX_SEGMENTS - 7)
 
+/* The writer of a segment of a participant holds up to half of maintenance_work_mem shared by nslots participants, at least this much (the serial build 64 MB) */
+#define SIFT_COL_BUILD_MIN_BUDGET	((Size) 16 * 1024 * 1024)
+#define SIFT_COL_BUILD_SERIAL_BUDGET ((Size) 64 * 1024 * 1024)
+
 typedef struct ColBuild ColBuild;
+
+extern Size sift_colb_budget(int nslots);
+/* Counts the runs of a key_cut build before the table is read; false: they do not fit and may_decline, else an error that names the setting */
+extern bool sift_colb_plan_runs(Relation heap, Relation index, IndexInfo *info, bool may_decline);
 
 /*
  * segs has room for maxsegs entries. A segment is cut when its writer holds more than budget bytes, except the last one that

@@ -71,6 +71,14 @@ SET client_min_messages = notice;
 DROP INDEX ka_auto, ka_off;
 CREATE INDEX ka_auto ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 
+-- a cut the build cannot write with the memory it has is not chosen (the runs of its rows would pass the segments the directory holds): the index is built without it
+SET sift.test_col_segment_kb = 8;
+CREATE INDEX ka_small ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+RESET sift.test_col_segment_kb;
+SELECT kopt('ka_small');
+SELECT sift.col_verify('ka_small', true);
+DROP INDEX ka_small;
+
 -- an index that would grow: the build says what the cut would read and cost, with the command; sift.key_cut_decision asks the same of an index that exists
 -- (small rows, 20 to a page: the prediction counts the addresses of the rows, not what the cut saves in the pre-aggregates, so it is an upper bound)
 DROP INDEX ka_auto;

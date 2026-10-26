@@ -114,6 +114,20 @@ SELECT (SELECT count(*) || ' ' || sum(amount) FROM kl WHERE cust = 42) = (SELECT
 SELECT sift.col_verify('kc_idx', true);
 DROP TABLE kl;
 
+-- the rows of a table make runs, and the directory holds a fixed number of them: a build whose runs cannot fit stops before it reads the table, and says the setting it needs
+SET sift.test_col_segment_kb = 16;
+DO $$
+DECLARE hint text;
+BEGIN
+	CREATE INDEX kc_big ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+EXCEPTION WHEN program_limit_exceeded THEN
+	GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT;
+	RAISE INFO '%', regexp_replace(SQLERRM, '[0-9.]+', 'N', 'g');
+	RAISE INFO '%', regexp_replace(hint, '[0-9.]+', 'N', 'g');
+END $$;
+RESET sift.test_col_segment_kb;
+SELECT to_regclass('kc_big') IS NULL AS no_index;
+
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
 DROP EXTENSION pg_sift;

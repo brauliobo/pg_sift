@@ -34,6 +34,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "col/build.h"
 #include "col/codec.h"
 #include "col/enc.h"
 #include "col/col.h"
@@ -757,7 +758,7 @@ decide(Relation heap, Relation index, bool dry, CutVerdict *v)
  * an earlier build chose a key and this one does not). Returns what it did.
  */
 SiftAutoCut
-sift_col_auto_cut(Relation heap, Relation index)
+sift_col_auto_cut(Relation heap, Relation index, IndexInfo *info)
 {
 	CutVerdict	v;
 
@@ -769,6 +770,16 @@ sift_col_auto_cut(Relation heap, Relation index)
 		initStringInfo(&opt);
 		appendStringInfo(&opt, "auto: %s", v.leaf);
 		sift_col_set_option(index, "key_cut", opt.data);
+		if (!sift_colb_plan_runs(heap, index, info, true))
+		{
+			/* the rows of the table make more runs than the directory holds with this maintenance_work_mem: a cut that cannot be built is not chosen */
+			sift_col_set_option(index, "key_cut", "auto");
+			ereport(NOTICE,
+					(errmsg("sift_col index \"%s\": key_cut = '%s' is not chosen: the build would need more segments than the directory holds with maintenance_work_mem = %d kB",
+							RelationGetRelationName(index), v.leaf, maintenance_work_mem),
+					 errhint("CREATE INDEX .. WITH (key_cut = '%s') says the maintenance_work_mem it needs.", v.leaf)));
+			return SIFT_AUTOCUT_ADVISED;
+		}
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%)",
 						RelationGetRelationName(index), v.leaf, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth),

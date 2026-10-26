@@ -115,6 +115,7 @@
 #define AGG_START_MS		500.0	/* a millisecond in this path's estimates, for starting workers: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
+#define AGG_PROBE_KEYS		4.0		/* the keys of a lookup that the normal plan still reads one btree probe each, priced as they run: the scan starts later and costs more than a few probes (1,000,000 rows, 3 keys: 6.8 ms against 7.1 for the scan, 5 keys: 10.5 against 8.3) */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	2.0	/* times parallel_setup_cost: the least a scan is charged for workers; a scan the estimate puts under ~4,000 units (8 to 40 ms measured) stays in one process. 22 priced them at 215 ms for the median node: no replay statement took workers, and a shape of 3,200,000 rows that runs 2.5 times faster with them stayed serial */
 #define AGG_DEFAULT_ELEMS	3.0
@@ -642,7 +643,14 @@ lookup_rows(AggCtx *c, const JoinCtx *jc)
 	return Max(jc->cpath ? child_rows(jc->cpath) : c->root->simple_rel_array[jc->rti]->rows, 1.0);
 }
 
-static bool lookup_counted(AggCtx *c, JoinCtx *jc);
+static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
+
+/* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
+static bool
+lookup_guessed(AggCtx *c, const JoinCtx *jc)
+{
+	return planner_rt_fetch(jc->rti, c->root)->rtekind == RTE_RELATION && !lookup_counted(c, jc);
+}
 
 /*
  * The share of the units that hold one of `keys` values of the leaf (nd distinct): a unit whose zone is the width w (as a share of the leaf's
@@ -710,14 +718,17 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
  * a comparison. A lookup whose count is a default guess (the output of a plan) has the keys lookup_set_ratio takes: the geometric mean
- * of the count and the leaf's distinct values. *n: the filters the scan applies.
+ * of the count and the leaf's distinct values. *n: the filters the scan applies; *sel_keys: the keys of the most selective one (a share of the
+ * leaf's distinct values), HUGE_VAL without a filter.
  */
 static double
-join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
+join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 {
-	double		kept = 1.0;
+	double		kept = 1.0,
+				selective = 1.0;
 
 	*n = 0;
+	*sel_keys = HUGE_VAL;
 	if (!sift_agg_join_filter || s->topn)
 		return kept;
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -740,6 +751,11 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n)
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
 				continue;
+			if (keys / nd < selective && !lookup_guessed(c, jc) && (dj == NULL || !lookup_guessed(c, dj)))
+			{
+				selective = keys / nd;
+				*sel_keys = keys;
+			}
 			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
 			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
 			(*n)++;
@@ -771,7 +787,7 @@ filter_has_stats(PlannerInfo *root, RestrictInfo *ri)
  * constants (unnest of a list) are; a sub-select, a CTE or a function of other arguments is estimated through its own joins and defaults.
  */
 static bool
-lookup_counted(AggCtx *c, JoinCtx *jc)
+lookup_counted(AggCtx *c, const JoinCtx *jc)
 {
 	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
 
@@ -1245,7 +1261,8 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 static double
 zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
-	double		kept = join_key_zone(c, s, nkeyfilters);
+	double		sel_keys,
+				kept = join_key_zone(c, s, nkeyfilters, &sel_keys);
 	List	   *rest;
 
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
@@ -1443,6 +1460,17 @@ rel_has_param_qual(RelOptInfo *rel)
 		if (extern_param_walker((Node *) ri->clause, NULL))
 			return true;
 	return false;
+}
+
+/* does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? */
+bool
+few_keys_lookup(AggCtx *c, SiftAggSpec *s)
+{
+	double		sel_keys;
+	int			n;
+
+	join_key_zone(c, s, &n, &sel_keys);
+	return sel_keys <= AGG_PROBE_KEYS;
 }
 
 /*

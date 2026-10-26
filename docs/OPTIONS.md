@@ -1960,9 +1960,11 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
 | sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %s bytes | `src/agg/lookshm.c` |  |
 | SiftAgg not used: %s: %s | `src/agg/refuse.c` |  |
+| sift_col index "%s": key_cut = '%s' is not chosen: the build would need more segments than the directory holds with maintenance_work_mem = %s kB | `src/col/autocut.c` | `key_cut` |
 | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%) | `src/col/autocut.c` | `key_cut` |
 | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
 | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
+| sift_col index "%s": the build uses %s parallel workers, not %s | `src/col/build.c` |  |
 | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
