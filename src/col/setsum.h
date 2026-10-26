@@ -19,6 +19,7 @@
 #define SIFT_CSET_LIMIT			32		/* up to this many distinct keys a unit keeps them exactly in a summary, a bloom filter beyond (a key list has no such limit: it takes the bytes of the unit's share) */
 #define SIFT_CSET_LIMIT_MAX		1024	/* a stored exact summary has at most this many keys */
 #define SIFT_CSET_BLOOM_BITS	10		/* bits a bloom filter takes for each distinct key */
+#define SIFT_CSET_BLOOM_MIN_BITS	3		/* the least bits a key gets in the filter a default key column keeps in what its share has left (about a quarter of the other units pass it) */
 #define SIFT_CSET_BLOOM_K		5
 #define SIFT_CSET_PROBES		8		/* a range that spans at most this many keys is probed key by key in a bloom filter, a wider one is not tested */
 #define SIFT_CSET_PRES_PCT		3		/* the key lists and bitmaps of all the leaves of a unit take at most this share of its bytes together */
@@ -57,6 +58,8 @@ extern uint32 sift_cset_keys(const SiftCPaggCol *c, int64 *out);
  * Appends the summary of the nd keys (ascending, distinct) to out and returns true, or appends nothing and returns false when it would tell
  * no more than the zone: fewer than two keys, or every integer between the smallest and the largest.
  */
+/* a bloom filter of the keys of a unit in at most max_bytes: up to SIFT_CSET_BLOOM_BITS bits for each key, the probes that fit; false when a key would get fewer than SIFT_CSET_BLOOM_MIN_BITS */
+extern bool sift_cset_build_filter(const int64 *keys, uint32 nd, Size max_bytes, StringInfo out);
 extern bool sift_cset_build(const int64 *keys, uint32 nd, uint32 limit, StringInfo out);
 
 /*

@@ -382,9 +382,28 @@ SELECT blobs > 0 AS has_blobs, exact > 0 AS has_exact, bloom > 0 AS has_bloom, i
 FROM sift._test_col_set_damage('ss_on', 6);
  has_blobs | has_exact | has_bloom | intact_decodes | intact_match_chunks | cuts_made | cuts_refused | named_made | named_refused | damages_made | some_refused | accepted_differ_from_chunk 
 -----------+-----------+-----------+----------------+---------------------+-----------+--------------+------------+---------------+--------------+--------------+----------------------------
- t         | t         | t         | t              | t                   | t         | t            | t          | t             | t            | t            | t
+ t         | f         | t         | t              | t                   | t         | t            | t          | t             | t            | t            | t
 (1 row)
 
+-- every integer leaf (int2, int4, int8, date) keeps a key list or bitmap where one fits, so the exact set is left to the leaves that have none: a timestamp
+CREATE TABLE sx (id int, t timestamp, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE sx ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sx SELECT g, timestamp '2025-01-01' + ((hashint4(g / 700) & 2147483647) % 60) * interval '1 day', repeat('x', 1500) FROM generate_series(1, 12000) g;
+CREATE INDEX sx_i ON sx USING sift_col (id, t) WITH (write_buffer_limit = 4096, key_columns = 't', cube_minmax = false, superunit = 0);
+SELECT blobs > 0 AS has_blobs, exact > 0 AS has_exact, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks, cut_accepted = 0 AS cuts_refused, missed = 0 AS accepted_differ_from_chunk
+FROM sift._test_col_set_damage('sx_i', 6);
+ has_blobs | has_exact | intact_decodes | intact_match_chunks | cuts_refused | accepted_differ_from_chunk 
+-----------+-----------+----------------+---------------------+--------------+----------------------------
+ t         | t         | t              | t                   | t            | t
+(1 row)
+
+SELECT sift.col_verify('sx_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE sx;
 -- an index of the old kind takes the option later: the units written before keep their minor and have no summary, the ones after are minor 10, a merge
 -- writes one segment of minor 10; the option switched off, the next merge writes the old minor; under a lower setting nothing of it is written
 CREATE TABLE sa (id int, kind bigint, parent_id bigint, val int, pad text) WITH (autovacuum_enabled = off);

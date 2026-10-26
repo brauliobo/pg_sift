@@ -79,7 +79,7 @@ bool
 sift_cset_pres_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 {
 	return sift_cpagg_dim_ok(s, d) && d->parent < 0 && d->store == SIFT_COLS_INT && !sift_col_def_has_kinds(d) &&
-		(d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE);
+		(d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_INT8 || d->type == SIFT_COLT_DATE);
 }
 
 /* the list of key_columns without its 'auto' word and colon; *autolist: the build chose it (or is to) */
@@ -193,6 +193,28 @@ sift_cset_build(const int64 *keys, uint32 nd, uint32 limit, StringInfo out)
 		appendBinaryStringInfo(out, (const char *) bits, nbits / 8);
 		pfree(bits);
 	}
+	return true;
+}
+
+bool
+sift_cset_build_filter(const int64 *keys, uint32 nd, Size max_bytes, StringInfo out)
+{
+	uint64		bits;
+	uint64		nbits;
+	uint8	   *filter;
+
+	if (nd < 2 || (uint64) keys[nd - 1] - (uint64) keys[0] == nd - 1 || max_bytes <= SIFT_CSET_HDR)
+		return false;
+	bits = Min((uint64) (max_bytes - SIFT_CSET_HDR) * 8 / nd, SIFT_CSET_BLOOM_BITS);
+	if (bits < SIFT_CSET_BLOOM_MIN_BITS)
+		return false;
+	nbits = ((uint64) nd * bits + 7) / 8 * 8;
+	filter = palloc0(nbits / 8);
+	for (uint32 i = 0; i < nd; i++)
+		bloom_add(filter, nbits, (uint32) ((bits * 7 + 5) / 10), keys[i]);
+	put_head(out, SIFT_CSET_BLOOM, (uint8) ((bits * 7 + 5) / 10), nd, nbits);
+	appendBinaryStringInfo(out, (const char *) filter, nbits / 8);
+	pfree(filter);
 	return true;
 }
 
@@ -363,7 +385,7 @@ put_runs(StringInfo out, int64 lo, const uint64 *off, uint32 nd, Size max_bytes)
 	lws = width_log2(st[nr - 1]);
 	lwl = width_log2(maxl);
 	/* one run is the zone: the keys fill their range */
-	ok = nr > 1 && SIFT_CSET_HDR + (Size) nr * ((1 << lws) + (1 << lwl)) <= max_bytes;
+	ok = nr > 1 && lo >= -(int64) RUNS_OFF_CAP && lo <= (int64) RUNS_OFF_CAP && st[nr - 1] + ln[nr - 1] < RUNS_OFF_CAP && SIFT_CSET_HDR + (Size) nr * ((1 << lws) + (1 << lwl)) <= max_bytes;
 	if (ok)
 	{
 		put_head(out, SIFT_CSET_RUNS, RUNS_AUX | lws | lwl << 2, nd, (uint64) lo);

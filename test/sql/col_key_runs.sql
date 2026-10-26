@@ -64,6 +64,37 @@ CREATE INDEX kr_o ON kr USING sift_col (id, grp, val) WITH (write_buffer_limit =
 SELECT kr_option('kr_o') AS option;
 DROP INDEX kr_o;
 
+-- a bigint id is listed the same way
+CREATE TABLE kr8 (id bigint PRIMARY KEY, set_id int NOT NULL, val int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE kr8 ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kr8 SELECT g + 5000000000, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, repeat('x', 150) FROM generate_series(1, 90000) g;
+VACUUM (FREEZE, ANALYZE) kr8;
+CREATE INDEX kr8_i ON kr8 USING sift_col (id, set_id, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
+SELECT kr_option('kr8_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr8_i');
+SELECT sift.col_verify('kr8_i', true);
+SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same, kr_units(q) <= 3 AS from_runs FROM (VALUES
+	('SELECT count(*), sum(val) FROM kr8 WHERE id = 5000045050'), ('SELECT count(*), sum(val) FROM kr8 WHERE id IN (5000045050, 5000007001, 5000088999)'),
+	('SELECT count(*), sum(val) FROM kr8 WHERE id BETWEEN 5000045050 AND 5000045120'), ('SELECT count(*), sum(val) FROM kr8 WHERE id = 1')) t(q) ORDER BY 1;
+SELECT blobs > 0 AS has_blobs, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks, cut_accepted = 0 AS cuts_refused, missed = 0 AS accepted_differ_from_chunk
+FROM sift._test_col_set_damage('kr8_i', 40);
+DROP TABLE kr8;
+
+-- a unique id scattered over the units (no runs, no list fits 3% of a unit): a bloom filter of what the share has left, a fraction of the units read for a key
+CREATE TABLE kf (id int PRIMARY KEY, set_id int NOT NULL, val int, x1 float8, x2 float8, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE kf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashint4(g / 100) & 2147483647) % 400, g % 1000, hashint4(g + 1) / 7.0, hashint4(g + 2) / 11.0, repeat('x', 150) FROM generate_series(1, 90000) g ORDER BY g;
+VACUUM (FREEZE, ANALYZE) kf;
+CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
+SELECT kr_option('kf_i') AS option;
+SELECT sift.col_verify('kf_i', true);
+SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same, kr_units(q) AS units FROM (VALUES
+	('SELECT count(*), sum(val) FROM kf WHERE id = 45050'), ('SELECT count(*), sum(val) FROM kf WHERE id IN (45050, 7001, 88999)'),
+	('SELECT count(*), sum(val) FROM kf WHERE id = 100000')) t(q) ORDER BY 1;
+SELECT bytes > 0 AS filters_take_bytes FROM sift.col_sections('kf_i') WHERE section = 'sets';
+SELECT blobs > 0 AS has_blobs, bloom > 0 AS has_bloom, intact = blobs AS intact_decodes, matching = blobs AS intact_match_chunks, cut_accepted = 0 AS cuts_refused, missed = 0 AS accepted_differ_from_chunk
+FROM sift._test_col_set_damage('kf_i', 40);
+DROP TABLE kf;
+
 -- 'off' writes none
 DROP INDEX kr_i;
 CREATE INDEX kr_off ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id', key_columns = 'off');

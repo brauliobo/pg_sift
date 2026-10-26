@@ -9,7 +9,7 @@ SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '120s';
 
 -- about 8 units of 7,500 rows (the constraints are added after the rows, NOT VALID: the parent table is empty). parent_id, set_id: foreign keys over a dense range; sparse_fk: 600 values spread over 2^30 (a list, not a bitmap); ext_fk: a
--- different value in every row (no bitmap or list fits); region_id: named like a key, no constraint; uniq_id: unique; wide_fk: a bigint; plain: neither; low_id: 12 values, a dimension of the cube
+-- different value in every row (no bitmap or list fits); region_id: named like a key, no constraint; uniq_id: unique; wide_fk: a bigint, a different value in every row (a candidate like the others, no list fits); plain: neither; low_id: 12 values, a dimension of the cube
 CREATE TABLE au_p (id int PRIMARY KEY);
 CREATE TABLE au (id int PRIMARY KEY, parent_id int, set_id int2, sparse_fk int, ext_fk int, region_id int, uniq_id int UNIQUE, wide_fk bigint, plain int, low_id int,
                  txt_id text, d date, ts date, val int, pad text) WITH (autovacuum_enabled = off);
@@ -90,7 +90,7 @@ SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 DROP INDEX au_old;
 
 -- no column of the index qualifies: nothing written, no notice
-CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, wide_fk, txt_id, val);
+CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, txt_id, val);
 SELECT au_option('au_none') AS option, au_minors('au_none') AS minors;
 DROP INDEX au_none;
 

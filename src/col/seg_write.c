@@ -415,6 +415,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 {
 	int64	   *keys = NULL;
 	Size		left = unit_bytes / 100 * SIFT_CSET_PRES_PCT;	/* the key lists and bitmaps of all the leaves of a unit share this, the first leaves first */
+	bool	   *filter = NULL;	/* the leaves of a default key_columns that got no list: a bloom filter of what the lists left */
 
 	for (int c = 0; w->set && c < w->schema->ncols; c++)
 	{
@@ -434,6 +435,12 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 				a->kinds |= SETS_PRES;
 				w->anyrunl |= a->blobs.data[had] == SIFT_CSET_RUNS;
 			}
+			else if (w->pagg.pres[c] && w->pagg.keyauto)
+			{
+				if (filter == NULL)
+					filter = palloc0(w->schema->ncols * sizeof(bool));
+				filter[c] = true;
+			}
 			else if (w->pagg.set[c] && !w->pagg.keyauto)
 			{
 				keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
@@ -447,6 +454,26 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 		}
 		a->off[w->nsb + 1] = a->blobs.len;
 	}
+	for (int c = 0; filter && c < w->schema->ncols; c++)
+	{
+		SetAcc	   *a = &w->set[c];
+		uint32		nd;
+		Size		had = a->blobs.len;
+
+		if (!filter[c])
+			continue;
+		keys = keys ? repalloc(keys, (Size) cols[c].n * sizeof(int64)) : palloc((Size) cols[c].n * sizeof(int64));
+		nd = sift_cset_keys(&cols[c], keys);
+		if (sift_cset_build_filter(keys, nd, left, &a->blobs))
+		{
+			left -= a->blobs.len - had;
+			a->any = w->anysets = true;
+			a->kinds |= SETS_BLOOM;
+			a->off[w->nsb + 1] = a->blobs.len;
+		}
+	}
+	if (filter)
+		pfree(filter);
 	if (keys)
 		pfree(keys);
 }

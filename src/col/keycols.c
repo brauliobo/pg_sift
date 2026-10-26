@@ -1,6 +1,6 @@
 /*
  * col/keycols.c - the default of the option key_columns: an index created without it, or with key_columns = 'auto', keeps the keys of its
- * foreign key columns and of its columns named *_id, as far as they are int2, int4 or date, not unique, and not held by the cube. CREATE INDEX is the only
+ * foreign key columns and of its columns named *_id, as far as they are int2, int4, int8 or date, not unique, and not held by the cube. CREATE INDEX is the only
  * place it is decided: the columns are written to the option as 'auto: a, b', so that a rebuild keeps them, and the build keeps those that hold a key list or
  * a bitmap in half of the units or more. The same file decides the other defaults that read the columns' data before a build: the jsonb paths and the plain
  * columns that take the dimensions of the cube when there are more than it holds.
@@ -354,6 +354,8 @@ sift_col_pagg_rewrite(Relation index, const SiftSegEntry *in, int n, SiftCPaggSp
 	}
 }
 
+#define SIFT_POINT_BYTES_ROW	20		/* what the point directory of a unique column takes a row: 8-byte slots, a power of two of them for the keys */
+
 static void
 append_bytes(StringInfo s, uint64 n)
 {
@@ -375,13 +377,16 @@ sift_col_auto_keys_report(Relation index)
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col auto keys", ALLOCSET_DEFAULT_SIZES);
 	uint32		units = 0,
 				have[SIFT_COL_MAX_COLS] = {0},
+				filters[SIFT_COL_MAX_COLS] = {0},
 				cubed[SIFT_COL_MAX_COLS] = {0};
 	uint64		bytes[SIFT_COL_MAX_COLS] = {0};
 	SiftColLeafStats ls[SIFT_COL_MAX_COLS];
 	StringInfoData kept,
 				left,
-				why;
-	uint64		kept_bytes = 0;
+				why,
+				filtered;
+	uint64		kept_bytes = 0,
+				point_bytes = 0;
 	bool		cube_left = false;
 
 	for (int l = 0; l < SIFT_COL_MAX_COLS; l++)
@@ -410,10 +415,11 @@ sift_col_auto_keys_report(Relation index)
 				uint32		len;
 				const uint8 *blob = sift_cseg_set(seg, l, u, &len);
 
-				if (blob != NULL && len > 0 && (blob[0] == SIFT_CSET_PRES || blob[0] == SIFT_CSET_PLIST || blob[0] == SIFT_CSET_RUNS))
+				if (blob != NULL && len > 0 && (blob[0] == SIFT_CSET_PRES || blob[0] == SIFT_CSET_PLIST || blob[0] == SIFT_CSET_RUNS || blob[0] == SIFT_CSET_BLOOM))
 				{
 					have[l]++;
 					bytes[l] += len;
+					filters[l] += blob[0] == SIFT_CSET_BLOOM;
 				}
 			}
 		}
@@ -423,6 +429,7 @@ sift_col_auto_keys_report(Relation index)
 	initStringInfo(&kept);
 	initStringInfo(&left);
 	initStringInfo(&why);
+	initStringInfo(&filtered);
 	for (int l = 0; l < rel->schema->ncols; l++)
 	{
 		if (!spec->pres[l])
@@ -449,6 +456,11 @@ sift_col_auto_keys_report(Relation index)
 		else
 		{
 			append_name(&kept, leaf_name(index, &rel->schema->cols[l]));
+			if (filters[l] > 0)
+			{
+				append_name(&filtered, leaf_name(index, &rel->schema->cols[l]));
+				point_bytes += (uint64) Max(ls[l].nvals - ls[l].nnull, 0) * SIFT_POINT_BYTES_ROW;
+			}
 			kept_bytes += bytes[l];
 		}
 	}
@@ -463,6 +475,13 @@ sift_col_auto_keys_report(Relation index)
 		appendStringInfoString(&detail, "They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, ");
 		append_bytes(&detail, kept_bytes);
 		appendStringInfoString(&detail, " together, which a count(DISTINCT) of one reads instead of its rows.");
+		if (filtered.len > 0)
+			appendStringInfo(&detail, " %s: where no list fits, a bloom filter of what the share has left (at least %d bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = '%s' lists the rows of each key, so that an equality reads one unit, for about ", filtered.data, SIFT_CSET_BLOOM_MIN_BITS, filtered.data);
+		if (filtered.len > 0)
+		{
+			appendStringInfo(&detail, "%.1f MB", point_bytes / 1048576.0);
+			appendStringInfoString(&detail, " more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead.");
+		}
 		if (left.len > 0)
 			appendStringInfo(&detail, " Left out: %s.%s", why.data,
 							 cube_left ? " The units written now keep the lists of a column the cube holds; a REINDEX drops them." : "");

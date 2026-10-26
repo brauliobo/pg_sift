@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '120s';
 -- about 8 units of 7,500 rows (the constraints are added after the rows, NOT VALID: the parent table is empty). parent_id, set_id: foreign keys over a dense range; sparse_fk: 600 values spread over 2^30 (a list, not a bitmap); ext_fk: a
--- different value in every row (no bitmap or list fits); region_id: named like a key, no constraint; uniq_id: unique; wide_fk: a bigint; plain: neither; low_id: 12 values, a dimension of the cube
+-- different value in every row (no bitmap or list fits); region_id: named like a key, no constraint; uniq_id: unique; wide_fk: a bigint, a different value in every row (a candidate like the others, no list fits); plain: neither; low_id: 12 values, a dimension of the cube
 CREATE TABLE au_p (id int PRIMARY KEY);
 CREATE TABLE au (id int PRIMARY KEY, parent_id int, set_id int2, sparse_fk int, ext_fk int, region_id int, uniq_id int UNIQUE, wide_fk bigint, plain int, low_id int,
                  txt_id text, d date, ts date, val int, pad text) WITH (autovacuum_enabled = off);
@@ -51,7 +51,7 @@ $$ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15))::text
 -- no option: the columns are chosen, written to the option and kept (the NOTICE names them and the way out); ext_fk holds nothing in any unit and goes out of it
 CREATE INDEX au_i ON au USING sift_col (id, parent_id, set_id, sparse_fk, ext_fk, region_id, uniq_id, wide_fk, plain, low_id, txt_id, d, ts, val) WITH (write_buffer_limit = 4096);
 NOTICE:  sift_col index au_i keeps the keys of parent_id, set_id, sparse_fk, region_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 21704 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: ext_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes); low_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 22470 bytes together, which a count(DISTINCT) of one reads instead of its rows. sparse_fk: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'sparse_fk' lists the rows of each key, so that an equality reads one unit, for about 1.1 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead. Left out: ext_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes); wide_fk (no key list or bitmap within 3% of a unit in 88% of the units; a filter would take up to about 67644 bytes); low_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX au_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
                           option                           | minors 
@@ -84,7 +84,7 @@ FROM unnest(ARRAY['parent_id', 'set_id', 'sparse_fk', 'region_id', 'ext_fk', 'un
 -- a rebuild of the same heap keeps the same columns, and says so again
 REINDEX INDEX au_i;
 NOTICE:  sift_col index au_i keeps the keys of parent_id, set_id, sparse_fk, region_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 21704 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 22470 bytes together, which a count(DISTINCT) of one reads instead of its rows. sparse_fk: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'sparse_fk' lists the rows of each key, so that an equality reads one unit, for about 1.1 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead.
 HINT:  ALTER INDEX au_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT au_option('au_i') AS option, au_minors('au_i') AS minors;
                           option                           | minors 
@@ -115,13 +115,13 @@ REINDEX INDEX au_named;
 NOTICE:  sift_col index "au_named": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
 DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
 HINT:  Add the columns to the index if queries join on them.
-NOTICE:  sift_col index au_named keeps the keys of parent_id, set_id, region_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: sparse_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes).
+NOTICE:  sift_col index au_named keeps the keys of parent_id, set_id, sparse_fk, region_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 9270 bytes together, which a count(DISTINCT) of one reads instead of its rows. sparse_fk: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'sparse_fk' lists the rows of each key, so that an equality reads one unit, for about 1.1 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead.
 HINT:  ALTER INDEX au_named SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT au_option('au_named') AS option;
-                     option                     
-------------------------------------------------
- key_columns=auto: parent_id, set_id, region_id
+                          option                           
+-----------------------------------------------------------
+ key_columns=auto: parent_id, set_id, sparse_fk, region_id
 (1 row)
 
 ALTER INDEX au_off RESET (key_columns);
@@ -135,13 +135,13 @@ REINDEX INDEX au_off;
 NOTICE:  sift_col index "au_off": the foreign key columns ext_fk, wide_fk of "au" are not columns of the index
 DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
 HINT:  Add the columns to the index if queries join on them.
-NOTICE:  sift_col index au_off keeps the keys of parent_id, set_id, region_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 2376 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: sparse_fk (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 75141 bytes).
+NOTICE:  sift_col index au_off keeps the keys of parent_id, set_id, sparse_fk, region_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 9120 bytes together, which a count(DISTINCT) of one reads instead of its rows. sparse_fk: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'sparse_fk' lists the rows of each key, so that an equality reads one unit, for about 1.1 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead.
 HINT:  ALTER INDEX au_off SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT au_option('au_off') AS after_reindex, au_minors('au_off') AS minors;
-                 after_reindex                  | minors 
-------------------------------------------------+--------
- key_columns=auto: parent_id, set_id, region_id | {15}
+                       after_reindex                       | minors 
+-----------------------------------------------------------+--------
+ key_columns=auto: parent_id, set_id, sparse_fk, region_id | {15}
 (1 row)
 
 DROP INDEX au_off, au_named;
@@ -173,8 +173,8 @@ SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 
 DROP INDEX au_old;
 -- no column of the index qualifies: nothing written, no notice
-CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, wide_fk, txt_id, val);
-NOTICE:  sift_col index "au_none": the foreign key columns parent_id, set_id, sparse_fk, ext_fk of "au" are not columns of the index
+CREATE INDEX au_none ON au USING sift_col (id, plain, uniq_id, txt_id, val);
+NOTICE:  sift_col index "au_none": the foreign key columns parent_id, set_id, sparse_fk, ext_fk, wide_fk of "au" are not columns of the index
 DETAIL:  A join to "au_p" on them keeps the normal plan (join_condition) and the scan cannot filter the table by the keys of another table's rows; a column adds a few bytes a row.
 HINT:  Add the columns to the index if queries join on them.
 SELECT au_option('au_none') AS option, au_minors('au_none') AS minors;
@@ -234,7 +234,7 @@ INSERT INTO au_m SELECT i, (hashint4(i) & 2147483647) % 3000, (hashint4(i + 1) &
 FROM generate_series(1, 60000) i;
 CREATE INDEX au_m_i ON au_m USING sift_col (id, a_id, b_id, c_id, d_id, e_id, f_id, g_id, h_id, val) WITH (write_buffer_limit = 4096);
 NOTICE:  sift_col index au_m_i keeps the keys of a_id, b_id, c_id, d_id, e_id, f_id, g_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 21952 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: h_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 3519 bytes).
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 22179 bytes together, which a count(DISTINCT) of one reads instead of its rows. a_id: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'a_id' lists the rows of each key, so that an equality reads one unit, for about 1.1 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead. Left out: h_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 3519 bytes).
 HINT:  ALTER INDEX au_m_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT au_option('au_m_i') AS option;
                            option                           
