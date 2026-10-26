@@ -706,15 +706,13 @@ sig_same(const SiftColSource *src, const SiftColPred *p, int n)
 
 /*
  * Whether the units the zones and summaries keep can be kept for the next begin: an aggregate begins for every morsel of units with the same predicates, and
- * each begin would test its units again, where the answer for a unit does not change. Not for the zone trees of an OR, the point directory (it answers per
+ * each begin would test its units again, where the answer for a unit does not change. Not for the point directory (it answers per
  * begin) or a wide integer (its test runs over the whole segment). The predicates are copied when they differ from those of the last begin, and the bitmaps
- * of every cursor are dropped with them.
+ * of every cursor are dropped with them. The zone trees (an OR) are the entries' of the scan, made once: the same array is the same trees.
  */
 static bool
-keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones)
+keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones)
 {
-	if (nzones > 0)
-		return false;
 	for (int i = 0; i < npreds; i++)
 	{
 		if (sift_colw_is_wide_int(&src->schema->cols[preds[i].col]))
@@ -723,7 +721,7 @@ keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones
 		if ((src->flags & SIFT_COLO_POINTS) && !(src->flags & SIFT_COLO_POINT_ROWS))
 			return false;
 	}
-	if (src->sig_gen > 0 && sig_same(src, preds, npreds))
+	if (src->sig_gen > 0 && src->sigzone == zones && sig_same(src, preds, npreds))
 		return true;
 	if (src->sigcx == NULL)
 		src->sigcx = AllocSetContextCreate(src->mcxt, "sift column keep cache", ALLOCSET_DEFAULT_SIZES);
@@ -748,6 +746,7 @@ keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, int nzones
 		src->sig[i] = (SiftColPred) {preds[i].col, preds[i].op, preds[i].nvals, v};
 	}
 	src->nsig = npreds;
+	src->sigzone = zones;
 	src->sig_gen++;
 	return true;
 }
@@ -827,6 +826,8 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 				sift_col_bit_set(c->cdone, e);
 			br = (PruneRange) {w * 64, Min(e * 64, seg->nsb), c->csetcut, NULL};
 			prune_preds(src, seg, preds, npreds, c->ckeep, &br);
+			for (int i = 0; i < nzones; i++)
+				prune_zone(src, seg, &zones[i], c->ckeep, &br);
 		}
 		c->keep = c->ckeep;
 		c->setcut = c->csetcut;
@@ -910,7 +911,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	for (int i = 0; i < npreds; i++)
 		SIFT_INVARIANT(preds[i].col >= 0 && preds[i].col < src->schema->ncols, "sift_col: predicate on leaf %d of %d", preds[i].col,
 					   src->schema->ncols);
-	cached = keep_cached(src, preds, npreds, nzones);
+	cached = keep_cached(src, preds, npreds, zones);
 	src->ptid = NULL;
 	src->nptid = src->capptid = 0;
 	src->ptid_unsorted = false;
@@ -942,7 +943,7 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 	MemoryContext old;
 	bool		ok = true;
 
-	if (!keep_cached(src, preds, npreds, nzones))
+	if (!keep_cached(src, preds, npreds, zones))
 		return false;
 	MemoryContextReset(src->scan);
 	old = MemoryContextSwitchTo(src->scan);
