@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.4.2 - 2026-10-26
 
 - Fixed: pg_sift: the extension builds against PostgreSQL 19 again: the planner's read of a lookup's plan down to its inputs named `UpperUniquePath`, which 19 folded into `UniquePath`.
 - Fixed: pg_sift: the key-cut test of the few-keys rule (an index cut by the key leaves a few-keys lookup to the scan) counts the keys PostgreSQL expects of the lookup, as the rule itself does, and no more the mean between those and the column's distinct values that prices the scan: a request for one key as a CTE or sub-select of ids (estimated at one row, priced as several) kept the normal plan's price on an index cut by the key, and a statement with a shared CTE took a plan split into one scan per arm, 1.3 to 5 times slower, or a lookup by the index of the table.

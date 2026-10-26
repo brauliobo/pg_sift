@@ -13,9 +13,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](../packaging/)).
 - Docker, Docker Compose, CloudNativePG: [CONTAINERS.md](CONTAINERS.md) (the image recipes are in [packaging/docker/](../packaging/docker/)); a five-minute tour: [QUICKSTART.md](QUICKSTART.md). Supported versions: [SUPPORT.md](SUPPORT.md).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-18`: download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-18-pg-sift_3.4.1-1_amd64.deb`.
+  and `sudo apt install ./postgresql-18-pg-sift_3.4.2-1_amd64.deb`.
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresql18-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.4.1/pg_sift_18-3.4.1-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.4.2/pg_sift_18-3.4.2-1.el9.x86_64.rpm`.
 
 Then, as a superuser: `CREATE EXTENSION pg_sift;` (after installing a newer version: `ALTER EXTENSION pg_sift UPDATE`). `shared_preload_libraries` is not needed for the `sift` index, the `sift_col` index or the `sift_table` access method; only publishing a `sift_table` under `wal_level = logical` needs it ([Replication](#replication)).
 
@@ -205,7 +205,7 @@ Writes go to small write buffers through generic WAL; a background worker (`sift
   - With `sift.col_auto_merge` on, the first scans that vet rows ask the worker to vacuum the table unless it was vacuumed lately: 5 `sift.maintenance_naptime`s, and on PostgreSQL 18 ten times its average VACUUM (an hour-long VACUUM is not repeated by the worker within ten hours). Here the VACUUM before the deletes took 2.4 s; the worker's ran 24 s after the deletes, on the fourth scan, and the next scan vetted 0 rows.
   - A VACUUM that cannot remove the dead rows (long transaction, replication slot, standby with `hot_standby_feedback`) leaves them vetted whatever the trigger does.
 - Free space in a `sift_col` file depends on the rewrite budget (1M rows, 0.87% changed per cycle, 21% in 24 cycles):
-  - `sift.col_auto_merge_wal_pct = 0` (no budget, a rewrite at every VACUUM): the file reaches 2.2 times the live bytes (54 to 55% of blocks free) in 5 cycles and stays, on 3.4.1 and 3.4 alike.
+  - `sift.col_auto_merge_wal_pct = 0` (no budget, a rewrite at every VACUUM): the file reaches 2.2 times the live bytes (54 to 55% of blocks free) in 5 cycles and stays, on 3.4.2 and 3.4 alike.
   - Default 5%: a fresh index stays at 1.2 to 1.3 times (cycles 60 to 240), bursting to 1.5 to 1.75 when a segment is rewritten whole.
   - An index from an old version with a few very large segments does not recover alone: rewriting one costs its size in WAL, the budget refuses it against 5% of the changes' WAL, and VACUUM's space step copies only end-of-file segments that fit `sift.vacuum_rewrite_limit`.
   - To recover space in a maintenance window, either `SET sift.vacuum_rewrite_limit = 4096; VACUUM t;` (MB to move; `sift.col_segments` lists segments, end-of-file ones first; exclusive lock, WAL equal to the bytes moved: 20.2 to 13.4 MB of file for 7.7 MB of WAL in 26 ms, 9.3 MB live), or `REINDEX INDEX CONCURRENTLY` (20.2 to 10.4 MB of file, 10.4 MB of WAL, 0.9 s per million rows with the heap cached; the disk holds both files until the swap).
