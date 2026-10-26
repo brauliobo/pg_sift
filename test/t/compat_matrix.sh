@@ -188,6 +188,8 @@ sift.async_maintenance = off'
 		[ca]=", calendar_columns = 'at'" [pt]=", point_tid_columns = 'g'" [kc]=", key_cut = 'g, n'" [hd]=", order_columns = 'g, n'" [hl]=", hll_columns = 'n'" [dk]=", dict_lookup = on" [rd]=", rollup_dims = 'g, n'" [sc]=", key_columns = 's'" [kp]=", key_columns = 'g'" [ke]=", cube_minmax = false, superunit = 0")
 	declare -A SRC=([ca]="*, timestamp '2026-01-01' + id * interval '1 minute' AS at" [ex]="*, CASE WHEN id % 500 = 0 THEN id END AS z" [dk]="*, 'k' || id AS k" [sc]="*, (id % 40) * 7 AS s")
 	declare -A COLS=([ex]="id, g, n, z" [ca]="id, g, n, at" [dk]="id, g, n, k" [sc]="id, g, n, s")
+	# the minor the data stamps beyond the setting: a key_columns leaf also gets the key table of a segment (22)
+	declare -A STAMP=([kp]=22)
 	docsonly=" h4 ke cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	refused=" cm ca rd sc su rn dk kp pt kc hd ex hl df "
 	for f in "${formats[@]}"; do
@@ -198,7 +200,7 @@ sift.async_maintenance = off'
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'y' FROM generate_series(20401, 20600) i" >/dev/null || bail "$ref $fmt docs"
 		if [[ $refused == *" $fmt "* ]]; then
-			check "$ref: the $fmt clone is stamped minor $minor" test "$(q "SELECT max(format) FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" == "$minor"
+			check "$ref: the $fmt clone is stamped minor ${STAMP[$fmt]:-$minor}" test "$(q "SELECT max(format) FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" == "${STAMP[$fmt]:-$minor}"
 		else
 			same "$ref: the $fmt clone is written at a minor the release reads (at most $minor)" "$(q "SELECT max(format) <= $minor AND min(format) >= 3 FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" t
 		fi
@@ -271,7 +273,8 @@ sift.async_maintenance = off'
 		check "$ref reads the rows of tbl_wr, the buffer of format 11, as this tree does" test "$(q "$WRQ")" == "$wrwant"
 		check "$ref writes to tbl_wr and promotes its buffers" q "INSERT INTO tbl_wr VALUES (3, 'w')" "VACUUM tbl_wr"
 		check "$ref reads the wide row intact after the promotion" test "$(q "SELECT id, length(v), md5(v) FROM tbl_wr ORDER BY id" | tr '\n' ' ')" == "1|5000000|$(q "SELECT md5(repeat('a', 5000000))") 2|5|$(q "SELECT md5('short')") 3|1|$(q "SELECT md5('w')") "
-		check "$ref still serves after the refusals of the tables" test "$(q "SELECT count(*) FROM tbl")" -gt 0
+		# tbl itself was promoted by this tree's VACUUM, at the minor it writes now (the cube minimum and maximum, 7), which the release refuses too
+		check "$ref still serves after the refusals of the tables" test "$(q "SELECT count(*) FROM tbl_h")" -gt 0
 	fi
 	node_stop mx
 

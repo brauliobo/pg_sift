@@ -47,7 +47,9 @@ sift.async_maintenance = off'
 		check 'real 3.1 minor 4 index null predicates equal the heap' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldseg}")" == "$want"
 		check 'real 3.1 table groups preserve JSON null answers' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldtbl}")" == "$want"
 		sql legacy "VACUUM FULL oldtbl" >/dev/null || bail '3.1 table rewrite'
-		check 'VACUUM FULL upgrades 3.1 groups to minor 6' test "$(sql legacy "SELECT min(format) FROM sift.table_segments('oldtbl') WHERE kind = 'columns'")" == 6
+		# the minor of a table's groups is what this tree writes (7 with the minimum and maximum of the cube, 22 where a key table fits): the groups of 3.1 are rewritten above minor 4
+		tmin=$(sql legacy "SELECT min(format) FROM sift.table_segments('oldtbl') WHERE kind = 'columns'")
+		check 'VACUUM FULL upgrades 3.1 groups above minor 4' test "$tmin" -gt 4
 		check 'rewritten 3.1 groups answer null predicates exactly' test "$(sql legacy "SET seq_page_cost = 10000" "${QUERY//oldcol/oldtbl}")" == "$want"
 	fi
 	check "$ref write-buffer null predicates equal the heap" test "$(sql legacy "SET seq_page_cost = 10000" "$QUERY")" == "$want"
@@ -89,7 +91,7 @@ sift.async_maintenance = off'
 		diag "3.1 refusal: $err"
 		check '3.1 refuses a minor 12 index (complete kinds and the default sections) with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
 		err=$(sql legacy "SELECT count(*) FROM oldtbl" 2>&1)
-		check '3.1 refuses minor 6 table groups' grep -q 'format 1.6' <<<"$err"
+		check "3.1 refuses minor $tmin table groups" grep -q "format 1.$tmin" <<<"$err"
 		check '3.1 reads an index written with key_columns on a bigint column under the setting 4' test "$(sql legacy "SELECT sift.col_verify('setlow_idx', true)" "SET sift.enable_agg = on" "$SETQ" | tail -n 1)" == "$setwant"
 		err=$(sql legacy "SET enable_seqscan = off" "SELECT sift.col_verify('sethigh_idx', false)" 2>&1)
 		check '3.1 refuses a minor 12 set summary index with a format error and REINDEX hint' test "$(grep -c 'format 1.12\|REINDEX' <<<"$err")" -ge 2
