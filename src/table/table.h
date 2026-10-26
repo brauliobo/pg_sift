@@ -501,6 +501,8 @@ extern bool sift_tbl_paths_complete(Relation rel, SiftTblRel *st);
  */
 extern void sift_tbl_path_stats(Relation rel, SiftTblRel *st, SiftColLeafStats *ls, bool *wovf, bool *wjnull);
 extern const SiftColSchema *sift_tbl_seg_schema(Relation rel, SiftTblRel *st, const SiftSegEntry *e);
+/* segments in the order of their first superblock */
+extern int	sift_tbl_cmp_sb_lo(const void *a, const void *b);
 /* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */
 extern SiftColBatch *sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt);

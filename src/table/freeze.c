@@ -441,10 +441,10 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 	return n;
 }
 
-static int
-cmp_sb_lo(const void *a, const void *b)
+int
+sift_tbl_cmp_sb_lo(const void *a, const void *b)
 {
-	return SIFT_CMP3(((const SiftSegEntry *) a)->sb_lo, ((const SiftSegEntry *) b)->sb_lo);
+	return pg_cmp_u32(((const SiftSegEntry *) a)->sb_lo, ((const SiftSegEntry *) b)->sb_lo);
 }
 
 /*
@@ -466,7 +466,7 @@ merge_adjacent(Relation rel, SiftTblRel *st, SiftSegEntry *sel, int n)
 	for (int i = 0; i < st->dir.nsegs; i++)
 		if (st->dir.segs[i].kind == SIFT_SEG_IMMUTABLE && schema_of(rel, st, &st->dir.segs[i])->hash == l->schema->hash)
 			all[na++] = st->dir.segs[i];
-	qsort(all, na, sizeof(SiftSegEntry), cmp_sb_lo);
+	qsort(all, na, sizeof(SiftSegEntry), sift_tbl_cmp_sb_lo);
 	for (int i = 0; i < na && lo < 0; i++)
 		if (n == 1 ? all[i].gen == sel[0].gen : all[i].bytes < small && i + 1 < na && all[i + 1].bytes < small)
 			lo = i;

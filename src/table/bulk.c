@@ -185,12 +185,6 @@ bulk_same_layout(SiftTblBulk *b, Relation old, SiftTblRel *ost)
 	return true;
 }
 
-static int
-cmp_sb_lo(const void *a, const void *b)
-{
-	return pg_cmp_u32(((const SiftSegEntry *) a)->sb_lo, ((const SiftSegEntry *) b)->sb_lo);
-}
-
 /* The live rows of the units of segment e that keep accepts, decoded and re-keyed: no tuple is formed */
 static void
 bulk_segment(SiftTblBulk *b, Relation old, const SiftSegEntry *e, SiftTblKeep keep, void *arg)
@@ -264,7 +258,7 @@ sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, SiftTblKeep ke
 	for (int i = 0; i < ost->dir.nsegs; i++)
 		if (ost->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
 			segs[n++] = ost->dir.segs[i];
-	qsort(segs, n, sizeof(SiftSegEntry), cmp_sb_lo);
+	qsort(segs, n, sizeof(SiftSegEntry), sift_tbl_cmp_sb_lo);
 	for (int i = 0; i < n; i++)
 		bulk_segment(b, old, &segs[i], keep, arg);
 	for (int i = 0; i < ost->nwbuf; i++)

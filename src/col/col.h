@@ -556,7 +556,6 @@ typedef struct SiftColVisibility
 	void	   *arg;
 } SiftColVisibility;
 
-extern void sift_col_set_visibility(SiftColSource *src, const SiftColVisibility *vis);
 
 extern int	sift_col_ncols(const SiftColSource *src);
 extern const SiftColDef *sift_col_def(const SiftColSource *src, int col);

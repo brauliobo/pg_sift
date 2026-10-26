@@ -64,12 +64,6 @@ vis_counters(void *arg, int64 *heap_pages)
 	v->heap_pages = 0;
 }
 
-void
-sift_col_set_visibility(SiftColSource *src, const SiftColVisibility *vis)
-{
-	src->visibility = *vis;
-}
-
 static void
 check_access(Relation heap, uint32 flags)
 {
