@@ -29,7 +29,9 @@
 	X(VERDICT_HITS, "verdict_cache_hits", "statements with a shared CTE planned as the cached choice between it and its inline plan said, without the others") \
 	X(VERDICT_MISSES, "verdict_cache_misses", "statements with a shared CTE planned in full for the choice (no verdict cached, or one due to be checked)") \
 	X(VERDICT_FLIPS, "verdict_cache_flips", "of those, the plans in full that chose the other plan than the cached verdict") \
-	X(VERDICT_SHARED, "verdict_cache_shared_hits", "of the hits, those on a verdict that another backend made (sift.verdict_cache_kb)")
+	X(VERDICT_SHARED, "verdict_cache_shared_hits", "of the hits, those on a verdict that another backend made (sift.verdict_cache_kb)") \
+	X(LEAF_BUILT, "leaf_stats_built", "indexes whose leaf statistics this backend folded from the zones of the units (the first plan over an index, or after it changed)") \
+	X(LEAF_SHARED, "leaf_stats_shared", "indexes whose leaf statistics this backend took from another backend (sift.col_leaf_cache_kb)")
 
 typedef enum SiftStat
 {

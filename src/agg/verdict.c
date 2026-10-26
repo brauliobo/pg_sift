@@ -33,7 +33,6 @@
 #include "nodes/queryjumble.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
-#include "storage/dsm_registry.h"
 #include "storage/lock.h"
 #include "storage/spin.h"
 #include "utils/guc_tables.h"
@@ -43,6 +42,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg_int.h"
+#include "col/dsmreg.h"
 #include "agg/plan_int.h"
 #include "agg/stats.h"
 
@@ -99,14 +99,6 @@ typedef struct VerdictShm
 	VerdictShmEnt ents[VSHM_MAX_SETS][VSHM_WAYS];
 } VerdictShm;
 
-#if PG_VERSION_NUM >= 190000
-#define VSHM_INIT_ARGS		void *ptr, void *arg
-#define VSHM_GET(init, found)	GetNamedDSMSegment(VSHM_NAME, sizeof(VerdictShm), init, found, NULL)
-#else
-#define VSHM_INIT_ARGS		void *ptr
-#define VSHM_GET(init, found)	GetNamedDSMSegment(VSHM_NAME, sizeof(VerdictShm), init, found)
-#endif
-
 /* the name carries the layout: a library of another one, loaded by new backends while old ones run, meets a segment it does not know as a size or a name that does not match */
 #define VSHM_NAME		"sift_agg_verdicts_4"
 
@@ -132,63 +124,13 @@ verdict_test_gate(void)
 #endif
 
 static void
-vshm_init(VSHM_INIT_ARGS)
+vshm_init(SIFT_DSM_INIT_ARGS)
 {
 	VerdictShm *s = ptr;
 
 	memset(s, 0, sizeof(*s));
 	SpinLockInit(&s->mutex);
 	s->nsets = Max(1, Min(VSHM_MAX_SETS, (int) ((Size) sift_verdict_cache_kb * 1024 / (sizeof(VerdictShmEnt) * VSHM_WAYS))));
-}
-
-/*
- * The table of the registry, created by the first backend that asks. A cache must not turn into an error: whatever fails here (no room in /dev/shm, no
- * more segments, a segment of another size) is caught in a subtransaction, which also gives back the locks the registry
- * holds, and the backend goes without the table.
- */
-static VerdictShm *
-vshm_attach(void)
-{
-	MemoryContext cx = CurrentMemoryContext;
-	ResourceOwner owner = CurrentResourceOwner;
-	VerdictShm *volatile s = NULL;
-	bool		found;
-
-	/* a subtransaction cannot start where there is no transaction or a parallel operation; the next statement of the backend tries again */
-	if (!IsTransactionState() || IsInParallelMode())
-		return NULL;
-	BeginInternalSubTransaction(NULL);
-	MemoryContextSwitchTo(cx);
-	PG_TRY();
-	{
-#ifdef SIFT_TESTING
-		if (sift_test_verdict_fail)
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: test: the table of the shared verdicts fails")));
-#endif
-		s = VSHM_GET(vshm_init, &found);
-		ReleaseCurrentSubTransaction();
-		MemoryContextSwitchTo(cx);
-		CurrentResourceOwner = owner;
-	}
-	PG_CATCH();
-	{
-		ErrorData  *e;
-
-		MemoryContextSwitchTo(cx);
-		e = CopyErrorData();
-		FlushErrorState();
-		RollbackAndReleaseCurrentSubTransaction();
-		MemoryContextSwitchTo(cx);
-		CurrentResourceOwner = owner;
-		vshm_failed = true;
-		s = NULL;
-		ereport(LOG,
-				(errmsg("sift: the choices of the planner are not shared with other backends: %s", e->message),
-				 errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set sift.verdict_cache_kb to 0.")));
-		FreeErrorData(e);
-	}
-	PG_END_TRY();
-	return s;
 }
 
 /* NULL where the table is off or not had */
@@ -198,7 +140,11 @@ vshm_get(void)
 	if (sift_verdict_cache_kb <= 0 || vshm_failed)
 		return NULL;
 	if (vshm == NULL)
-		vshm = vshm_attach();
+#ifdef SIFT_TESTING
+		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.verdict_cache_kb", sift_test_verdict_fail);
+#else
+		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.verdict_cache_kb", false);
+#endif
 	return vshm;
 }
 

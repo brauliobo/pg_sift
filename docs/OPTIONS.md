@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 100 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1311,6 +1311,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on. A b-tree is still faster on the same queries (15 us and 140 us against 82 us and 1.05 ms).
 
+#### sift.col_leaf_cache_kb
+
+`sift_col` · default · since 3.5 · default 4096 kB
+
+- **What it does:** a new backend plans over a sift_col index without reading the zones of all its units: the first backend that plans folds them into the statistics of the planner and keeps them for the others
+- **Gain:** planning of the first statement of a new backend over an index of 10,000 units and 6 leaves (2,000,000 rows, key_cut): 9.4 ms and 2,494 buffers to 0.9 ms and 213 once another backend has planned (17 ms and 2,284 reads for the very first after a start); the work grows with the units and the leaves, a new connection to an index of 63,000 units and some forty leaves paid 100 to 800 ms
+- **Impact:** index size: -; build, merge and writes: -; other: one table for the server, whatever the number of backends: the statistics of an index are about 33 kB for each integer leaf and 0.4 kB for the others, 4 MB by default (256 MB at most); where it cannot be allocated the backend logs once and folds them itself; the size is taken when the first backend allocates it (a restart to change it); the record of an index is read again from the zones when its segments or options change
+- **When:** Servers whose clients connect often (a pool that resets its sessions, an application that opens a connection for each request) and read large sift_col indexes: the planning of the first statement of each connection. The first backend after a start of the server, and after a merge, a rewrite or a REINDEX of the index, folds the statistics as before.
+- **Default:** 4096 kB — On: 4 MB of shared memory, allocated by the first backend that needs it, and a copy of a record (0.2 ms for an index of six leaves) in place of the fold; the statistics are the same numbers, so the plans do not change.
+- **Turn off:** SET sift.col_leaf_cache_kb = 0 (superuser; postgresql.conf for all backends): each backend then folds the statistics of every index it plans over once.
+- **Upgrade from 3.4:** new in 3.5
+- **Advice:** Leave at the default. 0 turns the sharing off (each backend then folds the statistics of an index once, as before); more room helps only a server with indexes of many integer leaves (a record is 33 kB for each).
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2050,7 +2063,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: `sift.agg_par_min_units`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
+No default changed since 3.4; new: `sift.agg_par_min_units`, `sift.col_leaf_cache_kb`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
@@ -2062,6 +2075,7 @@ No default changed since 3.4; new: `sift.agg_par_min_units`, `sift_col(key_table
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
 | `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
+| `sift.col_leaf_cache_kb` | new | 4096 kB |  | new in 3.5 |
 <!-- sift-upgrade:end -->
 
 ## NOTICE texts

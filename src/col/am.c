@@ -28,7 +28,9 @@
 
 #include "core/sift.h"
 #include "bm25/am.h"
+#include "agg/stats.h"
 #include "col/am.h"
+#include "col/leafshm.h"
 #include "col/build.h"
 #include "col/seg.h"
 #include "col/point.h"
@@ -330,6 +332,11 @@ sift_col_init(void)
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_leaf_cache_kb",
+							"Shared memory, for all backends together, that keeps what the zones of the units of a sift_col index say to the planner (a record for each leaf and a sample of the unit zones), so that a new backend does not read them all (0: off).",
+							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), not its size. A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
+							&sift_col_leaf_cache_kb, 4096, 0, 262144,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_format_minor",
 							"Column format minor of the segments written (15, the newest 3.3 writes, by default): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
 							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
@@ -1095,42 +1102,52 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		const SiftCPaggSpec *spec = &sift_col_rel(index)->pagg;
 		SiftColZones *zs = zones_new(d);
 		uint64		nunits = sift_cseg_dir_units(dir),
-					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS);
+					census_units = sift_limit(pre_census_units, PRE_CENSUS_UNITS),
+					shared_stamp;
 
 		for (int c = 0; c < d->ncols; c++)
 			sift_col_leaf_stats_init(&st[c]);
-		for (int i = 0; i < dir->nsegs; i++)
+		/* the statistics of the segments are folded once for the server: the first backend that plans keeps them for the others (col/leafshm.c) */
+		shared_stamp = stamp * 31 + census_units;
+		if (sift_col_leafshm_read(index->rd_locator.relNumber, shared_stamp, d->ncols, st, pre, zs))
+			sift_stat_add(SIFT_STAT_LEAF_SHARED, 1);
+		else
 		{
-			SiftColSegment *seg;
-			SiftCPaggCensus census;
-			double		w;
-
-			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
-				continue;
-			seg = sift_cseg_open(index, &dir->segs[i], cx);
-			for (int c = 0; c < d->ncols; c++)
-				sift_cseg_leaf_stats(seg, c, &st[c]);
-			sift_cseg_zone_sample(seg, zs);
-			sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
-			/* the units counted stand for the units of the segment */
-			w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
-			pre->units += census.units * w;
-			for (int k = 0; k < spec->ndims; k++)
+			for (int i = 0; i < dir->nsegs; i++)
 			{
-				pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
-				pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
-			}
-			for (int k = 0; k < spec->nrollups; k++)
-				if (spec->rollup[k].list >= 0)
-					pre->roll[spec->rollup[k].list] += census.roll[k] * w;
-				else
-					pre->rows += census.roll[k] * w;
-			sift_cseg_close(seg);
-		}
-		for (int i = 0; i < dir->nsegs; i++)
-			if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
+				SiftColSegment *seg;
+				SiftCPaggCensus census;
+				double		w;
+
+				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+					continue;
+				seg = sift_cseg_open(index, &dir->segs[i], cx);
 				for (int c = 0; c < d->ncols; c++)
-					st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
+					sift_cseg_leaf_stats(seg, c, &st[c]);
+				sift_cseg_zone_sample(seg, zs);
+				sift_cseg_pre_census(seg, spec, sift_col_format_minor, Max(PRE_CENSUS_MIN, (uint64) census_units * seg->nsb / Max(nunits, 1)), &census);
+				/* the units counted stand for the units of the segment */
+				w = census.units > 0 ? (double) seg->nsb / census.units : 0.0;
+				pre->units += census.units * w;
+				for (int k = 0; k < spec->ndims; k++)
+				{
+					pre->dim[spec->dim[k].leaf] += census.dim[k] * w;
+					pre->mm[spec->dim[k].leaf] += census.mm[k] * w;
+				}
+				for (int k = 0; k < spec->nrollups; k++)
+					if (spec->rollup[k].list >= 0)
+						pre->roll[spec->rollup[k].list] += census.roll[k] * w;
+					else
+						pre->rows += census.roll[k] * w;
+				sift_cseg_close(seg);
+			}
+			for (int i = 0; i < dir->nsegs; i++)
+				if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE && dir->segs[i].format < SIFT_COL_FORMAT_KINDS)
+					for (int c = 0; c < d->ncols; c++)
+						st[c].nokinds |= sift_col_def_has_kinds(&d->cols[c]);
+			sift_stat_add(SIFT_STAT_LEAF_BUILT, 1);
+			sift_col_leafshm_write(index->rd_locator.relNumber, shared_stamp, d->ncols, st, pre, zs);
+		}
 		MemoryContextDelete(cx);
 		zones_shrink(zs);
 		e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
