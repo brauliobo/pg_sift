@@ -5,6 +5,7 @@
 #   make bench-col         the same for the column kernels (src/col/kern*.c)
 #   make bench-shred       the shredder kernels (src/col/shred_kern*.c) against their composition from the shared slots
 #   make SANITIZE=1 test   ASan + UBSan build (into $(OUT)-san)
+#   make colodd [R=20]     the column kernels at lengths 0..4097 around every vector width, on exact-size buffers (use SANITIZE=1)
 OUT     ?= /tmp/sift-kernels-tools
 N       ?= 2
 
@@ -21,10 +22,16 @@ include ../tools.mk
 $(OUT)/bench: $(OUT)/bench.o $(OUT)/bench_col.o $(OUT)/bench_shred.o $(OUT)/alt.o $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+$(OUT)/colodd: $(OUT)/colodd.o $(OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+colodd: $(OUT)/colodd
+	$(OUT)/colodd $(R)
+
 bench-col: $(OUT)/bench
 	$(FLOCK) $(OUT)/bench col
 
 bench-shred: $(OUT)/bench
 	$(FLOCK) $(OUT)/bench shred
 
-.PHONY: bench-col bench-shred
+.PHONY: bench-col bench-shred colodd
