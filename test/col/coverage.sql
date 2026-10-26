@@ -125,16 +125,19 @@ END $$;
 CREATE FUNCTION coverage.scans(control text, qs text[]) RETURNS boolean LANGUAGE sql AS $$
 	SELECT coverage.preagg_units(control) > 0 AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.preagg_units(q) <> 0) $$;
 
--- a SCROLL cursor over the table: FETCH LAST and five FETCH PRIOR return the last rows of the forward scan, in reverse
+-- a SCROLL cursor over the table: FETCH LAST and five FETCH PRIOR return the last rows of the forward scan, in reverse (the forward scan is the one of a second
+-- cursor: the order of a query without ORDER BY is the scan's, which an aggregate over the table need not keep)
 CREATE FUNCTION coverage.scroll_back(tbl text) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE c refcursor; fwd int[]; back int[] := '{}'; r record; i int;
+DECLARE f refcursor; c refcursor; fwd int[] := '{}'; back int[] := '{}'; r record; i int;
 BEGIN
-	EXECUTE format('SELECT array_agg(id) FROM (SELECT id FROM %s) x', tbl) INTO fwd;
+	OPEN f FOR EXECUTE format('SELECT id FROM %s', tbl);
+	LOOP FETCH f INTO r; EXIT WHEN NOT FOUND; fwd := fwd || r.id; END LOOP;
+	CLOSE f;
 	OPEN c SCROLL FOR EXECUTE format('SELECT id FROM %s', tbl);
 	FETCH LAST FROM c INTO r; back := back || r.id;
 	FOR i IN 1..5 LOOP FETCH PRIOR FROM c INTO r; back := back || r.id; END LOOP;
 	CLOSE c;
-	RETURN back = ARRAY(SELECT fwd[cardinality(fwd) - g] FROM generate_series(0, 5) g);
+	RETURN cardinality(fwd) > 5 AND back = ARRAY(SELECT fwd[cardinality(fwd) - g] FROM generate_series(0, 5) g);
 END $$;
 
 -- a reader in a transaction of the isolation level iso sees the same rows whatever the writer (a second session) does, before and after
