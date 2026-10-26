@@ -440,7 +440,8 @@ sift_colb_plan_runs(Relation heap, Relation index, IndexInfo *info, bool may_dec
 				bytes,
 				runs;
 	ColBuild   *b;
-	Snapshot	snap = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
+	/* as the scan of the build: heapam asserts SnapshotAny with the horizon it takes for a build that is not concurrent, a snapshot of the statement otherwise */
+	Snapshot	snap = info->ii_Concurrent ? (ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot()) : SnapshotAny;
 	int			n = (int) Min(nsbs, PLAN_PROBE_SBS),
 				want = Max(info->ii_ParallelWorkers, 0),
 				slots;
