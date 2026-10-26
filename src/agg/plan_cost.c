@@ -133,7 +133,7 @@
 #define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
 #define AGG_WIDE_COPY		5.0		/* ... when its readers only copy the entry (array_agg, string_agg, count of the column, a group key): 0 to 100 ns an entry measured over numeric images, 128-bit numerics, uuid, interval and bytea, 1,000,000 rows in 4 groups (a list of 550,000 two-decimal values 54 ms more than one of 1,000 values) */
 #define AGG_WIDE_KEYSUM		25.0	/* ... and a sum or average of the column is added in the same scan (42 ns an entry more than the key alone) */
-#define AGG_WIDE_COLD		35.0	/* a row of such an image leaf, read by a worker: the unit's dictionary of images is inflated (zstd) and indexed in the worker, whose cache is empty, where the backend that repeats a scan finds it decoded (2,000,000 rows of almost unique values: 24 ns inflated, 6 ns of fresh pages, 3 ns indexed, a row) */
+#define AGG_WIDE_COLD		35.0	/* a row of such an image leaf, read by a worker: the unit's dictionary of images is inflated (zstd) and indexed in the worker, whose cache is empty, where the backend that repeats a scan finds it decoded (2,000,000 rows of almost unique values: 24 ns inflated, 6 ns of fresh pages, 3 ns indexed, a row; 20 ns with 30,000 values over 300,000 rows: the 0.13 power of the values over 2,000,000, as the dictionaries fit the cache) */
 #define AGG_WIDE_BIG		10.0	/* ... and, for each million distinct values the column has past 2,000,000, this many more up to AGG_WIDE_BIG_MAX: the dictionary of a segment outgrows the cache and a row is a miss for its entry (975 cycles a row in one segment of 10,000,000 almost unique values, 573 in 2,000,000), so the parallel scan of 5,000,000 or 10,000,000 such rows takes 1.5 to 2.3 times as long as PostgreSQL's plan with 4 or 8 workers */
 #define AGG_WIDE_BIG_MAX	40.0
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
@@ -1831,7 +1831,7 @@ wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
 {
 	double		nd = leaf_distinct_frac(c, leaf, k->rows) * k->rows;
 
-	return AGG_WIDE_COLD + Min(AGG_WIDE_BIG_MAX, AGG_WIDE_BIG * Max(nd - 2000000.0, 0.0) / 1000000.0);
+	return AGG_WIDE_COLD * pow(Min(nd / 2000000.0, 1.0), 0.13) + Min(AGG_WIDE_BIG_MAX, AGG_WIDE_BIG * Max(nd - 2000000.0, 0.0) / 1000000.0);
 }
 
 /* the entries of it, in operators */
