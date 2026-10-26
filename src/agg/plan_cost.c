@@ -110,9 +110,10 @@
 #define AGG_ARM_TUPLE		150.0	/* a tuple through an arm of a two level query: its cell started or added to, and flushed into the outer groups when the row ends (35 ns measured) */
 #define AGG_ARM_HIDDEN		330.0	/* ... in an arm with hidden keys: the cells of the row are numbered in a table of their own (70 ns) */
 #define AGG_MERGE_GROUP		8.0		/* a group of a partial table of a worker: dumped, sent, merged */
+#define AGG_MERGE_KEY		25.0	/* ... and, when the workers are priced, each key of it: 35 ns with one key over 30,000 groups and 85 ns with three over 100,000 per table measured (the CPU two workers add beyond their 3.35 ms start) */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
-#define AGG_START_MS		500.0	/* a millisecond in this path's estimates, for starting workers: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
+#define AGG_START_MS		750.0	/* a millisecond in this path's estimates, for starting workers: a scan of 4 to 13 ms (1,000,000 rows, 9 to 30,000 groups) took 0.6 to 1.0 ns an operator, 500 to 830 units a ms, and the workers add 3.35 ms and 6 to 16 ms of CPU for no wall: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
 #define AGG_CUT_SHARE		0.5		/* the share of the index that the keys of a lookup leave, at least, for the normal plan to keep its price: a table of a few units reads them all whatever the key */
@@ -2304,7 +2305,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	if (priced)
 		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
 	k->scan_cost = (k->scan_cost + arm - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
-		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
+		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * (AGG_MERGE_GROUP + (priced ? s->nkeys * AGG_MERGE_KEY : 0.0)) * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
