@@ -87,6 +87,15 @@ typedef int SiftTamOptions;
 #define SIFT_TAM(fn)	fn
 #endif
 
+/* The path of a DISTINCT or GROUP BY over sorted input: UpperUniquePath in 17 and 18, UniquePath in 19, which dropped the semi-join form of that name */
+#if PG_VERSION_NUM >= 190000
+typedef UniquePath SiftSortedUniquePath;
+#define sift_is_sorted_unique_path(p)	IsA(p, UniquePath)
+#else
+typedef UpperUniquePath SiftSortedUniquePath;
+#define sift_is_sorted_unique_path(p)	IsA(p, UpperUniquePath)
+#endif
+
 /* A tuple descriptor built by hand is finalized before its first use (19) */
 #if PG_VERSION_NUM >= 190000
 #define sift_tupdesc_finalize(desc)	TupleDescFinalize(desc)

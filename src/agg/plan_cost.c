@@ -672,8 +672,8 @@ child_keys(PlannerInfo *root, Path *p)
 			p = ((SubqueryScanPath *) p)->subpath;
 		else if (IsA(p, ProjectionPath))
 			p = ((ProjectionPath *) p)->subpath;
-		else if (IsA(p, UpperUniquePath))
-			p = ((UpperUniquePath *) p)->subpath;
+		else if (sift_is_sorted_unique_path(p))
+			p = ((SiftSortedUniquePath *) p)->subpath;
 		else if (IsA(p, SortPath))
 			p = ((SortPath *) p)->subpath;
 		else
