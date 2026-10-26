@@ -119,7 +119,7 @@ sift_maint_truncate(Relation index, int elevel)
 
 /* A coarse candidate screen only; sift_store_relocate plans exact extent reservations with the allocator before accepting a move. */
 #define SPACE_MIN_RUN		16
-#define SPACE_ROUNDS		16		/* rounds of one VACUUM: at most this many times sift.vacuum_rewrite_limit is copied */
+#define SPACE_ROUNDS		64		/* rounds of one VACUUM: at most this many times sift.vacuum_rewrite_limit is copied */
 
 static bool
 space_worth(int64 blocks, BlockNumber nblocks)
@@ -264,6 +264,55 @@ space_move(Relation rel, SiftWriteTarget *wt, const void *arg)
 	sift_log_maint(rel, "relocated", GetCurrentTimestamp(), move->entry->ndocs, fresh.bytes);
 }
 
+/* The shift of the segment that ends the file: its highest runs go down into the free blocks below them, as far as the allowance reaches */
+typedef struct SpaceShift
+{
+	const SiftSegEntry *entry;
+	SiftExtent *release;
+	int			nrelease;
+	uint64		budget;
+	uint64		written;
+} SpaceShift;
+
+static void
+space_shift(Relation rel, SiftWriteTarget *wt, const void *arg)
+{
+	SpaceShift *shift = (SpaceShift *) arg;
+	SiftSegEntry fresh;
+	SiftMaintSwitch sw = {.old = &shift->entry->gen,.nold = 1,.neu = &fresh};
+	TimestampTz start = GetCurrentTimestamp();
+
+	shift->written = sift_store_shift(rel, wt, shift->entry, shift->budget, &fresh, &shift->release, &shift->nrelease);
+	if (shift->written == 0)
+		return;
+	sift_wt_publish(wt, &(SiftDirChange) {.fn = sift_maint_switch_segments,.arg = &sw,.release = shift->release,
+					.nrelease = shift->nrelease,.extra = InvalidBuffer});
+	sift_log_maint(rel, "shifted", start, shift->entry->ndocs, fresh.bytes);
+}
+
+/*
+ * No segment fits the allowance whole (the one that ends the file is larger than it): the highest runs of that one go down a round at a time,
+ * when the free blocks below it are worth the lock. An index only; the segment keeps its generation and the cached state of a backend
+ * holds no block, and the relation lock keeps every reader out.
+ */
+static bool
+space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg, uint64 *budget)
+{
+	const SiftSegEntry *e;
+	SpaceShift shift;
+
+	if (rel->rd_rel->relkind != RELKIND_INDEX || snap->nsegs == 0 || (e = space_entry(snap, seg[0].gen)) == NULL ||
+		e->kind != SIFT_SEG_IMMUTABLE || !space_worth(sift_store_free_below(rel, seg[0].end, SPACE_MIN_RUN), snap->meta.high_water))
+		return false;
+	shift = (SpaceShift) {.entry = e,.budget = *budget};
+	if (run_step(rel, false, space_shift, &shift) != SIFT_STEP_DONE || shift.written == 0)
+		return false;
+	*budget -= Min(shift.written, *budget);
+	space_copied += shift.written;
+	SIFT_SPACE_TEST_POINT(4);
+	return true;
+}
+
 static void
 space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 {
@@ -282,7 +331,11 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 			break;
 		n = space_plan(rel, snap, budget, seg, &gain, &limit);
 		if (n == 0)
-			break;
+		{
+			if (!space_shift_round(rel, snap, seg, &budget))
+				break;
+			continue;
+		}
 		for (int i = 0; i < n; i++)
 		{
 			const SiftSegEntry *e;

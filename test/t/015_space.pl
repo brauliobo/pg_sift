@@ -85,6 +85,27 @@ for my $kind (qw(col tbl))
 	}
 }
 
+# A segment larger than the allowance moves down a round at a time: the crash after the first round leaves the segment whole, its header and extents either those of
+# before or after, and the next VACUUM goes on
+subtest 'col shift crash after a round' => sub {
+	fixture('col');
+	$primary->safe_psql('postgres', "SELECT sift.col_merge('s_col', true)");
+	my $expected = digest($primary);
+	my $before = size($primary, 'col');
+	my $offset = -s $primary->logfile;
+	system("$ENV{SIFT_REPO}/scripts/leakcheck.sh", 'expect', 1, 'terminated by signal 9');
+	my ($out, $err) = ('', '');
+	my $rc = $primary->psql('postgres', "SET sift.vacuum_rewrite_limit = 1; SET sift.test_space_crash = 4; VACUUM s", stdout => \$out, stderr => \$err);
+	ok($rc != 0, 'the injected boundary killed VACUUM');
+	ok($primary->log_contains(qr/sift test: space crash phase 4/, $offset), 'the boundary after the first round was reached');
+	$primary->wait_for_log(qr/database system is ready to accept connections/, $offset);
+	healthy($primary, 'col', $expected);
+	$primary->safe_psql('postgres', 'SET sift.vacuum_rewrite_limit = 1; VACUUM s');
+	is($primary->safe_psql('postgres', "SELECT sift._test_check('s_col')"), '0', 'VACUUM also reclaimed any crash orphans');
+	healthy($primary, 'col', $expected);
+	cmp_ok(size($primary, 'col'), '<=', $before, 'the file did not grow');
+};
+
 for my $kind (qw(col tbl))
 {
 	subtest "$kind primary cursor and disabled truncation" => sub {

@@ -200,6 +200,10 @@ extern BlockNumber sift_store_relocated_block(BlockNumber blk, const SiftExtent 
 extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, const SiftExtent *old, int n,
 								 BlockNumber limit, uint64 budget, SiftSegEntry *fresh, SiftRelocatePage relocate_page);
 
+/* Moves the highest runs of an immutable segment of an index, up to budget, into free runs below them; the header page is written again at the lowest free block. Zero if no free run lies below. Publish the entry and the released runs together with sift_wt_publish. */
+extern uint64 sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, uint64 budget, SiftSegEntry *fresh,
+							   SiftExtent **release, int *nrelease);
+
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
 extern uint64 sift_store_held_blocks(Relation index);

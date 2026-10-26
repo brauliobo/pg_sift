@@ -232,8 +232,8 @@ define_gucs(void)
 							 "Testing: error after publishing an open write buffer relocation.",
 							 NULL, &sift_test_space_error, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_space_crash",
-							"Testing: kill the backend after recycling (1), relocation publication (2), or lowering high_water (3).",
-							NULL, &sift_test_space_crash, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: kill the backend after recycling (1), relocation publication (2), lowering high_water (3), or the publication of a shift (4).",
+							NULL, &sift_test_space_crash, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_phase_gate",
 							"Testing: a CREATE INDEX waits to enter each phase for the advisory lock this number plus the phase (0 = no gate).",
 							NULL, &sift_test_phase_gate, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

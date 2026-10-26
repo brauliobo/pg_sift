@@ -1,6 +1,7 @@
 -- VACUUM of a sift_col index and of a BM25 index with deleted rows in units of the most rows, 74,496 (14 of them in 1,042,944 rows): a table of one column that is NULL in every row
 -- has 291 rows on a heap page, the most, so its units of 256 pages hold 74,496, and the liveness bits of such a unit (9,312 bytes) lie on three pages, which with the header page fill one
 -- GenericXLog record (the same bound as tbl_vacuum_dead_span, for the other two kinds of index). The rows deleted are those at every 20th offset of a page, so that every unit has dead rows over its whole length.
+-- One builder writes the sift_col segment, of 14 units: two builders write two of seven, whose bits lie on three pages at most. With the arrays of sift_live_clear at three entries, this test fails for both indexes.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE lc (a int) WITH (autovacuum_enabled = off);
