@@ -413,12 +413,12 @@ SELECT date_trunc('month', ts)::date AS bucket, count(*) AS n FROM events WHERE 
 SELECT d.tier, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.memo @@> 'plug' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: n01_scope_path_filter_in
--- expect: either 4.1 16
+-- expect: either 3.8 16
 SELECT kind, count(*) AS n, sum(amount) AS total FROM events
 WHERE parent_id IN (SELECT d.id FROM dims d WHERE d.settings ->> 'tier' = 'tier_b') AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
 -- name: n02_scope_path_filter_join
--- expect: either 4.1 16
+-- expect: either 3.8 16
 SELECT e.kind, count(*) AS n, sum(e.amount) AS total FROM events e JOIN dims d ON d.id = e.parent_id
 WHERE d.settings ->> 'tier' = 'tier_c' AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 

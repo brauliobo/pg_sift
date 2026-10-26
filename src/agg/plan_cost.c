@@ -721,9 +721,8 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
- * a comparison. A lookup whose count is a default guess (the output of a plan) has the keys lookup_set_ratio takes: the geometric mean
- * of the count and the leaf's distinct values. *n: the filters the scan applies; *sel_keys: the keys of the most selective one (a share of the
- * leaf's distinct values), HUGE_VAL without a filter.
+ * a comparison. *n: the filters the scan applies; *sel_keys: the keys of the most selective one (a share of the leaf's distinct values),
+ * HUGE_VAL without a filter.
  */
 static double
 join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
@@ -749,8 +748,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			int			leaf = j->keypos[k] < 0 ? -1 : cb->leaf[j->keypos[k]];
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
-			double		nd,
-						nkeys;
+			double		nd;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
@@ -760,8 +758,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 				selective = keys / nd;
 				*sel_keys = keys;
 			}
-			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
-			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
+			kept = Min(kept, Min(zone_keys_kept(c, leaf, keys, nd), point_kept(c, leaf, keys, nd)));
 			(*n)++;
 		}
 	}
