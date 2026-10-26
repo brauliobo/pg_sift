@@ -19,7 +19,7 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;

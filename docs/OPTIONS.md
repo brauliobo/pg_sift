@@ -1999,7 +1999,7 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 
 <!-- sift-upgrade:start -->
 No default changed since 3.4; new: none.
 
-| Option | 3.4 | 3.4 | Column format | What a 3.4 user gets after the update |
+| Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |

@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 56
+plan 58
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -101,6 +101,11 @@ q clean "CREATE INDEX facts_late_hll ON facts USING sift_col (id, g, n) WITH (cu
 check "hll_columns set after the build warns that the old units have no sketch, with the REINDEX" grep -q -E '^warn +facts_late_hll +option +hll_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_hll;' <<<"$(uc clean)"
 check "to 3.3: an index with sketches (format 20) is a blocker that says to reset hll_columns" grep -q -E '^blocker +facts_hll .*ALTER INDEX facts_hll RESET \(hll_columns\), then REINDEX INDEX facts_hll' <<<"$(uc --to 3.3 clean)"
 q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
+# the global order of order_array_columns is column format 21, which 3.3 cannot read
+q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_columns = 'id', order_array_columns = 'id')" >/dev/null
+check "to 3.3: an index with a global order (format 21) is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
+check "to 3.4: the same index is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_gord)"
+q clean "DROP INDEX facts_gord" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null
 check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1

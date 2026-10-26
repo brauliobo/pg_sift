@@ -11,8 +11,9 @@ Every number written to disk or checked on upgrade, and who claims it. A new fea
 | 3.2 | `sql/pg_sift--3.2.sql` | `sql/pg_sift--3.1--3.2.sql` |
 | 3.3 | `sql/pg_sift--3.3.sql` | `sql/pg_sift--3.2--3.3.sql` |
 | 3.4 | `sql/pg_sift--3.4.sql` | `sql/pg_sift--3.3--3.4.sql` |
+| 3.5 | `sql/pg_sift--3.5.sql` | `sql/pg_sift--3.4--3.5.sql` |
 
-`sql/pg_sift--3.4.sql` is the complete script and `sql/pg_sift--3.3--3.4.sql` adds the same objects to a 3.3 install (`test/t/extension_lifecycle.sh` compares them). Released scripts never change, so an in-place update equals a fresh install: later objects go into the next version's two scripts, and `scripts/ci.sh --selftest` checks released ones against `scripts/released-sql.sha256`. The on-disk formats below do not depend on the script: the library reads whatever the files hold.
+`sql/pg_sift--3.5.sql` is the complete script and `sql/pg_sift--3.4--3.5.sql` adds the same objects to a 3.4 install (`test/t/extension_lifecycle.sh` compares them). Released scripts never change, so an in-place update equals a fresh install: later objects go into the next version's two scripts, and `scripts/ci.sh --selftest` checks released ones against `scripts/released-sql.sha256`. The on-disk formats below do not depend on the script: the library reads whatever the files hold.
 
 ## 2. Metapage (`SiftMetaPageData`, `src/core/sift.h`)
 
