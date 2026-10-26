@@ -433,6 +433,7 @@ typedef struct SiftSrcPreagg
 		int			nmeas;
 		int			meas[SIFT_SRC_MAX_MEAS];
 		bool		minmax;			/* the units written from now on store min and max of the integer measures per group */
+		bool		ktab;			/* the dim is only the key table of the segments (a key leaf of the index with no cube dim): a whole segment answers, no unit */
 		bool		cal;			/* leaf is a date or timestamp leaf and the histogram groups it by calendar cells (keys: the first day of a cell, days since 2000-01-01; SiftSrcHist.grain), asked for as unit_hist(SIFT_SRC_CAL + leaf) */
 	}			dim[SIFT_SRC_MAX_DIMS];
 	int			nrollups;
@@ -615,6 +616,7 @@ typedef struct SiftSrcProvider
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
 	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
 	void		(*super) (void *impl, bool on);
+	void		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only) */
 	void		(*split) (void *impl, const SiftSrcUnit *unit);
 	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
 	/*
@@ -944,6 +946,13 @@ sift_colsrc_super(SiftSrcSource *src, bool on)
 		return false;
 	src->prov->super(src->impl, on);
 	return true;
+}
+
+static inline void
+sift_colsrc_whole(SiftSrcSource *src, int leaf, const int *meas, int nmeas)
+{
+	if (src->prov->whole != NULL)
+		src->prov->whole(src->impl, leaf, meas, nmeas);
 }
 
 static inline uint32

@@ -11,6 +11,7 @@
 
 #include "col/compress.h"
 #include "col/hll.h"
+#include "col/ktab.h"
 #include "col/point.h"
 #include "col/preagg.h"
 #include "col/seg.h"
@@ -1176,6 +1177,9 @@ pagg_header(SiftColSegment *seg)
 		if (ver > 6 && PAGG_HLL(h) &&
 			(PAGG_HLL(h) % 8 != 0 || PAGG_HLL_BYTES(h) < sizeof(SetsHeader) + sizeof(SetsLeaf) || !within(s->len - end, PAGG_HLL(h), PAGG_HLL_BYTES(h), 0)))
 			corrupt(seg, "The sketches (%llu bytes at %llu) lie outside the section.", ULL(PAGG_HLL_BYTES(h)), ULL(PAGG_HLL(h)));
+		if (ver > 7 && PAGG_KTAB(h) &&
+			(PAGG_KTAB(h) % 8 != 0 || PAGG_KTAB_BYTES(h) < 8 || !within(s->len - end, PAGG_KTAB(h), PAGG_KTAB_BYTES(h), 0)))
+			corrupt(seg, "The key tables (%llu bytes at %llu) lie outside the section.", ULL(PAGG_KTAB_BYTES(h)), ULL(PAGG_KTAB(h)));
 		pv->pagg_end = end;
 		pv->pagg = h;
 		pv->lagg = MemoryContextAllocZero(seg->mcxt, ncols * sizeof(uint64 *));
@@ -1718,6 +1722,51 @@ sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len)
 	return blob;
 }
 
+/* The key tables' bytes at *off, from the file start; false when the segment has none */
+static bool
+ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len)
+{
+	const PaggHeader *h;
+
+	if (seg->entry.format < SIFT_COL_FORMAT_KTAB || (h = pagg_header(seg))->version < 8 || !PAGG_KTAB(h))
+		return false;
+	*off = sec(seg, SIFT_SEC_DICTIDX)->off + PRIV(seg)->pagg_end + PAGG_KTAB(h);
+	*len = PAGG_KTAB_BYTES(h);
+	return true;
+}
+
+/* The key tables of the segment, read and decoded with the section on first use, kept with the segment: leaf by leaf, NULL where a leaf has none */
+const SiftCHistDim *
+sift_cseg_ktab(SiftColSegment *seg, int col)
+{
+	SegPriv    *pv = PRIV(seg);
+	uint64		off,
+				len;
+
+	if (!ktab_span(seg, &off, &len))
+		return NULL;
+	if (pv->ktdim == NULL)
+	{
+		uint8	   *buf = palloc(len);
+		SiftCHistDim **dim = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(SiftCHistDim *));
+
+		seg_read(seg, off, len, buf);
+		for (uint64 at = 0; at < len;)
+		{
+			SiftCHistDim *d = MemoryContextAlloc(seg->mcxt, sizeof(SiftCHistDim));
+			uint32		n = sift_ktab_decode(seg->schema, buf + at, len - at, seg->mcxt, d);
+
+			if (n == 0 || dim[d->leaf] != NULL)
+				corrupt(seg, "The key table at %llu of the section is malformed.", ULL(at));
+			dim[d->leaf] = d;
+			at += n;
+		}
+		pfree(buf);
+		pv->ktdim = dim;
+	}
+	return pv->ktdim[col];
+}
+
 uint32
 sift_cseg_hll_kinds(SiftColSegment *seg, int col)
 {
@@ -1871,6 +1920,34 @@ sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **u
 			seg_read(seg, *off + dir + (uint64) u * sizeof(uint64), sizeof(o), &o);
 			memset(*used + start + o, 2, SIFT_CSET_HDR);
 		}
+	}
+	return true;
+}
+
+/* The same for the key tables: every byte is used */
+bool
+sift_cseg_test_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used)
+{
+	if (!ktab_span(seg, off, len))
+		return false;
+	*used = palloc(*len);
+	memset(*used, 1, *len);
+	{
+		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "key table damage map", ALLOCSET_SMALL_SIZES);
+		uint8 *buf = MemoryContextAlloc(cx, *len);
+
+		seg_read(seg, *off, *len, buf);
+		for (uint64 at = 0; at < *len;)
+		{
+			SiftCHistDim d;
+			uint32 n = sift_ktab_decode(seg->schema, buf + at, *len - at, cx, &d);
+
+			if (n == 0)
+				corrupt(seg, "The key table at %llu of the section is malformed.", ULL(at));
+			memset(*used + at, 2, SIFT_KTAB_HEADER_BYTES);
+			at += n;
+		}
+		MemoryContextDelete(cx);
 	}
 	return true;
 }

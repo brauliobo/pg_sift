@@ -21,6 +21,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/am.h"
+#include "col/ktab.h"
 #include "col/pagg.h"
 
 PG_FUNCTION_INFO_V1(sift_col_unit_aggs_sql);
@@ -426,7 +427,15 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, SiftCHi
 	SiftColSegment *seg;
 	uint32		u;
 
-	if (sift_col_unit_super(unit, &seg, &u))
+	if (sift_col_unit_whole(unit, &seg))
+	{
+		const SiftCHistDim *d = dim < SIFT_PAGG_CAL ? sift_cseg_ktab(seg, dim) : NULL;
+
+		if (d == NULL)
+			return false;
+		*out = *d;
+	}
+	else if (sift_col_unit_super(unit, &seg, &u))
 	{
 		if (!super_hist(seg, u, dim, mcxt, out))
 			return false;
@@ -516,6 +525,7 @@ void
 sift_col_pagg_spec(Relation index, SiftCPaggSpec *spec)
 {
 	*spec = sift_col_rel(index)->pagg;
+	sift_ktab_spec(sift_col_rel(index)->schema, spec);
 }
 
 /* The leaf with this attribute name or shredder path; a list of scalars or a map and its element leaf share a path: scalar takes the element leaf */

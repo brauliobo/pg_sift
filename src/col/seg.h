@@ -223,6 +223,7 @@ extern uint8 sift_test_seg_flip_mask;
 extern bool sift_cseg_test_super_span(SiftColSegment *seg, uint64 *off, uint64 *len);
 extern bool sift_cseg_test_run_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 extern bool sift_cseg_test_set_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
+extern bool sift_cseg_test_ktab_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 extern bool sift_cseg_test_point_span(SiftColSegment *seg, uint64 *off, uint64 *len, uint8 **used);
 #endif
 /* the rollup blob of a list in unit u (NULL, len 0: none), for sift_cpagg_rollup_decode */
@@ -276,6 +277,9 @@ extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);
 /* The bytes the sorted runs of the segment take */
 extern uint64 sift_cseg_run_bytes(SiftColSegment *seg);
 extern uint64 sift_cseg_hll_bytes(SiftColSegment *seg);
+/* The histogram of the key leaf col over the whole segment, from its key table (col/ktab.h), kept with the segment; NULL when the leaf has none */
+struct SiftCHistDim;
+extern const struct SiftCHistDim *sift_cseg_ktab(SiftColSegment *seg, int col);
 /* The stored sketch of leaf col in unit u (len bytes, well formed: sift_hll_check), NULL when the unit has none; valid until the next call */
 extern const uint8 *sift_cseg_hll(SiftColSegment *seg, int col, uint32 u, uint32 *len);
 /* HLL_LIST | HLL_DENSE: the forms of sketch some unit of the leaf has (0: none) */

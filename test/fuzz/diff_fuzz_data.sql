@@ -96,6 +96,17 @@ BEGIN
 	END LOOP;
 END $$;
 -- @end
+-- key tables (column format minor 22): grp_id has 300 values, above the 256 groups of a unit's cube, over 40 times the rows of the other tables so that a table fits 3% of a segment
+CREATE TABLE ktf (id int, grp_id int, ts timestamp, amt numeric(12,2), val int, pad text) WITH (autovacuum_enabled = false, fillfactor = 10);
+CREATE FUNCTION fz.gen_ktf(lo bigint, hi bigint, salt int) RETURNS SETOF ktf LANGUAGE sql AS $$
+	SELECT i::int, CASE WHEN fz.h(i, 160 + salt) % 50 = 0 THEN NULL ELSE fz.h(i, 161 + salt) % 300 - 40 END,
+	       timestamp '2024-01-01' + (fz.h(i, 162 + salt) % 100000) * interval '7 minutes',
+	       CASE WHEN fz.h(i, 163 + salt) % 20 = 0 THEN NULL ELSE (fz.h(i, 164 + salt) % 100000) / 100.0 - 300 END,
+	       fz.h(i, 165 + salt) % 1000, md5(i::text) || md5((i + 1)::text)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO ktf SELECT * FROM fz.gen_ktf(1, @ROWS@ * 40, 0);
+CREATE INDEX ktf_idx ON ktf USING sift_col (id, grp_id, ts, amt, val, pad);
+
 -- @table
 DO $$
 BEGIN
@@ -311,4 +322,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;

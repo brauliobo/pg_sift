@@ -30,7 +30,7 @@ SELECT kopt('ka_auto');
 SELECT kind, format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
    kind    | format 
 -----------+--------
- immutable |     17
+ immutable |     22
 (1 row)
 
 SELECT sift.col_verify('ka_auto', true);
@@ -129,7 +129,7 @@ SELECT kopt('ka_auto');
 SELECT format FROM sift.col_segments('ka_auto') WHERE kind = 'immutable';
  format 
 --------
-     15
+     22
 (1 row)
 
 -- the NOTICE says what was chosen and how to turn it off

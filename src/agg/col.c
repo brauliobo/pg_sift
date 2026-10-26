@@ -480,6 +480,16 @@ col_super(void *impl, bool on)
 	sift_col_super(((ColSource *) impl)->cs, on);
 }
 
+static void
+col_whole(void *impl, int leaf, const int *meas, int nmeas)
+{
+	ColSource  *src = impl;
+
+	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
+	if (src->sel.keep == NULL)
+		sift_col_super_whole(src->cs, leaf, meas, nmeas);
+}
+
 static uint32
 col_super_span(void *impl)
 {
@@ -650,7 +660,10 @@ col_preagg(Relation index, SiftSrcPreagg *pa)
 static bool
 col_unit_exact(void *impl, const SiftSrcUnit *unit)
 {
-	return sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
+	SiftColSegment *seg;
+
+	/* a whole segment answers from its key table only (sift_col_unit_hist): every other question of it is refused */
+	return sift_col_unit_whole(&((ColSource *) impl)->unit, &seg) || sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
 }
 
 static int
@@ -769,6 +782,7 @@ static const SiftSrcProvider col_provider = {
 	.kept = col_kept,
 	.next = col_next,
 	.super = col_super,
+	.whole = col_whole,
 	.split = col_split,
 	.super_span = col_super_span,
 	.read = col_read,

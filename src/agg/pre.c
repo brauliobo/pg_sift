@@ -28,6 +28,43 @@ sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
 			pa->dim[pa->ndims].meas[m] = spec->dim[d].meas[m];
 		pa->ndims++;
 	}
+	/* the measures of the key tables, which a unit's cube need not hold: the key leaf is a dim of the segments (only theirs, unless a unit has its own histogram of it) */
+	for (int c = 0; c < SIFT_COL_MAX_COLS; c++)
+	{
+		int			d = -1;
+		bool		cal = false;
+
+		if (spec->ktn[c] == 0)
+			continue;
+		for (int i = 0; i < pa->ndims; i++)
+			if (pa->dim[i].leaf == c)
+			{
+				cal |= pa->dim[i].cal;
+				d = pa->dim[i].cal ? d : i;
+			}
+		/* a date with calendar cells only: they answer, the table does not */
+		if (d < 0 && (cal || pa->ndims == SIFT_SRC_MAX_DIMS))
+			continue;
+		if (d < 0)
+		{
+			d = pa->ndims++;
+			pa->dim[d].leaf = c;
+			pa->dim[d].nmeas = 0;
+			pa->dim[d].minmax = true;
+			pa->dim[d].cal = false;
+			pa->dim[d].ktab = true;
+		}
+		for (int m = 0; m < spec->ktn[c]; m++)
+		{
+			int			l = spec->ktm[c][m],
+						j = 0;
+
+			while (j < pa->dim[d].nmeas && pa->dim[d].meas[j] != l)
+				j++;
+			if (j == pa->dim[d].nmeas && j < SIFT_SRC_MAX_MEAS)
+				pa->dim[d].meas[pa->dim[d].nmeas++] = l;
+		}
+	}
 	for (int r = 0; r < spec->nrollups; r++)
 	{
 		const SiftCPaggRollup *ru = &spec->rollup[r];

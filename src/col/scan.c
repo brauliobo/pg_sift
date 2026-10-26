@@ -784,6 +784,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->nosuper_to = 0;
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
+	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
 	{
 		c->prow = NULL;
@@ -1075,7 +1076,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		load_memory(cu, src->order[src->ocur++]);
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
-	else if (!(src->super && col_super_take(src, best, cu)))
+	else if (!((src->super || src->whole) && col_super_take(src, best, cu)))
 	{
 		load_stored(cu, best->seg, best->cur);
 		if (best->prow != NULL)
@@ -1106,6 +1107,8 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		}
 		best->cur++;
 	}
+	if (!mem)
+		best->full = false;
 	SIFT_COL_JITTER();
 	if (cu->nsu == 0)
 	{
@@ -1153,6 +1156,15 @@ void
 sift_col_super(SiftColSource *src, bool on)
 {
 	src->super = on;
+	src->whole = 0;
+}
+
+void
+sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas)
+{
+	src->whole = leaf + 1;
+	src->nwmeas = nmeas;
+	memcpy(src->wmeas, meas, nmeas * sizeof(int));
 }
 
 uint32
@@ -1171,11 +1183,15 @@ sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
 	ColUnit    *cu = unit->priv;
 
 	Assert(cu->nsu > 0);
+	/* the table could not answer: the segment's own superunits and units, and no other segment is tried */
+	if (cu->whole)
+		src->whole = 0;
 	for (int i = 0; i < src->nseg; i++)
 		if (src->seg[i].seg == cu->seg)
 		{
 			src->seg[i].cur = cu->u;
-			src->seg[i].nosuper_to = cu->u + cu->nsu;
+			src->seg[i].full = false;
+			src->seg[i].nosuper_to = cu->whole ? 0 : cu->u + cu->nsu;
 		}
 	src->cnt.units -= cu->nsu;
 }

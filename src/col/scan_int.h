@@ -31,6 +31,7 @@ typedef struct ColCursor
 	uint64		cseg_gen;
 	uint32		cur;
 	uint32		end;
+	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
 	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the superunit there */
 	uint32	   *prow;			/* the rows of the segment the point directory lists for predicate ppred (ascending); the units without one are cut */
 	uint32		nprow;
@@ -101,6 +102,7 @@ typedef struct ColUnit
 	SiftColSegment *seg;		/* NULL for an in-memory unit */
 	uint32		u;
 	uint32		nsu;			/* a superunit: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
+	bool		whole;			/* ... of the whole segment, which has only the key table of src->whole - 1 (col/ktab.h) */
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -165,6 +167,9 @@ struct SiftColSource
 	SiftVis		vis;
 	SiftColVisibility visibility;
 	bool		super;			/* sift_col_super */
+	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
+	int			nwmeas;			/* ... and the measures it must keep */
+	int			wmeas[SIFT_PAGG_MAX_MEAS];
 	int			nseg;
 	ColCursor  *seg;
 	ColMem	   *mem;

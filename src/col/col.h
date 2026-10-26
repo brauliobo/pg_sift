@@ -41,7 +41,8 @@
 #define SIFT_COL_FORMAT_EXCEPT	19		/* 3.4: a unit also holds the cube and the element rollups of its few rows where one NULL-heavy leaf is not NULL (the exceptions), so that a filter IS NULL on it is answered as the unit minus them; written when a unit has exceptions, under a sift.col_format_minor of 15 or more (docs/COL-PREAGG.md 11) */
 #define SIFT_COL_FORMAT_HLL		20			/* 3.4: the segment has the HyperLogLog sketch of some leaf in some unit; written only for an index with the reloption hll_columns, and then for a schema that has no shredded leaves or whose every kind is known */
 #define SIFT_COL_FORMAT_GORDER	21		/* 3.4: the segment has the global order of some leaf: every row's key and heap address sorted, in chunks; written for a leaf of the option order_columns under sift.col_order_array */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_GORDER	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_KTAB	22		/* 3.5: the segment has the key table of some leaf: its distinct keys with the rows, sums, minima and maxima of each, over the whole segment; written under sift.col_format_minor 15 or more for the leaves the index keeps key lists for */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_KTAB	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -527,6 +528,8 @@ extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
  * from them calls sift_col_unit_split, and the next calls return the units of the group one by one.
  */
 extern void sift_col_super(SiftColSource *src, bool on);
+/* With a key leaf and the measures to read of it, the next unit may be a whole segment that has the key table of the leaf, with those measures (cu->nsu is its units): its histogram of the leaf, sift_col_unit_hist, is all it has; call after sift_col_super */
+extern void sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas);
 extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 /* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */
 extern uint32 sift_col_super_span(SiftColSource *src);

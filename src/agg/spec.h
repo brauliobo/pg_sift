@@ -667,6 +667,7 @@ typedef struct SiftAggPaShape
 	bool		hcal;				/* hdim is the calendar dim of the leaf */
 	bool		hcalalt;			/* hdim is the leaf's own dim, and a unit with no histogram of it (too many days) answers from the calendar dim of the leaf, with calmask */
 	bool		calalt;				/* dim is the leaf's own dim, tested by comparisons the span of a cell decides: a unit with no histogram of it answers from the calendar dim of the leaf, with calmask */
+	bool		ktab;				/* the dim (or hdim) is only a key table of whole segments: a unit that is not one is scanned */
 	int			hdim;				/* dim < 0 only: the dim a zone comparison tests, whose histogram answers a unit whose zone is not inside it; -1: none */
 	int			list;				/* >= 0: the rollup of this SCL_ARRAY / SCL_OBJECT leaf answers, the elements are the rows */
 	bool		rows;				/* the rollup of the rows of the unit answers (list is -1): the dims are columns of the index (column format minor 8) */

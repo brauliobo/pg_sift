@@ -36,7 +36,7 @@ UNION ALL SELECT 'ss_on', array_agg(DISTINCT format) FROM sift._test_col_formats
    idx    | minors 
 ----------+--------
  ss_off   | {4}
- ss_on    | {10}
+ ss_on    | {22}
  ss_seven | {4}
 (3 rows)
 
@@ -329,7 +329,7 @@ SELECT sift.col_promote('ss_on') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ss_on');
  minors 
 --------
- {10}
+ {22}
 (1 row)
 
 SELECT sift.col_verify('ss_on', true);
@@ -353,7 +353,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) ss;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ss_on');
  minors | segments 
 --------+----------
- {10}   |        1
+ {22}   |        1
 (1 row)
 
 SELECT sift.col_verify('ss_on', true);
@@ -408,7 +408,7 @@ SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('sa_idx');
  minors 
 --------
- {4,10}
+ {4,22}
 (1 row)
 
 SELECT sift.col_verify('sa_idx', true);
@@ -448,7 +448,7 @@ SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('sa_idx');
  minors | segments 
 --------+----------
- {10}   |        1
+ {22}   |        1
 (1 row)
 
 SELECT blobs > 0 AS has_summaries FROM sift._test_col_set_damage('sa_idx', 3);

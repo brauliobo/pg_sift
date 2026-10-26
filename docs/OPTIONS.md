@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 96 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 97 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -311,6 +311,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (key_columns = 'off') then REINDEX (the build NOTICE names it); RESET returns to auto. ALTER INDEX alone applies to units written afterwards; older units are scanned.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave at auto: non-unique foreign key and *_id columns of int2, int4 and date get a key list or bitmap within 3% of a unit. Name columns for equality filters; off removes it. REINDEX to apply.
+
+#### sift_col(key_table)
+
+`sift_col` · default · since 3.5 · default true
+
+- **What it does:** count, sum, min and max WHERE a key = x, IN, a range or GROUP BY the key (a key_columns leaf with more than 256 values in a unit) read one record of each segment, not its units: 0.107 ms at 900,000 rows against 5.20 ms (300 keys)
+- **Gain:** count, sum, min, max WHERE key = x over 900,000 rows 5.20 to 0.107 ms and 100,000 rows 0.49 to 0.054 ms (300 keys, 1 session, warm); count WHERE key IN (3 values) over 1,000,000 orders 78 to 0.33 ms (bench case key_table_point)
+- **Impact:** index size: +2.2% of the segments' bytes at 100,000 rows, +0.75% at 300,000, +0.46% at 900,000 (300 keys, two measures); a segment whose table would pass 3% has none or fewer measures; build, merge and writes: CREATE INDEX +2.4% and +2.6%, insert and promotion of 20,000 rows +0.03% and +0.9%, merge +0.03% and +4.3%, VACUUM rewrite +0.03% and +3.0% instructions (100,000 rows, 200 and 3,000 keys); other: format minor 22; a table of at most 3% of the segment (+0.46% to +2.2% of the segments' bytes at 300 keys); +2.6% instructions on CREATE INDEX, +4.3% on a merge, +0.9% on insert and promotion
+- **When:** WHERE a key_columns leaf (int2, int4, date) = x, IN, a range or GROUP BY, nothing else tested, count/sum/avg/min/max of the numeric, time and integer leaves the table keeps; every unit of the segment exact. A dead row, an IS NULL or another leaf: read from the units.
+- **Default:** true — The rule of 3.3: over 5% on the relevant class (4x to 22x), growth at most 3% of a segment by construction, write cost under 5% on every path measured; a table that does not fit is not written.
+- **Turn off:** ALTER INDEX .. SET (key_table = off), then REINDEX or the next merge; segments written before keep theirs and are still read.
+- **Upgrade from 3.4:** A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read.
+- **Advice:** Leave on. Set off for an index that is written far more than it is read by key, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
 
 #### sift_col(key_cut)
 
@@ -1997,10 +2010,11 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: none.
+No default changed since 3.4; new: `sift_col(key_table)`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
+| `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |

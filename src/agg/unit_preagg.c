@@ -1075,6 +1075,8 @@ preagg_unit_try(AggExec *ex)
 	int			dead;
 
 	ex->pa_xleaf = -1;
+	if (ex->pa.ktab && ex->unit.nsu == 0)
+		return false;
 	if (PA_ROLLUP(ex->pa) && rollup_skip(ex))
 		return false;
 	if (sift_colsrc_unit_exact(ex->src, &ex->unit))
@@ -1187,7 +1189,7 @@ preagg_init(AggExec *ex)
 	ex->pa_why = !pa.aggs && pa.ndims == 0 && pa.nrollups == 0 ? SPW_NONE : sift_aggspec_preagg_why(ex->spec, ex->lay, ex->nbase, &pa, &ex->pa);
 	ex->pa_on = ex->pa_why == SPW_OK;
 	ex->pa_dead = ex->pa_on && sift_agg_dead_delta > 0 && preagg_dead_ok(ex);
-	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && sift_colsrc_super(ex->src, true);
+	ex->super_on = ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.ktab && sift_colsrc_super(ex->src, true);
 	if (ex->pa_on && PA_ROLLUP(ex->pa))
 	{
 		rollup_need(ex);
@@ -1216,5 +1218,33 @@ preagg_init(AggExec *ex)
 				ex->pa_why = SPW_ZONE;
 			}
 		}
+	}
+	/* the key table of the leaf the histogram is of answers for a segment, when the comparisons are all on that leaf */
+	if (ex->pa_on && !PA_ROLLUP(ex->pa) && sift_agg_super && ex->search == NULL && !ex->pa.cal && !ex->pa.hcal && (ex->pa.dim >= 0 || ex->pa.hdim >= 0))
+	{
+		int			key = ex->pa.dim >= 0 ? ex->pa.dim : ex->pa.hdim,
+					meas[SIFT_SRC_MAX_MEAS],
+					nmeas = 0;
+		bool		only = true;
+
+		for (int k = 0; k < ex->nprune; k++)
+			only &= ex->prune[k].leaf == key && !ex->prune[k].nulltest;
+		/* the measures it reads: the table is taken only when it keeps them all (a unit that lacks one is scanned, so is a segment) */
+		for (int ai = 0; only && ai < ex->spec->naggs; ai++)
+		{
+			int			leaf = pa_leaf(&ex->spec->agg[ai]),
+						m = 0;
+
+			if (leaf < 0 || leaf == key || ex->spec->agg[ai].kind == SAA_COUNT_DISTINCT)
+				continue;
+			while (m < nmeas && meas[m] != leaf)
+				m++;
+			if (m == nmeas && nmeas == SIFT_SRC_MAX_MEAS)
+				only = false;
+			else if (m == nmeas)
+				meas[nmeas++] = leaf;
+		}
+		if (only)
+			sift_colsrc_whole(ex->src, key, meas, nmeas);
 	}
 }

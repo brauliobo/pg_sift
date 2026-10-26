@@ -408,6 +408,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Group histograms (the cube) and calendar cells | works | works | a table writes the default cube and the cells of every date and timestamp column; an index takes `preagg` and `calendar_columns` |
 | Minimum and maximum per group of the cube (`cube_minmax`) | works | works | a table writes them for the integer measures of its dims (not for calendar cells), as an index does by default; the setting `sift.col_format_minor = 6` writes none |
 | Superunit summaries (`superunit`) | works | missing | whole-table aggregates read one summary for 16 units on an index |
+| Key table of a segment (`key_table`) | works | missing | a segment of an index answers `WHERE key = x` from one record per key; a table keeps no key table of its segments |
 | Key lists and bitmaps of a leaf (`key_columns`) | works | works | a table writes them for its int2, int4 and date foreign key and `*_id` columns that are not unique (the default of an index), within 3% of a unit; `count(DISTINCT)` of a unit that has one reads no row |
 | HyperLogLog sketch (`hll_columns`, `approx_count_distinct`) | works | missing | `sift.approx_count_distinct` is pushed down and reads the rows; no sketch of the units |
 | Exceptions of a leaf that is NULL in nearly every row (soft-delete stamp) | works | missing | `IS NULL` / `IS NOT NULL` read the unit's NULL count either way |

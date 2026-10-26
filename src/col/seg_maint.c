@@ -5,6 +5,7 @@
 #include "core/host.h"
 
 #include "col/hll.h"
+#include "col/ktab.h"
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/seg_int.h"
@@ -330,7 +331,7 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 
 /* The unit checks of verify: structure, chunk sizes, dictionary codes, ascending keys inside the SB, zones */
 static void
-verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
+verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCKtab *kt)
 {
 	const SiftColSBRef *r = &seg->sbdir[u];
 	const SiftColSchema *sc = seg->schema;
@@ -339,7 +340,8 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 	const uint8 *rec = sift_cseg_unit(seg, u, &len);
 	uint64		group_elems[SIFT_COL_MAX_COLS] = {0};
 	SiftCPaggCol pcol[SIFT_COL_MAX_COLS];
-	int64	   *kept[SIFT_COL_MAX_COLS] = {NULL};
+	int64	   *kept[SIFT_COL_MAX_COLS] = {NULL},
+			   *late[SIFT_COL_MAX_COLS] = {NULL};
 	bool		need[SIFT_COL_MAX_COLS] = {false};
 	uint32		clen,
 				elen;
@@ -407,8 +409,17 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed)
 		}
 		if (need[c])
 			kept[c] = vals;
+		else if (kt)
+			late[c] = vals;			/* the key table adds the leaves of the unit together, below */
 		else
 			pfree(vals);
+	}
+	if (kt)
+	{
+		sift_ktab_add(kt, pcol, r->nrows);
+		for (int c = 0; c < sc->ncols; c++)
+			if (late[c])
+				pfree(late[c]);
 	}
 	if (!sift_cpagg_check(sc, pcol, r->nrows, cube, clen, ecube, elen, seg->entry.format))
 		corrupt(seg, "The cube or the element cubes of the unit of SB %u differ from its chunks.", r->sb);
@@ -703,18 +714,26 @@ sift_cseg_verify(SiftColSegment *seg)
 	SiftKey    *keys = palloc(SIFT_COL_UNIT_MAX_ROWS * sizeof(SiftKey));
 	uint64		live = seg->hdr->ndocs;
 	uint64		listed[SIFT_COL_MAX_COLS] = {0};
+	bool		haskt[SIFT_COL_MAX_COLS] = {false};
+	SiftCKtab  *kt;
 
+	for (int c = 0; c < seg->schema->ncols; c++)
+		haskt[c] = sift_cseg_ktab(seg, c) != NULL;
+	kt = sift_ktab_begin(seg->schema, haskt, CurrentMemoryContext);
 	verify_vers(seg);
 	verify_dicts(seg);
 	sift_cseg_verify_points(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
-		verify_unit(seg, u, keys, listed);
+		verify_unit(seg, u, keys, listed, kt);
 		CHECK_FOR_INTERRUPTS();
 	}
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (listed[c] != sift_cseg_point_count(seg, c))
 			corrupt(seg, "The point directory of leaf %d lists %u rows, its units hold %llu values.", c, sift_cseg_point_count(seg, c), ULL(listed[c]));
+	for (int c = 0; c < seg->schema->ncols; c++)
+		if (haskt[c] && !sift_ktab_check(kt, sift_cseg_ktab(seg, c)))
+			corrupt(seg, "The key table of leaf %d differs from the units.", c);
 	sift_cseg_verify_super(seg);
 	verify_set_kinds(seg);
 	verify_run_kinds(seg);

@@ -34,6 +34,7 @@ SIFT_SRC_MAX_ROLLUPS	planner-side array size that mirrors rollups
 SIFT_TBL_MAX_OFF	MaxHeapTuplesPerPage, a PostgreSQL bound
 SIFT_TBL_MAX_WBUF_PAGES	array size of the page list of one write buffer: see write_buffer_kb and tx_write_buffers
 SIFT_TBL_ROW_MAX_INLINE	a sift_table row above half a page goes to overflow pages: a layout threshold, not a limit
+SIFT_KTAB_MAX_GROUPS	the keys of a leaf in a segment beyond which the accumulator of its key table stops: a memory bound, a table that large takes more than 3% of any segment
 SIFT_VK_MAX_GROUPS	shader job layout of the opt-in Vulkan backend
 SIFT_VK_MAX_PRED	shader job layout of the opt-in Vulkan backend
 SIFT_VK_MAX_RS	shader job layout of the opt-in Vulkan backend

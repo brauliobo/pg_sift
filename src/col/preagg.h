@@ -35,6 +35,7 @@ typedef __int128 SiftCI128 __attribute__((aligned(8)));
 #define SIFT_PAGG_ROWS_CELLS	4096		/* the most cells (tuples) of the rollup of a unit's rows ... */
 #define SIFT_PAGG_ROWS_RATIO	10			/* ... and at most a 10th of the unit's rows (at least SIFT_PAGG_ROLLUP_MIN): a tuple costs about 15 rows to read, so past a 16th the unit scans anyway; a unit with more has none and scans */
 #define SIFT_PAGG_MAX_MEAS		8
+#define SIFT_KTAB_MEAS			2			/* measures a key table keeps besides the rows (col/ktab.h) */
 #define SIFT_PAGG_CAL			128			/* a calendar dim (the cells of a date or timestamp leaf) has the directory leaf grain * this + the leaf (SIFT_COL_MAX_COLS leaves precede it); asked of a reader, this + the leaf is the dim at the grain the unit has */
 #define SIFT_CAL_DAY			1			/* the grains of a cell, finest first: a day, a month, a year; the key of a cell is its first day, as days since 2000-01-01 (a date) */
 #define SIFT_CAL_MONTH			2
@@ -106,8 +107,11 @@ typedef struct SiftCPaggSpec
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
 	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
 	bool		table;					/* the default of a sift_table (table/seg.c): no exception cubes, which its source does not read, and runs only where they fit the share of the unit that key lists take */
+	bool		key_table;				/* the segments keep a key table of each leaf of set (option key_table, column format minor 22; col/ktab.h) */
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that keep their keys in every unit (option key_columns, column format minors 10 and 15; col/setsum.h) */
+	uint8		ktn[SIFT_COL_MAX_COLS];		/* the key leaves that get a key table and their measures: how many, which (sift_ktab_spec, for the planner; the writer chooses the same) */
+	int16		ktm[SIFT_COL_MAX_COLS][SIFT_KTAB_MEAS];
 	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */
 	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
 	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */

@@ -10,6 +10,7 @@
 #include "col/hll.h"
 #include "col/runs.h"
 #include "col/seg.h"
+#include "col/ktab.h"
 #include "col/seg_int.h"
 #include "col/setsum.h"
 #include "col/ver.h"
@@ -106,6 +107,8 @@ struct SiftColSegWriter
 	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
 	SetAcc	   *hll;			/* [ncols], NULL unless the segment keeps HyperLogLog sketches (sift_colw_set_preagg) */
 	bool		anyhll;
+	SiftCKtab  *kt;				/* the key tables of the leaves the index keeps key lists for (minor 22), NULL when the segment has none to keep */
+	StringInfoData ktab;
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anyord;			/* some leaf has a global order block to write (minor 21) */
@@ -269,6 +272,11 @@ sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 	/* the option is what stamps the minor 18: the setting stays at 15 */
 	if (w->setting >= SIFT_COL_FORMAT_PRESENCE && w->hll == NULL)
 		w->hll = acc_new(w, spec->hll);
+	/* the key tables stamp minor 22 themselves, as the setting says: under 15 the segment stays readable by 3.3 */
+	if (w->setting >= SIFT_COL_FORMAT_PRESENCE && w->kt == NULL && spec->key_table)
+	{
+		w->kt = sift_ktab_begin(w->schema, spec->set, w->mcxt);
+	}
 	/* the point directories are written with the dictionaries, minor 14 */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && w->pt == NULL)
 		for (int c = 0; c < w->schema->ncols; c++)
@@ -563,6 +571,8 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	add_sets(w, cols, unit_bytes);
 	add_runs(w, cols, b->keys, unit_bytes);
 	add_hll(w, cols);
+	if (w->kt)
+		sift_ktab_add(w->kt, cols, b->nrows);
 	add_points(w, cols, b->keys);
 	for (int c = 0; c < ncols; c++)
 		if (tk[c])
@@ -1207,6 +1217,12 @@ write_pagg(SiftColSegWriter *w)
 		hlls = layout_blobs(w, w->hll, at, &start, &bytes, &nhlls);
 		PAGG_HLL(h) = start;
 		PAGG_HLL_BYTES(h) = bytes;
+		at = start + bytes;
+	}
+	if (ver > 7 && w->ktab.len > 0)
+	{
+		PAGG_KTAB(h) = ALIGN8(at);
+		PAGG_KTAB_BYTES(h) = w->ktab.len;
 	}
 	sift_sw_write(w->sw, h, hsz);
 	for (int c = 0; c < ncols; c++)
@@ -1274,6 +1290,11 @@ write_pagg(SiftColSegWriter *w)
 	}
 	if (hlls)
 		write_blobs(w, w->hll, HLL_MAGIC, hlls, nhlls);
+	if (ver > 7 && w->ktab.len > 0)
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, w->ktab.data, w->ktab.len);
+	}
 	pfree(h);
 }
 
@@ -1390,6 +1411,12 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	}
 	h.sections[SIFT_SEC_POSTINGS] = (SiftSectionRef) {0, sift_sw_tell(w->sw)};
 	write_dicts(w, &h.sections[SIFT_SEC_DICT]);
+	initStringInfo(&w->ktab);
+	if (w->kt)
+		/* 3% of the segment as written so far: the chunks and the dictionaries */
+		sift_ktab_finish(w->kt, sift_sw_tell(w->sw), &w->ktab);
+	if (w->ktab.len > 0)
+		w->format = Max(w->format, SIFT_COL_FORMAT_KTAB);
 	write_zones(w, &h.sections[SIFT_SEC_DICTIDX]);
 	initStringInfo(&schema);
 	sift_cschema_serialize(w->schema, &schema);

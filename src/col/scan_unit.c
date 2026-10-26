@@ -474,6 +474,98 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	return sift_col_unit_allvisible(unit);
 }
 
+/* Every page the units [first, first + n) have rows on is all-visible: the page masks of their summary (the block ranges of key-cut units) against the snapshot, no unit record read */
+static bool
+units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
+{
+	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	sift_cseg_super_pagemask(seg, first / sift_cseg_super_fan(seg), n, pm);
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (sift_cseg_keyed(&seg->entry))
+		{
+			/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
+			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
+
+			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
+				return false;
+			continue;
+		}
+		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[first + i].sb, av);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
+				return false;
+	}
+	return true;
+}
+
+/* The units [first, first + n) have no dead row or exception; *rows: their rows */
+static bool
+units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (sift_cseg_dirty(seg, first + i))
+			return false;
+		*rows += seg->sbdir[first + i].nrows;
+	}
+	return true;
+}
+
+static void
+take_units(ColCursor *c, ColUnit *cu, uint32 first, uint32 n, uint32 rows)
+{
+	SiftColSegment *seg = c->seg;
+
+	cu->seg = seg;
+	cu->u = first;
+	cu->nsu = n;
+	cu->sb = seg->sbdir[first].sb;
+	cu->v.nrows = rows;
+	cu->clean = cu->clean_ready = cu->av_ready = true;
+	memset(cu->av, 0xFF, sizeof(cu->av));
+	c->cur = first + n;
+}
+
+/*
+ * The segment as one unit, for a scan that asks for it (sift_col_super_whole) and a segment that has the key table of its leaf: every unit of it exact on its
+ * own, as col_super_take wants of a group, whatever the zone tests kept of them (the table answers the comparisons on the leaf itself, and the consumer checks
+ * that those are the only ones). Its rows are the units' rows.
+ */
+static bool
+col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		fan = sift_cseg_super_fan(seg),
+				rows = 0;
+	const SiftCHistDim *kd = sift_cseg_ktab(seg, src->whole - 1);
+
+	if (!c->full || c->prow != NULL || c->ptidv != NULL || fan == 0 || kd == NULL)
+		return false;
+	for (int i = 0; i < src->nwmeas; i++)
+	{
+		int			m = 0;
+
+		while (m < kd->nmeas && kd->meas[m] != src->wmeas[i])
+			m++;
+		if (m == kd->nmeas)
+			return false;
+	}
+	for (uint32 u = 0; u < seg->nsb; u += fan)
+		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
+			return false;
+	if (!(src->flags & COLO_TABLE) && !segments_current(src))
+		return false;
+	SIFT_COL_JITTER();
+	if (!units_clean(seg, 0, seg->nsb, &rows))
+		return false;
+	take_units(c, cu, 0, seg->nsb, rows);
+	cu->whole = true;
+	return true;
+}
+
 /*
  * The group of units at the cursor as one unit. Every unit of the group must have passed the zone tests and be exact on its own: its pages that hold rows
  * all-visible (the masks of the units are in the summary, so no unit record is read) and no dead row, read in the order of unit_allvisible and
@@ -486,9 +578,11 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 	uint32		fan = sift_cseg_super_fan(seg),
 				n,
 				rows = 0;
-	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
-	uint64		av[SIFT_PAGEMASK_WORDS];
 
+	if (src->whole && col_whole_take(src, c, cu))
+		return true;
+	if (!src->super)
+		return false;
 	if (fan == 0 || c->cur % fan != 0 || c->cur < c->nosuper_to)
 		return false;
 	n = Min(fan, seg->nsb - c->cur);
@@ -497,43 +591,14 @@ col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 	for (uint32 i = 0; i < n; i++)
 		if (!sift_col_bit_test(c->keep, c->cur + i))
 			return false;
-	sift_cseg_super_pagemask(seg, c->cur / fan, n, pm);
-	if (sift_cseg_keyed(&seg->entry))
-	{
-		/* key-cut units: the block range of each, in its slot of the summary; a unit whose range holds a page that is not all-visible is read on its own */
-		for (uint32 i = 0; i < n; i++)
-		{
-			uint64		r = pm[i * SIFT_PAGEMASK_WORDS];
-
-			if (!sift_vis_range_allvisible(&src->vis, (uint32) r, (uint32) (r >> 32)))
-				return false;
-		}
-	}
-	else
-		for (uint32 i = 0; i < n; i++)
-		{
-			src->visibility.sb_mask(src->visibility.arg, seg->sbdir[c->cur + i].sb, av);
-			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
-				if (pm[i * SIFT_PAGEMASK_WORDS + w] & ~av[w])
-					return false;
-		}
+	if (!units_allvisible(src, seg, c->cur, n))
+		return false;
 	if (!(src->flags & COLO_TABLE) && !segments_current(src))
 		return false;
 	SIFT_COL_JITTER();
-	for (uint32 i = 0; i < n; i++)
-	{
-		if (sift_cseg_dirty(seg, c->cur + i))
-			return false;
-		rows += seg->sbdir[c->cur + i].nrows;
-	}
-	cu->seg = seg;
-	cu->u = c->cur;
-	cu->nsu = n;
-	cu->sb = seg->sbdir[c->cur].sb;
-	cu->v.nrows = rows;
-	cu->clean = cu->clean_ready = cu->av_ready = true;
-	memset(cu->av, 0xFF, sizeof(cu->av));
-	c->cur += n;
+	if (!units_clean(seg, c->cur, n, &rows))
+		return false;
+	take_units(c, cu, c->cur, n, rows);
 	return true;
 }
 
@@ -542,11 +607,20 @@ sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
 {
 	ColUnit    *cu = unit->priv;
 
-	if (cu->nsu == 0)
+	if (cu->nsu == 0 || cu->whole)
 		return false;
 	*seg = cu->seg;
 	*k = cu->u / sift_cseg_super_fan(cu->seg);
 	return true;
+}
+
+bool
+sift_col_unit_whole(const SiftColUnit *unit, SiftColSegment **seg)
+{
+	ColUnit    *cu = unit->priv;
+
+	*seg = cu->seg;
+	return cu->whole;
 }
 
 /* ---------- pre-aggregates (col/pagg.c, docs/COL-PREAGG.md) ---------- */

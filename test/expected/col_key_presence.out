@@ -40,7 +40,7 @@ UNION ALL SELECT 'kp_on', array_agg(DISTINCT format) FROM sift._test_col_formats
 --------+--------
  kp_off | {12}
  kp_old | {8}
- kp_on  | {15}
+ kp_on  | {22}
 (3 rows)
 
 SELECT sift.col_verify('kp_off', true), sift.col_verify('kp_old', true), sift.col_verify('kp_on', true);
@@ -263,7 +263,7 @@ SELECT sift.col_promote('kp_on') >= 0 AS promoted;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kp_on');
  minors 
 --------
- {15}
+ {22}
 (1 row)
 
 SELECT sift.col_verify('kp_on', true);
@@ -287,7 +287,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) kp;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('kp_on');
  minors | segments 
 --------+----------
- {15}   |        1
+ {22}   |        1
 (1 row)
 
 SELECT sift.col_verify('kp_on', true);
@@ -345,7 +345,7 @@ RESET parallel_setup_cost;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kp_w_on');
  minors 
 --------
- {15}
+ {22}
 (1 row)
 
 SELECT sift.col_verify('kp_w_on', true);

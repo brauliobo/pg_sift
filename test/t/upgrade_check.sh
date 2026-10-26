@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 58
+plan 61
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -106,6 +106,14 @@ q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_
 check "to 3.3: an index with a global order (format 21) is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
 check "to 3.4: the same index is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_gord)"
 q clean "DROP INDEX facts_gord" >/dev/null
+# the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15
+q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad FROM generate_series(1, 20000) i" \
+	"CREATE INDEX facts_ktab ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, superunit = 0, key_columns = 'k')" \
+	"CREATE INDEX facts_ktab_off ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, superunit = 0, key_columns = 'k', key_table = off)" >/dev/null
+check "an index with key tables is column format 22" grep -q -E '^ok +facts_ktab +index +format 1\.[0-9]+, column format 22' <<<"$(uc clean)"
+check "to 3.4: an index with key tables is a blocker that says to turn key_table off" grep -q -E '^blocker +facts_ktab .*ALTER INDEX facts_ktab SET \(key_table = off\), then REINDEX INDEX facts_ktab' <<<"$(uc --to 3.4 clean)"
+check "to 3.4: the same index with key_table = off is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_ktab_off)"
+q clean "DROP TABLE key_facts" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null
 check "an index with an option set after its units is listed" test "$(q clean "SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'scat_late'::regclass")" == 1

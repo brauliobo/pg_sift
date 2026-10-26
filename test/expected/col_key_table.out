@@ -1,0 +1,423 @@
+-- The key table of a segment: for each leaf of key_columns the rows, sums, minima and maxima per distinct key over the
+-- whole segment, so that count, sum, min and max WHERE key = x (an IN list, a range, GROUP BY key) read one record of a segment, not its units. Written where the table
+-- takes at most 3% of the segment and the option key_table is on, under sift.col_format_minor 15 or more; the units, and the scan, are what an index without it has
+-- (an older minor, the option off, a table over the budget: the same answers, read from the units); recomputed by sift.col_verify; kept by promotion, merge and VACUUM.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '240s';
+-- 160,000 rows in about 20 units. grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with
+-- NULLs (a measure of the table); ts and d: time leaves (ts is a measure of the table too); val: an int the table does not keep; mid_id: 3,000 values (a table of the counts fits, not their sums); many_id: 20,000 (no table: over 16,384 keys)
+CREATE TABLE kt (id int, grp_id int, ts timestamp, d date, amt numeric(12,2), val int, mid_id int, many_id int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE kt ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kt
+SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) % 300 - 100 END,
+       timestamp '2024-01-01' + i * interval '3 minutes', date '2023-01-01' + (hashint4(i + 1) & 2147483647) % 1000,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE ((hashint4(i + 2) & 2147483647) % 100000)::numeric / 100 - 300 END,
+       i % 1000, (hashint4(i + 3) & 2147483647) % 3000, (hashint4(i + 4) & 2147483647) % 20000, md5(i::text) || md5((i + 1)::text)
+FROM generate_series(1, 160000) i;
+CREATE TABLE kt_b (LIKE kt) WITH (autovacuum_enabled = off);
+ALTER TABLE kt_b ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kt_b SELECT * FROM kt ORDER BY id;
+CREATE TABLE kt_c (LIKE kt) WITH (autovacuum_enabled = off);
+ALTER TABLE kt_c ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kt_c SELECT * FROM kt ORDER BY id;
+VACUUM (FREEZE, ANALYZE) kt;
+VACUUM (FREEZE, ANALYZE) kt_b;
+VACUUM (FREEZE, ANALYZE) kt_c;
+-- the minor of the segments: 22 with the table, 15 under a setting of 15 or the option off
+CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
+CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, key_table = off);
+SET sift.col_format_minor = 14;
+CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
+RESET sift.col_format_minor;
+SELECT 'kt_on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kt_on')
+UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_b_off')
+UNION ALL SELECT 'kt_c_old', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_c_old') ORDER BY 1;
+   idx    | minors 
+----------+--------
+ kt_b_off | {15}
+ kt_c_old | {14}
+ kt_on    | {22}
+(3 rows)
+
+SELECT sift.col_verify('kt_on', true), sift.col_verify('kt_b_off', true), sift.col_verify('kt_c_old', true);
+ col_verify | col_verify | col_verify 
+------------+------------+------------
+            |            | 
+(1 row)
+
+-- a few percent of the index at most
+SELECT pg_relation_size('kt_on') > pg_relation_size('kt_b_off') AS table_takes_bytes, pg_relation_size('kt_on') < pg_relation_size('kt_b_off') * 1.03 AS under_3_percent;
+ table_takes_bytes | under_3_percent 
+-------------------+-----------------
+ t                 | t
+(1 row)
+
+CREATE FUNCTION kt_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION kt_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		scanned := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, scanned);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL; scanned := NULL;
+END $$;
+CREATE TABLE kt_q (n int, shape text, q text, from_table bool);
+INSERT INTO kt_q VALUES
+	(1, 'count, a key',               'SELECT count(*) FROM %s WHERE grp_id = 17', true),
+	(2, 'sums and extremes',          'SELECT count(*), count(amt), sum(amt), min(amt), max(amt), min(ts), max(ts) FROM %s WHERE grp_id = 17', true),
+	(3, 'IN list',                    'SELECT count(*), sum(amt) FROM %s WHERE grp_id IN (3, 4, 5, 250)', true),
+	(4, 'range',                      'SELECT count(*), min(ts), max(ts) FROM %s WHERE grp_id BETWEEN -50 AND -20', true),
+	(5, 'one side of a range',        'SELECT count(*), avg(amt) FROM %s WHERE grp_id >= 190', true),
+	(6, 'group by the key',           'SELECT grp_id, count(*), sum(amt), max(ts) FROM %s WHERE grp_id < 0 GROUP BY grp_id', true),
+	(7, 'group by, no filter',        'SELECT grp_id, count(*), sum(amt), min(amt) FROM %s GROUP BY grp_id', true),
+	(8, 'a key that is not there',    'SELECT count(*), sum(amt), min(ts) FROM %s WHERE grp_id = 99999', true),
+	(9, 'negative key',               'SELECT count(*), max(amt) FROM %s WHERE grp_id = -100', true),
+	(10, 'the NULL key',              'SELECT count(*), sum(amt) FROM %s WHERE grp_id IS NULL', false),
+	(11, 'count of the key',          'SELECT count(grp_id), count(*) FROM %s WHERE grp_id < 10', true),
+	(12, 'a measure it does not keep','SELECT count(*), sum(val) FROM %s WHERE grp_id = 17', false),
+	(13, 'a date measure',            'SELECT min(d), max(d) FROM %s WHERE grp_id = 17', false),
+	(14, 'a filter on another leaf',  'SELECT count(*), sum(amt) FROM %s WHERE grp_id = 17 AND val < 500', false),
+	(15, 'a window of ts',            'SELECT count(*) FROM %s WHERE grp_id = 17 AND ts >= timestamp ''2024-06-01''', false),
+	(16, 'a key of 3,000 values',     'SELECT count(*) FROM %s WHERE mid_id = 17', true),
+	(19, 'its sums are not kept',     'SELECT count(*), sum(amt) FROM %s WHERE mid_id = 17', false),
+	(20, 'a key of 20,000 values',    'SELECT count(*) FROM %s WHERE many_id = 17', false),
+	(17, 'FILTER',                    'SELECT count(*) FILTER (WHERE val < 500), sum(amt) FROM %s WHERE grp_id = 17', false),
+	(18, 'no key',                    'SELECT count(*), sum(amt), min(ts), max(ts) FROM %s', false);
+CREATE FUNCTION kt_check(a text, b text) RETURNS TABLE (n int, shape text, same bool, from_table bool, twin_scans bool) LANGUAGE plpgsql AS $$
+DECLARE r record; qa text; qb text; ua record; ub record;
+BEGIN
+	FOR r IN SELECT * FROM kt_q ORDER BY kt_q.n LOOP
+		qa := format(r.q, a); qb := format(r.q, b);
+		SELECT * INTO ua FROM kt_units(qa);
+		SELECT * INTO ub FROM kt_units(qb);
+		n := r.n; shape := r.shape;
+		-- every unit from its segment's table: the scan read no row; a shape the table does not answer only has to give the twin's answer
+		from_table := NOT r.from_table OR (ua.scanned = 0 AND ua.pre = ua.units);
+		twin_scans := ub.scanned > 0;
+		same := kt_rows(qa, true) = kt_rows(qb, true) AND kt_rows(qa, true) = kt_rows(qa, false) AND kt_rows(qa, true) NOT LIKE 'ERROR%';
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- from_table: the scan of the table's index read no row for the shapes of the table (twin_scans: the twin's index, which has none, does)
+SELECT n, shape, same, from_table, twin_scans FROM kt_check('kt', 'kt_b');
+ n  |           shape            | same | from_table | twin_scans 
+----+----------------------------+------+------------+------------
+  1 | count, a key               | t    | t          | t
+  2 | sums and extremes          | t    | t          | t
+  3 | IN list                    | t    | t          | t
+  4 | range                      | t    | t          | t
+  5 | one side of a range        | t    | t          | t
+  6 | group by the key           | t    | t          | t
+  7 | group by, no filter        | t    | t          | t
+  8 | a key that is not there    | t    | t          | f
+  9 | negative key               | t    | t          | t
+ 10 | the NULL key               | t    | t          | t
+ 11 | count of the key           | t    | t          | t
+ 12 | a measure it does not keep | t    | t          | t
+ 13 | a date measure             | t    | t          | t
+ 14 | a filter on another leaf   | t    | t          | t
+ 15 | a window of ts             | t    | t          | t
+ 16 | a key of 3,000 values      | t    | t          | t
+ 17 | FILTER                     | t    | t          | t
+ 18 | no key                     | t    | t          | f
+ 19 | its sums are not kept      | t    | t          | t
+ 20 | a key of 20,000 values     | t    | t          | t
+(20 rows)
+
+-- an index of an older minor: the same answers, read from the units
+SELECT n, shape, same FROM kt_check('kt_c', 'kt_b') WHERE NOT same;
+ n | shape | same 
+---+-------+------
+(0 rows)
+
+SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM kt_c WHERE grp_id = 17')) > 0 AS older_minor_scans,
+       (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM kt WHERE grp_id = 17')) = 0 AS table_does_not;
+ older_minor_scans | table_does_not 
+-------------------+----------------
+ t                 | t
+(1 row)
+
+-- rows in the write buffer are read whatever the table says; a delete or an update makes a segment not exact, and it is read from its units; VACUUM and promotion,
+-- merge compute the table again
+INSERT INTO kt SELECT g, 17 + g % 3, timestamp '2030-01-01' + g * interval '1 minute', date '2030-01-01', g % 100, g % 1000, g % 3000, g % 20000, md5(g::text) FROM generate_series(160001, 160400) g;
+INSERT INTO kt_b SELECT g, 17 + g % 3, timestamp '2030-01-01' + g * interval '1 minute', date '2030-01-01', g % 100, g % 1000, g % 3000, g % 20000, md5(g::text) FROM generate_series(160001, 160400) g;
+SELECT n, shape, same FROM kt_check('kt', 'kt_b') WHERE NOT same;
+ n | shape | same 
+---+-------+------
+(0 rows)
+
+UPDATE kt SET grp_id = 20 + id % 3, amt = 1 WHERE id % 1000 = 5;
+UPDATE kt_b SET grp_id = 20 + id % 3, amt = 1 WHERE id % 1000 = 5;
+DELETE FROM kt WHERE id % 7 = 3;
+DELETE FROM kt_b WHERE id % 7 = 3;
+SELECT n, shape, same FROM kt_check('kt', 'kt_b') WHERE NOT same;
+ n | shape | same 
+---+-------+------
+(0 rows)
+
+SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM kt WHERE grp_id = 17')) > 1000 AS dirty_segments_scan;
+ dirty_segments_scan 
+---------------------
+ t
+(1 row)
+
+VACUUM (freeze, index_cleanup on, disable_page_skipping) kt;
+VACUUM (freeze, index_cleanup on, disable_page_skipping) kt_b;
+SELECT n, shape, same FROM kt_check('kt', 'kt_b') WHERE NOT same;
+ n | shape | same 
+---+-------+------
+(0 rows)
+
+SELECT sift.col_promote('kt_on') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kt_on');
+ minors 
+--------
+ {22}
+(1 row)
+
+SELECT sift.col_verify('kt_on', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT n, shape, same, from_table FROM kt_check('kt', 'kt_b') WHERE NOT same OR NOT from_table;
+ n  |         shape         | same | from_table 
+----+-----------------------+------+------------
+  2 | sums and extremes     | t    | f
+ 16 | a key of 3,000 values | t    | f
+(2 rows)
+
+SELECT sift.col_merge('kt_on', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('kt_on');
+ minors | segments 
+--------+----------
+ {22}   |        1
+(1 row)
+
+SELECT sift.col_verify('kt_on', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT n, shape, same, from_table FROM kt_check('kt', 'kt_b') WHERE NOT same OR NOT from_table;
+ n | shape | same | from_table 
+---+-------+------+------------
+(0 rows)
+
+REINDEX INDEX kt_on;
+SELECT sift.col_verify('kt_on', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT n, shape, same, from_table FROM kt_check('kt', 'kt_b') WHERE NOT same OR NOT from_table;
+ n | shape | same | from_table 
+---+-------+------+------------
+(0 rows)
+
+-- an index taken to the option later, and switched off: the segments written before keep their minor and are read from their units, the ones after have a table
+CREATE TABLE ka (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2024-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 60000) g;
+SET sift.col_format_minor = 14;
+CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (write_buffer_limit = 4096);
+RESET sift.col_format_minor;
+SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ka_idx');
+ minors 
+--------
+ {14}
+(1 row)
+
+ALTER INDEX ka_idx SET (key_columns = 'grp_id');
+INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2025-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(60001, 120000) g;
+SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (freeze) ka;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ka_idx');
+ minors  
+---------
+ {14,22}
+(1 row)
+
+SELECT sift.col_verify('ka_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT (SELECT pre FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) > 0 AS new_segment_answers,
+       (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) > 0 AS old_segment_scans;
+ new_segment_answers | old_segment_scans 
+---------------------+-------------------
+ t                   | t
+(1 row)
+
+SELECT kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', true) = kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', false) AS same_as_heap;
+ same_as_heap 
+--------------
+ t
+(1 row)
+
+SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
+ minors | segments 
+--------+----------
+ {22}   |        1
+(1 row)
+
+SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) = 0 AS merged_answers_all,
+       kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', true) = kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', false) AS same_as_heap;
+ merged_answers_all | same_as_heap 
+--------------------+--------------
+ t                  | t
+(1 row)
+
+SELECT sift.col_verify('ka_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+ALTER INDEX ka_idx SET (key_table = off);
+INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2026-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(120001, 180000) g;
+SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('ka_idx');
+ minors | segments 
+--------+----------
+ {15}   |        1
+(1 row)
+
+SELECT (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM ka WHERE grp_id = 7')) > 0 AS no_table_scans,
+       kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', true) = kt_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ka WHERE grp_id = 7', false) AS same_as_heap;
+ no_table_scans | same_as_heap 
+----------------+--------------
+ t              | t
+(1 row)
+
+SELECT sift.col_verify('ka_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a table over the budget keeps fewer measures, or none: the counts of mid_id are in it, its sums are not
+SELECT (SELECT scanned FROM kt_units('SELECT count(*) FROM kt WHERE mid_id = 17')) = 0 AS mid_id_counts_from_table,
+       (SELECT scanned FROM kt_units('SELECT count(*), sum(amt) FROM kt WHERE mid_id = 17')) > 0 AS mid_id_sums_scan,
+       (SELECT scanned FROM kt_units('SELECT count(*) FROM kt WHERE many_id = 17')) > 0 AS many_id_scans;
+ mid_id_counts_from_table | mid_id_sums_scan | many_id_scans 
+--------------------------+------------------+---------------
+ t                        | t                | t
+(1 row)
+
+-- sift.col_refresh rewrites a segment that has key tables like one that has none: cube_minmax set after the units makes both stale, and the refresh rewrites the one with tables
+CREATE TABLE kr (id int, kk_id int, val int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO kr SELECT g, g % 20, g % 100, md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 20000) g;
+VACUUM (FREEZE, ANALYZE) kr;
+CREATE INDEX kr_on ON kr USING sift_col (id, kk_id, val, pad) WITH (write_buffer_limit = 4096, cube_minmax = false);
+CREATE INDEX kr_off ON kr USING sift_col (id, kk_id, val, pad) WITH (write_buffer_limit = 4096, cube_minmax = false, key_table = off);
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on');
+ minors 
+--------
+ {22}
+(1 row)
+
+ALTER INDEX kr_on SET (cube_minmax = true);
+ALTER INDEX kr_off SET (cube_minmax = true);
+SELECT 'on' AS idx, remaining > 0 AS stale FROM sift.col_refresh('kr_on', 0)
+UNION ALL SELECT 'off', remaining > 0 FROM sift.col_refresh('kr_off', 0) ORDER BY 1;
+ idx | stale 
+-----+-------
+ off | t
+ on  | t
+(2 rows)
+
+SELECT remaining AS left_on FROM sift.col_refresh('kr_on');
+ left_on 
+---------
+       0
+(1 row)
+
+SELECT sift.col_verify('kr_on', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE kr;
+-- a bit flipped, one at a time, in the section of the tables in the stream (every 5th byte of a table): the reader or the check against the units refuses each.
+-- Each flip opens and verifies the whole segment, so the cost grows with the square of the rows: two units of the table
+CREATE TABLE kt_f (LIKE kt) WITH (autovacuum_enabled = off);
+ALTER TABLE kt_f ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO kt_f SELECT * FROM kt WHERE id <= 9000 ORDER BY id;
+VACUUM (FREEZE, ANALYZE) kt_f;
+CREATE INDEX kt_f_on ON kt_f USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
+SELECT runs > 0 AS has_sections, damaged > 500 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_ktab_file_damage('kt_f_on', 5);
+ has_sections | many | some_refused | unnoticed 
+--------------+------+--------------+-----------
+ t            | t    | t            |         0
+(1 row)
+
+DROP TABLE kt_f;
+-- the option is validated, and read back
+CREATE INDEX kt_bad ON kt USING sift_col (id, grp_id) WITH (key_table = maybe);
+ERROR:  invalid value for boolean option "key_table": maybe
+SELECT reloptions FROM pg_class WHERE relname = 'ka_idx';
+                         reloptions                         
+------------------------------------------------------------
+ {write_buffer_limit=4096,key_columns=grp_id,key_table=off}
+(1 row)
+
+DROP TABLE kt, kt_b, kt_c, ka, kt_q;
+DROP FUNCTION kt_rows(text, bool), kt_units(text), kt_check(text, text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

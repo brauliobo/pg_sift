@@ -44,6 +44,7 @@ TABLE_SKIP = {
     'trail': 'trf is read through a sift_col index of its own, which the mode drops',
     'gorder': 'the global order (order_array_columns) is an option of the sift_col index',
     'zonekey': 'zkf is read through its sift_col index only',
+    'keytable': 'ktf is read through its sift_col index only',
 }
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
@@ -1317,6 +1318,41 @@ def gen_zonekey(r, ctx):
                 where=where, having=[], ordered=True, tz=r.choice(ZK_ZONES))
 
 
+# ---------- key tables: the aggregates of a segment's table (column format minor 22) WHERE the key (grp_id: 300 values) is tested, against the normal plan ----------
+KT_WHERE = ['e.grp_id = {k}'] * 3 + ['e.grp_id IN ({k}, {k2}, {k3})', 'e.grp_id BETWEEN {k} AND {k2}', 'e.grp_id < {k}', 'e.grp_id >= {k}', 'e.grp_id <> {k}', 'e.grp_id IS NULL', 'e.grp_id IS NOT NULL',
+                                   'e.grp_id = {k} AND e.val < {v}', "e.grp_id = {k} AND e.ts >= timestamp '2024-06-01'", '(e.grp_id = {k} OR e.grp_id = {k2})', 'e.grp_id = 99999', 'e.val < {v}']
+KT_KEYS = ['e.grp_id', 'e.grp_id % 7', '(e.grp_id < 100)']
+KT_AGGS = ['count(*)', 'count(e.grp_id)', 'count(e.amt)', 'sum(e.amt)', 'avg(e.amt)', 'min(e.amt)', 'max(e.amt)', 'min(e.ts)', 'max(e.ts)', 'sum(e.val)', 'min(e.val)', 'max(e.val)', 'count(DISTINCT e.grp_id)',
+           'sum(e.amt) FILTER (WHERE e.val < {v})']
+
+
+def gen_keytable(r, ctx):
+    fill = lambda t: t.format(k=r.randrange(-40, 260), k2=r.randrange(-40, 260), k3=r.randrange(-40, 260), v=r.randrange(50, 1000))
+    ks = list(dict.fromkeys(r.sample(KT_KEYS, r.choice([0, 0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(fill(a) for a in ['count(*)'] + r.sample(KT_AGGS, r.randrange(1, 5))))
+    return dict(table='ktf', keys=ks, aggs=ag, where=[fill(r.choice(KT_WHERE)) for _ in range(r.choice([1, 1, 1, 2]))], having=[], ordered=True)
+
+
+def dml_keytable(r, ctx):
+    """Updates and deletes (a segment with a dead row is read from its units), inserts into the write buffer, VACUUM, promotion, merge and the option on ktf."""
+    m = r.choice([13, 40, 97, 211, 509])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(12)
+    if e < 3:
+        return r.choice([f'UPDATE ktf SET grp_id = grp_id + {r.randrange(1, 40)} WHERE {ids}', f'UPDATE ktf SET amt = coalesce(amt, 0) + 1, val = val + 1 WHERE {ids}', f'UPDATE ktf SET grp_id = NULL WHERE {ids}'])
+    if e == 3:
+        return f'DELETE FROM ktf WHERE {ids}'
+    if e in (4, 5, 6):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_kt']; ctx['next_kt'] += n
+        return f'INSERT INTO ktf SELECT * FROM fz.gen_ktf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 7:
+        return r.choice(['VACUUM ktf', 'VACUUM (FREEZE) ktf'])
+    if e == 8:
+        return f"ALTER INDEX ktf_idx SET (key_table = {r.choice(['on', 'off'])})"
+    return r.choice(["SELECT sift.col_promote('ktf_idx')", "SELECT sift.col_merge('ktf_idx', true)"])
+
+
 def base_of(parts, nl):
     return BASE + (';enable_nestloop=off' if nl else '') + (';TimeZone=%s' % parts['tz'] if parts.get('tz') else '')
 
@@ -1330,7 +1366,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
-    'zonekey': (gen_zonekey, render_preagg, 4),
+    'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1654,6 +1690,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rw = random.Random(seed * 32452843 + 11)
     ru = random.Random(seed * 49979687 + 13)
     rd = random.Random(seed * 67867979 + 19)
+    rq = random.Random(seed * 86028121 + 23)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
@@ -1670,6 +1707,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [q for _ in range(rk.randrange(dmls + 1)) for q in dml_kcut(rk, ctx)]
         if not TABLE and (not only or 'window' in only):
             st += [q for _ in range(rw.randrange(dmls + 1)) for q in dml_window(rw, ctx)]
+        if not TABLE and (not only or 'keytable' in only):
+            st += [dml_keytable(rq, ctx) for _ in range(rq.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:
@@ -1843,7 +1882,7 @@ def main():
     TABLE = a.table
     if a.selftest:
         for TABLE in (False, True):
-            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000}
             sql = data_sql(1, a.rows, a.parts)
             if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
@@ -1879,7 +1918,7 @@ def main():
         tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

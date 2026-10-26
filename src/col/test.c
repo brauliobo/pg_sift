@@ -52,6 +52,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_run_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_run_file_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
 PG_FUNCTION_INFO_V1(sift_test_col_set_file_damage);
+PG_FUNCTION_INFO_V1(sift_test_col_ktab_file_damage);
 PG_FUNCTION_INFO_V1(sift_test_col_point_file_damage);
 
 #define TEST_NOWBUF	1
@@ -1484,6 +1485,13 @@ Datum
 sift_test_col_set_file_damage(PG_FUNCTION_ARGS)
 {
 	return section_file_damage(fcinfo, sift_cseg_test_set_span);
+}
+
+/* sift._test_col_ktab_file_damage(index, stride): the same for the key tables */
+Datum
+sift_test_col_ktab_file_damage(PG_FUNCTION_ARGS)
+{
+	return section_file_damage(fcinfo, sift_cseg_test_ktab_span);
 }
 
 /* sift._test_col_point_file_damage(index, stride): the same for the point directories at the end of the dictionary section */

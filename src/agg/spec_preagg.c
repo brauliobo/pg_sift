@@ -588,7 +588,8 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 	uint8		cmask = 0;
 	bool		hcal = false,
 				hcalalt = false,
-				calalt = false;
+				calalt = false,
+				ktab;
 	SiftPaWhy	why = SPW_OK;
 
 	if (s->nkeys > 1)
@@ -731,7 +732,12 @@ preagg_rows(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const Sif
 		calalt = true;
 		cmask = 0x0E;
 	}
-	*out = (SiftAggPaShape) {.dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
+	{
+		int			pd = cleaf < 0 && dim >= 0 ? pa_dim(pa, dim) : hdim >= 0 && !hcal ? pa_dim(pa, hdim) : -1;
+
+		ktab = pd >= 0 && pa->dim[pd].ktab;
+	}
+	*out = (SiftAggPaShape) {.ktab = ktab, .dim = dim, .cal = cleaf >= 0, .calmask = cmask, .hcal = hcal, .hcalalt = hcalalt, .calalt = calalt, .hdim = hdim, .list = -1, .nullz = nullz};
 	return SPW_OK;
 }
 
