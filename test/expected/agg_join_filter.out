@@ -221,6 +221,17 @@ SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('a', daterange('202
  SiftAgg key filters 1 units pruned |           3 |            0 |              0
 (1 row)
 
+-- the same with a chain through the entities (ks.id = e.id): the keys of ks are probed from the event's column too, as without the calendar
+SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('a', daterange('2024-02-01', '2024-04-01', '[]')), ('b', daterange('2024-06-01', '2024-07-01', '[]')), ('c', daterange('2030-01-01', '2030-02-01', '[]'))) p (period, range)),
+ all_dates AS (SELECT period FROM periods),
+ ks AS MATERIALIZED (SELECT id FROM ents2 WHERE grp IN (7, 8)),
+ rev AS (SELECT ev.id, ev.amount, periods.period AS bucket FROM ev JOIN periods ON ev.day <@ range JOIN ents2 e ON e.id = ev.dim_a_id JOIN ks ON ks.id = e.id)
+ SELECT all_dates.period, count(DISTINCT rev.id) AS n, sum(rev.amount) AS total FROM all_dates LEFT JOIN rev ON rev.bucket = all_dates.period GROUP BY 1$$);
+                plan                | result_rows | vs_no_filter | vs_normal_plan 
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 2 units pruned |           3 |            0 |              0
+(1 row)
+
 -- a divisor that is zero only on entities outside the table's rows is never evaluated for their events, as in the normal plan; a zero on a matching one raises the same error
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount / e.tier) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 7 AND e.tier > 0$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 

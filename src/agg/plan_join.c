@@ -753,6 +753,7 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 	*quals = drop_pushed(c, *quals);
 	*scan_quals = drop_pushed(c, *scan_quals);
 	*quals = rekey_chains(c, *quals);
+	*scan_quals = rekey_chains(c, *scan_quals);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		jc->clauses = drop_pushed(c, jc->clauses);
 	probe_quals = preserved_join(c) ? list_copy(*scan_quals) : list_concat_copy(*quals, *scan_quals);
