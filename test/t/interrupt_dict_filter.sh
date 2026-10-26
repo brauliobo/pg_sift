@@ -9,7 +9,7 @@ node_init idf 29 "autovacuum = off
 max_parallel_workers_per_gather = 0"
 node_start idf || bail "start failed"
 sql idf "CREATE EXTENSION pg_sift" >/dev/null || bail "pg_sift"
-sql idf "CREATE EXTENSION fuzzystrmatch" >/dev/null 2>&1 || { echo "1..0 # SKIP fuzzystrmatch is not installed"; exit 0; }
+sql idf "CREATE EXTENSION fuzzystrmatch" >/dev/null 2>&1 || { skip 3 "the fuzzystrmatch extension is not available"; finish; }
 sql idf "CREATE TABLE lv (id int, g int, name text)" \
 	"INSERT INTO lv SELECT i, i % 10, repeat(md5(i::text), 6) FROM generate_series(1, 150000) i" \
 	"CREATE INDEX lv_i ON lv USING sift_col (id, g, name)" "VACUUM (FREEZE, ANALYZE) lv" >/dev/null || bail "setup failed"
