@@ -130,6 +130,9 @@ space_worth(int64 blocks, BlockNumber nblocks)
 /* The bytes the space step copied since sift_maint_space_budget began (a round that moves segments down may cut nothing yet) */
 static uint64 space_copied;
 
+/* Set between the rounds of one VACUUM once one copied something: the shift goes on to the end whatever the free blocks left below */
+static bool space_resume;
+
 /* A segment of the directory, as the space step sees it: where its blocks end and how many it takes */
 typedef struct SpaceSeg
 {
@@ -292,7 +295,7 @@ space_shift(Relation rel, SiftWriteTarget *wt, const void *arg)
 
 /*
  * No segment fits the allowance whole (the one that ends the file is larger than it): the highest runs of that one go down a round at a time,
- * when the free blocks below it are worth the lock. An index only; the segment keeps its generation and the cached state of a backend
+ * when the free blocks below it are worth the lock, and on to the end once a round has begun, so that the last of them is not left above a few free blocks. An index only; the segment keeps its generation and the cached state of a backend
  * holds no block, and the relation lock keeps every reader out.
  */
 static bool
@@ -302,7 +305,8 @@ space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg
 	SpaceShift shift;
 
 	if (rel->rd_rel->relkind != RELKIND_INDEX || snap->nsegs == 0 || (e = space_entry(snap, seg[0].gen)) == NULL ||
-		e->kind != SIFT_SEG_IMMUTABLE || !space_worth(sift_store_free_below(rel, seg[0].end, SPACE_MIN_RUN), snap->meta.high_water))
+		e->kind != SIFT_SEG_IMMUTABLE ||
+		(!space_resume && space_copied == 0 && !space_worth(sift_store_free_below(rel, seg[0].end, SPACE_MIN_RUN), snap->meta.high_water)))
 		return false;
 	shift = (SpaceShift) {.entry = e,.budget = *budget};
 	if (run_step(rel, false, space_shift, &shift) != SIFT_STEP_DONE || shift.written == 0)
@@ -400,7 +404,7 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	 * relation is locked): do not stop the relation for it
 	 */
 	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
-		!(budget > 0 && space_worth(sift_store_free_stats(rel).blocks, nblocks)))
+		!(budget > 0 && (space_resume || space_worth(sift_store_free_stats(rel).blocks, nblocks))))
 		return 0;
 	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
 	{
@@ -438,12 +442,15 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 void
 sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
+	space_resume = false;
 	for (int round = 0; round < SPACE_ROUNDS; round++)
 	{
 		BlockNumber freed = sift_maint_space_budget(rel, relocate_page, elevel, budget);
 
 		if (budget == 0 || (space_copied == 0 && !space_worth(freed, RelationGetNumberOfBlocks(rel) + freed)))
 			break;
+		space_resume = space_copied > 0;
 		CHECK_FOR_INTERRUPTS();
 	}
+	space_resume = false;
 }
