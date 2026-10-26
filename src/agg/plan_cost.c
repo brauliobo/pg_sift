@@ -113,6 +113,8 @@
 #define AGG_START_MS		500.0	/* a millisecond in this path's estimates, for starting workers: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
+#define AGG_CUT_SHARE		0.5		/* the share of the index that the keys of a lookup leave, at least, for the normal plan to keep its price: a table of a few units reads them all whatever the key */
+#define AGG_CUT_UNITS		8.0		/* the units the keys of a lookup leave, at most: an index cut by the key (key_cut) reads a handful for one key and the scan costs a millisecond or two more than the probes, where an index not cut by it reads tens to hundreds (1,000,000 rows, 3,000,000: 9 units against 45-417) */
 #define AGG_PROBE_KEYS		4.0		/* the keys of a lookup that the normal plan still reads one btree probe each, priced as they run: the scan starts later and costs more than a few probes (1,000,000 rows, 3 keys: 6.8 ms against 7.1 for the scan, 5 keys: 10.5 against 8.3) */
 #define AGG_KEY_SKEW_FLOOR	2.0		/* the rows a key owns beyond the mean's double are skew: a statistics sample and a mild unevenness of a column are not */
 #define AGG_SETUP_FACTOR	2.0	/* times parallel_setup_cost: the least a scan is charged for workers; a scan the estimate puts under ~4,000 units (8 to 40 ms measured) stays in one process. 22 priced them at 215 ms for the median node: no replay statement took workers, and a shape of 3,200,000 rows that runs 2.5 times faster with them stayed serial */
@@ -1522,11 +1524,12 @@ rel_has_param_qual(RelOptInfo *rel)
 bool
 few_keys_lookup(AggCtx *c, SiftAggSpec *s)
 {
-	double		sel_keys;
+	double		sel_keys,
+				kept;
 	int			n;
 
-	join_key_zone(c, s, &n, &sel_keys);
-	return sel_keys <= AGG_PROBE_KEYS;
+	kept = join_key_zone(c, s, &n, &sel_keys);
+	return sel_keys <= AGG_PROBE_KEYS && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
 }
 
 /*
