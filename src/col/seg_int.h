@@ -192,6 +192,51 @@ typedef struct ZoneArrays
 } ZoneArrays;
 
 #define DICT_PARSE_AFTER	32	/* tests of a dictionary searched in the stream, over the queries of a backend, before it is parsed and cached */
+/*
+ * A dictionary the backend searches in the stream with the bisection cache is parsed and kept once the searches have cost about what the parse costs (ski rental: DICT_PARSE_COST
+ * instructions a string, measured; a search is counted in the cache entry by the buffer reads, DICT_READ_COST each, and the blocks decompressed, DICT_ZSTD_COST each, that the
+ * cache did not save), so that a dictionary of a million strings is not parsed by the 33rd lookup (400 million instructions) and one that is asked all day is parsed
+ */
+#define DICT_PARSE_COST		400
+#define DICT_READ_COST		1600
+#define DICT_ZSTD_COST		24000
+#define BISECT_MIN			2048	/* the dictionaries of fewer strings are parsed after DICT_PARSE_AFTER tests: their bisection is short */
+#define BISECT_SLOTS_MAX	8192
+#define BISECT_STR			24	/* a string up to this long is kept in its slot */
+#define BISECT_NOSTR		UINT16_MAX
+
+/* A position of the sorted order a bisection looked at: its code and, when short, its string; slot[hash(pos)] holds one, an empty or unused one is taken over (hits is aged by each miss on it) */
+typedef struct BisectSlot
+{
+	uint32		pos1;			/* position + 1, 0: empty */
+	uint32		code;
+	uint16		len;			/* BISECT_NOSTR: only the code is kept */
+	uint8		hits;
+	char		str[BISECT_STR];
+} BisectSlot;
+
+/* What the backend remembers of the bisections of one dictionary searched in the stream (col/dictcache.c), under its segment generation like the dictionaries */
+typedef struct DictLookHead
+{
+	uint32		n;
+	uint32		fixed;
+	uint32		nbytes;
+	uint64		offs_at;
+	uint64		bytes_at;
+	uint64		boff_at;
+	uint64		blk_at;
+	uint64		blk_len;
+	uint64		perm_at;
+} DictLookHead;
+
+typedef struct SiftCBisect
+{
+	uint64		spent;			/* instructions the searches of the stream cost since the entry was made */
+	bool		have_head;		/* head: where the parts of the dictionary lie, so that the next query does not read them again */
+	DictLookHead head;
+	uint32		mask;
+	BisectSlot	slot[FLEXIBLE_ARRAY_MEMBER];
+} SiftCBisect;
 
 /* A dictionary stored plain or in blocks (DICT_PLAIN, DICT_BLOCKS, DICT_LOOKUP): where its parts lie in the stream */
 typedef struct DictLook
@@ -209,14 +254,17 @@ typedef struct DictLook
 	uint64		blk_len;
 	uint64		perm_at;
 	uint32		blkno;			/* the block in blkraw (UINT32_MAX: none) */
-	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
-	uint8		blkraw[DICT_BLOCK_RAW_MAX];
-	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
 	uint32		reads;			/* strings read in place for sift_cseg_dict_lazy */
 	uint32		loads;			/* blocks decompressed for the strings of sift_cseg_dict_view_lazy */
 	SiftCDict	stub;			/* n and look only: what a test is given instead of the parsed dictionary */
+	SiftCBisect *bc;			/* the backend's cache of the positions bisected (NULL: none yet, or too few strings) */
+	bool		bc_tried;
+	/* written before they are read, so not cleared with the rest (look_alloc) */
+	uint16		blkoff[DICT_BLOCK + 1];	/* where its strings start in blkraw */
+	uint8		blkraw[DICT_BLOCK_RAW_MAX];
+	uint8		blkz[DICT_BLOCK_RAW_MAX + DICT_BLOCK_HEAD];
 	char		buf[SIFT_COL_DICT_MAX_ENTRY];	/* the string a bisection looks at */
 } DictLook;
 
@@ -332,5 +380,8 @@ extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);
 /* Counts one more test of the dictionary of leaf col that was searched in the stream, and says how many the backend made */
 extern uint32 sift_cseg_dict_asked(SiftColSegment *seg, int col);
 extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);
+/* The bisection cache of the dictionary of leaf col (n strings), pinned for the segment's context; made empty when the cache has none, NULL if it has no room */
+extern SiftCBisect *sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n);
+extern SiftCBisect *sift_cseg_bisect_find(SiftColSegment *seg, int col);
 
 #endif

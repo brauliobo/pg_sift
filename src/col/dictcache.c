@@ -373,6 +373,49 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	return d;
 }
 
+#define BISECT_UNIT		(UINT32_MAX - 2)
+
+SiftCBisect *
+sift_cseg_bisect_find(SiftColSegment *seg, int col)
+{
+	DictKey		k;
+	DictEnt    *e;
+
+	if (cache == NULL)
+		return NULL;
+	dict_key(&k, seg, col, BISECT_UNIT);
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
+		return NULL;
+	dict_pin(e, seg->mcxt);
+	return e->obj;
+}
+
+SiftCBisect *
+sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)
+{
+	DictKey		k;
+	DictEnt    *e;
+	MemoryContext cx;
+	SiftCBisect *b;
+	uint32		slots = 256;
+
+	dict_key(&k, seg, col, BISECT_UNIT);
+	if (cache == NULL)
+		cache_init();
+	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		dict_pin(e, seg->mcxt);
+		return e->obj;
+	}
+	while (slots < BISECT_SLOTS_MAX && slots < n / 4)
+		slots *= 2;
+	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment bisection", ALLOCSET_SMALL_SIZES);
+	b = MemoryContextAllocZero(cx, offsetof(SiftCBisect, slot) + (Size) slots * sizeof(BisectSlot));
+	b->mask = slots - 1;
+	obj_keep(&k, cx, b, seg->mcxt);
+	return b;
+}
+
 const SiftCLens *
 sift_cseg_lens_find(SiftColSegment *seg, uint32 unit, int col, MemoryContext arena)
 {

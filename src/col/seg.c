@@ -511,6 +511,8 @@ look_load_block(DictLook *l, uint32 b)
 	}
 	l->blkno = b;
 	l->loads++;
+	if (l->bc != NULL)
+		l->bc->spent += l->blkz[0] == 0 ? DICT_READ_COST : DICT_ZSTD_COST;
 }
 
 /* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */
@@ -550,11 +552,22 @@ look_code_str(DictLook *l, uint32 code, uint32 *len, char *buf)
 	return buf;
 }
 
+static inline BisectSlot *
+look_slot(const DictLook *l, uint32 pos)
+{
+	return l->bc ? &l->bc->slot[(pos * 0x9E3779B1u) >> 8 & l->bc->mask] : NULL;
+}
+
 static uint32
 look_perm(const DictLook *l, uint32 pos)
 {
+	const BisectSlot *s = look_slot(l, pos);
 	uint32		code;
 
+	if (s != NULL && s->pos1 == pos + 1)
+		return s->code;
+	if (l->bc != NULL)
+		l->bc->spent += DICT_READ_COST;
 	seg_read(l->seg, l->perm_at + (uint64) pos * sizeof(uint32), sizeof(code), &code);
 	if (code >= l->n)
 		corrupt(l->seg, "The order of the dictionary of leaf %d names code %u of %u.", l->col, code, l->n);
@@ -565,9 +578,49 @@ look_perm(const DictLook *l, uint32 pos)
 static const char *
 look_sorted_str(const void *ctx, uint32 pos, uint32 *len)
 {
-	const DictLook *l = ctx;
+	DictLook   *l = (DictLook *) ctx;
+	BisectSlot *s = look_slot(l, pos);
+	uint32		code;
+	const char *str;
 
-	return look_code_str((DictLook *) l, look_perm(l, pos), len, ((DictLook *) l)->buf);
+	if (s != NULL && s->pos1 == pos + 1)
+	{
+		if (s->hits < UINT8_MAX)
+			s->hits++;
+		if (s->len != BISECT_NOSTR)
+		{
+			*len = s->len;
+			return s->str;
+		}
+		return look_code_str(l, s->code, len, l->buf);
+	}
+	code = look_perm(l, pos);
+	str = look_code_str(l, code, len, l->buf);
+	/* a miss takes over an empty slot or one nothing has used since the last miss on it, and otherwise ages it: what every search shares (the top of the bisection) stays */
+	if (s != NULL && (s->pos1 == 0 || s->hits == 0))
+	{
+		s->pos1 = pos + 1;
+		s->code = code;
+		s->hits = 0;
+		s->len = *len <= BISECT_STR ? (uint16) *len : BISECT_NOSTR;
+		if (s->len != BISECT_NOSTR)
+			memcpy(s->str, str, *len);
+	}
+	else if (s != NULL)
+		s->hits--;
+	return str;
+}
+
+/* The cache of the positions of a dictionary of many strings, once per search */
+static void
+look_cache(DictLook *l)
+{
+	if (!l->bc_tried)
+	{
+		l->bc_tried = true;
+		if (l->n >= BISECT_MIN && HEAD_CACHED())
+			l->bc = sift_cseg_bisect(l->seg, l->col, l->n);
+	}
 }
 
 static int64
@@ -576,7 +629,10 @@ look_find(const SiftCDictLook *look, const char *s, uint32 len)
 	const DictLook *l = (const DictLook *) look;
 	SiftCSorted so = {l->n, look_sorted_str, l};
 	SiftColValue c = {.v.s = s,.len = len};
-	uint32		pos = sift_csorted_bound(&so, &c, false);
+	uint32		pos;
+
+	look_cache((DictLook *) l);
+	pos = sift_csorted_bound(&so, &c, false);
 
 	return pos < l->n && sift_csorted_cmp(&so, pos, &c) == 0 ? (int64) look_perm(l, pos) : -1;
 }
@@ -589,6 +645,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint6
 	uint32		from,
 				to;
 
+	look_cache((DictLook *) l);
 	sift_csorted_range(&so, op, c, &from, &to);
 	for (uint32 pos = from; pos < to;)
 	{
@@ -607,6 +664,42 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint6
 	return to - from;
 }
 
+/* The blocks and the string buffer of a DictLook are written before they are read: only what comes before them is cleared (clearing them costs 34,000 instructions a query and segment) */
+static DictLook *
+look_alloc(SiftColSegment *seg)
+{
+	DictLook   *l = MemoryContextAlloc(seg->mcxt, sizeof(DictLook));
+
+	memset(l, 0, offsetof(DictLook, blkoff));
+	return l;
+}
+
+/* A searchable dictionary (form 2) from where its parts lie, which the backend kept from the query that read them */
+static DictLook *
+look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
+{
+	DictLook   *l = look_alloc(seg);
+
+	l->seg = seg;
+	l->col = col;
+	l->n = bc->head.n;
+	l->fixed = bc->head.fixed;
+	l->nbytes = bc->head.nbytes;
+	l->boff_at = bc->head.boff_at;
+	l->blk_at = bc->head.blk_at;
+	l->blk_len = bc->head.blk_len;
+	l->perm_at = bc->head.perm_at;
+	l->blocked = true;
+	l->blkno = UINT32_MAX;
+	l->look = (SiftCDictLook) {look_find, look_match};
+	l->stub.n = l->n;
+	l->stub.look = &l->look;
+	l->searchable = true;
+	l->bc = bc;
+	l->bc_tried = true;
+	return l;
+}
+
 /* Where the dictionary of leaf col lies when it is stored plain or in blocks (forms 0, 2 and 3); NULL for the compact form, which is read whole */
 static DictLook *
 dict_look(SiftColSegment *seg, int col)
@@ -618,10 +711,13 @@ dict_look(SiftColSegment *seg, int col)
 	DictLook   *l;
 	uint64		nblk;
 	uint32		blen;
+	SiftCBisect *bc;
 
 	if (pv->look_checked[col])
 		return pv->look[col];
 	pv->look_checked[col] = true;
+	if (HEAD_CACHED() && (bc = sift_cseg_bisect_find(seg, col)) != NULL && bc->have_head)
+		return pv->look[col] = look_from_head(seg, col, bc);
 	dict_region(seg, col, &off, &len);
 	off += sec(seg, SIFT_SEC_DICT)->off;
 	if (len < DICT_HEAD)
@@ -629,7 +725,7 @@ dict_look(SiftColSegment *seg, int col)
 	seg_read(seg, off, DICT_HEAD, head);
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
-	l = MemoryContextAllocZero(seg->mcxt, sizeof(DictLook));
+	l = look_alloc(seg);
 	l->seg = seg;
 	l->col = col;
 	l->n = head[1];
@@ -669,6 +765,13 @@ dict_look(SiftColSegment *seg, int col)
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
+			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
+			{
+				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at};
+				bc->have_head = true;
+				l->bc = bc;
+				l->bc_tried = true;
+			}
 		}
 		else if (l->blk_at + blen > off + len)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
@@ -691,7 +794,7 @@ sift_cseg_dict_search(SiftColSegment *seg, int col)
 		return pv->dict[col];
 	l = dict_look(seg, col);
 	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost */
-	if (l && l->searchable && (sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER || sift_cseg_dict_nokeep(seg, col)))
+	if (l && l->searchable && ((l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
 	return sift_cseg_dict(seg, col);
 }
