@@ -274,6 +274,27 @@ SELECT * FROM sr_range('sr', 'f', ARRAY['WHERE COL > 0', 'WHERE COL BETWEEN -10 
       16 |   16 |        16 | 
 (1 row)
 
+-- a sort expression after the key makes the unit hold the key whole (read with the rows of the mask): the search of the run for the range must not overwrite it
+CREATE FUNCTION sr_expr(flts text[]) RETURNS TABLE (queries bigint, same bigint, different text[]) LANGUAGE plpgsql AS $$
+DECLARE flt text; lim int; q text; n bigint := 0; ok bigint := 0; bad text[] := '{}'; a text; b text;
+BEGIN
+	FOREACH flt IN ARRAY flts LOOP
+	FOREACH lim IN ARRAY ARRAY[20, 300] LOOP
+		q := format('SELECT id, k FROM sr WHERE %s ORDER BY k, k * 2, id LIMIT %s', flt, lim);
+		PERFORM sr_mode('plain'); a := sr_rows(q);
+		PERFORM sr_mode('runs'); b := sr_rows(q);
+		n := n + 1;
+		IF a = b THEN ok := ok + 1; ELSE bad := bad || (flt || ' limit ' || lim); END IF;
+	END LOOP; END LOOP;
+	PERFORM sr_mode('runs');
+	RETURN QUERY SELECT n, ok, bad;
+END $$;
+SELECT * FROM sr_expr(ARRAY['k >= 0', 'k >= 250', 'k > 100 AND k <= 300', 'k BETWEEN 100 AND 120', 'k = 77', 'k > 400 OR k < 20', 'k >= 250 AND id % 7 = 3']);
+ queries | same | different 
+---------+------+-----------
+      14 |   14 | {}
+(1 row)
+
 -- rows in the write buffer have no run and are read whatever the runs say; deletes and updates leave the rows of a run that are not live, and the new
 -- version of an updated row is in the buffer; VACUUM, promotion and merge write the runs again
 INSERT INTO sr SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 2 = 0 THEN NULL ELSE g % 3 END, timestamptz '2023-06-01' + g * interval '1 second',
@@ -576,5 +597,5 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTE
 (1 row)
 
 DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f, sr_d CASCADE;
-DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]), sr_range(text, text, text[]);
+DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]), sr_range(text, text, text[]), sr_expr(text[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

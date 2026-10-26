@@ -2007,8 +2007,13 @@ run_key_of(RunWalk *w, uint32 pos)
 	int64		key = 0;
 
 	sift_colsrc_run_read(w->src, w->unit, k0->leaf, pos, 1, &row);
-	sift_colsrc_read_rows(w->src, w->unit, k0->leaf, &row, 1, &v);
-	if (!row_key(k0, &v, 0, &key))
+	/* a unit that has the key whole keeps it in the buffer of the leaf, which a read of rows overwrites */
+	if (w->key0 == NULL)
+	{
+		sift_colsrc_read_rows(w->src, w->unit, k0->leaf, &row, 1, &v);
+		row = 0;
+	}
+	if (!row_key(k0, w->key0 ? w->key0 : &v, row, &key))
 		run_corrupt(w, "has a NULL row among those with a value");
 	return key;
 }
