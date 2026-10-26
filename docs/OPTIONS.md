@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 92 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 94 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1103,6 +1103,32 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on for an index with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
 
+#### auto(table-key-lists)
+
+`sift_table` · default · since 3.5 · default automatic
+
+- **What it does:** count(DISTINCT col) of a sift_table column that is an int2, int4 or date foreign key or *_id and not unique reads the key list or bitmap of each clean, all-visible unit, not its rows
+- **Gain:** count(DISTINCT fk) of 500,000 rows, 7 columns, 21 units: 2.10 to 0.053 ms, executor 36.2M to 0.69M instructions; with a date filter 2.10 to 0.106 ms, 36.5M to 1.30M
+- **Impact:** index size: +0.00% to +0.55% of the column groups (8 KB page granularity, 500,000 rows, 7 columns: 1,490,944 to 1,499,136 bytes after COPY with the lists, none visible after INSERT and VACUUM); build, merge and writes: User instructions of the writer: INSERT 3,393,416,045 to 3,393,024,718 (-0.01%), VACUUM FREEZE 5,732,666,520 to 5,800,252,851 (+1.18%), COPY 6,453,099,597 to 6,486,689,588 (+0.52%), 100 batches of 1,000 rows 29,270,531,273 to 29,273,684,061 (+0.01%), UPDATE of 10% 2,006,963,472 to 2,006,942,673 (0.00%), VACUUM after it +0.54%, merge +1.58%; lists and run heads together; other: format minor 15; A list or bitmap per unit and column, written only where the lists of all the columns of the unit take at most 3% of its bytes (a column of random keys keeps none). A dirty unit (a tombstone or a write buffer row) is read as before; groups written earlier have none until VACUUM or a merge rewrites them.
+- **When:** A sift_table with an int2, int4 or date column that is a foreign key or ends in _id and is not unique, a layout with no jsonb path, units clean and all-visible, count(DISTINCT col) over whole units.
+- **Default:** automatic — Meets the 3.3 rule: 40x in instructions on count(DISTINCT fk) (limit 5%), growth under 0.6% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The columns are the default of key_columns for an index, so there is no second choice to make.
+- **Turn off:** SET sift.col_format_minor = 14 (no list is written; groups already written keep theirs until rewritten) or SET sift.agg_preagg = off (no unit is answered from pre-aggregates).
+- **Upgrade from 3.4:** No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3).
+- **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A column that is not a foreign key or named *_id has no list; a sift_col index takes key_columns for the others.
+
+#### auto(table-run-heads)
+
+`sift_table` · default · since 3.5 · default automatic
+
+- **What it does:** ORDER BY ts LIMIT n (n <= 32, one sort key, no condition, join or aggregate) of a timestamp or timestamptz column the rows follow reads the first and last keys of each clean, all-visible unit, not the unit
+- **Gain:** ORDER BY ts DESC LIMIT 10 of 500,000 rows, 7 columns, 19 units: 0.140 to 0.038 ms, executor 1.74M to 0.40M instructions; ASC LIMIT 10 0.80M to 0.44M; LIMIT 32 0.82M to 0.58M (ASC), 2.26M to 0.67M (DESC); LIMIT 33 to 10,000 within 1%
+- **Impact:** index size: +1.42% of the column groups with one timestamp column (1,736,704 to 1,761,280 bytes, 500,000 rows, 7 columns, 19 units); +0.55% after COPY; build, merge and writes: User instructions of the writer: INSERT 3,393,416,045 to 3,393,024,718 (-0.01%), VACUUM FREEZE 5,732,666,520 to 5,800,252,851 (+1.18%), COPY 6,453,099,597 to 6,486,689,588 (+0.52%), 100 batches of 1,000 rows 29,270,531,273 to 29,273,684,061 (+0.01%), UPDATE of 10% 2,006,963,472 to 2,006,942,673 (0.00%), VACUUM after it +0.54%, merge +1.58%; lists and run heads together; other: format minor 18; A run header and its head (up to 32 keys at each end with the heap addresses of their rows: 16 B a key) per unit, written only where the run takes at most 3% of the unit's bytes, which is a column the rows follow (a run of any other takes 2 B a row and is not written); none for a unit with NULL or under 128 rows. A source does not walk a run that is the rows in their own order (LIMIT above 32 reads the unit as before). A 3.3 library cannot read minor 18.
+- **When:** A sift_table timestamp or timestamptz column loaded in order (created_at), ORDER BY it LIMIT up to 32 with no filter, join or aggregate, units clean and all-visible with no NULL in the column. Not a column the rows do not follow, a filtered LIMIT or LIMIT above 32.
+- **Default:** automatic — Meets the 3.3 rule: 3.7x at LIMIT 10 DESC (limit 5%), growth 0.55% to 1.42% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The column is the one whose run fits 3% of a unit, so there is no second choice to make.
+- **Turn off:** SET sift.col_format_minor = 12 (no run is written; groups already written keep theirs until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off.
+- **Upgrade from 3.4:** No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can).
+- **Advice:** Leave on; EXPLAIN ANALYZE shows Units Answered By Run Head. A b-tree on the column is still faster for LIMIT 10; heads do not apply to LIMIT above 32 or to a filtered LIMIT.
+
 #### auto(top-n-zone-probe)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -1946,6 +1972,11 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 
 
 <!-- sift-upgrade:start -->
 No default changed since 3.4; new: none.
+
+| Option | 3.4 | 3.4 | Column format | What a 3.4 user gets after the update |
+|---|---|---|---|---|
+| `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
+| `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
 <!-- sift-upgrade:end -->
 
 ## NOTICE texts

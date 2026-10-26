@@ -409,7 +409,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Group histograms (the cube) and calendar cells | works | works | a table writes the default cube and the cells of every date and timestamp column; an index takes `preagg` and `calendar_columns` |
 | Minimum and maximum per group of the cube (`cube_minmax`) | works | missing | a table would grow 6.1% for it: not a default, no setting yet |
 | Superunit summaries (`superunit`) | works | missing | whole-table aggregates read one summary for 16 units on an index |
-| Key lists and bitmaps of a leaf (`key_columns`) | works | missing | `count(DISTINCT)` is pushed down and counts the values of the rows; no key list of the units to read instead |
+| Key lists and bitmaps of a leaf (`key_columns`) | works | works | a table writes them for its int2, int4 and date foreign key and `*_id` columns that are not unique (the default of an index), within 3% of a unit; `count(DISTINCT)` of a unit that has one reads no row |
 | HyperLogLog sketch (`hll_columns`, `approx_count_distinct`) | works | missing | `sift.approx_count_distinct` is pushed down and reads the rows; no sketch of the units |
 | Exceptions of a leaf that is NULL in nearly every row (soft-delete stamp) | works | missing | `IS NULL` / `IS NOT NULL` read the unit's NULL count either way |
 | Rollups of the elements of a list (`rollup`, paths) | works | missing | declared paths (`sift.table_set_paths`) make leaves of a table, not rollups |
@@ -424,7 +424,8 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Decoding straight into the executor's vector | works | partial | a leaf that is not wide decodes into the executor's buffer in its own type (the read shared with `sift_col`); wide leaves (numeric over 18 digits, interval, enum) decode, then copy |
 | Point directory and heap addresses of a key (`point_columns`, `point_tid_columns`) | works | n/a | a table has no index scan of its own: a btree serves point lookups |
 | Units cut by a key (`key_cut`) | works | n/a | a table has no option surface; a lookup of a key reads the units of its superblocks |
-| Sorted runs, run heads and the global order (`order_columns`) | works | missing | `ORDER BY .. LIMIT` walks the zones of the units instead |
+| Sorted runs and run heads (`order_columns`) | works | works | a table writes the run of its timestamp columns where the run takes at most 3% of a unit (a column loaded in order: its rows are the run, and a unit keeps the first and last keys); `ORDER BY .. LIMIT 32` of such a column reads no unit |
+| Run heads of a superblock, read without opening its unit | works | missing | a superblock of a table may hold write buffer rows and tombstones that its page masks do not show, so the unit is opened |
 | Global order of a leaf (`order_array_columns`) | works | missing | the sorted `(key, heap address)` entries of every row of a segment; the top-N walks the zones of the units instead |
 | Aggregates of a unit net of its dead rows | works | missing | a unit with a dead row is read as its rows; the counts and integer sums of the unit stay unused |
 | Top-N from the zones of the units | works | works |  |

@@ -243,6 +243,15 @@ sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull
 	return cu->run.found;
 }
 
+bool
+sift_col_run_identity(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+
+	SIFT_INVARIANT(cu->run.known && cu->run.found && cu->run.col == col, "sift_col: the kind of a sorted run read without its info");
+	return cu->run.r.kind == SIFT_CRUN_IDENT;
+}
+
 /*
  * The head of the sorted run of col in the unit of superblock sb, when the unit need not be opened to know that every row of it is live and visible to the
  * snapshot: the only unit of the superblock (a write buffer holding rows of it is the caller's to rule out), of a segment with superunit summaries (the page

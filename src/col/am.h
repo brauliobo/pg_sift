@@ -85,6 +85,8 @@ extern bool sift_col_paths_redecide(Relation index);
 extern void sift_col_auto_keys_report(Relation index);
 /* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
+/* ... of the heap column hatt itself (the keys of a sift_table's columns: the leaf's attno) */
+extern bool sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, const SiftColDef *d);
 extern bool sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d);
 #ifdef SIFT_TESTING
 extern int	sift_test_col_rollup_panic;

@@ -43,7 +43,7 @@ SELECT 'cmo_nots', blobs > 0, intact = blobs, with_calendar = 0, cut > 0, cut_ac
 FROM sift._test_tbl_cube_damage('cmo_nots', 3)
 ORDER BY 1;
 
--- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes minor 8
+-- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes the newest minor its columns ask for (18: the run heads of its ascending timestamp column, which need the setting 15)
 SET sift.col_format_minor = 7;
 SELECT cmo_fill('cmo', 60001, 90000);
 VACUUM (DISABLE_PAGE_SKIPPING) cmo;

@@ -46,6 +46,7 @@
 
 #include "col/am.h"
 #include "col/pg.h"
+#include "col/runs.h"
 #include "col/seg.h"
 #include "core/lane.h"
 #include "core/limits.h"
@@ -210,6 +211,35 @@ layout_policy(Relation rel, const SiftTblLayout *l)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid compression option: %s", err)));
 	}
 	return pol;
+}
+
+/*
+ * The pre-aggregates a segment of the layout carries and the planner counts on (SiftSrcProvider.preagg): the default cube, its calendar cells under a minor that
+ * allows them, and, for a layout without shredded leaves, the key lists of the foreign key and *_id columns the default of key_columns picks for a sift_col index
+ * and the sorted runs of the timestamp columns. Both are written only where they fit the share of a unit that sift_col gives its key lists.
+ */
+void
+sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spec)
+{
+	sift_cpagg_spec_default(schema, spec);
+	spec->table = true;
+	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
+	for (int c = 0; c < schema->ncols; c++)
+		spec->lookup[c] = sift_col_table_lookup;
+	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
+		sift_cpagg_spec_calendar(schema, spec);
+	if (schema->kinds)
+		return;
+	spec->keyauto = true;
+	for (int c = 0; c < schema->ncols; c++)
+	{
+		const SiftColDef *d = &schema->cols[c];
+
+		if (d->attno <= 0 || d->path[0])
+			continue;
+		spec->set[c] = spec->pres[c] = sift_col_key_attr(rel, d->attno, schema, d);
+		spec->run[c] = (d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ) && sift_crun_leaf_ok(schema, d);
+	}
 }
 
 const SiftTblLayout *

@@ -641,9 +641,10 @@ typedef struct SiftSrcProvider
 	 * Optional (NULL: no sorted runs): the sorted run of a leaf of the unit the source is at, in the numbering `read` uses: false when the
 	 * unit has none or its rows are not numbered as stored (a unit of a match set, rows read again from the heap, a unit narrowed to a few rows). The rows
 	 * of positions [0, nvals) of the run have a value, ascending by (value, row), the next nnull are the NULL rows ascending, the rest are the rows whose
-	 * value the leaf cannot store, ascending. run_read gives the rows at positions [pos, pos + cnt) of that run. id names the unit within the scan.
+	 * value the leaf cannot store, ascending. run_read gives the rows at positions [pos, pos + cnt) of that run. id names the unit within the scan. walk: the
+	 * caller will read the rows of the run (not only its head); a source may refuse a run that is the rows in their own order, which reads no faster than the unit.
 	 */
-	bool		(*run_info) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id);
+	bool		(*run_info) (void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
 	void		(*run_read) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 	/*
 	 * The global order of a leaf (optional, col/gorder.h): every row's key and heap address sorted, in sources (stored segments, the rows of the write
@@ -833,7 +834,7 @@ extern bool sift_colsrc_has_zone_range(SiftSrcSource *src);
 extern bool sift_colsrc_overflow(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
 extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 /* The sorted run of a leaf of the unit (SiftSrcProvider.run_info): false when there is none to use, then the rows of the run [pos, pos + cnt) */
-extern bool sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id);
+extern bool sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
 /* The head of the run (SiftSrcProvider.run_heads): its H, 0 when there is none */
 extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);

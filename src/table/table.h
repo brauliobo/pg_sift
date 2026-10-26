@@ -492,6 +492,8 @@ extern int	sift_tbl_gscan_block(SiftTblGroupScan *g, BlockNumber vblock, const u
 
 /* The column layout of the table now, and the one segment e was written for (a segment keeps its own after ALTER TABLE) */
 extern const SiftColSchema *sift_tbl_layout_schema(Relation rel, SiftTblRel *st);
+/* The pre-aggregates the segments of a layout are written with: the writers and the planner read the same spec */
+extern void sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spec);
 extern Datum sift_tbl_leaf_datum(Relation rel, const SiftColDef *def, const SiftColVec *vec, uint32 i);
 /* Does every column segment hold the leaves of the table's declared paths? (a layout of the paths is exposed to the aggregate scan only then) */
 extern bool sift_tbl_paths_complete(Relation rel, SiftTblRel *st);

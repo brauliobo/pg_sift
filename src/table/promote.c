@@ -131,7 +131,11 @@ seal_flush(SealWriter *sw)
 		{
 			sw->wt = sift_wt_begin(sw->rel, SIFT_WRITE_SHARED);
 			sift_wt_expect(sw->wt, sw->expect);
+			SiftCPaggSpec spec;
+
 			sw->w = sift_colw_begin(sw->wt, sift_store_new_gen(sw->rel), sw->l->schema, sw->policy, sw->format, sw->cxt);
+			sift_tbl_pagg_spec(sw->rel, sw->l->schema, &spec);
+			sift_colw_set_preagg(sw->w, &spec);
 		}
 		sift_colw_add(sw->w, sw->batch);
 	}

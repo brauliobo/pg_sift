@@ -327,9 +327,9 @@ sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, Sif
 }
 
 bool
-sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id)
 {
-	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, nvals, nnull, id);
+	return src->prov->run_info && src->prov->run_info(src->impl, unit, leaf, walk, nvals, nnull, id);
 }
 
 int

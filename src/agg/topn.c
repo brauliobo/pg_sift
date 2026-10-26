@@ -2111,7 +2111,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	SiftSrcVec	cv = {0};
 
 	/* the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
-	if (!sift_topn_runs || k0->xk != TXK_NONE || k0->leaf < 0 || !sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id))
+	if (!sift_topn_runs || k0->xk != TXK_NONE || k0->leaf < 0 || !sift_colsrc_run_info(src, unit, k0->leaf, true, &nvals, &nnull, &id))
 		return false;
 	if (t->revisit)
 	{
@@ -2267,7 +2267,7 @@ head_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64
 			return false;
 	if (nrow % 64 && rmask[nrow / 64] != (UINT64CONST(1) << (nrow % 64)) - 1)
 		return false;
-	if (!sift_colsrc_run_info(src, unit, k0->leaf, &nvals, &nnull, &id) || nvals != (uint32) nrow || nnull != 0)
+	if (!sift_colsrc_run_info(src, unit, k0->leaf, false, &nvals, &nnull, &id) || nvals != (uint32) nrow || nnull != 0)
 		return false;
 	if (sift_colsrc_run_heads(src, unit, k0->leaf, lo, &nlo, hi, &nhi) == 0)
 		return false;

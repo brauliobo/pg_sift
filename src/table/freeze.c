@@ -511,6 +511,7 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 	const SiftTblLayout *l = layout_of(rel, st);
 	SiftSegEntry sel[SIFT_MAX_SEGMENTS];
 	XidFinal	fin = {.oldest = oldest};
+	SiftCPaggSpec spec;
 	uint64		bytes = 0;
 	int			n;
 
@@ -524,7 +525,8 @@ sift_tbl_merge(Relation rel, SiftTblRel *st, TransactionId oldest)
 	}
 	if (n == 0)
 		return 0;
-	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), NULL, sel, n, tbl_col_format(any_vers(sel, n)), merge_freeze, &fin);
+	sift_tbl_pagg_spec(rel, l->schema, &spec);
+	sift_col_merge_segments(rel, l->schema, layout_policy(rel, l), &spec, sel, n, tbl_col_format(any_vers(sel, n)), merge_freeze, &fin);
 	sift_tbl_refresh(rel, st);
 	return bytes;
 }

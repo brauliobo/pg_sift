@@ -144,13 +144,20 @@ sift_col_leaf_unique(Relation heap, Relation index, const SiftColDef *d)
 }
 
 bool
+sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, const SiftColDef *d)
+{
+	const char *name = NameStr(TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attname);
+
+	/* the option is a list split at commas, and its names are not quoted */
+	return sift_cset_pres_leaf_ok(schema, d) && strchr(name, ',') == NULL && (is_fk_column(heap, hatt) || ends_in_id(name)) && !is_unique_column(heap, hatt);
+}
+
+bool
 sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d)
 {
 	AttrNumber	hatt = heap_attno(index, d);
-	const char *name = leaf_name(index, d);
 
-	/* the option is a list split at commas, and its names are not quoted */
-	return hatt != 0 && sift_cset_pres_leaf_ok(schema, d) && strchr(name, ',') == NULL && (is_fk_column(heap, hatt) || ends_in_id(name)) && !is_unique_column(heap, hatt);
+	return hatt != 0 && sift_col_key_attr(heap, hatt, schema, d);
 }
 
 /* 'auto: a, b'; 'auto' for none, which the next REINDEX decides again */

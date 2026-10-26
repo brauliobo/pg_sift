@@ -856,12 +856,9 @@ static void
 tbl_preagg(Relation rel, SiftSrcPreagg *pa)
 {
 	SiftCPaggSpec spec;
-	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
 
-	/* the segments are written with the default spec of their layout (its calendar dims when the minor allows them: seg_write.c), whose columns are the leaves of the table's */
-	sift_cpagg_spec_default(schema, &spec);
-	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
-		sift_cpagg_spec_calendar(schema, &spec);
+	/* the segments are written with the spec of their layout, whose columns are the leaves of the table's */
+	sift_tbl_pagg_spec(rel, sift_tbl_layout_schema(rel, sift_tbl_rel(rel)), &spec);
 	sift_aggpre_spec(&spec, pa);
 }
 
@@ -891,6 +888,45 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 	return col >= 0 && sift_aggpre_unit_hist(&((TblSource *) impl)->pre, &p->unit, col + (cal ? SIFT_PAGG_CAL : 0), &p->schema->cols[col], p->leaf_of_col, h);
 }
 
+static bool
+tbl_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	TblPart    *part = unit->priv;
+
+	return part->col[leaf] >= 0 && sift_aggpre_unit_presence(&part->unit, part->col[leaf], p);
+}
+
+/*
+ * A segment of an older layout may lack the column, and a wide leaf is ordered by the images of its values, not the stored keys. A table writes the run of a column
+ * its rows follow (the run of any other takes more than a unit may give it): the rows are the run, so walking it reads no faster than the unit does, and only
+ * the head of the run is of use
+ */
+static bool
+tbl_run_info(void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+
+	return p->col[leaf] >= 0 && !t->lay->leaf[leaf].wide && sift_aggpre_run_info(&t->sel, unit, &p->unit, p->col[leaf], nvals, nnull, id) &&
+		!(walk && sift_col_run_identity(&p->unit, p->col[leaf]));
+}
+
+static int
+tbl_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	TblPart    *p = unit->priv;
+
+	return sift_aggpre_run_heads(&p->unit, p->col[leaf], lo, nlo, hi, nhi);
+}
+
+static void
+tbl_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
+{
+	TblPart    *p = unit->priv;
+
+	sift_col_run_read(&p->unit, p->col[leaf], pos, cnt, rows);
+}
+
 static const SiftSrcProvider tbl_provider = {
 	.owns_index = tbl_owns_index,
 	.owns_table = tbl_owns_table,
@@ -917,6 +953,10 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_exact = tbl_unit_exact,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
+	.unit_presence = tbl_unit_presence,
+	.run_info = tbl_run_info,
+	.run_heads = tbl_run_heads,
+	.run_read = tbl_run_read,
 	.read_sel = tbl_read_sel,
 	.narrow = tbl_narrow,
 	.prune_str = tbl_prune_str,

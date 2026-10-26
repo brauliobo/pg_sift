@@ -75,7 +75,7 @@ ORDER BY 1;
  cmo_seven | t         | t              | t                 | t         | t            | t            | t            | t
 (3 rows)
 
--- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes minor 8
+-- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes the newest minor its columns ask for (18: the run heads of its ascending timestamp column, which need the setting 15)
 SET sift.col_format_minor = 7;
 SELECT cmo_fill('cmo', 60001, 90000);
  cmo_fill 
@@ -120,7 +120,7 @@ VACUUM (FULL) cmo;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
  minors 
 --------
- {8}
+ {18}
 (1 row)
 
 SELECT blobs > 0 AS has_cubes, with_calendar = blobs AS all_with_calendar FROM sift._test_tbl_cube_damage('cmo', 3);

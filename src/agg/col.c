@@ -561,14 +561,11 @@ col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem
 
 /* the stored numbering: not a unit of a match set, of rows read again from the heap, or narrowed to a few rows */
 static bool
-col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, uint32 *nvals, uint32 *nnull, uint64 *id)
+col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id)
 {
 	ColSource  *src = impl;
 
-	
-	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows)
-		return false;
-	return sift_col_run_info(&src->unit, leaf, nvals, nnull, id);
+	return !(src->rck && src->rck->active) && !col_wide(src, leaf) && sift_aggpre_run_info(&src->sel, unit, &src->unit, leaf, nvals, nnull, id);
 }
 
 static bool
@@ -587,13 +584,7 @@ col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, Sift
 static int
 col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
 {
-	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
-	int			h = sift_col_run_heads(&((ColSource *) impl)->unit, leaf, e, nlo, nhi);
-
-	StaticAssertStmt(sizeof(SiftSrcHead) == sizeof(SiftCHeadEnt) && SIFT_SRC_HEAD_MAX == SIFT_CRUN_HEAD_MAX, "the run head entries of the engine and the source differ");
-	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
-	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
-	return h;
+	return sift_aggpre_run_heads(&((ColSource *) impl)->unit, leaf, lo, nlo, hi, nhi);
 }
 
 static int
@@ -693,12 +684,7 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 static bool
 col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
 {
-	SiftCPresence c;
-
-	if (!sift_col_unit_presence(&((ColSource *) impl)->unit, leaf, &c))
-		return false;
-	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
-	return true;
+	return sift_aggpre_unit_presence(&((ColSource *) impl)->unit, leaf, p);
 }
 
 static bool

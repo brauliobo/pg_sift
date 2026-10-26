@@ -171,18 +171,6 @@ sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const SiftColSchema *schema, co
 	w->xcubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->xecubeoff = palloc((w->capsb + 1) * sizeof(uint64));
 	w->pmask = palloc(w->capsb * SIFT_PAGEMASK_WORDS * sizeof(uint64));
-	sift_cpagg_spec_default(schema, &w->pagg);
-	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
-	for (int c = 0; c < schema->ncols; c++)
-		w->pagg.lookup[c] = sift_col_table_lookup;
-	/* a sift_table has no index option for its pre-aggregates and writes this default (a sift_col index sets its own spec, which has calendar dims when it asks) */
-	if (format >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
-	{
-		sift_cpagg_spec_calendar(schema, &w->pagg);
-		for (int d = 0; d < w->pagg.ndims; d++)
-			if (w->pagg.dim[d].cal)
-				w->format = SIFT_COL_FORMAT_CALENDAR;
-	}
 	initStringInfo(&w->cube);
 	initStringInfo(&w->ecube);
 	initStringInfo(&w->xcube);
@@ -233,7 +221,7 @@ void
 sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec)
 {
 	w->pagg = *spec;
-	w->excepts = w->setting >= SIFT_COL_FORMAT_PRESENCE;
+	w->excepts = w->setting >= SIFT_COL_FORMAT_PRESENCE && !spec->table;
 	/* the cube asks for min and max: the segment is minor 7, which the caller may not have allowed (sift.col_format_minor) or the kinds of its rows forbid */
 	w->pagg.minmax = spec->minmax && spec->ndims > 0 && w->setting >= SIFT_COL_FORMAT_MINMAX;
 	if (w->pagg.minmax)
@@ -455,8 +443,10 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 
 /* The sorted run of each leaf that asks for one, from the keys of the unit just encoded */
 static void
-add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
+add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr, Size unit_bytes)
 {
+	Size		left = unit_bytes / 100 * SIFT_CSET_PRES_PCT;	/* the default runs of a table share this, as the key lists do */
+
 	for (int c = 0; w->run && c < w->schema->ncols; c++)
 	{
 		SetAcc	   *a = &w->run[c];
@@ -466,9 +456,17 @@ add_runs(SiftColSegWriter *w, const SiftCPaggCol *cols, const SiftKey *addr)
 		a->off[w->nsb] = a->blobs.len;
 		if (sift_crun_build(&w->schema->cols[c], &cols[c], addr, !w->keyed && w->setting >= SIFT_COL_FORMAT_PRESENCE, &a->blobs))
 		{
-			a->any = w->anyruns = true;
-			w->anyheads |= a->blobs.data[a->off[w->nsb] + 2] != 0;
-			a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
+			Size		len = a->blobs.len - a->off[w->nsb];
+
+			if (w->pagg.table && len > left)
+				a->blobs.len = a->off[w->nsb];
+			else
+			{
+				left -= Min(len, left);
+				a->any = w->anyruns = true;
+				w->anyheads |= a->blobs.data[a->off[w->nsb] + 2] != 0;
+				a->kinds |= a->blobs.data[a->off[w->nsb]] == SIFT_CRUN_ORD ? RUNS_ORD : RUNS_IDENT;
+			}
 		}
 		a->off[w->nsb + 1] = a->blobs.len;
 	}
@@ -563,7 +561,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 	w->ecubeoff[w->nsb + 1] = w->ecube.len;
 	add_excepts(w, b, cols, cubeat, ecubeat);
 	add_sets(w, cols, unit_bytes);
-	add_runs(w, cols, b->keys);
+	add_runs(w, cols, b->keys, unit_bytes);
 	add_hll(w, cols);
 	add_points(w, cols, b->keys);
 	for (int c = 0; c < ncols; c++)

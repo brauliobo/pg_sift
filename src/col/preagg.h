@@ -104,6 +104,7 @@ typedef struct SiftCPaggSpec
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
 	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
+	bool		table;					/* the default of a sift_table (table/seg.c): no exception cubes, which its source does not read, and runs only where they fit the share of the unit that key lists take */
 	bool		minmax;					/* every group of the cube also holds the minimum and maximum of each integer measure (column format minor 7) */
 	bool		set[SIFT_COL_MAX_COLS];	/* the leaves that keep their keys in every unit (option key_columns, column format minors 10 and 15; col/setsum.h) */
 	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */

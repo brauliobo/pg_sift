@@ -121,3 +121,32 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 	}
 	return true;
 }
+
+bool
+sift_aggpre_unit_presence(const SiftColUnit *unit, int col, SiftSrcPresence *p)
+{
+	SiftCPresence c;
+
+	if (!sift_col_unit_presence(unit, col, &c))
+		return false;
+	*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
+	return true;
+}
+
+bool
+sift_aggpre_run_info(const SiftAggSel *sel, const SiftSrcUnit *unit, const SiftColUnit *cu, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	return !sel->compact && !sel->keep && unit->nrow == cu->nrows && sift_col_run_info(cu, col, nvals, nnull, id);
+}
+
+int
+sift_aggpre_run_heads(const SiftColUnit *unit, int col, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
+{
+	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
+	int			h = sift_col_run_heads(unit, col, e, nlo, nhi);
+
+	StaticAssertStmt(sizeof(SiftSrcHead) == sizeof(SiftCHeadEnt) && SIFT_SRC_HEAD_MAX == SIFT_CRUN_HEAD_MAX, "the run head entries of the engine and the source differ");
+	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
+	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
+	return h;
+}
