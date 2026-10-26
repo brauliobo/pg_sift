@@ -2548,8 +2548,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		k.scan_cost *= Max(sqrt(input_rel->rows / (k.sel_rows * k.elems)), 1.0);
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	k.scan_cost += k.gen_cost * cpu_operator_cost;
-	/* rows on pages that are not all-visible are checked in the heap */
-	vet = vet_cost(c, vis, k.sel_rows, Min(Max(k.zone_kept, 1.0 / k.units), 1.0)) * (s->topn ? c->topn_frac : 1.0);
+	/* rows on pages that are not all-visible are checked in the heap: the rows that reach the groups, not the rows the table's own filters keep (the lookup joins filter them first) */
+	vet = vet_cost(c, vis, Min(k.sel_rows, k.scan_rows / k.elems), Min(Max(k.zone_kept, 1.0 / k.units), 1.0)) * (s->topn ? c->topn_frac : 1.0);
 	k.scan_cost += vet;
 	/* the exact units cost their groups, not their rows */
 	exact = preagg_share(c, s);

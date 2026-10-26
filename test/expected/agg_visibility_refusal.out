@@ -100,6 +100,14 @@ DO $$ DECLARE r record; BEGIN
 END $$;
 RESET client_min_messages;
 RESET sift.explain_refusals;
+-- the heap check is of the rows that reach the groups: a lookup that keeps a seventh of them (v = 3) charges the pages that fewer rows touch
+CREATE TABLE lookup (v int);
+INSERT INTO lookup VALUES (3);
+ANALYZE lookup;
+CREATE TABLE lcosts AS
+SELECT q, (SELECT scan_cost FROM sift.explain_why(q)) AS empty_cost
+FROM unnest(ARRAY['SELECT o.v, count(*), sum(o.k) FROM ordered o GROUP BY o.v',
+				  'SELECT o.v, count(*), sum(o.k) FROM ordered o JOIN lookup l ON l.v = o.v GROUP BY o.v']::text[]) q;
 VACUUM ordered;
 SELECT * FROM cte_why('WITH r AS (SELECT * FROM ordered WHERE k < 12) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v');
  used | slug | reason 
@@ -129,6 +137,13 @@ SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SEL
  f    | cost | t
 (1 row)
 
+SELECT (SELECT c.empty_cost - (SELECT scan_cost FROM sift.explain_why(c.q)) FROM lcosts c WHERE q ~ 'JOIN lookup')
+	< 0.8 * (SELECT c.empty_cost - (SELECT scan_cost FROM sift.explain_why(c.q)) FROM lcosts c WHERE q !~ 'JOIN lookup') AS lookup_charges_less;
+ lookup_charges_less 
+---------------------
+ t
+(1 row)
+
 DROP FUNCTION why(text), cte_why(text);
-DROP TABLE ordered, costs, charges;
+DROP TABLE ordered, costs, charges, lookup, lcosts;
 DROP EXTENSION pg_sift;
