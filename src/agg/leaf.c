@@ -43,6 +43,7 @@
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "utils/acl.h"
+#include "utils/pg_locale.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
@@ -77,6 +78,14 @@
 #include "core/popcount.h"
 #include "agg/agg_int.h"
 
+static bool
+collation_deterministic(Oid collid)
+{
+	pg_locale_t loc = pg_newlocale_from_collation(collid);
+
+	return loc == NULL || loc->deterministic;
+}
+
 void
 ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 {
@@ -95,6 +104,7 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 	}
 	fmgr_info(lhs, &t->hashfn);
 	fmgr_info(get_opcode(eqop), &t->eqfn);
+	t->text = get_opcode(eqop) == F_TEXTEQ && (!OidIsValid(collid) || collation_deterministic(collid));
 	get_typlenbyval(typid, &t->len, &t->byval);
 	t->collid = collid;
 	t->nslot = 64;
@@ -110,6 +120,7 @@ ot_init_image(OutTable *t, Oid typid)
 {
 	get_typlenbyval(typid, &t->len, &t->byval);
 	t->image = true;
+	t->text = false;
 	t->collid = InvalidOid;
 	t->nslot = 64;
 	t->slot = palloc0(t->nslot * sizeof(uint32));
@@ -149,19 +160,50 @@ ot_rehash(OutTable *t)
 }
 
 /* the id (1..) of a non-null output value; the value is copied into the current context when new */
+/* the bytes of a text, which equal texts of a deterministic collation share (texteq and hashtext reach them through the collation and the detoasting) */
+static const unsigned char *
+text_bytes(Datum d, Size *len)
+{
+	struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+	*len = VARSIZE_ANY_EXHDR(v);
+	return (const unsigned char *) VARDATA_ANY(v);
+}
+
 uint32
 ot_id(OutTable *t, Datum d)
 {
-	uint32		hv = t->image ? image_hash(t, d) : DatumGetUInt32(FunctionCall1Coll(&t->hashfn, t->collid, d)),
-				h = hv & (t->nslot - 1);
+	uint32		hv,
+				h;
+	const unsigned char *b = NULL;
+	Size		len = 0;
 
+	if (t->text)
+	{
+		b = text_bytes(d, &len);
+		hv = hash_bytes(b, len);
+	}
+	else
+		hv = t->image ? image_hash(t, d) : DatumGetUInt32(FunctionCall1Coll(&t->hashfn, t->collid, d));
+	h = hv & (t->nslot - 1);
 	while (t->slot[h])
 	{
 		uint32		id = t->slot[h];
 
-		if (t->hv[id - 1] == hv && (t->image ? datumIsEqual(t->val[id - 1], d, t->byval, t->len) :
-									DatumGetBool(FunctionCall2Coll(&t->eqfn, t->collid, t->val[id - 1], d))))
-			return id;
+		if (t->hv[id - 1] == hv)
+		{
+			if (t->text)
+			{
+				Size		vlen;
+				const unsigned char *vb = text_bytes(t->val[id - 1], &vlen);
+
+				if (vlen == len && memcmp(vb, b, len) == 0)
+					return id;
+			}
+			else if (t->image ? datumIsEqual(t->val[id - 1], d, t->byval, t->len) :
+					 DatumGetBool(FunctionCall2Coll(&t->eqfn, t->collid, t->val[id - 1], d)))
+				return id;
+		}
 		h = (h + 1) & (t->nslot - 1);
 	}
 	if (t->n == t->cap)

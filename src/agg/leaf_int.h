@@ -9,6 +9,7 @@
 typedef struct OutTable
 {
 	Oid			collid;
+	bool		text;			/* text of a deterministic collation: equal when the bytes are, hashed as hashtext does */
 	bool		image;			/* values are the same when their bytes are (generic DISTINCT), not when the type's equality says so */
 	bool		byval;
 	int16		len;
