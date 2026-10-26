@@ -35,6 +35,7 @@
 #include "agg/wide.h"
 #include "col/col.h"
 #include "col/am.h"
+#include "col/ktab.h"
 #include "col/pagg.h"
 #include "col/seg.h"
 #include "agg/colsrc.h"
@@ -456,6 +457,7 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 			continue;
 		unit->sb = best->unit.sb;
 		unit->nrow = nrow;
+		unit->nsu = best->unit.nsu;
 		unit->priv = best;
 		return true;
 	}
@@ -856,16 +858,65 @@ static void
 tbl_preagg(Relation rel, SiftSrcPreagg *pa)
 {
 	SiftCPaggSpec spec;
+	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
 
 	/* the segments are written with the spec of their layout, whose columns are the leaves of the table's */
-	sift_tbl_pagg_spec(rel, sift_tbl_layout_schema(rel, sift_tbl_rel(rel)), &spec);
+	sift_tbl_pagg_spec(rel, schema, &spec);
+	sift_ktab_spec(schema, &spec);
 	sift_aggpre_spec(&spec, pa);
 }
 
 static bool
 tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
 {
-	return sift_col_unit_preagg_ok(&((TblPart *) unit->priv)->unit);
+	SiftColSegment *seg;
+	TblPart    *p = unit->priv;
+
+	return sift_col_unit_whole(&p->unit, &seg) || sift_col_unit_preagg_ok(&p->unit);
+}
+
+/* The key table of a segment answers for the key leaf and the measures: each source asks for them as its own columns, and one that lacks any reads its units */
+static bool
+tbl_whole(void *impl, int leaf, const int *meas, int nmeas)
+{
+	TblSource  *t = impl;
+	bool		asked = false;
+
+	for (int k = 0; k < t->nparts; k++)
+	{
+		TblPart    *p = &t->part[k];
+		int			cm[SIFT_SRC_MAX_MEAS],
+					i = 0;
+
+		for (; i < nmeas && p->col[meas[i]] >= 0; i++)
+			cm[i] = p->col[meas[i]];
+		/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
+		if (i == nmeas && p->col[leaf] >= 0 && t->sel.keep == NULL)
+		{
+			sift_col_super_whole(p->src, p->col[leaf], cm, nmeas);
+			asked = true;
+		}
+	}
+	return asked;
+}
+
+static uint32
+tbl_super_span(void *impl)
+{
+	TblSource  *t = impl;
+	uint32		span = 0;
+
+	for (int k = 0; k < t->nparts; k++)
+		span = Max(span, sift_col_super_span(t->part[k].src));
+	return span;
+}
+
+static void
+tbl_split(void *impl, const SiftSrcUnit *unit)
+{
+	TblPart    *p = unit->priv;
+
+	sift_col_unit_split(p->src, &p->unit);
 }
 
 /* a segment of an older layout may lack the column: the unit is scanned, and the scan reads the catalog's default for it */
@@ -973,6 +1024,9 @@ static const SiftSrcProvider tbl_provider = {
 	.read_rows = tbl_read_rows,
 	.preagg = tbl_preagg,
 	.unit_exact = tbl_unit_exact,
+	.whole = tbl_whole,
+	.super_span = tbl_super_span,
+	.split = tbl_split,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
 	.unit_rollup_tuples = tbl_unit_rollup_tuples,

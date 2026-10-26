@@ -616,7 +616,7 @@ typedef struct SiftSrcProvider
 	bool		(*unit_rollup_miss) (void *impl, const SiftSrcUnit *unit);
 	/* Optional (NULL: none): `next` may hand over a group of exact units as one unit that has pre-aggregates only (nsu > 0); split gives the units of the group back, one by one, to the next calls */
 	void		(*super) (void *impl, bool on);
-	void		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only) */
+	bool		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only); true: an item of the scan has to span a segment for that, which a source with no superunits does not do alone */
 	void		(*split) (void *impl, const SiftSrcUnit *unit);
 	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
 	/*
@@ -948,11 +948,10 @@ sift_colsrc_super(SiftSrcSource *src, bool on)
 	return true;
 }
 
-static inline void
+static inline bool
 sift_colsrc_whole(SiftSrcSource *src, int leaf, const int *meas, int nmeas)
 {
-	if (src->prov->whole != NULL)
-		src->prov->whole(src->impl, leaf, meas, nmeas);
+	return src->prov->whole != NULL && src->prov->whole(src->impl, leaf, meas, nmeas);
 }
 
 static inline uint32

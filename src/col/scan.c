@@ -1224,11 +1224,19 @@ sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas)
 uint32
 sift_col_super_span(SiftColSource *src)
 {
-	uint32		fan = 0;
+	uint32		fan = 0,
+				extent = 0;
 
 	for (int i = 0; i < src->nseg; i++)
-		fan = Max(fan, sift_cseg_super_fan(src->seg[i].seg));
-	return fan * 4 * Max(src->nseg, 1);
+	{
+		SiftColSegment *seg = src->seg[i].seg;
+
+		fan = Max(fan, sift_cseg_super_fan(seg));
+		if (seg->nsb > 0)
+			extent = Max(extent, seg->sbdir[seg->nsb - 1].sb - seg->sbdir[0].sb + 1);
+	}
+	/* a segment the key table answers for lies in one item: four times its superblocks, as a scan with workers shares the span of four */
+	return Max(fan * 4 * Max(src->nseg, 1), (src->flags & COLO_TABLE) && src->whole ? extent * 4 : 0);
 }
 
 void

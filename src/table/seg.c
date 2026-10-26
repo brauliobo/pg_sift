@@ -234,6 +234,7 @@ sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spe
 	if (schema->kinds)
 		return;
 	spec->keyauto = true;
+	spec->key_table = sift_col_table_key_table;
 	for (int c = 0; c < schema->ncols; c++)
 	{
 		const SiftColDef *d = &schema->cols[c];

@@ -95,6 +95,10 @@ sift_tbl_define_gucs(void)
 							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string.",
 							 NULL, &sift_col_table_lookup, false,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.table_key_table",
+							 "The column segments of a sift_table written from now on keep a key table of each foreign key or *_id column (column format minor 22), so that count, sum, min and max WHERE key = x read one record of a segment instead of its units.",
+							 "On by default, where the table fits 3% of the segment. Off: segments are written without them, column format minor 15 or 18, which 3.4 reads.",
+							 &sift_col_table_key_table, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.table_backpressure",
 							"Percent of the directory of a sift_table from which a writer that needs a new write buffer first waits for the maintenance lock and merges.",
 							"0 (off): a writer waits only when the directory is nearly full. Above 50, the percent of the entries.",

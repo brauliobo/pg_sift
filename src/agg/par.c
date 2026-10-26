@@ -133,8 +133,11 @@ shared_init(ScanShared *sh, AggExec *ex)
 	sh->ordered = sift_aggspec_ordered(ex->spec);
 	sh->morsel = sift_aggspec_parallel_ok(ex->spec) ? MORSEL_SBS : Max(sh->nsb, 1);
 	/* a superunit is taken whole by one item (a scan that has workers shares the span of four, so that the participants find more than two items) */
-	if (ex->super_on)
+	if (ex->super_on || ex->whole_on)
 		sh->morsel = Max(sh->morsel, sift_colsrc_super_span(ex->src) / (ex->spec->nworkers > 0 ? MORSEL_SUPER_DIV : 1));
+	/* a segment is taken whole by a serial scan only when no item cuts it */
+	if (ex->whole_on && ex->spec->nworkers == 0)
+		sh->morsel = Max(sh->nsb, 1);
 	sh->nitems = sh->ordered ? SIFT_AGG_LANES : (sh->nsb + sh->morsel - 1) / sh->morsel;
 	if (part_flush_on(ex))
 		sh->nitems = ex->spec->nparts;

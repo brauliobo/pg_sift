@@ -480,7 +480,7 @@ col_super(void *impl, bool on)
 	sift_col_super(((ColSource *) impl)->cs, on);
 }
 
-static void
+static bool
 col_whole(void *impl, int leaf, const int *meas, int nmeas)
 {
 	ColSource  *src = impl;
@@ -488,6 +488,7 @@ col_whole(void *impl, int leaf, const int *meas, int nmeas)
 	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
 	if (src->sel.keep == NULL)
 		sift_col_super_whole(src->cs, leaf, meas, nmeas);
+	return false;
 }
 
 static uint32

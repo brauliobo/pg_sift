@@ -1210,7 +1210,7 @@ preagg_init(AggExec *ex)
 {
 	SiftSrcPreagg pa;
 
-	ex->pa_on = ex->pa_dead = false;
+	ex->pa_on = ex->pa_dead = ex->whole_on = false;
 	ex->pa_dead_miss = 0;
 	ex->pa_why = SPW_OFF;
 	if (!sift_agg_preagg)
@@ -1274,7 +1274,6 @@ preagg_init(AggExec *ex)
 			else if (m == nmeas)
 				meas[nmeas++] = leaf;
 		}
-		if (only)
-			sift_colsrc_whole(ex->src, key, meas, nmeas);
+		ex->whole_on = only && sift_colsrc_whole(ex->src, key, meas, nmeas);
 	}
 }

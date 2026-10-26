@@ -501,6 +501,22 @@ units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 	return true;
 }
 
+/* Every superblock of the segment is plain for the table (tbl_sb_mask: all pages or none): a table's segment has no summary of page masks to test */
+static bool
+sbs_plain(SiftColSource *src, SiftColSegment *seg)
+{
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		src->visibility.sb_mask(src->visibility.arg, seg->sbdir[u].sb, av);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			if (av[w] != ~UINT64CONST(0))
+				return false;
+	}
+	return true;
+}
+
 /* The units [first, first + n) have no dead row or exception; *rows: their rows */
 static bool
 units_clean(SiftColSegment *seg, uint32 first, uint32 n, uint32 *rows)
@@ -541,8 +557,9 @@ col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 	uint32		fan = sift_cseg_super_fan(seg),
 				rows = 0;
 	const SiftCHistDim *kd = sift_cseg_ktab(seg, src->whole - 1);
+	bool		table = src->flags & COLO_TABLE;
 
-	if (!c->full || c->prow != NULL || c->ptidv != NULL || fan == 0 || kd == NULL)
+	if (!c->full || c->prow != NULL || c->ptidv != NULL || (fan == 0 && !table) || kd == NULL)
 		return false;
 	for (int i = 0; i < src->nwmeas; i++)
 	{
@@ -553,11 +570,19 @@ col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 		if (m == kd->nmeas)
 			return false;
 	}
-	for (uint32 u = 0; u < seg->nsb; u += fan)
-		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
+	if (table)
+	{
+		if (!sbs_plain(src, seg))
 			return false;
-	if (!(src->flags & COLO_TABLE) && !segments_current(src))
-		return false;
+	}
+	else
+	{
+		for (uint32 u = 0; u < seg->nsb; u += fan)
+			if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
+				return false;
+		if (!segments_current(src))
+			return false;
+	}
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
 		return false;

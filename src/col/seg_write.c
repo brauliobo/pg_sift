@@ -56,6 +56,7 @@ typedef struct PointAcc
 #define CDICT_BLOCKS_CLEAR_DENOM	6
 
 bool		sift_col_table_lookup = false;
+bool		sift_col_table_key_table = true;
 
 typedef struct SetAcc
 {

@@ -29,14 +29,14 @@ CREATE TABLE tc USING sift_table AS SELECT * FROM tl_src ORDER BY id;
 VACUUM (FREEZE, ANALYZE) tl;
 VACUUM (FREEZE, ANALYZE) tf;
 VACUUM (FREEZE, ANALYZE) tc;
--- the column format minor of the groups (18 with the heads of the sorted runs: a unit has one only when none of its rows is NULL)
+-- the column format minor of the groups (18 with the heads of the sorted runs: a unit has one only when none of its rows is NULL; 22 where the key table of a foreign key fits)
 SELECT t, array_agg(DISTINCT format) AS minors FROM (SELECT 'tl' AS t, format FROM sift.table_segments('tl') WHERE kind = 'columns'
 	UNION ALL SELECT 'tf', format FROM sift.table_segments('tf') WHERE kind = 'columns'
 	UNION ALL SELECT 'tc', format FROM sift.table_segments('tc') WHERE kind = 'columns') s GROUP BY t ORDER BY t;
- t  | minors 
-----+--------
+ t  | minors  
+----+---------
  tc | {18}
- tf | {18}
+ tf | {18,22}
  tl | {18}
 (3 rows)
 

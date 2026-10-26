@@ -1,0 +1,173 @@
+-- The key table of a segment of a sift_table: for each foreign key or *_id column the rows, sums, minima
+-- and maxima per distinct key over the whole segment, so that count, sum, min and max WHERE key = x (an IN list, a range, GROUP BY key) read one record of a segment,
+-- not its units. Written where the table takes at most 3% of the segment and sift.table_key_table is on; a segment is answered whole only while no tombstone, write
+-- buffer row or uncommitted row touches its superblocks and none of its rows is dead, else its units are read; the answers are the heap's; recomputed by
+-- sift._test_tbl_verify; kept by VACUUM, promotion and merge.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '240s';
+
+-- 160,000 rows in segments of 25,000 and about 3 units each (a long pad: a key table of two measures fits 3% of such a segment). grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with NULLs
+-- (a measure of the table); ts and d: time leaves (ts is a measure too); val: an int the table does not keep; mid_id: 3,000 values (a table of the counts fits, not their
+-- sums); many_id: 20,000 (no table: over the budget)
+CREATE TABLE tk_src AS
+SELECT i AS id, CASE WHEN i % 97 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) % 300 - 100 END AS grp_id,
+       timestamp '2024-01-01' + i * interval '3 minutes' AS ts, date '2023-01-01' + (hashint4(i + 1) & 2147483647) % 1000 AS d,
+       (CASE WHEN i % 11 = 0 THEN NULL ELSE ((hashint4(i + 2) & 2147483647) % 100000)::numeric / 100 - 300 END)::numeric(12,2) AS amt,
+       i % 1000 AS val, (hashint4(i + 3) & 2147483647) % 3000 AS mid_id, (hashint4(i + 4) & 2147483647) % 20000 AS many_id, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) || md5((i + 3)::text) AS pad
+FROM generate_series(1, 160000) i;
+CREATE TABLE tk (LIKE tk_src) USING sift_table;
+INSERT INTO tk SELECT * FROM tk_src ORDER BY id;
+CREATE TABLE tk_off (LIKE tk_src) USING sift_table;
+INSERT INTO tk_off SELECT * FROM tk_src ORDER BY id;
+CREATE TABLE tk_b AS SELECT * FROM tk_src ORDER BY id;
+VACUUM (FREEZE, ANALYZE) tk;
+SET sift.table_key_table = off;
+VACUUM (FREEZE, ANALYZE) tk_off;
+RESET sift.table_key_table;
+VACUUM (FREEZE, ANALYZE) tk_b;
+
+-- the minor of the groups: 22 with the table, not with sift.table_key_table off
+SELECT 'tk' AS t, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tk') WHERE kind = 'columns'
+UNION ALL SELECT 'tk_off', array_agg(DISTINCT format ORDER BY format) FROM sift.table_segments('tk_off') WHERE kind = 'columns' ORDER BY 1;
+SELECT sift._test_tbl_verify('tk') = 160000 AS verified, sift._test_tbl_verify('tk_off') = 160000 AS verified_off;
+-- a few percent of the table at most
+SELECT pg_relation_size('tk') > pg_relation_size('tk_off') AS table_takes_bytes, pg_relation_size('tk') < pg_relation_size('tk_off') * 1.03 AS under_3_percent;
+
+CREATE FUNCTION tk_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config(s, (NOT push)::text, true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), ''no rows'') FROM (%s) x', q) INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'ERROR: ' || SQLERRM;
+END $$;
+CREATE FUNCTION tk_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
+		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		scanned := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, scanned);
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL; pre := NULL; scanned := NULL;
+END $$;
+CREATE TABLE tk_q (n int, shape text, q text, from_table bool);
+INSERT INTO tk_q VALUES
+	(1, 'count, a key',               'SELECT count(*) FROM %s WHERE grp_id = 17', true),
+	(2, 'sums and extremes',          'SELECT count(*), count(amt), sum(amt), min(amt), max(amt), min(ts), max(ts) FROM %s WHERE grp_id = 17', true),
+	(3, 'IN list',                    'SELECT count(*), sum(amt) FROM %s WHERE grp_id IN (3, 4, 5, 250)', true),
+	(4, 'range',                      'SELECT count(*), min(ts), max(ts) FROM %s WHERE grp_id BETWEEN -50 AND -20', true),
+	(5, 'one side of a range',        'SELECT count(*), avg(amt) FROM %s WHERE grp_id >= 190', true),
+	(6, 'group by the key',           'SELECT grp_id, count(*), sum(amt), max(ts) FROM %s WHERE grp_id < 0 GROUP BY grp_id', true),
+	(7, 'group by, no filter',        'SELECT grp_id, count(*), sum(amt), min(amt) FROM %s GROUP BY grp_id', true),
+	(8, 'a key that is not there',    'SELECT count(*), sum(amt), min(ts) FROM %s WHERE grp_id = 99999', true),
+	(9, 'negative key',               'SELECT count(*), max(amt) FROM %s WHERE grp_id = -100', true),
+	(10, 'the NULL key',              'SELECT count(*), sum(amt) FROM %s WHERE grp_id IS NULL', false),
+	(11, 'count of the key',          'SELECT count(grp_id), count(*) FROM %s WHERE grp_id < 10', true),
+	(12, 'a measure it does not keep','SELECT count(*), sum(val) FROM %s WHERE grp_id = 17', false),
+	(13, 'a date measure',            'SELECT min(d), max(d) FROM %s WHERE grp_id = 17', false),
+	(14, 'a filter on another leaf',  'SELECT count(*), sum(amt) FROM %s WHERE grp_id = 17 AND val < 500', false),
+	(15, 'a window of ts',            'SELECT count(*) FROM %s WHERE grp_id = 17 AND ts >= timestamp ''2024-06-01''', false),
+	(16, 'a key of 3,000 values',     'SELECT count(*) FROM %s WHERE mid_id = 17', true),
+	(19, 'its sums are not kept',     'SELECT count(*), sum(amt) FROM %s WHERE mid_id = 17', false),
+	(20, 'a key of 20,000 values',    'SELECT count(*) FROM %s WHERE many_id = 17', false),
+	(17, 'FILTER',                    'SELECT count(*) FILTER (WHERE val < 500), sum(amt) FROM %s WHERE grp_id = 17', false),
+	(18, 'no key',                    'SELECT count(*), sum(amt), min(ts), max(ts) FROM %s', false),
+	(21, 'a subquery on the key',     'SELECT count(*), sum(amt) FROM %s WHERE grp_id IN (SELECT x FROM generate_series(10, 14) x)', false),
+	(22, 'a join on the key',         'SELECT count(*), sum(amt) FROM %s t JOIN (VALUES (17), (18)) v(k) ON t.grp_id = v.k', false);
+CREATE FUNCTION tk_check(a text, b text) RETURNS TABLE (n int, shape text, same bool, from_table bool) LANGUAGE plpgsql AS $$
+DECLARE r record; qa text; qb text; ua record;
+BEGIN
+	FOR r IN SELECT * FROM tk_q ORDER BY tk_q.n LOOP
+		qa := format(r.q, a); qb := format(r.q, b);
+		SELECT * INTO ua FROM tk_units(qa);
+		n := r.n; shape := r.shape;
+		-- every unit from its segment's table: the scan read no row; a shape the table does not answer only has to give the heap's answer
+		from_table := NOT r.from_table OR (ua.scanned = 0 AND ua.pre = ua.units);
+		same := tk_rows(qa, true) = tk_rows(qb, false) AND tk_rows(qa, true) = tk_rows(qa, false) AND tk_rows(qa, true) NOT LIKE 'ERROR%';
+		RETURN NEXT;
+	END LOOP;
+END $$;
+-- from_table: the scan of the table read no row for the shapes of the table
+SELECT n, shape, same, from_table FROM tk_check('tk', 'tk_b');
+-- without the key tables: the same answers, read from the units
+SELECT n, shape, same FROM tk_check('tk_off', 'tk_b') WHERE NOT same;
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk_off WHERE grp_id = 17')) > 0 AS off_scans,
+       (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) = 0 AS table_does_not;
+
+-- a scan with workers gives the same answers
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+SET max_parallel_workers_per_gather = 0;
+
+-- a table over the budget keeps fewer measures, or none: the sums of mid_id (3,000 keys) are not in it, and many_id (20,000) has none
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE mid_id = 17')) > 100000 AS mid_id_sums_scan,
+       (SELECT scanned FROM tk_units('SELECT count(*) FROM tk WHERE many_id = 17')) > 100000 AS many_id_scans;
+
+-- rows in the write buffer are read whatever the table says; a delete or an update makes a segment not exact, and it is read from its units; VACUUM and the
+-- maintenance compute the table again
+INSERT INTO tk SELECT g, 17 + g % 3, timestamp '2030-01-01' + g * interval '1 minute', date '2030-01-01', g % 100, g % 1000, g % 3000, g % 20000, md5(g::text) FROM generate_series(160001, 160400) g;
+INSERT INTO tk_b SELECT g, 17 + g % 3, timestamp '2030-01-01' + g * interval '1 minute', date '2030-01-01', g % 100, g % 1000, g % 3000, g % 20000, md5(g::text) FROM generate_series(160001, 160400) g;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) < 2000 AS buffer_rows_only;
+-- rows of an open transaction: its own rows, and a rollback
+BEGIN;
+INSERT INTO tk SELECT g, 17, timestamp '2031-01-01', date '2031-01-01', 5, 1, 1, 1, 'x' FROM generate_series(170001, 170010) g;
+SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17;
+ROLLBACK;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+UPDATE tk SET grp_id = 20 + id % 3, amt = 1 WHERE id % 1000 = 5;
+UPDATE tk_b SET grp_id = 20 + id % 3, amt = 1 WHERE id % 1000 = 5;
+DELETE FROM tk WHERE id % 7 = 3;
+DELETE FROM tk_b WHERE id % 7 = 3;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) > 1000 AS dirty_segments_scan;
+-- the deletes and the updates of the open transaction, then rolled back
+BEGIN;
+DELETE FROM tk WHERE id % 5 = 1;
+DELETE FROM tk_b WHERE id % 5 = 1;
+UPDATE tk SET grp_id = 17, amt = 2 WHERE id % 11 = 2;
+UPDATE tk_b SET grp_id = 17, amt = 2 WHERE id % 11 = 2;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+ROLLBACK;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+VACUUM (FREEZE) tk;
+VACUUM (FREEZE) tk_b;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+SELECT merged >= 0 AS maintained FROM sift.table_maintain('tk');
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tk') WHERE kind = 'columns';
+SELECT sift._test_tbl_verify('tk') = (SELECT count(*) FROM tk_b) AS verified;
+SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
+
+-- the option switched off while a table is written, and on again: the segments written without a table are read from their units until a merge rewrites them with
+-- one, and the answers are the heap's all the way
+SET sift.table_key_table = off;
+CREATE TABLE ta (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) USING sift_table;
+INSERT INTO ta SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id <= 60000 ORDER BY id;
+VACUUM (FREEZE) ta;
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('ta') WHERE kind = 'columns';
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM ta WHERE grp_id = 7')) > 0 AS no_table_scans;
+RESET sift.table_key_table;
+INSERT INTO ta SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id > 60000 AND id <= 120000 ORDER BY id;
+VACUUM (FREEZE, ANALYZE) ta;
+CREATE TABLE ta_b AS SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id <= 120000 ORDER BY id;
+SELECT tk_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ta WHERE grp_id = 7', true) = tk_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ta_b WHERE grp_id = 7', false) AS same_as_heap;
+SELECT sift._test_tbl_verify('ta');
+
+DROP TABLE tk, tk_off, tk_b, ta, ta_b, tk_src, tk_q;
+DROP FUNCTION tk_rows(text, bool), tk_units(text), tk_check(text, text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 98 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 99 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -922,6 +922,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET sift.table_inline_promote = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): promotion is left to VACUUM and autovacuum. Autovacuum reads the server or database setting, not the writer's.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on so the writer promotes closed buffers as it inserts. Off leaves them to VACUUM and autovacuum; table_async_promote moves the work to a worker instead.
+
+#### sift.table_key_table
+
+`sift_table` · default · since 3.5 · default on
+
+- **What it does:** count, sum, min and max WHERE a key = x, IN, a range or GROUP BY the key (a foreign key or *_id column with more than 256 values in a unit) read one record of each segment, not its units: 0.068 ms at 900,000 rows against 0.577 ms (300 keys)
+- **Gain:** count, sum, min, max WHERE key = x over 900,000 rows 0.577 to 0.068 ms, count(*) 0.395 to 0.064 ms, IN (3 keys) 0.835 to 0.069 ms, BETWEEN 1.201 to 0.069 ms, GROUP BY key 0.922 to 0.066 ms (300 keys, 1 session, warm); 300,000 rows 0.205 to 0.066 ms
+- **Impact:** index size: +2.7% of the segments' bytes at 100,000 rows, +0.34% at 300,000, +0.27% at 900,000 (300 keys, two measures); a segment whose table would pass 3% has none or fewer measures; build, merge and writes: load and promotion of 100,000 rows +0.42% (200 and 3,000 keys), 20,000 rows inserted and promoted +0.41%, delete and VACUUM +0.05% and +0.08%, maintenance and VACUUM FULL +1.28% and +1.49% instructions; other: a table of at most 3% of the segment (+0.27% of the segments' bytes at 900,000 rows, +2.7% at 100,000); +0.4% instructions on a load and promotion, +1.5% on a rewrite
+- **When:** WHERE a foreign key or *_id column (int2, int4, date) = x, IN, a range or GROUP BY, nothing else tested, count/sum/avg/min/max of the numeric, time and integer leaves the table keeps; every superblock of the segment plain (no tombstone, no write buffer row, no uncommitted row) and no dead row. Else the units are read.
+- **Default:** on — The rule of 3.3: over 5% on the relevant class (0.58 to 0.07 ms at 900,000 rows), growth at most 3% of a segment by construction, write cost under 5% on every path measured; a table that does not fit is not written.
+- **Turn off:** SET sift.table_key_table = off (or in postgresql.conf), then VACUUM FULL or the next merge; segments written before keep theirs and are still read.
+- **Upgrade from 3.4:** A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read.
+- **Advice:** Leave on. Set off for a table that is written far more than it is read by key, or to keep the segments readable by 3.4. The setting applies to the segments written afterwards.
 
 #### sift.table_bulk_groups
 
@@ -2023,12 +2036,13 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: `sift.agg_par_min_units`, `sift_col(key_table)`.
+No default changed since 3.4; new: `sift.agg_par_min_units`, `sift_col(key_table)`, `sift.table_key_table`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift.agg_par_min_units` | new | 128 |  | new in 3.5 |
+| `sift.table_key_table` | new | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
