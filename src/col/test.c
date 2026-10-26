@@ -1263,7 +1263,7 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 					case 0: copy[2] = 1; break;							/* flag bits */
 					case 1: copy[3] = 0x80; break;
 					case 2: copy[0] = 0; break;							/* kind */
-					case 3: copy[0] = 5; break;
+					case 3: copy[0] = 6; break;
 					case 4: memcpy(copy + 4, &n, 4); break;				/* no keys */
 					case 5: n = UINT32_MAX; memcpy(copy + 4, &n, 4); break;	/* a count that overflows 32 bits when multiplied */
 					case 6: if (orig[0] == SIFT_CSET_PRES) continue; copy[1] = 0; break;							/* width or probes 0 */

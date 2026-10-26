@@ -127,7 +127,46 @@ SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
  t
 (2 rows)
 
+-- and a promotion writes them too: a column the cube holds (400 owners in bursts of 500 rows, scattered over the units) is not in the option, and the segment of a
+-- promotion reads as few units for a key as the one a REINDEX writes
+CREATE FUNCTION mk_units(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		n := coalesce(substring(l from '^ *Units: (\d+)')::int, n);
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE TABLE mk3 (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE mk3 ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO mk3 SELECT i, (hashint4(i / 500) & 2147483647) % 400, i % 1000, repeat('p', 100) FROM generate_series(1, 150000) i;
+VACUUM (FREEZE, ANALYZE) mk3;
+CREATE INDEX mk3_auto ON mk3 USING sift_col (id, set_id, v);
+INSERT INTO mk3 SELECT i, (hashint4(i / 500) & 2147483647) % 400, i % 1000, repeat('p', 100) FROM generate_series(150001, 300000) i;
+SELECT sift.col_promote('mk3_auto') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+CREATE TEMP TABLE mk3_units AS SELECT mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promoted;
+REINDEX INDEX mk3_auto;
+SELECT mk_opt('mk3_auto') AS auto, promoted <= mk_units('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0') AS promotion_prunes_like_reindex FROM mk3_units;
+       auto       | promotion_prunes_like_reindex 
+------------------+-------------------------------
+ key_columns=auto | t
+(1 row)
+
+SELECT mk_rows(q, true) = mk_rows(q, false) AS same FROM (VALUES
+	('SELECT count(*), sum(v) FROM mk3 WHERE set_id = 5 AND v % 7 = 0')) t(q);
+ same 
+------
+ t
+(1 row)
+
 SET client_min_messages = warning;
-DROP TABLE mk, mk2;
-DROP FUNCTION mk_opt(regclass), mk_held(regclass), mk_rows(text, bool), mk_lists(regclass);
+DROP TABLE mk, mk2, mk3;
+DROP FUNCTION mk_opt(regclass), mk_held(regclass), mk_rows(text, bool), mk_lists(regclass), mk_units(text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

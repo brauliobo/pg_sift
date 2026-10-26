@@ -14,6 +14,7 @@
 #define SIFT_CSET_BLOOM			2		/* a bloom filter of the keys */
 #define SIFT_CSET_PRES			3		/* every distinct key (column format minor 15): a bitmap of 64-bit words from the word of the smallest key (or PLIST, where that is smaller) */
 #define SIFT_CSET_PLIST			4		/* every distinct key as a list (column format minor 15): the exact summary's layout, with no limit on the keys but the bytes */
+#define SIFT_CSET_RUNS			5		/* every distinct key as runs of consecutive keys (column format minor 23): the starts and the lengths of the runs, where no bitmap or list of offsets fits */
 #define SIFT_CSET_HDR			16
 #define SIFT_CSET_LIMIT			32		/* up to this many distinct keys a unit keeps them exactly in a summary, a bloom filter beyond (a key list has no such limit: it takes the bytes of the unit's share) */
 #define SIFT_CSET_LIMIT_MAX		1024	/* a stored exact summary has at most this many keys */
@@ -27,9 +28,10 @@ typedef struct SiftCSet
 	uint8		kind;
 	uint8		aux;			/* EXACT: bytes of a key offset; BLOOM: probes */
 	uint32		n;				/* distinct keys */
-	int64		base;			/* EXACT: the smallest key; PRES: the key of bit 0 (a multiple of 64) */
+	int64		base;			/* EXACT, RUNS: the smallest key; PRES: the key of bit 0 (a multiple of 64) */
 	uint64		nbits;			/* BLOOM, PRES: bits */
 	const uint8 *data;			/* PRES: little endian words, not aligned */
+	uint32		dlen;			/* RUNS: bytes of data */
 } SiftCSet;
 
 /* Whether a leaf can keep its keys: a pre-aggregate dimension leaf, or a top-level uuid */

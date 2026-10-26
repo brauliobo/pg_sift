@@ -544,7 +544,7 @@ sift_col_report_caps(Relation index)
 				}
 				if (spec->set[l] && sets_ok && !open)
 					no_set[l]++;
-				if (spec->pres[l] && pres_ok && !(open && (s.kind == SIFT_CSET_PRES || s.kind == SIFT_CSET_PLIST)))
+				if (spec->pres[l] && pres_ok && !(open && (s.kind == SIFT_CSET_PRES || s.kind == SIFT_CSET_PLIST || s.kind == SIFT_CSET_RUNS)))
 					no_pres[l]++;
 			}
 		sift_cseg_close(seg);

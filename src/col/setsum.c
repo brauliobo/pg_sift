@@ -264,6 +264,119 @@ distinct_offsets(const SiftCPaggCol *c, int64 lo, uint64 cap, uint32 *nd)
 	return out;
 }
 
+/*
+ * RUNS: the keys as runs of consecutive integers, for ids that arrive in batches (aux: RUNS_AUX with the log2 of the bytes of a start and of a length minus 1);
+ * the body is nr starts (offsets from the smallest key, ascending, the first 0) and then nr lengths minus 1, so that a test is a binary search like that of a list.
+ */
+#define RUNS_OFF_CAP	((uint64) 1 << 62)
+#define RUNS_AUX		0x40	/* aux: this marker, then the log2 of the bytes of a start (bits 0-1) and of a length minus 1 (bits 2-3): a byte of any other kind's aux is not one */
+
+static inline uint64
+runs_get(const uint8 *p, uint8 w, uint32 i)
+{
+	switch (w)
+	{
+		case 1:
+			return p[i];
+		case 2:
+			{
+				uint16		d;
+
+				memcpy(&d, p + (Size) i * 2, sizeof(d));
+				return d;
+			}
+		case 4:
+			{
+				uint32		d;
+
+				memcpy(&d, p + (Size) i * 4, sizeof(d));
+				return d;
+			}
+		default:
+			{
+				uint64		d;
+
+				memcpy(&d, p + (Size) i * 8, sizeof(d));
+				return d;
+			}
+	}
+}
+
+static inline uint8
+runs_ws(const SiftCSet *s)
+{
+	return 1 << (s->aux & 3);
+}
+
+static inline uint8
+runs_wl(const SiftCSet *s)
+{
+	return 1 << (s->aux >> 2 & 3);
+}
+
+static inline uint32
+runs_nr(const SiftCSet *s)
+{
+	return s->dlen / (runs_ws(s) + runs_wl(s));
+}
+
+static inline uint64
+runs_start(const SiftCSet *s, uint32 i)
+{
+	return runs_get(s->data, runs_ws(s), i);
+}
+
+/* the offset of the last key of run i */
+static inline uint64
+runs_last(const SiftCSet *s, uint32 i)
+{
+	return runs_get(s->data, runs_ws(s), i) + runs_get(s->data + (Size) runs_nr(s) * runs_ws(s), runs_wl(s), i);
+}
+
+static uint8
+width_log2(uint64 v)
+{
+	return v <= UINT8_MAX ? 0 : v <= UINT16_MAX ? 1 : v <= UINT32_MAX ? 2 : 3;
+}
+
+/* The keys, ascending offsets from lo, as a RUNS blob if it takes at most max_bytes */
+static bool
+put_runs(StringInfo out, int64 lo, const uint64 *off, uint32 nd, Size max_bytes)
+{
+	uint64	   *st = palloc(nd * sizeof(uint64)),
+			   *ln = palloc(nd * sizeof(uint64)),
+				maxl = 0;
+	uint32		nr = 0;
+	uint8		lws,
+				lwl;
+	bool		ok;
+
+	for (uint32 i = 0, j; i < nd; i = j + 1)
+	{
+		for (j = i; j + 1 < nd && off[j + 1] == off[j] + 1; j++)
+			;
+		st[nr] = off[i];
+		ln[nr] = j - i;
+		maxl = Max(maxl, ln[nr]);
+		nr++;
+	}
+	lws = width_log2(st[nr - 1]);
+	lwl = width_log2(maxl);
+	/* one run is the zone: the keys fill their range */
+	ok = nr > 1 && SIFT_CSET_HDR + (Size) nr * ((1 << lws) + (1 << lwl)) <= max_bytes;
+	if (ok)
+	{
+		put_head(out, SIFT_CSET_RUNS, RUNS_AUX | lws | lwl << 2, nd, (uint64) lo);
+		for (uint32 i = 0; i < nr; i++)
+			appendBinaryStringInfo(out, (const char *) &st[i], 1 << lws);
+		for (uint32 i = 0; i < nr; i++)
+			appendBinaryStringInfo(out, (const char *) &ln[i], 1 << lwl);
+	}
+	pfree(st);
+	pfree(ln);
+	return ok;
+}
+
 bool
 sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 {
@@ -300,7 +413,14 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 
 		cap = max_bytes > SIFT_CSET_HDR ? (max_bytes - SIFT_CSET_HDR) / w : 0;
 		if (cap == 0 || (off = distinct_offsets(c, lo, cap, &n)) == NULL)
-			return false;
+		{
+			/* no bitmap or list of offsets fits: the keys that come in runs of consecutive ones (ids that arrive in batches) may */
+			bool		ok = max_bytes > SIFT_CSET_HDR && (off = distinct_offsets(c, lo, c->n, &n)) != NULL && put_runs(out, lo, off, n, max_bytes);
+
+			if (off)
+				pfree(off);
+			return ok;
+		}
 		put_list(out, w, lo, off, n);
 		pfree(off);
 		return true;
@@ -428,8 +548,36 @@ sift_cset_open(const uint8 *blob, uint32 len, SiftCSet *s)
 	s->data = blob + SIFT_CSET_HDR;
 	s->base = 0;
 	s->nbits = 0;
-	if (flags != 0 || s->n < (s->kind == SIFT_CSET_PRES || s->kind == SIFT_CSET_PLIST ? 1 : 2))
+	s->dlen = 0;
+	if (flags != 0 || s->n < (s->kind == SIFT_CSET_PRES || s->kind == SIFT_CSET_PLIST || s->kind == SIFT_CSET_RUNS ? 1 : 2))
 		return false;
+	if (s->kind == SIFT_CSET_RUNS)
+	{
+		uint8		ws = runs_ws(s),
+					wl = runs_wl(s);
+		uint32		nr;
+		uint64		keys = 0,
+					prev = 0;
+
+		if ((s->aux & 0xf0) != RUNS_AUX || (int64) v > (int64) RUNS_OFF_CAP || (int64) v < -(int64) RUNS_OFF_CAP || len - SIFT_CSET_HDR == 0 || (len - SIFT_CSET_HDR) % (ws + wl) != 0)
+			return false;
+		s->base = (int64) v;
+		s->dlen = len - SIFT_CSET_HDR;
+		nr = runs_nr(s);
+		for (uint32 i = 0; i < nr; i++)
+		{
+			uint64		st = runs_start(s, i),
+						last = runs_last(s, i);
+
+			if (st > RUNS_OFF_CAP || last >= RUNS_OFF_CAP || (i == 0 ? st != 0 : st < prev + 2))
+				return false;
+			keys += last - st + 1;
+			prev = last;
+			if (keys > s->n)
+				return false;
+		}
+		return keys == s->n;
+	}
 	if (s->kind == SIFT_CSET_PRES)
 	{
 		uint64		nw = (len - SIFT_CSET_HDR) / sizeof(uint64),
@@ -471,6 +619,20 @@ sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi)
 {
 	if (s->kind == SIFT_CSET_PRES)
 		return pres_any(s, lo, hi);
+	if (s->kind == SIFT_CSET_RUNS)
+	{
+		uint64		dlo,
+					dhi;
+		uint32		a = 0,
+					b = runs_nr(s);
+
+		if (hi < s->base)
+			return false;
+		dlo = lo <= s->base ? 0 : (uint64) lo - (uint64) s->base;
+		dhi = (uint64) hi - (uint64) s->base;
+		SIFT_BISECT(uint32, m, a, b, runs_last(s, m) < dlo);
+		return a < runs_nr(s) && runs_start(s, a) <= dhi;
+	}
 	if (s->kind == SIFT_CSET_EXACT || s->kind == SIFT_CSET_PLIST)
 	{
 		uint64		dlo,
@@ -499,7 +661,16 @@ sift_cset_may_hold(const SiftCSet *s, int64 lo, int64 hi)
 void
 sift_cset_members(const SiftCSet *s, int64 *out)
 {
-	Assert(s->kind == SIFT_CSET_EXACT || s->kind == SIFT_CSET_PLIST);
+	Assert(s->kind == SIFT_CSET_EXACT || s->kind == SIFT_CSET_PLIST || s->kind == SIFT_CSET_RUNS);
+	if (s->kind == SIFT_CSET_RUNS)
+	{
+		uint32		m = 0;
+
+		for (uint32 i = 0, nr = runs_nr(s); i < nr; i++)
+			for (uint64 k = 0, st = runs_start(s, i), len = runs_last(s, i) - st + 1; k < len && m < s->n; k++)
+				out[m++] = (int64) ((uint64) s->base + st + k);
+		return;
+	}
 	for (uint32 i = 0; i < s->n; i++)
 		out[i] = (int64) ((uint64) s->base + exact_at(s, i));
 }
@@ -516,6 +687,16 @@ sift_cset_matches(const SiftCSet *s, const int64 *keys, uint32 nd)
 			if (!pres_any(s, keys[i], keys[i]))
 				return false;
 		return true;
+	}
+	if (s->kind == SIFT_CSET_RUNS)
+	{
+		uint32		m = 0;
+
+		for (uint32 i = 0, nr = runs_nr(s); i < nr; i++)
+			for (uint64 k = 0, st = runs_start(s, i), len = runs_last(s, i) - st + 1; k < len; k++, m++)
+				if (m >= nd || keys[m] != (int64) ((uint64) s->base + st + k))
+					return false;
+		return m == nd;
 	}
 	if (s->kind == SIFT_CSET_EXACT || s->kind == SIFT_CSET_PLIST)
 	{

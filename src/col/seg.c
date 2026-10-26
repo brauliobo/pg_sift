@@ -1771,7 +1771,7 @@ sift_cseg_presence(SiftColSegment *seg, int col, uint32 u, SiftCPresence *p)
 	if (!sift_cset_open(blob, len, &s))
 		corrupt(seg, "The small-set summary of leaf %d in unit %u is malformed.", col, u);
 	memset(p, 0, sizeof(*p));
-	if (s.kind == SIFT_CSET_PLIST)
+	if (s.kind == SIFT_CSET_PLIST || s.kind == SIFT_CSET_RUNS)
 	{
 		p->nkeys = s.n;
 		p->keys = palloc(s.n * sizeof(int64));
@@ -3093,7 +3093,7 @@ set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
  * morsel, and a begin that tested the whole segment made the scan quadratic in its units.
  */
 static void
-prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut, const ZoneArrays *z, uint32 lo, uint32 hi)
+prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut, const ZoneArrays *z, uint32 lo, uint32 hi, bool sets)
 {
 	uint32		n = hi - lo,
 				nw = (n + 63) / 64;
@@ -3123,13 +3123,15 @@ prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint
 			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
-			sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
+			if (sets)
+				sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
 			break;
 		case SIFT_CT_LUT:
 			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)
 				sift_colk->zone_set(z->set + lo, n, t->fold, kw);
-			sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
+			if (sets)
+				sift_cseg_prune_sets(seg, col, t, keep, Max(ulo, lo), Min(uhi, hi), setcut);
 			break;
 		case SIFT_CT_NONNULL:
 		case SIFT_CT_NOTNULL:
@@ -3173,7 +3175,7 @@ prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint
 }
 
 void
-sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut)
+sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut, bool sets)
 {
 	const ZoneArrays *z = zone_arrays(seg, col);
 	uint32		lo = ulo / 64 * 64,
@@ -3208,7 +3210,7 @@ sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, 
 		}
 		for (e = w + 1; e < w1 && (keep[e] || t->kind == SIFT_CT_NONE); e++)
 			;
-		prune_words(seg, col, t, keep, ulo, uhi, setcut, z, w * 64, Min(seg->nsb, e * 64));
+		prune_words(seg, col, t, keep, ulo, uhi, setcut, z, w * 64, Min(seg->nsb, e * 64), sets);
 		w = e;
 	}
 }

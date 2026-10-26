@@ -7,6 +7,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
@@ -18,12 +20,14 @@
 #include "catalog/indexing.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -161,6 +165,39 @@ sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, 
 	return hatt != 0 && sift_col_key_attr(heap, hatt, schema, d);
 }
 
+/*
+ * A column that is unique alone (the id) is not a candidate for the count(DISTINCT) that the other key lists serve, but an equality on it is the lookup a b-tree
+ * answers: a list of its keys in a unit skips the units whose zone holds the key, and it fits the share of the unit only as runs of consecutive keys (the
+ * ids that a batch inserted). It is worth a list where the zones cannot skip the units: the units are cut by a key, or the column does not follow the order
+ * of the heap (its correlation in pg_statistic is under 0.9); the report after the build keeps it only where the lists fit.
+ */
+static bool
+unique_needs_list(Relation heap, Relation index, const SiftColRel *rel, const SiftColDef *d)
+{
+	AttrNumber	hatt = heap_attno(index, d);
+	const char *name;
+	HeapTuple	tp;
+	bool		follows = true;
+	AttStatsSlot sslot;
+
+	if (hatt == 0 || !sift_cset_pres_leaf_ok(rel->schema, d) || !is_unique_column(heap, hatt))
+		return false;
+	name = NameStr(TupleDescAttr(RelationGetDescr(heap), hatt - 1)->attname);
+	if (strchr(name, ',') != NULL)
+		return false;
+	if (sift_col_key_cut(rel))
+		return true;
+	if ((tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false))) == NULL)
+		return false;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		follows = sslot.nnumbers > 0 && fabs(sslot.numbers[0]) >= 0.9;
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	return !follows;
+}
+
 /* 'auto: a, b'; 'auto' for none, which the next REINDEX decides again */
 static void
 set_chosen(Relation index, const StringInfoData *list)
@@ -199,7 +236,7 @@ sift_col_auto_keys(Relation heap, Relation index)
 			return true;
 	initStringInfo(&list);
 	for (int c = 0; c < rel->schema->ncols; c++)
-		if (sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]))
+		if (sift_col_key_shaped(heap, index, rel->schema, &rel->schema->cols[c]) || unique_needs_list(heap, index, rel, &rel->schema->cols[c]))
 			append_name(&list, leaf_name(index, &rel->schema->cols[c]));
 	if (list.len == 0)
 		return false;
@@ -373,7 +410,7 @@ sift_col_auto_keys_report(Relation index)
 				uint32		len;
 				const uint8 *blob = sift_cseg_set(seg, l, u, &len);
 
-				if (blob != NULL && len > 0 && (blob[0] == SIFT_CSET_PRES || blob[0] == SIFT_CSET_PLIST))
+				if (blob != NULL && len > 0 && (blob[0] == SIFT_CSET_PRES || blob[0] == SIFT_CSET_PLIST || blob[0] == SIFT_CSET_RUNS))
 				{
 					have[l]++;
 					bytes[l] += len;

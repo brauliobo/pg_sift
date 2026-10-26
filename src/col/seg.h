@@ -236,7 +236,7 @@ extern void sift_cseg_pre_census(SiftColSegment *seg, const SiftCPaggSpec *spec,
 extern bool sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting, const SiftCPaggCensus *c);
 
 /* Clears the bits (one per unit, nsb bits) of the units whose zone cannot satisfy the test, with the zone kernels */
-extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
+extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut, bool sets);
 /*
  * The small-set summary of the leaf alone on the units [ulo, uhi): clears the units it shows cannot hold a match, and sets their bits in
  * setcut (nsb bits, NULL: not told), which sift_cseg_prune does for the tests it takes; the units the tests before it kept are those it can count as its own.

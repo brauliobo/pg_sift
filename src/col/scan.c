@@ -596,6 +596,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 	int64	   *lo = palloc(Max(npreds, 1) * 2 * sizeof(int64)),
 			   *hi = lo + Max(npreds, 1);
 	bool	   *range = palloc0(Max(npreds, 1) * sizeof(bool));
+	bool	   *late = palloc0(Max(npreds, 1) * sizeof(bool));
 
 	if (pr->top != NULL)
 		pr->top->others = npreds > 1;
@@ -626,11 +627,30 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 				make_test(src, def, NULL, &preds[i], &t);
 			/* the directory lists the rows of the key: the zones and summaries of every unit would only narrow what it already narrowed */
 			if (pass == 0 || !prune_point(src, seg, pr->top, i, preds[i].col, &t, keep))
-				sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut);
+			{
+				/* with several predicates the summaries wait for the zones of all of them: they cost a read per unit the zones may have dropped */
+				late[i] = npreds > 1 && sift_cseg_set_kinds(seg, preds[i].col) != 0;
+				sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut, !late[i]);
+			}
 			range[i] = t.kind == SIFT_CT_RANGE;
 			lo[i] = t.lo;
 			hi[i] = t.hi;
 		}
+	for (int i = 0; i < npreds; i++)
+	{
+		const SiftColDef *def = &seg->schema->cols[preds[i].col];
+		SiftCTest	t;
+
+		if (!late[i])
+			continue;
+		if (window_empty(keep, pr))
+			break;
+		if (def->store == SIFT_COLS_STR)
+			seg_test(src, seg, def, &preds[i], &t);
+		else
+			make_test(src, def, NULL, &preds[i], &t);
+		sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut, true);
+	}
 	/* the ranges on one leaf together: BETWEEN is two tests, each too wide for a small set to answer alone */
 	for (int i = 0; i < npreds; i++)
 	{
@@ -654,6 +674,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 	}
 	pfree(lo);
 	pfree(range);
+	pfree(late);
 }
 
 /* keep narrowed to the units z may match: a kid of an OR narrows a copy, and the units any copy keeps are the ones kept */

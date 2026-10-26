@@ -141,8 +141,21 @@ unit_floor_applies(uint32 unit, uint64 rows, uint64 sbs)
 	return sbs >= least && rows_sparse(rows, sbs, unit);
 }
 
+/* the segments in snap that are immutable, in a new array */
+static SiftSegEntry *
+immutable_segs(const SiftDirSnapshot *snap, int *n)
+{
+	SiftSegEntry *in = palloc(Max(snap->nsegs, 1) * sizeof(SiftSegEntry));
+
+	*n = 0;
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			in[(*n)++] = snap->segs[i];
+	return in;
+}
+
 static void
-promote_one(Relation index, const SiftSegEntry *sealed)
+promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, int nin)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift_col promote", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -157,6 +170,7 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 	int			npages;
 	TimestampTz start = GetCurrentTimestamp();
 	uint64		rows = 0;
+	SiftCPaggSpec rewrite = r->pagg;
 
 	sift_cwbuf_flag_sealed(index, sealed);
 	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb);
@@ -175,7 +189,10 @@ promote_one(Relation index, const SiftSegEntry *sealed)
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
-		sift_colw_set_preagg(w, &r->pagg);
+		/* the lists the segments hold, as a merge writes them: a promotion that wrote the option's would leave the new segment without */
+		if (sift_col_is_index(index))
+			sift_col_pagg_rewrite(index, in, nin, &rewrite);
+		sift_colw_set_preagg(w, &rewrite);
 		if (sift_col_key_cut(r))
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
@@ -217,7 +234,13 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 
 	sift_dir_read(index, snap);
 	if ((s = first_sealed(snap)) != NULL)
-		promote_one(index, s);
+	{
+		int			nin;
+		SiftSegEntry *in = immutable_segs(snap, &nin);
+
+		promote_one(index, s, in, nin);
+		pfree(in);
+	}
 	pfree(snap);
 	return s ? SIFT_STEP_DONE : SIFT_STEP_IDLE;
 }

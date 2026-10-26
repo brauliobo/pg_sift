@@ -102,6 +102,7 @@ struct SiftColSegWriter
 	SetAcc	   *set;			/* [ncols], NULL unless the segment keeps small-set summaries (sift_colw_set_preagg) */
 	bool		anysets;
 	bool		anypres;		/* some unit keeps a key list or bitmap of a leaf (minor 15) */
+	bool		anyrunl;		/* ... and one of them as runs of consecutive keys (minor 23) */
 	SetAcc	   *run;			/* [ncols], NULL unless the segment keeps sorted runs (sift_colw_set_preagg) */
 	bool		anyruns;
 	bool		anyheads;		/* ... and one of them has its head (column format minor 18) */
@@ -431,6 +432,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 				left -= a->blobs.len - had;
 				a->any = w->anysets = w->anypres = true;
 				a->kinds |= SETS_PRES;
+				w->anyrunl |= a->blobs.data[had] == SIFT_CSET_RUNS;
 			}
 			else if (w->pagg.set[c] && !w->pagg.keyauto)
 			{
@@ -1385,6 +1387,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	Assert(!w->anyver || w->format >= SIFT_COL_FORMAT_VERS);
 	if (w->anysets)
 		w->format = Max(w->format, w->anypres ? SIFT_COL_FORMAT_PRESENCE : SIFT_COL_FORMAT_SETS);
+	if (w->anyrunl)
+		w->format = Max(w->format, SIFT_COL_FORMAT_RUNL);
 	if (w->anyruns)
 		w->format = Max(w->format, w->anyheads ? SIFT_COL_FORMAT_HEADS : SIFT_COL_FORMAT_RUNS);
 	if (w->anyexc)
