@@ -146,6 +146,8 @@
 #define AGG_KEY_ENTRY		40.0	/* an entry of a unit's dictionary given the id of a group key (the text built, hashed and looked up) in a table of 2,000 ids: 39 ns measured, which the read of the leaf prices; 90 ns at 20,000 ids and 200 ns at 200,000, as the table outgrows the caches (the 0.35 power of the ids over AGG_KEY_IDS): the excess over the first is charged */
 #define AGG_KEY_WIDE		45.0	/* an entry of a unit's dictionary of a wide column, given the id of a group key, in a table of 30,000 ids (107 ns measured on a numeric of two decimals); it grows with the 0.42 power of the ids (460 ns at 1,000,000 ids) */
 #define AGG_KEY_IDS			2000.0
+#define AGG_DIST_SEND		250.0	/* a distinct text value a worker sends and the leader merges into its own set of a count(DISTINCT): 0.4 to 1.2 us (1,500 to 2,600 instructions) measured with 100,000 to 736,000 values over 1,000,000 and 3,000,000 rows, 2 workers; the leader hashes the strings again */
+#define AGG_DIST_ID			35.0	/* an entry of a unit's dictionary given the id of a count(DISTINCT) of a text column, in a table of 100,000 ids: 83 ns measured (10,000 ids: 6 ns, 30,000: 23, 245,000: 110, 289,000: 216, 632,000: 259, 736,000 ids over 3,000,000 rows: 199 ns), as the table outgrows the caches: the 0.9 power up to 100,000 ids, the 0.6 power past them */
 #define AGG_ID_SWEEP		8.0		/* an id of the key table, per spill of the group table: the table is walked and its arrays reset whatever number of its groups hold rows (45 ns measured), in cpu_operator_cost */
 
 double
@@ -2207,6 +2209,50 @@ distinct_chunks(AggCtx *c, SiftAggAgg *a, CostAcc *k)
 	return touched * AGG_DIST_CHUNK_BYTES > (double) get_hash_memory_limit() ? 0 : touched;
 }
 
+/* the distinct values of the text column a count(DISTINCT) reads by the statistics; 0 for any other argument or without them */
+static double
+distinct_text_values(AggCtx *c, const SiftAggAgg *a, const CostAcc *k)
+{
+	double		frac;
+
+	if (a->kind != SAA_COUNT_DISTINCT || a->leaf < 0 || c->lay->leaf[a->leaf].vtype != SCV_CODE || c->lay->leaf[a->leaf].wide ||
+		(frac = leaf_stat_frac(c, a->leaf, k->rows)) <= 0)
+		return 0;
+	return Max(frac * k->rows, 1.0);
+}
+
+/*
+ * The ids the dictionary entries of a text column get for its count(DISTINCT): each unit hashes its entries into the table of the ids of the
+ * query, which grows with the values the column has (a column of a few thousand values costs nothing; one of 700,000 costs 140 ns a row).
+ */
+static double
+distinct_id_ops(AggCtx *c, const SiftAggSpec *s, const CostAcc *k)
+{
+	double		units = Max(k->units, 1.0),
+				read = Max(k->zone_kept, 1.0 / units) * units,
+				ops = 0;
+
+	for (int ai = 0; ai < s->naggs; ai++)
+	{
+		double		nd = distinct_text_values(c, &s->agg[ai], k),
+					entries,
+					x;
+		bool		counted = false;
+
+		/* a leaf the keys or an earlier aggregate gave ids to has them */
+		for (int j = 0; j < ai; j++)
+			counted |= s->agg[j].kind == SAA_COUNT_DISTINCT && s->agg[j].leaf == s->agg[ai].leaf;
+		for (int j = 0; j < s->nkeys; j++)
+			counted |= (s->key[j].kind == SAK_LEAF || s->key[j].kind == SAK_LUT) && s->key[j].leaf == s->agg[ai].leaf;
+		if (nd <= 0 || counted)
+			continue;
+		entries = nd * -expm1(-k->rows / units / nd) * read;
+		x = Min(entries, nd) / 100000.0;
+		ops += entries * AGG_DIST_ID * pow(x, x <= 1.0 ? 0.9 : 0.6);
+	}
+	return ops;
+}
+
 /* The aggregates, combos, keys and predicates of every tuple, less what the plain path saves, plus the bytes read */
 static void
 cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
@@ -2225,7 +2271,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
-	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units)) + bucket_eval_cost(c, s, k->agg_rows);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units)) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)
@@ -2242,7 +2288,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
  * read once, by the leader, who writes them to the shared memory (agg/lookshare.c): the divisor is not theirs.
  */
 static void
-cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
+cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
@@ -2264,7 +2310,13 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 		if (is_ordered_agg(&s->agg[i]) && s->agg[i].share == i)
 			k->scan_cost += k->agg_rows * AGG_ORDERED_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 		if (priced && s->agg[i].kind == SAA_COUNT_DISTINCT)
+		{
+			double		nd = distinct_text_values(c, &s->agg[i], k);
+
 			k->scan_cost += k->agg_rows * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
+			if (nd > 0)
+				k->scan_cost += s->nworkers * nd * -expm1(-k->agg_rows / tables / nd) * AGG_DIST_SEND * AGG_SCAN_SPEED * cpu_operator_cost;
+		}
 		/* the pairs of the sets of a joined column are at most one a row, and at most the values of each group: a column of few values sends few */
 		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
 			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
@@ -2514,7 +2566,7 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	for (int i = 0; i < s->npred; i++)
 		startup += in_tables_cost(c, s->pred[i]);
 	if (s->nworkers > 0)
-		cost_parallel(s, &k, &startup);
+		cost_parallel(c, s, &k, &startup);
 	/* each process holds a table of its own (and spills it) */
 	groups = group_count(c, s);
 	/* a top-N reads a fraction of the units, and makes the ids of those */
