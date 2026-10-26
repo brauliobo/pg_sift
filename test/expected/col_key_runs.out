@@ -40,7 +40,7 @@ CREATE FUNCTION kr_queries() RETURNS SETOF text LANGUAGE sql AS $$ VALUES
 -- the default: id is chosen with the key cut (the NOTICE names it), the segments are minor 23
 CREATE INDEX kr_i ON kr USING sift_col (id, set_id, grp, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
 NOTICE:  sift_col index kr_i keeps the keys of id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX kr_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT kr_option('kr_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr_i');
         option        | minors 
@@ -105,7 +105,7 @@ SELECT kr_option('kr_i') AS option, kr_units('SELECT count(*), sum(val) FROM kr 
 
 REINDEX INDEX kr_i;
 NOTICE:  sift_col index kr_i keeps the keys of id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 6036 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 6036 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX kr_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same FROM kr_queries() q ORDER BY 1;
                                                    q                                                    | same 
@@ -140,7 +140,7 @@ INSERT INTO kr8 SELECT g + 5000000000, 1 + (hashint4(g / 100) & 2147483647) % 40
 VACUUM (FREEZE, ANALYZE) kr8;
 CREATE INDEX kr8_i ON kr8 USING sift_col (id, set_id, val) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
 NOTICE:  sift_col index kr8_i keeps the keys of id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 4509 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX kr8_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT kr_option('kr8_i') AS option, array_agg(DISTINCT format ORDER BY format)::text AS minors FROM sift._test_col_formats('kr8_i');
         option        | minors 
@@ -180,7 +180,7 @@ INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashin
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
 NOTICE:  sift_col index kf_i keeps the keys of id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 45161 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 45161 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX kf_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT kr_option('kf_i') AS option;
         option        

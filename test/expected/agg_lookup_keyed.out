@@ -9,7 +9,7 @@ CREATE TABLE ev (id int, dim_id int, v int, d date) WITH (autovacuum_enabled = f
 INSERT INTO ev SELECT i, i % 2000, i % 7, date '2026-01-01' + i % 300 FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_id, v, d);
 NOTICE:  sift_col index ev_col keeps the keys of dim_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 544 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 544 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 -- twenty rows to a page: a table of a hundred pages
 CREATE TABLE dims (id int PRIMARY KEY, kind int, pad text) WITH (autovacuum_enabled = false);

@@ -10,7 +10,7 @@ FROM generate_series(1, 300000) i;
 CREATE INDEX customers_col ON customers USING sift_col (id, segment);
 CREATE INDEX sales_col ON sales USING sift_col (customer_id, ordered, shipped, amount);
 NOTICE:  sift_col index sales_col keeps the keys of customer_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 5184 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 5184 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX sales_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) customers, sales;
 \ir test/agg_helpers.sql

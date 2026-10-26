@@ -1,5 +1,5 @@
 -- The key lists and sorted runs of a sift_table: its column groups keep, per unit, the key list or bitmap of
--- each int2, int4 or date foreign key or *_id column that is not unique, and the sorted run of each timestamp column whose run takes at most the share of the unit
+-- each int2, int4, int8 or date foreign key or *_id column that is not unique, and the sorted run of each timestamp column whose run takes at most the share of the unit
 -- the key lists take. count(DISTINCT key) over whole units then reads no row, and ORDER BY a timestamp LIMIT n reads the head of each unit's run. Written by every
 -- writer of the groups (INSERT, COPY and CREATE TABLE AS, VACUUM and its merge); the answers are the heap plan's, with deletes and updates in between.
 CREATE EXTENSION pg_sift;

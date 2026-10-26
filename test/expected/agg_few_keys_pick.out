@@ -14,7 +14,7 @@ INSERT INTO fk_facts SELECT i, 1 + (i * 7919) % 600, date '2024-01-01' + (i % 70
 CREATE INDEX fk_facts_parent ON fk_facts (parent_id, ts, deleted_at);
 CREATE INDEX fk_facts_col ON fk_facts USING sift_col (id, parent_id, ts, deleted_at, metrics_a) WITH (paths = 'metrics_a.* float8');
 NOTICE:  sift_col index fk_facts_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 288 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 288 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX fk_facts_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 -- scope 1: one parent, 2: three, 3: forty
 CREATE TABLE fk_scope (scope_id int NOT NULL, parent_id int NOT NULL);

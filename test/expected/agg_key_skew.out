@@ -17,11 +17,11 @@ CREATE INDEX ks_events_parent ON ks_events (parent_id, ts, deleted_at);
 CREATE INDEX ks_flat_parent ON ks_flat (parent_id, ts, deleted_at);
 CREATE INDEX ks_events_col ON ks_events USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
 NOTICE:  sift_col index ks_events_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX ks_events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX ks_flat_col ON ks_flat USING sift_col (id, parent_id, ts, kind, amount, deleted_at);
 NOTICE:  sift_col index ks_flat_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX ks_flat_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 -- the lists: group 1 the five heaviest parents, group 2 the five rarest
 CREATE TABLE ks_pick (grp int NOT NULL, parent_id int NOT NULL);

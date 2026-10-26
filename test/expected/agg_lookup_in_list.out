@@ -11,7 +11,7 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 30000 EN
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, day, kind, amount);
 NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 26376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 26376 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- 100 countries (a list of a few keeps a few percent of the table), a city name that repeats, a tier, and the same rows without an index

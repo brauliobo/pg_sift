@@ -11,6 +11,9 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL WHEN i <= 5 THEN -i WHEN i <= 10 THEN 
        (i % 50)::int2, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, day, kind, amount);
+NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1020 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: small_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 -- the statistics of dim_a_id see every row (300 rows of sample per unit of target: 300000): sift reads the span of the values from them (a table over a span past
 -- 4M values is not built), and a sample that misses the few rows far from the rest would let the plan of NOT IN (SELECT ..) flip from run to run
 ALTER TABLE ev ALTER COLUMN dim_a_id SET STATISTICS 1000;

@@ -56,7 +56,7 @@ SET max_parallel_maintenance_workers = 2;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX li_ser ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_ser keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_ser SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_ser: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -71,7 +71,7 @@ SET max_parallel_maintenance_workers = 2;
 -- Two workers and the leader: a segment each, the same column data
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -103,7 +103,7 @@ DROP INDEX li_ser, li_par;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX li_ser ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_ser keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_ser SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_ser: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -111,7 +111,7 @@ HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX li_ser SET (
 SET max_parallel_maintenance_workers = 2;
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -140,7 +140,7 @@ SET max_parallel_workers = 0;
 DROP INDEX li_par;
 CREATE INDEX li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -162,7 +162,7 @@ RESET max_parallel_workers;
 SET sift.test_col_segment_kb = 1;
 CREATE INDEX li_cut ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_cut keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_cut SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_cut: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -208,7 +208,7 @@ DROP INDEX li_cut;
 -- REINDEX, REINDEX CONCURRENTLY and CREATE INDEX CONCURRENTLY (the snapshot of the leader is the workers')
 REINDEX INDEX li_par;
 NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -227,7 +227,7 @@ SELECT col_same('li_par', 'li_ser');
 
 REINDEX INDEX CONCURRENTLY li_par;
 NOTICE:  sift_col index li_par_ccnew keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par_ccnew SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par_ccnew: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -247,7 +247,7 @@ SELECT col_same('li_par', 'li_ser');
 DROP INDEX li_par;
 CREATE INDEX CONCURRENTLY li_par ON li USING sift_col (tenant_id, qty, price, sku, attrs) WITH (paths = 'attrs.channel text, attrs.weight float4, attrs.tags[] text');
 NOTICE:  sift_col index li_par keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1280 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_par SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_par: an equality on "tenant_id" reads 16 of 16 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.
@@ -347,7 +347,7 @@ SELECT count(*) AS left_behind FROM pg_class WHERE relname = 'li_fail';
 
 CREATE INDEX li_fail ON li USING sift_col (tenant_id, qty, price, sku);
 NOTICE:  sift_col index li_fail keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1360 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1360 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX li_fail SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 NOTICE:  sift_col index li_fail: an equality on "tenant_id" reads 17 of 17 units, and no other leaf of the index follows the order of the table
 DETAIL:  key_cut = 'tenant_id' cuts the units by that key instead of by block range, so a lookup reads the few units of its range and keeps doing so through writes and merges without a rewrite of the table; no leaf loses its zones, and the index grows by the address lists of the units.

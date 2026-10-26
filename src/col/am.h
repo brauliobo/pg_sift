@@ -84,7 +84,9 @@ extern const char *sift_col_options_paths_raw(Relation index);
 extern bool sift_col_paths_auto(const char *opt);
 extern bool sift_col_paths_redecide(Relation index);
 extern void sift_col_auto_keys_report(Relation index);
-/* The columns the default of key_columns looks at: an int2, int4 or date foreign key or *_id column that is not unique, and a column that is unique alone */
+/* The types of the columns the default of key_columns looks at (sift_cset_pres_leaf_ok), in the words of its NOTICE */
+#define SIFT_KEY_TYPES "int2, int4, int8 or date"
+/* The columns the default of key_columns looks at: a foreign key or *_id column of those types that is not unique, and a column that is unique alone */
 extern bool sift_col_key_shaped(Relation heap, Relation index, const SiftColSchema *schema, const SiftColDef *d);
 /* ... of the heap column hatt itself (the keys of a sift_table's columns: the leaf's attno) */
 extern bool sift_col_key_attr(Relation heap, AttrNumber hatt, const SiftColSchema *schema, const SiftColDef *d);

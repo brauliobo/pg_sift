@@ -1,5 +1,5 @@
 -- The summary of the keys of a leaf in every unit: an index with the option key_columns keeps, per unit and
--- leaf that is not an int2, int4 or date column (those keep a key list or bitmap: col_key_presence), the distinct keys exactly up to 32 and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
+-- leaf that is not an int2, int4, int8 or date column (those keep a key list or bitmap: col_key_presence), the distinct keys exactly up to 32 and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
 -- match where the zone (a minimum and a maximum) cannot tell. Written only under sift.col_format_minor = 10 and for the leaves of the option, so that
 -- an older library keeps reading what an index without it, or under a lower setting, writes; read back by the decoder that refuses a damaged summary;
 -- recomputed by sift.col_verify; kept by promotion, merge and VACUUM; counted in EXPLAIN.

@@ -272,7 +272,7 @@ INSERT INTO keyed SELECT g, g % 400, g % 300, g, g % 5 FROM generate_series(1, 1
 SET client_min_messages = notice;
 CREATE INDEX keyed_col ON keyed USING sift_col (id, parent_id, set_id, ext_id, kind);
 NOTICE:  sift_col index keyed_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 53 bytes); ext_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 203 bytes).
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: set_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 53 bytes); ext_id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 203 bytes).
 HINT:  ALTER INDEX keyed_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'keyed_col' AND o LIKE 'key_columns=%';
               o              
@@ -282,7 +282,7 @@ SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'keyed_col' A
 
 REINDEX INDEX keyed_col;
 NOTICE:  sift_col index keyed_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 72 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX keyed_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SET client_min_messages = warning;
 SELECT count(DISTINCT parent_id) FROM keyed;

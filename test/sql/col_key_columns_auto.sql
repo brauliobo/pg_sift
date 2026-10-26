@@ -1,5 +1,5 @@
 -- The default of the option key_columns: an index created without the option, or with key_columns = 'auto', keeps the
--- key list or bitmap of the foreign key columns and of the columns named *_id that are int2, int4 or date, not unique and not held by the cube; CREATE INDEX
+-- key list or bitmap of the foreign key columns and of the columns named *_id that are int2, int4, int8 or date, not unique and not held by the cube; CREATE INDEX
 -- writes the columns to the option as 'auto: a, b' (a rebuild of the same heap keeps them), the build keeps those that hold a list or a bitmap in half of the
 -- units, never a bloom filter, and a NOTICE says which, with the bytes, and how to turn it off.
 CREATE EXTENSION pg_sift_test CASCADE;

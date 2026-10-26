@@ -9,7 +9,7 @@ INSERT INTO lk_facts SELECT i, CASE WHEN i % 4 = 0 THEN 1 ELSE 2 + (i::bigint * 
 	date '2024-01-01' + (i % 700), i % 50 FROM generate_series(1, 400000) i;
 CREATE INDEX lk_facts_col ON lk_facts USING sift_col (id, parent_id, ts, amount) WITH (key_cut = parent_id);
 NOTICE:  sift_col index lk_facts_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 1050 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1050 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: id (no key list or bitmap within 3% of a unit in 100% of the units; a filter would take up to about 500220 bytes).
 HINT:  ALTER INDEX lk_facts_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE lk_dims (id int PRIMARY KEY, partner int NOT NULL, grp int NOT NULL);
 INSERT INTO lk_dims SELECT p, 1 + (p * 31) % 3000, p % 10 FROM generate_series(1, 3000) p;

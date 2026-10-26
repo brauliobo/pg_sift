@@ -17,7 +17,7 @@ CREATE INDEX ev_entity ON ev (dim_a_id, day);
 CREATE INDEX ev_ref ON ev (ref);
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, small_id, big_id, kind, amount, day, ref);
 NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 65280 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: small_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 65280 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: small_id (the cube holds it in 100% of the units); big_id (no key list or bitmap within 3% of a unit in 93% of the units; a filter would take up to about 75240 bytes). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- the plan of a statement, EXPLAIN without the numbers

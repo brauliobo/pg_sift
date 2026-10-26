@@ -472,7 +472,7 @@ sift_col_auto_keys_report(Relation index)
 		StringInfoData detail;
 
 		initStringInfo(&detail);
-		appendStringInfoString(&detail, "They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, ");
+		appendStringInfoString(&detail, "They are foreign key columns and columns named *_id of type " SIFT_KEY_TYPES " that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, ");
 		append_bytes(&detail, kept_bytes);
 		appendStringInfoString(&detail, " together, which a count(DISTINCT) of one reads instead of its rows.");
 		if (filtered.len > 0)

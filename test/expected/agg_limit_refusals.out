@@ -12,7 +12,7 @@ CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date);
 INSERT INTO events SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts);
 NOTICE:  sift_col index events_col keeps the keys of parent_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 96 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i % 7 FROM generate_series(0, 599) i;

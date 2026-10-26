@@ -15,7 +15,7 @@ INSERT INTO items SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 1200 END, CA
 FROM generate_series(1, 30000) i;
 CREATE INDEX items_col ON items USING sift_col (id, set_id, owner_k2, cat, amt, txt, d, k8);
 NOTICE:  sift_col index items_col keeps the keys of set_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 168 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 168 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX items_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX items_owner ON items (set_id);
 CREATE TABLE nothing (id int, set_id int, amt int);

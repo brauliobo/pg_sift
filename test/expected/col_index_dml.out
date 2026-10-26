@@ -44,7 +44,7 @@ SELECT (i * 7919) % 1000 - 500, (ARRAY['new', 'paid', 'shipped'])[1 + i % 3], (i
 UPDATE orders SET status = NULL WHERE id % 17 = 0;
 CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (write_buffer_limit = 64);
 NOTICE:  sift_col index o_col keeps the keys of tenant_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4 or date that are not unique: a key list or bitmap of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 144 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX o_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT 'build', stage('o_col');
  ?column? |     stage     
