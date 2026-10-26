@@ -339,6 +339,8 @@ struct SiftTopN
 	int64	   *skey;			/* sort: the keys of the rows of a unit, nkey for each row, and whether each is NULL */
 	bool	   *snull;
 	uint32	   *rwin;			/* a window of a sorted run (sift_topn_unit) */
+	uint32	   *rpass;			/* the rows of the window that pass, whose keys are read */
+	uint16	   *rslot;			/* the place of the key of each entry of the window in that read */
 	int			budget;			/* rows a unit gives in the first pass of a walk through sorted runs (0: all it can), sift_topn_run_budget */
 	bool		revisit;		/* the second pass: only the units the first left unfinished */
 	bool		yielded;		/* trunc[rpos] was given out and is not yet done */
@@ -1841,6 +1843,12 @@ run_corrupt(RunWalk *w, const char *what)
 			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what)));
 }
 
+static inline bool
+run_pass(const RunWalk *w, uint32 row)
+{
+	return w->rmask[row >> 6] >> (row & 63) & 1;
+}
+
 /* The row at position pos of the run; the window is read toward the direction of the walk */
 static uint32
 run_at(RunWalk *w, uint32 pos, bool back)
@@ -1852,7 +1860,19 @@ run_at(RunWalk *w, uint32 pos, bool back)
 
 		sift_colsrc_run_read(w->src, w->unit, w->t->key[0].leaf, lo, cnt, w->t->rwin);
 		if (w->key0 == NULL)
-			sift_colsrc_read_rows(w->src, w->unit, w->t->key[0].leaf, w->t->rwin, cnt, &w->wkey);
+		{
+			/* a key is read for a row that passes only: the walk skips the others, and reading one by position costs ten times what decoding it with its unit does */
+			int			m = 0;
+
+			for (uint32 i = 0; i < cnt; i++)
+				if (run_pass(w, w->t->rwin[i]))
+				{
+					w->t->rslot[i] = m;
+					w->t->rpass[m++] = w->t->rwin[i];
+				}
+			if (m > 0)
+				sift_colsrc_read_rows(w->src, w->unit, w->t->key[0].leaf, w->t->rpass, m, &w->wkey);
+		}
 		w->lo = lo;
 		w->hi = lo + cnt;
 		w->win = Min(w->win * 2, RUN_WIN_MAX);
@@ -1863,7 +1883,7 @@ run_at(RunWalk *w, uint32 pos, bool back)
 static void
 run_key(RunWalk *w, uint32 pos, uint32 row, int64 *v)
 {
-	if (!(w->key0 ? row_key(&w->t->key[0], w->key0, row, v) : row_key(&w->t->key[0], &w->wkey, pos - w->lo, v)))
+	if (!(w->key0 ? row_key(&w->t->key[0], w->key0, row, v) : row_key(&w->t->key[0], &w->wkey, w->t->rslot[pos - w->lo], v)))
 		run_corrupt(w, "has a NULL row among those with a value");
 }
 
@@ -1913,12 +1933,6 @@ run_room(RunWalk *w)
 {
 	if (w->nc >= w->t->ccap)
 		grow_unit_buffers(w->t, w->nc + 1);
-}
-
-static inline bool
-run_pass(const RunWalk *w, uint32 row)
-{
-	return w->rmask[row >> 6] >> (row & 63) & 1;
 }
 
 static bool
@@ -2065,7 +2079,11 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	}
 	grow_unit_buffers(t, Min(nrow, RUN_CAND_MIN));
 	if (t->rwin == NULL)
-		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * sizeof(uint32));
+	{
+		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * (2 * sizeof(uint32) + sizeof(uint16)));
+		t->rpass = t->rwin + RUN_WIN_MAX;
+		t->rslot = (uint16 *) (t->rpass + RUN_WIN_MAX);
+	}
 	w.barred = bar_rank(t, &w.bar);
 	if (rt && run_stop(&w, rt->next))
 		return true;
