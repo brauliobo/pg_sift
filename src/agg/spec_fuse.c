@@ -55,6 +55,28 @@ typedef struct SlotOwn
 	List	   *key;			/* that aggregate, apart from the slot it reads */
 } SlotOwn;
 
+/* the child's Params numbered by their place in the join's list, not by the planner's ids (the arms of a statement number them apart) */
+static Node *
+param_place_mutator(Node *n, const List *params)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC)
+	{
+		Param	   *p = copyObject((Param *) n);
+
+		for (int i = 0; i < list_length(params); i++)
+			if (list_nth_int(params, i) == p->paramid)
+			{
+				p->paramid = i;
+				break;
+			}
+		p->location = -1;
+		return (Node *) p;
+	}
+	return expression_tree_mutator(n, param_place_mutator, (void *) params);
+}
+
 /* the arm's join with what an arm may differ in left out: an inner join is a left join whose arm drops the tuples without a row (SAP_MATCHED), its columns (the union's), its plan numbers (a plan with the same query is the same), the slot of its ON clause */
 static List *
 join_shell(const SiftAggJoin *j)
@@ -68,6 +90,8 @@ join_shell(const SiftAggJoin *j)
 	x.subplan = 0;
 	x.params = NIL;
 	x.first.use = false;
+	x.first.ncol = 0;
+	x.first.pqual = (Node *) param_place_mutator(x.first.pqual, j->params);
 	x.fslot = -1;
 	x.desc = NULL;
 	return sift_aggspec_pack(&t);
