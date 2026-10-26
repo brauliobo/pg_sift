@@ -18,7 +18,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 95 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 96 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1112,9 +1112,22 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +3.1% of the column groups of a 4-integer-column table (532,480 to 548,864 bytes, 500,000 rows) and +0.7% of an 8-column one (2,457,600 to 2,473,984 bytes); build, merge and writes: User instructions of the writer (perf stat, 500,000 rows, 3 runs, 3.5 library with and without the change): CTAS and VACUUM FREEZE of 4 integer columns 3,427M to 3,426M (0.0%), of 8 columns 4,898M to 4,907M (+0.2%); other: format minor 7; The cube of every unit holds, for each integer measure of a dim, the smallest and largest value of each group (zigzag keys after the sums): within the cube's byte budget, none for the calendar cells of a date or timestamp column (their bytes fit the calendar budget only without them), none for a float measure. A 3.2 library cannot read minor 7.
 - **When:** A sift_table with a low-cardinality key (a store, a status, a kind) and integer or numeric measures, units clean and all-visible. Not a float measure, a calendar cell or a unit with a dead row.
 - **Default:** automatic — Meets the 3.3 rule: 20x at 50 groups (limit 5%), growth 0.7% to 3.1% (limit 3%; the 4-column table is a narrow one with nothing else in the unit), write cost 0.0% to 0.2% of the writer's instructions (limit 5%). It is the default of cube_minmax for an index since 3.3.
-- **Turn off:** SET sift.col_format_minor = 6 (no min or max is written; groups already written keep theirs until rewritten; it is also the 3.2 format) or SET sift.agg_preagg = off.
+- **Turn off:** No per-table switch: SET sift.col_format_minor = 6 writes no min or max (groups already written keep theirs until rewritten), and it also stops every later feature of the writer (calendar cells, key lists and run heads of a table, column format minors 8 to 18; it is the 3.2 format); SET sift.agg_preagg = off reads none of the pre-aggregates.
 - **Upgrade from 3.4:** No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can).
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A min or max of a float column, of a month of a timestamp, or by a column that is not a dim of the cube reads the rows.
+
+#### auto(table-rollup)
+
+`sift_table` · default · since 3.5 · default automatic
+
+- **What it does:** GROUP BY of the unnested elements of a declared jsonb list (sift.table_set_paths, doc.items[]{k int4, p float8}) by its low-cardinality leaves, with count, sum, min and max of the measures, over whole units, reads no element (EXPLAIN ANALYZE shows Units From Pre-aggregates, Units Without The Rollup 0).
+- **Gain:** GROUP BY an element key with count and sum of an element float, 500,000 rows, 2 elements a row, 10 units: 22.977 to 0.121 ms, 97.73M to 0.46M instructions
+- **Impact:** index size: none: the bytes of the groups are those the 3.5 tip writes; build, merge and writes: none: the writers are unchanged; other: Nothing new is written: the units of a table already carry the element rollups (the 2% byte budget a list of the index default); the source reads them with the code of the sift_col source (unit_rollup, unit_rollup_tuples, unit_rollup_miss).
+- **When:** A sift_table with a jsonb column whose list paths are declared (sift.table_set_paths), GROUP BY over jsonb_to_recordset / unnest of it by element leaves of few values, units clean and all-visible. Not a grouping by a leaf of many values, a filter on the row or a unit with a dead row.
+- **Default:** automatic — Meets the 3.3 rule: 140x at 500,000 rows (limit 5%), growth 0% (limit 3%), write cost 0% (limit 5%): the rollups were written already and nothing read them.
+- **Turn off:** SET sift.agg_rollup_cost = 1000 (no unit is answered from a rollup).
+- **Upgrade from 3.4:** No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so).
+- **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A grouping by a leaf the rollup does not hold, a filter on a column of the row, or a unit with a dead or buffered row reads the elements.
 
 #### auto(table-key-lists)
 
@@ -1989,6 +2002,7 @@ No default changed since 3.4; new: none.
 | Option | 3.4 | 3.4 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
+| `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
 | `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
 <!-- sift-upgrade:end -->
