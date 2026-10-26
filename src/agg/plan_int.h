@@ -420,7 +420,7 @@ extern bool spelled_wide(const SiftSrcLeaf *lf);
 extern double agg_stage_normal;
 extern double agg_read_rows;
 extern double lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups);
-extern bool few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows);
+extern bool few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess);
 extern PlannerInfo *cte_root(PlannerInfo *root, RangeTblEntry *rte);
 extern double input_rows_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, double rows);
 extern double filter_rows_ratio(AggCtx *c);

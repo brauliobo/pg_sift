@@ -799,7 +799,7 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * one of ten thousand, and an index not cut by the key reads tens of units for one, so the scan is priced for a guess that is not a floor).
  */
 static double
-join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share)
+join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share, double *excess)
 {
 	double		kept = 1.0,
 				selective = 1.0;
@@ -807,6 +807,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 	*n = 0;
 	*sel_keys = HUGE_VAL;
 	*share = 1.0;
+	*excess = 1.0;
 	if (!sift_agg_join_filter || s->topn)
 		return kept;
 	foreach_ptr(JoinCtx, jc, c->joins)
@@ -838,7 +839,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 			{
 				selective = sure / nd;
 				*sel_keys = sure;
-				*share = Max(selective, list_keys < HUGE_VAL ? cte_list_worth(c, jc, (Var *) e) / nd : 0);
+				*excess = list_keys < HUGE_VAL ? Max(cte_list_worth(c, jc, (Var *) e) / sure, 1.0) : 1.0;
+				*share = selective * *excess;
 			}
 			nkeys = Min(keys, list_keys);
 			kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
@@ -1435,10 +1437,11 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
 	double		sel_keys,
 				share,
+				excess,
 				kept;
 	List	   *rest;
 
-	kept = join_key_zone(c, s, nkeyfilters, &sel_keys, &share);
+	kept = join_key_zone(c, s, nkeyfilters, &sel_keys, &share, &excess);
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
 	kept = Min(kept, set_kept(c, s));
 	foreach_ptr(SiftAggPred, p, rest)
@@ -1636,16 +1639,19 @@ rel_has_param_qual(RelOptInfo *rel)
 	return false;
 }
 
-/* does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? *rows: the rows of the table those keys own */
+/*
+ * does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? *rows: the rows of the table those keys own;
+ * *excess: how many times the rows of one of them exceed the mean's, which PostgreSQL prices a probe of the key by
+ */
 bool
-few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows)
+few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess)
 {
 	double		sel_keys,
 				share,
 				kept;
 	int			n;
 
-	kept = join_key_zone(c, s, &n, &sel_keys, &share);
+	kept = join_key_zone(c, s, &n, &sel_keys, &share, excess);
 	*rows = c->rel->rows * Min(share, 1.0);
 	return sel_keys <= AGG_PROBE_KEYS && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
 }
