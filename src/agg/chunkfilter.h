@@ -18,6 +18,12 @@ typedef struct SiftAggFilters
 	int			n;
 } SiftAggFilters;
 
+/* The text tests of one scan that join the zone pruning of a begin (the others are not used to skip units) */
+#define COL_MAX_STR_PRUNE	16
+
+/* A text test (prune_str, filter_str) as an engine predicate on the column col of the source, over the constants in vals (room for t->nvals) */
+extern SiftColPred sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col);
+
 /* Is a filter on a column of this definition one the engine tests as integers on its chunks? */
 extern bool sift_aggfilt_int(const SiftColDef *def);
 

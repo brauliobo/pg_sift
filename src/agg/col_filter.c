@@ -35,43 +35,6 @@
 
 #include "agg/col_int.h"
 
-static SiftColOp
-str_op(SiftSrcStrOp op)
-{
-	switch (op)
-	{
-		case SSTR_EQ:
-			return SIFT_COLOP_EQ;
-		case SSTR_NE:
-			return SIFT_COLOP_NE;
-		case SSTR_LT:
-			return SIFT_COLOP_LT;
-		case SSTR_LE:
-			return SIFT_COLOP_LE;
-		case SSTR_GT:
-			return SIFT_COLOP_GT;
-		case SSTR_GE:
-			return SIFT_COLOP_GE;
-		case SSTR_IN:
-			return SIFT_COLOP_IN;
-		case SSTR_NOTIN:
-			return SIFT_COLOP_NOTIN;
-		case SSTR_PREFIX:
-			return SIFT_COLOP_PREFIX;
-	}
-	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
-	pg_unreachable();
-}
-
-/* a text test as a column predicate over the constants in vals (room for t->nvals) */
-static SiftColPred
-str_pred(const SiftSrcStrTest *t, SiftColValue *vals)
-{
-	for (int i = 0; i < t->nvals; i++)
-		vals[i] = (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
-	return (SiftColPred) {t->leaf, str_op(t->op), t->nvals, vals};
-}
-
 /* the tests join the zone pruning of every begin: the segment dictionary's, or the prefix zone of an inline unit */
 void
 col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
@@ -81,7 +44,7 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 	src->spred = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
 	for (int i = 0; i < nt && src->nspred < COL_MAX_STR_PRUNE; i++)
 		if (!src->lay->leaf[t[i].leaf].lossy)
-			src->spred[src->nspred++] = str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)));
+			src->spred[src->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)), t[i].leaf);
 }
 
 static void
@@ -104,7 +67,7 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 		src->fcap = Max(t->nvals, 2 * src->fcap);
 		src->fvals = src->fvals ? repalloc(src->fvals, src->fcap * sizeof(SiftColValue)) : MemoryContextAlloc(src->cxt, src->fcap * sizeof(SiftColValue));
 	}
-	pred = str_pred(t, src->fvals);
+	pred = sift_aggfilt_str_pred(t, src->fvals, t->leaf);
 	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
 	return true;
 }

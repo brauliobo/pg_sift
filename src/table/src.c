@@ -368,6 +368,47 @@ add_wbuf(TblSource *t, uint32 sb_lo, uint32 sb_hi)
 	MemoryContextSwitchTo(old);
 }
 
+/* The text tests join the zone pruning of every begin (a segment that lacks the column has no bound for it), and filter the rows of a unit on the encoded strings */
+static void
+tbl_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
+{
+	TblSource  *tb = impl;
+
+	for (int k = 0; k < tb->nparts; k++)
+	{
+		TblPart    *p = &tb->part[k];
+
+		p->spred = MemoryContextAlloc(tb->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
+		p->nspred = 0;
+		for (int i = 0; i < nt && p->nspred < COL_MAX_STR_PRUNE; i++)
+			if (p->col[t[i].leaf] >= 0 && !tb->lay->leaf[t[i].leaf].lossy)
+				p->spred[p->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(tb->cxt, t[i].nvals * sizeof(SiftColValue)), p->col[t[i].leaf]);
+	}
+}
+
+static void
+filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
+{
+	sift_col_filter(cu, pred, 1, sel);
+}
+
+static bool
+tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
+{
+	TblSource  *tb = impl;
+	TblPart    *p = unit->priv;
+	SiftColValue *vals;
+	SiftColPred pred;
+
+	if (p->col[t->leaf] < 0 || tb->lay->leaf[t->leaf].lossy)
+		return false;
+	vals = palloc(Max(t->nvals, 1) * sizeof(SiftColValue));
+	pred = sift_aggfilt_str_pred(t, vals, p->col[t->leaf]);
+	sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
+	pfree(vals);
+	return true;
+}
+
 static void
 tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
@@ -377,9 +418,11 @@ tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	for (int k = 0; k < t->nparts; k++)
 	{
 		TblPart    *p = &t->part[k];
-		SiftColPred preds[SIFT_AGGZONE_MAX + SIFT_COLSRC_MAX_FILTERS];
+		SiftColPred preds[SIFT_AGGZONE_MAX + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
 		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, prune, nprune, preds);
 
+		for (int i = 0; i < p->nspred; i++)
+			preds[n++] = p->spred[i];
 		for (int i = 0; i < p->flt.n; i++)
 			preds[n++] = p->flt.pred[i];
 		sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
@@ -875,6 +918,8 @@ static const SiftSrcProvider tbl_provider = {
 	.unit_hist = tbl_unit_hist,
 	.read_sel = tbl_read_sel,
 	.narrow = tbl_narrow,
+	.prune_str = tbl_prune_str,
+	.filter_str = tbl_filter_str,
 	.set_filters = tbl_set_filters,
 	.filter = tbl_filter,
 	.set_wide = tbl_set_wide,

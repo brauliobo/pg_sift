@@ -13,6 +13,42 @@ static const SiftColOp filter_ops[] = {
 	[SSF_GE] = SIFT_COLOP_GE, [SSF_IN] = SIFT_COLOP_IN, [SSF_NOTIN] = SIFT_COLOP_NOTIN, [SSF_NOTNULL] = SIFT_COLOP_NOTNULL
 };
 
+static SiftColOp
+str_op(SiftSrcStrOp op)
+{
+	switch (op)
+	{
+		case SSTR_EQ:
+			return SIFT_COLOP_EQ;
+		case SSTR_NE:
+			return SIFT_COLOP_NE;
+		case SSTR_LT:
+			return SIFT_COLOP_LT;
+		case SSTR_LE:
+			return SIFT_COLOP_LE;
+		case SSTR_GT:
+			return SIFT_COLOP_GT;
+		case SSTR_GE:
+			return SIFT_COLOP_GE;
+		case SSTR_IN:
+			return SIFT_COLOP_IN;
+		case SSTR_NOTIN:
+			return SIFT_COLOP_NOTIN;
+		case SSTR_PREFIX:
+			return SIFT_COLOP_PREFIX;
+	}
+	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
+	pg_unreachable();
+}
+
+/* a text test as a column predicate over the constants in vals (room for t->nvals) */
+SiftColPred
+sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col)
+{
+	for (int i = 0; i < t->nvals; i++)
+		vals[i] = (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
+	return (SiftColPred) {col, str_op(t->op), t->nvals, vals};
+}
 bool
 sift_aggfilt_int(const SiftColDef *def)
 {

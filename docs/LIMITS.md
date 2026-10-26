@@ -49,7 +49,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 | `float_ops` | operations of one float8 aggregate argument | 16 | operations | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_VX` |  |
 | `combo_leaves` | leaves one value combination reads | 8 | leaves | normal plan |  | `agg/spec.h` `SIFT_AGG_MAX_CLEAVES` |  |
 | `rows_shared` | aggregates sharing one rows-set (count(DISTINCT) grouping) | 32 | aggregates | normal plan (slug rows_shape) |  | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` | yes |
-| `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/col_int.h` `COL_MAX_STR_PRUNE` |  |
+| `text_prune` | text conditions of a scan that prune units by prefix | 16 | conditions | the others do not prune units |  | `agg/chunkfilter.h` `COL_MAX_STR_PRUNE` |  |
 | `filter_set` | values of an IN set sent as a zone filter | 8 | values | a larger set is not used as a zone filter |  | `agg/init_filter.c` `FILTER_MAX_SET` |  |
 
 ## Column index (`src/col`)

@@ -98,7 +98,7 @@
 	  "leaves one value combination reads", "normal plan", "-", 0) \
 	X(rows_shared, "SIFT_ROWS_MAX_SHARED", "agg/rows.h", SIFT_ROWS_MAX_SHARED, "aggregates", \
 	  "aggregates sharing one rows-set (count(DISTINCT) grouping)", "normal plan (slug rows_shape)", "-", 1) \
-	X(text_prune, "COL_MAX_STR_PRUNE", "agg/col_int.h", COL_MAX_STR_PRUNE, "conditions", \
+	X(text_prune, "COL_MAX_STR_PRUNE", "agg/chunkfilter.h", COL_MAX_STR_PRUNE, "conditions", \
 	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \

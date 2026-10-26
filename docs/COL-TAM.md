@@ -417,7 +417,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Skip map for parallel morsels | works | missing | a worker takes ranges of superblocks and begins each, instead of skipping the pruned ones from one map |
 | Parallel scan workers | works | works | partitions of a partitioned table: index only (`open_part`) |
 | Partitioned table pushdown | works | missing | partitions of `sift_table` are scanned by PostgreSQL's own plan |
-| Text tests on the encoded form (prefix zones, dictionary codes) | works | missing | the executor tests the strings of the decoded leaf; no prefix zone or dictionary code test |
+| Text tests on the encoded form (prefix zones, dictionary codes) | works | works | prefix zones skip groups, dictionary codes and encoded strings answer `=`, `<>`, ranges, `IN`, `NOT IN`, `LIKE 'p%'` (a column a group lacks stays with the executor) |
 | Integer comparisons on encoded chunks | works | works | the table takes a filter when every segment layout holds the column as an integer leaf (agg/chunkfilter.c) |
 | Decoding only the rows a filter keeps | works | works | a unit with few kept rows decodes them, and one the integer filters left few rows is narrowed to them |
 | Decoding straight into the executor's vector | works | partial | a leaf that is not wide decodes into the executor's buffer in its own type (the read shared with `sift_col`); wide leaves (numeric over 18 digits, interval, enum) decode, then copy |

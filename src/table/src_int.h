@@ -34,6 +34,8 @@ typedef struct TblPart
 	bool		have;
 	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin, on this schema's leaves */
 	SiftAggFilters flt;			/* the filters set_filters accepted, on this schema's columns */
+	SiftColPred *spred;			/* the text tests of prune_str, on this schema's columns */
+	int			nspred;
 } TblPart;
 
 typedef struct TblSource
