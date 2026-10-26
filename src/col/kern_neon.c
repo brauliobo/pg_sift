@@ -238,4 +238,143 @@ sift_colk_bits_to_flags_neon(const uint64 *bits, uint32 n, uint8 *flags)
 	}
 }
 
+/* popcount(a & b): CNT per byte, widened by pairwise adds into two 64-bit lanes */
+uint64
+sift_colk_bits_and_count_neon(const uint64 *a, const uint64 *b, uint32 nwords)
+{
+	uint64x2_t	acc = vdupq_n_u64(0);
+	uint64		c;
+	uint32		i = 0;
+
+	for (; i + 2 <= nwords; i += 2)
+		acc = vpadalq_u32(acc, vpaddlq_u16(vpaddlq_u8(vcntq_u8(vreinterpretq_u8_u64(vandq_u64(vld1q_u64(a + i), vld1q_u64(b + i)))))));
+	c = vaddvq_u64(acc);
+	for (; i < nwords; i++)
+		c += sift_pc64(a[i] & b[i]);
+	return c;
+}
+
+/* dst = base + the four zero-extended lanes of v, as int64 (wrapping, as the scalar kernel) */
+static inline void
+for_store4(int64 *dst, uint32x4_t v, uint64x2_t b)
+{
+	vst1q_u64((uint64 *) dst, vaddq_u64(b, vmovl_u32(vget_low_u32(v))));
+	vst1q_u64((uint64 *) dst + 2, vaddq_u64(b, vmovl_high_u32(v)));
+}
+
+void
+sift_colk_for_i64_u8_neon(const void *a, uint32 n, int64 base, int64 *dst)
+{
+	const uint8 *p = a;
+	const uint64x2_t b = vdupq_n_u64((uint64) base);
+	uint32		i = 0;
+
+	for (; i + 16 <= n; i += 16)
+	{
+		const uint8x16_t x = vld1q_u8(p + i);
+		const uint16x8_t lo = vmovl_u8(vget_low_u8(x)),
+					hi = vmovl_high_u8(x);
+
+		for_store4(dst + i, vmovl_u16(vget_low_u16(lo)), b);
+		for_store4(dst + i + 4, vmovl_high_u16(lo), b);
+		for_store4(dst + i + 8, vmovl_u16(vget_low_u16(hi)), b);
+		for_store4(dst + i + 12, vmovl_high_u16(hi), b);
+	}
+	sift_colk_for_i64_u8_scalar(p + i, n - i, base, dst + i);
+}
+
+void
+sift_colk_for_i64_u16_neon(const void *a, uint32 n, int64 base, int64 *dst)
+{
+	const uint16 *p = a;
+	const uint64x2_t b = vdupq_n_u64((uint64) base);
+	uint32		i = 0;
+
+	for (; i + 8 <= n; i += 8)
+	{
+		const uint16x8_t x = vld1q_u16(p + i);
+
+		for_store4(dst + i, vmovl_u16(vget_low_u16(x)), b);
+		for_store4(dst + i + 4, vmovl_high_u16(x), b);
+	}
+	sift_colk_for_i64_u16_scalar(p + i, n - i, base, dst + i);
+}
+
+void
+sift_colk_for_i64_u32_neon(const void *a, uint32 n, int64 base, int64 *dst)
+{
+	const uint32 *p = a;
+	const uint64x2_t b = vdupq_n_u64((uint64) base);
+	uint32		i = 0;
+
+	for (; i + 4 <= n; i += 4)
+		for_store4(dst + i, vld1q_u32(p + i), b);
+	sift_colk_for_i64_u32_scalar(p + i, n - i, base, dst + i);
+}
+
+void
+sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int64 *dst)
+{
+	const uint64 *p = a;
+	const uint64x2_t b = vdupq_n_u64((uint64) base);
+	uint32		i = 0;
+
+	for (; i + 2 <= n; i += 2)
+		vst1q_u64((uint64 *) dst + i, vaddq_u64(b, vld1q_u64(p + i)));
+	sift_colk_for_i64_u64_scalar(p + i, n - i, base, dst + i);
+}
+
+/* the order preserving int64 of a double: k ^ ((k >> 63 arithmetic) >> 1 logical) */
+void
+sift_colk_f8_from_keys_neon(int64 *a, uint32 n)
+{
+	uint32		i = 0;
+
+	for (; i + 2 <= n; i += 2)
+	{
+		const int64x2_t k = vld1q_s64(a + i);
+
+		vst1q_s64(a + i, veorq_s64(k, vreinterpretq_s64_u64(vshrq_n_u64(vreinterpretq_u64_s64(vshrq_n_s64(k, 63)), 1))));
+	}
+	sift_colk_f8_from_keys_scalar(a + i, n - i);
+}
+
+/* keep &= the sets that share a bit with the probe (4 words each); the bits from n on are left as they are */
+void
+sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep)
+{
+	const uint64x2_t p01 = vld1q_u64(probe),
+				p23 = vld1q_u64(probe + 2);
+
+	for (uint32 w = 0; w < SIFT_COLK_WORDS(n); w++)
+	{
+		uint64		word = 0;
+
+		for (uint32 j = 0, i = w * 64; j < 64 && i < n; j++, i++)
+		{
+			const uint64x2_t x = vorrq_u64(vandq_u64(vld1q_u64(set[i]), p01), vandq_u64(vld1q_u64(set[i] + 2), p23));
+
+			word |= (uint64) ((vgetq_lane_u64(x, 0) | vgetq_lane_u64(x, 1)) != 0) << j;
+		}
+		keep[w] &= word | ~sift_colk_tail(n, w);
+	}
+}
+
+/* parent[i] = the p whose run [end[p - 1], end[p]) holds i: each run is filled four entries a store */
+void
+sift_colk_expand_parents_neon(const uint32 *end, uint32 np, uint32 *parent)
+{
+	uint32		i = 0;
+
+	for (uint32 p = 0; p < np; p++)
+	{
+		const uint32x4_t v = vdupq_n_u32(p);
+
+		for (; i + 4 <= end[p]; i += 4)
+			vst1q_u32(parent + i, v);
+		for (; i < end[p]; i++)
+			parent[i] = p;
+	}
+}
+
 #endif

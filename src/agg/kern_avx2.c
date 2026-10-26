@@ -2,8 +2,7 @@
  * agg/kern_avx2.c - AVX2 aggregation operators. Predicates compare 4 rows per instruction (doubles) and take the bits with
  * MOVMSK; lookups use VPGATHER (masked where a lane may not be touched); reductions keep several independent accumulators.
  * Results are bit-identical to the scalar table (agg/kern.c): float compares are mapped to unordered predicates so that
- * NaN is greater than everything. Slots that a per-group scatter or a gather does not speed up (gid_code, gid_i32, count_gid,
- * sum_gid_*) are the scalar functions.
+ * NaN is greater than everything. Slots that a per-group scatter (count_gid, sum_gid_*) or the gather of gid_code does not speed up are the scalar functions.
  */
 #include "core/host.h"
 
@@ -142,6 +141,22 @@ F2 void
 gather_bits_avx2(uint64 *out, const uint64 *rowmask, const uint32 *parent, int m)
 {
 	AGK_BITS2(out, m, 8, 0, e, row_bits(rowmask, LD(parent + e)), row_bits(rowmask, ld_n32(parent + e, m - e)));
+}
+
+/* ---- group ids ---- */
+
+F2 void
+gid_i32_avx2(uint32 *gid, const int32 *v, int32 base, const uint32 *map, int n, uint32 mult)
+{
+	const __m256i vm = _mm256_set1_epi32(mult),
+				vb = _mm256_set1_epi32(base);
+	int			i = 0;
+
+	for (; i + 8 <= n; i += 8)
+		ST(gid + i, _mm256_add_epi32(LD(gid + i),
+									 _mm256_mullo_epi32(_mm256_i32gather_epi32((const int *) map, _mm256_sub_epi32(LD(v + i), vb), 4), vm)));
+	for (; i < n; i++)
+		gid[i] += map[(uint32) v[i] - (uint32) base] * mult;
 }
 
 /* ---- reductions that keep the hand loop: the masked 50 % case measured 7 to 8 % slower in the shared body ---- */
@@ -319,9 +334,8 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 const SiftAggKernels sift_aggkern_avx2 = {
 	AGK_INIT2(cmp_f64) AGK_INIT2(cmp2_i32) AGK_INIT2(cmp2_i64) AGK_INIT2(cmp2_f64) AGK_INIT2(lut_i32) AGK_INIT2(gather_bits)
 	AGK_INIT2(sum_i32) AGK_INIT2(sum_i64) AGK_INIT2(absmax_f64) AGK_INIT2(absmax_i64) AGK_INIT2(minmax_i32) AGK_INIT2(minmax_i64) AGK_INIT2(minmax_f64)
-	AGK_INIT2(lin_i64) AGK_INIT2(mulw_i64)
+	AGK_INIT2(lin_i64) AGK_INIT2(mulw_i64) AGK_INIT2(gid_i32)
 	.gid_code = agk_gid_code_scalar,
-	.gid_i32 = agk_gid_i32_scalar,
 	.count_gid = agk_count_gid_scalar,
 	.sum_gid_i32 = agk_sum_gid_i32_scalar,
 	.sum_gid_f64 = agk_sum_gid_f64_scalar,

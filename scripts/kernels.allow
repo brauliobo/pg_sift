@@ -1,0 +1,35 @@
+# Kernel slots a SIMD level leaves on the scalar function (scripts/check-kernels.py). family, level, slot ([] = every element of an array slot), reason (tab separated).
+# A reason is a measurement or a property of the operation.
+agg	avx2	count_gid	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx2	gid_code	the scalar loop runs at the gather rate: 1,366 / 1,311 ns per 4096 rows scalar / AVX2 gather, 1.0x (2026-10-26; gid_i32, with the subtraction, is 1.6x and vectorized)
+agg	avx2	sum_gid_f64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx2	sum_gid_i32	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx2	sum_gid_i64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx512	count_gid	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx512	sum_gid_f64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx512	sum_gid_i32	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	avx512	sum_gid_i64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	neon	absmax_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
+agg	neon	sum_i64	the shared two-lane form is slower than the scalar loop on an arm64 core: 875 against 219 ns per 4096 rows unmasked, 906 against 859 at 50 % (2026-10-26)
+agg	neon	cmp2_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
+agg	neon	count_gid	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	neon	gather_bits	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+agg	neon	gid_code	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+agg	neon	gid_i32	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+agg	neon	lut_i32	a byte load per row indexed by the value, and NEON has no gather: a vector form issues the same loads as the scalar loop
+agg	neon	minmax_i64	the scalar loop is faster than two 64-bit lanes on an arm64 core (src/agg/kern_neon.c)
+agg	neon	sum_gid_f64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	neon	sum_gid_i32	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+agg	neon	sum_gid_i64	scatter-add of rows into per-group accumulators: the lanes of a vector can meet in one group, so a vector form pays only below about 4 groups; under 0.5% of the cycles of the 156-statement corpus (perf record, 2026-10-26)
+bm25	neon	bm25_sel	0.86x of the scalar loop at d = 0.25 on an arm64 core, where most bytes hold one or two slots; no end-to-end gain
+bm25	neon	expand	a deposit of tf values into slots, for which NEON has no instruction
+bm25	neon	select_gt	a compaction, for which NEON has no instruction
+bm25	neon	tf_decode	a variable length decode, for which NEON has no instruction
+bm25	neon	ub_accum	1.0x on an arm64 core: the compiler vectorizes the scalar loop as well
+bm25	neon	vm_allvisible	a bit gather, for which NEON has no instruction
+col	avx2	for_i64_sel[]	x86 gathers were slower than the scalar loads they replace
+col	avx2	gather_u32	x86 gathers were slower than the scalar loads they replace
+col	avx512	for_i64_sel[]	x86 gathers were slower than the scalar loads they replace
+col	neon	for_i64_sel[]	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+col	neon	gather_u32	NEON has no gather instruction: a vector form is the scalar loads with lane inserts
+col	neon	lut[]	NEON has no gather instruction: a 16 or 32 bit value indexes a bit of the table, which is a scalar load per row

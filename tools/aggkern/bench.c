@@ -176,6 +176,8 @@ main(void)
 	ROW("gid_i32", k->gid_i32(gid0, k32, -5, map2, N, 4));
 	ROW("sum_i32 all rows", sink = k->sum_i32(i32, NULL, N));
 	ROW("sum_i32 50 %", sink = k->sum_i32(i32, m50, N));
+	ROW("sum_i64 all rows", sink = k->sum_i64(i64, NULL, N));
+	ROW("sum_i64 50 %", sink = k->sum_i64(i64, m50, N));
 	{
 		double		amx;
 

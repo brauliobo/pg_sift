@@ -24,6 +24,14 @@ extern void sift_colk_lut_u8_neon(const void *a, uint32 n, const uint64 *lutbits
 extern void sift_colk_zone_range_neon(const int64 *mn, const int64 *mx, uint32 n, int64 lo, int64 hi, uint64 *keep);
 extern void sift_colk_zone_notnull_neon(const uint32 *nnull, const uint32 *nvals, uint32 n, uint64 *keep);
 extern void sift_colk_bits_to_flags_neon(const uint64 *bits, uint32 n, uint8 *flags);
+extern uint64 sift_colk_bits_and_count_neon(const uint64 *a, const uint64 *b, uint32 nwords);
+extern void sift_colk_for_i64_u8_neon(const void *a, uint32 n, int64 base, int64 *dst);
+extern void sift_colk_for_i64_u16_neon(const void *a, uint32 n, int64 base, int64 *dst);
+extern void sift_colk_for_i64_u32_neon(const void *a, uint32 n, int64 base, int64 *dst);
+extern void sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int64 *dst);
+extern void sift_colk_f8_from_keys_neon(int64 *a, uint32 n);
+extern void sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep);
+extern void sift_colk_expand_parents_neon(const uint32 *end, uint32 np, uint32 *parent);
 #endif
 
 /* Fully unrolled loop of a constant trip count (a vector step per iteration), whichever compiler builds the file */

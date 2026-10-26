@@ -20,6 +20,7 @@ CHECKS=(
 	'limits		scripts/gen-limits.sh --check'
 	'errors		scripts/check-errors.sh'
 	'approx		scripts/check-approx.sh'
+	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/ci.sh --selftest'
