@@ -149,7 +149,7 @@ INSERT INTO sr_res SELECT * FROM sr_check('sr', ARRAY['id', 'sk'], ARRAY[1, 300,
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_res;
  queries | same | read_runs 
 ---------+------+-----------
-     240 |  240 |       188
+     240 |  240 |       176
 (1 row)
 
 SELECT n, shape FROM sr_res WHERE NOT same;

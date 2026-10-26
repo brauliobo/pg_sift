@@ -956,6 +956,14 @@ topn_run(AggExec *ex)
 	{
 		if (sift_topn_wants_zones(t) && !topn_window_viable(ex, lo, hi))
 			continue;
+		if (sift_topn_reverse(t) && hi - lo > 1 && ex->search == NULL && sift_topn_wants_zones(t))
+		{
+			/* the best superblock of a window is its last: one by one from there, the zone of each against the bar the better ones set, not all of them read in table order */
+			for (uint32 sb = hi; sb-- > lo;)
+				if (topn_window_viable(ex, sb, sb + 1))
+					topn_scan(ex, sb, sb + 1, nsb, &ch);
+			continue;
+		}
 		topn_scan(ex, lo, hi, nsb, &ch);
 	}
 	sift_topn_finish(t);

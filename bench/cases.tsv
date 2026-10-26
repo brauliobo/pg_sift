@@ -173,3 +173,4 @@ cube_wide_dims	the byte budget of the cube of a `sift_col` unit counts what the 
 few_keys_lookup	keeps its btree probes at the price they are planned for	events	-	fallback:Index Scan using events_pkey	native	-	ms	faster33	no
 keycut_or_ranges	no longer starts the setup of a scan for each morsel	orders	default WITH (key_cut = 'customer_id')	Units Pruned: [1-9]	native	-	ms	faster33	no
 topn_keyset_run	reads a unit from the first entry of the range without running the unit's filters	orders	default	Units Read Without Filters: [1-9]	native	no_run:search_path = topn_keyset_run_plain	ms	faster33	no
+topn_desc_window	reads the superblocks of each window of the walk from the window's best end	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no
