@@ -53,7 +53,7 @@ table	g05_exists_in_table	scan	0.12	0.50
 table	g06_not_exists_in_table	scan	0.091	0.36
 table	g07_elements_counted	scan	0.060	0.24
 table	h01_partitions_group	either	0.18	0.71
-table	h02_partition_pruned	normal	-	-
+table	h02_partition_pruned	either	any	any
 table	h03_partitions_join	scan	0.18	0.73
 table	h04_partitions_top	either	0.18	0.72
 table	h05_partitions_count	either	0.13	0.52
