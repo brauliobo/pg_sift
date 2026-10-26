@@ -648,6 +648,7 @@ lookup_rows(AggCtx *c, const JoinCtx *jc)
 }
 
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
+static double cte_list_keys(AggCtx *c, const JoinCtx *jc);
 
 /* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
 static bool
@@ -721,7 +722,9 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * The units the join key filters leave (join_filters in agg/init.c): an inner or semi join on an integer leaf tests the leaf against
  * the keys of the lookup, narrowed to the rows a later inner or semi join keyed on one of its columns can match (a scope list joined
  * to the table's rows). The keys are that many of the distinct values of the leaf: the share of the leaf's range the zones keep, as for
- * a comparison. *n: the filters the scan applies; *sel_keys: the keys of the most selective one (a share of the leaf's distinct values),
+ * a comparison. A CTE of a literal list has no more keys than the list holds: key_list_lift raises its rows to those its keys own, so a key of many
+ * rows counts as many keys there, and the zones of the units hold keys, not rows. *n: the filters the scan applies; *sel_keys: the keys of the most
+ * selective one (a share of the leaf's distinct values),
  * HUGE_VAL without a filter.
  */
 static double
@@ -748,7 +751,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			int			leaf = j->keypos[k] < 0 ? -1 : cb->leaf[j->keypos[k]];
 			const SiftSrcLeaf *lf = leaf < 0 || leaf >= c->lay->nleaves - c->nvleaf ? NULL : &c->lay->leaf[leaf];
 			Node	   *e = lf && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
-			double		nd;
+			double		nd,
+						nkeys;
 
 			if (lf == NULL || lf->kind != SCL_SCALAR || lf->parent >= 0 || lf->vtype != SCV_I32 || e == NULL || !IsA(e, Var) ||
 				(nd = column_distinct(c, (Var *) e)) <= 0)
@@ -758,7 +762,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 				selective = keys / nd;
 				*sel_keys = keys;
 			}
-			kept = Min(kept, Min(zone_keys_kept(c, leaf, keys, nd), point_kept(c, leaf, keys, nd)));
+			nkeys = Min(keys, Min(cte_list_keys(c, jc), dj ? cte_list_keys(c, dj) : HUGE_VAL));
+			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
 			(*n)++;
 		}
 	}
@@ -1053,6 +1058,50 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
  */
 double		agg_cte_lift = 1.0;
 
+/* the number of the plan of a CTE (an index of root->glob->subroots and subplans, from 1), 0 when it has none */
+static int
+cte_plan_id(PlannerInfo *root, RangeTblEntry *rte)
+{
+	PlannerInfo *cteroot = root;
+	int			ndx = 0;
+
+	for (Index lv = rte->ctelevelsup; lv > 0; lv--)
+		cteroot = cteroot->parent_root;
+	foreach_node(CommonTableExpr, cte, cteroot->parse->cteList)
+	{
+		if (strcmp(cte->ctename, rte->ctename) == 0)
+			break;
+		ndx++;
+	}
+	return ndx < list_length(cteroot->cte_plan_ids) ? list_nth_int(cteroot->cte_plan_ids, ndx) : 0;
+}
+
+/* the keys a lookup that is a CTE of a literal list (key_list_walker) can hold: the constants of the list; HUGE_VAL for any other lookup */
+static double
+cte_list_keys(AggCtx *c, const JoinCtx *jc)
+{
+	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
+	int			plan_id = rte->rtekind == RTE_CTE ? cte_plan_id(c->root, rte) : 0;
+	PlannerInfo *body;
+	KeyList		kl = {NULL, NULL};
+	List	  **args;
+	ArrayType  *arr;
+
+	if (plan_id <= 0)
+		return HUGE_VAL;
+	body = list_nth(c->root->glob->subroots, plan_id - 1);
+	kl.tlist = body->parse->targetList;
+	if (body->parse->jointree == NULL)
+		return HUGE_VAL;
+	key_list_walker((Node *) body->parse->jointree, &kl);
+	if (kl.clause == NULL || (args = key_clause_args(kl.clause)) == NULL || ((Const *) lsecond(*args))->constisnull)
+		return HUGE_VAL;
+	if (IsA(kl.clause, OpExpr))
+		return 1.0;
+	arr = DatumGetArrayTypeP(((Const *) lsecond(*args))->constvalue);
+	return ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+}
+
 /*
  * A shared CTE whose body joins a table with a column index to filtered tables is estimated at a row or two (each join keeps the share of a
  * default guess, and a dimension filter that owns all the rows of the table keeps a hundredth), and everything that reads it is priced from
@@ -1065,24 +1114,12 @@ void
 derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 {
 	RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-	PlannerInfo *cteroot = root;
-	int			ndx = 0,
-				plan_id;
+	int			plan_id;
 	double		leaf,
 				rows;
 	bool		reads;
 
-	if (!sift_enable_agg || agg_variant != NULL || rte->self_reference)
-		return;
-	for (Index lv = rte->ctelevelsup; lv > 0; lv--)
-		cteroot = cteroot->parent_root;
-	foreach_node(CommonTableExpr, cte, cteroot->parse->cteList)
-	{
-		if (strcmp(cte->ctename, rte->ctename) == 0)
-			break;
-		ndx++;
-	}
-	if (ndx >= list_length(cteroot->cte_plan_ids) || (plan_id = list_nth_int(cteroot->cte_plan_ids, ndx)) <= 0)
+	if (!sift_enable_agg || agg_variant != NULL || rte->self_reference || (plan_id = cte_plan_id(root, rte)) <= 0)
 		return;
 	leaf = plan_leaf_rows(list_nth(root->glob->subroots, plan_id - 1), list_nth(root->glob->subplans, plan_id - 1), &reads);
 	if (!reads)
