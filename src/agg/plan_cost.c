@@ -779,10 +779,13 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * leaf's distinct values), HUGE_VAL without a filter.
  */
 static double
-join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
+join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *kept_pg)
 {
 	double		kept = 1.0,
 				selective = 1.0;
+
+	if (kept_pg)
+		*kept_pg = 1.0;
 
 	*n = 0;
 	*sel_keys = HUGE_VAL;
@@ -816,6 +819,8 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys)
 			}
 			nkeys = nd > keys && !lookup_counted(c, jc) ? sqrt(keys * nd) : keys;
 			kept = Min(kept, Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd)));
+			if (kept_pg)
+				*kept_pg = Min(*kept_pg, Min(zone_keys_kept(c, leaf, keys, nd), point_kept(c, leaf, keys, nd)));
 			(*n)++;
 		}
 	}
@@ -1320,7 +1325,7 @@ static double
 zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 {
 	double		sel_keys,
-				kept = join_key_zone(c, s, nkeyfilters, &sel_keys);
+				kept = join_key_zone(c, s, nkeyfilters, &sel_keys, NULL);
 	List	   *rest;
 
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
@@ -1528,7 +1533,7 @@ few_keys_lookup(AggCtx *c, SiftAggSpec *s)
 				kept;
 	int			n;
 
-	kept = join_key_zone(c, s, &n, &sel_keys);
+	join_key_zone(c, s, &n, &sel_keys, &kept);
 	return sel_keys <= AGG_PROBE_KEYS && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
 }
 
