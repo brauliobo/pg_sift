@@ -818,12 +818,14 @@ spec_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel,
 	s->est_groups = set_groups(c, root, s, keys, input_rel->rows, false);
 	s->est_rows = input_rel->rows;
 	/*
-	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of all the rows
-	 * the lists can pass: a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
-	 * again for each row, while a count that is too large only makes it hash or materialize. A filter of the table that has no statistics
-	 * keeps a guess of the rows as well (filter_rows_ratio).
+	 * Where PostgreSQL's count of a lookup is a default guess (the lists are the output of a plan), the path reports the groups of the rows
+	 * the lists can pass, at the geometric mean of PostgreSQL's count and all of them (as the normal plan's price takes the keys,
+	 * lookup_set_ratio): a plan above that takes a CTE of one row for one nests loops on a null-safe key and runs the aggregate under it
+	 * again for each row, while a count that is too large only makes it hash or materialize, and one as large as the distinct values of the key
+	 * (the keys of a request name a few of them) makes the plan above a join of thousands of groups. A filter of the table that has no
+	 * statistics keeps a guess of the rows as well (filter_rows_ratio).
 	 */
-	lists = lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c);
+	lists = sqrt(lookup_set_ratio(c, s, input_rel, true) * filter_rows_ratio(c));
 	c->path_rows = lists > 1.0 ? set_groups(c, root, s, keys, input_rel->rows * lists, true) : 0;
 	if (c->search)
 		s->search = c->search->spec;
