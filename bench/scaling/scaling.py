@@ -52,12 +52,14 @@ def med(x):
 
 def explain(sql, sets, reps):
     pre = ''.join(f'set {s};\n' for s in COMMON + sets)
-    body = ''.join(f"explain (analyze, timing off, summary on, costs off) {sql};\nselect '#END';\n" for _ in range(reps + 1))
+    body = ''.join(f"explain (analyze, buffers, timing off, summary on, costs off) {sql};\nselect '#END';\n" for _ in range(reps + 1))
     out = psql(pre + body, check=False).split('#END')[:-1]
     if len(out) != reps + 1 or any('Execution Time' not in o for o in out):
         return None, '\n'.join(out)[-600:]
     f = lambda c, k: float(re.search(k + r': ([0-9.]+) ms', c).group(1))
-    return ([f(c, 'Planning Time') for c in out[1:]], [f(c, 'Execution Time') for c in out[1:]], out[-1]), None
+    first = re.search(r'Planning:\n\s+Buffers: shared ([^\n]+)', out[0])     # the first statement of the backend: nothing of the index is cached yet
+    fb = sum(int(n) for n in re.findall(r'(?:hit|read)=(\d+)', first.group(1))) if first else None
+    return ([f(c, 'Planning Time') for c in out[1:]], [f(c, 'Execution Time') for c in out[1:]], out[-1], fb), None
 
 
 def node(plan):
@@ -116,7 +118,7 @@ def run_case(name, c, args, rows, sizes_override):
                     if eng == 'sift' and q.target:
                         failed = True
                     continue
-                pl, ex, plan = r
+                pl, ex, plan, fb = r
                 g = lambda k: m.group(1) if (m := re.search(k + r': (\d+)', plan)) else ''
                 p, e = med(pl), med(ex)
                 if eng == 'sift' and q.needs_sift and 'sift' not in plan.lower() and 'SiftAgg' not in plan:
@@ -125,6 +127,8 @@ def run_case(name, c, args, rows, sizes_override):
                     failed = True
                 print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
                 rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
+                if q.first_plan and fb is not None:
+                    rows.setdefault((name, q.name + '[first-plan buffers]', eng, None if q.first_plan == 'info' else q.first_plan), []).append((size, fb))
                 if q.units and g('Units'):
                     rows.setdefault((name, q.name + '[units]', eng, None if q.units == 'info' else q.units), []).append((size, int(g('Units'))))
     if not args.keep:
@@ -139,7 +143,7 @@ def summary(rows, failed):
         slope, last, v = verdict(pts, target)
         v = 'NOSIFT' if eng == 'sift' and (name, qn) in nosift else v
         extra = pts[-1][1] * (64 ** max(last, 0))
-        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}{"units" if qn.endswith("[units]") else "ms"}', flush=True)
+        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}{"units" if qn.endswith("[units]") else "buffers" if qn.endswith("[first-plan buffers]") else "ms"}', flush=True)
         failed |= eng == 'sift' and v == 'FAIL'
     sys.exit(1 if failed else 0)
 

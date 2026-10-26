@@ -3,7 +3,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-TARGETS = {'flat': 0.50, 'linear': 1.15}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only
+TARGETS = {'flat': 0.50, 'linear': 1.15, 'plan': 0.15}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only. plan: the buffers of a first plan, a
+# floor of catalogs and the census with a small part that grows with the units: 0.08 with the leaf statistics block, 0.26 when the plan reads the zones of every unit
 FLOOR_MS = 0.5                                # below this at every size the slope is noise: PASS
 
 
@@ -14,6 +15,7 @@ class Query:
     target: str | None = 'flat'               # flat | linear | None
     needs_sift: bool = True                   # the sift engine must plan a sift node, else the time is not the index: FAIL
     units: str | None = None                  # flat | linear | info: the units read (the plan's Units) against the size, a second SLOPE line `<query>[units]`; None = not reported
+    first_plan: str | None = None             # plan | info: the shared buffers the first plan of a fresh backend touches against the size (`<query>[first-plan buffers]`); None = not reported
 
 
 @dataclass

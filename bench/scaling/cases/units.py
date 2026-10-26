@@ -7,22 +7,26 @@ from model import Case, Query
 PAGES = int(os.environ.get('SCALING_UNIT_PAGES', 256))
 ROWS = PAGES                                 # rows (= pages) of a unit
 print(f'# units: {PAGES} heap pages a unit', file=sys.stderr)
+WIDE = 16                                    # leaves besides id, g and v: what a plan sums over the units of a segment grows with them (the first plan of a backend, first_plan)
+WIDE_DEF = ', '.join(f'c{k} int' for k in range(WIDE))
+WIDE_VAL = ', '.join(f'i % {7 + k}' for k in range(WIDE))
+WIDE_COLS = ', '.join(f'c{k}' for k in range(WIDE))
 IN51 = ', '.join(str(1000 + 37 * i) for i in range(51))
 
 
 def setup(size):
-    return f"""create table t (id int, g int, v int, pad text);
+    return f"""create table t (id int, g int, v int, {WIDE_DEF}, pad text);
 alter table t alter column pad set storage plain;
-insert into t select i, i % 100, i % 1000, repeat('x', 7000) from generate_series(1, {size * ROWS}) i;
+insert into t select i, i % 100, i % 1000, {WIDE_VAL}, repeat('x', 7000) from generate_series(1, {size * ROWS}) i;
 vacuum freeze t;"""
 
 
 def at(size):
-    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v) with (point_columns = 'id') where id <= {size * ROWS};"
+    return f"drop index if exists ix; create index ix on t using sift_col (id, g, v, {WIDE_COLS}) with (point_columns = 'id') where id <= {size * ROWS};"
 
 
-def q(name, body, target='flat'):
-    return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", target, needs_sift=target is not None)
+def q(name, body, target='flat', first_plan=None):
+    return Query(name, lambda size: f"select {body.format(bound=size * ROWS)}", target, needs_sift=target is not None, first_plan=first_plan)
 
 
 CASES = [Case('units', [512, 1024, 2048, 4096] if PAGES > 16 else [1024, 4096, 16384, 65536], setup=setup, at=at, native=False, unit='units',
@@ -53,7 +57,8 @@ def tids_match(keys):
 
 GATE = [Case('units', [512, 1024, 2048, 4096, 8192], setup=setup, at=at, native=False, unit='units',
              check=lambda size: [f"select count(*), sum(v) from t where id <= {size * ROWS}"] + tids_match([777])(size) + tids_match([1000 + 37 * i for i in range(51)])(size), queries=[
-    q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g"),
+    # the first plan of a backend reads the leaf statistics of the segment (a block of its own, not the zones of every unit): flat in the units
+    q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g", first_plan='plan'),
     q('pruned', "count(*), sum(v) from t where id <= {bound} and v > 100000", 'linear'),
     q('count', "count(*) from t where id <= {bound}", 'linear'),
     q('sum', "sum(v) from t where id <= {bound}", 'linear'),
