@@ -123,6 +123,9 @@
 	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write.c", 1024, "strings", \
 	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
 	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \
+	X(lst_min_units, "LST_MIN_UNITS", "col/seg_write.c", 64, "units", \
+	  "units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf", \
+	  "no statistics block: the plan reads the zone arrays of the segment (a few pages)", "-", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/col.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
 	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \

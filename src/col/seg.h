@@ -173,6 +173,8 @@ extern void sift_col_leaf_stats_init(SiftColLeafStats *acc);
 /* Does the segment keep the kinds of every leaf: a segment of column format SIFT_COL_FORMAT_KINDS, or one of an older format with no NULL slot and no astext value in a leaf filled from a jsonb path. Reads the zone arrays */
 extern bool sift_cseg_kinds_exact(SiftColSegment *seg);
 extern void sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc);
+/* The leaf statistics block of the segment, when it has one, is what the zones of its units add up to (corruption error otherwise) */
+extern void sift_cseg_verify_lst(SiftColSegment *seg);
 /* The zones of the segment's units (INT scalar leaves) into the sample, thinned to keep SIFT_COL_ZONE_SAMPLE units over the segments added; the caller allocates the arrays of the leaves that are sampled (lo[col] not NULL) */
 extern void sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs);
 

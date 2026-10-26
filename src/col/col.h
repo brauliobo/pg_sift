@@ -343,7 +343,8 @@ typedef struct SiftColZones
 	int			ncols;
 	uint32		n;				/* units sampled */
 	uint64		units;			/* units of the immutable segments the sample is taken from */
-	uint64		stride;			/* one unit in stride is sampled */
+	uint64		seen;			/* candidates offered so far: the units of the segments, or the sampled ones of a segment with more than SIFT_COL_ZONE_SAMPLE */
+	uint64		stride;			/* one candidate in stride is sampled */
 	int64	  **lo;				/* [ncols][SIFT_COL_ZONE_SAMPLE] */
 	int64	  **hi;
 } SiftColZones;

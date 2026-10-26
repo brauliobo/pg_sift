@@ -16,6 +16,41 @@
 #define ALIGN8(x)		TYPEALIGN(8, x)
 #define DICTS_MAGIC		0x44444F43		/* "COLD" */
 #define ZONES_MAGIC		0x5A4C4F43		/* "COLZ" */
+#define LST_MAGIC		0x3154534C		/* "LST1": the leaf statistics after the DOCMAP section */
+#define LST_HAS_RANGE	0x01			/* LstLeaf.flags: what sift_col_leaf_stats_init sets and a unit can clear ... */
+#define LST_HAS_SUM		0x02
+#define LST_HAS_OVF		0x04			/* ... and what a unit can set */
+#define LST_HAS_JNULL	0x08
+#define LST_NOKINDS		0x10
+#define LST_ANY_INL		0x20			/* some unit stores its strings inline */
+#define LST_ANY_OVF		0x40			/* some unit's zone overflowed: the statistics need the overflow slots of the units, so this leaf is read from its zone arrays */
+
+/* One leaf of the segment: what sift_cseg_leaf_stats adds up over the zones of its units, and where its sample is (a pair of arrays of LstHeader.nsample entries) */
+typedef struct LstLeaf
+{
+	double		nvals;
+	double		nnull;
+	double		sum;
+	double		span;
+	double		nzone;
+	double		novf;
+	int64		min;
+	int64		max;
+	uint64		sample_off;		/* from the start of the block, 0: no sample (a leaf that is not an integer scalar) */
+	uint32		flags;
+	uint32		pad;
+} LstLeaf;
+
+typedef struct LstHeader
+{
+	uint32		magic;
+	uint32		ncols;
+	uint32		nsb;
+	uint32		nsample;		/* units sampled (sift_lst_nsample) */
+	uint64		len;			/* the block: this header, ncols LstLeaf, the samples */
+} LstHeader;
+
+StaticAssertDecl(sizeof(LstLeaf) == 80 && sizeof(LstHeader) == 24, "the leaf statistics block is a file format");
 #define PAGG_MAGIC		0x504C4F43		/* "COLP": the pre-aggregates, at the end of the ZONES section (docs/COL-PREAGG.md section 2) */
 #define PAGG_ECUBE_MINOR	4			/* the column format minor that adds the element cubes: directory version 2 */
 #define PAGG_SETS_MINOR		SIFT_COL_FORMAT_SETS	/* the column format minor that adds the small-set summaries: directory version 3 */
@@ -191,6 +226,11 @@ typedef struct ZoneArrays
 	bool		any_inl;		/* some unit flags SIFT_COLZ_INLINE: its min and max are prefix keys, not codes */
 } ZoneArrays;
 
+/* The leaf statistics of one leaf from its zone arrays (what sift_cseg_leaf_stats adds up), and for a leaf the sample holds (lo not NULL) the zones of the units sampled (sift_lst_nsample): lo and hi have sift_lst_nsample(nsb) entries */
+extern uint32 sift_lst_nsample(uint32 nsb);
+extern void sift_lst_leaf(const SiftColDef *def, int format, uint32 nsb, const ZoneArrays *z, LstLeaf *out, int64 *lo, int64 *hi);
+extern bool sift_lst_sampled(const SiftColDef *def);
+
 #define DICT_PARSE_AFTER	32	/* tests of a dictionary searched in the stream, over the queries of a backend, before it is parsed and cached */
 /*
  * A dictionary the backend searches in the stream with the bisection cache is parsed and kept once the searches have cost about what the parse costs (ski rental: DICT_PARSE_COST
@@ -300,6 +340,8 @@ typedef struct SegPriv
 	Size		unitcap;
 	PaggHeader *pagg;			/* the sidecar's header, read on first use */
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
+	const uint8 *lst;			/* the leaf statistics block (LstHeader first), NULL: the segment has none */
+	bool		lst_read;
 	uint64	   *cubedir;		/* nsb + 1 */
 	uint8	   *cubebuf;
 	Size		cubecap;

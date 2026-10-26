@@ -723,6 +723,7 @@ sift_cseg_verify(SiftColSegment *seg)
 	verify_vers(seg);
 	verify_dicts(seg);
 	sift_cseg_verify_points(seg);
+	sift_cseg_verify_lst(seg);
 	for (uint32 u = 0; u < seg->nsb; u++)
 	{
 		verify_unit(seg, u, keys, listed, kt);

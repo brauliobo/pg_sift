@@ -1642,7 +1642,7 @@ sift_test_col_run_damage(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
-/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation */
+/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, and whether it holds the leaf statistics block */
 Datum
 sift_test_col_formats(PG_FUNCTION_ARGS)
 {
@@ -1654,8 +1654,9 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	sift_dir_read(index, snap);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
-		Datum		v[2] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format)};
-		bool		nulls[2] = {false};
+		Datum		v[3] = {Int64GetDatum(snap->segs[i].gen), Int32GetDatum(snap->segs[i].format),
+							BoolGetDatum((snap->segs[i].flags & SIFT_SEG_LSTATS) != 0)};
+		bool		nulls[3] = {false};
 
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);

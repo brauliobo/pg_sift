@@ -94,6 +94,7 @@ typedef enum SiftSegKind
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
 #define SIFT_SEG_POSITIONS 0x0002	/* written with word positions (SIFT_TERM_POS terms) */
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
+#define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_VERS	0x0400	/* a column segment with unfrozen rows: reserved = the smallest xid (docs/COL-TAM.md section 7); cleared when the rows are frozen */
 
 typedef struct SiftSegEntry

@@ -1002,11 +1002,17 @@ sift_col_leaf_stats_init(SiftColLeafStats *acc)
 
 /* The kinds of a leaf in a unit of this segment that has nnull NULL slots among nvals: complete in a segment of format SIFT_COL_FORMAT_KINDS, and where nothing needs them */
 static bool
-leaf_kinds_exact(const SiftColSegment *seg, const SiftColDef *def, uint32 nnull, uint32 nvals)
+kinds_exact_at(int format, const SiftColDef *def, uint32 nnull, uint32 nvals)
 {
-	if (seg->entry.format >= SIFT_COL_FORMAT_KINDS || !sift_col_def_has_kinds(def))
+	if (format >= SIFT_COL_FORMAT_KINDS || !sift_col_def_has_kinds(def))
 		return true;
 	return nnull == 0 && !((def->flags & SIFT_COLD_ASTEXT) && nvals > 0);
+}
+
+static bool
+leaf_kinds_exact(const SiftColSegment *seg, const SiftColDef *def, uint32 nnull, uint32 nvals)
+{
+	return kinds_exact_at(seg->entry.format, def, nnull, nvals);
 }
 
 bool
@@ -1069,20 +1075,18 @@ sample_overflow(SiftColSegment *seg, int col, const ZoneArrays *z, SiftColLeafSt
 	}
 }
 
-void
-sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
+/* What the zones of the units of one leaf add to acc: the statistics the planner reads, one unit after the other (the writer keeps them per segment, LstLeaf) */
+static void
+zone_stats(const SiftColDef *def, int format, uint32 nsb, const ZoneArrays *z, SiftColLeafStats *acc)
 {
-	const SiftColDef *def = &seg->schema->cols[col];
-	const ZoneArrays *z = zone_arrays(seg, col);
-
-	for (uint32 u = 0; u < seg->nsb; u++)
+	for (uint32 u = 0; u < nsb; u++)
 	{
 		bool		any = z->nnull[u] < z->nvals[u];
 
 		acc->nunits++;
 		acc->nvals += z->nvals[u];
 		acc->nnull += z->nnull[u];
-		acc->nokinds |= !leaf_kinds_exact(seg, def, z->nnull[u], z->nvals[u]);
+		acc->nokinds |= !kinds_exact_at(format, def, z->nnull[u], z->nvals[u]);
 		acc->has_jnull |= (z->flags[u] & SIFT_COLZ_JNULL) != 0;
 		if (z->flags[u] & SIFT_COLZ_OVERFLOW)
 		{
@@ -1104,11 +1108,186 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		if (def->kind == SIFT_COLK_GROUP)
 			acc->sum += (double) z->sum[u];
 	}
-	if (z->any_ovf)
-		sample_overflow(seg, col, z, acc);
+}
+
+/* The leaves whose zones the sample holds: the integer scalars (SiftColZones, zones_new) */
+bool
+sift_lst_sampled(const SiftColDef *def)
+{
+	return def->store == SIFT_COLS_INT && def->kind != SIFT_COLK_GROUP;
+}
+
+/* The zone of unit u of a sampled leaf as the sample holds it: an overflowed one is the whole range, one without a value the empty range */
+static void
+sample_zone(const ZoneArrays *z, uint32 u, int64 *lo, int64 *hi)
+{
+	if (z->flags[u] & SIFT_COLZ_OVERFLOW)
+		*lo = PG_INT64_MIN, *hi = PG_INT64_MAX;
+	else if (z->nnull[u] >= z->nvals[u])
+		*lo = PG_INT64_MAX, *hi = PG_INT64_MIN;
+	else
+		*lo = z->min[u], *hi = z->max[u];
+}
+
+/* A segment of up to SIFT_COL_ZONE_SAMPLE units samples all of them (what the zones gave before the block); a larger one every stride-th */
+static uint32
+lst_stride(uint32 nsb)
+{
+	return Max(1, (nsb + SIFT_COL_ZONE_SAMPLE - 1) / SIFT_COL_ZONE_SAMPLE);
+}
+
+uint32
+sift_lst_nsample(uint32 nsb)
+{
+	return (nsb + lst_stride(nsb) - 1) / lst_stride(nsb);
+}
+
+void
+sift_lst_leaf(const SiftColDef *def, int format, uint32 nsb, const ZoneArrays *z, LstLeaf *out, int64 *lo, int64 *hi)
+{
+	SiftColLeafStats a;
+
+	sift_col_leaf_stats_init(&a);
+	zone_stats(def, format, nsb, z, &a);
+	memset(out, 0, sizeof(*out));
+	out->nvals = a.nvals;
+	out->nnull = a.nnull;
+	out->sum = a.sum;
+	out->span = a.span;
+	out->nzone = a.nzone;
+	out->novf = a.novf;
+	out->min = a.min;
+	out->max = a.max;
+	out->flags = (a.has_range ? LST_HAS_RANGE : 0) | (a.has_sum ? LST_HAS_SUM : 0) | (a.has_ovf ? LST_HAS_OVF : 0) | (a.has_jnull ? LST_HAS_JNULL : 0) |
+		(a.nokinds ? LST_NOKINDS : 0) | (z->any_inl ? LST_ANY_INL : 0) | (z->any_ovf ? LST_ANY_OVF : 0);
+	if (lo != NULL)
+		for (uint32 k = 0; k < sift_lst_nsample(nsb); k++)
+			sample_zone(z, k * lst_stride(nsb), &lo[k], &hi[k]);
+}
+
+/*
+ * The leaf statistics block of the segment, or NULL: a segment of 64 units or more, written by 3.5, has after its DOCMAP section what a plan
+ * adds up over the zones of every unit of every leaf, so that the first plan of a backend reads a few pages for the segment, not
+ * its zone arrays. An older segment, or a shorter one, has none (the flag of its directory entry) and is read as before.
+ */
+static const uint8 *
+lst_block(SiftColSegment *seg)
+{
+	SegPriv    *pv = PRIV(seg);
+
+	if (!pv->lst_read)
+	{
+		const SiftSectionRef *d = sec(seg, SIFT_SEC_DOCMAP);
+		uint64		at = ALIGN8(d->off + d->len),
+					size = (uint64) seg->sr.npages * SIFT_PAGE_PAYLOAD;
+		LstHeader	h;
+
+		pv->lst_read = true;
+		if (seg->entry.flags & SIFT_SEG_LSTATS)
+		{
+			uint8	   *blk;
+
+			if (at + sizeof(h) > size)
+				corrupt(seg, "The directory entry says the segment has leaf statistics, the stream ends at %llu.", ULL(size));
+			seg_read(seg, at, sizeof(h), &h);
+			if (h.magic != LST_MAGIC || h.ncols != (uint32) seg->schema->ncols || h.nsb != seg->nsb || h.nsample != sift_lst_nsample(seg->nsb) ||
+				h.len < sizeof(h) + h.ncols * sizeof(LstLeaf) || at + h.len > size)
+				corrupt(seg, "The leaf statistics (0x%08x, %u leaves, %u units, %llu bytes) do not fit the segment.", h.magic, h.ncols, h.nsb, ULL(h.len));
+			blk = MemoryContextAlloc(seg->mcxt, h.len);
+			seg_read(seg, at, h.len, blk);
+			pv->lst = blk;
+		}
+	}
+	return pv->lst;
+}
+
+static const LstLeaf *
+lst_leaf(const uint8 *blk, int col)
+{
+	return (const LstLeaf *) (blk + sizeof(LstHeader)) + col;
+}
+
+/* The sample of the leaf: nsample lows, then nsample highs (NULL: the leaf has none, or the block is damaged) */
+static const int64 *
+lst_sample(const uint8 *blk, int col)
+{
+	const LstHeader *h = (const LstHeader *) blk;
+	uint64		off = lst_leaf(blk, col)->sample_off;
+
+	if (off == 0 || off % 8 != 0 || off + 2 * (uint64) h->nsample * sizeof(int64) > h->len)
+		return NULL;
+	return (const int64 *) (blk + off);
+}
+
+/* The statistics block of the segment is what its zone arrays add up to (sift.col_verify) */
+void
+sift_cseg_verify_lst(SiftColSegment *seg)
+{
+	const uint8 *blk = lst_block(seg);
+
+	if (blk == NULL)
+		return;
+	for (int c = 0; c < seg->schema->ncols; c++)
+	{
+		const SiftColDef *def = &seg->schema->cols[c];
+		const LstLeaf *have = lst_leaf(blk, c);
+		const int64 *smp = lst_sample(blk, c);
+		uint32		ns = ((const LstHeader *) blk)->nsample;
+		LstLeaf		want;
+		int64	   *lo = NULL;
+
+		if (sift_lst_sampled(def) != (have->sample_off != 0) || (have->sample_off != 0 && smp == NULL))
+			corrupt(seg, "The leaf statistics of leaf %d have %s sample.", c, have->sample_off != 0 ? "a" : "no");
+		if (smp != NULL)
+			lo = palloc(2 * (Size) ns * sizeof(int64));
+		sift_lst_leaf(def, seg->entry.format, seg->nsb, zone_arrays(seg, c), &want, lo, lo != NULL ? lo + ns : NULL);
+		want.sample_off = have->sample_off;
+		if (memcmp(&want, have, sizeof(want)) != 0 || (lo != NULL && memcmp(lo, smp, 2 * (Size) ns * sizeof(int64)) != 0))
+			corrupt(seg, "The leaf statistics of leaf %d differ from the zones of its units.", c);
+		if (lo != NULL)
+			pfree(lo);
+	}
+}
+
+void
+sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
+{
+	const SiftColDef *def = &seg->schema->cols[col];
+	const uint8 *blk = lst_block(seg);
+	const LstLeaf *l = blk != NULL ? lst_leaf(blk, col) : NULL;
+	const ZoneArrays *z = NULL;
+	bool		inl;
+
+	if (l != NULL && !(l->flags & LST_ANY_OVF))
+	{
+		/* the sum of the segments' sums is the sum of the units': counts are whole numbers, the spans the estimate they are */
+		acc->nunits += seg->nsb;
+		acc->nvals += l->nvals;
+		acc->nnull += l->nnull;
+		acc->nokinds |= (l->flags & LST_NOKINDS) != 0;
+		acc->has_jnull |= (l->flags & LST_HAS_JNULL) != 0;
+		acc->has_range &= (l->flags & LST_HAS_RANGE) != 0;
+		acc->has_sum &= (l->flags & LST_HAS_SUM) != 0;
+		acc->has_ovf |= (l->flags & LST_HAS_OVF) != 0;
+		acc->novf += l->novf;
+		acc->min = Min(acc->min, l->min);
+		acc->max = Max(acc->max, l->max);
+		acc->span += l->span;
+		acc->nzone += l->nzone;
+		acc->sum += l->sum;
+		inl = (l->flags & LST_ANY_INL) != 0;
+	}
+	else
+	{
+		z = zone_arrays(seg, col);
+		zone_stats(def, seg->entry.format, seg->nsb, z, acc);
+		if (z->any_ovf)
+			sample_overflow(seg, col, z, acc);
+		inl = z->any_inl;
+	}
 	if (def->store == SIFT_COLS_STR)
 	{
-		acc->inl |= z->any_inl;
+		acc->inl |= inl;
 		acc->dict_n = Max(acc->dict_n, dict_count(seg, col));
 	}
 	{
@@ -1160,55 +1339,79 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->set_sampled += Min(seg->nsb, SET_STATS_UNITS);
 }
 
+/* The next candidate of the sample: kept when it is the stride's turn, the sample thinned to every other entry (and the stride doubled) when it is full */
+static bool
+sample_offer(SiftColZones *zs)
+{
+	uint64		at = zs->seen++;
+
+	if (at % zs->stride != 0)
+		return false;
+	if (zs->n == SIFT_COL_ZONE_SAMPLE)
+	{
+		/* the units kept are the even ones: every other sample goes, and one candidate in twice as many is sampled from here on */
+		for (int c = 0; c < zs->ncols; c++)
+			if (zs->lo[c] != NULL)
+				for (uint32 k = 0; k < SIFT_COL_ZONE_SAMPLE / 2; k++)
+				{
+					zs->lo[c][k] = zs->lo[c][2 * k];
+					zs->hi[c][k] = zs->hi[c][2 * k];
+				}
+		zs->n /= 2;
+		zs->stride *= 2;
+		if (at % zs->stride != 0)
+			return false;
+	}
+	return true;
+}
+
 void
 sift_cseg_zone_sample(SiftColSegment *seg, SiftColZones *zs)
 {
 	const ZoneArrays *z[SIFT_COL_MAX_COLS] = {NULL};
+	const uint8 *blk = lst_block(seg);
+	const int64 *smp[SIFT_COL_MAX_COLS] = {NULL};
+	bool		fast = blk != NULL;
 
 	for (int c = 0; c < seg->schema->ncols && c < zs->ncols; c++)
 		if (zs->lo[c] != NULL)
-			z[c] = zone_arrays(seg, c);
-	for (uint32 u = 0; u < seg->nsb; u++, zs->units++)
+		{
+			if (fast && (smp[c] = lst_sample(blk, c)) == NULL)
+				fast = false;
+		}
+	if (fast)
 	{
-		if (zs->units % zs->stride != 0)
-			continue;
-		if (zs->n == SIFT_COL_ZONE_SAMPLE)
+		/* the sampled units, from the block: the zone arrays of the leaves are not read */
+		uint32		ns = ((const LstHeader *) blk)->nsample;
+
+		for (uint32 k = 0; k < ns; k++)
 		{
-			/* the units kept are the even ones: every other sample goes, and one unit in twice as many is sampled from here on */
+			if (!sample_offer(zs))
+				continue;
 			for (int c = 0; c < zs->ncols; c++)
-				if (zs->lo[c] != NULL)
-					for (uint32 k = 0; k < SIFT_COL_ZONE_SAMPLE / 2; k++)
-					{
-						zs->lo[c][k] = zs->lo[c][2 * k];
-						zs->hi[c][k] = zs->hi[c][2 * k];
-					}
-			zs->n /= 2;
-			zs->stride *= 2;
-			if (zs->units % zs->stride != 0)
-				continue;
+				if (smp[c] != NULL)
+				{
+					zs->lo[c][zs->n] = smp[c][k];
+					zs->hi[c][zs->n] = smp[c][ns + k];
+				}
+			zs->n++;
 		}
+		zs->units += seg->nsb;
+		return;
+	}
+	for (int c = 0; c < seg->schema->ncols && c < zs->ncols; c++)
+		if (zs->lo[c] != NULL)
+			z[c] = zone_arrays(seg, c);
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		if (!sample_offer(zs))
+			continue;
 		for (int c = 0; c < zs->ncols; c++)
-		{
-			if (z[c] == NULL)
-				continue;
-			if (z[c]->flags[u] & SIFT_COLZ_OVERFLOW)
-			{
-				zs->lo[c][zs->n] = PG_INT64_MIN;
-				zs->hi[c][zs->n] = PG_INT64_MAX;
-			}
-			else if (z[c]->nnull[u] >= z[c]->nvals[u])
-			{
-				zs->lo[c][zs->n] = PG_INT64_MAX;
-				zs->hi[c][zs->n] = PG_INT64_MIN;
-			}
-			else
-			{
-				zs->lo[c][zs->n] = z[c]->min[u];
-				zs->hi[c][zs->n] = z[c]->max[u];
-			}
-		}
+			if (z[c] != NULL)
+				sample_zone(z[c], u, &zs->lo[c][zs->n], &zs->hi[c][zs->n]);
 		zs->n++;
 	}
+	zs->units += seg->nsb;
 }
 
 /* ---------- pre-aggregates (docs/COL-PREAGG.md) ---------- */

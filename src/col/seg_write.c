@@ -49,6 +49,7 @@ typedef struct PointAcc
 
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
+#define LST_MIN_UNITS		64		/* a segment of fewer units keeps no leaf statistics: its zone arrays are a few pages */
 /* the dictionaries written in blocks that their leaves did not ask for (DICT_BLOCKS, not DICT_LOOKUP) add together at most 1/33 (3%) of the segment (what it wrote before the dictionaries, and these in the compact form) */
 #define CDICT_BLOCKS_BUDGET_DENOM	33
 /* an estimate of the blocks over this share of the compact form (1/6) is not worth serializing them for */
@@ -76,6 +77,8 @@ struct SiftColSegWriter
 	uint32	  **dictmap;		/* [ncols] scratch: batch code -> segment code */
 	bool	   *inl;			/* [ncols] scratch: the STR leaf is stored inline in the unit being added */
 	SiftCZone  *zones;			/* [unit * ncols + col] */
+	uint8	   *lst;			/* the leaf statistics block (seg_int.h LstHeader), made with the zones; NULL for a segment of fewer than LST_MIN_UNITS units */
+	Size		lstlen;
 	SiftCPaggSpec pagg;			/* the pre-aggregates to write (docs/COL-PREAGG.md) */
 	SiftCLeafAgg *lagg;			/* [unit * ncols + col] exact sums of the INT leaves */
 	uint64	   *cubeoff;		/* [unit]: offset of the unit's cube blob in cube; [nsb] the end */
@@ -1339,6 +1342,20 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 
 	hdr[0] = ZONES_MAGIC;
 	hdr[1] = ncols;
+	if (w->nsb >= sift_limit(lst_min_units, LST_MIN_UNITS))
+	{
+		uint32		ns = sift_lst_nsample(w->nsb);
+		Size		len = sizeof(LstHeader) + ncols * sizeof(LstLeaf);
+		LstHeader  *lh;
+
+		for (int c = 0; c < ncols; c++)
+			if (sift_lst_sampled(&w->schema->cols[c]))
+				len += 2 * (Size) ns * sizeof(int64);
+		w->lst = palloc0(len);
+		w->lstlen = len;
+		lh = (LstHeader *) w->lst;
+		*lh = (LstHeader) {.magic = LST_MAGIC,.ncols = ncols,.nsb = w->nsb,.nsample = ns,.len = len};
+	}
 	for (int c = 0; c < ncols; c++)
 	{
 		tab[c] = at;
@@ -1376,6 +1393,28 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 			flags[u] = w->format >= SIFT_COL_FORMAT_KINDS ? z->flags : z->flags & ~SIFT_COLZ_JNULL;
 			if (def->store == SIFT_COLS_STR)
 				memcpy(set + (Size) u * 4, z->set, 4 * sizeof(uint64));
+		}
+		if (w->lst != NULL)
+		{
+			LstHeader  *lh = (LstHeader *) w->lst;
+			LstLeaf    *rec = (LstLeaf *) (w->lst + sizeof(LstHeader)) + c;
+			ZoneArrays	za = {.min = (const int64 *) mn,.max = (const int64 *) mx,.sum = (const int64 *) sum,.nnull = nnull,.nvals = nvals,.flags = flags};
+			int64	   *lo = NULL;
+
+			for (uint32 u = 0; u < w->nsb; u++)
+				za.any_ovf |= (flags[u] & SIFT_COLZ_OVERFLOW) != 0, za.any_inl |= (flags[u] & SIFT_COLZ_INLINE) != 0;
+			if (sift_lst_sampled(def))
+			{
+				Size		at = sizeof(LstHeader) + ncols * sizeof(LstLeaf);
+
+				for (int k = 0; k < c; k++)
+					if (sift_lst_sampled(&w->schema->cols[k]))
+						at += 2 * (Size) lh->nsample * sizeof(int64);
+				lo = (int64 *) (w->lst + at);
+			}
+			sift_lst_leaf(def, w->format, w->nsb, &za, rec, lo, lo != NULL ? lo + lh->nsample : NULL);
+			if (lo != NULL)
+				rec->sample_off = (uint8 *) lo - w->lst;
 		}
 		sift_sw_write(w->sw, blk, sz);
 		pfree(blk);
@@ -1460,6 +1499,14 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->anyver)
 		write_vers(w);
 	h.sections[SIFT_SEC_DOCMAP].len = sift_sw_tell(w->sw) - h.sections[SIFT_SEC_DOCMAP].off;
+	/* the leaf statistics follow the last section, where no reader of an older minor looks (the directory entry says they are there); 3% of the segment at most */
+	if (w->lst != NULL && w->lstlen * 33 <= sift_sw_tell(w->sw))
+	{
+		sw_pad8(w->sw);
+		sift_sw_write(w->sw, w->lst, w->lstlen);
+	}
+	else
+		w->lst = NULL;
 	ext = sift_sw_finish(w->sw, &n);
 	sift_live_write(w->wt, w->gen, w->sb_hi - w->sb_lo + 1, w->rows, &h.live_first, &h.live_npages);
 	h.gen = w->gen;
@@ -1490,6 +1537,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	}
 	if (w->keyed)
 		entry->flags |= SIFT_SEG_KEYED;
+	if (w->lst != NULL)
+		entry->flags |= SIFT_SEG_LSTATS;
 	entry->ndocs = w->rows;
 	entry->bytes = blocks * BLCKSZ;
 	pfree(schema.data);
