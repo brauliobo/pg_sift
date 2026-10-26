@@ -25,6 +25,19 @@ BEGIN
 END $$;
 -- the key with a third of the events is worth hundreds of keys, a key of the mean is one, a hundred keys of the mean are a hundred
 SELECT key_rows('1') > 100 AS hot, key_rows('1500') AS cold, key_rows((SELECT string_agg(g::text, ',') FROM generate_series(1000, 1099) g)) AS hundred;
-DROP FUNCTION key_rows;
+-- a CTE that only joins those keys to their rows in the table that names them (and may add a left join to it) has the keys of the list as well
+CREATE FUNCTION chain_rows(ids text, extra text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN WITH keys AS MATERIALIZED (SELECT DISTINCT id FROM sites WHERE id IN (' || ids || ') AND id IN (SELECT site_id FROM grants)),
+		named AS MATERIALIZED (SELECT s.id, s.id + 1 AS other FROM keys k JOIN sites s ON s.id = k.id ' || extra || ')
+		SELECT (SELECT count(*) FROM events e JOIN named k ON k.id = e.site_id), (SELECT max(ts) FROM events e JOIN named k ON k.id = e.site_id)' LOOP
+		IF l ~ 'CTE Scan on named' THEN n := substring(l from 'rows=(\d+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT chain_rows('1', '') > 100 AS hot, chain_rows('1500', '') AS cold,
+	chain_rows('1', 'LEFT JOIN grants g ON g.site_id = s.id') > 100 AS hot_left;
+DROP FUNCTION key_rows, chain_rows;
 DROP TABLE events, grants, sites;
 DROP EXTENSION pg_sift;

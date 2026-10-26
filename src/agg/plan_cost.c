@@ -715,7 +715,8 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
 static double cte_list_keys(AggCtx *c, const JoinCtx *jc, int key);
-static double cte_list_worth(AggCtx *c, const JoinCtx *jc, Var *key);
+static double cte_list_worth(AggCtx *c, const JoinCtx *jc, int k, Var *key);
+static PlannerInfo *cte_inner_body(PlannerInfo *body, int *resno);
 static double list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key);
 
 /* is the count of a table's lookup a default guess: a filter of it that PostgreSQL has no statistics for? (a CTE or sub-select is estimated through its own plan) */
@@ -839,7 +840,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 			{
 				selective = sure / nd;
 				*sel_keys = sure;
-				*excess = list_keys < HUGE_VAL ? Max(cte_list_worth(c, jc, (Var *) e) / sure, 1.0) : 1.0;
+				*excess = list_keys < HUGE_VAL ? Max(cte_list_worth(c, jc, k, (Var *) e) / sure, 1.0) : 1.0;
 				*share = selective * *excess;
 			}
 			nkeys = Min(keys, list_keys);
@@ -1137,6 +1138,14 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 	if (key == NULL)
 		return;
 	rows = list_keys_worth(root, body, key);
+	foreach_node(TargetEntry, te, body->parse->targetList)
+	{
+		int			resno = te->resno;
+		PlannerInfo *inner = cte_inner_body(body, &resno);
+
+		if (inner != body)
+			rows = Max(rows, list_keys_worth(root, inner, key));
+	}
 	while (top->parent_root)
 		top = top->parent_root;
 	if (rows <= rel->rows || !reads_column_index((Node *) top->parse, NULL))
@@ -1171,6 +1180,103 @@ cte_plan_id(PlannerInfo *root, RangeTblEntry *rte)
 	return ndx < list_length(cteroot->cte_plan_ids) ? list_nth_int(cteroot->cte_plan_ids, ndx) : 0;
 }
 
+/* a column of a CTE that the query equates to the column v: the key of an inner join of a table with the keys of that CTE */
+static Var *
+cte_equal_var(PlannerInfo *body, Node *n, Var *v)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, FromExpr))
+	{
+		Var		   *r;
+
+		foreach_ptr(Node, c, ((FromExpr *) n)->fromlist)
+			if ((r = cte_equal_var(body, c, v)) != NULL)
+				return r;
+		return cte_equal_var(body, ((FromExpr *) n)->quals, v);
+	}
+	if (IsA(n, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) n;
+		Var		   *r;
+
+		/* the rows of the preserved side of a left join are those of the keys, whatever it adds */
+		if (j->jointype != JOIN_INNER && j->jointype != JOIN_LEFT)
+			return NULL;
+		if ((r = cte_equal_var(body, j->larg, v)) != NULL)
+			return r;
+		if (j->jointype == JOIN_LEFT)
+			return NULL;
+		if ((r = cte_equal_var(body, j->rarg, v)) != NULL)
+			return r;
+		return cte_equal_var(body, j->quals, v);
+	}
+	if (IsA(n, List) || (IsA(n, BoolExpr) && ((BoolExpr *) n)->boolop == AND_EXPR))
+	{
+		foreach_ptr(Node, a, IsA(n, List) ? (List *) n : ((BoolExpr *) n)->args)
+		{
+			Var		   *r = cte_equal_var(body, a, v);
+
+			if (r != NULL)
+				return r;
+		}
+		return NULL;
+	}
+	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && op_mergejoinable(((OpExpr *) n)->opno, exprType(linitial(((OpExpr *) n)->args))))
+	{
+		Node	   *a = linitial(((OpExpr *) n)->args),
+				   *b = lsecond(((OpExpr *) n)->args);
+
+		if (IsA(a, Var) && IsA(b, Var))
+		{
+			Var		   *x = (Var *) a,
+					   *y = (Var *) b;
+
+			if (x->varno == v->varno && x->varattno == v->varattno && x->varlevelsup == 0 && y->varlevelsup == 0 && rt_fetch(y->varno, body->parse->rtable)->rtekind == RTE_CTE)
+				return y;
+			if (y->varno == v->varno && y->varattno == v->varattno && y->varlevelsup == 0 && x->varlevelsup == 0 && rt_fetch(x->varno, body->parse->rtable)->rtekind == RTE_CTE)
+				return x;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * The body a CTE column comes from when the CTE only passes it on: a join of the keys of another CTE with the table that names them (a CTE
+ * of the table's rows for the ids of another) exports the column of the table, equal to that of the inner CTE, and the list that column holds is the inner
+ * CTE's. *resno becomes the column of the inner body; body itself when the column is anything else.
+ */
+static PlannerInfo *
+cte_inner_body(PlannerInfo *body, int *resno)
+{
+	for (;;)
+	{
+		RangeTblEntry *rte;
+		Var		   *v = NULL;
+		int			id;
+
+		foreach_node(TargetEntry, te, body->parse->targetList)
+			if (te->resno == *resno && !te->resjunk && IsA(te->expr, Var))
+				v = (Var *) te->expr;
+		if (v == NULL || v->varlevelsup != 0)
+			return body;
+		rte = rt_fetch(v->varno, body->parse->rtable);
+		if (rte->rtekind == RTE_RELATION && body->parse->jointree != NULL)
+		{
+			Var		   *eq = cte_equal_var(body, (Node *) body->parse->jointree, v);
+
+			if (eq == NULL)
+				return body;
+			v = eq;
+			rte = rt_fetch(v->varno, body->parse->rtable);
+		}
+		if (rte->rtekind != RTE_CTE || rte->self_reference || (id = cte_plan_id(body, rte)) <= 0)
+			return body;
+		body = list_nth(body->glob->subroots, id - 1);
+		*resno = v->varattno;
+	}
+}
+
 /*
  * The keys a lookup that is a CTE of a literal list (key_list_walker) can hold, when its key `key` is the column the list is of: the constants of
  * the list. HUGE_VAL for any other lookup, and for a key that is another column of the CTE (the list says nothing of its values).
@@ -1185,10 +1291,11 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 	List	  **args;
 	ArrayType  *arr;
 	bool		found = false;
+	int			resno = jc->j.keyatt[key];
 
 	if (plan_id <= 0)
 		return HUGE_VAL;
-	body = list_nth(c->root->glob->subroots, plan_id - 1);
+	body = cte_inner_body(list_nth(c->root->glob->subroots, plan_id - 1), &resno);
 	kl.tlist = body->parse->targetList;
 	if (body->parse->jointree == NULL)
 		return HUGE_VAL;
@@ -1196,7 +1303,7 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 	if (kl.clause == NULL || (args = key_clause_args(kl.clause)) == NULL || ((Const *) lsecond(*args))->constisnull)
 		return HUGE_VAL;
 	foreach_node(TargetEntry, te, kl.tlist)
-		if (te->resno == jc->j.keyatt[key])
+		if (te->resno == resno)
 		{
 			Var		   *listed = linitial(*args);
 
@@ -1212,14 +1319,15 @@ cte_list_keys(AggCtx *c, const JoinCtx *jc, int key)
 	return ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
 }
 
-/* the keys of the table the literal list a lookup CTE holds is worth (list_keys_worth): 0 for any other lookup */
+/* the keys of the table the literal list a lookup CTE holds is worth (list_keys_worth), for its column k: 0 for any other lookup */
 static double
-cte_list_worth(AggCtx *c, const JoinCtx *jc, Var *key)
+cte_list_worth(AggCtx *c, const JoinCtx *jc, int k, Var *key)
 {
 	RangeTblEntry *rte = planner_rt_fetch(jc->rti, c->root);
 	int			plan_id = rte->rtekind == RTE_CTE ? cte_plan_id(c->root, rte) : 0;
+	int			resno = jc->j.keyatt[k];
 
-	return plan_id > 0 ? list_keys_worth(c->root, list_nth(c->root->glob->subroots, plan_id - 1), key) : 0;
+	return plan_id > 0 ? list_keys_worth(c->root, cte_inner_body(list_nth(c->root->glob->subroots, plan_id - 1), &resno), key) : 0;
 }
 
 /*
