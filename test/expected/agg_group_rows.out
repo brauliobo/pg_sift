@@ -1,9 +1,9 @@
 -- The rows a SiftAgg path reports to the plan above. A scope list PostgreSQL cannot count (a sub-select with filters on a jsonb path has no
 -- statistics: it expects a row or two) makes it expect one group for a scan that makes thousands, and a plan that joins the aggregate to a
 -- grouped copy of itself on a null-safe key (not hashable, so a nested loop) then reads the copy again for each row: the aggregate under it runs
--- once per row, spilling each time. The path reports the groups of every row the lists can pass, so the plan above keeps the copy (Materialize)
--- and runs its aggregate once. The estimate is not part of the price: the choice of the scan does not move. A list PostgreSQL has statistics for
--- keeps its count.
+-- once per row, spilling each time. The path reports the groups of the rows the lists can pass at the geometric mean of PostgreSQL's count
+-- and of every row (within a factor of 64 of the real groups, not of the guess), so the plan above keeps the copy (Materialize) and runs its
+-- aggregate once. The estimate is not part of the price: the choice of the scan does not move. A list PostgreSQL has statistics for keeps its count.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
@@ -25,7 +25,7 @@ BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
 	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")');
 	scan := CASE WHEN n IS NULL THEN 'normal' ELSE 'SiftAgg' END;
-	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN 0.25 * (n ->> 'Plan Rows')::numeric AND 4 * (n ->> 'Plan Rows')::numeric;
+	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN (n ->> 'Plan Rows')::numeric / 64 AND 64 * (n ->> 'Plan Rows')::numeric;
 	aggregate_runs := (SELECT max((x ->> 'Actual Loops')::numeric) FROM jsonb_path_query(j, '$.** ? (@."Node Type" == "Aggregate")') x);
 	plan_above := CASE WHEN j::text LIKE '%"Node Type": "Materialize"%' THEN 'materialized' ELSE 'rescanned' END;
 	RETURN NEXT;
@@ -70,7 +70,7 @@ BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
 	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")');
 	scan := CASE WHEN n IS NULL THEN 'normal' ELSE 'SiftAgg' END;
-	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN 0.25 * (n ->> 'Plan Rows')::numeric AND 4 * (n ->> 'Plan Rows')::numeric;
+	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN (n ->> 'Plan Rows')::numeric / 64 AND 64 * (n ->> 'Plan Rows')::numeric;
 	join_above := jsonb_path_query_first(j, '$.** ? (@."Node Type" like_regex "Join")."Node Type"') #>> '{}';
 	RETURN NEXT;
 END $$;

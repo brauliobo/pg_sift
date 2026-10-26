@@ -143,7 +143,7 @@ typedef struct AggCtx
 	SiftSrcStats stats;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
-	double		path_rows;		/* the groups of the rows the lookup lists can pass, 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
+	double		path_rows;		/* the groups of the rows the lookup lists can pass (at the geometric mean of PostgreSQL's count and all of them), 0 where PostgreSQL's count of them stands: what the path reports to the plan above */
 	double		topn_frac;		/* top-N: the fraction of the table the scan reads before the n-th best row cannot be beaten */
 	PathTarget *topn_target;	/* ... the target of the path: the one PostgreSQL makes for the ordered rel, or the scan's own for a min/max (sift_agg_minmax_paths) */
 	bool		topn_array;		/* ... the executor reads the order array of the first key (sift_topn_gorder): no unit is read */
