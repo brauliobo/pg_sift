@@ -176,11 +176,13 @@ MapTab *map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cx
 /* lookcache.c */
 LookFinger *lookcache_finger(Relation rel);
 bool lookcache_refused(const char *key, Relation rel);
+bool lookcache_known(const char *key);
 MapTab *lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
 bool lookcache_keep(const char *key, const LookFinger *before, const LookFinger *after, MapTab *m, const LookCols *cols, MemoryContext cx, MemoryContext mcxt);
 bool cols_cover(const LookCols *have, const LookCols *need);
 
 /* lookshm.c */
+bool lookshm_known(const char *key);
 MapTab *lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt);
 bool lookshm_keep(const char *key, const LookFinger *f, MapTab *m, const LookCols *cols, bool *large);
 bool lookshm_claim(const char *key, MemoryContext mcxt);

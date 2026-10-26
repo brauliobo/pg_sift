@@ -201,6 +201,21 @@ head_is(const LookShmHead *hd, const char *key, const LookFinger *f)
 		hd->nblocks == f->nblocks && memcmp(base + hd->lsn, f->lsn, f->nblocks * sizeof(XLogRecPtr)) == 0;
 }
 
+/* does a slot hold rows kept for the key? */
+bool
+lookshm_known(const char *key)
+{
+	LookShm    *s = shm_get();
+	uint64		kh = key_hash(key);
+	bool		known = false;
+
+	SpinLockAcquire(&s->mutex);
+	for (int i = 0; i < LOOKSHM_SLOTS && !known; i++)
+		known = s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh;
+	SpinLockRelease(&s->mutex);
+	return known;
+}
+
 /* The rows kept for the key of a table that has the pages of f and the columns need, read in place and valid until mcxt goes; NULL when there are none. *have as in lookcache_find */
 MapTab *
 lookshm_find(const char *key, const LookFinger *f, const LookCols *need, LookCols *have, MemoryContext mcxt)

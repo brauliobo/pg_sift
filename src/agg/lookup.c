@@ -858,6 +858,9 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 	if (!map_kept_conds(cb, j, own))
 		return NULL;
 	t->key = psprintf("%u|%s", GetUserId(), shared_map_key(ex, ci, own));
+	/* the peek of a first-row lookup asks for a table only a cache holds: without an entry the finger would read every page of the table for nothing */
+	if (ex->first_peek && !lookcache_known(t->key))
+		return NULL;
 	/* a table whose rows did not fit is not read page by page for nothing every time */
 	if (lookcache_refused(t->key, rel) || (t->before = lookcache_finger(rel)) == NULL)
 		return NULL;

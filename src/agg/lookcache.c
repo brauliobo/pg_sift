@@ -265,6 +265,16 @@ lookcache_find(const char *key, const LookFinger *f, const LookCols *need, LookC
 	return NULL;
 }
 
+/* is there an entry for key, in this backend or in the shared memory? (the question that costs no read of the table's pages, which the finger does) */
+bool
+lookcache_known(const char *key)
+{
+	foreach_ptr(LookEnt, e, entries)
+		if (strcmp(e->key, key) == 0)
+			return true;
+	return lookshm_bytes() > 0 && lookshm_known(key);
+}
+
 /*
  * Keeps the rows m, loaded into cx between the fingers before and after, for the next query, which owns cx from here. False when they
  * are not kept (the table was written to during the load, or the rows do not fit): cx stays with the caller.
