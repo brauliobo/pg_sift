@@ -359,6 +359,7 @@ typedef struct WorkerDone
 	int64		n_matches;
 	int64		n_skipped;
 	int64		n_runs;
+	int64		n_lazy;
 	SiftSrcCounters cc;
 } WorkerDone;
 
@@ -541,6 +542,7 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		send_blob(ex->mqh, b.data, b.len);
 		done.n_skipped = sift_topn_skipped(ex->topn);
 		done.n_runs = sift_topn_runs_read(ex->topn);
+		done.n_lazy = sift_topn_runs_lazy(ex->topn);
 	}
 	else
 		scan_items(ex);
@@ -850,7 +852,7 @@ par_message(AggExec *ex, int w, const char *data, Size len)
 		ex->n_dense += d->n_dense;
 		ex->n_combo_trim += d->n_combo_trim;
 		if (ex->topn)
-			sift_topn_add_skipped(ex->topn, d->n_skipped, d->n_runs);
+			sift_topn_add_skipped(ex->topn, d->n_skipped, d->n_runs, d->n_lazy);
 		par->matches += d->n_matches;
 		par->cc.units_pruned += d->cc.units_pruned;
 		par->cc.units_set_pruned += d->cc.units_set_pruned;

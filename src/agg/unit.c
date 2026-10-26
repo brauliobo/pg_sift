@@ -648,6 +648,17 @@ process_unit(AggExec *ex)
 	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
 	check_overflow(ex, rmask, false);
+	if (ex->topn && sift_topn_lazy_unit(ex->topn, ex->src, u))
+	{
+		/* its sorted run gives the rows in the order of the sort: the conditions are tested on those it takes */
+		sift_colsrc_vet(ex->src, u, rmask);
+		if (sift_topn_unit_lazy(ex->topn, ex->src, u, rmask, nrow))
+		{
+			ex->row_base += nrow;
+			CHECK_FOR_INTERRUPTS();
+			return;
+		}
+	}
 	cand = ex->recheck ? sift_colsrc_recheck_rows(ex->src, u) : NULL;
 	/* a row the source will read again is tested by the filters on the columns of the stored unit, as the rows that stay; the type tests leave it to the heap */
 	if (cand && ((ex->nwide > 0 && !wide_filters(ex, cand)) || (ex->nfilter > 0 && !sift_colsrc_filter(ex->src, u, cand))))

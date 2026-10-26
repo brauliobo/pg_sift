@@ -240,7 +240,7 @@ SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL > 40 AND 
 	'WHERE COL > 600', 'WHERE COL < 100 AND COL > 200', 'WHERE COL < 4000000000', 'WHERE COL > -4000000000', 'WHERE COL <> 77 AND COL >= 490']);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      80 |   80 |        48 | 
+      80 |   80 |        64 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 'kn', ARRAY['WHERE COL > 10', 'WHERE COL <= 5', 'WHERE COL IS NOT NULL', 'WHERE COL IS NOT NULL AND COL < 3', 'WHERE COL IS NULL', 'WHERE COL = 39 OR COL IS NULL']);
@@ -253,13 +253,13 @@ SELECT * FROM sr_range('sr', 't', ARRAY['WHERE COL >= timestamptz ''2024-01-08+0
 	'WHERE COL BETWEEN timestamptz ''2024-01-05+00'' AND timestamptz ''2024-01-06+00''', 'WHERE COL = ''infinity''', 'WHERE COL > timestamptz ''2024-01-02+00'' AND id % 3 = 1']);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      48 |   48 |        32 | 
+      48 |   48 |        40 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 'd', ARRAY['WHERE COL >= date ''2023-01-01''', 'WHERE COL < date ''2020-06-01''', 'WHERE COL BETWEEN date ''2021-01-01'' AND date ''2021-03-01''', 'WHERE COL = date ''2022-02-02''']);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      32 |   32 |        23 | 
+      32 |   32 |        24 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 'cd', ARRAY['WHERE COL < 90000', 'WHERE COL >= 99000', 'WHERE COL BETWEEN 90000 AND 91000 AND id % 2 = 0']);

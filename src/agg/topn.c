@@ -195,6 +195,7 @@ typedef struct TopExpr
 static SiftSrcVecType expr_vtype(Oid typid);
 static TopExpr *expr_open(List *xs, const SiftSrcLayout *lay, Oid rtype, ExprContext *outer, MemoryContext cxt);
 
+#define TOP_RESID	4			/* leaves the conditions of a lazy filter may read */
 #define TOP_GKEYS 4
 
 typedef struct TopKey
@@ -350,7 +351,9 @@ struct SiftTopN
 	bool	   *snull;
 	uint32	   *rwin;			/* a window of a sorted run (sift_topn_unit) */
 	uint32	   *rpass;			/* the rows of the window that pass, whose keys are read */
+	uint32	   *rmrow;			/* lazy: those of them that the key does not decide, whose other columns are read */
 	uint16	   *rslot;			/* the place of the key of each entry of the window in that read */
+	uint16	   *rmay;			/* ... their entries of the window */
 	int			budget;			/* rows a unit gives in the first pass of a walk through sorted runs (0: all it can), sift_topn_run_budget */
 	bool		revisit;		/* the second pass: only the units the first left unfinished */
 	bool		yielded;		/* trunc[rpos] was given out and is not yet done */
@@ -387,10 +390,15 @@ struct SiftTopN
 	TopFetch   *pf;				/* the heap row of a TID: the version an index scan finds, along a HOT chain */
 	int64		skipped;
 	int64		nrun;			/* units read through their sorted run */
+	int64		nlazy;			/* ... of them with no filter run (sift_topn_lazy) */
 	int64		nrhead;			/* units answered from the head of their sorted run */
 	bool		wkeep;			/* the write buffers' superblocks are known (whead): a superblock outside them has no row in memory */
 	int64		fetched;
 	GBox		kbox;			/* the range of the first key that the conditions on it keep (sift_topn_key_range): a sorted run is read from its first entry in it */
+	const SiftTopGPred *resid;	/* sift_topn_lazy: the conditions of the scan, which a unit read through its sorted run tests on the rows it takes (its filters are not run) */
+	int			nresid;
+	int			rleaf[TOP_RESID];	/* ... the leaves they read, and whether each is an int64 (else int32) vector */
+	bool		rwide[TOP_RESID];
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
@@ -1812,6 +1820,27 @@ after_bar(SiftTopN *t, uint8 *worse, const SiftSrcDict *d, bool isnull, uint32 c
 	return true;
 }
 
+/* does a value of the column pass the comparison: the one test of a heap row (gcond_test) and of a row of a unit (resid_test) */
+static inline bool
+gcond_cmp(int op, int64 key, int64 val)
+{
+	switch (op)
+	{
+		case SCMP_EQ:
+			return key == val;
+		case SCMP_NE:
+			return key != val;
+		case SCMP_LT:
+			return key < val;
+		case SCMP_LE:
+			return key <= val;
+		case SCMP_GT:
+			return key > val;
+		default:
+			return key >= val;
+	}
+}
+
 /* Entries of a sorted run are read in windows that double up to this many */
 #define RUN_WIN_MIN		32
 #define RUN_WIN_MAX		512
@@ -1836,6 +1865,8 @@ typedef struct RunWalk
 	SiftSrcVec	wkey;
 	const uint64 *rmask;
 	uint32		n;				/* rows of the unit: entries of the run */
+	uint32		first,
+				end;			/* the entries run_values reads: the keys of the others are not read */
 	uint32		lo,
 				hi;				/* the entries rwin holds */
 	uint32		win;
@@ -1850,7 +1881,16 @@ typedef struct RunWalk
 	Rank		resume;
 	bool		trunc;
 	Rank		next;			/* trunc: the rank of the first group left */
+	bool		lazy;			/* rmask holds the live rows, not the ones that pass: the window's rows are tested by t->resid (rslot is RSLOT_OUT for those that fail) */
+	SiftSrcVec	rv[TOP_RESID];	/* lazy: the leaves of t->resid for the rows of the window that rmask keeps */
+	uint32		nfail;			/* lazy: the rows that failed t->resid; abort: so many that the filters of the unit are cheaper */
+	bool		abort;
 } RunWalk;
+
+/* a lazy walk that finds more than a 32nd of the rows of the unit failing the conditions is left to the filters, which test a row for a few instructions */
+#define LAZY_FAIL_DIV	32
+
+#define RSLOT_OUT	0xFFFF
 
 static void
 run_corrupt(RunWalk *w, const char *what)
@@ -1865,6 +1905,91 @@ static inline bool
 run_pass(const RunWalk *w, uint32 row)
 {
 	return w->rmask[row >> 6] >> (row & 63) & 1;
+}
+
+/* the value of a leaf of a condition at a row of the window: ki its place in the read of the key, oi in that of the other leaves; false for NULL */
+static bool
+resid_value(const RunWalk *w, int leaf, int ki, int oi, int64 *out)
+{
+	const SiftTopN *t = w->t;
+	int			j = 0,
+				i = leaf == t->key[0].leaf ? ki : oi;
+
+	while (t->rleaf[j] != leaf)
+		j++;
+	if (w->rv[j].isnull && w->rv[j].isnull[i])
+		return false;
+	*out = t->rwide[j] ? ((const int64 *) w->rv[j].data)[i] : ((const int32 *) w->rv[j].data)[i];
+	return true;
+}
+
+#define RESID_MAYBE	2
+
+/* Does the row pass the conditions: a condition on a column other than the key is not known (RESID_MAYBE) until that column is read (oi >= 0) */
+static int
+resid_test(const RunWalk *w, const SiftTopGPred *p, int ki, int oi)
+{
+	bool		unknown = false;
+	int64		v;
+
+	if (p->kind == STG_NOTNULL || p->kind == STG_CMP)
+	{
+		if (oi < 0 && p->leaf != w->t->key[0].leaf)
+			return RESID_MAYBE;
+		return resid_value(w, p->leaf, ki, oi, &v) && (p->kind == STG_NOTNULL || gcond_cmp(p->op, v, p->val));
+	}
+	for (int c = 0; c < p->nchild; c++)
+	{
+		int			r = resid_test(w, p->child[c], ki, oi);
+
+		if (r == (p->kind == STG_OR))
+			return r;
+		unknown |= r == RESID_MAYBE;
+	}
+	return unknown ? RESID_MAYBE : p->kind == STG_AND;
+}
+
+/* The rows of the window that fail the conditions leave it (rslot): the key decides most, and the other columns are read for the rows it does not */
+static void
+run_resid(RunWalk *w, uint32 cnt)
+{
+	SiftTopN   *t = w->t;
+	int			k = 0;
+
+	for (int j = 0; j < t->nresid; j++)
+		if (t->rleaf[j] == t->key[0].leaf)
+			w->rv[j] = w->wkey;
+	for (uint32 i = 0; i < cnt; i++)
+	{
+		int			r;
+
+		if (t->rslot[i] == RSLOT_OUT)
+			continue;
+		r = resid_test(w, t->resid, t->rslot[i], -1);
+		if (r == RESID_MAYBE)
+		{
+			t->rmrow[k] = t->rpass[t->rslot[i]];
+			t->rmay[k++] = i;
+		}
+		else if (!r)
+		{
+			t->rslot[i] = RSLOT_OUT;
+			w->nfail++;
+		}
+	}
+	if (k > 0)
+	{
+		for (int j = 0; j < t->nresid; j++)
+			if (t->rleaf[j] != t->key[0].leaf)
+				sift_colsrc_read_rows(w->src, w->unit, t->rleaf[j], t->rmrow, k, &w->rv[j]);
+		for (int q = 0; q < k; q++)
+			if (!resid_test(w, t->resid, t->rslot[t->rmay[q]], q))
+			{
+				t->rslot[t->rmay[q]] = RSLOT_OUT;
+				w->nfail++;
+			}
+	}
+	w->abort = w->nfail > Max(w->n / LAZY_FAIL_DIV, 64);
 }
 
 /* The row at position pos of the run; the window is read toward the direction of the walk */
@@ -1883,13 +2008,15 @@ run_at(RunWalk *w, uint32 pos, bool back)
 			int			m = 0;
 
 			for (uint32 i = 0; i < cnt; i++)
-				if (run_pass(w, w->t->rwin[i]))
-				{
-					w->t->rslot[i] = m;
+			{
+				w->t->rslot[i] = lo + i >= w->first && lo + i < w->end && run_pass(w, w->t->rwin[i]) ? m : RSLOT_OUT;
+				if (w->t->rslot[i] != RSLOT_OUT)
 					w->t->rpass[m++] = w->t->rwin[i];
-				}
+			}
 			if (m > 0)
 				sift_colsrc_read_rows(w->src, w->unit, w->t->key[0].leaf, w->t->rpass, m, &w->wkey);
+			if (w->lazy && m > 0)
+				run_resid(w, cnt);
 		}
 		w->lo = lo;
 		w->hi = lo + cnt;
@@ -1997,43 +2124,80 @@ run_nulls(RunWalk *w, uint32 nvals, uint32 nnull)
 	run_close(w, g0, r, false);
 }
 
-/* The key of the entry at position pos of the run (a position among the values) */
-static int64
-run_key_of(RunWalk *w, uint32 pos)
+#define RUN_SEEK_TAIL	16
+
+/* The keys of the entries [pos, pos + cnt) of the run (positions among the values): from key0 when the unit has it whole, which a read of rows would overwrite */
+static void
+run_keys_of(RunWalk *w, uint32 pos, uint32 cnt, int64 *keys)
 {
 	const TopKey *k0 = &w->t->key[0];
-	uint32		row;
+	uint32		rows[RUN_SEEK_TAIL];
 	SiftSrcVec	v = {0};
-	int64		key = 0;
 
-	sift_colsrc_run_read(w->src, w->unit, k0->leaf, pos, 1, &row);
-	/* a unit that has the key whole keeps it in the buffer of the leaf, which a read of rows overwrites */
-	if (w->key0 == NULL)
-	{
-		sift_colsrc_read_rows(w->src, w->unit, k0->leaf, &row, 1, &v);
-		row = 0;
-	}
-	if (!row_key(k0, w->key0 ? w->key0 : &v, row, &key))
-		run_corrupt(w, "has a NULL row among those with a value");
-	return key;
+	sift_colsrc_run_read(w->src, w->unit, k0->leaf, pos, cnt, rows);
+	if (!w->key0)
+		sift_colsrc_read_rows(w->src, w->unit, k0->leaf, rows, cnt, &v);
+	for (uint32 i = 0; i < cnt; i++)
+		if (!(w->key0 ? row_key(k0, w->key0, rows[i], &keys[i]) : row_key(k0, &v, i, &keys[i])))
+			run_corrupt(w, "has a NULL row among those with a value");
 }
 
-/* The first position of the run [0, nvals) whose key is after bound (at bound itself when incl) */
+/*
+ * The first position of the run [0, nvals) whose key is after bound (at bound itself when incl). A key costs the opening of its chunk, and the zone of the unit
+ * bounds the keys: the ends answer outright, and the next probe goes where the keys, spread evenly between the ends known so far, would put the bound; a probe
+ * that does not halve what is left is followed by one at the middle, so that keys that are not spread evenly cost twice a bisection and not more. The last entries
+ * are read together.
+ */
 static uint32
 run_seek(RunWalk *w, uint32 nvals, int64 bound, bool incl)
 {
+	SiftSrcZone z;
 	uint32		lo = 0,
 				hi = nvals;
+	int64		kl = 0,
+				kh = 0;
+	bool		even,
+				mid = false;
 
+	sift_colsrc_zone(w->src, w->unit, w->t->key[0].leaf, &z);
+	even = !z.inexact && z.nvals == nvals;
+	if (even)
+	{
+		if (incl ? z.min > bound : z.min >= bound)
+			return 0;
+		if (!(incl ? z.max > bound : z.max >= bound))
+			return nvals;
+		kl = z.min;
+		kh = z.max;
+	}
 	while (lo < hi)
 	{
-		uint32		m = lo + (hi - lo) / 2;
-		int64		k = run_key_of(w, m);
+		uint32		left = hi - lo,
+					m = lo + left / 2;
+		int64		keys[RUN_SEEK_TAIL];
 
-		if (incl ? k <= bound : k < bound)
-			lo = m + 1;
-		else
+		if (left <= RUN_SEEK_TAIL)
+		{
+			run_keys_of(w, lo, left, keys);
+			for (m = 0; m < left; m++)
+				if (incl ? keys[m] > bound : keys[m] >= bound)
+					break;
+			return lo + m;
+		}
+		if (even && !mid && kh > kl)
+			m = lo + (uint32) ((double) (left - 1) * Min(Max(((double) bound - (double) kl) / ((double) kh - (double) kl), 0.0), 1.0));
+		run_keys_of(w, m, 1, keys);
+		if (incl ? keys[0] > bound : keys[0] >= bound)
+		{
 			hi = m;
+			kh = keys[0];
+		}
+		else
+		{
+			lo = m + 1;
+			kl = keys[0];
+		}
+		mid = (hi - lo) * 2 > left;
 	}
 	return lo;
 }
@@ -2061,7 +2225,9 @@ run_values(RunWalk *w, uint32 first, uint32 end)
 					row = run_at(w, pos, desc);
 		int64		v;
 
-		if (!run_pass(w, row))
+		if (w->abort)
+			return;
+		if (!run_pass(w, row) || (w->lazy && w->t->rslot[pos - w->lo] == RSLOT_OUT))
 			continue;
 		run_key(w, pos, row, &v);
 		if (open && v == gv)
@@ -2093,6 +2259,15 @@ run_values(RunWalk *w, uint32 first, uint32 end)
 		run_close(w, g0, r, desc);
 }
 
+/* Has the unit a run the walk can read: the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
+static bool
+run_ready(const SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, uint32 *nvals, uint32 *nnull, uint64 *id)
+{
+	const TopKey *k0 = &t->key[0];
+
+	return sift_topn_runs && k0->xk == TXK_NONE && k0->leaf >= 0 && sift_colsrc_run_info(src, unit, k0->leaf, true, nvals, nnull, id);
+}
+
 /*
  * The unit from its sorted run: the groups of equal first keys in the order of the sort, from the best, until one cannot be in the
  * result, where the rows are read and tested one by one otherwise. The candidates are what the other loop finds: the rows that pass whose first key is
@@ -2100,9 +2275,9 @@ run_values(RunWalk *w, uint32 first, uint32 end)
  * to pay (it reads about n / share of the rows that pass) and the heap has no bar yet.
  */
 static bool
-run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow)
+run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, bool lazy)
 {
-	RunWalk		w = {.t = t, .src = src, .unit = unit, .key0 = key0, .rmask = rmask, .n = nrow, .win = RUN_WIN_MIN};
+	RunWalk		w = {.t = t, .src = src, .unit = unit, .key0 = key0, .rmask = rmask, .n = nrow, .end = nrow, .win = RUN_WIN_MIN, .lazy = lazy};
 	uint32		nvals,
 				nnull,
 				first,
@@ -2115,8 +2290,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	RunTrunc   *rt = NULL;
 	SiftSrcVec	cv = {0};
 
-	/* the run orders the column, not the expression of it (coalesce moves the NULLs, lower() folds the strings) */
-	if (!sift_topn_runs || k0->xk != TXK_NONE || k0->leaf < 0 || !sift_colsrc_run_info(src, unit, k0->leaf, true, &nvals, &nnull, &id))
+	if (!run_ready(t, src, unit, &nvals, &nnull, &id))
 		return false;
 	if (t->revisit)
 	{
@@ -2126,29 +2300,33 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 				rt = &t->trunc[i];
 		if (rt == NULL)
 			return true;
-		rt->done = true;
 		w.resumed = true;
 		w.resume = rt->next;
 	}
 	else
 	{
-		for (int i = 0; i < (nrow + 63) / 64; i++)
+		for (int i = 0; i < (nrow + 63) / 64 && !lazy; i++)
 			npass += pg_popcount64(rmask[i]);
-		/* a unit with fewer rows than the walk would take for its own bar is read through the run only when the heap's bar already cuts it */
-		if ((uint64) (t->limit + 1) * 2 > npass && !bar_rank(t, &w.bar))
+		/* a unit with fewer rows than the walk would take for its own bar is read through the run only when the heap's bar already cuts it (a lazy unit is not counted: the rows that pass are what the walk finds) */
+		if (!lazy && (uint64) (t->limit + 1) * 2 > npass && !bar_rank(t, &w.bar))
 			return false;
 		w.budget = t->budget;
 	}
 	grow_unit_buffers(t, Min(nrow, RUN_CAND_MIN));
 	if (t->rwin == NULL)
 	{
-		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * (2 * sizeof(uint32) + sizeof(uint16)));
+		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * (3 * sizeof(uint32) + 2 * sizeof(uint16)));
 		t->rpass = t->rwin + RUN_WIN_MAX;
-		t->rslot = (uint16 *) (t->rpass + RUN_WIN_MAX);
+		t->rmrow = t->rpass + RUN_WIN_MAX;
+		t->rslot = (uint16 *) (t->rmrow + RUN_WIN_MAX);
+		t->rmay = t->rslot + RUN_WIN_MAX;
 	}
 	w.barred = bar_rank(t, &w.bar);
 	if (rt && run_stop(&w, rt->next))
+	{
+		rt->done = true;
 		return true;
+	}
 	first = 0;
 	end = nvals;
 	/* the conditions on the key bound the part of the run that can pass: the rows outside it, and the NULLs, fail them */
@@ -2160,7 +2338,13 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	}
 	if (k0->nulls_first && !bounded)
 		run_nulls(&w, nvals, nnull);
+	w.first = first;
+	w.end = end;
 	run_values(&w, first, end);
+	if (w.abort)
+		return false;
+	if (rt)
+		rt->done = true;
 	if (!k0->nulls_first && !w.trunc && !bounded)
 		run_nulls(&w, nvals, nnull);
 	/* the rows whose value overflowed the leaf are tested one by one: the run does not order them */
@@ -2194,6 +2378,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 		t->cand[m++] = e->row;
 	}
 	t->nrun++;
+	t->nlazy += lazy;
 	if (w.trunc)
 	{
 		if (t->ntrunc == t->captrunc)
@@ -2782,6 +2967,25 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 	pfree(vm);
 }
 
+static void
+unit_reset(SiftTopN *t)
+{
+	if (t->ucxt)
+	{
+		MemoryContextReset(t->ucxt);
+		for (int j = 0; j < t->nkey; j++)
+			t->key[j].xid = NULL;
+	}
+}
+
+/* The unit from its sorted run with no filter run: false when the walk finds the conditions fail for too many rows (the unit goes on to its filters) */
+bool
+sift_topn_unit_lazy(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
+{
+	unit_reset(t);
+	return run_unit(t, src, unit, NULL, rmask, nrow, true);
+}
+
 /*
  * The rows of the unit are cut in two steps, so that the leaves of the other sort keys are read for a handful of rows and not for all of
  * them. First the first key of every row that passes: a row strictly worse on it than the n-th of the heap, or than the n-th of the unit
@@ -2798,12 +3002,7 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 				m = 0,
 				nc = 0;
 
-	if (t->ucxt)
-	{
-		MemoryContextReset(t->ucxt);
-		for (int j = 0; j < t->nkey; j++)
-			t->key[j].xid = NULL;
-	}
+	unit_reset(t);
 	/* the first key of the rows is read whole only by the paths that test every row: a unit from its sorted run reads the keys of the rows it takes, by position */
 	if (key0 == NULL && k0->leaf >= 0 && (t->nexpr > 0 || t->all || k0->blob || !sift_topn_runs))
 		key0 = leaf(ctx, k0->leaf);
@@ -2827,12 +3026,12 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	}
 	if (t->revisit)
 	{
-		(void) run_unit(t, src, unit, key0, rmask, nrow);
+		(void) run_unit(t, src, unit, key0, rmask, nrow, false);
 		return;
 	}
 	if (key0 == NULL && head_unit(t, src, unit, rmask, nrow))
 		return;
-	if (run_unit(t, src, unit, key0, rmask, nrow))
+	if (run_unit(t, src, unit, key0, rmask, nrow, false))
 		return;
 	if (key0 == NULL && k0->leaf >= 0)
 		key0 = leaf(ctx, k0->leaf);
@@ -3530,26 +3729,10 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 	{
 		bool		isnull;
 		Datum		d = slot_getattr(slot, p->attno, &isnull);
-		int64		key;
 
 		if (isnull)
 			return false;
-		key = heap_key(p->typid, d);
-		switch (p->op)
-		{
-			case SCMP_EQ:
-				return key == p->val;
-			case SCMP_NE:
-				return key != p->val;
-			case SCMP_LT:
-				return key < p->val;
-			case SCMP_LE:
-				return key <= p->val;
-			case SCMP_GT:
-				return key > p->val;
-			default:
-				return key >= p->val;
-		}
+		return gcond_cmp(p->op, heap_key(p->typid, d), p->val);
 	}
 	for (int i = 0; i < p->nchild; i++)
 		if (gcond_test(p->child[i], slot) == (p->kind == STG_OR))
@@ -3678,6 +3861,58 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 	for (int i = 0; i < p->nchild; i++)
 		n += gcond_loose(p->child[i], gl, top && p->kind == STG_AND);
 	return n;
+}
+
+/* the leaves of a condition, into t->rleaf: false when there are more than it holds */
+static bool
+resid_leaves(SiftTopN *t, const SiftSrcLayout *lay, const SiftTopGPred *p)
+{
+	int			j = 0;
+
+	if (p->kind != STG_AND && p->kind != STG_OR)
+	{
+		while (j < t->nresid && t->rleaf[j] != p->leaf)
+			j++;
+		if (j == t->nresid)
+		{
+			if (j == TOP_RESID)
+				return false;
+			t->rleaf[j] = p->leaf;
+			t->rwide[j] = lay->leaf[p->leaf].vtype == SCV_I64;
+			t->nresid++;
+		}
+		return true;
+	}
+	for (int i = 0; i < p->nchild; i++)
+		if (!resid_leaves(t, lay, p->child[i]))
+			return false;
+	return true;
+}
+
+/*
+ * The conditions of the scan are all of them on integer and time columns (cond), and the range of the first key that they keep is bounded: the units read through their
+ * sorted run do not run the filters of the scan, they test cond on the rows the walk takes from the range (sift_topn_lazy_unit). A condition on another column that
+ * does not narrow the walk (not pinned by an equality of the first key) is left to the filters: the walk would read the column for rows that fail it.
+ */
+void
+sift_topn_lazy(SiftTopN *t, const SiftSrcLayout *lay, const SiftTopGPred *cond)
+{
+	t->resid = NULL;
+	t->nresid = 0;
+	if (cond == NULL || !(t->kbox.has_lo || t->kbox.has_hi) || gcond_loose(cond, -1, true) > 0 || !resid_leaves(t, lay, cond))
+		return;
+	t->resid = cond;
+}
+
+/* Does the unit go to its sorted run without its filters (the paths that test every row of the mask come before the run in sift_topn_unit) */
+bool
+sift_topn_lazy_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	uint32		nvals,
+				nnull;
+	uint64		id;
+
+	return t->resid != NULL && !t->all && t->nexpr == 0 && run_ready(t, src, unit, &nvals, &nnull, &id);
 }
 
 /* the equalities of the top of the conjunction on columns other than the first key: a global order grouped by one of them reads the entries of that group */
@@ -3887,10 +4122,11 @@ sift_topn_walk_order(SiftTopN *t)
 }
 
 void
-sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs)
+sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs, int64 lazy)
 {
 	t->skipped += n;
 	t->nrun += runs;
+	t->nlazy += lazy;
 }
 
 int64
@@ -3903,6 +4139,12 @@ int64
 sift_topn_runs_read(const SiftTopN *t)
 {
 	return t->nrun;
+}
+
+int64
+sift_topn_runs_lazy(const SiftTopN *t)
+{
+	return t->nlazy;
 }
 
 /* units compared with the bar by an exact order code (0), by a prefix (1), as bytes (2) */

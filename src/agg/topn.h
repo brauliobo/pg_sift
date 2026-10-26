@@ -177,6 +177,11 @@ extern bool sift_topn_walk_zone_viable(const SiftTopN *t, const SiftSrcZone *z);
 typedef const SiftSrcVec *(*SiftTopLeaf) (void *ctx, int leaf);
 extern void sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, SiftTopLeaf leaf, void *ctx);
 
+/* The units that go to their sorted run with no filter run (rmask: the live rows): the conditions are tested on the rows the walk takes */
+extern void sift_topn_lazy(SiftTopN *t, const SiftSrcLayout *lay, const SiftTopGPred *cond);
+extern bool sift_topn_lazy_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit);
+extern bool sift_topn_unit_lazy(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow);
+
 /* After the scan: the rows in order; sift_topn_next stores the next one (all its attributes, copied) in slot, a virtual slot of the scan tuple, false at the end */
 extern void sift_topn_finish(SiftTopN *t);
 /*
@@ -189,11 +194,12 @@ extern void sift_topn_bound_init(pg_atomic_uint64 *bound);
 extern void sift_topn_share(SiftTopN *t, pg_atomic_uint64 *bound);
 extern void sift_topn_visit(SiftTopN *t, uint32 nsb, bool reverse);
 extern const uint32 *sift_topn_walk_order(SiftTopN *t);
-extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs);
+extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs, int64 lazy);
 extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
 extern bool sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb);
 extern int64 sift_topn_heads_used(const SiftTopN *t);	/* units answered from the head of their sorted run */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */
+extern int64 sift_topn_runs_lazy(const SiftTopN *t);	/* ... of them with no filter run */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);
 extern void sift_topn_import(SiftTopN *t, const char *data, Size len);
 

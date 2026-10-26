@@ -1,0 +1,134 @@
+-- A unit read through its sorted run does not run the filters of the scan when the conditions are all on integer and time columns and bound the first sort key:
+-- the walk takes the rows from the range of the key the conditions keep and tests the conditions on them (a condition on another column only when an equality of the
+-- first key pins it). The rows are the plain plan's for every shape of the conditions: each comparison, ranges, ORs of ranges, a keyset page, NULLs, the ends of the
+-- types, an empty range, the write buffer, deletes and updates; a condition that the walk cannot test, or that it would read a column for every row of the unit for,
+-- leaves the filters to run (no unit is read without them).
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET statement_timeout = '120s';
+
+-- 15,000 rows in about 12 units. k: 500 values, kn: 40 values and a NULL in 7 rows, ki: int2 with its ends, kb: int8 with its ends, ts: a timestamp with infinities and NULLs,
+-- d: a date, v: 100 values, g: 4 values (a group of a unit is a quarter of it), nn: a numeric with NaN (stored as an overflow) and NULLs
+CREATE TABLE lz (id int, k int, kn int, ki int2, kb int8, ts timestamp, d date, v int, g int, nn numeric(12, 2), pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE lz ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO lz
+SELECT g, (hashint4(g) & 2147483647) % 500,
+       CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 40 END,
+       CASE WHEN g % 301 = 0 THEN 32767 WHEN g % 307 = 0 THEN -32768 ELSE ((hashint4(g + 2) & 2147483647) % 2000 - 1000) END,
+       CASE WHEN g % 997 = 0 THEN 9223372036854775807 WHEN g % 991 = 0 THEN -9223372036854775808 ELSE ((hashint4(g + 3) & 2147483647) % 1000)::int8 * 1000000007 END,
+       CASE WHEN g % 11 = 0 THEN NULL WHEN g % 499 = 0 THEN 'infinity' WHEN g % 503 = 0 THEN '-infinity'
+            ELSE timestamp '2024-01-01 00:00:00' + ((hashint4(g + 4) & 2147483647) % 20000) * interval '1 minute' END,
+       CASE WHEN g % 19 = 0 THEN NULL ELSE date '2020-01-01' + (hashint4(g + 5) & 2147483647) % 2000 END,
+       (hashint4(g + 6) & 2147483647) % 100, (hashint4(g + 7) & 2147483647) % 4,
+       CASE WHEN g % 17 = 0 THEN NULL WHEN g % 211 = 0 THEN 'NaN'::numeric ELSE ((hashint4(g + 8) & 2147483647) % 100000) / 100.0 END, repeat('x', 1500)
+FROM generate_series(1, 15000) g;
+CREATE INDEX lz_i ON lz USING sift_col (id, k, kn, ki, kb, ts, d, v, g, nn) WITH (write_buffer_limit = 4096, order_columns = 'k, kn, ki, kb, ts, d, v, g', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+SELECT sift.col_verify('lz_i', true);
+
+-- the plain plan, the top-N scan with the runs, and the top-N scan without them (sift.topn_runs = off)
+CREATE FUNCTION lz_mode(m text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', (m <> 'plain')::text, false);
+	PERFORM set_config('sift.topn_runs', (m = 'runs')::text, false);
+	PERFORM set_config('sift.test_topn_heads', 'false', false);
+	PERFORM set_config('enable_seqscan', (m = 'plain')::text, false);
+	PERFORM set_config('enable_indexscan', (m = 'plain')::text, false);
+	PERFORM set_config('enable_bitmapscan', (m = 'plain')::text, false);
+END $$;
+
+CREATE FUNCTION lz_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT coalesce(md5(string_agg(x::text, ''|'' ORDER BY pos)), ''no rows'') FROM (SELECT row_number() OVER () AS pos, x FROM (' || q || ') x) y' INTO r;
+	RETURN r;
+END $$;
+
+-- the units a query read through their sorted run without the filters of the scan (0 when the plan is not a top-N scan)
+CREATE FUNCTION lz_units(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN coalesce(jsonb_path_query_first(j, '$.**."Units Read Without Filters"')::int, 0);
+END $$;
+
+CREATE TEMP TABLE lz_shape (n serial, col text, flt text, ord text DEFAULT ', id');
+INSERT INTO lz_shape (col, flt) VALUES
+	-- each comparison on the key, and its ends
+	('k', 'k >= 250'), ('k', 'k > 250'), ('k', 'k < 250'), ('k', 'k <= 250'), ('k', 'k = 250'), ('k', 'k <> 250 AND k >= 480'),
+	('k', 'k >= 0'), ('k', 'k > 499'), ('k', 'k < 0'), ('k', 'k >= 500'), ('k', 'k > -2147483648'), ('k', 'k < 2147483647'),
+	-- ranges, ANDs and ORs of them
+	('k', 'k BETWEEN 100 AND 120'), ('k', 'k > 40 AND k <= 300'), ('k', 'k > 100 AND k < 100'), ('k', 'k >= 300 AND k <= 299'), ('k', 'k > 200 AND k >= 250 AND k < 400 AND k <= 390'),
+	('k', 'k >= 400 OR k = 7'), ('k', '(k > 300 AND k < 350) OR (k > 100 AND k < 120)'), ('k', 'k > 400 OR k < 20'), ('k', '(k >= 250 AND k <= 260) OR k = 255 OR k = 3'),
+	-- NULLs of the key
+	('kn', 'kn >= 0'), ('kn', 'kn > 10'), ('kn', 'kn < 5'), ('kn', 'kn IS NOT NULL'), ('kn', 'kn IS NOT NULL AND kn <= 20'), ('kn', 'kn IS NULL'), ('kn', 'kn = 39 OR kn IS NULL'),
+	-- the ends of the types
+	('ki', 'ki >= 0'), ('ki', 'ki > 32766'), ('ki', 'ki < -32767'), ('ki', 'ki = 32767'), ('ki', 'ki = -32768'), ('ki', 'ki BETWEEN -5 AND 5'),
+	('kb', 'kb >= 9223372036854775807'), ('kb', 'kb > 9223372036854775806'), ('kb', 'kb <= -9223372036854775808'), ('kb', 'kb < -9223372036854775807'), ('kb', 'kb > 500000003500'),
+	('kb', 'kb < 9223372036854775807 AND kb > -9223372036854775808'), ('kb', 'kb = 9223372036854775807'), ('kb', 'kb < -9223372036854775808'), ('kb', 'kb > 9223372036854775807'),
+	('ts', 'ts >= timestamp ''2024-01-08'''), ('ts', 'ts > timestamp ''2024-01-08'''), ('ts', 'ts < timestamp ''2024-01-03'''), ('ts', 'ts BETWEEN timestamp ''2024-01-05'' AND timestamp ''2024-01-06'''),
+	('ts', 'ts = ''infinity'''), ('ts', 'ts = ''-infinity'''), ('ts', 'ts >= ''-infinity'''), ('ts', 'ts <= ''infinity'''), ('ts', 'ts < ''-infinity'''), ('ts', 'ts > ''infinity'''),
+	('ts', 'ts > timestamp ''2100-01-01'''), ('ts', 'ts < ''infinity'' AND ts > ''-infinity'''),
+	('d', 'd >= date ''2023-01-01'''), ('d', 'd < date ''2020-06-01'''), ('d', 'd BETWEEN date ''2021-01-01'' AND date ''2021-03-01'''), ('d', 'd = date ''2022-02-02'''),
+	-- a keyset page: the row comparison is an OR of a range of the key and an equality of it with a condition on the next column (which the equality pins)
+	('k', '(k, id) > (250, 7000)'), ('k', '(k, id) >= (250, 7000)'), ('k', '(k, id) < (250, 7000)'), ('k', '(k, id) <= (250, 7000)'), ('k', '(k, id) > (499, 0)'), ('k', '(k, id) > (0, 99999)'),
+	('ts', '(ts, id) > (timestamp ''2024-01-08'', 7000)'), ('d', '(d, id) < (date ''2022-02-02'', 7000)'),
+	-- a condition on another column: left to the filters unless the key is pinned
+	('k', 'k >= 250 AND v < 10'), ('k', 'k >= 250 AND v = 7'), ('k', 'k = 77 AND v < 50'), ('k', 'k = 77 AND v >= 50 AND id % 2 = 0'), ('k', 'k >= 250 AND id % 7 = 3'),
+	('k', 'k >= 250 AND ki IS NOT NULL'), ('k', 'k = 250 AND kn IS NOT NULL'), ('k', 'k >= 250 AND (v < 10 OR v > 90)'), ('k', 'k = 250 AND (v < 10 OR v > 90)'),
+	('k', 'k >= 250 AND ts > timestamp ''2024-01-08'''), ('k', 'k = 250 AND ts > timestamp ''2024-01-08'''), ('k', '(k, v) > (250, 50)'),
+	-- an equality of the key that a condition fails for many of the rows of its group (a quarter of a unit): the walk gives the unit up and its filters run
+	('g', 'g = 2 AND v = 7'), ('g', 'g = 2 AND v < 50'), ('g', 'g = 2 AND v < 2 AND kn > 5'), ('g', 'g >= 2 AND v = 7'), ('g', 'g = 2 AND v < 99');
+-- a second sort key (a numeric with NaN): the rows of a group of the first are in the order of the second
+INSERT INTO lz_shape (col, flt, ord) VALUES ('k', 'k >= 250', ', nn, id'), ('k', 'k = 250 AND v < 50', ', nn, id'),
+	-- a sort expression after the key: the unit has the key whole (read with the rows of the mask), and the search of the run must not overwrite it
+	('k', 'k >= 250', ', k * 2, id'), ('k', 'k BETWEEN 100 AND 120', ', k * 2, id'), ('k', 'k = 250 AND v < 50', ', k * 2, id');
+-- a sort key that is not the column as it is: the run orders the column, and the filters run
+INSERT INTO lz_shape (col, flt) VALUES ('coalesce(kn, 100)', 'kn >= 20'), ('coalesce(kn, 100)', 'kn < 20'), ('k * 2', 'k >= 250'), ('-k', 'k BETWEEN 100 AND 120');
+
+CREATE FUNCTION lz_check(OUT n int, OUT col text, OUT flt text, OUT same bool, OUT lazy bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
+DECLARE
+	s record; dir text; nl text; lim int; q text; a text; b text; c text; units int;
+BEGIN
+	FOR s IN SELECT * FROM lz_shape ORDER BY lz_shape.n LOOP
+		n := s.n; col := s.col; flt := s.flt; same := true; lazy := false;
+		FOREACH dir IN ARRAY ARRAY['ASC', 'DESC'] LOOP
+		FOREACH nl IN ARRAY ARRAY['NULLS FIRST', 'NULLS LAST'] LOOP
+		FOREACH lim IN ARRAY ARRAY[1, 20, 300, 6000] LOOP
+			q := format('SELECT id, %1$s FROM lz WHERE %2$s ORDER BY %1$s %3$s %4$s%7$s LIMIT %5$s%6$s', s.col, s.flt, dir, nl, lim, CASE WHEN lim = 300 THEN ' OFFSET 25' ELSE '' END, s.ord);
+			PERFORM lz_mode('plain'); a := lz_rows(q);
+			PERFORM lz_mode('norun'); b := lz_rows(q);
+			PERFORM lz_mode('runs'); c := lz_rows(q);
+			same := same AND a = b AND b = c;
+			units := lz_units(q);
+			lazy := lazy OR units > 0;
+		END LOOP; END LOOP; END LOOP;
+		RETURN NEXT;
+	END LOOP;
+	PERFORM lz_mode('runs');
+END $$;
+
+CREATE TEMP TABLE lz_res AS SELECT * FROM lz_check();
+SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same FROM lz_res;
+SELECT n, col, flt FROM lz_res WHERE NOT same ORDER BY n;
+-- the shapes the walk filters (a bounded range of the key, and the conditions that the key pins) and those it leaves to the filters
+SELECT n, flt, lazy FROM lz_res ORDER BY n;
+
+-- rows in the write buffer have no run, deletes and updates leave rows of a run that are not live, the new version of an updated row is in the buffer; VACUUM writes the runs again
+INSERT INTO lz SELECT g, g % 500, g % 40, g % 100, g * 1000, timestamp '2024-01-04' + g * interval '1 second', date '2021-01-01' + g % 50, g % 100, g % 4, g / 7.0, repeat('x', 1500) FROM generate_series(15001, 15300) g;
+UPDATE lz SET k = 250, kn = NULL, ts = NULL WHERE id % 1000 = 5;
+UPDATE lz SET k = 1000 + k WHERE id % 1000 = 6;
+DELETE FROM lz WHERE id % 7 = 0;
+CREATE TEMP TABLE lz_res2 AS SELECT * FROM lz_check();
+SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE lazy) AS lazy FROM lz_res2;
+SELECT n, col, flt FROM lz_res2 WHERE NOT same ORDER BY n;
+VACUUM lz;
+CREATE TEMP TABLE lz_res3 AS SELECT * FROM lz_check();
+SELECT count(*) AS shapes, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE lazy) AS lazy FROM lz_res3;
+SELECT n, col, flt FROM lz_res3 WHERE NOT same ORDER BY n;
+SELECT sift.col_verify('lz_i', true);
+
+DROP TABLE lz CASCADE;
+DROP FUNCTION lz_mode(text), lz_rows(text), lz_units(text), lz_check();
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

@@ -873,6 +873,7 @@ topn_run(AggExec *ex)
 				best;
 	SiftSrcZone z;
 	TopnChunk	ch = {0, 0, NULL};
+	SiftTopGPred *cond = NULL;
 	bool		parallel,
 				heads,
 				bufs = false;
@@ -887,11 +888,15 @@ topn_run(AggExec *ex)
 	if (sift_topn_empty(t))
 		return;
 	if (ex->spec->npred > 0)
+	{
+		cond = topn_gcond(ex, t);
 		sift_topn_key_range(t, topn_gbox(ex, t));
+		/* the filters of the scan are the conditions the top-N tests (the rows of a group or a recheck go through the filters) */
+		if (ex->spec->naggs == 0 && ex->spec->group < 0 && !ex->recheck && ex->search == NULL)
+			sift_topn_lazy(t, ex->lay, cond);
+	}
 	if (topn_plain_ok(ex) && ex->spec->nworkers == 0 && sift_topn_gorder_on)
 	{
-		SiftTopGPred *cond = ex->spec->npred > 0 ? topn_gcond(ex, t) : NULL;
-
 		if ((ex->spec->npred == 0 || cond != NULL) && sift_topn_gorder(t, ex->src, cond))
 			return;
 	}
@@ -1703,6 +1708,8 @@ explain_run(AggExec *ex, ExplainState *es)
 			ExplainPropertyInteger("Top-N Restarts", NULL, ex->widen, es);
 		if (sift_topn_runs_read(ex->topn) > 0)
 			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
+		if (sift_topn_runs_lazy(ex->topn) > 0)
+			ExplainPropertyInteger("Units Read Without Filters", NULL, sift_topn_runs_lazy(ex->topn), es);
 		if (sift_topn_heads_used(ex->topn) > 0)
 			ExplainPropertyInteger("Units Answered By Run Head", NULL, sift_topn_heads_used(ex->topn), es);
 		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
