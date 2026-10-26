@@ -137,7 +137,16 @@ CC_FN(unpack_range32)(const uint32 *src, uint32 W, uint32 rows, uint32 lo, uint3
 #define CC_LIST16(F, s, N)	CC_LIST8(F, s, N), F(8, s, N), F(9, s, N), F(10, s, N), F(11, s, N), F(12, s, N), F(13, s, N), F(14, s, N), F(15, s, N)
 #define CC_LISTN(n, F, s, N)	CC_LISTN_(n, F, s, N)
 #define CC_LISTN_(n, F, s, N)	CC_LIST##n(F, s, N)
+/*
+ * __builtin_shufflevector is Clang's and GCC 12's. GCC 11 (el9) has __builtin_shuffle, whose mask is a vector of the lanes' width and count (x itself is
+ * the type: the callers shuffle unsigned lanes) and which cannot change the length of the vector, so CC_HALF takes a half of x through a union.
+ */
+#if defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 12)
+#define CC_SHUFFLEVECTOR
 #define CC_SHUF(x, y, F, s, N)	__builtin_shufflevector(x, y, CC_LISTN(N, F, s, N))
+#else
+#define CC_SHUF(x, y, F, s, N)	__builtin_shuffle(x, y, (__typeof__(x)) {CC_LISTN(N, F, s, N)})
+#endif
 #define CC_SCAN(x, N) \
 	do { \
 		x += CC_SHUF(x, (__typeof__(x)) {}, CC_UP, 1, N); \
@@ -256,7 +265,11 @@ CC_FN(max32)(const uint32 *a, uint32 n)
  * the caller runs the scalar kernel on the tail.
  */
 #define CC_IDX(i, s, N)	((i) + (s))
+#ifdef CC_SHUFFLEVECTOR
 #define CC_HALF(x, off)	__builtin_shufflevector(x, x, CC_LISTN(CC_L64, CC_IDX, off, 0))
+#else
+#define CC_HALF(x, off)	(((union {__typeof__(x) v; cc_hf32 h[2];}) {x}).h[(off) / CC_LANES64])
+#endif
 
 CC_INLINE void
 CC_FN(put)(int64 *dst, cc_vf64 d, bool keys)
