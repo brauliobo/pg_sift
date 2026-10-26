@@ -4,7 +4,6 @@
 -- PostgreSQL's own, and the same statement over a table without a column index keeps its plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.enable_agg = off;
 CREATE TABLE facts (id int, grp int, period text, score float8);
 INSERT INTO facts SELECT i, i % 500, CASE WHEN i % 2 = 0 THEN 'cur' ELSE 'prev' END, i % 10 FROM generate_series(1, 40000) i;
 CREATE TABLE plain_facts AS SELECT * FROM facts;

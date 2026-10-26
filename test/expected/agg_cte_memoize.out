@@ -31,13 +31,15 @@ BEGIN
 	RETURN jsonb_array_length(jsonb_path_query_array(j, '$.** ? (@."Node Type" == "Memoize")'));
 END $$;
 CREATE FUNCTION plan_it(q text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'EXPLAIN ' || q; END $$;
--- the plan PostgreSQL makes alone caches the lookups
+-- the plan PostgreSQL makes alone caches the lookups when it joins them by nested loops
+SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;
 SELECT memoize_nodes(series_query(), false) > 0 AS postgres_memoizes;
  postgres_memoizes 
 -------------------
  t
 (1 row)
 
+RESET enable_hashjoin; RESET enable_mergejoin; RESET enable_material;
 -- the plan with the shared CTE does not
 SELECT memoize_nodes(series_query(), true) AS memoize_nodes;
  memoize_nodes 

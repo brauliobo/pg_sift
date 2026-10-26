@@ -880,7 +880,7 @@ derived_rel_rows(PlannerInfo *root, RelOptInfo *rel)
 	double		rows;
 	PlannerInfo *top = root;
 
-	if (rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
+	if (!sift_enable_agg || rel->baserestrictinfo == NIL || rel->rows >= rel->tuples)
 		return;
 	rows = clamp_row_est(rel->rows * rel_filter_ratio(root, rel));
 	if (rows <= rel->rows)
@@ -1075,7 +1075,7 @@ derived_cte_rows(PlannerInfo *root, RelOptInfo *rel)
 				rows;
 	bool		reads;
 
-	if (agg_variant != NULL || rte->self_reference)
+	if (!sift_enable_agg || agg_variant != NULL || rte->self_reference)
 		return;
 	for (Index lv = rte->ctelevelsup; lv > 0; lv--)
 		cteroot = cteroot->parent_root;

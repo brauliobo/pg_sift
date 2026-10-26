@@ -34,8 +34,10 @@ BEGIN
 END $$;
 CREATE FUNCTION plan_it(q text) RETURNS void LANGUAGE plpgsql AS $$ BEGIN EXECUTE 'EXPLAIN ' || q; END $$;
 
--- the plan PostgreSQL makes alone caches the lookups
+-- the plan PostgreSQL makes alone caches the lookups when it joins them by nested loops
+SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off;
 SELECT memoize_nodes(series_query(), false) > 0 AS postgres_memoizes;
+RESET enable_hashjoin; RESET enable_mergejoin; RESET enable_material;
 -- the plan with the shared CTE does not
 SELECT memoize_nodes(series_query(), true) AS memoize_nodes;
 -- the setting is what it was after a plan, and after a plan that fails

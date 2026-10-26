@@ -26,8 +26,16 @@ CREATE FUNCTION series_query(t text, extra text DEFAULT '') RETURNS text LANGUAG
 	c AS (SELECT r.period, r.set_id, count(DISTINCT r.id) AS n FROM r GROUP BY r.period, r.set_id)
 SELECT 'a' AS src, period, cat, s, n FROM a UNION ALL SELECT 'b', period, NULL, s, n FROM b UNION ALL SELECT 'c', period, set_id::text, NULL, n FROM c %2$s$q$, t, extra) $f$;
 
--- the rows PostgreSQL expects of the scan of the shared CTE r in the normal plan
-CREATE FUNCTION cte_rows(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+-- a statement whose aggregates the scan cannot take (an ordered array_agg), so that the shared CTE r stays in the plan
+CREATE FUNCTION held_query(t text, extra text DEFAULT '') RETURNS text LANGUAGE sql AS $f$
+	SELECT format($q$WITH key_sets AS MATERIALIZED (SELECT DISTINCT set_id FROM %1$s WHERE set_id IN (SELECT 1 + g FROM generate_series(0, 29) g)),
+	periods AS (SELECT * FROM (VALUES ('cur', daterange(DATE '2025-06-01', DATE '2025-12-31', '[]')), ('prev', daterange(DATE '2025-01-01', DATE '2025-05-31', '[]'))) p(period, range)),
+	r AS (SELECT e.*, periods.period FROM %1$s e INNER JOIN key_sets o ON o.set_id = e.set_id INNER JOIN kinds k ON k.id = e.kind_id AND k.enabled IS TRUE
+	      INNER JOIN periods ON e.ts <@ periods.range)
+SELECT (SELECT array_agg(id ORDER BY ts, id) FROM r) AS ids, (SELECT array_agg(set_id ORDER BY id) FROM r) AS key_sets %2$s$q$, t, extra) $f$;
+
+-- the rows PostgreSQL expects of the scan of the shared CTE r in the plan that keeps it
+CREATE FUNCTION cte_rows(q text) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
@@ -36,7 +44,7 @@ END $$;
 CREATE FUNCTION verdict(q text) RETURNS text LANGUAGE sql AS $$ SELECT string_agg(DISTINCT used::text, ',') FROM sift.explain_why(q) WHERE arm = 'cte_inline' $$;
 
 -- the floor lifts the rows of the scan of the table with the column index, and the copy without one keeps PostgreSQL's
-SELECT t, cte_rows(series_query(t)) > 20 AS lifted FROM (VALUES ('events'), ('plain_events')) v(t) ORDER BY t;
+SELECT t, cte_rows(held_query(t)) > 20 AS lifted FROM (VALUES ('events'), ('plain_events')) v(t) ORDER BY t;
 -- the scans take the shared CTE (used: t); the normal plan priced from one row had kept it
 SELECT verdict(series_query('events')) AS inline_used;
 -- an error while the statement is planned (after the CTEs were) leaves nothing behind: the next plan is the one it was
@@ -44,7 +52,7 @@ DO $$ BEGIN
 	PERFORM verdict(series_query('events', 'WHERE n > 1 / 0'));
 EXCEPTION WHEN division_by_zero THEN RAISE NOTICE 'planning failed';
 END $$;
-SELECT cte_rows(series_query('events')) > 20 AS lifted, verdict(series_query('events')) AS inline_used;
-DROP FUNCTION verdict, cte_rows, series_query;
+SELECT cte_rows(held_query('events')) > 20 AS lifted, verdict(series_query('events')) AS inline_used;
+DROP FUNCTION verdict, cte_rows, held_query, series_query;
 DROP TABLE events, plain_events, kinds;
 DROP EXTENSION pg_sift;
