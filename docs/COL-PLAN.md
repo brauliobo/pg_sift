@@ -210,6 +210,28 @@ A dictionary code, a dense id of a numeric expression or an integer column up to
 
 Memory and time (Q06, `count(DISTINCT customer_id)` per month, 10M orders, 2M customers, one backend without workers): 398 MB peak with a hash set, 13.5 to 13.8 MB with the forms above at `work_mem` 4MB and 64MB (same rows); with 3 workers 51 MB and 40 MB at the leader (each worker has a budget). At 10M rows the forms take 76 to 87 ms against 704 ms for the hash set. Fixtures `d_*` and the `aggstub_agg` and `aggstub_sets` regress cases cover the three forms, the chunks and pairs from workers, the spill (`work_mem` 64kB), NULLs and the global case.
 
+### EXPLAIN labels
+
+Every label that `src/` raises is named in a document. The ones not described where their feature is (`EXPLAIN ANALYZE` unless said otherwise):
+
+| Label | Node | What it counts or says |
+|---|---|---|
+| `Blocks Scored`, `Blocks Skipped` | `SiftScan` (ranked) | posting blocks the ranked evaluation scored, and those it skipped without scoring |
+| `Limit Hint` | `SiftScan` (ranked) | the `LIMIT k` the planner gave the scan |
+| `Filter Mask Up To Matches` | `SiftScan` (`VERBOSE`) | with `Filter Mask From Matches`: the bitmap filter is built when the query matches between the two numbers of documents |
+| `Filter Pages Exact`, `Filter Pages Lossy` | `SiftScan` | pages of the bitmap filter that keep the offsets of their tuples, and pages kept whole (lossy) |
+| `Group Columns`, `Distinct Counts` | `SiftAggRows` | the group-by columns of the node, and its `count(DISTINCT)` aggregates |
+| `Distinct Pairs` | `SiftAggRows` | the (group, value) pairs the distinct counts kept |
+| `Combo Caches Restarted` | `SiftAgg` | times a combo cache reached its entry limit and was started again |
+| `Group Table Spills` | `SiftAgg` | times the group table spilled to partitions |
+| `Lookup Rows Shared` | `SiftAgg` | rows of the lookup tables the leader put in the shared memory of its workers |
+| `Lookup Column Loads` | `SiftAgg` | loads of the columns of a lookup table from the leaves of an index of that table |
+| `Pre-aggregate Measures` | `SiftAgg` | the measures the node reads from the pre-aggregates (`Pre-aggregate Dims` are the dimensions) |
+| `Top-N Units By Order Code` | `SiftAgg` | units a top-N compared with its bar by an exact order code, by a prefix of it, or as bytes (text under `C`, `uuid`, `bytea` keys) |
+| `Units Net Of Dead Rows`, `Units With Dead Rows Scanned` | `SiftAgg` | units answered from their pre-aggregates net of their dead rows (`sift.agg_dead_delta`), and units with dead rows that were scanned instead |
+| `Unnests` | `SiftAgg` | `yes` when the node unnests a list of the row |
+| `Workers Priced For` | `SiftAgg` | `the rows the scan reads`: the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins |
+
 ## Parallel scan
 
 The planner offers a second path with the workers PostgreSQL would give a parallel sequential scan (`compute_parallel_worker`: table size, the `parallel_workers` reloption, `max_parallel_workers_per_gather`), only when the whole query is parallel safe (`glob->parallelModeOK`, no unsafe function in the spec) and the spec is one of the parallel kinds below; the cheaper path wins. The cost divides the scan by PostgreSQL's divisor (workers plus the leader's share when it scans too, `parallel_leader_participation`), adds `parallel_setup_cost` and charges every partial table for its groups (merge cost per group). `sift.enable_agg = off` removes both paths.

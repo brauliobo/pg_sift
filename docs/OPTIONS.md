@@ -2078,41 +2078,44 @@ No default changed since 3.4; new: `sift.agg_par_min_rows`, `sift.col_leaf_cache
 | `sift.col_leaf_cache_kb` | new | 4096 kB |  | new in 3.5 |
 <!-- sift-upgrade:end -->
 
-## NOTICE texts
+## NOTICE and WARNING texts
 
-The library tells what an automatic choice did with a NOTICE; `SET client_min_messages = warning` silences them. The table is generated from the `ereport(NOTICE ...)` calls of `src/`.
+The library tells what an automatic choice did with a NOTICE; `SET client_min_messages = warning` silences them. A WARNING says that something went wrong and is retried or needs a `REINDEX`. The table is generated from the `ereport(NOTICE ...)` and `ereport(WARNING ...)` calls of `src/`.
 
 <!-- sift-notices:start -->
-| Message (`%s` is a placeholder) | Raised in | Options it names |
-|---|---|---|
-| sift.gpu: no usable Vulkan device (%s); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
-| sift.gpu: %s; the aggregate runs on the CPU and the device is not used again in this session | `src/agg/gpu.c` | `sift.gpu` |
-| sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
-| sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %s bytes | `src/agg/lookshm.c` |  |
-| SiftAgg not used: %s: %s | `src/agg/refuse.c` |  |
-| sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%) | `src/col/autocut.c` | `key_cut` |
-| sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
-| sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
-| sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
-| sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
-| sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
-| sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
-| sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
-| sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |
-| sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
-| sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
-| sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
-| sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
-| sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols.c` |  |
-| sift_col index %s writes a rollup of the rows by %s | `src/col/keycols.c` | `rollup` |
-| sift_col index %s: the cube dim "%s" has no histogram in %s%%sf %s units, which hold more than %s groups of it | `src/col/rollup.c` |  |
-| sift_col index %s: the keys of "%s" are a bloom filter, not a list, in %s%%sf %s units, which hold more than %s distinct keys | `src/col/rollup.c` |  |
-| sift_col index %s: key_columns wrote no summary of "%s" in %s%%sf %s units, whose keys are one value, or every integer of a range, or inline text | `src/col/rollup.c` | `key_columns` |
-| sift_col index %s: key_columns wrote no key list or bitmap of "%s" in %s%%sf %s units, where it would take more than %s%%sf the bytes of the unit | `src/col/rollup.c` | `key_columns` |
-| sift_col index %s: rollup_dims wrote no rollup of "%s" in %s%%sf %s units, which hold more combinations of them than a unit may keep | `src/col/rollup.c` | `rollup_dims`, `rollup` |
-| sift_col index %s: the cube holds %s dimensions and left out the histograms of %s column%s: %s | `src/col/rollup.c` |  |
-| sift_col index %s: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out %s column%s: %s | `src/col/rollup.c` | `calendar_columns` |
-| sift_col index "%s": sift.col_auto_merge does not vacuum "%s", whose autovacuum_enabled is false | `src/col/vacreq.c` | `sift.col_auto_merge` |
-| sift_col index "%s": sift.col_auto_merge keeps it answerable after churn | `src/col/vacreq.c` | `sift.col_auto_merge` |
-| sift index "%s" has %s segments: its write buffer stays open | `src/core/lane.c` |  |
+| Level | Message (`%s` is a placeholder) | Raised in | Options it names |
+|---|---|---|---|
+| NOTICE | sift.gpu: no usable Vulkan device (%s); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
+| NOTICE | sift.gpu: %s; the aggregate runs on the CPU and the device is not used again in this session | `src/agg/gpu.c` | `sift.gpu` |
+| NOTICE | sift.gpu = %s: this build has no Vulkan support (build with VULKAN=1); the aggregate runs on the CPU | `src/agg/gpu.c` | `sift.gpu` |
+| NOTICE | sift: the rows of a joined table are not shared with other backends: no dynamic shared memory for %s bytes | `src/agg/lookshm.c` |  |
+| NOTICE | SiftAgg not used: %s: %s | `src/agg/refuse.c` |  |
+| WARNING | maintenance of sift index "%s" failed: %s | `src/bm25/step.c` |  |
+| NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%) | `src/col/autocut.c` | `key_cut` |
+| NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
+| NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
+| NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
+| NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
+| NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
+| NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |
+| NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
+| NOTICE | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
+| NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
+| NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
+| NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols.c` |  |
+| NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols.c` | `rollup` |
+| WARNING | maintenance of sift_col index %s failed: %s | `src/col/maint.c` |  |
+| NOTICE | sift_col index %s: the cube dim "%s" has no histogram in %s%%sf %s units, which hold more than %s groups of it | `src/col/rollup.c` |  |
+| NOTICE | sift_col index %s: the keys of "%s" are a bloom filter, not a list, in %s%%sf %s units, which hold more than %s distinct keys | `src/col/rollup.c` |  |
+| NOTICE | sift_col index %s: key_columns wrote no summary of "%s" in %s%%sf %s units, whose keys are one value, or every integer of a range, or inline text | `src/col/rollup.c` | `key_columns` |
+| NOTICE | sift_col index %s: key_columns wrote no key list or bitmap of "%s" in %s%%sf %s units, where it would take more than %s%%sf the bytes of the unit | `src/col/rollup.c` | `key_columns` |
+| NOTICE | sift_col index %s: rollup_dims wrote no rollup of "%s" in %s%%sf %s units, which hold more combinations of them than a unit may keep | `src/col/rollup.c` | `rollup_dims`, `rollup` |
+| NOTICE | sift_col index %s: the cube holds %s dimensions and left out the histograms of %s column%s: %s | `src/col/rollup.c` |  |
+| NOTICE | sift_col index %s: the calendar cells of every date and timestamp column (calendar_columns = 'all', the default) left out %s column%s: %s | `src/col/rollup.c` | `calendar_columns` |
+| NOTICE | sift_col index "%s": sift.col_auto_merge does not vacuum "%s", whose autovacuum_enabled is false | `src/col/vacreq.c` | `sift.col_auto_merge` |
+| NOTICE | sift_col index "%s": sift.col_auto_merge keeps it answerable after churn | `src/col/vacreq.c` | `sift.col_auto_merge` |
+| NOTICE | sift index "%s" has %s segments: its write buffer stays open | `src/core/lane.c` |  |
+| WARNING | index "%s" was built with other analyzer options | `src/core/ops.c` | `analyzer` |
 <!-- sift-notices:end -->
