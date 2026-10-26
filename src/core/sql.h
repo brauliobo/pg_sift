@@ -42,6 +42,9 @@ extern PGDLLEXPORT Datum sift_index_info(PG_FUNCTION_ARGS);		/* (regclass) recor
 extern PGDLLEXPORT Datum sift_index_format(PG_FUNCTION_ARGS);	/* (regclass) record */
 extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) record */
 
+/* core/jsonbuild.c */
+extern PGDLLEXPORT Datum sift_json_build_object(PG_FUNCTION_ARGS);	/* (VARIADIC "any") json */
+
 /* bm25/facet.c */
 extern PGDLLEXPORT Datum sift_facet_counts(PG_FUNCTION_ARGS);	/* SRF */
 

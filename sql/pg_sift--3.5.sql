@@ -1148,3 +1148,8 @@ COMMENT ON FUNCTION sift.approx_count_distinct_serial(internal) IS 'Serial funct
 COMMENT ON FUNCTION sift.approx_count_distinct_deserial(bytea, internal) IS 'Deserial function of sift.approx_count_distinct: the sketch of a worker.';
 COMMENT ON FUNCTION sift.approx_count_distinct_final(internal) IS 'Final function of sift.approx_count_distinct: the estimate of the distinct values, 0 for none.';
 COMMENT ON AGGREGATE sift.approx_count_distinct(anyelement) IS 'An estimate of the distinct values of x (relative standard error 0.81%), the same in every plan; count(DISTINCT x) stays exact.';
+
+-- json_build_object with the type lookups of each argument made once per call site, not per call; the same text (test json_build_object). Put sift before pg_catalog in the search_path to take it for every call of the name.
+CREATE FUNCTION sift.json_build_object(VARIADIC "any") RETURNS json
+	AS 'MODULE_PATHNAME', 'sift_json_build_object' LANGUAGE C STABLE PARALLEL SAFE;
+COMMENT ON FUNCTION sift.json_build_object("any") IS 'json_build_object with the type lookups of each argument made once per call site: the same text as the core function, for one or more arguments';

@@ -15,7 +15,7 @@
 =agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|scaling_slope|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
 =tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
 =dec	^(fuzz|hardened)$
-=any	^(release-library-regress|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
+=any	^(release-library-regress|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)

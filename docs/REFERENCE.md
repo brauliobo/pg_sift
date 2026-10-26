@@ -2,7 +2,7 @@
 
 Generated from `sql/pg_sift--3.5.sql`; do not edit by hand. Descriptions are the `COMMENT ON` of the install scripts (`\df+`).
 
-Schema `sift`: 52 functions, 5 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
+Schema `sift`: 53 functions, 5 views, 1 table, 2 operator classes, 1 operator. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.
 
 Settings (`sift.*`) are in the table of [Maintenance and operations](USAGE.md#maintenance-and-operations); the fixed limits are in [LIMITS.md](LIMITS.md).
 
@@ -22,6 +22,7 @@ The `sift` index (BM25): the operator, ranking, query helpers, facets and the in
 | `sift.highlight(doc text, query text, start_tag text DEFAULT '<b>', stop_tag text DEFAULT '</b>', index regclass DEFAULT NULL)` | function | `text` | 1.0 | The text with the matched terms of a query wrapped in start_tag and stop_tag. |
 | `sift.index_advice(index regclass)` | function | `setof (leaf text, kind text, held text, sampled int4, share int4, advice text)` | 3.3 | The profile of the columns of a sift_col index and what its options could still use: per column its kind (dimension, key, unique, date, measure, text, list), what the index holds of it and, over 32 evenly spaced units, the share that satisfy the rule of a dimension (at most 256 distinct values) or, per pair of dimensions, of a rollup of the rows; advice only, nothing is changed. See [Column indexes, aggregates and sift_table](USAGE.md#column-indexes-aggregates-and-sift_table). |
 | `sift.index_info(index regclass)` | function | `(relation_blocks int8, high_water int8, free_blocks int8, reusable_blocks int8, free_extents int8, segments int4, max_segments int4, ndocs int8, sum_dl int8, maintenance_busy bool)` | 1.2 | Space and directory state of a sift index: blocks, free list, segments, documents and whether maintenance runs. See [Maintenance and operations](USAGE.md#maintenance-and-operations). |
+| `sift.json_build_object(VARIADIC "any")` | function | `json` | 3.5 | json_build_object with the type lookups of each argument made once per call site: the same text as the core function, for one or more arguments |
 | `sift.key_cut_decision(index regclass)` | function | `(leaf text, units float8, sampled float8, reads float8, ideal float8, growth_pct float8, decision text, reason text)` | 3.4 | What CREATE INDEX or REINDEX of a sift_col index would decide for key_cut now, from a sample of the heap: the key-shaped column, the units an equality on it reads (reads) against the units its rows fill (ideal), the predicted growth of the index when cut by it, the decision (cut, advise or none) and the reason. Changes nothing. |
 | `sift.match(doc text, query text)` | function | `bool` | 1.0 | The function behind @@> with the default analyzer; the planner rebinds it to the index analyzer. |
 | `sift.match_idx(doc text, query text, index oid)` | function | `bool` | 1.0 | The function behind @@> for a column whose sift index uses another analyzer. See [Analyzers, phrases, several columns](USAGE.md#analyzers-phrases-several-columns). |
