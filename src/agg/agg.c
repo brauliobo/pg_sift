@@ -835,6 +835,25 @@ topn_gcond(AggExec *ex, const SiftTopN *t)
 	return g;
 }
 
+/* the conjuncts of the scan that the order of the key can read, as one condition (the others are left to the mask of the scan, which tests them all): NULL when none */
+static SiftTopGPred *
+topn_gbox(AggExec *ex, const SiftTopN *t)
+{
+	SiftTopGPred *g = palloc0(sizeof(SiftTopGPred));
+	int			keyleaf = sift_topn_leaf(t, 0);
+
+	g->kind = STG_AND;
+	g->child = palloc(ex->spec->npred * sizeof(SiftTopGPred *));
+	for (int i = 0; i < ex->spec->npred; i++)
+	{
+		SiftTopGPred *c = topn_gpred(ex, ex->spec->pred[i], keyleaf, false);
+
+		if (c != NULL)
+			g->child[g->nchild++] = c;
+	}
+	return g->nchild > 0 ? g : NULL;
+}
+
 /* the vectors of a scan are allocated when the first unit is read: a walk that the heads of the runs answer reads none */
 static void
 topn_buffers(AggExec *ex, bool *done)
@@ -867,6 +886,8 @@ topn_run(AggExec *ex)
 	t = ex->topn;
 	if (sift_topn_empty(t))
 		return;
+	if (ex->spec->npred > 0)
+		sift_topn_key_range(t, topn_gbox(ex, t));
 	if (topn_plain_ok(ex) && ex->spec->nworkers == 0 && sift_topn_gorder_on)
 	{
 		SiftTopGPred *cond = ex->spec->npred > 0 ? topn_gcond(ex, t) : NULL;

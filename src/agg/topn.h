@@ -123,6 +123,9 @@ typedef struct SiftTopGPred
 	struct SiftTopGPred **child;
 } SiftTopGPred;
 
+/* The part of the first key that the conditions keep: a sorted run is read within it */
+extern void sift_topn_key_range(SiftTopN *t, const SiftTopGPred *cond);
+
 /* The scan reads the global order of the key (the part of it that the condition keeps): false when the source or the query cannot (the units are read as before) */
 extern bool sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond);
 extern bool sift_topn_gordered(const SiftTopN *t);

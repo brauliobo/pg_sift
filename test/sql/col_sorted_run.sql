@@ -76,7 +76,7 @@ END $$;
 CREATE FUNCTION sr_rows(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	EXECUTE 'SELECT md5(string_agg(CASE WHEN r ~ ''-0[,)]'' THEN regexp_replace(r, ''-0(?![.0-9])'', ''0'', ''g'') ELSE r END, ''|'' ORDER BY pos)) FROM (SELECT row_number() OVER () AS pos, x::text AS r FROM (' || q || ') x) y' INTO r;
+	EXECUTE 'SELECT coalesce(md5(string_agg(CASE WHEN r ~ ''-0[,)]'' THEN regexp_replace(r, ''-0(?![.0-9])'', ''0'', ''g'') ELSE r END, ''|'' ORDER BY pos)), ''no rows'') FROM (SELECT row_number() OVER () AS pos, x::text AS r FROM (' || q || ') x) y' INTO r;
 	RETURN r;
 END $$;
 
@@ -157,6 +157,20 @@ CREATE FUNCTION sr_filt(tab text, cols text[], lims int[]) RETURNS TABLE (querie
 $$;
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn', 't'], ARRAY[20, 300]);
 
+-- a range on the first key bounds the part of each run that is read (a binary search of the run for each end): the rows are the plain plan's for every form of the
+-- range, ending past either end of the key's type, empty, the NULLs left out, an OR of ranges, a range of a float key (no bound), a date, a timestamp with infinity
+CREATE FUNCTION sr_range(tab text, col text, flts text[]) RETURNS TABLE (queries bigint, same bigint, read_runs bigint, different text[]) LANGUAGE sql AS $$
+	SELECT count(*), count(*) FILTER (WHERE same), count(*) FILTER (WHERE runs > 0), array_agg(shape) FILTER (WHERE NOT same) FROM sr_check(tab, ARRAY[col], ARRAY[1, 300], flts)
+$$;
+SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL > 40 AND COL <= 300 AND id % 7 = 3', 'WHERE COL = 77', 'WHERE COL BETWEEN 100 AND 120', 'WHERE COL > 400 OR COL < 20',
+	'WHERE COL > 600', 'WHERE COL < 100 AND COL > 200', 'WHERE COL < 4000000000', 'WHERE COL > -4000000000', 'WHERE COL <> 77 AND COL >= 490']);
+SELECT * FROM sr_range('sr', 'kn', ARRAY['WHERE COL > 10', 'WHERE COL <= 5', 'WHERE COL IS NOT NULL', 'WHERE COL IS NOT NULL AND COL < 3', 'WHERE COL IS NULL', 'WHERE COL = 39 OR COL IS NULL']);
+SELECT * FROM sr_range('sr', 't', ARRAY['WHERE COL >= timestamptz ''2024-01-08+00''', 'WHERE COL < timestamptz ''2024-01-03+00''', 'WHERE COL > timestamptz ''2100-01-01+00''',
+	'WHERE COL BETWEEN timestamptz ''2024-01-05+00'' AND timestamptz ''2024-01-06+00''', 'WHERE COL = ''infinity''', 'WHERE COL > timestamptz ''2024-01-02+00'' AND id % 3 = 1']);
+SELECT * FROM sr_range('sr', 'd', ARRAY['WHERE COL >= date ''2023-01-01''', 'WHERE COL < date ''2020-06-01''', 'WHERE COL BETWEEN date ''2021-01-01'' AND date ''2021-03-01''', 'WHERE COL = date ''2022-02-02''']);
+SELECT * FROM sr_range('sr', 'cd', ARRAY['WHERE COL < 90000', 'WHERE COL >= 99000', 'WHERE COL BETWEEN 90000 AND 91000 AND id % 2 = 0']);
+SELECT * FROM sr_range('sr', 'f', ARRAY['WHERE COL > 0', 'WHERE COL BETWEEN -10 AND 10']);
+
 -- rows in the write buffer have no run and are read whatever the runs say; deletes and updates leave the rows of a run that are not live, and the new
 -- version of an updated row is in the buffer; VACUUM, promotion and merge write the runs again
 INSERT INTO sr SELECT g, (hashint4(g) & 2147483647) % 500, CASE WHEN g % 2 = 0 THEN NULL ELSE g % 3 END, timestamptz '2023-06-01' + g * interval '1 second',
@@ -167,6 +181,8 @@ UPDATE sr SET k = 1000 + k WHERE id % 1000 = 6;
 DELETE FROM sr WHERE id % 7 = 0;
 SELECT * FROM sr_small('sr');
 SELECT * FROM sr_filt('sr', ARRAY['k', 'kn'], ARRAY[20]);
+SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL BETWEEN 100 AND 120', 'WHERE COL > 900', 'WHERE COL BETWEEN 1000 AND 1100', 'WHERE COL = 2']);
+SELECT * FROM sr_range('sr', 't', ARRAY['WHERE COL >= timestamptz ''2024-01-08+00''', 'WHERE COL > timestamptz ''2023-06-01+00'' AND COL < timestamptz ''2023-06-01 00:03+00''']);
 VACUUM (freeze, index_cleanup on, disable_page_skipping) sr;
 SELECT * FROM sr_small('sr');
 SELECT sift.col_promote('sr_on') >= 0 AS promoted;
@@ -254,5 +270,5 @@ SELECT sift.col_verify('sa_idx', true);
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
 
 DROP TABLE sa, sr, sr_o, sr_t, sr_s, sr_f, sr_d CASCADE;
-DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]);
+DROP FUNCTION sr_mode(text), sr_rows(text), sr_runs(text), sr_check(text, text[], int[], text[]), sr_small(text), sr_filt(text, text[], int[]), sr_range(text, text, text[]);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

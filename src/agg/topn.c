@@ -285,6 +285,16 @@ typedef struct OrdCode
 	bool		useless;		/* a prefix that most rows tie on: the rows are compared as bytes */
 } OrdCode;
 
+/* The range of the key that a condition keeps: the ends that it bounds */
+typedef struct GBox
+{
+	bool		empty;
+	bool		has_lo;
+	bool		has_hi;
+	int64		lo;
+	int64		hi;
+} GBox;
+
 struct SiftTopN
 {
 	int			limit;			/* rows the heap holds; 0: none wanted (a LIMIT that leaves nothing) */
@@ -339,6 +349,8 @@ struct SiftTopN
 	int64	   *skey;			/* sort: the keys of the rows of a unit, nkey for each row, and whether each is NULL */
 	bool	   *snull;
 	uint32	   *rwin;			/* a window of a sorted run (sift_topn_unit) */
+	uint32	   *rpass;			/* the rows of the window that pass, whose keys are read */
+	uint16	   *rslot;			/* the place of the key of each entry of the window in that read */
 	int			budget;			/* rows a unit gives in the first pass of a walk through sorted runs (0: all it can), sift_topn_run_budget */
 	bool		revisit;		/* the second pass: only the units the first left unfinished */
 	bool		yielded;		/* trunc[rpos] was given out and is not yet done */
@@ -378,6 +390,7 @@ struct SiftTopN
 	int64		nrhead;			/* units answered from the head of their sorted run */
 	bool		wkeep;			/* the write buffers' superblocks are known (whead): a superblock outside them has no row in memory */
 	int64		fetched;
+	GBox		kbox;			/* the range of the first key that the conditions on it keep (sift_topn_key_range): a sorted run is read from its first entry in it */
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
@@ -1848,6 +1861,12 @@ run_corrupt(RunWalk *w, const char *what)
 			 errdetail("The sorted run of the first sort column of a unit of %u rows %s.", w->n, what)));
 }
 
+static inline bool
+run_pass(const RunWalk *w, uint32 row)
+{
+	return w->rmask[row >> 6] >> (row & 63) & 1;
+}
+
 /* The row at position pos of the run; the window is read toward the direction of the walk */
 static uint32
 run_at(RunWalk *w, uint32 pos, bool back)
@@ -1859,7 +1878,19 @@ run_at(RunWalk *w, uint32 pos, bool back)
 
 		sift_colsrc_run_read(w->src, w->unit, w->t->key[0].leaf, lo, cnt, w->t->rwin);
 		if (w->key0 == NULL)
-			sift_colsrc_read_rows(w->src, w->unit, w->t->key[0].leaf, w->t->rwin, cnt, &w->wkey);
+		{
+			/* a key is read for a row that passes only: the walk skips the others, and reading one by position costs ten times what decoding it with its unit does */
+			int			m = 0;
+
+			for (uint32 i = 0; i < cnt; i++)
+				if (run_pass(w, w->t->rwin[i]))
+				{
+					w->t->rslot[i] = m;
+					w->t->rpass[m++] = w->t->rwin[i];
+				}
+			if (m > 0)
+				sift_colsrc_read_rows(w->src, w->unit, w->t->key[0].leaf, w->t->rpass, m, &w->wkey);
+		}
 		w->lo = lo;
 		w->hi = lo + cnt;
 		w->win = Min(w->win * 2, RUN_WIN_MAX);
@@ -1870,7 +1901,7 @@ run_at(RunWalk *w, uint32 pos, bool back)
 static void
 run_key(RunWalk *w, uint32 pos, uint32 row, int64 *v)
 {
-	if (!(w->key0 ? row_key(&w->t->key[0], w->key0, row, v) : row_key(&w->t->key[0], &w->wkey, pos - w->lo, v)))
+	if (!(w->key0 ? row_key(&w->t->key[0], w->key0, row, v) : row_key(&w->t->key[0], &w->wkey, w->t->rslot[pos - w->lo], v)))
 		run_corrupt(w, "has a NULL row among those with a value");
 }
 
@@ -1922,12 +1953,6 @@ run_room(RunWalk *w)
 		grow_unit_buffers(w->t, w->nc + 1);
 }
 
-static inline bool
-run_pass(const RunWalk *w, uint32 row)
-{
-	return w->rmask[row >> 6] >> (row & 63) & 1;
-}
-
 static bool
 run_stop(const RunWalk *w, Rank r)
 {
@@ -1972,13 +1997,49 @@ run_nulls(RunWalk *w, uint32 nvals, uint32 nnull)
 	run_close(w, g0, r, false);
 }
 
+/* The key of the entry at position pos of the run (a position among the values) */
+static int64
+run_key_of(RunWalk *w, uint32 pos)
+{
+	const TopKey *k0 = &w->t->key[0];
+	uint32		row;
+	SiftSrcVec	v = {0};
+	int64		key = 0;
+
+	sift_colsrc_run_read(w->src, w->unit, k0->leaf, pos, 1, &row);
+	sift_colsrc_read_rows(w->src, w->unit, k0->leaf, &row, 1, &v);
+	if (!row_key(k0, &v, 0, &key))
+		run_corrupt(w, "has a NULL row among those with a value");
+	return key;
+}
+
+/* The first position of the run [0, nvals) whose key is after bound (at bound itself when incl) */
+static uint32
+run_seek(RunWalk *w, uint32 nvals, int64 bound, bool incl)
+{
+	uint32		lo = 0,
+				hi = nvals;
+
+	while (lo < hi)
+	{
+		uint32		m = lo + (hi - lo) / 2;
+		int64		k = run_key_of(w, m);
+
+		if (incl ? k <= bound : k < bound)
+			lo = m + 1;
+		else
+			hi = m;
+	}
+	return lo;
+}
+
 /*
  * The rows with a value, best group first, until a group cannot be in the result. A row is tested against the mask before its key is read, so the
  * keys of the rows that do not pass (zero in a vector read for the rows that pass only) are never looked at; a group is the rows that pass with an
  * equal key. The run holds equal keys by row ascending: a descending walk meets them backwards and puts them right at the end of the group.
  */
 static void
-run_values(RunWalk *w, uint32 nvals)
+run_values(RunWalk *w, uint32 first, uint32 end)
 {
 	const TopKey *k0 = &w->t->key[0];
 	bool		desc = k0->desc,
@@ -1989,9 +2050,9 @@ run_values(RunWalk *w, uint32 nvals)
 	uint32		prev = 0;
 	Rank		r = {0};
 
-	for (uint32 i = 0; i < nvals; i++)
+	for (uint32 i = first; i < end; i++)
 	{
-		uint32		pos = desc ? nvals - 1 - i : i,
+		uint32		pos = desc ? end - 1 - (i - first) : i,
 					row = run_at(w, pos, desc);
 		int64		v;
 
@@ -2039,9 +2100,12 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	RunWalk		w = {.t = t, .src = src, .unit = unit, .key0 = key0, .rmask = rmask, .n = nrow, .win = RUN_WIN_MIN};
 	uint32		nvals,
 				nnull,
+				first,
+				end,
 				npass = 0;
 	uint64		id;
 	int			m = 0;
+	bool		bounded;
 	const TopKey *k0 = &t->key[0];
 	RunTrunc   *rt = NULL;
 	SiftSrcVec	cv = {0};
@@ -2072,14 +2136,27 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	}
 	grow_unit_buffers(t, Min(nrow, RUN_CAND_MIN));
 	if (t->rwin == NULL)
-		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * sizeof(uint32));
+	{
+		t->rwin = MemoryContextAlloc(GetMemoryChunkContext(t), RUN_WIN_MAX * (2 * sizeof(uint32) + sizeof(uint16)));
+		t->rpass = t->rwin + RUN_WIN_MAX;
+		t->rslot = (uint16 *) (t->rpass + RUN_WIN_MAX);
+	}
 	w.barred = bar_rank(t, &w.bar);
 	if (rt && run_stop(&w, rt->next))
 		return true;
-	if (k0->nulls_first)
+	first = 0;
+	end = nvals;
+	/* the conditions on the key bound the part of the run that can pass: the rows outside it, and the NULLs, fail them */
+	bounded = t->kbox.has_lo || t->kbox.has_hi;
+	if (bounded)
+	{
+		first = t->kbox.has_lo ? run_seek(&w, nvals, t->kbox.lo, false) : 0;
+		end = t->kbox.has_hi ? run_seek(&w, nvals, t->kbox.hi, true) : nvals;
+	}
+	if (k0->nulls_first && !bounded)
 		run_nulls(&w, nvals, nnull);
-	run_values(&w, nvals);
-	if (!k0->nulls_first && !w.trunc)
+	run_values(&w, first, end);
+	if (!k0->nulls_first && !w.trunc && !bounded)
 		run_nulls(&w, nvals, nnull);
 	/* the rows whose value overflowed the leaf are tested one by one: the run does not order them */
 	for (uint32 pos = nvals + nnull; pos < (uint32) nrow && !w.resumed; pos++)
@@ -3352,16 +3429,6 @@ heap_key(Oid typid, Datum d)
 	}
 }
 
-/* The range of the key that a condition keeps: the ends that it bounds */
-typedef struct GBox
-{
-	bool		empty;
-	bool		has_lo;
-	bool		has_hi;
-	int64		lo;
-	int64		hi;
-} GBox;
-
 static GBox
 gcond_box(const SiftTopGPred *p)
 {
@@ -3433,6 +3500,14 @@ gcond_box(const SiftTopGPred *p)
 		}
 	}
 	return r;
+}
+
+/* The conditions of the scan on the first key as the range of it that they keep, which a sorted run is read within (only integer and time columns make a condition: sift_topn_leaf_attno) */
+void
+sift_topn_key_range(SiftTopN *t, const SiftTopGPred *cond)
+{
+	if (cond != NULL)
+		t->kbox = gcond_box(cond);
 }
 
 /* does the heap row pass: a NULL column passes no comparison */

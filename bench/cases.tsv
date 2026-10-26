@@ -146,6 +146,7 @@ ts_top_value	over a `float4` or `float8` key hands the rows of a unit to the hea
 order_array	the reloption `order_array_columns` of a `sift_col` index	orders	default	Global Order: true	native	no_array:search_path = order_array_plain	ms	faster33	no
 hits_order_trail	is a top-N of the first keys under PostgreSQL's `Incremental Sort`	hits	-	Incremental Sort.*Top-N: event_time DESC	native	-	ms	faster33	no
 order_array_range	the scan searches each segment's array for the first entry of the range	orders	default	Global Order: true	native	no_array:search_path = order_array_range_plain	ms	faster33	no
+topn_run_range	starts at the first entry of the range, found by two binary searches of the run	orders	default	Units Read By Sorted Run: [1-9]	native	no_run:search_path = topn_run_range_plain	ms	faster33	no
 order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no
 group_order_window	emits its groups in that order	orders	default	Group Order Keys	native	-	ms	faster33	no
