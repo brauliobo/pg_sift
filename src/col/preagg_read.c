@@ -917,6 +917,7 @@ spec_of(const SiftColSchema *s, const uint8 *blob, uint32 len, const uint8 *eblo
 			spec->dim[spec->ndims].leaf = h.dim[d].leaf % SIFT_PAGG_CAL;
 			spec->dim[spec->ndims].cal = h.dim[d].leaf >= SIFT_PAGG_CAL;
 			spec->dim[spec->ndims].grain = h.dim[d].leaf / SIFT_PAGG_CAL;
+			spec->dim[spec->ndims].no_minmax = !h.dim[d].minmax;
 			if (spec->dim[spec->ndims].cal && format < SIFT_COL_FORMAT_CALENDAR)
 				return false;
 			spec->dim[spec->ndims].nmeas = h.dim[d].nmeas;

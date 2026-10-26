@@ -509,9 +509,9 @@ build_dims(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol
 	sc.si = palloc((maxg + 1) * sizeof(SiftCI128));
 	sc.mn = palloc((maxg + 1) * sizeof(int64));
 	sc.mx = palloc((maxg + 1) * sizeof(int64));
-	sc.minmax = spec->minmax;
 	for (int d = 0; d < spec->ndims; d++)
 	{
+		sc.minmax = spec->minmax && !spec->dim[d].no_minmax;
 		db[d] = (DimBuild) {.spec = d};
 		initStringInfo(&db[d].blob);
 		if (spec->dim[d].cal)

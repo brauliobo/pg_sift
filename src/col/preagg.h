@@ -84,6 +84,7 @@ typedef struct SiftCPaggDim
 	uint8		nmeas;
 	bool		cal;					/* leaf is a date or timestamp leaf and the dim groups it by calendar cells: each unit stores the finest grain (SIFT_CAL_*) that fits, the key of a cell being its first day */
 	uint8		grain;					/* cal: 0, the writer chooses the grain; else exactly this grain (a stored dim, which the verify recomputes) */
+	bool		no_minmax;				/* the spec asks for min and max, this dim holds none: a table's calendar cells, which the byte budget of the calendar dims fits only without them */
 	int16		meas[SIFT_PAGG_MAX_MEAS];
 } SiftCPaggDim;
 

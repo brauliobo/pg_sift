@@ -84,7 +84,7 @@ INSERT INTO pm_q VALUES
 	(27, 'range cuts, no key', 'SELECT count(*), sum(amt) FROM %s WHERE ts >= ''2000-03-01 12:00'' AND ts < ''2000-09-01 12:00'''),
 	(28, 'range, other key',  'SELECT cat, count(*), sum(amt) FROM %s WHERE ts >= ''2000-03-01'' AND ts < ''2000-09-01'' GROUP BY 1'),
 	(29, 'test of a dim',     'SELECT date_trunc(''month'', ts)::date, count(*) FROM %s WHERE cat = 3 GROUP BY 1'),
-	(30, 'min: scan',         'SELECT date_trunc(''month'', ts)::date, min(qty) FROM %s GROUP BY 1'),
+	(30, 'min: none',         'SELECT date_trunc(''month'', ts)::date, min(qty) FROM %s GROUP BY 1'),
 	(31, 'float: scan',       'SELECT date_trunc(''month'', ts)::date, sum(f) FROM %s GROUP BY 1'),
 	(32, 'having, limit',     'SELECT date_trunc(''month'', ts)::date, count(*) FROM %s GROUP BY 1 HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 5'),
 	(33, 'two keys: scan',    'SELECT date_trunc(''month'', ts)::date, cat, count(*) FROM %s GROUP BY 1, 2'),

@@ -78,7 +78,7 @@ INSERT INTO pm_q VALUES
 	(27, 'range cuts, no key', 'SELECT count(*), sum(amt) FROM %s WHERE ts >= ''2000-03-01 12:00'' AND ts < ''2000-09-01 12:00'''),
 	(28, 'range, other key',  'SELECT cat, count(*), sum(amt) FROM %s WHERE ts >= ''2000-03-01'' AND ts < ''2000-09-01'' GROUP BY 1'),
 	(29, 'test of a dim',     'SELECT date_trunc(''month'', ts)::date, count(*) FROM %s WHERE cat = 3 GROUP BY 1'),
-	(30, 'min: scan',         'SELECT date_trunc(''month'', ts)::date, min(qty) FROM %s GROUP BY 1'),
+	(30, 'min: none',         'SELECT date_trunc(''month'', ts)::date, min(qty) FROM %s GROUP BY 1'),
 	(31, 'float: scan',       'SELECT date_trunc(''month'', ts)::date, sum(f) FROM %s GROUP BY 1'),
 	(32, 'having, limit',     'SELECT date_trunc(''month'', ts)::date, count(*) FROM %s GROUP BY 1 HAVING count(*) > 100 ORDER BY 2 DESC, 1 LIMIT 5'),
 	(33, 'two keys: scan',    'SELECT date_trunc(''month'', ts)::date, cat, count(*) FROM %s GROUP BY 1, 2'),
@@ -196,7 +196,7 @@ SELECT * FROM pm_check('tcd');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | all  | t
  33 | two keys: scan      | scan | t
@@ -250,7 +250,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | all  | t
  33 | two keys: scan      | scan | t
@@ -304,7 +304,7 @@ SELECT * FROM pm_check('tcy');
  27 | range cuts, no key  | some | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | all  | t
  33 | two keys: scan      | scan | t
@@ -359,7 +359,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | some | t
  33 | two keys: scan      | scan | t
@@ -414,7 +414,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | all  | t
  33 | two keys: scan      | scan | t
@@ -470,7 +470,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | some | t
  33 | two keys: scan      | scan | t
@@ -525,7 +525,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | none | t
  33 | two keys: scan      | scan | t
@@ -579,7 +579,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | some | t
  33 | two keys: scan      | scan | t
@@ -636,7 +636,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | none | t
  33 | two keys: scan      | scan | t
@@ -690,7 +690,7 @@ SELECT * FROM pm_check('tcm');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | none | t
  33 | two keys: scan      | scan | t
@@ -757,7 +757,7 @@ SELECT * FROM pm_check('tci', 1, 100, '{6}');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | some | t
  33 | two keys: scan      | scan | t
@@ -813,7 +813,7 @@ SELECT * FROM pm_check('tci');
  27 | range cuts, no key  | none | t
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
- 30 | min: scan           | scan | t
+ 30 | min: none           | none | t
  31 | float: scan         | scan | t
  32 | having, limit       | all  | t
  33 | two keys: scan      | scan | t
@@ -911,7 +911,7 @@ RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT format) AS minors FROM sift.table_segments('tc7') WHERE kind = 'columns';
  minors 
 --------
- {4}
+ {7}
 (1 row)
 
 SELECT no_cal > 0 AS none_have_cells, days + months + years = 0 AS no_cells FROM sift._test_tbl_cal_grains('tc7');
@@ -947,7 +947,7 @@ VACUUM (DISABLE_PAGE_SKIPPING) tc7;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tc7') WHERE kind = 'columns';
  minors 
 --------
- {4,8}
+ {7,8}
 (1 row)
 
 SELECT * FROM pm_check('tc7', 1, 12);

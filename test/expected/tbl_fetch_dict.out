@@ -178,7 +178,7 @@ SELECT t, min(format) AS format FROM (SELECT 'compact' AS t, format FROM sift.ta
     t    | format 
 ---------+--------
  blocks  |     14
- compact |      4
+ compact |      7
  order   |     14
 (3 rows)
 

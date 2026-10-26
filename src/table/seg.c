@@ -223,11 +223,14 @@ sift_tbl_pagg_spec(Relation rel, const SiftColSchema *schema, SiftCPaggSpec *spe
 {
 	sift_cpagg_spec_default(schema, spec);
 	spec->table = true;
+	spec->minmax = true;
 	/* a sift_table has no option for its dictionaries: its leaves have the order to search stored only when sift.table_dict_lookup says so */
 	for (int c = 0; c < schema->ncols; c++)
 		spec->lookup[c] = sift_col_table_lookup;
 	if (sift_col_format_minor >= SIFT_COL_FORMAT_CALENDAR && !schema->kinds)
 		sift_cpagg_spec_calendar(schema, spec);
+	for (int d = 0; d < spec->ndims; d++)
+		spec->dim[d].no_minmax = spec->dim[d].cal;
 	if (schema->kinds)
 		return;
 	spec->keyauto = true;
