@@ -481,7 +481,8 @@ typedef struct CteVerdict
 	int			streak;
 	double		scans,
 				shared,
-				size;			/* the rows PostgreSQL expects of the largest CTE of the plan with the shared CTEs, as it was planned in full; 0: not known */
+				size,			/* the rows PostgreSQL expects of the largest scan of an indexed table of the plan with the shared CTEs, as it was planned in full; 0: not known */
+				isize;			/* the most rows the scans of the inline plan read; 0: not known */
 	Oid			rels[VERDICT_RELS];	/* the relations of the statement, as the walk over its sizes finds them */
 }			CteVerdict;
 
@@ -494,6 +495,6 @@ extern void verdict_lookup(Query *q, int kind, CteVerdict *vd);
 #define VERDICT_SWITCH	1
 #define VERDICT_FULL	2
 extern int verdict_accept(CteVerdict *vd, double size);
-extern void verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double size);
+extern void verdict_remember(CteVerdict *vd, bool won, double scans, double shared, double size, double isize);
 
 #endif							/* SIFT_AGG_PLAN_INT_H */

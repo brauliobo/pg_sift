@@ -653,7 +653,8 @@ typedef struct CteVariants
 				inlined_cx;
 	ScanArms	scans;
 	double		plain_cost,
-				work;
+				work,
+				read_rows;		/* the most rows the scans of the inline plan read (agg_read_rows) */
 } CteVariants;
 
 /*
@@ -700,6 +701,7 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	v->inlined = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), &v->inlined_cx);
 	read_rows = agg_read_rows;
 	agg_variant = outer_variant;
+	v->read_rows = read_rows;
 	v->plain_cost = plan_cost_without_unread_ctes(v->plain);
 	sift_agg_arms(v->inlined->planTree, &v->scans);
 	sift_agg_arms_list(v->inlined->subplans, &v->scans);
@@ -840,29 +842,18 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	if (vd.known && !replan)
 	{
 		/*
-		 * The shared plan consumes the tree and the inline plan a copy of it. The verdict is checked against the size of the shared plan (verdict_accept),
-		 * which a hit that goes on with the inline plan has to plan as well; where it is far from what the verdict was made for, the statement is
-		 * planned again from the tree that is left (the inline plan) or from a copy made for it (the shared plan).
+		 * The shared plan consumes the tree and the inline plan a copy of it. The verdict is checked against the size of the plan the hit plans (verdict_accept);
+		 * where it is far from what the verdict was made for, the statement is planned again from the tree that is left (the inline plan) or from a copy made
+		 * for it (the shared plan).
 		 */
 		Query	   *again = copyObject(parse);
 		PlannedStmt *stmt;
 		double		size;
 		int			r;
 
-		if (vd.won)
-		{
-			MemoryContext shared_cx;
-			double		lift;
-
-			stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
-			size = cte_size(plan_shared(SIFT_PLANNER_ARGS(parse), &shared_cx, &lift));
-			discard_plan(shared_cx);
-		}
-		else
-		{
-			stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
-			size = cte_size(stmt);
-		}
+		agg_read_rows = 0;
+		stmt = plan_cached(SIFT_PLANNER_ARGS(parse), &vd, cx);
+		size = vd.won ? agg_read_rows : cte_size(stmt);
 		r = verdict_accept(&vd, size);
 		if (r == VERDICT_TAKE)
 			return stmt;
@@ -885,7 +876,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && CTE_INLINE_MARGIN * v.scans.total >= v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
-	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, cte_size(v.plain));
+	verdict_remember(&vd, won, v.scans.n > 0 ? v.inlined->planTree->total_cost : 0, v.plain_cost, cte_size(v.plain), v.read_rows);
 	if (!planning_second)
 	{
 		first_plan.set = true;
@@ -1009,7 +1000,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 */
 		if (!by_cost && (uses_sift_agg(flatplan->planTree) || any_sift_agg(flatplan->subplans)) && !plain_reader_stmt(flatplan))
 		{
-			verdict_remember(&fv, true, 0, 0, cte_size(flatplan));
+			verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
 			return flatplan;
 		}
 		planning_second = true;
@@ -1022,7 +1013,7 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		if (flatplan != NULL)
 		{
 			discard_plan(flat_cx);
-			verdict_remember(&fv, false, 0, 0, cte_size(plain));
+			verdict_remember(&fv, false, 0, 0, cte_size(plain), cte_size(plain));
 		}
 		return plain;
 	}
@@ -1035,11 +1026,11 @@ plan_flat(SIFT_PLANNER_PARAMS)
 		 flatplan->planTree->total_cost + function_rescans(flatplan->planTree) * FLAT_RESCAN_OPS * cpu_operator_cost < plain->planTree->total_cost))
 	{
 		discard_plan(plain_cx);
-		verdict_remember(&fv, true, 0, 0, cte_size(flatplan));
+		verdict_remember(&fv, true, 0, 0, cte_size(flatplan), cte_size(flatplan));
 		return flatplan;
 	}
 	discard_plan(flat_cx);
-	verdict_remember(&fv, false, 0, 0, cte_size(plain));
+	verdict_remember(&fv, false, 0, 0, cte_size(plain), cte_size(plain));
 	return plain;
 }
 
