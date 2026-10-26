@@ -44,9 +44,9 @@ BEGIN
 END $$;
 -- (1) the covered lookups: one clause of the directory
 SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id IN (' || (SELECT string_agg((i * 997 % 60000 + 1)::text, ',') FROM generate_series(1, 60) i) || ')'), ' on pf.*| using.*', '') AS id_in_60;
-     id_in_60     
-------------------
- Bitmap Heap Scan
+  id_in_60  
+------------
+ Index Scan
 (1 row)
 
 SELECT regexp_replace(pf_node('SELECT id, tenant FROM pf WHERE id = 4242'), ' on pf.*| using.*', '') AS id_eq;

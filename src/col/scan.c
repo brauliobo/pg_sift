@@ -448,6 +448,32 @@ units_within(const uint64 *keep, const uint64 *held, uint32 nw)
 	return true;
 }
 
+/*
+ * SIFT_COLO_POINT_LAZY: the lists of the lookup stay undecoded (a cursor over each, sift_cseg_point_stream_open) and the units they name are told apart as
+ * sift_col_point_next hands the addresses over: no unit stays kept until then (the units with a dead row come back at the end of the segment's addresses). Not
+ * for a scan with other predicates, whose units with many addresses are read instead of fetched (that needs every address of the unit before the first).
+ */
+static bool
+prune_point_lazy(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
+{
+	uint32		nw = SIFT_COL_NWORDS(c->seg->nsb);
+	bool		some = false;
+
+	if (!(src->flags & SIFT_COLO_POINT_LAZY) || c->others)
+		return false;
+	for (uint32 w = 0; w < nw && !some; w++)
+		some = (w == c->seg->nsb / 64 ? keep[w] & ((UINT64CONST(1) << (c->seg->nsb % 64)) - 1) : keep[w]) != 0;
+	if (!some || (c->ps = sift_cseg_point_stream_open(c->seg, col, keys, nkeys)) == NULL)
+		return false;
+	c->pkept = palloc(nw * sizeof(uint64));
+	memcpy(c->pkept, keep, nw * sizeof(uint64));
+	c->ppend = palloc0(nw * sizeof(uint64));
+	memset(keep, 0, nw * sizeof(uint64));
+	c->ptids = true;
+	c->ppred = i;
+	return true;
+}
+
 static bool
 prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
@@ -461,6 +487,8 @@ prune_point_tids(SiftColSource *src, ColCursor *c, int i, int col, const int64 *
 	uint64	   *has,
 			   *done;
 
+	if (emit && prune_point_lazy(src, c, i, col, keys, nkeys, keep))
+		return true;
 	if (c->pc_tids != NULL && c->pc_gen == seg->entry.gen && c->pc_col == col && c->pc_nkeys == nkeys && memcmp(c->pc_keys, keys, nkeys * sizeof(int64)) == 0 &&
 		units_within(keep, c->pc_keep, nw))
 	{
@@ -845,6 +873,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->cur = pr.ulo;
 	c->end = pr.uhi;
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
+	c->ps = NULL;
 	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
 	{
 		c->prow = NULL;
@@ -950,6 +979,62 @@ sift_col_point_tids(const SiftColSource *src, uint32 *n)
 	return src->ptid;
 }
 
+bool
+sift_col_point_lazy(const SiftColSource *src)
+{
+	for (int i = 0; i < src->nseg; i++)
+		if (src->seg[i].ps != NULL)
+			return true;
+	return false;
+}
+
+/* The addresses of the segments' lists, in the order of the segments, those of the units that are not read: the units with a dead row wait for the end of the segment's list */
+uint32
+sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max)
+{
+	uint32		n = 0;
+
+	while (n < max && src->pstream < src->nseg)
+	{
+		ColCursor  *c = &src->seg[src->pstream];
+		SiftColSegment *seg = c->seg;
+		SiftKey		buf[128];
+		uint32		got,
+					sb = PG_UINT32_MAX,
+					u = 0;
+		int			mode = 0;		/* of the unit u: 0 not kept, 1 handed over, 2 read as a unit */
+
+		if (c->ps == NULL)
+		{
+			src->pstream++;
+			continue;
+		}
+		got = sift_cseg_point_stream_next(c->ps, buf, Min(max - n, lengthof(buf)));
+		for (uint32 k = 0; k < got; k++)
+		{
+			uint32		b = (uint32) (buf[k] >> 16) >> SIFT_SB_SHIFT;
+
+			if (b != sb)
+			{
+				sb = b;
+				u = sift_cseg_find_unit(seg, sb);
+				mode = u >= seg->nsb || seg->sbdir[u].sb != sb || !sift_col_bit_test(c->pkept, u) ? 0 : sift_cseg_dirty(seg, u) ? 2 : 1;
+				if (mode == 2)
+					sift_col_bit_set(c->ppend, u);
+			}
+			if (mode == 1)
+				out[n++] = buf[k];
+		}
+		if (got == 0)
+		{
+			memcpy(c->keep, c->ppend, SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
+			c->ps = NULL;
+			src->pstream++;
+		}
+	}
+	return n;
+}
+
 void
 sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
@@ -965,6 +1050,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	src->ptid = NULL;
 	src->nptid = src->capptid = 0;
 	src->ptid_unsorted = false;
+	src->pstream = 0;
 	for (int i = 0; i < src->nseg; i++)
 		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
 	if (src->ptid_unsorted)

@@ -259,6 +259,14 @@ extern bool sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 
  */
 extern bool sift_cseg_point_is_tid(SiftColSegment *seg, int col);
 extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, SiftKey **tids, uint32 *ntids);
+/*
+ * The addresses of the same lookup read as far as the caller goes, for a scan that may stop early: a cursor over each list the keys name (at most 8), merged, in
+ * pieces. NULL when the keys name more lists, more rows than a point lookup takes, or the leaf has no addresses (sift_cseg_point_tids answers or refuses then).
+ * Every address ascends, once; the caller checks that it lies in a unit.
+ */
+typedef struct SiftPointStream SiftPointStream;
+extern SiftPointStream *sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int nkeys);
+extern uint32 sift_cseg_point_stream_next(SiftPointStream *s, SiftKey *out, uint32 max);
 extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const uint64 *nulls, const SiftKey *tid, uint32 n, uint64 *listed);
 /* The rows the point directory of leaf col lists (0: it has none), and the check of the blocks of every leaf: slots and lists in range, ascending, as many keys, rows and words as the records say */
 extern uint32 sift_cseg_point_count(SiftColSegment *seg, int col);

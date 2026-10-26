@@ -59,6 +59,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_point_file_damage);
 #define TEST_NOVET		2
 #define TEST_POINTS	8		/* open the source with SIFT_COLO_POINTS: a segment with a point directory answers an equality or a short IN list from it */
 #define TEST_POINT_TIDS	16	/* with TEST_POINTS: a directory of heap addresses returns the addresses (sift_col_point_tids), listed first by sift._test_col_tids, and its units are not read */
+#define TEST_POINT_LAZY	32	/* with TEST_POINT_TIDS: the addresses come as sift_col_point_next hands them over, in chunks of the size in the bits above 8 (128 when 0) */
 #define TEST_WAIT		4	/* after the source is open, wait for advisory lock (WAIT_KEY, 1): lets a test run VACUUM or DML mid-scan */
 #define WAIT_KEY		0x51F7
 
@@ -252,7 +253,7 @@ scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
 	ts->src = sift_col_open(ts->heap, ts->index, GetActiveSnapshot(), CurrentMemoryContext,
-							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0));
+							((flags & TEST_NOWBUF) ? SIFT_COLO_NOWBUF : 0) | ((flags & TEST_POINTS) ? SIFT_COLO_POINTS : 0) | ((flags & TEST_POINT_TIDS) ? SIFT_COLO_POINT_TIDS : 0) | ((flags & TEST_POINT_LAZY) ? SIFT_COLO_POINT_LAZY : 0));
 	parse_query(sift_col_rel(ts->index)->schema, preds, &ts->q);
 	sift_col_begin(ts->src, ts->q.top, ts->q.ntop, 0, PG_UINT32_MAX);
 	if (flags & TEST_WAIT)
@@ -302,6 +303,22 @@ unit_select(TestScan *ts, const SiftColUnit *unit, int flags, SiftColSel *sel)
 	return (flags & TEST_NOVET) ? true : sift_col_vet(unit, sel);
 }
 
+static void
+put_tids(ReturnSetInfo *rsi, const SiftKey *keys, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+		Datum		v[2];
+		bool		nulls[2] = {false, false};
+
+		sift_key_to_tid(keys[i], &tid);
+		v[0] = ItemPointerGetDatum(&tid);
+		v[1] = Int32GetDatum(ItemPointerGetBlockNumber(&tid) >> SIFT_SB_SHIFT);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+}
+
 Datum
 sift_test_col_tids(PG_FUNCTION_ARGS)
 {
@@ -313,20 +330,15 @@ sift_test_col_tids(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 	scan_open(&ts, PG_GETARG_OID(0), text_to_cstring(PG_GETARG_TEXT_PP(1)), flags);
 	{
-		uint32		n;
+		uint32		n,
+					m,
+					chunk = flags >> 8 ? flags >> 8 : 128;
 		const SiftKey *keys = sift_col_point_tids(ts.src, &n);
+		SiftKey    *lazy = palloc(chunk * sizeof(SiftKey));
 
-		for (uint32 i = 0; i < n; i++)
-		{
-			ItemPointerData tid;
-			Datum		v[2];
-			bool		nulls[2] = {false, false};
-
-			sift_key_to_tid(keys[i], &tid);
-			v[0] = ItemPointerGetDatum(&tid);
-			v[1] = Int32GetDatum(ItemPointerGetBlockNumber(&tid) >> SIFT_SB_SHIFT);
-			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-		}
+		put_tids(rsi, keys, n);
+		while ((flags & TEST_POINT_LAZY) && (m = sift_col_point_next(ts.src, lazy, chunk)) > 0)
+			put_tids(rsi, lazy, m);
 	}
 	while (test_next(&ts, &unit))
 	{

@@ -43,6 +43,7 @@
  * bitmap heap scan of 1,700 units about 1.7 ms; the figures below are measured, docs/COL-SCAN.md, and scale with cpu_operator_cost like the rest of the planner's costs).
  */
 #define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
+#define COL_SCAN_FIXED_TID	12.0	/* ... for a lookup the directory of heap addresses answers: the source is opened and the first addresses read in 67,000 instructions (16 us measured, 4 of them the probe) */
 #define COL_SCAN_WALK		0.03	/* the zones and summaries of one unit tested against the constants */
 #define COL_SCAN_WORD		0.002	/* ... when the point directory answered, so only the bits of the kept units are walked */
 #define COL_SCAN_PROBE		4.0		/* one key looked up in a point directory: its slots are a page or two of a table the lookups of other keys do not share */
@@ -58,6 +59,9 @@ double		sift_plan_scale = 1.0;
  * One scan of the index, as a bitmap (amgetbitmap) or tuple by tuple (amgettuple): the source, the predicates of the keys and, for amgettuple, the rows of
  * the unit being returned. Everything but the heap relation lives in cxt, which a rescan resets.
  */
+#define COL_LAZY_FIRST	16
+#define COL_LAZY_MAX	512
+
 typedef struct ColScanOpaque
 {
 	MemoryContext cxt;
@@ -78,6 +82,8 @@ typedef struct ColScanOpaque
 	ItemPointerData *tids;
 	ItemPointerData *dtids;		/* the rows a point directory of heap addresses lists, returned before the units' (no unit read for them) */
 	uint32		ndtids;
+	ItemPointerData *ltids;		/* the addresses of the lookup handed over as the scan asks (SIFT_COLO_POINT_LAZY), nlazy of them in the last chunk; NULL once all are */
+	uint32		nlazy;
 	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
 	bool	   *nulls;
 	IndexTuple	itup;
@@ -122,6 +128,8 @@ col_scan_end(ColScanOpaque *so)
 	so->n = so->pos = so->cap = 0;
 	so->tids = so->dtids = NULL;
 	so->ndtids = 0;
+	so->ltids = NULL;
+	so->nlazy = 0;
 	so->vals = NULL;
 	so->nulls = NULL;
 	so->itup = NULL;
@@ -500,7 +508,7 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 
 /* Opens the source and makes the predicates of the keys; the executor checked the privileges and the row security of the table, and the planner only offers operators it knows leak nothing */
 static void
-col_scan_begin(IndexScanDesc scan)
+col_scan_begin(IndexScanDesc scan, bool lazy)
 {
 	ColScanOpaque *so = scan->opaque;
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
@@ -518,7 +526,7 @@ col_scan_begin(IndexScanDesc scan)
 	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
-	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS));
+	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
 	if (scan_preds(scan, &keys, so->preds))
 	{
 		so->npreds = scan->numberOfKeys;
@@ -529,6 +537,11 @@ col_scan_begin(IndexScanDesc scan)
 			so->dtids = palloc(so->ndtids * sizeof(ItemPointerData));
 			for (uint32 i = 0; i < so->ndtids; i++)
 				sift_key_to_tid(tids[i], &so->dtids[i]);
+			keys.recheck = true;
+		}
+		if (sift_col_point_lazy(so->src))
+		{
+			so->ltids = palloc(COL_LAZY_MAX * sizeof(ItemPointerData));
 			keys.recheck = true;
 		}
 	}
@@ -575,7 +588,7 @@ sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	SiftColSel	sel;
 	int64		ntids = 0;
 
-	col_scan_begin(scan);
+	col_scan_begin(scan, false);
 	if (so->ndtids > 0)
 	{
 		tbm_add_tuples(tbm, so->dtids, so->ndtids, true);
@@ -793,13 +806,32 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 
 	if (!so->started)
 	{
-		col_scan_begin(scan);
+		col_scan_begin(scan, true);
 		so->tids = so->dtids;
 		so->n = so->ndtids;
 	}
 	while (so->pos >= so->n)
+	{
+		if (so->ltids)
+		{
+			SiftKey		tids[COL_LAZY_MAX];
+
+			/* a scan that stops early reads a few addresses: the chunks double up to the size that keeps the cost of a call small */
+			so->n = sift_col_point_next(so->src, tids, Min(COL_LAZY_MAX, Max(COL_LAZY_FIRST, so->nlazy * 2)));
+			so->pos = 0;
+			if (so->n > 0)
+			{
+				so->nlazy = so->n;
+				for (uint32 i = 0; i < so->n; i++)
+					sift_key_to_tid(tids[i], &so->ltids[i]);
+				so->tids = so->ltids;
+				continue;
+			}
+			so->ltids = NULL;
+		}
 		if (!col_fill_batch(scan))
 			return false;
+	}
 	scan->xs_heaptid = so->tids[so->pos];
 	scan->xs_recheck = so->recheck;
 	if (scan->xs_want_itup)
@@ -1072,7 +1104,8 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			if (nkeys > SIFT_CPOINT_MAX_KEYS || (nkeys > SIFT_CPOINT_MIN_KEYS && nkeys > index->rel->tuples / 16))
 				continue;
 			share = 1.0 - exp(-rows / units);
-			if (1.0 - cover + cover * share < kept)
+			/* equal counts: a key that is in every unit still has its rows listed, and the scan filters those, not the rows of the units */
+			if (1.0 - cover + cover * share <= kept)
 			{
 				kept = 1.0 - cover + cover * share;
 				*nprobes = (int) ceil(nkeys);
@@ -1114,16 +1147,17 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one */
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans, 1);
-	costs.indexStartupCost = scale * (COL_SCAN_FIXED + (pkept < 1.0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
+	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
-		+ kept_units * (pkept < 1.0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
-		+ (pkept < 1.0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
+		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
+		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
 		+ index->pages * cpu_tuple_cost
 		+ idx_rows * (scale * COL_SCAN_EMIT + cpu_index_tuple_cost);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
 	*indexSelectivity = costs.indexSelectivity;
-	*indexCorrelation = 0.0;
+	/* the addresses of a lookup come in heap order (a list ascends, the segments follow each other), so the tuple scan reads the heap as a bitmap scan does */
+	*indexCorrelation = nprobes > 0 ? tid : 0.0;
 	*indexPages = Max(1.0, kept * index->pages);
 }
 

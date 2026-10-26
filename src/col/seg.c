@@ -303,6 +303,7 @@ points_read(SiftColSegment *seg)
 	int64		prev = -1;
 	uint32		hdr[4],
 				tail[2];
+	char	   *recs;
 
 	if (pv->pt_checked)
 		return pv->pt;
@@ -332,15 +333,16 @@ points_read(SiftColSegment *seg)
 	next = foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
 	pv->go = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(GOrdLeaf));
+	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
+	seg_read(seg, s->off + foot[0] + sizeof(hdr), (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
 	{
 		uint32		rec[6];
 		uint64		at;
-		uint64		rat = s->off + foot[0] + sizeof(hdr) + (uint64) i * SIFT_CPOINT_RECLEN;
 		uint64		size;
 
-		seg_read(seg, rat, sizeof(rec), rec);
-		seg_read(seg, rat + sizeof(rec), sizeof(at), &at);
+		memcpy(rec, recs + (uint64) i * SIFT_CPOINT_RECLEN, sizeof(rec));
+		memcpy(&at, recs + (uint64) i * SIFT_CPOINT_RECLEN + sizeof(rec), sizeof(at));
 		if (i >= hdr[2])
 		{
 			/* a global order block (col/gorder.h): chunks, entries, values, 0, words of 8 bytes; its header and directory are checked when it is read */
@@ -369,6 +371,7 @@ points_read(SiftColSegment *seg)
 		prev = rec[0];
 		next += size;
 	}
+	pfree(recs);
 	if (next != s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section end at %llu of %llu.", (unsigned long long) next, (unsigned long long) (s->len - sizeof(foot)));
 	pv->dict_end = foot[0];
@@ -2780,6 +2783,201 @@ sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys,
 	*tids = a.t;
 	*ntids = u;
 	return true;
+}
+
+/* ---- the addresses of a lookup read as far as the caller goes: a cursor over each list the keys name, merged ---- */
+
+#define TCUR_BUF		2048		/* the bytes of a list read at a time: a code is at most 10 */
+#define TCUR_MAX		8			/* lists a stream merges: more slots are decoded whole (sift_cseg_point_tids) */
+
+typedef struct TidCur
+{
+	uint64		at;				/* the file position of the next byte of the list not read yet */
+	uint32		unread;			/* ... and how many bytes of it there are */
+	uint32		remaining;		/* addresses of the list not taken yet */
+	uint32		taken;
+	uint64		prev;
+	SiftKey		head;
+	bool		have;
+	uint32		off;			/* word of the list, for the messages */
+	uint32		bpos;
+	uint32		blen;
+	uint32		chunk;			/* the bytes of the next read: it doubles, so a scan that stops early reads little and one that goes on reads whole pages */
+	uint8		buf[TCUR_BUF + 16];
+} TidCur;
+
+struct SiftPointStream
+{
+	SiftColSegment *seg;
+	int			col;
+	int			n;				/* the lists */
+	TidCur	   *cur[TCUR_MAX];
+	SiftKey	   *one;			/* the slots that hold one address, ascending and distinct, from pone */
+	uint32		none;
+	uint32		pone;
+	SiftKey		last;
+	bool		any;
+	uint64	   *slots;
+	int			nslots;
+	int			nlists;
+};
+
+static void
+stream_slot(void *arg, uint64 slot)
+{
+	SiftPointStream *s = arg;
+
+	if ((TID_PAYLOAD(slot) & 0xFFFF) == SIFT_CPOINT_TID_LIST && s->nlists++ == TCUR_MAX)
+		return;
+	if (s->nslots % 64 == 0)
+		s->slots = s->slots ? repalloc(s->slots, (s->nslots + 64) * sizeof(uint64)) : palloc(64 * sizeof(uint64));
+	s->slots[s->nslots++] = slot;
+}
+
+/* The next address of a list into its head (have: false past its last) */
+static void
+tcur_advance(SiftPointStream *s, TidCur *t)
+{
+	uint64		d = 0;
+	int			shift = 0;
+	uint8		b;
+
+	if (t->remaining == 0)
+	{
+		if (t->bpos != t->blen || t->unread != 0)
+			corrupt(s->seg, "The point directory of leaf %d has a list at word %u that is longer than its addresses.", s->col, t->off);
+		t->have = false;
+		return;
+	}
+	if (t->blen - t->bpos < 10 && t->unread > 0)
+	{
+		uint32		rem = t->blen - t->bpos,
+					take = Min(t->unread, Min(t->chunk, TCUR_BUF - rem));
+
+		memmove(t->buf, t->buf + t->bpos, rem);
+		seg_read(s->seg, t->at, take, t->buf + rem);
+		t->at += take;
+		t->unread -= take;
+		t->bpos = 0;
+		t->blen = rem + take;
+		t->chunk = Min(t->chunk * 2, TCUR_BUF);
+	}
+	do
+	{
+		if (t->bpos >= t->blen || shift > 63)
+			corrupt(s->seg, "The point directory of leaf %d has a list at word %u that does not hold its addresses.", s->col, t->off);
+		b = t->buf[t->bpos++];
+		d |= (uint64) (b & 0x7F) << shift;
+		shift += 7;
+	} while (b & 0x80);
+	if ((t->taken > 0 && d == 0) || (d >> 41) || ((t->prev + d) >> 41))
+		corrupt(s->seg, "The point directory of leaf %d has a list at word %u that does not hold ascending addresses.", s->col, t->off);
+	t->prev += d;
+	t->head = sift_cpoint_tid_key(t->prev);
+	t->have = true;
+	t->taken++;
+	t->remaining--;
+}
+
+SiftPointStream *
+sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int nkeys)
+{
+	const PointLeaf *pl = points_read(seg);
+	SiftPointStream *s;
+	uint64		rows = 0;
+
+	if (pl == NULL || pl[col].nslots == 0 || !pl[col].tids)
+		return NULL;
+	s = palloc0(sizeof(SiftPointStream));
+	s->seg = seg;
+	s->col = col;
+	for (int k = 0; k < nkeys && s->nlists <= TCUR_MAX; k++)
+		point_probe(seg, col, pl + col, sift_cpoint_hash(keys[k]), stream_slot, s);
+	/* more lists than the stream merges are decoded whole (sift_cseg_point_tids) */
+	if (s->nlists > TCUR_MAX)
+		return NULL;
+	s->one = palloc(Max(s->nslots, 1) * sizeof(SiftKey));
+	for (int i = 0; i < s->nslots; i++)
+	{
+		uint64		pay = TID_PAYLOAD(s->slots[i]);
+		TidCur	   *t;
+		uint32		hdr[2];
+		uint32		off;
+		uint64		base;
+
+		if ((pay & 0xFFFF) != SIFT_CPOINT_TID_LIST)
+		{
+			s->one[s->none++] = pay;
+			rows++;
+			continue;
+		}
+		off = (uint32) (pay >> 16);
+		base = pl[col].at + (uint64) pl[col].nslots * sizeof(uint64) + (uint64) off * sizeof(uint32);
+		if (pay >> 48 || off >= pl[col].words || pl[col].words - off < 2)
+			corrupt(seg, "The point directory of leaf %d has a list at word %llu of %u.", col, (unsigned long long) (pay >> 16), pl[col].words);
+		seg_read(seg, base, sizeof(hdr), hdr);
+		if (hdr[0] < 2 || hdr[0] > pl[col].count || hdr[1] < hdr[0] || hdr[1] > 6 * hdr[0] || (uint64) off + 2 + (hdr[1] + 3) / 4 > pl[col].words)
+			corrupt(seg, "The point directory of leaf %d has a list of %u addresses in %u bytes at word %u of %u.", col, hdr[0], hdr[1], off, pl[col].words);
+		t = palloc(sizeof(TidCur));
+		/* the fields one by one: a compound literal would clear and copy the buffer */
+		t->at = base + sizeof(hdr);
+		t->unread = hdr[1];
+		t->remaining = hdr[0];
+		t->taken = 0;
+		t->prev = 0;
+		t->have = false;
+		t->off = off;
+		t->bpos = t->blen = 0;
+		t->chunk = 256;
+		s->cur[s->n++] = t;
+		rows += hdr[0];
+	}
+	/* a lookup that finds more rows is not a point lookup: the units answer it */
+	if (rows > SIFT_CPOINT_MAX_ROWS)
+		return NULL;
+	if (s->none > 1)
+	{
+		uint32		u = 1;
+
+		qsort(s->one, s->none, sizeof(SiftKey), tid_cmp);
+		for (uint32 i = 1; i < s->none; i++)
+			if (s->one[u - 1] != s->one[i])
+				s->one[u++] = s->one[i];
+		s->none = u;
+	}
+	for (int i = 0; i < s->n; i++)
+		tcur_advance(s, s->cur[i]);
+	return s;
+}
+
+uint32
+sift_cseg_point_stream_next(SiftPointStream *s, SiftKey *out, uint32 max)
+{
+	uint32		n = 0;
+
+	while (n < max)
+	{
+		TidCur	   *best = NULL;
+		SiftKey		head = s->pone < s->none ? s->one[s->pone] : PG_UINT64_MAX;
+
+		for (int i = 0; i < s->n; i++)
+			if (s->cur[i]->have && s->cur[i]->head < head)
+			{
+				best = s->cur[i];
+				head = best->head;
+			}
+		if (best == NULL && s->pone == s->none)
+			break;
+		if (!s->any || head != s->last)
+			out[n++] = head;
+		s->last = head;
+		s->any = true;
+		if (best)
+			tcur_advance(s, best);
+		else
+			s->pone++;
+	}
+	return n;
 }
 
 typedef struct TidKey
