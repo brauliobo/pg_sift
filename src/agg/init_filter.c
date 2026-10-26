@@ -16,18 +16,7 @@
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 
-/*
- * The members of an IN list that travel with its zone test. A set prunes the units whose zone holds none of its members: a unit meets one of n
- * members with probability about 1 - exp(-n / units) when the keys are clustered, so a set of more than a few times the units prunes almost none
- * and is left to its range. The least is what a few units already gain from a handful of members.
- */
-static uint32
-zone_set_max(AggExec *ex)
-{
-	return Min(Max(ZONE_SET_MAX, 2 * sift_colsrc_nsb(ex->src)), ZONE_SET_CAP);
-}
-
-/* the values of an IN set that has gaps in [in_lo, in_hi] (a byte table, a bit table, or a hash table of values far apart), sorted */
+/* the values of an IN set that has gaps in [in_lo, in_hi] (a bit table, or a hash table of values far apart), sorted */
 static int64 *
 set_values(const PredState *st, int *n)
 {
@@ -42,16 +31,10 @@ set_values(const PredState *st, int *n)
 				vals[(*n)++] = st->in_htab[h];
 		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
 	}
-	else if (st->in_bits)
-	{
+	else
 		for (uint64 w = 0; w < (st->in_nbits + 63) / 64; w++)
 			for (uint64 b = st->in_bits[w]; b != 0; b &= b - 1)
 				vals[(*n)++] = (int64) ((uint64) st->in_lo + w * 64 + pg_rightmost_one_pos64(b));
-	}
-	else
-		for (uint32 i = 0; i < st->in_nlut; i++)
-			if (st->in_lut[i])
-				vals[(*n)++] = st->in_lo + i;
 	return vals;
 }
 
@@ -84,8 +67,16 @@ cmp_zone(AggExec *ex, SiftAggPred *p, SiftSrcPrune *z)
 			lo = st->in_lo;
 			hi = st->in_hi;
 			/* values with gaps: a unit whose zone holds none of them is not read, which their range cannot tell */
-			if (!st->in_dense && st->in_nv <= zone_set_max(ex))
-				z->vals = set_values(st, &z->nvals);
+			if (!st->in_dense && st->in_nv <= ZONE_SET_CAP)
+			{
+				if (st->in_vals)
+				{
+					z->vals = st->in_vals;
+					z->nvals = st->in_nvals;
+				}
+				else
+					z->vals = set_values(st, &z->nvals);
+			}
 		}
 	}
 	else
@@ -348,11 +339,10 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		/* the NaN rows of a numeric leaf are the executor's */
 		if ((p->op && st->in_hasnull) || st->in_htab || st->in_hasnan)
 			return false;
-		for (uint32 i = 0; i < st->in_nlut; i++)
-			if (st->in_lut[i] && n++ < FILTER_MAX_SET)
-				set[n - 1] = (int64) st->in_lo + i;
-		if (n == 0 || n > FILTER_MAX_SET)
+		if (st->in_vals == NULL || st->in_nvals == 0 || st->in_nvals > FILTER_MAX_SET)
 			return false;
+		n = st->in_nvals;
+		memcpy(set, st->in_vals, n * sizeof(int64));
 		f->op = p->op ? SSF_NOTIN : SSF_IN;
 		f->nset = n;
 		f->set = set;

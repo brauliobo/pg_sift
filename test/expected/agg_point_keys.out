@@ -121,6 +121,20 @@ SELECT plan_of('SELECT count(*) FROM pk_t WHERE k IN (1, 2, 3, 7919)') AS tids, 
  SiftAgg directory | SiftAgg directory | SiftAgg
 (1 row)
 
+-- a list of more keys than the units are many (and than the set a zone test carries) asks the directory as well
+CREATE TABLE pk_l AS SELECT i AS id, (i * 7919) % 100000 AS k, i % 97 AS g FROM generate_series(1, 100000) i;
+CREATE INDEX pk_l_col ON pk_l USING sift_col (k, g) WITH (point_tid_columns = 'k');
+NOTICE:  sift_col index "pk_l_col": point_tid_columns lists the heap addresses of the rows
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
+HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) pk_l;
+SELECT * FROM same('SELECT count(*), sum(g) FROM pk_l WHERE k IN (' || (SELECT string_agg((i * 331)::text, ',') FROM generate_series(1, 300) i) || ')');
+       plan        | result_rows | vs_normal_plan 
+-------------------+-------------+----------------
+ SiftAgg directory |           1 |              0
+(1 row)
+
+DROP TABLE pk_l;
 -- DML: the unit a changed row lives in has a dead row, the new versions are in the write buffer; inside the transaction and after it
 BEGIN;
 UPDATE pk_t SET k = k + 1 WHERE id % 97 = 0;

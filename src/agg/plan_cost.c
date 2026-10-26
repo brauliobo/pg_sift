@@ -1410,6 +1410,22 @@ set_kept(AggCtx *c, SiftAggSpec *s)
 	return kept;
 }
 
+/* does the point directory narrow a unit of the scan to the rows of an equality or IN list (set_kept), which are then the only rows its filters test? */
+static bool
+point_narrows(AggCtx *c, SiftAggSpec *s)
+{
+	bool		narrows = false;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+
+		narrows |= ((p->kind == SAP_CMP && p->op == SCMP_EQ) || (p->kind == SAP_IN && p->op == 0)) && c->stats.ndistinct[p->leaf] > 0 &&
+			point_kept(c, p->leaf, Min(Max(p->sel, 0.0), 1.0) * c->stats.ndistinct[p->leaf], c->stats.ndistinct[p->leaf]) < 1.0;
+	}
+	return narrows;
+}
+
 /*
  * The share of the units the zone tests leave: the comparisons (their selectivity is also the fraction of the leaf's range they keep) and
  * the ORs of them, the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
@@ -1947,7 +1963,8 @@ static void
 cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
 	int			nkeyfilters;
-	double		sparse;
+	double		sparse,
+				tested;
 
 	k->zone_kept = zone_kept(c, s, &nkeyfilters);
 	/*
@@ -1956,13 +1973,15 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	 */
 	sparse = Min(k->sel_rows / (k->rows * Max(k->zone_kept, 1.0 / k->units)), 1.0);
 	sparse = sparse <= AGG_SPARSE_MAX ? Min(sparse * AGG_SPARSE_LEAF, 1.0) : 1.0;
+	/* the rows the point directory lists are the only ones the filters read and test */
+	tested = point_narrows(c, s) ? sparse : 1.0;
 	for (int i = 0; i < s->nleaves; i++)
 		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
-			(leaf_filtered(s, s->leaves[i]) ? 1.0 : sparse);
-	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1);
+			(leaf_filtered(s, s->leaves[i]) ? tested : sparse);
+	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1) * tested;
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->npred; i++)
-		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED);
+		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED) * tested;
 	for (int i = 0; i < s->nvleaf; i++)
 		k->scan_cost += sift_aggvleaf_member(&s->vleaf[i]) ? k->rows * elems_of(c, s->vleaf[i].obj) * AGG_VLEAF_ELEM : 0;
 	k->scan_cost += k->rows * inline_text_cost(c, s);

@@ -67,6 +67,7 @@ def load(n):
 
 def queries(n, t):
     ids = sorted(random.Random(7).sample(range(1, n + 1), 100))
+    ids1000 = sorted(random.Random(8).sample(range(1, n + 1), 1000))
     mid, narrow, wide, rmax = n // 2, max(1, n // 1000), n // 5, n * 10
     one = lambda col: psql(f"SELECT {col} FROM {t} WHERE id = {mid}").strip()
     rnd_v, u_v, s_v, ts_lo = one("rnd"), one("u"), one("s_short"), one("ts")
@@ -79,6 +80,11 @@ def queries(n, t):
         "in10_rows": f"SELECT * FROM {t} WHERE id IN ({','.join(map(str, ids[:10]))})",
         "in100_rows": f"SELECT * FROM {t} WHERE id IN ({','.join(map(str, ids))})",
         "in100_count": f"SELECT count(*) FROM {t} WHERE id IN ({','.join(map(str, ids))})",
+        "in10_count": f"SELECT count(*) FROM {t} WHERE id IN ({','.join(map(str, ids[:10]))})",
+        "in100_sum": f"SELECT count(*), sum(amount) FROM {t} WHERE id IN ({','.join(map(str, ids))})",
+        "in1000_rows": f"SELECT * FROM {t} WHERE id IN ({','.join(map(str, ids1000))})",
+        "in1000_count": f"SELECT count(*) FROM {t} WHERE id IN ({','.join(map(str, ids1000))})",
+        "in1000_sum": f"SELECT count(*), sum(amount) FROM {t} WHERE id IN ({','.join(map(str, ids1000))})",
         "rng_narrow_rows": f"SELECT * FROM {t} WHERE id BETWEEN {mid} AND {mid + narrow}",
         "rng_narrow_count": f"SELECT count(*) FROM {t} WHERE id BETWEEN {mid} AND {mid + narrow}",
         "rng_wide_rows": f"SELECT * FROM {t} WHERE id BETWEEN {mid} AND {mid + wide}",

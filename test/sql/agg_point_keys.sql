@@ -79,6 +79,13 @@ SELECT 'none' AS dir, * FROM all_same('pk_n');
 SELECT plan_of('SELECT count(*) FROM pk_t WHERE k IN (1, 2, 3, 7919)') AS tids, plan_of('SELECT count(*) FROM pk_r WHERE k IN (1, 2, 3, 7919)') AS rows,
 	   plan_of('SELECT count(*) FROM pk_n WHERE k IN (1, 2, 3, 7919)') AS none;
 
+-- a list of more keys than the units are many (and than the set a zone test carries) asks the directory as well
+CREATE TABLE pk_l AS SELECT i AS id, (i * 7919) % 100000 AS k, i % 97 AS g FROM generate_series(1, 100000) i;
+CREATE INDEX pk_l_col ON pk_l USING sift_col (k, g) WITH (point_tid_columns = 'k');
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) pk_l;
+SELECT * FROM same('SELECT count(*), sum(g) FROM pk_l WHERE k IN (' || (SELECT string_agg((i * 331)::text, ',') FROM generate_series(1, 300) i) || ')');
+DROP TABLE pk_l;
+
 -- DML: the unit a changed row lives in has a dead row, the new versions are in the write buffer; inside the transaction and after it
 BEGIN;
 UPDATE pk_t SET k = k + 1 WHERE id % 97 = 0;

@@ -23,6 +23,8 @@ typedef struct PredState
 	uint32		in_nv;
 	uint32		in_nlut;
 	uint8	   *in_lut;			/* a table over [in_lo, in_lo + in_nlut) ... */
+	int64	   *in_vals;		/* ... with the elements sorted and distinct, in_nvals of them, when there are at most ZONE_SET_CAP: no walk of a wide table to list them */
+	uint32		in_nvals;
 	uint64	   *in_bits;		/* ... or, when the range is too wide for a byte table, a bit for each value of [in_lo, in_lo + in_nbits) ... */
 	uint64		in_nbits;
 	int64	   *in_htab;		/* ... or, when the values are too far apart for that, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */

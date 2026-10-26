@@ -1117,7 +1117,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	costs.indexStartupCost = scale * (COL_SCAN_FIXED + (pkept < 1.0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
 		+ kept_units * (pkept < 1.0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
-		+ (pkept <= kept ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
+		+ (pkept < 1.0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
 		+ index->pages * cpu_tuple_cost
 		+ idx_rows * (scale * COL_SCAN_EMIT + cpu_index_tuple_cost);
 	*indexStartupCost = costs.indexStartupCost;

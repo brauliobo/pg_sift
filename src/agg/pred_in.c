@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "col/kern.h"
+#include "core/cmp.h"
 #include "core/limits.h"
 #include "agg/pred_in_int.h"
 
@@ -169,6 +170,16 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 	for (int i = 0; i < nv; i++)
 		st->in_lut[vals[i] - lo] = 1;
 	st->in_dense = memchr(st->in_lut, 0, span) == NULL;
+	if (nv <= ZONE_SET_CAP)
+	{
+		st->in_vals = palloc(nv * sizeof(int64));
+		for (int i = 0; i < nv; i++)
+			st->in_vals[i] = vals[i];
+		qsort(st->in_vals, nv, sizeof(int64), sift_cmp_i64);
+		for (int i = 0; i < nv; i++)
+			if (st->in_nvals == 0 || st->in_vals[st->in_nvals - 1] != st->in_vals[i])
+				st->in_vals[st->in_nvals++] = st->in_vals[i];
+	}
 }
 
 void
