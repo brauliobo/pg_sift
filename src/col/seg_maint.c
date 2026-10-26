@@ -171,8 +171,6 @@ sift_cseg_reap_overflow(SiftColSegment *seg, SiftCsegDead dead, void *arg)
 	return removed;
 }
 
-StaticAssertDecl(SIFT_COL_UNIT_MAX_ROWS / 8 + 1 <= 2 * SIFT_PAGE_PAYLOAD, "the liveness bits of a unit lie on at most three pages, which sift_live_clear clears with the header page in one GenericXLog record");
-
 int64
 sift_cseg_bulkdelete(SiftColSegment *seg, IndexBulkDeleteCallback cb, void *cbstate, IndexBulkDeleteResult *stats)
 {

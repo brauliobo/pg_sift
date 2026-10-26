@@ -1,0 +1,26 @@
+-- VACUUM of a sift_col index and of a BM25 index with deleted rows in units of the most rows, 74,496 (14 of them in 1,042,944 rows): an index on a column that is NULL in
+-- every row has the widest units, and the liveness bits of such a unit (9,312 bytes) lie on three pages, which with the header page fill one GenericXLog record
+-- (the same bound as tbl_vacuum_dead_span, for the other two kinds of index).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+CREATE TABLE lc (a int, b int, t text) WITH (autovacuum_enabled = off);
+INSERT INTO lc SELECT NULL, g, NULL FROM generate_series(1, 1042944) g;
+VACUUM (FREEZE, ANALYZE) lc;
+CREATE INDEX lc_col ON lc USING sift_col (a);
+DELETE FROM lc WHERE b % 20 = 5;
+VACUUM lc;
+SELECT count(*) AS live, sum(b) AS sum_b FROM lc;
+DELETE FROM lc WHERE b % 20 = 6;
+VACUUM (FREEZE) lc;
+SELECT count(*) AS live, sum(b) AS sum_b FROM lc;
+SELECT count(*) AS live_by_a_scan_of_the_index FROM lc WHERE a IS NULL;
+SELECT sift.col_verify('lc_col', true);
+DROP INDEX lc_col;
+INSERT INTO lc SELECT NULL, g, NULL FROM generate_series(2000001, 2042944) g;
+CREATE INDEX lc_bm ON lc USING sift ((coalesce(t, 'x')));
+DELETE FROM lc WHERE b % 20 = 7;
+VACUUM lc;
+SELECT count(*) AS live FROM lc;
+SELECT sift.verify('lc_bm');
+DROP TABLE lc;
+DROP EXTENSION pg_sift;

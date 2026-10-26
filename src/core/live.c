@@ -179,6 +179,8 @@ sift_live_bits(const SiftLive *l, uint64 rank, uint32 n, uint64 *out, uint32 nwo
 #define MAX_GENERIC_XLOG_PAGES	4
 #endif
 
+StaticAssertDecl(SIFT_SB_PAGES * MaxHeapTuplesPerPage / 8 + 1 <= 2 * SIFT_PAGE_PAYLOAD, "the liveness bits of a unit of the most rows lie on at most three pages, which sift_live_clear clears with the header page in one GenericXLog record");
+
 /* the header page and the pages of the bits of the dead rows of a unit: GenericXLog holds MAX_GENERIC_XLOG_PAGES, which a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills */
 void
 sift_live_clear(const SiftLive *l, uint32 sbidx, const uint64 *dead, int nd)

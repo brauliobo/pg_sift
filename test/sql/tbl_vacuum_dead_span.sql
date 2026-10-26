@@ -1,9 +1,9 @@
--- VACUUM of a sift_table with deleted rows in units of 71,428 rows: the liveness bits of such a unit (the bits of a unit of the most rows, 74,496, are 9,312 bytes) lie on
+-- VACUUM of a sift_table with deleted rows in units of the most rows, 74,496 (14 of them in 1,042,944 rows): the liveness bits of such a unit (9,312 bytes) lie on
 -- three pages of the segment, which with the header page are four; clearing them took the header page and two more, and read a page past the end of the table.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE lv (id int) USING sift_table;
-INSERT INTO lv SELECT generate_series(1, 1000000);
+INSERT INTO lv SELECT generate_series(1, 1042944);
 VACUUM (FULL) lv;
 SELECT count(*) AS column_segments, sum(units) AS units FROM sift.table_segments('lv') WHERE kind = 'columns';
 -- every unit has dead rows over its whole length
