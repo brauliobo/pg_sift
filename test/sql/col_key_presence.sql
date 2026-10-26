@@ -163,7 +163,8 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) kp;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) kp_b;
 SELECT n, shape, same FROM kp_check('kp', 'kp_b') WHERE NOT same;
 SELECT sift.col_promote('kp_on') >= 0 AS promoted;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kp_on');
+-- minor 22 (a key table, written only where it fits 3% of the segment) counts as 15: the small segment a promotion writes has none, and what is tested is the lists
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('kp_on');
 SELECT sift.col_verify('kp_on', true);
 SELECT n, shape, same FROM kp_check('kp', 'kp_b') WHERE NOT same;
 SELECT sift.col_merge('kp_on', true) >= 0 AS merged;
@@ -202,7 +203,8 @@ CREATE INDEX kp_w_on ON kp_w USING sift_col (id, k, kn, s, d, ts, g, big, val, s
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kp_w_on');
+-- the last worker's segment is too small for a key table
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('kp_w_on');
 SELECT sift.col_verify('kp_w_on', true);
 SELECT (SELECT scanned FROM kp_units('SELECT count(DISTINCT k), count(*) FROM kp_w')) < 5000 AS built_by_workers_answers,
        kp_rows('SELECT count(DISTINCT k), count(DISTINCT s), count(*) FROM kp_w', true) = kp_rows('SELECT count(DISTINCT k), count(DISTINCT s), count(*) FROM kp_w', false) AS same_as_heap;
