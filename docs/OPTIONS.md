@@ -1825,8 +1825,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** bounds the megabytes a column VACUUM rewrites to merge, and moves from the end of the file
 - **Gain:** -
-- **Impact:** index size: with vacuum_truncate: table and indexes after VACUUM 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: default 128 MB of segments rewritten by one VACUUM, plus an equal allowance to move the end of the file; 0 keeps the one merge step and moves nothing; the move holds an exclusive lock; other: the VACUUM that moves the end of the file holds the table or index under an exclusive lock
-- **When:** VACUUM of sift_col and sift_table: merge work past the first step, and a separate allowance to copy tail segments into free blocks before truncation. col_auto_merge rewrites an index over it in steps of that size.
+- **Impact:** index size: with vacuum_truncate: table and indexes after VACUUM 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: default 128 MB of segments rewritten by one VACUUM, plus an equal allowance to move the end of the file in each of up to 16 rounds, the lock let go between them (a rewritten index of 105 MB live: file 210 to 115 MiB after VACUUM, in 12 MB rounds); 0 keeps the one merge step and moves nothing; the move holds an exclusive lock; other: the VACUUM that moves the end of the file holds the table or index under an exclusive lock
+- **When:** VACUUM of sift_col and sift_table: merge work past the first step, and a separate allowance, for each of up to 16 rounds, to copy tail segments into free blocks before truncation. col_auto_merge rewrites an index over it in steps of that size.
 - **Default:** 128 MB — 128 MB (about 6 million rows of index) bounds the rewrite and the exclusive-lock copy of one VACUUM; the first merge always runs; with truncation, table and indexes 200.3 to 154.5 MiB after churn (1,000,000 rows).
 - **Turn off:** SET sift.vacuum_rewrite_limit = 0 (session, ALTER ROLE/DATABASE, postgresql.conf): one merge step and no file move; the free end is still truncated unless vacuum_truncate = false.
 - **Upgrade from 3.4:** unchanged

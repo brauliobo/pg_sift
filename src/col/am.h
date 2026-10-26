@@ -140,9 +140,11 @@ extern uint32 sift_colk_unit_rows(uint32 aim);
 extern uint32 sift_colk_run_rows(Relation index, SiftColBatch *const *in, int n);
 extern uint32 sift_colk_aim_rows(Relation index);
 extern uint64 sift_colk_heap_sbs(Relation index);
+/* Called with NULL for the writer of the next output segment, and after each unit with the writer in hand: returns the writer to go on with (NULL: it was finished, the next unit asks for one) */
+typedef SiftColSegWriter *(*SiftColCutFn) (void *arg, SiftColSegWriter *w);
 extern int	sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const SiftColSchema *schema, const int *leaf, int nleaf, uint32 unit_rows, MemoryContext cx);
 extern int	sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx);
+							const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg);
 
 /*
  * numeric(p <= 18, s) leaves hold the number times 10^s as their INT value (SiftColDef.scale). A predicate constant is scaled with

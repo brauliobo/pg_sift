@@ -119,12 +119,16 @@ sift_maint_truncate(Relation index, int elevel)
 
 /* A coarse candidate screen only; sift_store_relocate plans exact extent reservations with the allocator before accepting a move. */
 #define SPACE_MIN_RUN		16
+#define SPACE_ROUNDS		16		/* rounds of one VACUUM: at most this many times sift.vacuum_rewrite_limit is copied */
 
 static bool
 space_worth(int64 blocks, BlockNumber nblocks)
 {
 	return blocks > 0 && (blocks >= TRUNCATE_MIN_BLOCKS || blocks >= nblocks / TRUNCATE_FRACTION);
 }
+
+/* The bytes the space step copied since sift_maint_space_budget began (a round that moves segments down may cut nothing yet) */
+static uint64 space_copied;
 
 /* A segment of the directory, as the space step sees it: where its blocks end and how many it takes */
 typedef struct SpaceSeg
@@ -149,8 +153,11 @@ static int
 space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *seg, int64 *gain, BlockNumber *limit)
 {
 	int			n = 0;
-	int			best = 0;
+	int			best = 0,
+				step = 0;
 	uint64		moved = 0;
+	int64		all = 0;
+	BlockNumber step_limit = 0;
 	BlockNumber hwm = snap->meta.high_water;
 	BlockNumber top;
 
@@ -180,12 +187,17 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 		int64		net;
 
 		moved += seg[j - 1].blocks;
-		if (moved * BLCKSZ > budget || sift_store_free_below(rel, hwm, SPACE_MIN_RUN) < (int64) moved)
+		if (sift_store_free_below(rel, hwm, SPACE_MIN_RUN) < (int64) moved)
 			break;
 		/* the lowest end that holds them: the free blocks are taken from the start of the file up */
 		SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, SPACE_MIN_RUN) < (int64) moved);
 		end = Max(end, lo);
 		net = (int64) top - (int64) end;
+		all = Max(all, net);
+		if (moved * BLCKSZ > budget)
+			continue;
+		step = j;
+		step_limit = end;
 		if (net > *gain)
 		{
 			*gain = net;
@@ -193,7 +205,18 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 			*limit = end;
 		}
 	}
-	return space_worth(*gain, hwm) ? best : 0;
+	if (space_worth(*gain, hwm))
+		return best;
+	/*
+	 * The cut is out of reach of the allowance (segments in the middle of the free blocks: each prefix of the ones that end the file leaves the next
+	 * one near the end), but the whole move is worth it: the top ones go down now and the next round, or VACUUM, finds the rest
+	 */
+	if (step > 0 && space_worth(all, hwm) && step_limit < top)
+	{
+		*limit = step_limit;
+		return step;
+	}
+	return 0;
 }
 
 /* The directory entry of a generation, or NULL when a step replaced it */
@@ -283,6 +306,7 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 #endif
 			SIFT_SPACE_TEST_POINT(2);
 			budget -= move.written;
+			space_copied += move.written;
 			pfree(release);
 			CHECK_FOR_INTERRUPTS();
 		}
@@ -305,8 +329,8 @@ sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
 	sift_maint_space_budget(rel, relocate_page, elevel, (uint64) sift_vacuum_rewrite_limit << 20);
 }
 
-/* The space step with a cap on the bytes it may copy under the lock (0: only the free tail is cut) */
-void
+/* The space step with a cap on the bytes it may copy under the lock (0: only the free tail is cut); the blocks it cut off the end of the file */
+BlockNumber
 sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
 	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
@@ -315,7 +339,8 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 
 	/* The lock is WAL-logged for a standby, which takes a transaction id; the leader of a parallel VACUUM runs the cleanup in parallel mode and cannot assign one */
 	if (IsInParallelMode() && !FullTransactionIdIsValid(GetTopFullTransactionIdIfAny()))
-		return;
+		return 0;
+	space_copied = 0;
 	nblocks = RelationGetNumberOfBlocks(rel);
 	/*
 	 * nothing to cut and not enough free blocks to be worth gathering (what this VACUUM released is not reusable yet, but is once the
@@ -323,11 +348,11 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	 */
 	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
 		!(budget > 0 && space_worth(sift_store_free_stats(rel).blocks, nblocks)))
-		return;
+		return 0;
 	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
 	{
 		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
-		return;
+		return 0;
 	}
 	PG_TRY();
 	{
@@ -349,4 +374,23 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	if (freed > 0)
 		ereport(elevel, (errmsg("%s \"%s\": truncated %u to %u pages", what, RelationGetRelationName(rel),
 								RelationGetNumberOfBlocks(rel) + freed, RelationGetNumberOfBlocks(rel))));
+	return freed;
+}
+
+/*
+ * Rounds of the space step: a rewrite leaves the index twice its size in the file, and a round copies at most the cap. Rounds follow while one
+ * copies segments or cuts a worthwhile end, the lock let go between them, so that the file is back near the live bytes after one VACUUM and not after as many
+ * VACUUMs as the cap fits in the index
+ */
+void
+sift_maint_space_rounds(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
+{
+	for (int round = 0; round < SPACE_ROUNDS; round++)
+	{
+		BlockNumber freed = sift_maint_space_budget(rel, relocate_page, elevel, budget);
+
+		if (budget == 0 || (space_copied == 0 && !space_worth(freed, RelationGetNumberOfBlocks(rel) + freed)))
+			break;
+		CHECK_FOR_INTERRUPTS();
+	}
 }

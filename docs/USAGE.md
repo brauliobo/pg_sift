@@ -208,7 +208,7 @@ Writes go to small write buffers through generic WAL; a background worker (`sift
 - Free space in a `sift_col` file depends on the rewrite budget (1M rows, 0.87% changed per cycle, 21% in 24 cycles):
   - `sift.col_auto_merge_wal_pct = 0` (no budget, a rewrite at every VACUUM): the file reaches 2.2 times the live bytes (54 to 55% of blocks free) in 5 cycles and stays, on 3.4.2 and 3.4 alike.
   - Default 5%: a fresh index stays at 1.2 to 1.3 times (cycles 60 to 240), bursting to 1.5 to 1.75 when a segment is rewritten whole.
-  - An index from an old version with a few very large segments does not recover alone: rewriting one costs its size in WAL, the budget refuses it against 5% of the changes' WAL, and VACUUM's space step copies only end-of-file segments that fit `sift.vacuum_rewrite_limit`.
+  - An index from an old version with a few very large segments does not recover alone: rewriting one costs its size in WAL, the budget refuses it against 5% of the changes' WAL, and VACUUM's space step copies only end-of-file segments that fit `sift.vacuum_rewrite_limit` in a round (up to 16 rounds, the lock let go between them).
   - To recover space in a maintenance window, either `SET sift.vacuum_rewrite_limit = 4096; VACUUM t;` (MB to move; `sift.col_segments` lists segments, end-of-file ones first; exclusive lock, WAL equal to the bytes moved: 20.2 to 13.4 MB of file for 7.7 MB of WAL in 26 ms, 9.3 MB live), or `REINDEX INDEX CONCURRENTLY` (20.2 to 10.4 MB of file, 10.4 MB of WAL, 0.9 s per million rows with the heap cached; the disk holds both files until the swap).
 
 <!-- sift-settings:start -->

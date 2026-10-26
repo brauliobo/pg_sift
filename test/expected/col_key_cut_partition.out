@@ -1,0 +1,208 @@
+-- The rewrite of a key_cut sift_col index by range (sift.col_auto_merge_partition_kb): the units are cut by the key, so the rewrite writes the index as segments of
+-- about that size, each cut of the key, not as one segment of all the live bytes (a lone segment of the index would need the free space of the whole index to
+-- be written, and would leave it in the file when the segments it replaced are freed). The answers never change and the index verifies after every step.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET client_min_messages = warning;
+SET sift.vacuum_rewrite_limit = 0;
+CREATE TABLE kp (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO kp SELECT i, (i * 7919) % 600, date '2026-01-01' + (i * 31) % 300, i % 100, md5(i::text) || md5((i + 1)::text) FROM generate_series(1, 60000) i;
+CREATE TABLE kp_plain (LIKE kp) WITH (autovacuum_enabled = false);
+INSERT INTO kp_plain SELECT * FROM kp ORDER BY id;
+CREATE INDEX kp_idx ON kp USING sift_col (id, cust, d, amount, pad) WITH (key_cut = 'cust', dict_lookup = off);
+CREATE INDEX kp_plain_idx ON kp_plain USING sift_col (id, cust, d, amount, pad) WITH (dict_lookup = off);
+ALTER INDEX kp_idx SET (dead_rewrite_pct = 100);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
+-- the answers of the key lookups and the totals are those of the table, and of the index of the same rows with no key
+CREATE FUNCTION kpc_same() RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text; q text;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['SELECT count(*), sum(amount), min(id) FROM %s WHERE cust = 42', 'SELECT count(*), sum(amount) FROM %s WHERE cust BETWEEN 100 AND 130', 'SELECT count(*), sum(amount), count(DISTINCT cust) FROM %s'] LOOP
+		SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+		EXECUTE format('SELECT x::text FROM (' || q || ') x', 'kp') INTO a;
+		SET LOCAL enable_indexscan = off; SET LOCAL enable_seqscan = on;
+		EXECUTE format('SELECT x::text FROM (' || q || ') x', 'kp_plain') INTO b;
+		IF a IS DISTINCT FROM b THEN RETURN false; END IF;
+	END LOOP;
+	RETURN true;
+END $$;
+-- the churn of the whole table, on both tables
+CREATE PROCEDURE kpc_churn(n int) LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	FOREACH t IN ARRAY ARRAY['kp', 'kp_plain'] LOOP
+		EXECUTE format('UPDATE %s SET amount = amount + 1 WHERE id %% 5 = %s', t, n % 5);
+		EXECUTE format('DELETE FROM %s WHERE id %% 50 = %s', t, n);
+		EXECUTE format('INSERT INTO %s SELECT %s * 100000 + g, g %% 600, date ''2026-02-01'', g %% 100, md5(g::text) FROM generate_series(1, 500) g', t, n);
+	END LOOP;
+END $$;
+SELECT kind, rows, bytes > 500000 AS some_bytes FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
+   kind    | rows  | some_bytes 
+-----------+-------+------------
+ immutable | 60000 | t
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+-- 1. one segment of 2 MB, cut at 128 kB (the units of this table are of a few hundred kB, so a partition is a few of them): the rewrite is partitions, none of a third of the bytes
+SET sift.col_auto_merge_partition_kb = 128;
+CALL kpc_churn(1);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
+SELECT sift.col_maintain('kp_idx') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT count(*) >= 4 AS partitions, max(bytes) * 3 <= sum(bytes) AS none_over_third, min(rows) > 0 AS none_empty, sum(rows) = (SELECT count(*) FROM kp) AS all_rows
+FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
+ partitions | none_over_third | none_empty | all_rows 
+------------+-----------------+------------+----------
+ t          | t               | t          | t
+(1 row)
+
+SELECT sift.col_verify('kp_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+-- 2. the next steps keep the partitions: they are no segments to merge into one, and the rewrite of the churn is of the partitions it touches
+SELECT sift.col_maintain('kp_idx') AS rewritten_again;
+ rewritten_again 
+-----------------
+ f
+(1 row)
+
+SELECT count(*) >= 4 AS partitions FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
+ partitions 
+------------
+ t
+(1 row)
+
+CALL kpc_churn(2);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
+SELECT sift.col_maintain('kp_idx') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT count(*) >= 4 AS partitions, max(bytes) * 3 <= sum(bytes) AS none_over_third, bool_and(NOT dirty) AS none_dirty FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
+ partitions | none_over_third | none_dirty 
+------------+-----------------+------------
+ t          | t               | t
+(1 row)
+
+SELECT sift.col_verify('kp_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+-- a merge of all the segments (col_merge) writes partitions too, not a segment of all the bytes
+SELECT sift.col_merge('kp_idx', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT count(*) >= 4 AS partitions, max(bytes) * 3 <= sum(bytes) AS none_over_third FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
+ partitions | none_over_third 
+------------+-----------------
+ t          | t
+(1 row)
+
+SELECT sift.col_verify('kp_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+-- the rewrite wrote the index beside the segments it replaced: the file is twice the live bytes until VACUUM moves the partitions at its end into the free blocks below
+-- them and cuts the file, in as many rounds as it takes (each copies at most sift.vacuum_rewrite_limit, here less than the partitions that have to move)
+CREATE FUNCTION kpc_file_x100() RETURNS int LANGUAGE sql AS $$
+	SELECT (100 * i.relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('kp_idx') WHERE section <> 'free'))::int FROM sift.col_index_info('kp_idx') i $$;
+SELECT kpc_file_x100() > 160 AS twice_the_live_bytes;
+ twice_the_live_bytes 
+----------------------
+ t
+(1 row)
+
+SET sift.vacuum_rewrite_limit = 1;
+VACUUM kp;
+SELECT kpc_file_x100() < 130 AS near_the_live_bytes;
+ near_the_live_bytes 
+---------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('kp_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+-- 3. with no partition size, the rewrite is one segment again
+SET sift.col_auto_merge_partition_kb = 0;
+CALL kpc_churn(3);
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
+SELECT sift.col_maintain('kp_idx') AS rewritten;
+ rewritten 
+-----------
+ t
+(1 row)
+
+SELECT count(*) FILTER (WHERE kind = 'immutable') AS segments FROM sift.col_segments('kp_idx');
+ segments 
+----------
+        3
+(1 row)
+
+SELECT sift.col_verify('kp_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT kpc_same();
+ kpc_same 
+----------
+ t
+(1 row)
+
+DROP TABLE kp, kp_plain;
+DROP FUNCTION kpc_same();
+DROP FUNCTION kpc_file_x100();
+DROP PROCEDURE kpc_churn(int);
+DROP EXTENSION pg_sift;

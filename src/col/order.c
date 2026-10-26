@@ -252,7 +252,7 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
  */
 static int
 cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone done, void *state, const SiftColSchema *schema, const OrderCtx *ctx, uint32 unit_rows,
-		 MemoryContext cx)
+		 MemoryContext cx, SiftColCutFn cutfn, void *cutarg)
 {
 	uint64		slack = unit_rows / 4;
 	uint64		want = unit_rows + slack + 1;
@@ -302,7 +302,11 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		out->keyed = true;
 		for (uint64 i = 0; i < end; i++)
 			sift_cbatch_add_from(out, u[i].b, u[i].r);
+		if (w == NULL)
+			w = cutfn(cutarg, NULL);
 		sift_colw_add(w, out);
+		if (cutfn)
+			w = cutfn(cutarg, w);
 		if (refs)
 			pos += end;
 		else
@@ -340,7 +344,7 @@ sift_colk_write(SiftColSegWriter *w, SiftColBatch *const *in, int nin, const Sif
 		for (uint32 r = 0; r < in[i]->nrows; r++)
 			refs[k++] = (RowRef) {in[i], r};
 	sort_refs(refs, total, &ctx);
-	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx);
+	units = cut_rows(w, refs, total, NULL, NULL, NULL, schema, &ctx, unit_rows, cx, NULL, NULL);
 	pfree(refs);
 	return units;
 }
@@ -503,7 +507,7 @@ merge_done(void *state, const RowRef *refs, uint64 n)
  */
 int
 sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *const *seg, int n, SiftColFreezeFn freeze, void *freeze_arg, const SiftColSchema *schema,
-				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx)
+				 const int *leaf, int nleaf, uint32 unit_rows, uint64 memory_kb, MemoryContext cx, SiftColCutFn cutfn, void *cutarg)
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
@@ -512,7 +516,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 
 	for (int i = 0; i < n; i++)
 		m.in[i] = (MergeIn) {.seg = seg[i], .gen = ent[i].gen, .keyed = nleaf == 0 || sift_cseg_keyed(&ent[i]), .chunk = -1};
-	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx);
+	units = cut_rows(w, NULL, 0, merge_next, merge_done, &m, schema, &ctx, unit_rows, cx, cutfn, cutarg);
 	MemoryContextDelete(m.scratch);
 	return units;
 }
