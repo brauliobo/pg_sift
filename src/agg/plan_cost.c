@@ -129,6 +129,8 @@
 #define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
 #define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
 #define AGG_WIDE_COLD		35.0	/* a row of such an image leaf, read by a worker: the unit's dictionary of images is inflated (zstd) and indexed in the worker, whose cache is empty, where the backend that repeats a scan finds it decoded (2,000,000 rows of almost unique values: 24 ns inflated, 6 ns of fresh pages, 3 ns indexed, a row) */
+#define AGG_WIDE_BIG		10.0	/* ... and, for each million distinct values the column has past 2,000,000, this many more up to AGG_WIDE_BIG_MAX: the dictionary of a segment outgrows the cache and a row is a miss for its entry (975 cycles a row in one segment of 10,000,000 almost unique values, 573 in 2,000,000), so the parallel scan of 5,000,000 or 10,000,000 such rows takes 1.5 to 2.3 times as long as PostgreSQL's plan with 4 or 8 workers */
+#define AGG_WIDE_BIG_MAX	40.0
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
 #define AGG_DIST_CHUNK_BYTES	512.0
@@ -1521,7 +1523,7 @@ typedef struct CostAcc
 	double		scan_cost;
 	double		load_cost;		/* of scan_cost, the reads of the lookup tables (the leader's alone) and their rows */
 	double		load_rows;
-	double		cold_rows;		/* rows of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
+	double		cold_ops;		/* operators of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
 	double		gen_cost;
 	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
@@ -1628,6 +1630,15 @@ wide_entry_frac(AggCtx *c, int leaf, const CostAcc *k)
 	return Min(nd * -expm1(-per_unit / nd) * units / Max(k->rows, 1.0), 1.0);
 }
 
+/* the operators a row of an image leaf costs a worker for the dictionary it inflates, cold: more for a column of millions of distinct values (AGG_WIDE_BIG) */
+static double
+wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
+{
+	double		nd = leaf_distinct_frac(c, leaf, k->rows) * k->rows;
+
+	return AGG_WIDE_COLD + Min(AGG_WIDE_BIG_MAX, AGG_WIDE_BIG * Max(nd - 2000000.0, 0.0) / 1000000.0);
+}
+
 /* the entries of it, in operators */
 static double
 wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
@@ -1716,13 +1727,13 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 		{
 			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k));
 			if (numeric_image(c, leaf_of(c, s->leaves[i])))
-				k->cold_rows += k->rows * wide_entry_frac(c, s->leaves[i], k);
+				k->cold_ops += k->rows * wide_entry_frac(c, s->leaves[i], k) * wide_cold_ops(c, s->leaves[i], k);
 		}
 	for (int i = 0; i < s->npred; i++)
 		if (s->pred[i]->kind == SAP_WIDE && leaf_of(c, s->pred[i]->leaf)->vtype == SCV_CODE)
 			k->scan_cost += k->rows * leaf_distinct_frac(c, s->pred[i]->leaf, k->rows) * AGG_WIDE_TEST;
 	k->scan_cost = (k->scan_cost + k->units * AGG_UNIT_COST) * Max(k->zone_kept, 1.0 / k->units);
-	k->cold_rows *= Max(k->zone_kept, 1.0 / k->units);
+	k->cold_ops *= Max(k->zone_kept, 1.0 / k->units);
 }
 
 /* The tuples that reach the groups and what each takes */
@@ -2031,7 +2042,7 @@ cost_parallel(SiftAggSpec *s, CostAcc *k, Cost *startup)
 	 */
 	if (priced)
 		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
-	k->scan_cost = (k->scan_cost + arm - load + (priced ? k->cold_rows * AGG_WIDE_COLD * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+	k->scan_cost = (k->scan_cost + arm - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * AGG_MERGE_GROUP * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
