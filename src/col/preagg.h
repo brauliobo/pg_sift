@@ -204,9 +204,9 @@ extern bool sift_cpagg_mirror(const SiftColSchema *s, const SiftCPaggSpec *spec,
 
 /*
  * The exceptions of a unit (docs/COL-PREAGG.md 11): the cube and element rollups of the rows where its one NULL-heavy INT leaf is not NULL, with the dims of the unit's
- * own blobs; appended (leaf first) to xcube and xecube. eoff[c]: the element offsets of a leaf of a list, NULL for the others. false: the unit has none.
+ * own blobs; appended (leaf first) to xcube and xecube. leaf: -1 chooses a leaf, otherwise checks that stored leaf. eoff[c]: the element offsets of a leaf of a list, NULL for the others. false: the unit has none.
  */
-extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+extern bool sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, int leaf,
 							   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube);
 
 /* The exact sums of one INT leaf's values */

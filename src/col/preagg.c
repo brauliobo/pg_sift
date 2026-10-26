@@ -1030,10 +1030,10 @@ sift_cpagg_cube(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPa
  * The exceptions of a unit: when exactly one INT leaf of the top level has at most 1 row in SIFT_PAGG_EXC_DIV not NULL (the fewest, the first of equals), the cube and the
  * element rollups of those rows, built with the dims, measures and calendar grains of the unit's own blobs and appended to xcube (after the leaf, as a varint) and xcube's
  * element blob xecube. eoff[c] is the element offset of each row for a leaf c of a list, NULL for the others. Nothing is appended, and false returned, when no leaf
- * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own. Deterministic: the verifier calls it again and compares the bytes.
+ * qualifies or the blobs would take more than 1/SIFT_PAGG_EXC_SHARE of the unit's own. leaf >= 0 selects a stored leaf for verification; -1 chooses the fewest non-NULL rows.
  */
 bool
-sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows,
+sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, int leaf,
 				   const uint8 *cube, uint32 clen, const uint8 *ecube, uint32 elen, StringInfo xcube, StringInfo xecube)
 {
 	int			ncols = s->ncols,
@@ -1062,10 +1062,10 @@ sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const Sift
 	{
 		uint32		k = 0;
 
-		if (s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !cols[c].ready || cols[c].n != nrows || cols[c].nulls == NULL || cols[c].ovf != NULL)
+		if (s->cols[c].store != SIFT_COLS_INT || s->cols[c].parent >= 0 || !cols[c].ready || cols[c].n != nrows || (leaf < 0 && cols[c].nulls == NULL) || has_ovf(&cols[c]) || (leaf >= 0 && c != leaf))
 			continue;
 		for (uint32 i = 0; i < nrows; i++)
-			k += !((cols[c].nulls[i / 64] >> (i % 64)) & 1);
+			k += !is_null(cols[c].nulls, i);
 		if (k > 0 && k <= limit && k < best)
 		{
 			best = k;
@@ -1079,7 +1079,7 @@ sift_cpagg_excepts(const SiftColSchema *s, const SiftCPaggSpec *spec, const Sift
 	}
 	xrow = palloc(best * sizeof(uint32));
 	for (uint32 i = 0; i < nrows; i++)
-		if (!((cols[xleaf].nulls[i / 64] >> (i % 64)) & 1))
+		if (!is_null(cols[xleaf].nulls, i))
 			xrow[nx++] = i;
 	xc = palloc(ncols * sizeof(SiftCPaggCol));
 	tk = palloc0(ncols * sizeof(int64 *));

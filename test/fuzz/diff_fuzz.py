@@ -1151,6 +1151,11 @@ EX_LIST_AGGS = ['count(*)', 'sum(p.score)', 'avg(p.score)', 'max(p.score)', 'cou
 
 
 def gen_exceptions(r, ctx):
+    if not TABLE and r.randrange(4) == 0:
+        pred = r.choice(["(e.marker->>'x')::bigint", 'e.stamp'])
+        return dict(table='exr', frm='exr e', keys=r.choice([[], ['e.kind'], ['e.org'], ['e.kind', 'e.org']]),
+                    aggs=r.sample(['count(*)', 'sum(e.amount)', 'avg(e.amount)', 'min(e.amount)', 'max(e.amount)'], r.randrange(1, 4)),
+                    where=['e.org >= 2', pred + r.choice([' IS NULL', ' IS NOT NULL'])], having=[], ordered=True)
     form = r.choice(['rows', 'rows', 'map', 'map', 'list'])
     fill = lambda t: t.format(k=r.randrange(1, 6), k4=r.randrange(5), n=r.randrange(100, max(ctx['rows'], 101)))
     where_ = [fill(r.choice(EX_WHERE))]
@@ -1175,6 +1180,8 @@ def render_exceptions(p):
 
 def dml_exceptions(r, ctx):
     """Stamps and restores (a stamped row makes its unit dirty: scanned until VACUUM and a merge write its exceptions again), inserts, deletes, VACUUM and merges on exf."""
+    if not TABLE and r.randrange(5) == 0:
+        return r.choice(['REINDEX INDEX exr_col', "SELECT sift.col_verify('exr_col', true)"])
     m = r.choice([13, 40, 97, 211, 509])
     ids = f'id % {m} = {r.randrange(m)}'
     e = r.randrange(12)

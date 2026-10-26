@@ -140,6 +140,37 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_out;
 CREATE INDEX ex_out_col ON ex_out USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
 SELECT * FROM pa_check('ex_out') WHERE n IN (1, 3, 5, 13);
 
+-- A bad JSON value allocates an overflow bitmap in the middle unit. Later
+-- units reuse its zeroed storage; this must not change their exception leaf.
+CREATE TABLE ex_reuse (id int, k int, dim int, val bigint, j jsonb);
+INSERT INTO ex_reuse
+SELECT g, (g - 1) / 100, g % 10, g * 100,
+       CASE WHEN g > 100 AND g <= 200 THEN '{"x":"bad"}'::jsonb
+            WHEN g % 100 = 0 THEN '{"x":1}'::jsonb ELSE '{}'::jsonb END
+FROM generate_series(1, 1000) g;
+CREATE TABLE ex_alternate AS SELECT *, CASE WHEN id % 100 = 99 THEN 1 END::bigint stamp FROM ex_reuse;
+CREATE INDEX ex_reuse_col ON ex_reuse USING sift_col (id, k, dim, val, j)
+  WITH (key_cut = 'k', key_cut_rows = 100, paths = 'j.x bigint', superunit = 0);
+CREATE INDEX ex_alternate_col ON ex_alternate USING sift_col (id, k, dim, val, j, stamp)
+  WITH (key_cut = 'k', key_cut_rows = 100, paths = 'j.x bigint', superunit = 0);
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_reuse, ex_alternate;
+SELECT sift.col_verify('ex_reuse_col', true);
+SELECT sift.col_verify('ex_alternate_col', true);
+SET sift.agg_force = on;
+SELECT tbl, pred, pa_rows(q, true, true) IS NOT DISTINCT FROM pa_rows(q, false, true)
+              AND pa_rows(q, true, true) IS NOT DISTINCT FROM pa_rows(q, false, false) AS same
+FROM (SELECT tbl, pred, format('SELECT dim, count(*), sum(val) FROM %I WHERE k >= 2 AND %s GROUP BY dim', tbl, pred) AS q
+      FROM (VALUES ('ex_reuse'), ('ex_alternate')) t(tbl),
+           (VALUES ('(j->>''x'')::bigint IS NULL'), ('(j->>''x'')::bigint IS NOT NULL')) p(pred)
+      UNION ALL
+      SELECT 'ex_alternate', pred, format('SELECT dim, count(*), sum(val) FROM ex_alternate WHERE %s GROUP BY dim', pred)
+      FROM (VALUES ('stamp IS NULL'), ('stamp IS NOT NULL')) p(pred)) q
+ORDER BY tbl, pred;
+SELECT net > 0 AS uses_exceptions
+FROM pa_units('SELECT dim, count(*), sum(val) FROM ex_reuse WHERE k >= 2 AND (j->>''x'')::bigint IS NULL GROUP BY dim');
+RESET sift.agg_force;
+DROP TABLE ex_reuse, ex_alternate;
+
 DROP TABLE ex, ex_old, ex_many, ex_out, pa_q;
 DROP FUNCTION pa_rows(text, bool, bool), pa_units(text), pa_check(text);
 DROP PROCEDURE pa_settle();

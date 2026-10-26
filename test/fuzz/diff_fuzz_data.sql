@@ -226,6 +226,20 @@ CREATE FUNCTION fz.gen_exf(lo bigint, hi bigint, salt int) RETURNS SETOF exf LAN
 INSERT INTO exf SELECT * FROM fz.gen_exf(1, @ROWS@, 0);
 CREATE INDEX exf_col ON exf USING sift_col (id, org, kind, amount, val, dec, stamp, metrics_a, parts) WITH (paths = 'metrics_a.* float8, parts[]{cat text, score float8}', superunit = 0);
 
+-- @heap
+-- Reusing an empty overflow bitmap must not omit exceptions or select another leaf.
+CREATE TABLE exr (id int, org int, kind int, amount bigint, marker jsonb, stamp bigint);
+INSERT INTO exr
+SELECT i, (i - 1) / 100, i % 10, i * 100,
+       CASE WHEN i > 100 AND i <= 200 THEN '{"x":"bad"}'::jsonb
+            WHEN i % 100 = 0 THEN '{"x":1}'::jsonb ELSE '{}'::jsonb END,
+       CASE WHEN i % 100 = 99 THEN 1 END
+FROM generate_series(1, 1000) i;
+CREATE INDEX exr_col ON exr USING sift_col (id, org, kind, amount, marker, stamp)
+  WITH (key_cut = 'org', key_cut_rows = 100, paths = 'marker.x bigint', superunit = 0);
+VACUUM (FREEZE, ANALYZE) exr;
+-- @end
+
 -- ORDER BY leaves, then columns the index does not hold (TOPN_TIES, docs/USAGE.md): ties and NULLs in the leaves, and updates that make a tie group the statistics do not know
 CREATE TABLE trf (id int, k int, d date, t timestamp, w bigint, x float8, s text, pad text) WITH (autovacuum_enabled = false);
 CREATE FUNCTION fz.gen_trf(lo bigint, hi bigint, salt int) RETURNS SETOF trf LANGUAGE sql AS $$

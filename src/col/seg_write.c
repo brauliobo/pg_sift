@@ -509,7 +509,7 @@ add_excepts(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols
 		if (w->schema->cols[c].parent >= 0)
 			eoff[c] = b->col[w->schema->cols[c].parent].eoff;
 	if (w->excepts &&
-		sift_cpagg_excepts(w->schema, &w->pagg, cols, eoff, b->nrows, (const uint8 *) w->cube.data + cubeat, w->cube.len - cubeat,
+		sift_cpagg_excepts(w->schema, &w->pagg, cols, eoff, b->nrows, -1, (const uint8 *) w->cube.data + cubeat, w->cube.len - cubeat,
 						   (const uint8 *) w->ecube.data + ecubeat, w->ecube.len - ecubeat, &w->xcube, &w->xecube))
 		w->anyexc = true;
 	w->xcubeoff[w->nsb + 1] = w->xcube.len;

@@ -970,23 +970,32 @@ sift_cpagg_check(const SiftColSchema *s, const SiftCPaggCol *cols, uint32 nrows,
 	return ok;
 }
 
-/* The exceptions a unit stores are what sift_cpagg_excepts makes of its columns and its own blobs (none: none stored) */
+/* Exceptions are optional. Rebuild the stored leaf: older writers could skip an earlier candidate whose reused overflow bitmap was empty. */
 bool
 sift_cpagg_check_excepts(const SiftColSchema *s, const SiftCPaggCol *cols, const uint32 *const *eoff, uint32 nrows, const uint8 *blob, uint32 len,
 						 const uint8 *eblob, uint32 elen, int format, const uint8 *xblob, uint32 xlen, const uint8 *xeblob, uint32 xelen)
 {
+	Rd			rd = {xblob, xblob ? xblob + xlen : NULL, false};
+	uint64		leaf;
 	SiftCPaggSpec spec;
 	StringInfoData xa,
 				xb;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
-	bool		ok = spec_of(s, blob, len, eblob, elen, format, cx, &spec);
+	MemoryContext cx;
+	bool		ok;
 
+	if (xlen == 0)
+		return xelen == 0;
+	leaf = get_u(&rd);
+	if (rd.bad || leaf >= (uint64) s->ncols)
+		return false;
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift preagg check", ALLOCSET_SMALL_SIZES);
+	ok = spec_of(s, blob, len, eblob, elen, format, cx, &spec);
 	MemoryContextDelete(cx);
 	if (!ok)
 		return false;
 	initStringInfo(&xa);
 	initStringInfo(&xb);
-	sift_cpagg_excepts(s, &spec, cols, eoff, nrows, blob, len, eblob, elen, &xa, &xb);
+	sift_cpagg_excepts(s, &spec, cols, eoff, nrows, (int) leaf, blob, len, eblob, elen, &xa, &xb);
 	ok = same_bytes(&xa, xblob, xlen) && same_bytes(&xb, xeblob, xelen);
 	pfree(xa.data);
 	pfree(xb.data);
