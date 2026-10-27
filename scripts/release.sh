@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The release, from a green head to the published assets and the AUR, in one command.
 #
-#   scripts/release.sh VERSION [--dry-run] [--resume]
+#   scripts/release.sh VERSION [--dry-run] [--resume] [--skip-ci]
 #
 # It does not run the test matrix again: GitHub CI is the gate. In this order, stopping at the first failure:
 #   preflight  clean tree on main, equal to origin/main; the notes (docs/releases/vVERSION.md), CHANGELOG, control and SQL scripts are in place
@@ -13,13 +13,15 @@
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
 # A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
+# --skip-ci leaves out the ci check only, for a release whose CI the person releasing accepts as it is (no full-scope run, or a lighter one): it prints
+#   ci: SKIPPED by --skip-ci (no green full-scope run required), records it in the manifest (--resume and the last line show it), and every other check runs.
 # Environment: RELEASE_TMP (scratch, default ~/.cache), SIFT_PORT (first port of two, default 56210), AUR_SSH_KEY, SSH_ASKPASS (release-aur.sh).
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-VERSION='' DRY='' RESUME=''
+VERSION='' DRY='' RESUME='' SKIPCI=''
 for a in "$@"; do
-	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; -h|--help) sed -n '2,19p' "$0"; exit 0 ;; -*) sed -n '2,19p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
+	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; -h|--help) sed -n '2,21p' "$0"; exit 0 ;; -*) sed -n '2,21p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
 done
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
 MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} TAG=v$VERSION
@@ -31,6 +33,7 @@ fi
 STATE=${RELEASE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/pg_sift-release}/$VERSION${DRY:+.dry}
 MAN=$STATE/manifest PORT0=${SIFT_PORT:-56210}
 # the build inputs of the shipped files: a CI run whose commit differs from HEAD in none of them is evidence for HEAD (notes, versions and docs are not inputs)
+CI_SKIPPED='ci: SKIPPED by --skip-ci (no green full-scope run required)'
 GUARDED=(src test scripts Makefile pg_sift.control 'sql/pg_sift--*.sql' sqlite mariadb ':!*.md' ':!*/VERSION' ':!scripts/release*')
 log() { printf '[%s] %s\n' "$(date +%T)" "$*" >&2; }
 die() { echo "release: $*" >&2; exit 1; }
@@ -84,6 +87,7 @@ preflight() {
 # commit has the build inputs of HEAD (a rebase merge, a revert or a docs commit after it change no input). A run in progress on such a commit is waited for; with none, one is dispatched.
 check_ci() {
 	local id sha st wait prev latest dispatched='' n
+	[[ -z $SKIPCI ]] || { echo "$CI_SKIPPED"; return 0; }
 	latest() { gh run list --workflow ci.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'; }
 	while :; do
 		wait=
@@ -184,6 +188,7 @@ check_versions() {
 }
 checks() {
 	local n names=(ci upgrade package) rc=0
+	[[ -z $SKIPCI ]] || { log "$CI_SKIPPED"; printf 'ci\tskipped\t--skip-ci\t0s\t%s\n' "$(date '+%F %T')" >>"$MAN"; }
 	( exec 9>/tmp/sift-ci.lock; flock -n 9 || { log "waiting for /tmp/sift-ci.lock"; flock 9; }
 	  check_upgrade >"$W/upgrade.log" 2>&1 & p1=$!; check_package >"$W/package.log" 2>&1 & p2=$!
 	  r=0; wait $p1 || r=1; wait $p2 || r=1; exit $r ) &
@@ -258,6 +263,8 @@ aur() {
 
 preflight
 T0=$SECONDS
+ci_skipped() { cut -f1-2 "$MAN" 2>/dev/null | grep -qx $'ci\tskipped'; }
+[[ -z $RESUME ]] || ! ci_skipped || log "$CI_SKIPPED (recorded in the manifest)"
 step checks "$(g log -1 --format=%H -- "${GUARDED[@]}")" checks || exit 1
 step bump "$VERSION" bump || exit 1
 step publish "$VERSION" publish || exit 1
@@ -265,4 +272,4 @@ step workflow "$VERSION" workflow || exit 1
 step assets "$VERSION" assets || exit 1
 step aur "$VERSION" aur || exit 1
 printf 'done\t%s\t%ss\n' "$VERSION" $((SECONDS - T0)) >>"$MAN"
-echo "release: $VERSION ${DRY:+(dry run) }done in $((SECONDS - T0)) s"
+echo "release: $VERSION ${DRY:+(dry run) }done in $((SECONDS - T0)) s$(ci_skipped && echo ", $CI_SKIPPED")"
