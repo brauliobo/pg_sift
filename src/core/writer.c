@@ -232,6 +232,29 @@ sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec)
 	wt->wal_t0 = GetCurrentTimestamp();
 }
 
+void
+sift_nap(long ms)
+{
+	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, PG_WAIT_EXTENSION);
+	ResetLatch(MyLatch);
+	CHECK_FOR_INTERRUPTS();
+}
+
+bool
+sift_nap_until(bool (*ready) (void *arg), void *arg)
+{
+	long		delay = sift_maintenance_naptime;
+
+	for (int tries = 0; !ready(arg); tries++)
+	{
+		if (tries == 8)
+			return false;
+		sift_nap(delay);
+		delay *= 2;
+	}
+	return true;
+}
+
 /* Sleeps until the WAL the backend wrote since the target was limited is within what its rate allows for the time that went by */
 static void
 wt_wal_wait(SiftWriteTarget *wt)
@@ -243,9 +266,7 @@ wt_wal_wait(SiftWriteTarget *wt)
 
 		if (ahead <= 0)
 			return;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Min(ahead, 1000), PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(Min(ahead, 1000));
 	}
 }
 
@@ -263,9 +284,7 @@ sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 	charged += pages;
 	for (; charged >= THROTTLE_PAGES; charged -= THROTTLE_PAGES)
 	{
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, wt->delay_ms, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(wt->delay_ms);
 	}
 }
 

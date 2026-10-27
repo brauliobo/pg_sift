@@ -668,21 +668,16 @@ sift_maint_busy(int max_active)
 	return n > max_active;
 }
 
+static bool
+not_busy(void *max_active)
+{
+	return !sift_maint_busy(*(int *) max_active);
+}
+
 bool
 sift_maint_wait_quiet(int max_active)
 {
-	long		delay = sift_maintenance_naptime;
-
-	for (int tries = 0; sift_maint_busy(max_active); tries++)
-	{
-		if (tries == 8)
-			return false;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-		delay *= 2;
-	}
-	return true;
+	return sift_nap_until(not_busy, &max_active);
 }
 
 Oid
@@ -753,10 +748,7 @@ sift_maint_worker_main(Datum main_arg)
 			CHECK_FOR_INTERRUPTS();
 		if (r == SIFT_STEP_FAILED || left <= 0)
 			break;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)), PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(Min(left, Min(Max(sift_maintenance_naptime / 20, 100), 1000)));
 	}
 }
 

@@ -278,9 +278,7 @@ vacuum_worker(Datum main_arg, bool asked)
 		CommitTransactionCommand();
 		if (state != TABLE_DUE)
 		{
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, sift_maintenance_naptime, PG_WAIT_EXTENSION);
-			ResetLatch(MyLatch);
-			CHECK_FOR_INTERRUPTS();
+			sift_nap(sift_maintenance_naptime);
 		}
 	}
 }

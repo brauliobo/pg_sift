@@ -491,9 +491,7 @@ lookshm_claim(const char *key, MemoryContext mcxt)
 		if (TimestampDifferenceExceeds(start, GetCurrentTimestamp(), LOOKSHM_WAIT_MS))
 			return false;
 		waited = true;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, LOOKSHM_POLL_MS, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(LOOKSHM_POLL_MS);
 	}
 	if (r->taken)
 	{

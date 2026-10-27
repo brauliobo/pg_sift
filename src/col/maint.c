@@ -1273,31 +1273,13 @@ sift_col_maint_worker_main(Datum main_arg)
 	PG_END_TRY();
 }
 
-/* Waits as sift_maint_wait_quiet does, until ready() says so; False: it stayed not ready, and the next VACUUM asks again */
-static bool
-wait_until(bool (*ready) (void))
-{
-	long		delay = sift_maintenance_naptime;
-
-	for (int tries = 0; !ready(); tries++)
-	{
-		if (tries == 8)
-			return false;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, delay, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
-		delay *= 2;
-	}
-	return true;
-}
-
 /*
  * sift.col_auto_merge_max_workers: a worker rewrites while it holds one of that many session locks of the database (advisory locks of the keys
  * REWRITE_SLOT_KEY + slot, which the server drops when the worker ends, whatever the way), so no more than that many rewrite at a time, whichever
  * indexes they are for.
  */
 static bool
-take_slot(void)
+take_slot(void *arg)
 {
 	for (int s = 0; s < sift_col_auto_merge_max_workers; s++)
 	{
@@ -1319,7 +1301,7 @@ sift_col_rewrite_worker_main(Datum main_arg)
 	MemoryContext cx = CurrentMemoryContext;
 
 	/* sift.col_auto_merge_max_active, then a slot of sift.col_auto_merge_max_workers; False: it stayed busy, and the next VACUUM asks again */
-	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !wait_until(take_slot))
+	if (!sift_maint_wait_quiet(sift_col_auto_merge_max_active) || !sift_nap_until(take_slot, NULL))
 		return;
 	PG_TRY();
 	{

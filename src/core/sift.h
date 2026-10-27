@@ -164,6 +164,10 @@ extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_rls_scores;
 extern PGDLLIMPORT bool sift_async_maintenance;
 extern PGDLLIMPORT int sift_maintenance_naptime;
+/* Sleeps ms milliseconds on the process latch, interruptibly */
+extern void sift_nap(long ms);
+/* Naps sift.maintenance_naptime, doubled each time, until ready(arg) says so; false: it stayed not ready after 8 naps, and the next VACUUM asks again */
+extern bool sift_nap_until(bool (*ready) (void *arg), void *arg);
 extern PGDLLIMPORT int sift_maintenance_cost_delay;
 extern PGDLLIMPORT int sift_maintenance_wal_rate;
 extern PGDLLIMPORT int sift_vacuum_rewrite_limit;

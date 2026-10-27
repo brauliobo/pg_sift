@@ -94,9 +94,7 @@ pass_delay(void)
 		ahead -= TimestampDifferenceMilliseconds(pass_start, GetCurrentTimestamp());
 		if (ahead <= 0)
 			break;
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Min(ahead, 1000), PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(Min(ahead, 1000));
 	}
 }
 
@@ -849,9 +847,7 @@ maint_worker(Datum main_arg, WorkerPass first)
 	{
 		BlockNumber before = r.blocks_after;
 
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, Max(sift_maintenance_naptime / 4, 100), PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-		CHECK_FOR_INTERRUPTS();
+		sift_nap(Max(sift_maintenance_naptime / 4, 100));
 		if (!sift_maint_wait_quiet(pass_max_active))
 			break;
 		if (!worker_pass(relid, first == PASS_SETTLE ? PASS_SETTLE : PASS_SPACE, &r))
