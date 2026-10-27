@@ -675,6 +675,12 @@ process_unit(AggExec *ex)
 		sift_colk->bits_count(rmask, (nrow + 63) / 64) * NARROW_RATIO < nrow)
 		unit_narrow(ex, &rmask, &nrow);
 	unit_conjuncts(ex, rmask, cand, nrow);
+	/* the conjuncts the executor tests (an OR of ranges, an expression) can leave no row: the group's counts, owners and chunks are not read for a unit that holds none */
+	if (!cand && !sift_colk->bits_count(rmask, (nrow + 63) / 64))
+	{
+		ex->row_base += nrow;
+		return;
+	}
 	if (ex->spec->group >= 0)
 		unit_elems(ex, rmask, nrow);
 	else

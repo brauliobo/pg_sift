@@ -1,0 +1,61 @@
+-- A unit whose rows the executor's own conjuncts all reject (an expression of the zone cannot refuse, an OR the source cannot apply) is left after the
+-- conjuncts without reading the counts, owners and chunks of its element group. The answers stay those of the heap: a group by, a left lateral
+-- (rows with no element), a distinct count and an aggregate with no group, when some units, none or every unit is emptied.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE ev (id int PRIMARY KEY, prop_id int, day date, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 1 + i % 40, '2026-01-01'::date + i % 90,
+       CASE WHEN i % 5 = 0 THEN '[]'::jsonb ELSE (SELECT jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 7), 'n', (i * k) % 9)) FROM generate_series(1, 1 + i % 4) k) END
+FROM generate_series(1, 6000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, prop_id, day, items) WITH (paths = 'items[]{kind text, n int4}');
+VACUUM ANALYZE ev;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_preagg = off;
+SET sift.agg_force = on;
+
+CREATE TABLE s_q (name text, q text);
+INSERT INTO s_q VALUES
+ ('some units', $q$SELECT i.kind, count(*) AS n, sum(i.n) AS s, count(DISTINCT e.id) AS d FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int)
+   WHERE e.id + 0 BETWEEN 1200 AND 1800 OR e.id + 0 BETWEEN 4000 AND 4100 GROUP BY 1 ORDER BY 1$q$),
+ ('left lateral', $q$SELECT i.kind, count(*) AS n, count(e.id) AS ids FROM ev e LEFT JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) ON true
+   WHERE e.id + 0 BETWEEN 1200 AND 1800 OR e.id + 0 BETWEEN 4000 AND 4100 GROUP BY 1 ORDER BY 1$q$),
+ ('no group', $q$SELECT count(*) AS n, sum(n) AS s, count(DISTINCT kind) AS k FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int)
+   WHERE e.id + 0 BETWEEN 1200 AND 1800 OR e.id + 0 BETWEEN 4000 AND 4100$q$),
+ ('rows only', $q$SELECT prop_id, count(*) AS n, sum(id) AS s FROM ev e WHERE e.id + 0 BETWEEN 1200 AND 1800 OR e.id + 0 BETWEEN 4000 AND 4100 GROUP BY 1 ORDER BY 1$q$),
+ ('every unit empty', $q$SELECT count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 < 0$q$),
+ ('every unit empty, grouped', $q$SELECT i.kind, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 < 0 GROUP BY 1$q$),
+ ('no unit empty', $q$SELECT i.kind, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 > 0 GROUP BY 1 ORDER BY 1$q$);
+
+-- the scan runs (SiftAgg), and its rows are the heap's
+CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || qq LOOP
+		IF l ~ 'SiftAgg' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE b bigint;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	EXECUTE 'CREATE TEMP TABLE s_a ON COMMIT DROP AS ' || qq;
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	EXECUTE 'CREATE TEMP TABLE s_b ON COMMIT DROP AS ' || qq;
+	EXECUTE 'SELECT count(*) FROM ((SELECT * FROM s_a EXCEPT ALL SELECT * FROM s_b) UNION ALL (SELECT * FROM s_b EXCEPT ALL SELECT * FROM s_a)) d' INTO b;
+	DROP TABLE s_a, s_b;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN b;
+END $$;
+SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;
+
+SET sift.enable_agg = on;
+SELECT i.kind, count(*) AS n, sum(i.n) AS s, count(DISTINCT e.id) AS d FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int)
+   WHERE e.id + 0 BETWEEN 1200 AND 1800 OR e.id + 0 BETWEEN 4000 AND 4100 GROUP BY 1 ORDER BY 1;
+SELECT count(*), sum(i.n) FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 < 0;
+
+RESET sift.enable_agg;
+DROP FUNCTION s_scan(text), s_diff(text);
+DROP TABLE s_q, ev;
+DROP EXTENSION pg_sift;
