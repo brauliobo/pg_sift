@@ -98,6 +98,7 @@
 #define AGG_REAL_JSON		70.0	/* the same for a function that builds a jsonb value: 1,400 instructions measured for jsonb_build_array of one element, against 100 for an fmgr call */
 #define AGG_PLAIN_CREDIT	0.5		/* the share of the normal plan's under-priced evaluation the scan is credited with */
 #define AGG_BYTE			0.1		/* a stored byte read and decompressed: about 0.3 ns, 3 GB/s */
+#define AGG_UNNEST_FLOOR	100.0	/* the rows PostgreSQL expects of an unnesting function over one row (jsonb_array_elements, jsonb_each): the join of a lookup it has no statistics for is that many */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
 #define AGG_UNIT_COST		200.0
 #define AGG_PREAGG_HLL		40000.0	/* a unit's stored sketch merged into the aggregate's: up to 16,384 registers unpacked and maxed (about 60 us for a dense one) */
@@ -2586,6 +2587,76 @@ group_bytes(const SiftAggSpec *s, double *state)
 		vals += get_typavgwidth(s->key[j].typid, s->key[j].typmod);
 	*state += vals;
 	return b * AGG_GROUP_SLACK + s->nkeys * AGG_GROUP_KEY_BYTES + vals;
+}
+
+/*
+ * The groups the scan makes when PostgreSQL's rows of its join are the floor it gives an unnesting function over a lookup it has no statistics for (a CTE or
+ * sub-select of ids is one row, the function 100): the rows of the table keep hundreds of thousands, and the groups cannot be more than they hold. The tuples that
+ * reach the groups are taken at the geometric mean of the floor and the elements of the table's rows (the lookup can only narrow them), and the groups are no
+ * more than the combinations of the values the keys read: the distinct values of the index for a leaf (the fields of one element go together), PostgreSQL's
+ * statistics for a column, the buckets of a calendar key. 0: PostgreSQL's rows stand (grouping sets, a key no leaf gives, a leaf whose values are not known).
+ */
+double
+tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel)
+{
+	double		rows = Max(input_rel->rows, 1.0),
+				scan = Max(c->rel->rows, 1.0) * (s->group >= 0 ? elems_of(c, s->group) : 1.0),
+				nd = 1.0,
+				parent_nd[SIFT_COLSRC_MAX_LEAVES] = {0};
+	Bitmapset  *seen = NULL;
+	int			nbase = c->lay->nleaves - c->nvleaf;
+
+	if (s->group < 0 || s->nsets > 0 || rows > AGG_UNNEST_FLOOR || scan <= rows)
+		return 0;
+	for (int j = 0; j < s->nkeys; j++)
+	{
+		const SiftAggKey *k = &s->key[j];
+		double		b = key_groups(c, k);
+		int			leaves[SIFT_AGG_MAX_CLEAVES],
+					nleaves = 0;
+
+		if (b > 0)
+		{
+			nd *= b;
+			continue;
+		}
+		if (k->kind == SAK_LEAF || k->kind == SAK_LUT)
+			leaves[nleaves++] = k->leaf;
+		else if (k->kind == SAK_COMBO)
+			for (int i = 0; i < s->combo[k->leaf].nleaves; i++)
+				if (s->combo[k->leaf].leaf[i] >= 0)
+					leaves[nleaves++] = s->combo[k->leaf].leaf[i];
+		if (nleaves == 0)
+			return 0;
+		for (int i = 0; i < nleaves; i++)
+		{
+			const SiftSrcLeaf *lf;
+			Node	   *e;
+			double		d;
+
+			if (leaves[i] >= nbase || bms_is_member(leaves[i], seen))
+				continue;
+			seen = bms_add_member(seen, leaves[i]);
+			lf = &c->lay->leaf[leaves[i]];
+			if (lf->parent >= 0 || lf->path != NIL)
+			{
+				if ((d = c->stats.ndistinct[leaves[i]]) <= 0)
+					return 0;
+				if (lf->parent >= 0)
+				{
+					parent_nd[lf->parent] = Max(parent_nd[lf->parent], d);
+					continue;
+				}
+			}
+			else if ((e = list_nth(c->attexpr, lf->attno - 1)) == NULL || !IsA(e, Var) || (d = column_distinct(c, (Var *) e)) <= 0)
+				return 0;
+			nd *= d;
+		}
+	}
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES; i++)
+		if (parent_nd[i] > 0)
+			nd *= parent_nd[i];
+	return Max(Min(sqrt(rows * scan), nd), 1.0);
 }
 
 /*

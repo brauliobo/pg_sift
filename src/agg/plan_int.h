@@ -421,6 +421,7 @@ extern void pred_deps(PlannerInfo *root, SiftAggPred *p);
 extern bool out_walker(Node *n, OutWalk *w);
 
 extern double elems_of(AggCtx *c, int grp);
+extern double tuple_group_count(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel);
 extern double preagg_share(AggCtx *c, SiftAggSpec *s);
 extern double zone_sample_kept(AggCtx *c, SiftAggSpec *s, List **rest);
 extern double in_list_table_bytes(AggCtx *c, const SiftAggPred *p);
