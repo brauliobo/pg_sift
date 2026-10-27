@@ -240,7 +240,7 @@ CC_FN(prefix64)(const uint32 *a, uint32 n, int64 *dst, int64 first, int64 add)
 static inline uint32
 CC_FN(max32)(const uint32 *a, uint32 n)
 {
-	cc_vu32		m = {};
+	cc_vu32		m __attribute__((aligned(CC_VB))) = {};	/* read by lane below, so it lives on the stack: aligned as cc_row_t */
 	uint32		i = 0,
 				r = 0;
 
