@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: a scan whose workers the planner prices for the rows it reads kept one process only when the units it keeps times the average unit of the index were fewer than `sift.agg_par_min_rows`, and the average unit of an index built by workers is several times the real one (its statistics count the superblocks the segments span, not the units they hold), so a scan of a few thousand rows started workers that cost more than the scan (4.2 ms with 2 workers, 0.2 ms alone, 4,500 rows). The floor now compares the rows of the units the scan keeps, which the unit directory holds.
+
 ## 3.5.0 - 2026-10-27
 
 - Fixed: pg_sift: a partitioned table whose partitions did not choose the same rollup of the rows (`rollup_dims = auto` picks it from each partition's data, so a partition attached later with few rows has none) lost the single `Custom Scan (SiftAgg)` over its partitions; the scan now keeps the rollups every partition has and reads the others by their rows.

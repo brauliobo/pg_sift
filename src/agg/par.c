@@ -152,6 +152,7 @@ typedef struct SkipMap
 	bool		ok;
 	uint32		nsb;
 	uint64	   *kept;
+	uint64		rows;			/* the rows of the units kept */
 } SkipMap;
 
 static SkipMap *
@@ -166,7 +167,7 @@ skip_map(AggExec *ex)
 		m = ex->skip = MemoryContextAllocZero(ex->cxt, sizeof(SkipMap));
 		m->nsb = nsb;
 		m->kept = MemoryContextAllocZero(ex->cxt, (nsb + 63) / 64 * sizeof(uint64));
-		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept);
+		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept, &m->rows);
 	}
 	return m;
 }
@@ -656,7 +657,8 @@ select_stmt(AggExec *ex, Plan *tree)
  * reads (workers_ratio: PostgreSQL counts the join of its lookups at a handful of rows) keeps one process when the units it keeps hold fewer rows than
  * sift.agg_par_min_rows: a few rows take less than the workers do to start and merge, and the lists the planner has no statistics for may keep
  * a handful of units. 300,000 rows of 900 bytes, 60 units kept (65,000 rows): 40 ms alone, 58 with 4 workers; 276 units: 493 and 328; 101,000 rows
- * of unnested documents: 990 ms alone, 750 with 4.
+ * of unnested documents: 990 ms alone, 750 with 4. The rows are those of the units kept, not their number times the average unit of the index: units
+ * cut by a key hold a few hundred rows for a small key and hundreds of thousands for a large one.
  */
 int			sift_agg_par_min_rows = 80000;
 
@@ -664,16 +666,11 @@ static bool
 par_scan_small(AggExec *ex)
 {
 	SkipMap    *m;
-	uint32		kept = 0;
 
 	if (ex->spec->wide_unit_rows <= 0)
 		return false;
 	m = skip_map(ex);
-	if (!m->ok)
-		return false;
-	for (uint32 w = 0; w < (m->nsb + 63) / 64; w++)
-		kept += pg_popcount64(m->kept[w]);
-	return kept * ex->spec->wide_unit_rows < sift_agg_par_min_rows;
+	return m->ok && m->rows < sift_agg_par_min_rows;
 }
 
 /* Starts the workers of the plan; the leader scans alone when none could be launched */

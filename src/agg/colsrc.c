@@ -383,9 +383,9 @@ sift_colsrc_begin(SiftSrcSource *src, uint32 sb_lo, uint32 sb_hi, const SiftSrcP
 }
 
 bool
-sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
+sift_colsrc_kept(SiftSrcSource *src, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint64 *rows)
 {
-	return src->prov->kept != NULL && src->prov->kept(src->impl, prune, nprune, nspace, kept);
+	return src->prov->kept != NULL && src->prov->kept(src->impl, prune, nprune, nspace, kept, rows);
 }
 
 bool

@@ -422,13 +422,13 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 }
 
 static bool
-col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept)
+col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint64 *kept, uint64 *rows)
 {
 	ColSource  *src = impl;
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept);
+	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept, rows);
 }
 
 static bool

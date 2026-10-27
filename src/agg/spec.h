@@ -565,7 +565,7 @@ typedef struct SiftAggSpec
 	double		est_groups;
 	double		est_rows;		/* the rows the planner expects to aggregate: with est_groups, what a group of a count(DISTINCT) can hold */
 	int			nworkers;		/* parallel workers the plan asks for (0: the leader scans alone) */
-	double		wide_unit_rows;	/* the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins (workers_ratio): the rows of a unit, with which par_launch keeps one process for a scan of few rows; 0 where they are not */
+	double		wide_unit_rows;	/* the workers are priced for the rows the scan reads, not for the tuples PostgreSQL expects of the joins (workers_ratio): the rows of a unit, > 0 where they are, and then par_launch keeps one process for a scan of few rows; 0 where they are not */
 	const char *serial;			/* why the plan asks for none whatever the cost, for EXPLAIN VERBOSE (the planner's reasons; sift_aggspec_serial_reason has those of the spec); else NULL */
 	char	   *desc_quals;		/* EXPLAIN: the conjuncts, as text */
 	Node	   *search;			/* BM25 match set the rows are restricted to: a List of the index Oid (Const) and the query operands (docs/COL-SEARCH.md); NULL: none */
