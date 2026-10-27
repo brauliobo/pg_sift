@@ -58,6 +58,7 @@ typedef struct CountAcc
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
 #define LST_MIN_UNITS		64		/* a segment of fewer units keeps no leaf statistics: its zone arrays are a few pages */
+#define LST_SHARE_DIV		33		/* the leaf statistics take at most 1/33 (3%) of the segment: units of a few rows and many leaves keep none */
 /* the dictionaries written in blocks that their leaves did not ask for (DICT_BLOCKS, not DICT_LOOKUP) add together at most 1/33 (3%) of the segment (what it wrote before the dictionaries, and these in the compact form) */
 #define CDICT_BLOCKS_BUDGET_DENOM	33
 /* an estimate of the blocks over this share of the compact form (1/6) is not worth serializing them for */
@@ -1565,7 +1566,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		write_vers(w);
 	h.sections[SIFT_SEC_DOCMAP].len = sift_sw_tell(w->sw) - h.sections[SIFT_SEC_DOCMAP].off;
 	/* the leaf statistics follow the last section, where no reader of an older minor looks (the directory entry says they are there); 3% of the segment at most */
-	if (w->lst != NULL && w->lstlen * 33 <= sift_sw_tell(w->sw))
+	if (w->lst != NULL && w->lstlen * sift_limit(lst_share_div, LST_SHARE_DIV) <= sift_sw_tell(w->sw))
 	{
 		sw_pad8(w->sw);
 		sift_sw_write(w->sw, w->lst, w->lstlen);

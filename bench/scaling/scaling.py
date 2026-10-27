@@ -127,8 +127,14 @@ def run_case(name, c, args, rows, sizes_override):
                     failed = True
                 print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
                 rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
-                if q.first_plan and fb is not None:
-                    rows.setdefault((name, q.name + '[first-plan buffers]', eng, None if q.first_plan == 'info' else q.first_plan), []).append((size, fb))
+                if q.first_plan:
+                    # the first plan of a fresh backend: folded from the segment's leaf statistics block (the shared table of the server is off for the session), and
+                    # taken from that shared table, which the statement above has filled (the default of a server)
+                    sets = [f'search_path = scal_{name}, public'] + ENGINES[eng]
+                    for label, extra in (('first-plan buffers', ['sift.col_leaf_cache_kb = 0']), ('first-plan buffers, shared', [])):
+                        r1, _ = explain(q.sql(size), sets + extra, 0)
+                        if r1 is not None and r1[3] is not None:
+                            rows.setdefault((name, f'{q.name}[{label}]', eng, None if q.first_plan == 'info' else q.first_plan), []).append((size, r1[3]))
                 if q.units and g('Units'):
                     rows.setdefault((name, q.name + '[units]', eng, None if q.units == 'info' else q.units), []).append((size, int(g('Units'))))
     if not args.keep:
@@ -143,7 +149,9 @@ def summary(rows, failed):
         slope, last, v = verdict(pts, target)
         v = 'NOSIFT' if eng == 'sift' and (name, qn) in nosift else v
         extra = pts[-1][1] * (64 ** max(last, 0))
-        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}{"units" if qn.endswith("[units]") else "buffers" if qn.endswith("[first-plan buffers]") else "ms"}', flush=True)
+        if '[first-plan buffers' in qn:
+            print(f'POINTS {name}/{qn} ' + ' '.join(f'{n}={int(b)}' for n, b in pts), flush=True)
+        print(f'SLOPE {name}/{qn} {eng} slope={slope:.2f} last={last:.2f} target={target or "-"} {v} x64={extra:.1f}{"units" if qn.endswith("[units]") else "buffers" if "[first-plan buffers" in qn else "ms"}', flush=True)
         failed |= eng == 'sift' and v == 'FAIL'
     sys.exit(1 if failed else 0)
 

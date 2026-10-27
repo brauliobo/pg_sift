@@ -7,7 +7,7 @@ from model import Case, Query
 PAGES = int(os.environ.get('SCALING_UNIT_PAGES', 256))
 ROWS = PAGES                                 # rows (= pages) of a unit
 print(f'# units: {PAGES} heap pages a unit', file=sys.stderr)
-WIDE = 16                                    # leaves besides id, g and v: what a plan sums over the units of a segment grows with them (the first plan of a backend, first_plan)
+WIDE = 28                                    # leaves besides id, g and v: what a plan sums over the units of a segment grows with them (the first plan of a backend, first_plan)
 WIDE_DEF = ', '.join(f'c{k} int' for k in range(WIDE))
 WIDE_VAL = ', '.join(f'i % {7 + k}' for k in range(WIDE))
 WIDE_COLS = ', '.join(f'c{k}' for k in range(WIDE))
@@ -23,6 +23,13 @@ vacuum freeze t;"""
 
 def at(size):
     return f"drop index if exists ix; create index ix on t using sift_col (id, g, v, {WIDE_COLS}) with (point_columns = 'id') where id <= {size * ROWS};"
+
+
+# The gate's units hold 8 rows, so the leaf statistics block (16 bytes of sample a unit and leaf) is near the 3% of the segment it may take and some sizes keep it, some
+# do not: the gate builds its indexes with the share lifted to a quarter and fails if a segment of 64 units or more is left without the block (it measures the first plan the block gives)
+def at_gate(size):
+    return (f"set sift.test_limits = 'lst_share_div=4'; {at(size)} reset sift.test_limits; "
+            "do $$ begin if not (select bool_and(f.lstats or s.units < 64) from sift._test_col_formats('ix'::regclass) f join sift.col_segments('ix') s on s.gen = f.gen) then raise exception 'a segment of the index has no leaf statistics block'; end if; end $$;")
 
 
 def q(name, body, target='flat', first_plan=None):
@@ -55,7 +62,7 @@ def tids_match(keys):
                          f"from sift._test_col_tids('ix'::regclass, '0:in:{'|'.join(map(str, keys))}', 0)"]
 
 
-GATE = [Case('units', [512, 1024, 2048, 4096, 8192], setup=setup, at=at, native=False, unit='units',
+GATE = [Case('units', [512, 1024, 2048, 4096, 8192], setup=setup, at=at_gate, native=False, unit='units',
              check=lambda size: [f"select count(*), sum(v) from t where id <= {size * ROWS}"] + tids_match([777])(size) + tids_match([1000 + 37 * i for i in range(51)])(size), queries=[
     # the first plan of a backend reads the leaf statistics of the segment (a block of its own, not the zones of every unit): flat in the units
     q('one_unit', "g, count(*), sum(v) from t where id between 1000 and 1100 and id <= {bound} group by g", first_plan='plan'),

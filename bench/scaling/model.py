@@ -3,8 +3,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
-TARGETS = {'flat': 0.50, 'linear': 1.15, 'plan': 0.15}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only. plan: the buffers of a first plan, a
-# floor of catalogs and the census with a small part that grows with the units: 0.08 with the leaf statistics block, 0.26 when the plan reads the zones of every unit
+TARGETS = {'flat': 0.50, 'linear': 1.15, 'plan': 0.20}      # largest log-log slope that still passes (margin over the measured 0.1-0.4 and 0.8-1.05); None = information only. plan: the buffers of a first plan, a
+# floor of catalogs and the census (about 1,000 for 31 leaves) with a part that grows with the units: 0.14 to 0.15 with the leaf statistics block, 0.27 to 0.35 when the plan reads the zones of every unit
 FLOOR_MS = 0.5                                # below this at every size the slope is noise: PASS
 
 
