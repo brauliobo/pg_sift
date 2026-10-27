@@ -19,6 +19,7 @@
 #include "bm25/kernels.h"
 #include "table/table.h"
 #include "core/popcount.h"
+#include "core/cmp.h"
 #include "core/cpu.h"
 #include "core/store.h"
 #include "core/visibility.h"
@@ -294,15 +295,7 @@ sift_vis_range_allvisible(SiftVis *v, BlockNumber lo, BlockNumber hi)
 	if (v->ndirty < 0)
 		return false;
 	b = v->ndirty;
-	while (a < b)				/* the first dirty page >= lo */
-	{
-		uint32		mid = (a + b) / 2;
-
-		if (v->dirty[mid] < lo)
-			a = mid + 1;
-		else
-			b = mid;
-	}
+	SIFT_BISECT(uint32, mid, a, b, v->dirty[mid] < lo);	/* the first dirty page >= lo */
 	return (a == (uint32) v->ndirty || v->dirty[a] > hi) && dir_current(v);
 }
 

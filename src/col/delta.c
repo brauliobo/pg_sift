@@ -16,6 +16,7 @@
 #include "col/pagg.h"
 #include "col/scan_int.h"
 #include "core/popcount.h"
+#include "core/cmp.h"
 
 typedef struct ColDelta
 {
@@ -220,15 +221,7 @@ find_key(const int64 *key, uint32 nk, int64 v)
 	uint32		lo = 0,
 				hi = nk;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (key[mid] < v)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, key[mid] < v);
 	return lo < nk && key[lo] == v ? (int64) lo : -1;
 }
 
@@ -342,15 +335,7 @@ sift_col_unit_dead_rollup(const SiftColUnit *unit, SiftCRollup *r)
 		uint32		lo = 0,
 					hi = r->ntuples;
 
-		while (lo < hi)
-		{
-			uint32		mid = lo + (hi - lo) / 2;
-
-			if (row_cmp(r, mid, dim, j) < 0)
-				lo = mid + 1;
-			else
-				hi = mid;
-		}
+		SIFT_BISECT(uint32, mid, lo, hi, row_cmp(r, mid, dim, j) < 0);
 		if (lo >= r->ntuples || row_cmp(r, lo, dim, j) != 0 || r->count[lo] == 0)
 			return false;
 		r->count[lo]--;

@@ -25,6 +25,7 @@
 #include "col/seg.h"
 #include "core/visibility.h"
 #include "col/scan_int.h"
+#include "core/cmp.h"
 
 static bool
 range_any(const uint64 *bits, uint32 lo, uint32 hi)
@@ -82,16 +83,7 @@ run_bound(const RunProbe *rp, uint32 from, int64 key, bool upper)
 	uint32		lo = from,
 				hi = rp->nvals;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-		int64		k = run_key(rp, mid);
-
-		if (upper ? k <= key : k < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, upper ? run_key(rp, mid) <= key : run_key(rp, mid) < key);
 	return lo;
 }
 

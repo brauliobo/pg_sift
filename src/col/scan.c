@@ -1914,15 +1914,7 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 
 	if (i < src->nseg)
 		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after);
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (after ? g->key[mid] <= key : g->key[mid] < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
 	return lo;
 }
 

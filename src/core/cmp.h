@@ -5,6 +5,7 @@
 #ifndef SIFT_CMP_H
 #define SIFT_CMP_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -53,5 +54,16 @@ sift_term_cmp(const char *a, int alen, const char *b, int blen)
 				(hi) = m; \
 		} \
 	} while (0)
+
+/* does the sorted set hold a member in [lo, hi]? */
+static inline bool
+sift_set_meets_i64(const int64_t *set, uint32_t n, int64_t lo, int64_t hi)
+{
+	uint32_t	a = 0,
+				b = n;
+
+	SIFT_BISECT(uint32_t, m, a, b, set[m] < lo);
+	return a < n && set[a] <= hi;
+}
 
 #endif							/* SIFT_CMP_H */

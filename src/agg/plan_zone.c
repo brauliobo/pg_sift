@@ -163,24 +163,9 @@ in_list_test_ns(AggCtx *c, const SiftAggPred *p)
 static bool
 zone_meets(const ZoneRange *r, int64 zlo, int64 zhi)
 {
-	int			a = 0,
-				b = r->nvals;
-
 	if (zlo > zhi || zhi < r->lo || zlo > r->hi)
 		return false;
-	if (r->nvals == 0)
-		return true;
-	/* the first value of the set that is not below the zone: is it within it */
-	while (a < b)
-	{
-		int			m = a + (b - a) / 2;
-
-		if (r->vals[m] < zlo)
-			a = m + 1;
-		else
-			b = m;
-	}
-	return a < r->nvals && r->vals[a] <= zhi;
+	return r->nvals == 0 || sift_set_meets_i64(r->vals, r->nvals, zlo, zhi);
 }
 
 /* the range of a comparison or IN list of a unit's zone, by the node's number: the constant is read once */

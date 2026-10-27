@@ -1094,23 +1094,9 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 static bool
 range_meets(int64 lo, int64 hi, const int64 *set, int nset, int64 zlo, int64 zhi)
 {
-	int			a = 0,
-				b = nset;
-
 	if (zlo > zhi || zhi < lo || zlo > hi)
 		return false;
-	if (set == NULL)
-		return true;
-	while (a < b)
-	{
-		int			m = a + (b - a) / 2;
-
-		if (set[m] < zlo)
-			a = m + 1;
-		else
-			b = m;
-	}
-	return a < nset && set[a] <= zhi;
+	return set == NULL || sift_set_meets_i64(set, nset, zlo, zhi);
 }
 
 /*

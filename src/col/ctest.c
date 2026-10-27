@@ -305,24 +305,7 @@ sift_ctest_zone(const SiftCTest *t, const SiftCZone *z)
 			if (z->max < t->lo || z->min > t->hi)
 				return false;
 			if (t->kind == SIFT_CT_SET)
-			{
-				const int64 *first = t->set;
-				uint32		n = t->nset;
-
-				while (n > 0)		/* the first member >= z->min */
-				{
-					uint32		h = n / 2;
-
-					if (first[h] < z->min)
-					{
-						first += h + 1;
-						n -= h + 1;
-					}
-					else
-						n = h;
-				}
-				return first < t->set + t->nset && *first <= z->max;
-			}
+				return sift_set_meets_i64(t->set, t->nset, z->min, z->max);
 			if (t->fold_valid)
 				return ((t->fold[0] & z->set[0]) | (t->fold[1] & z->set[1]) | (t->fold[2] & z->set[2]) | (t->fold[3] & z->set[3])) != 0;
 			return true;

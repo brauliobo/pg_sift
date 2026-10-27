@@ -1937,15 +1937,7 @@ sift_cseg_sb_in_spans(SiftColSegment *seg, uint32 sb)
 				hi = sift_cseg_sb_spans(seg, &r),
 				n = hi;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (r[mid].hi < sb)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, r[mid].hi < sb);
 	return lo < n && r[lo].lo <= sb;
 }
 
@@ -3599,15 +3591,7 @@ gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool 
 	c0 = vs / SIFT_CGORD_ROWS;
 	lo = c0 + 1;
 	hi = (ve - 1) / SIFT_CGORD_ROWS + 1;
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (after ? gord_dirent(seg, g, col, mid).first <= key : gord_dirent(seg, g, col, mid).first < key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, after ? gord_dirent(seg, g, col, mid).first <= key : gord_dirent(seg, g, col, mid).first < key);
 	lo--;
 	m = gorder_chunk_memo(seg, col, lo, memo);
 	from = Max(vs, lo * SIFT_CGORD_ROWS);
@@ -3921,17 +3905,6 @@ sift_cseg_pre_stale(SiftColSegment *seg, const SiftCPaggSpec *spec, int setting,
 	return false;
 }
 
-/* does the sorted set hold a key in [lo, hi]? */
-static bool
-set_meets(const int64 *set, uint32 n, int64 lo, int64 hi)
-{
-	uint32		a = 0,
-				b = n;
-
-	SIFT_BISECT(uint32, m, a, b, set[m] < lo);
-	return a < n && set[a] <= hi;
-}
-
 /*
  * Narrows keep for the units [ulo, uhi) to those whose zone may pass t. The passes run over the words of keep that hold the range (the units of those words
  * outside it are narrowed too, which is exact), so that a begin of two superblocks of a segment of thousands tests those only: an aggregate begins for every
@@ -3963,7 +3936,7 @@ prune_words(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint
 				kw[w] &= tmp[w];
 			if (t->kind == SIFT_CT_SET)
 				for (uint32 u = lo; u < hi; u++)
-					if ((keep[u / 64] >> (u % 64) & 1) && z->nnull[u] < z->nvals[u] && !set_meets(t->set, t->nset, z->min[u], z->max[u]))
+					if ((keep[u / 64] >> (u % 64) & 1) && z->nnull[u] < z->nvals[u] && !sift_set_meets_i64(t->set, t->nset, z->min[u], z->max[u]))
 						keep[u / 64] &= ~(UINT64CONST(1) << (u % 64));
 			sift_colk->zone_notnull(z->nnull + lo, z->nvals + lo, n, kw);
 			if (t->fold_valid && z->set)

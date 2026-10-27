@@ -68,15 +68,7 @@ count_below(const double *a, int64 n, double v, bool inclusive)
 	int64		lo = 0,
 				hi = n;
 
-	while (lo < hi)
-	{
-		int64		mid = lo + (hi - lo) / 2;
-
-		if (inclusive ? a[mid] <= v : a[mid] < v)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int64, mid, lo, hi, inclusive ? a[mid] <= v : a[mid] < v);
 	return lo;
 }
 

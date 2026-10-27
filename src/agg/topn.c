@@ -919,15 +919,7 @@ enum_rank(const TopKey *k, Oid oid)
 	uint32		lo = 0,
 				hi = k->nenum;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (k->eoid[mid] < oid)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(uint32, mid, lo, hi, k->eoid[mid] < oid);
 	if (lo == k->nenum || k->eoid[lo] != oid)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("enum value %u was added while the scan was running", oid)));
 	return k->erank[lo];
@@ -1410,15 +1402,7 @@ row_at(const uint32 *rows, int n, uint32 row)
 	int			lo = 0,
 				hi = n;
 
-	while (lo < hi)
-	{
-		int			mid = lo + (hi - lo) / 2;
-
-		if (rows[mid] < row)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int, mid, lo, hi, rows[mid] < row);
 	return lo;
 }
 

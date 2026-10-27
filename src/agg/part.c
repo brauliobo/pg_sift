@@ -942,15 +942,7 @@ part_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, in
 	/* the first partition that ends past sb_lo (the offsets only grow): a scan of thousands of partitions begins once for each item */
 	lo = 0;
 	hi = ps->n;
-	while (lo < hi)
-	{
-		int			mid = (lo + hi) / 2;
-
-		if (ps->off[mid + 1] <= sb_lo)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	SIFT_BISECT(int, mid, lo, hi, ps->off[mid + 1] <= sb_lo);
 	ps->next = lo;
 	if (ps->cur >= 0)
 		sift_colsrc_unpin(ps->src[ps->cur]);
