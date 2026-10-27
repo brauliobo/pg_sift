@@ -161,7 +161,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life upg33 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
 	check "ALTER EXTENSION UPDATE takes 3.3 to 3.5" test "$(q life upg33 "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.5
 	check "3.3 updated to 3.5 has the objects of a fresh 3.5 install" test "$(q life upg33 "$MEMBERS")" == "$(q life fresh35 "$MEMBERS")"
-	# 3.5 changes no SQL object: the update from the released 3.4 moves the version and nothing else
+	# the update from the released 3.4 moves the version, adds sift.json_build_object and replaces sift.upgrade_commands(): the objects equal a fresh install's
 	q life postgres "CREATE DATABASE upg34" >/dev/null
 	q life upg34 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.4'" >/dev/null
 	q life upg34 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
