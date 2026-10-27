@@ -2909,7 +2909,7 @@ tid_slot_read(TidAcc *a, uint64 slot)
 	{
 		uint64		d;
 
-		if (!sift_cpoint_get_varint(&p, end, &d) || (i > 0 && d == 0) || (d >> 41) || ((prev + d) >> 41))
+		if ((p = sift_get_varint64_n(p, end, &d)) == NULL || (i > 0 && d == 0) || (d >> 41) || ((prev + d) >> 41))
 			corrupt(a->seg, "The point directory of leaf %d has a list at word %u that does not hold %u ascending addresses.", a->col, off, hdr[0]);
 		prev += d;
 		tid_push(a, sift_cpoint_tid_key(prev));

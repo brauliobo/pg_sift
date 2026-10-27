@@ -80,9 +80,6 @@ sift_cpoint_tid_key(uint64 code)
 	return (code >> 9) << 16 | (code & (SIFT_CPOINT_TID_MAXOFF - 1));
 }
 
-/* Reads a LEB128 code at *p (not past end), false when it is cut or longer than a code can be */
-extern bool sift_cpoint_get_varint(const uint8 **p, const uint8 *end, uint64 *v);
-
 /*
  * Appends the leaf's block for the n entries (key, address) to out, addresses ascending in each key (sift_cpoint_build for the table of heap addresses; the
  * numbers it returns are the same: words counts the words of the lists, each padded to a word).

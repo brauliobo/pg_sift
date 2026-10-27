@@ -6,6 +6,7 @@
 #include "col/point.h"
 #include "col/preagg.h"
 #include "col/setsum.h"
+#include "core/cmp.h"
 
 static bool
 leaf_ok(const SiftColSchema *s, const SiftColDef *d)
@@ -51,7 +52,7 @@ sift_cpoint_slots(uint32 n)
 typedef struct PointEnt
 {
 	int64		key;
-	uint32		row;
+	uint64		val;				/* the row, or the heap address of the row */
 } PointEnt;
 
 static int
@@ -62,112 +63,64 @@ ent_cmp(const void *a, const void *b)
 
 	if (x->key != y->key)
 		return x->key < y->key ? -1 : 1;
-	return (x->row > y->row) - (x->row < y->row);
+	return SIFT_CMP3(x->val, y->val);
 }
 
-void
-sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+/* A key of several rows: the count and the rows as words after the slots; the payload names the list */
+static uint64
+row_list(StringInfo lists, const PointEnt *e, uint32 cnt)
+{
+	uint64		payload = SIFT_CPOINT_LIST | (uint32) (lists->len / sizeof(uint32));
+
+	appendBinaryStringInfo(lists, (const char *) &cnt, sizeof(cnt));
+	for (uint32 k = 0; k < cnt; k++)
+	{
+		uint32		r = (uint32) e[k].val;
+
+		appendBinaryStringInfo(lists, (const char *) &r, sizeof(r));
+	}
+	return payload;
+}
+
+/* ... of several heap addresses: the count, the bytes and the deltas of their codes as varints, padded to a word */
+static uint64
+tid_list(StringInfo lists, const PointEnt *e, uint32 cnt)
+{
+	StringInfoData body;
+	uint32		nbytes;
+	uint64		prev = 0,
+				payload = (uint64) (lists->len / sizeof(uint32)) << 16 | SIFT_CPOINT_TID_LIST;
+
+	initStringInfo(&body);
+	for (uint32 k = 0; k < cnt; k++)
+	{
+		uint64		code = sift_cpoint_tid_code(e[k].val);
+
+		sift_col_put_varint(&body, code - prev);
+		prev = code;
+	}
+	nbytes = body.len;
+	appendBinaryStringInfo(lists, (const char *) &cnt, sizeof(cnt));
+	appendBinaryStringInfo(lists, (const char *) &nbytes, sizeof(nbytes));
+	appendBinaryStringInfo(lists, body.data, body.len);
+	while (lists->len % 4)
+		appendStringInfoChar(lists, '\0');
+	pfree(body.data);
+	return payload;
+}
+
+/* The directory of the keys, by the rows (row) or by the heap addresses (tid): a key with several values points at a list in the words after the slots */
+static void
+point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
 {
 	PointEnt   *e = palloc(n * sizeof(PointEnt));
-	uint32		nk = 0,
-				nw = 0,
-				at = 0;
-	uint64	   *t;
-	uint32	   *w;
-
-	for (uint32 i = 0; i < n; i++)
-		e[i] = (PointEnt) {key[i], row[i]};
-	qsort(e, n, sizeof(PointEnt), ent_cmp);
-	for (uint32 i = 0, j; i < n; i = j)
-	{
-		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
-			;
-		nk++;
-		if (j - i > 1)
-			nw += 1 + (j - i);
-	}
-	*nslots = sift_cpoint_slots(nk);
-	*nkeys = nk;
-	*words = nw;
-	t = palloc(*nslots * sizeof(uint64));
-	memset(t, 0xFF, *nslots * sizeof(uint64));
-	w = palloc(Max(nw, 1) * sizeof(uint32));
-	for (uint32 i = 0, j; i < n; i = j)
-	{
-		uint64		h = sift_cpoint_hash(e[i].key);
-		uint32		p = sift_cpoint_pos(h, *nslots);
-		uint32		payload = e[i].row;
-
-		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
-			;
-		if (j - i > 1)
-		{
-			payload = SIFT_CPOINT_LIST | at;
-			w[at++] = j - i;
-			for (uint32 k = i; k < j; k++)
-				w[at++] = e[k].row;
-		}
-		while (t[p] != SIFT_CPOINT_EMPTY)
-			p = (p + 1) & (*nslots - 1);
-		t[p] = (h & 0xFFFFFFFF) << 32 | payload;
-	}
-	appendBinaryStringInfo(out, (const char *) t, (int) (*nslots * sizeof(uint64)));
-	appendBinaryStringInfo(out, (const char *) w, (int) (nw * sizeof(uint32)));
-	if (nw % 2)
-		appendBinaryStringInfo(out, "\0\0\0\0", 4);
-	pfree(t);
-	pfree(w);
-	pfree(e);
-}
-
-bool
-sift_cpoint_get_varint(const uint8 **p, const uint8 *end, uint64 *v)
-{
-	uint64		x = 0;
-
-	for (int shift = 0; shift <= 63 && *p < end; shift += 7)
-	{
-		uint8		b = *(*p)++;
-
-		x |= (uint64) (b & 0x7F) << shift;
-		if (!(b & 0x80))
-		{
-			*v = x;
-			return true;
-		}
-	}
-	return false;
-}
-
-typedef struct TidEnt
-{
-	int64		key;
-	uint64		tid;
-} TidEnt;
-
-static int
-tid_ent_cmp(const void *a, const void *b)
-{
-	const TidEnt *x = a,
-			   *y = b;
-
-	if (x->key != y->key)
-		return x->key < y->key ? -1 : 1;
-	return (x->tid > y->tid) - (x->tid < y->tid);
-}
-
-void
-sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
-{
-	TidEnt	   *e = palloc(n * sizeof(TidEnt));
-	uint32		nk = 0,
-				nw = 0;
+	uint32		nk = 0;
 	uint64	   *t;
 	StringInfoData lists;
 
 	for (uint32 i = 0; i < n; i++)
-		e[i] = (TidEnt) {key[i], tid[i]};
-	qsort(e, n, sizeof(TidEnt), tid_ent_cmp);
+		e[i] = (PointEnt) {key[i], tid ? tid[i] : row[i]};
+	qsort(e, n, sizeof(PointEnt), ent_cmp);
 	for (uint32 i = 0, j; i < n; i = j)
 	{
 		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
@@ -183,45 +136,34 @@ sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo
 	{
 		uint64		h = sift_cpoint_hash(e[i].key);
 		uint32		p = sift_cpoint_pos(h, *nslots);
-		uint64		payload = e[i].tid;
+		uint64		payload = e[i].val;
 
 		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
 			;
 		if (j - i > 1)
-		{
-			StringInfoData body;
-			uint32		cnt = j - i,
-						nbytes;
-			uint64		prev = 0;
-
-			initStringInfo(&body);
-			for (uint32 k = i; k < j; k++)
-			{
-				uint64		code = sift_cpoint_tid_code(e[k].tid);
-
-				sift_col_put_varint(&body, code - prev);
-				prev = code;
-			}
-			nbytes = body.len;
-			payload = (uint64) (lists.len / sizeof(uint32)) << 16 | SIFT_CPOINT_TID_LIST;
-			appendBinaryStringInfo(&lists, (const char *) &cnt, sizeof(cnt));
-			appendBinaryStringInfo(&lists, (const char *) &nbytes, sizeof(nbytes));
-			appendBinaryStringInfo(&lists, body.data, body.len);
-			while (lists.len % 4)
-				appendStringInfoChar(&lists, '\0');
-			pfree(body.data);
-		}
+			payload = tid ? tid_list(&lists, e + i, j - i) : row_list(&lists, e + i, j - i);
 		while (t[p] != SIFT_CPOINT_EMPTY)
 			p = (p + 1) & (*nslots - 1);
-		t[p] = (h & 0xFFFF) << 48 | payload;
+		t[p] = tid ? (h & 0xFFFF) << 48 | payload : (h & 0xFFFFFFFF) << 32 | payload;
 	}
-	nw = lists.len / sizeof(uint32);
-	*words = nw;
+	*words = lists.len / sizeof(uint32);
 	appendBinaryStringInfo(out, (const char *) t, (int) (*nslots * sizeof(uint64)));
 	appendBinaryStringInfo(out, lists.data, lists.len);
-	if (nw % 2)
+	if (*words % 2)
 		appendBinaryStringInfo(out, "\0\0\0\0", 4);
 	pfree(lists.data);
 	pfree(t);
 	pfree(e);
+}
+
+void
+sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+{
+	point_build(key, row, NULL, n, out, nslots, nkeys, words);
+}
+
+void
+sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+{
+	point_build(key, NULL, tid, n, out, nslots, nkeys, words);
 }
