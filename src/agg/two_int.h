@@ -8,6 +8,15 @@
 #include "agg/leaf_int.h"
 #include "agg/tup_int.h"
 
+/* an inner aggregate of a group or cell: its rows, the integer and float sums (the extreme for max and min), and whether an input was not finite */
+typedef struct Cell
+{
+	int64		n;
+	int64		i;
+	double		d;
+	uint8		nf;
+} Cell;
+
 /* the state of one arm of a two level query (SiftAggArm): per tuple of the chunk, and per outer group the inner aggregates of the current row */
 typedef struct ArmSt
 {
@@ -18,10 +27,7 @@ typedef struct ArmSt
 	double	  **dx;				/* its float8 value */
 	int64	  **ix;				/* its integer value */
 	uint64	   *ord;			/* per outer group: the row its cell holds, UINT64_MAX none */
-	int64	  **n;				/* per inner aggregate and group (local: and cell) */
-	int64	  **i;
-	double	  **d;
-	uint8	  **nf;
+	Cell	  **cell;			/* per inner aggregate and group (local: and cell) */
 	double	   *amax;			/* per inner aggregate: the largest absolute float input */
 	/*
 	 * A local arm has hidden keys: its cells are finer than the outer groups and live for one row, so they are numbered in the row (a small

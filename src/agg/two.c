@@ -94,26 +94,16 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 		memset(nord, 0xff, newcap * sizeof(uint64));
 		for (int ai = 0; ai < sa->ninner; ai++)
 		{
-			int64	   *nn = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64)),
-					   *ni = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
-			double	   *nd = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(double));
-			uint8	   *nnf = MemoryContextAllocZero(ex->tcxt, newcap);
+			Cell	   *nc = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(Cell));
 
 			for (uint32 g = 0; g < oldcap && a->ord; g++)
 			{
 				uint32		t = remap ? remap[g] : g;
 
-				if (t == UINT32_MAX || a->ord[g] == UINT64_MAX)
-					continue;
-				nn[t] = a->n[ai][g];
-				ni[t] = a->i[ai][g];
-				nd[t] = a->d[ai][g];
-				nnf[t] = a->nf[ai][g];
+				if (t != UINT32_MAX && a->ord[g] != UINT64_MAX)
+					nc[t] = a->cell[ai][g];
 			}
-			a->n[ai] = nn;
-			a->i[ai] = ni;
-			a->d[ai] = nd;
-			a->nf[ai] = nnf;
+			a->cell[ai] = nc;
 		}
 		for (uint32 g = 0; g < oldcap && a->ord; g++)
 		{
@@ -138,10 +128,7 @@ cells_alloc(AggExec *ex, ArmSt *a, int ninner, uint32 room)
 	a->cid = MemoryContextAlloc(ex->cxt, (Size) room * a->nlk * sizeof(uint32));
 	for (int ai = 0; ai < ninner; ai++)
 	{
-		a->n[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(int64));
-		a->i[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(int64));
-		a->d[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(double));
-		a->nf[ai] = MemoryContextAlloc(ex->cxt, room);
+		a->cell[ai] = MemoryContextAlloc(ex->cxt, room * sizeof(Cell));
 	}
 }
 
@@ -166,10 +153,7 @@ cells_grow(AggExec *ex, int k, ArmSt *a)
 	a->cid = repalloc(a->cid, (Size) a->ccap * a->nlk * sizeof(uint32));
 	for (int ai = 0; ai < ninner; ai++)
 	{
-		a->n[ai] = repalloc(a->n[ai], a->ccap * sizeof(int64));
-		a->i[ai] = repalloc(a->i[ai], a->ccap * sizeof(int64));
-		a->d[ai] = repalloc(a->d[ai], a->ccap * sizeof(double));
-		a->nf[ai] = repalloc(a->nf[ai], a->ccap);
+		a->cell[ai] = repalloc(a->cell[ai], a->ccap * sizeof(Cell));
 	}
 	pfree(a->ltab);
 	a->lcap = 4 * a->ccap;
@@ -205,10 +189,7 @@ arms_init(AggExec *ex)
 		a->iok = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(uint8 *));
 		a->dx = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(double *));
 		a->ix = MemoryContextAlloc(ex->cxt, Max(ni, 1) * sizeof(int64 *));
-		a->n = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(int64 *));
-		a->i = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(int64 *));
-		a->d = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(double *));
-		a->nf = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(uint8 *));
+		a->cell = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(Cell *));
 		a->amax = MemoryContextAllocZero(ex->cxt, Max(ni, 1) * sizeof(double));
 		for (int ai = 0; ai < ni; ai++)
 		{
@@ -300,10 +281,7 @@ cell_start(AggExec *ex, int k, ArmSt *a, uint32 g, uint64 row)
 	}
 	for (int ai = 0; ai < ex->spec->arm[k].ninner; ai++)
 	{
-		a->n[ai][g] = 0;
-		a->i[ai][g] = 0;
-		a->d[ai][g] = 0;
-		a->nf[ai][g] = 0;
+		memset(&a->cell[ai][g], 0, sizeof(Cell));
 	}
 	if (ex->ntouch == ex->captouch)
 	{
@@ -346,10 +324,12 @@ cell_find(AggExec *ex, int k, ArmSt *a, int j, uint64 row)
 static void
 cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 {
+	Cell	   *c = &a->cell[ai][g];
+
 	switch (ia->kind)
 	{
 		case SAA_SUM_INT:
-			a->i[ai][g] += a->ix[ai][j];
+			c->i += a->ix[ai][j];
 			break;
 		case SAA_SUM_F64:
 		case SAA_AVG_F64:
@@ -358,60 +338,62 @@ cell_add(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, int j)
 			{
 				double		x = a->dx[ai][j];
 
-				a->d[ai][g] += x;
+				c->d += x;
 				if (!isfinite(x))
-					a->nf[ai][g] = 1;
+					c->nf = 1;
 				else
 					a->amax[ai] = Max(a->amax[ai], fabs(x));
 			}
 			break;
 		case SAA_MAX:
 		case SAA_X_MAX:
-			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) > 0)
-				a->d[ai][g] = a->dx[ai][j];
+			if (c->n == 0 || float8_cmp_internal(a->dx[ai][j], c->d) > 0)
+				c->d = a->dx[ai][j];
 			break;
 		case SAA_MIN:
 		case SAA_X_MIN:
-			if (a->n[ai][g] == 0 || float8_cmp_internal(a->dx[ai][j], a->d[ai][g]) < 0)
-				a->d[ai][g] = a->dx[ai][j];
+			if (c->n == 0 || float8_cmp_internal(a->dx[ai][j], c->d) < 0)
+				c->d = a->dx[ai][j];
 			break;
 		default:
 			break;
 	}
-	a->n[ai][g]++;
+	c->n++;
 }
 
 /* the value of inner aggregate ai in a cell: false for NULL */
 static bool
 cell_value(ArmSt *a, SiftAggAgg *ia, int ai, uint32 g, double *dv, int64 *iv)
 {
+	const Cell	   *c = &a->cell[ai][g];
+
 	switch (ia->kind)
 	{
 		case SAA_COUNT_STAR:
 		case SAA_COUNT:
-			*iv = a->n[ai][g];
+			*iv = c->n;
 			return true;
 		case SAA_SUM_INT:
-			*iv = a->i[ai][g];
-			return a->n[ai][g] > 0;
+			*iv = c->i;
+			return c->n > 0;
 		case SAA_SUM_F64:
 		case SAA_X_SUM:
-			if (isinf(a->d[ai][g]) && !a->nf[ai][g])
+			if (isinf(c->d) && !c->nf)
 				float_overflow_error();
-			*dv = a->d[ai][g];
-			return a->n[ai][g] > 0;
+			*dv = c->d;
+			return c->n > 0;
 		case SAA_AVG_F64:
 		case SAA_X_AVG:
-			if (a->n[ai][g] == 0)
+			if (c->n == 0)
 				return false;
-			*dv = a->d[ai][g] / (double) a->n[ai][g];
+			*dv = c->d / (double) c->n;
 			return true;
 		case SAA_MAX:
 		case SAA_MIN:
 		case SAA_X_MAX:
 		case SAA_X_MIN:
-			*dv = a->d[ai][g];
-			return a->n[ai][g] > 0;
+			*dv = c->d;
+			return c->n > 0;
 		default:
 			SIFT_INVARIANT(false, "sift: unexpected inner aggregate");
 	}
