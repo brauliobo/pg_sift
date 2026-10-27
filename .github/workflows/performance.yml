@@ -89,6 +89,7 @@ jobs:
 
       - name: Install PostgreSQL 18 and measurement dependencies
         if: steps.scope.outputs.run == 'true'
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           started=$(date +%s)
@@ -96,7 +97,7 @@ jobs:
           trap finish_phase EXIT
           exec > >(tee "$ARTIFACTS/dependencies.log") 2>&1
           scripts/pgdg-repo.sh
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev build-essential python3
+          scripts/apt-install.sh postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev build-essential python3
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
 
       # Both exact SHA builds, isolated libraries/clusters and paired samples run here,

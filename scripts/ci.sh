@@ -358,6 +358,7 @@ if [[ $MODE == --selftest ]]; then
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	"$REPO/scripts/gen-options.sh" --selftest || bad=1
 	"$REPO/scripts/check-bench-cases.sh" --selftest || bad=1
+	"$REPO/scripts/apt-install.sh" --selftest || bad=1
 	# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message
 	b4='declare -A|local -A|local -n|declare -n|mapfile|readarray|\[\[ -v |\$\{[A-Za-z_]+(,,|\^\^)\}|wait -n|EPOCHSECONDS|EPOCHREALTIME|printf .%\(|&>>|\|&|coproc|;;&|read -[a-zA-Z]*N'
 	for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do

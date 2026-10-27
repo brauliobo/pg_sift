@@ -43,9 +43,10 @@ jobs:
 
       - name: Install PostgreSQL 18 and the build dependencies
         if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 10
         run: |
           scripts/pgdg-repo.sh
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev
+          scripts/apt-install.sh postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
 
       # the analysis tool is large: cached for a month, then fetched again

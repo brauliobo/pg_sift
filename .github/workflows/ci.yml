@@ -159,11 +159,13 @@ jobs:
 
       # PGDG also serves the previous major of the pg_upgrade test (below) to the entry that builds PostgreSQL 19 itself
       - name: PGDG repository
+        timeout-minutes: 10
         run: |
           scripts/pgdg-repo.sh
 
       - name: Install PostgreSQL ${{ matrix.pg }}
         if: ${{ !matrix.git && !matrix.cassert }}
+        timeout-minutes: 10
         run: |
           scripts/apt-install.sh postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} libipc-run-perl liblz4-dev libzstd-dev libicu-dev ${{ matrix.tier == 'full' && format('postgresql-{0}-repack', matrix.pg) || '' }}
           echo /usr/lib/postgresql/${{ matrix.pg }}/bin >> "$GITHUB_PATH"
@@ -187,14 +189,15 @@ jobs:
       - name: Build PostgreSQL ${{ matrix.pg }} with assertions
         if: ${{ matrix.cassert }}
         run: |
-          sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl liblz4-dev libzstd-dev
+          scripts/apt-install.sh bison flex libipc-run-perl liblz4-dev libzstd-dev
           prefix=$(PG_ASSERT_MAJOR=${{ matrix.pg }} scripts/pg-assert.sh)
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Use PostgreSQL 19
         if: ${{ matrix.git }}
+        timeout-minutes: 10
         run: |
-          sudo apt-get install -y --no-install-recommends libipc-run-perl liblz4-dev libzstd-dev libicu-dev
+          scripts/apt-install.sh libipc-run-perl liblz4-dev libzstd-dev libicu-dev
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
 
       # test/t/pg_upgrade.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
@@ -202,6 +205,7 @@ jobs:
       # is a warning, and the test then upgrades within one major
       - name: Install the previous PostgreSQL major (pg_upgrade)
         if: ${{ matrix.pg > 17 }}
+        timeout-minutes: 10
         env:
           SIFT_CI_AFFECTED: ${{ matrix.jobs }}
           SIFT_CI_JOBS: ${{ matrix.only }}
@@ -311,9 +315,9 @@ jobs:
       - uses: ./.github/actions/apt-limits
 
       - name: Install build dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential libsqlite3-dev sqlite3 python3
+          scripts/apt-install.sh --update build-essential libsqlite3-dev sqlite3 python3
           sqlite3 --version
 
       # the portable-core check (the files of src/portable.list include only src/core/host.h), then: build, smoke test, baseline instruction check, 59 unit tests,

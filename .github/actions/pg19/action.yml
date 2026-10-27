@@ -50,8 +50,7 @@ runs:
     - if: ${{ steps.build.outputs.needed == 'true' }}
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends bison flex libipc-run-perl libicu-dev ccache
+        scripts/apt-install.sh --update bison flex libipc-run-perl libicu-dev ccache
         export CCACHE_DIR="$HOME/.cache/ccache"
         ccache --max-size=200M
         scripts/pg19-build.sh "$HOME/pg19" "${{ steps.head.outputs.sha }}"
