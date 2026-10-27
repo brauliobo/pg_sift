@@ -800,6 +800,8 @@ extern uint32 sift_col_lane_n(const SiftColUnit *unit, int col);
 extern void sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst, uint8 *isnull, SiftColLaneInfo *info);
 
 /* Per element of the unit's group: the ordinal of its row (nelems entries) and the element count of every row (nrows entries, NULL array = 0) */
+/* The element offsets of the rows of the unit's group (nrows + 1 entries), the ones the scan reads the elements by */
+extern const uint32 *sift_col_group_offsets(const SiftColUnit *unit, int col);
 extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent, const uint32 **counts);
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */

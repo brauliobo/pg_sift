@@ -462,6 +462,15 @@ sift_col_read_lane(const SiftColUnit *unit, int col, SiftColLane lane, void *dst
 	}
 }
 
+/* NULL for a leaf that is not a group */
+const uint32 *
+sift_col_group_offsets(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+
+	return cu->src->schema->cols[col].kind == SIFT_COLK_GROUP ? unit_group(cu, col)->eoff : NULL;
+}
+
 void
 sift_col_group_parents(const SiftColUnit *unit, int group, const uint32 **parent, const uint32 **counts)
 {

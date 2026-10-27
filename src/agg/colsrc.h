@@ -211,6 +211,8 @@ typedef struct SiftSrcVec
 	 * the provider.
 	 */
 	const uint64 *ovf;
+	/* an array leaf's count vector: the offsets of the elements of its rows (n + 1 entries, the running sum of the counts), when the provider holds them; else NULL, zeroed by sift_colsrc_read */
+	const uint32 *eoff;
 } SiftSrcVec;
 
 /*

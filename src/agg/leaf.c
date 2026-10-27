@@ -541,6 +541,7 @@ read_types_leaf(AggExec *ex, int leaf, SiftSrcVec *out)
 	out->dict = &type_dict;
 	out->n = nrow;
 	out->ovf = NULL;
+	out->eoff = NULL;
 }
 
 /* a leaf after the source's: the member of an object by key, the length of an array (the element counts of its leaf are the values), or the JSON type of a path */
@@ -586,6 +587,7 @@ null_vec(AggExec *ex, int leaf)
 		v->dict = &null_dict;
 		v->n = n;
 		v->ovf = NULL;
+		v->eoff = NULL;
 		ex->nvec_ok[leaf] = true;
 	}
 	return &ex->nvec[leaf];
@@ -617,18 +619,24 @@ elem_offs(AggExec *ex, int leaf)
 	{
 		const SiftSrcVec *cnt = get_vec(ex, leaf);
 		const int32 *c = cnt->data;
-		int			nrow = ex->unit.nrow;
-		uint32	   *offs = MemoryContextAlloc(ex->ucxt, (nrow + 1) * sizeof(uint32)),
-					m = 0;
 
-		for (int r = 0; r < nrow; r++)
+		if (cnt->eoff != NULL)
+			ex->gofs[leaf] = (uint32 *) cnt->eoff;
+		else
 		{
-			offs[r] = m;
-			if (!(cnt->isnull && cnt->isnull[r]) && c[r] > 0)
-				m += c[r];
+			int			nrow = ex->unit.nrow;
+			uint32	   *offs = MemoryContextAlloc(ex->ucxt, (nrow + 1) * sizeof(uint32)),
+						m = 0;
+
+			for (int r = 0; r < nrow; r++)
+			{
+				offs[r] = m;
+				if (!(cnt->isnull && cnt->isnull[r]) && c[r] > 0)
+					m += c[r];
+			}
+			offs[nrow] = m;
+			ex->gofs[leaf] = offs;
 		}
-		offs[nrow] = m;
-		ex->gofs[leaf] = offs;
 	}
 	return ex->gofs[leaf];
 }

@@ -192,6 +192,7 @@ sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec
 	size_t		n = v->n;
 
 	vec->ovf = NULL;
+	vec->eoff = NULL;
 	if (v->ovf && !buf->ovf)
 		sift_aggsel_overflow_error(a->heapoid);
 	switch (l->vtype)
@@ -272,6 +273,7 @@ sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftS
 	vec->n = info.n;
 	vec->isnull = info.nulls ? buf->isnull : NULL;
 	vec->dict = NULL;
+	vec->eoff = a->compact ? NULL : sift_col_group_offsets(cu, col);
 	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
 	if (l->vtype == SCV_CODE)
 	{
@@ -311,6 +313,7 @@ sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 	vec->n = nrow;
 	vec->isnull = NULL;
 	vec->ovf = NULL;
+	vec->eoff = NULL;
 	if (v->ovf && !tol)
 	{
 		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));

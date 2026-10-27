@@ -311,6 +311,7 @@ void
 sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
 {
 	vec->ovf = NULL;
+	vec->eoff = NULL;
 	src->prov->read_rows(src->impl, unit, leaf, rows, n, vec);
 }
 
@@ -398,6 +399,7 @@ void
 sift_colsrc_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 {
 	vec->ovf = NULL;
+	vec->eoff = NULL;
 	src->prov->read(src->impl, unit, leaf, vec);
 }
 
