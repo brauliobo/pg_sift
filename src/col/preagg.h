@@ -115,6 +115,7 @@ typedef struct SiftCPaggSpec
 	bool		keyauto;				/* key_columns is the choice of the build ('auto: a, b'): a leaf keeps only a key list or a bitmap, within the share of the unit, never a filter */
 	uint16		super;					/* units per superunit summary (column format minor 12); 0: none */
 	bool		lookup[SIFT_COL_MAX_COLS];	/* the leaves whose dictionary of many strings is written to be searched in place (option dict_lookup, column format minor 14); the others have the compact form */
+	uint8		lookup_pct;				/* a sift_table: the orders of the dictionaries together take at most this percent of the segment's chunks (the leaves of lookup); 0: no cap */
 	bool		pres[SIFT_COL_MAX_COLS];	/* the leaves of set that can keep every distinct key of a unit as a bitmap or a list (column format minor 15; col/setsum.h) */
 	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
 	bool		hll[SIFT_COL_MAX_COLS];	/* the leaves that keep a HyperLogLog sketch of their values in every unit (option hll_columns, column format minor 20; col/hll.h) */

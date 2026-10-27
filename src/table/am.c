@@ -92,8 +92,8 @@ sift_tbl_define_gucs(void)
 							 NULL, &sift_tbl_inline_promote, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_dict_lookup",
-							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string.",
-							 NULL, &sift_col_table_lookup, false,
+							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string, kept while the orders of a segment take at most a quarter of its chunks.",
+							 NULL, &sift_col_table_lookup, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.table_key_table",
 							 "The column segments of a sift_table written from now on keep a key table of each foreign key or *_id column (column format minor 22), so that count, sum, min and max WHERE key = x read one record of a segment instead of its units.",

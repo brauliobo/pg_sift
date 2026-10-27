@@ -35,8 +35,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 102 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
+| [default](#default) | 103 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -974,6 +974,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on so the writer promotes closed buffers as it inserts. Off leaves them to VACUUM and autovacuum; table_async_promote moves the work to a worker instead.
 
+#### sift.table_dict_lookup
+
+`sift_table` · default · since 3.3 · default on
+
+- **What it does:** a test for a string reads a dictionary of 1,024 strings or more in place, without loading it whole (column format minor 14), where the orders of a segment take a quarter of it at most
+- **Gain:** first statement of a new backend on a text column of 300,000 distinct 33-character strings (instructions of the backend): prefix test 154.6 M to 7.4 M, equality 137.6 M to 3.4 M. Steady state: the backend loads the dictionary whole and keeps it after about 250 statements (one load of 5 M), so the equality costs 0 M and the prefix 4 M in either form; during those statements the equality costs about 1 M, the compact form 0.4 M
+- **Formula:** S 20.90x saving 147153k instructions, G 22.9%, W 3.0%, R 1: B 62.3 against C 8.2, automatic
+- **Impact:** index size: +22.9% of the table (10,502,144 to 12,910,592 bytes, 300,000 rows, a uuid and a text column of distinct strings); nothing for a dictionary under 1,024 strings; the orders of a segment stop at 25% of it; build, merge and writes: load and VACUUM +3.0% instructions (11,233 M to 11,593 M, 300,000 rows); the order is sorted by the radix of the sort of ; other: the order is 4 bytes a string, +22.9% of a sift_table with a uuid and a text column of 300,000 distinct strings (the cap is 25% of the segment; a column of short repeated strings keeps the compact form); load and VACUUM +3.0% instructions
+- **When:** Column segments of a sift_table written from now on, for a text or uuid column with a dictionary of 1,024 strings or more: string tests (equality, IN, prefix, range) read it in place. Column format minor 14.
+- **Default:** on — Automatic where the orders of a segment (4 bytes a string) take 25% of it at most, which holds the growth under the ceiling of the default formula: S 20.9 on the first statement of a backend (every backend of a pool or a dashboard pays it), G 22.9%, W 3.0%, B 62 against C 8.2. At steady state the form costs the same as the compact one.
+- **Turn off:** SET sift.table_dict_lookup = off (session): new segments return to the compact form; segments already written keep the order until a merge or VACUUM FULL rewrites them. No NOTICE: a sift_table writes its segments in promotion and VACUUM, not in a statement that could report them; sift.table_segments(table) gives their bytes and format.
+- **Upgrade from 3.4:** After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4.
+- **Advice:** Leave on. Set off for a table whose segments are written far more than their strings are tested, or to keep them at 4 bytes a string less; new segments only.
+
 #### sift.table_key_table
 
 `sift_table` · default · since 3.5 · default on
@@ -1620,21 +1634,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Empty picks the best device (discrete before integrated before virtual before software); set an index or part of a name to choose one. Superuser.
 
-#### sift.table_dict_lookup
-
-`sift_table` · opt-in · since 3.3 · default off
-
-- **What it does:** a test for a string reads a dictionary of 1,024 strings or more in place, without loading it whole (column format minor 14)
-- **Gain:** first lookup of a new backend: uuid equality (300,000 rows) 12.1 to 0.43 ms, text prefix 36.7 to 6.5 ms; warm statements unchanged; instructions of a 300,000-row table with a text column of distinct 33-character strings: the first prefix test of a backend 154.6 M to 7.4 M and the first equality 137.6 M to 3.4 M, warm prefix 18.3 M to 5.4 M, warm equality 0.39 M to 0.95 M (slower); the figures s, save are the mean of the warm prefix and the warm equality
-- **Formula:** S 1.18x saving 6200k instructions, G 22.9%, W 2.9%, R 1: B 3.4 against C 8.2, opt-in (fails: cost)
-- **Impact:** index size: +14.1% of a 6-column table and +10.3% of a table of an integer and a text column, 100,000 distinct 32-character strings (4 bytes a string; measured +2.4% to +63% on other shapes); +22.9% of the table (10,502,144 to 12,910,592 bytes, 300,000 rows, a uuid and a text column of distinct strings); build, merge and writes: load in 20 statements 357 to 269 ms and 270 to 243 ms: no cost measurable (100,000 rows); load and VACUUM +2.9% instructions (11,216 M to 11,557 M); other: off by default: the order is +10% to +14% of a sift_table with a column of 100,000 distinct strings (4 bytes a string;: +2.4% to +63% on other shapes) and gains the first statement of a backend only; a row fetch reads the strings in place without it
-- **When:** Column segments of a sift_table written from now on, for a text or uuid column with a dictionary of 1,024 strings or more: string tests (equality, IN, prefix, range) read it in place. Column format minor 14.
-- **Default:** off — off: it adds 4 bytes a string (+22.9% of the table here, +2.4% to +63%) and gains the first statement of a backend (prefix 20.9x, equality 40x) and the warm prefix (3.4x) but makes a warm equality 2.4x dearer in instructions, so the benefit does not reach the cost (B 3.4 against C 8.2); an automatic form needs a rule that keeps the order only where it adds at most a quarter of the segment.
-- **Why not the default:** the benefit B does not reach the cost C, no statistic says which columns it pays on
-- **Turn off:** Already off. After SET sift.table_dict_lookup = on, SET it off or RESET: new segments return to the compact form; segments already written keep the order until a merge or VACUUM FULL rewrites them.
-- **Upgrade from 3.4:** unchanged
-- **Advice:** Leave off. Set on for a sift_table whose first statement per backend tests strings (equality, IN, prefix, range) on a high-distinct text or uuid column; warm queries gain nothing. New segments only.
-
 #### sift.table_async_promote
 
 `sift_table` · opt-in · since 3.3 · default off
@@ -2105,7 +2104,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: `sift.agg_verdict_cache`, `sift.agg_par_min_rows`, `sift.col_leaf_cache_kb`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
+Defaults changed: sift.table_dict_lookup since 3.4; new: `sift.agg_verdict_cache`, `sift.agg_par_min_rows`, `sift.col_leaf_cache_kb`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
@@ -2114,6 +2113,7 @@ No default changed since 3.4; new: `sift.agg_verdict_cache`, `sift.agg_par_min_r
 | `sift_col(order_array_columns)` | '' | '' | minor 21 | The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 21, which 3.3 and older refuse (SET (order_array_columns = 'off') and REINDEX first). |
 | `sift.agg_verdict_cache` | new | on |  | new in 3.5 |
 | `sift.agg_par_min_rows` | new | 80000 |  | new in 3.5 |
+| `sift.table_dict_lookup` | off | on |  | After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4. |
 | `sift.table_key_table` | new | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |

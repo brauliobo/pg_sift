@@ -172,7 +172,8 @@ SELECT sift.col_promote('ox_col') >= 0 AS promoted;
 INSERT INTO ox (id, g, u, s, sp) SELECT i, i % 7, md5('m' || i)::uuid, 'Zy' || md5('m' || i), NULL FROM generate_series(6801, 7000) i;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
 
--- a sift_table has no stored order: its dictionaries get the prefix code
+-- a sift_table without the stored order (sift.table_dict_lookup off): its dictionaries get the prefix code
+SET sift.table_dict_lookup = off;
 CREATE TABLE ot (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;
 INSERT INTO ot (id, g, u, s, sp)
 SELECT i, i % 7, CASE WHEN i % 17 = 0 THEN NULL ELSE md5('u' || i)::uuid END, CASE WHEN i % 19 = 0 THEN NULL ELSE md5('s' || i) END,
@@ -184,6 +185,14 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN 
 INSERT INTO ot (id, g, u, s, sp) SELECT i, i % 7, md5('n' || i)::uuid, 'Zz' || md5('n' || i), 'prefix_c' || i FROM generate_series(6001, 6300) i;
 DELETE FROM ot WHERE id % 61 = 0;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
+RESET sift.table_dict_lookup;
+
+-- by default the order of a dictionary that takes a quarter of the segment at most is stored: the units are ordered by exact codes
+CREATE TABLE otd (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;
+INSERT INTO otd (id, g, u, s, sp) SELECT id, g, u, s, sp FROM ot;
+VACUUM (ANALYZE) otd;
+SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
+SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
 
 -- values the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the query stays with the normal plan or reads them from the heap
 CREATE TABLE ov (id int PRIMARY KEY, b bytea);
@@ -195,6 +204,6 @@ ANALYZE ov;
 SELECT oc_check($q$SELECT id, b FROM ov ORDER BY b DESC, id LIMIT 10$q$) AS overflow_key;
 
 DROP FUNCTION oc_check, oc_mode, oc_path, oc_rows, oc_stage;
-DROP TABLE oc, oc_q, ov, ox, ot, ob;
+DROP TABLE oc, oc_q, ov, ox, ot, otd, ob;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

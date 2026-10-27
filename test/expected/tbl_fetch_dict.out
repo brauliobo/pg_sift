@@ -169,9 +169,10 @@ RESET sift.col_format_minor;
 SET sift.table_dict_lookup = on;
 CREATE TABLE tf_o USING sift_table AS SELECT * FROM tf_heap;
 VACUUM tf_o;
-RESET sift.table_dict_lookup;
+SET sift.table_dict_lookup = off;
 CREATE TABLE tf_b USING sift_table AS SELECT * FROM tf_heap;
 VACUUM tf_b;
+RESET sift.table_dict_lookup;
 SELECT t, min(format) AS format FROM (SELECT 'compact' AS t, format FROM sift.table_segments('tf_c') WHERE kind = 'columns'
 	UNION ALL SELECT 'blocks', format FROM sift.table_segments('tf_b') WHERE kind = 'columns'
 	UNION ALL SELECT 'order', format FROM sift.table_segments('tf_o') WHERE kind = 'columns') x GROUP BY t ORDER BY t;

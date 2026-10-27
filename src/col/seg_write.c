@@ -63,7 +63,7 @@ typedef struct CountAcc
 /* an estimate of the blocks over this share of the compact form (1/6) is not worth serializing them for */
 #define CDICT_BLOCKS_CLEAR_DENOM	6
 
-bool		sift_col_table_lookup = false;
+bool		sift_col_table_lookup = true;
 bool		sift_col_table_key_table = true;
 
 typedef struct SetAcc
@@ -1522,10 +1522,19 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	/* a dictionary of many strings is written with the order to be searched in place when the setting allows it, the leaf asks for it (spec.lookup) and the kinds are complete */
 	if (w->setting >= SIFT_COL_FORMAT_DICTIDX && !w->inexact)
 	{
+		Size		order_bytes = 0,		/* the orders kept so far, for the cap of a sift_table */
+					seg_bytes = sift_sw_tell(w->sw);	/* the segment before its dictionaries, then with the compact form of them */
+
 		w->dform = palloc0(w->schema->ncols * sizeof(uint8));
+		if (w->pagg.lookup_pct != 0)
+			for (int c = 0; c < w->schema->ncols; c++)
+				if (w->dict[c] != NULL)
+					seg_bytes += w->dict[c]->nbytes + ((Size) w->dict[c]->n + 1) * sizeof(uint32);
 		for (int c = 0; c < w->schema->ncols; c++)
-			if (w->dict[c] != NULL && w->pagg.lookup[c] && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+			if (w->dict[c] != NULL && w->pagg.lookup[c] && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN) &&
+				(w->pagg.lookup_pct == 0 || (order_bytes + (Size) w->dict[c]->n * sizeof(uint32)) * 100 <= (Size) w->pagg.lookup_pct * seg_bytes))
 			{
+				order_bytes += (Size) w->dict[c]->n * sizeof(uint32);
 				w->dform[c] = DICT_LOOKUP;
 				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
 				if (w->cnt != NULL && w->pagg.count[c] && !w->cnt[c].bad && w->cnt[c].cap >= w->dict[c]->n)

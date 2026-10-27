@@ -597,6 +597,7 @@ extern bool sift_tbl_bulk_copy(SiftTblBulk *b, Relation old, SiftTblRel *ost, Si
 extern void sift_tbl_bulk_finish(SiftTblBulk *b);
 
 /* The default of sift.table_dead_rewrite_pct: segments kept up to a third dead hold the file near 1.4 times its live size */
+#define SIFT_TBL_LOOKUP_PCT	25		/* the stored orders of the dictionaries of a segment take at most this percent of its chunks */
 #define SIFT_TBL_DEAD_PCT	30
 
 /* A column segment more than sift.table_dead_rewrite_pct percent dead: the merge policy rewrites it alone, the most dead first */

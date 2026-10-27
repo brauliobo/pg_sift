@@ -509,7 +509,8 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN 
  uuid_asc         | same+topn+stored 25
 (3 rows)
 
--- a sift_table has no stored order: its dictionaries get the prefix code
+-- a sift_table without the stored order (sift.table_dict_lookup off): its dictionaries get the prefix code
+SET sift.table_dict_lookup = off;
 CREATE TABLE ot (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;
 INSERT INTO ot (id, g, u, s, sp)
 SELECT i, i % 7, CASE WHEN i % 17 = 0 THEN NULL ELSE md5('u' || i)::uuid END, CASE WHEN i % 19 = 0 THEN NULL ELSE md5('s' || i) END,
@@ -550,6 +551,27 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN 
  uuid_asc         | same+topn+stored 25
 (3 rows)
 
+RESET sift.table_dict_lookup;
+-- by default the order of a dictionary that takes a quarter of the segment at most is stored: the units are ordered by exact codes
+CREATE TABLE otd (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;
+INSERT INTO otd (id, g, u, s, sp) SELECT id, g, u, s, sp FROM ot;
+VACUUM (ANALYZE) otd;
+SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
+       tag        |   oc_path    
+------------------+--------------
+ text_asc         | exact+prefix
+ text_same_prefix | exact+prefix
+ uuid_asc         | exact+prefix
+(3 rows)
+
+SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
+       tag        |      oc_check       
+------------------+---------------------
+ text_desc        | same+topn 25
+ text_same_prefix | same+topn 40
+ uuid_asc         | same+topn+stored 25
+(3 rows)
+
 -- values the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the query stays with the normal plan or reads them from the heap
 CREATE TABLE ov (id int PRIMARY KEY, b bytea);
 INSERT INTO ov SELECT i, decode(repeat(md5(i::text), 6) || md5((i % 40)::text), 'hex') FROM generate_series(1, 3000) i;
@@ -566,6 +588,6 @@ SELECT oc_check($q$SELECT id, b FROM ov ORDER BY b DESC, id LIMIT 10$q$) AS over
 (1 row)
 
 DROP FUNCTION oc_check, oc_mode, oc_path, oc_rows, oc_stage;
-DROP TABLE oc, oc_q, ov, ox, ot, ob;
+DROP TABLE oc, oc_q, ov, ox, ot, otd, ob;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
