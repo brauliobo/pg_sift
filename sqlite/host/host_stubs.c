@@ -53,7 +53,7 @@ sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
 	return false;
 }
 
-/* ---------- segment heads and zone arrays (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
+/* ---------- segment heads, zone arrays and bisected positions (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
 
 const SegHead *
 sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHeaderData *h, MemoryContext mcxt)
@@ -75,6 +75,19 @@ sift_cseg_zones_find(SiftColSegment *seg, int col)
 void
 sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
 {
+}
+
+/* no cache of the positions a dictionary search bisected: every search reads the dictionary */
+SiftCBisect *
+sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)
+{
+	return NULL;
+}
+
+SiftCBisect *
+sift_cseg_bisect_find(SiftColSegment *seg, int col)
+{
+	return NULL;
 }
 
 /* ---------- write buffers (bm25/wbuf.c): the directory never lists one ---------- */
