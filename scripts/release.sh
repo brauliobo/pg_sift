@@ -21,7 +21,7 @@ set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 VERSION='' DRY='' RESUME='' SKIPCI=''
 for a in "$@"; do
-	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; -h|--help) sed -n '2,21p' "$0"; exit 0 ;; -*) sed -n '2,21p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
+	case $a in --dry-run) DRY=1 ;; --resume) RESUME=1 ;; --skip-ci) SKIPCI=1 ;; -h|--help) sed -n '2,18p' "$0"; exit 0 ;; -*) sed -n '2,18p' "$0" >&2; exit 2 ;; *) VERSION=$a ;; esac
 done
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
 MM=${BASH_REMATCH[1]}.${BASH_REMATCH[2]} TAG=v$VERSION
