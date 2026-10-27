@@ -9,8 +9,10 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_NEON
 #include "col/kern_int.h"
 #include "core/neon.h"
+#include "core/simd_isa.h"
 
 #if defined(SIFT_HAVE_NEON)
 
@@ -254,90 +256,9 @@ sift_colk_bits_and_count_neon(const uint64 *a, const uint64 *b, uint32 nwords)
 	return c;
 }
 
-/* dst = base + the four zero-extended lanes of v, as int64 (wrapping, as the scalar kernel) */
-static inline void
-for_store4(int64 *dst, uint32x4_t v, uint64x2_t b)
-{
-	vst1q_u64((uint64 *) dst, vaddq_u64(b, vmovl_u32(vget_low_u32(v))));
-	vst1q_u64((uint64 *) dst + 2, vaddq_u64(b, vmovl_high_u32(v)));
-}
-
-void
-sift_colk_for_i64_u8_neon(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint8 *p = a;
-	const uint64x2_t b = vdupq_n_u64((uint64) base);
-	uint32		i = 0;
-
-	for (; i + 16 <= n; i += 16)
-	{
-		const uint8x16_t x = vld1q_u8(p + i);
-		const uint16x8_t lo = vmovl_u8(vget_low_u8(x)),
-					hi = vmovl_high_u8(x);
-
-		for_store4(dst + i, vmovl_u16(vget_low_u16(lo)), b);
-		for_store4(dst + i + 4, vmovl_high_u16(lo), b);
-		for_store4(dst + i + 8, vmovl_u16(vget_low_u16(hi)), b);
-		for_store4(dst + i + 12, vmovl_high_u16(hi), b);
-	}
-	sift_colk_for_i64_u8_scalar(p + i, n - i, base, dst + i);
-}
-
-void
-sift_colk_for_i64_u16_neon(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint16 *p = a;
-	const uint64x2_t b = vdupq_n_u64((uint64) base);
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-	{
-		const uint16x8_t x = vld1q_u16(p + i);
-
-		for_store4(dst + i, vmovl_u16(vget_low_u16(x)), b);
-		for_store4(dst + i + 4, vmovl_high_u16(x), b);
-	}
-	sift_colk_for_i64_u16_scalar(p + i, n - i, base, dst + i);
-}
-
-void
-sift_colk_for_i64_u32_neon(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint32 *p = a;
-	const uint64x2_t b = vdupq_n_u64((uint64) base);
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-		for_store4(dst + i, vld1q_u32(p + i), b);
-	sift_colk_for_i64_u32_scalar(p + i, n - i, base, dst + i);
-}
-
-void
-sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint64 *p = a;
-	const uint64x2_t b = vdupq_n_u64((uint64) base);
-	uint32		i = 0;
-
-	for (; i + 2 <= n; i += 2)
-		vst1q_u64((uint64 *) dst + i, vaddq_u64(b, vld1q_u64(p + i)));
-	sift_colk_for_i64_u64_scalar(p + i, n - i, base, dst + i);
-}
-
-/* the order preserving int64 of a double: k ^ ((k >> 63 arithmetic) >> 1 logical) */
-void
-sift_colk_f8_from_keys_neon(int64 *a, uint32 n)
-{
-	uint32		i = 0;
-
-	for (; i + 2 <= n; i += 2)
-	{
-		const int64x2_t k = vld1q_s64(a + i);
-
-		vst1q_s64(a + i, veorq_s64(k, vreinterpretq_s64_u64(vshrq_n_u64(vreinterpretq_u64_s64(vshrq_n_s64(k, 63)), 1))));
-	}
-	sift_colk_f8_from_keys_scalar(a + i, n - i);
-}
+#define CV_LANES(T)	(16 / sizeof(T))
+#define CV_FN(x)	void sift_colk_##x##_neon
+#include "col/kern_vec.h"
 
 /* keep &= the sets that share a bit with the probe (4 words each); the bits from n on are left as they are */
 void

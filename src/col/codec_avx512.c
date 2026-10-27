@@ -6,13 +6,9 @@
 
 #include "col/codec_int.h"
 
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt"))), apply_to = function)
-#else
-#pragma GCC push_options
-#pragma GCC target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")
-#endif
-#include <immintrin.h>
+#define SIFT_VEC_AVX512
+#include "core/simd_isa.h"
+SIFT_VEC_PUSH
 
 #define CC_VB 64
 #define CC_FN(x) cc_##x##_avx512
@@ -23,9 +19,5 @@
 
 CC_TABLE(avx512);
 
-#if defined(__clang__)
-#pragma clang attribute pop
-#else
-#pragma GCC pop_options
-#endif
+SIFT_VEC_POP
 #endif							/* __x86_64__ */

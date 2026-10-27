@@ -11,7 +11,9 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_AVX2
 #include "col/kern_int.h"
+#include "core/simd_isa.h"
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -415,81 +417,10 @@ unpack_avx2(const uint8 *src, uint32 bits, uint32 n, uint32 *dst)
 		unpack_tmpl(src, bits, n, dst, false);
 }
 
-F2 void
-for_i64_u8_avx2(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint8 *p = a;
-	const __m256i b = set64(base);
-	uint32		i = 0;
-
-	for (; i + 16 <= n; i += 16)
-	{
-		__m128i		v = _mm_loadu_si128((const __m128i *) (p + i));
-
-		st(dst + i, _mm256_add_epi64(_mm256_cvtepu8_epi64(v), b));
-		st(dst + i + 4, _mm256_add_epi64(_mm256_cvtepu8_epi64(_mm_srli_si128(v, 4)), b));
-		st(dst + i + 8, _mm256_add_epi64(_mm256_cvtepu8_epi64(_mm_srli_si128(v, 8)), b));
-		st(dst + i + 12, _mm256_add_epi64(_mm256_cvtepu8_epi64(_mm_srli_si128(v, 12)), b));
-	}
-	sift_colk_for_i64_u8_scalar(p + i, n - i, base, dst + i);
-}
-
-F2 void
-for_i64_u16_avx2(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint16 *p = a;
-	const __m256i b = set64(base);
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-	{
-		__m128i		v = _mm_loadu_si128((const __m128i *) (p + i));
-
-		st(dst + i, _mm256_add_epi64(_mm256_cvtepu16_epi64(v), b));
-		st(dst + i + 4, _mm256_add_epi64(_mm256_cvtepu16_epi64(_mm_srli_si128(v, 8)), b));
-	}
-	sift_colk_for_i64_u16_scalar(p + i, n - i, base, dst + i);
-}
-
-F2 void
-for_i64_u32_avx2(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint32 *p = a;
-	const __m256i b = set64(base);
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-		st(dst + i, _mm256_add_epi64(_mm256_cvtepu32_epi64(_mm_loadu_si128((const __m128i *) (p + i))), b));
-	sift_colk_for_i64_u32_scalar(p + i, n - i, base, dst + i);
-}
-
-F2 void
-for_i64_u64_avx2(const void *a, uint32 n, int64 base, int64 *dst)
-{
-	const uint64 *p = a;
-	const __m256i b = set64(base);
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-		st(dst + i, _mm256_add_epi64(ld(p + i), b));
-	sift_colk_for_i64_u64_scalar(p + i, n - i, base, dst + i);
-}
-
-/* key ^ (the low 63 bits when the key is negative): the IEEE bits of the double a float key stands for */
-F2 void
-f8_from_keys_avx2(int64 *a, uint32 n)
-{
-	const __m256i zero = _mm256_setzero_si256();
-	uint32		i = 0;
-
-	for (; i + 4 <= n; i += 4)
-	{
-		__m256i		k = ld(a + i);
-
-		st(a + i, _mm256_xor_si256(k, _mm256_srli_epi64(_mm256_cmpgt_epi64(zero, k), 1)));
-	}
-	sift_colk_f8_from_keys_scalar(a + i, n - i);
-}
+SIFT_VEC_PUSH
+#define CV_FN(x)	static void x##_avx2
+#include "col/kern_vec.h"
+SIFT_VEC_POP
 
 /* 32 flags a step: the four bytes of the mask each replicated over eight lanes, one bit kept per lane */
 F2 void

@@ -7,13 +7,10 @@
  * microcoded on Zen 4).
  */
 #if defined(__x86_64__)
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("avx512f,avx512bw,avx512vl,avx512vbmi2,avx512vpopcntdq,avx2,bmi,bmi2,popcnt"))), apply_to = function)
-#else
-#pragma GCC push_options
-#pragma GCC target("avx512f,avx512bw,avx512vl,avx512vbmi2,avx512vpopcntdq,avx2,bmi,bmi2,popcnt")
-#endif
-#include <immintrin.h>
+#include "core/host.h"
+#define SIFT_VEC_AVX512
+#include "core/simd_isa.h"
+SIFT_VEC_PUSH
 
 #define KFN(x) x##_avx512
 #include "bm25/bitmap_kern.h"
@@ -300,11 +297,7 @@ static void bm25_v(float *score, const float *kn, const float *tf, const uint32_
 const sift_kernels sift_kern_avx512 = { popcount_v, and2_v, or2_v, andnot_v, and_count_v, count_mask_v, tids_avx512, ranks_avx512,
 					vop_avx512, bm25_v };
 
-#if defined(__clang__)
-#pragma clang attribute pop
-#else
-#pragma GCC pop_options
-#endif
+SIFT_VEC_POP
 #else
 #include "bm25/bitmap_kern.h"
 const sift_kernels sift_kern_avx512 = { 0 };

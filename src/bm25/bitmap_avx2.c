@@ -1,12 +1,9 @@
 /* AVX2 + BMI1/2 + POPCNT kernels (x86-64-v3); function-level target, safe to link on any x86-64. */
 #if defined(__x86_64__)
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("avx2,bmi,bmi2,popcnt"))), apply_to = function)
-#else
-#pragma GCC push_options
-#pragma GCC target("avx2,bmi,bmi2,popcnt")
-#endif
-#include <immintrin.h>
+#include "core/host.h"
+#define SIFT_VEC_AVX2
+#include "core/simd_isa.h"
+SIFT_VEC_PUSH
 
 #define KFN(x) x##_avx2
 #define or_wide_avx2 sift_or_wide_gen
@@ -80,11 +77,7 @@ static void bm25_v(float *score, const float *kn, const float *tf, const uint32_
 const sift_kernels sift_kern_avx2 = { popcount_avx2_dispatch, and2_avx2, or2_avx2, andnot_avx2, and_count_avx2,
 				      count_mask_avx2, tids_avx2, ranks_avx2, vop_avx2, bm25_v };
 
-#if defined(__clang__)
-#pragma clang attribute pop
-#else
-#pragma GCC pop_options
-#endif
+SIFT_VEC_POP
 #else
 #include "bm25/bitmap_kern.h"
 const sift_kernels sift_kern_avx2 = { 0 };
