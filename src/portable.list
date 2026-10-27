@@ -67,6 +67,7 @@ bm25/wbuf.h
 core/page.h
 bm25/parallel.h
 core/neon.h
+core/simd_isa.h
 core/popcount.h
 bm25/posting.h
 bm25/posting_int.h

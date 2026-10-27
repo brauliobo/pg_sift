@@ -1,9 +1,13 @@
 /*
  * agg/kern_vec.h - the vector kernels of the aggregation operators, written once with GCC/Clang vector extensions and
- * compiled by each level file at its own width (AKV_VB bytes per vector: 32 for AVX2, 64 for AVX-512, 16 for NEON) under the level's target
- * options. Included by agg/kern_avx2.c, agg/kern_avx512.c and agg/kern_neon.c after they define AKV_VB and AKV_FN(x). The integer arithmetic of the numeric programs
+ * compiled by each level file at its own width (SIFT_V_BYTES of core/simd_isa.h per vector: 32 for AVX2, 64 for AVX-512, 16 for NEON) under the level's target
+ * options. Included by agg/kern_avx2.c, agg/kern_avx512.c and agg/kern_neon.c after they define SIFT_VEC_<level> and AKV_FN(x). The integer arithmetic of the numeric programs
  * (agg/vnum.c) wraps (unsigned lanes): the caller has proved that no value leaves int64.
  */
+
+#include "core/simd_isa.h"
+
+#define AKV_VB SIFT_V_BYTES
 
 typedef uint64 akv_u __attribute__((vector_size(AKV_VB), aligned(8), may_alias));
 typedef int64 akv_s __attribute__((vector_size(AKV_VB), aligned(8), may_alias));
@@ -54,10 +58,10 @@ AKV_FN(absmax_i64)(const int64 *v, int n)
 
 /*
  * The one operation the vector extensions cannot express: the product of the low signed 32 bits of each lane as a full 64-bit lane (vpmuldq, vmull_s32).
- * A level file defines AKV_WIDEN(a, b) for its ISA before including this file; x86-64 has no 64-bit vector multiply before AVX-512DQ and NEON never,
+ * SIFT_V_WIDEN(a, b) of core/simd_isa.h is that; x86-64 has no 64-bit vector multiply before AVX-512DQ and NEON never,
  * which is why the numeric programs prove their operands fit int32 (agg/vnum.c) and use this instead.
  */
-#define AKV_TERM(a, k)	((akv_u) AKV_WIDEN((a), (akv_u) {} + (uint64) (int64) (k)))
+#define AKV_TERM(a, k)	((akv_u) SIFT_V_WIDEN((a), (akv_u) {} + (uint64) (int64) (k)))
 
 /* dst = a * ka + b * kb: a term with |k| == 1 is a plain add or subtract, any other multiplies the low 32 bits of the operand */
 #define AKV_LIN_LOOP(TA, TB) \
@@ -96,7 +100,7 @@ AKV_FN(mulw_i64)(int64 *dst, const int64 *a, const int64 *b, int n)
 	int			i = 0;
 
 	for (; i + AKV_L <= n; i += AKV_L)
-		*(akv_s *) (dst + i) = (akv_s) AKV_WIDEN(*(const akv_s *) (a + i), *(const akv_s *) (b + i));
+		*(akv_s *) (dst + i) = (akv_s) SIFT_V_WIDEN(*(const akv_s *) (a + i), *(const akv_s *) (b + i));
 	for (; i < n; i++)
 		dst[i] = (int64) (int32) a[i] * (int64) (int32) b[i];
 }
@@ -105,7 +109,7 @@ AKV_FN(mulw_i64)(int64 *dst, const int64 *a, const int64 *b, int n)
  * Two columns compared into a bitmap (the cmp2_* slots). The six operators are two primitives and a complement: a < b, a = b, and their exact negations over the
  * total order (a <= b is not b < a, a <> b is not a = b), so a level needs one loop per primitive and the operand swap is a call with the pointers exchanged.
  * Every 64 rows are one word of the bitmap; the tail word reads at most one vector past n (the padding of the arrays) and its bits >= n are cleared. A level file defines
- * AKV_BITS32(m) and AKV_BITS64(m): the lane masks of an int32 / int64 compare as the bits of its lanes.
+ * SIFT_V_BITS32(m) and SIFT_V_BITS64(m) (core/simd_isa.h): the lane masks of an int32 / int64 compare as the bits of its lanes.
  *
  * Doubles follow PostgreSQL's order: a NaN equals a NaN and is greater than every number, -0 equals 0 (a < b, with b a NaN and a not, is true).
  */
@@ -154,12 +158,12 @@ AKV_FN(mulw_i64)(int64 *dst, const int64 *a, const int64 *b, int n)
 #define AKV_NAN_LT(x, y)	(((x) < (y)) | (((y) != (y)) & ((x) == (x))))
 #define AKV_NAN_EQ(x, y)	(((x) == (y)) | (((x) != (x)) & ((y) != (y))))
 
-AKV_CMP2_LOOP(cmp2_i32, int32, akv_i32, AKV_L32, AKV_BITS32, x < y, x == y)
+AKV_CMP2_LOOP(cmp2_i32, int32, akv_i32, AKV_L32, SIFT_V_BITS32, x < y, x == y)
 #ifndef AKV_NO_CMP2_I64
-AKV_CMP2_LOOP(cmp2_i64, int64, akv_s, AKV_L, AKV_BITS64, x < y, x == y)
+AKV_CMP2_LOOP(cmp2_i64, int64, akv_s, AKV_L, SIFT_V_BITS64, x < y, x == y)
 #endif
 #ifndef AKV_NO_CMP2_F64
-AKV_CMP2_LOOP(cmp2_f64, double, akv_f64, AKV_L, AKV_BITS64, AKV_NAN_LT(x, y), AKV_NAN_EQ(x, y))
+AKV_CMP2_LOOP(cmp2_f64, double, akv_f64, AKV_L, SIFT_V_BITS64, AKV_NAN_LT(x, y), AKV_NAN_EQ(x, y))
 #endif
 
 /*
@@ -193,18 +197,26 @@ AKV_CMP2_LOOP(cmp2_f64, double, akv_f64, AKV_L, AKV_BITS64, AKV_NAN_LT(x, y), AK
 #ifndef AKV_LANES32
 #define AKV_LANES32(k)	((akv_i32) ((((akv_i32) {} + (int32) (k)) & akv_w32) == akv_w32))
 #endif
-/* m ? a : b per lane, m all ones or zero: a level with a select instruction defines AKV_BLEND */
-#ifndef AKV_BLEND
+/* m ? a : b per lane, m all ones or zero: a level with a select instruction has SIFT_V_BLEND */
+#ifdef SIFT_V_BLEND
+#define AKV_BLEND SIFT_V_BLEND
+#else
 #define AKV_BLEND(T, m, a, b)	((T) (((akv_s) (m) & (akv_s) (a)) | (~(akv_s) (m) & (akv_s) (b))))
 #endif
 /* min / max, a NaN first operand yields the second: the compilers do not form the instruction of the level out of the blend, a level defines AKV_MIN_<T> / AKV_MAX_<T> for the types it has one for (akv_i32, akv_f64) */
 #define AKV_MIN(T, a, b)	AKV_MIN_##T(a, b)
 #define AKV_MAX(T, a, b)	AKV_MAX_##T(a, b)
-#ifndef AKV_MIN_akv_i32
+#ifdef SIFT_V_MIN_I32
+#define AKV_MIN_akv_i32(a, b) SIFT_V_MIN_I32(a, b)
+#define AKV_MAX_akv_i32(a, b) SIFT_V_MAX_I32(a, b)
+#else
 #define AKV_MIN_akv_i32(a, b)	AKV_BLEND(akv_i32, (a) < (b), a, b)
 #define AKV_MAX_akv_i32(a, b)	AKV_BLEND(akv_i32, (a) > (b), a, b)
 #endif
-#ifndef AKV_MIN_akv_f64
+#ifdef SIFT_V_MIN_F64
+#define AKV_MIN_akv_f64(a, b) SIFT_V_MIN_F64(a, b)
+#define AKV_MAX_akv_f64(a, b) SIFT_V_MAX_F64(a, b)
+#else
 #define AKV_MIN_akv_f64(a, b)	AKV_BLEND(akv_f64, (a) < (b), a, b)
 #define AKV_MAX_akv_f64(a, b)	AKV_BLEND(akv_f64, (a) > (b), a, b)
 #endif

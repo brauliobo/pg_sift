@@ -7,6 +7,9 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_NEON
+#include "core/simd_isa.h"
+
 #include "agg/kern_int.h"
 #include "core/neon.h"
 
@@ -111,20 +114,11 @@ agk_sum_i32_neon(const int32 *v, const uint64 *mask, int n)
 
 /* the scalar loop is faster than two 64-bit lanes on an arm64 core: both stay scalar */
 #define AKV_NO_ABSMAX
-#define AKV_VB 16
 #define AKV_RFN(x) agk_##x##_v_neon
 #define AKV_NO_SUM_I32
 #define AKV_NO_SUM_I64
-#define AKV_BLEND(T, m, a, b) ((T) vbslq_u8((uint8x16_t) (m), (uint8x16_t) (a), (uint8x16_t) (b)))
 #define AKV_LANES64(k) ((akv_s) vtstq_u64(vdupq_n_u64(k), (uint64x2_t) akv_w64))
 #define AKV_LANES32(k) ((akv_i32) vtstq_u32(vdupq_n_u32(k), (uint32x4_t) akv_w32))
-#define AKV_MIN_akv_i32(a, b) ((akv_i32) vminq_s32((int32x4_t) (a), (int32x4_t) (b)))
-#define AKV_MAX_akv_i32(a, b) ((akv_i32) vmaxq_s32((int32x4_t) (a), (int32x4_t) (b)))
-#define AKV_WIDEN(a, b) vmull_s32(vmovn_s64((int64x2_t) (a)), vmovn_s64((int64x2_t) (b)))
-/* the lane masks of four int32 as bits: AND with the weight of the lane, add across */
-static const uint32 akv_lane_weight[4] = {1, 2, 4, 8};
-#define AKV_BITS32(m) ((uint64) vaddvq_u32(vandq_u32((uint32x4_t) (m), vld1q_u32(akv_lane_weight))))
-#define AKV_BITS64(m) ((uint64) (vgetq_lane_u64((uint64x2_t) (m), 0) & 1) | ((vgetq_lane_u64((uint64x2_t) (m), 1) & 1) << 1))
 #define AKV_NO_CMP2_I64
 #define AKV_FN(x) agk_##x##_neon
 #include "agg/kern_vec.h"

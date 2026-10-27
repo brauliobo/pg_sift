@@ -52,6 +52,7 @@ agg/kern_neon.c
 agg/kern_vec.h
 # headers
 col/shred.h
+col/shred_vec.h
 col/shred_int.h
 col/col.h
 col/kern.h

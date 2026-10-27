@@ -8,10 +8,12 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_AVX512
+#include "core/simd_isa.h"
+
 #include "agg/kern_int.h"
 
 #if defined(__x86_64__)
-#include <immintrin.h>
 
 #define K5 static inline __attribute__((always_inline)) SIFT_TARGET_AVX512
 #define F5 static SIFT_TARGET_AVX512
@@ -358,24 +360,11 @@ minmax_f64_avx512(double *mn, double *mx, const double *v, const uint64 *mask, i
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt"))), apply_to = function)
-#else
-#pragma GCC push_options
-#pragma GCC target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")
-#endif
-#define AKV_VB 64
+SIFT_VEC_PUSH
 #define AKV_OWN_REDUCE
-#define AKV_WIDEN(a, b) _mm512_mul_epi32((__m512i) (a), (__m512i) (b))
-#define AKV_BITS32(m) ((uint64) _mm512_movepi32_mask((__m512i) (m)))
-#define AKV_BITS64(m) ((uint64) _mm512_movepi64_mask((__m512i) (m)))
 #define AKV_FN(x) x##_avx512
 #include "agg/kern_vec.h"
-#if defined(__clang__)
-#pragma clang attribute pop
-#else
-#pragma GCC pop_options
-#endif
+SIFT_VEC_POP
 
 #define AGK_INIT5(s)	.s = s##_avx512,
 

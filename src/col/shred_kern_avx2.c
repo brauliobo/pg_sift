@@ -3,14 +3,16 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_AVX2
+#include "core/simd_isa.h"
+
 #include "col/shred.h"
 
 #if defined(__x86_64__)
-#include <immintrin.h>
 
-#define K2 static SIFT_TARGET_AVX2
+SIFT_VEC_PUSH
 
-K2 void
+static void
 state_counts_avx2(const uint8 *state, uint32 n, uint32 counts[4])
 {
 	uint32		c0 = 0,
@@ -44,41 +46,29 @@ state_counts_avx2(const uint8 *state, uint32 n, uint32 counts[4])
 	counts[3] = c3;
 }
 
-K2 void
-state_bits_avx2(const uint8 *state, uint32 n, uint64 *nulls, uint64 *ovf)
+/* The 64 states at p that are VALUE and OVERFLOW, from one load of each half */
+static inline void
+sv_words(const uint8 *p, uint64 *value, uint64 *ovf)
 {
 	const __m256i s2 = _mm256_set1_epi8(SIFT_SHRED_VALUE),
-				s3 = _mm256_set1_epi8(SIFT_SHRED_OVERFLOW);
-	uint32		i = 0;
+				s3 = _mm256_set1_epi8(SIFT_SHRED_OVERFLOW),
+				a = _mm256_loadu_si256((const __m256i *) p),
+				b = _mm256_loadu_si256((const __m256i *) (p + 32));
 
-	for (; i + 64 <= n; i += 64)
-	{
-		__m256i		a = _mm256_loadu_si256((const __m256i *) (state + i)),
-					b = _mm256_loadu_si256((const __m256i *) (state + i + 32));
-		uint64		value = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s2)) |
-		(uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s2)) << 32;
-
-		nulls[i / 64] = ~value;
-		ovf[i / 64] = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s3)) |
-			(uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s3)) << 32;
-	}
-	if (i < n)
-	{
-		uint64		nw = 0,
-					ow = 0;
-
-		for (uint32 j = 0; i + j < n; j++)
-		{
-			nw |= (uint64) (state[i + j] != SIFT_SHRED_VALUE) << j;
-			ow |= (uint64) (state[i + j] == SIFT_SHRED_OVERFLOW) << j;
-		}
-		nulls[i / 64] = nw;
-		ovf[i / 64] = ow;
-	}
+	*value = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s2)) | (uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s2)) << 32;
+	*ovf = (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(a, s3)) | (uint64) (uint32) _mm256_movemask_epi8(_mm256_cmpeq_epi8(b, s3)) << 32;
 }
 
+#define SV_FN(x) x##_avx2
+#define SV_NO_MINMAX_F64
+#include "col/shred_vec.h"
+
+/*
+ * The minimum and maximum of the double values stay as they were: with the vector extensions GCC keeps the running maximum in a register it copies in
+ * every step of the loop, one instruction more for four values than the VMAXPD this is written for.
+ */
 /* The four state bytes at p as four 64-bit lanes that are all ones where the state is VALUE */
-K2 __m256i
+static inline __m256i
 value_lanes(const uint8 *p)
 {
 	int			w;
@@ -89,53 +79,7 @@ value_lanes(const uint8 *p)
 	return _mm256_cmpeq_epi64(_mm256_cvtepu8_epi64(b), _mm256_set1_epi64x(SIFT_SHRED_VALUE));
 }
 
-K2 bool
-minmax_i64_avx2(const uint8 *state, const int64 *val, uint32 n, int64 *min, int64 *max)
-{
-	__m256i		mn = _mm256_set1_epi64x(PG_INT64_MAX),
-				mx = _mm256_set1_epi64x(PG_INT64_MIN),
-				any = _mm256_setzero_si256();
-	uint32		i = 0;
-	int64		lo = PG_INT64_MAX,
-				hi = PG_INT64_MIN;
-	bool		found;
-	int64		t[4];
-
-	for (; i + 4 <= n; i += 4)
-	{
-		__m256i		m = value_lanes(state + i),
-					v = _mm256_loadu_si256((const __m256i *) (val + i)),
-					a = _mm256_blendv_epi8(_mm256_set1_epi64x(PG_INT64_MAX), v, m),
-					b = _mm256_blendv_epi8(_mm256_set1_epi64x(PG_INT64_MIN), v, m);
-
-		mn = _mm256_blendv_epi8(mn, a, _mm256_cmpgt_epi64(mn, a));
-		mx = _mm256_blendv_epi8(mx, b, _mm256_cmpgt_epi64(b, mx));
-		any = _mm256_or_si256(any, m);
-	}
-	found = !_mm256_testz_si256(any, any);
-	_mm256_storeu_si256((__m256i *) t, mn);
-	for (int k = 0; k < 4; k++)
-		lo = Min(lo, t[k]);
-	_mm256_storeu_si256((__m256i *) t, mx);
-	for (int k = 0; k < 4; k++)
-		hi = Max(hi, t[k]);
-	for (; i < n; i++)
-	{
-		if (state[i] != SIFT_SHRED_VALUE)
-			continue;
-		lo = Min(lo, val[i]);
-		hi = Max(hi, val[i]);
-		found = true;
-	}
-	if (found)
-	{
-		*min = lo;
-		*max = hi;
-	}
-	return found;
-}
-
-K2 bool
+static bool
 minmax_f64_avx2(const uint8 *state, const double *val, uint32 n, double *min, double *max)
 {
 	const __m256d pinf = _mm256_set1_pd(__builtin_inf()),
@@ -182,11 +126,14 @@ minmax_f64_avx2(const uint8 *state, const double *val, uint32 n, double *min, do
 	return found;
 }
 
+
 const SiftShredKernels sift_shred_kernels_avx2 = {
 	.state_counts = state_counts_avx2,
 	.state_bits = state_bits_avx2,
 	.minmax_i64 = minmax_i64_avx2,
 	.minmax_f64 = minmax_f64_avx2
 };
+
+SIFT_VEC_POP
 
 #endif

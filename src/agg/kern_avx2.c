@@ -6,11 +6,13 @@
  */
 #include "core/host.h"
 
+#define SIFT_VEC_AVX2
+#include "core/simd_isa.h"
+
 #include "agg/kern_int.h"
 #include "col/kern_int.h"
 
 #if defined(__x86_64__)
-#include <immintrin.h>
 
 #define K2 static inline __attribute__((always_inline)) SIFT_TARGET_AVX2
 #define F2 static SIFT_TARGET_AVX2
@@ -303,31 +305,13 @@ minmax_f64_avx2(double *mn, double *mx, const double *v, const uint64 *mask, int
 	return mask ? minmax_f64_t(mn, mx, v, mask, n, true) : minmax_f64_t(mn, mx, v, mask, n, false);
 }
 
-#if defined(__clang__)
-#pragma clang attribute push(__attribute__((target("avx2,bmi,bmi2,popcnt"))), apply_to = function)
-#else
-#pragma GCC push_options
-#pragma GCC target("avx2,bmi,bmi2,popcnt")
-#endif
-#define AKV_VB 32
+SIFT_VEC_PUSH
 #define AKV_NO_MINMAX_I64
 #define AKV_NO_MINMAX_F64
-#define AKV_BLEND(T, m, a, b) ((T) _mm256_blendv_epi8((__m256i) (b), (__m256i) (a), (__m256i) (m)))
 #define AKV_LANES64(k) ((akv_s) lanes64(k))
-#define AKV_MIN_akv_i32(a, b) ((akv_i32) _mm256_min_epi32((__m256i) (a), (__m256i) (b)))
-#define AKV_MAX_akv_i32(a, b) ((akv_i32) _mm256_max_epi32((__m256i) (a), (__m256i) (b)))
-#define AKV_MIN_akv_f64(a, b) ((akv_f64) _mm256_min_pd((__m256d) (a), (__m256d) (b)))
-#define AKV_MAX_akv_f64(a, b) ((akv_f64) _mm256_max_pd((__m256d) (a), (__m256d) (b)))
-#define AKV_WIDEN(a, b) _mm256_mul_epi32((__m256i) (a), (__m256i) (b))
-#define AKV_BITS32(m) ((uint64) (uint32) _mm256_movemask_ps((__m256) (m)))
-#define AKV_BITS64(m) ((uint64) (uint32) _mm256_movemask_pd((__m256d) (m)))
 #define AKV_FN(x) x##_avx2
 #include "agg/kern_vec.h"
-#if defined(__clang__)
-#pragma clang attribute pop
-#else
-#pragma GCC pop_options
-#endif
+SIFT_VEC_POP
 
 #define AGK_INIT2(s)	.s = s##_avx2,
 
