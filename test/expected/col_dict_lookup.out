@@ -220,6 +220,24 @@ SELECT mode, dl_node(q, mode) AS node, count(*) FROM dl_s GROUP BY mode, 2 ORDER
  col  | index    |     6
 (2 rows)
 
+-- the order of strings that share long prefixes, that are prefixes of each other and that run past 8 and 16 bytes
+CREATE TABLE dl_p (id int, s text);
+INSERT INTO dl_p SELECT i, repeat('ab', 20 + i % 3) || CASE WHEN i % 4 = 0 THEN '' ELSE lpad(to_hex(i), 1 + i % 9, '0') END FROM generate_series(1, 6000) i;
+INSERT INTO dl_p SELECT 6000 + i, repeat('a', i % 40) || 'b' FROM generate_series(1, 2000) i;
+CREATE INDEX dl_p_idx ON dl_p USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = 'on');
+SELECT sift.col_verify('dl_p_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT count(DISTINCT s) > 1024 AS dictionary_over_the_minimum FROM dl_p;
+ dictionary_over_the_minimum 
+-----------------------------
+ t
+(1 row)
+
+DROP TABLE dl_p;
 DROP TABLE dl, dl_q, dl_s;
 DROP FUNCTION dl_cmp(regclass, text, text), dl_round(), dl_rounds(int), dl_mode(text), dl_sql(text, text), dl_node(text, text);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

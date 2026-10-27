@@ -176,7 +176,101 @@ sort_ent_cmp(const void *a, const void *b, void *arg)
 	return sift_cstr_cmp(d->bytes + d->off[x], cdict_len(d, x), d->bytes + d->off[y], cdict_len(d, y));
 }
 
-/* d->sorted: a radix sort on the first 8 bytes of every string, then the entries that tie on them by their whole strings */
+#define SORT_SMALL	32		/* a group of this many strings or fewer is sorted by comparing whole strings */
+
+/* the key of the 8 bytes of string c from at, zero padded: byte order of the keys is byte order of the strings from at, up to a tie */
+static uint64
+sort_key(const SiftCDict *d, uint32 c, uint32 at)
+{
+	const uint8 *s = (const uint8 *) d->bytes + d->off[c];
+	uint32		len = cdict_len(d, c);
+	uint64		k = 0;
+
+	for (uint32 i = 0; i < sizeof(uint64); i++)
+		k = k << 8 | (at + i < len ? s[at + i] : 0);
+	return k;
+}
+
+/*
+ * The strings of a[0..n) all begin with the same depth bytes: sorted by a radix sort on the 8 bytes after the prefix they still share (the strings of a column
+ * of urls, paths or prefixed ids share long ones), then each run that ties on them by the 8 bytes after, until it is small or no string goes on; b is scratch.
+ */
+static void
+sort_group(const SiftCDict *d, SortEnt *a, SortEnt *b, uint32 n, uint32 depth)
+{
+	const uint8 *s0;
+	uint32		len0,
+				share,
+				maxlen = 0,
+				at;
+	SortEnt    *src = a,
+			   *dst = b;
+
+	if (n <= SORT_SMALL)
+	{
+		qsort_arg(a, n, sizeof(SortEnt), sort_ent_cmp, (void *) d);
+		return;
+	}
+	s0 = (const uint8 *) d->bytes + d->off[a[0].code];
+	len0 = cdict_len(d, a[0].code);
+	share = len0 > depth ? len0 - depth : 0;
+	for (uint32 i = 0; i < n; i++)
+	{
+		const uint8 *s = (const uint8 *) d->bytes + d->off[a[i].code];
+		uint32		len = cdict_len(d, a[i].code),
+					k = 0;
+
+		maxlen = Max(maxlen, len);
+		while (k < share && depth + k < len && s[depth + k] == s0[depth + k])
+			k++;
+		share = k;
+	}
+	at = depth + share;
+	if (at >= maxlen)
+	{
+		qsort_arg(a, n, sizeof(SortEnt), sort_ent_cmp, (void *) d);
+		return;
+	}
+	for (uint32 i = 0; i < n; i++)
+		a[i].key = sort_key(d, a[i].code, at);
+	for (int pass = 0; pass < 8; pass++)
+	{
+		uint32		count[256] = {0},
+					pos = 0;
+		int			shift = pass * 8;
+
+		for (uint32 i = 0; i < n; i++)
+			count[(src[i].key >> shift) & 255]++;
+		if (count[(src[0].key >> shift) & 255] == n)
+			continue;
+		for (int v = 0; v < 256; v++)
+		{
+			uint32		c = count[v];
+
+			count[v] = pos;
+			pos += c;
+		}
+		for (uint32 i = 0; i < n; i++)
+			dst[count[(src[i].key >> shift) & 255]++] = src[i];
+		{
+			SortEnt    *t = src;
+
+			src = dst;
+			dst = t;
+		}
+	}
+	if (src != a)
+		memcpy(a, src, n * sizeof(SortEnt));
+	for (uint32 i = 0, j; i < n; i = j)
+	{
+		for (j = i + 1; j < n && a[j].key == a[i].key; j++)
+			;
+		if (j - i > 1)
+			sort_group(d, a + i, b + i, j - i, at + sizeof(uint64));
+	}
+}
+
+/* d->sorted: the codes of the strings in byte order */
 static void
 cdict_sort(SiftCDict *d)
 {
@@ -184,49 +278,8 @@ cdict_sort(SiftCDict *d)
 			   *b = palloc(d->n * sizeof(SortEnt));
 
 	for (uint32 c = 0; c < d->n; c++)
-	{
-		const uint8 *s = (const uint8 *) d->bytes + d->off[c];
-		uint32		len = Min(cdict_len(d, c), sizeof(uint64));
-		uint64		k = 0;
-
-		for (uint32 i = 0; i < sizeof(uint64); i++)
-			k = k << 8 | (i < len ? s[i] : 0);
-		a[c].key = k;
 		a[c].code = c;
-	}
-	for (int pass = 0; pass < 8; pass++)
-	{
-		uint32		count[256] = {0},
-					at = 0;
-		int			shift = pass * 8;
-
-		for (uint32 i = 0; i < d->n; i++)
-			count[(a[i].key >> shift) & 255]++;
-		if (count[(a[0].key >> shift) & 255] == d->n)
-			continue;
-		for (int v = 0; v < 256; v++)
-		{
-			uint32		c = count[v];
-
-			count[v] = at;
-			at += c;
-		}
-		for (uint32 i = 0; i < d->n; i++)
-			b[count[(a[i].key >> shift) & 255]++] = a[i];
-		{
-			SortEnt    *t = a;
-
-			a = b;
-			b = t;
-		}
-	}
-	for (uint32 i = 0, j; i < d->n; i = j)
-	{
-		for (j = i + 1; j < d->n && a[j].key == a[i].key; j++)
-			;
-		if (j - i > 1)
-			qsort_arg(a + i, j - i, sizeof(SortEnt), sort_ent_cmp, d);
-	}
+	sort_group(d, a, b, d->n, 0);
 	d->sorted = MemoryContextAlloc(d->mcxt, (Size) d->n * sizeof(uint32));
 	for (uint32 i = 0; i < d->n; i++)
 		d->sorted[i] = a[i].code;

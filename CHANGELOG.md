@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Improved: pg_sift: the sort that gives a dictionary its order (`dict_lookup`, `count_columns`) skips the prefix that the strings of a run still share and radix sorts the bytes after it, so a column of urls or prefixed ids no longer pays a comparison of whole strings for every step; the order is the same.
 - Improved: pg_sift: the bloom filter that `key_columns = 'auto'` writes for a unique id that no list fits may use up to a share of five percent of the unit together with the lists (three before), which gives it the bits a key of a column named in the option, so `WHERE id = x` skips more of the units whose filter lacks the key; the NOTICE at `CREATE INDEX` says so.
 - Changed: pg_sift: `rollup_dims` defaults to `'auto'`: `CREATE INDEX` of a `sift_col` index picks the pair of low-cardinality columns whose combinations fit the cells of a unit and writes the rollup of the rows by them (column format minor 9, which 3.3 reads), with a NOTICE that names the columns; `rollup_dims = 'off'` writes none, and the regression tests that count pre-aggregated units or read the format minors of an index create it with `'off'`.
 - Added: pg_sift: `sift.agg_verdict_cache` (on by default; `off` plans the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the form as written, in full for every statement, so a plan does not depend on the statements planned before it)
