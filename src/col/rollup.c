@@ -666,6 +666,9 @@ sift_col_rollup_request(Relation index, uint64 gen)
 	TimestampTz now = GetCurrentTimestamp();
 	bool		queued = false;
 
+	/* the worker refreshes the segments of an index: the options of a sift_table are the heap's, which are not a SiftColOptions */
+	if (!sift_col_is_index(index))
+		return false;
 	/* a server that writes minor 3 (sift.col_format_minor, for readers of 3.0) is not rewritten to minor 4 behind its back */
 	if (!sift_col_rollup_on_demand || !sift_col_options(index)->rollup_on_demand || RecoveryInProgress() || sift_col_format_minor < 4)
 		return false;
