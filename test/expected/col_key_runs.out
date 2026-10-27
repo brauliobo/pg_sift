@@ -180,7 +180,7 @@ INSERT INTO kf SELECT row_number() OVER (ORDER BY hashint4(g))::int, 1 + (hashin
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_i ON kf USING sift_col (id, set_id, val, x1, x2) WITH (write_buffer_limit = 4096, key_cut = 'set_id');
 NOTICE:  sift_col index kf_i keeps the keys of id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 45161 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (at least 3 bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead. Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
+DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 90160 bytes together, which a count(DISTINCT) of one reads instead of its rows. id: where no list fits, a bloom filter of what the share has left (3 to 10 bits a key, within 5% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'id' lists the rows of each key, so that an equality reads one unit, for about 1.7 MB more (a b-tree is about as large). Left out: set_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX kf_i SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 SELECT kr_option('kf_i') AS option;
         option        
@@ -200,8 +200,8 @@ SELECT q, kr_rows(q, true) = kr_rows(q, false) AS same, kr_units(q) AS units FRO
                                  q                                  | same | units 
 --------------------------------------------------------------------+------+-------
  SELECT count(*), sum(val) FROM kf WHERE id = 100000                | t    |     0
- SELECT count(*), sum(val) FROM kf WHERE id = 45050                 | t    |     3
- SELECT count(*), sum(val) FROM kf WHERE id IN (45050, 7001, 88999) | t    |     6
+ SELECT count(*), sum(val) FROM kf WHERE id = 45050                 | t    |     1
+ SELECT count(*), sum(val) FROM kf WHERE id IN (45050, 7001, 88999) | t    |     3
 (3 rows)
 
 SELECT bytes > 0 AS filters_take_bytes FROM sift.col_sections('kf_i') WHERE section = 'sets';

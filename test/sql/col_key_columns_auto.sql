@@ -118,7 +118,7 @@ INSERT INTO au_m SELECT i, (hashint4(i) & 2147483647) % 3000, (hashint4(i + 1) &
 FROM generate_series(1, 60000) i;
 CREATE INDEX au_m_i ON au_m USING sift_col (id, a_id, b_id, c_id, d_id, e_id, f_id, g_id, h_id, val) WITH (write_buffer_limit = 4096);
 SELECT au_option('au_m_i') AS option;
-SELECT bytes * 100 < pg_relation_size('au_m_i') * 3 AS sets_under_3_percent FROM sift.col_sections('au_m_i') WHERE section = 'sets';
+SELECT bytes * 100 < pg_relation_size('au_m_i') * 5 AS sets_under_5_percent FROM sift.col_sections('au_m_i') WHERE section = 'sets';
 SELECT sift.col_verify('au_m_i', true);
 
 DROP TABLE au, au_m, au_p CASCADE;

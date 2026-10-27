@@ -506,6 +506,7 @@ add_sets(SiftColSegWriter *w, const SiftCPaggCol *cols, Size unit_bytes)
 		}
 		a->off[w->nsb + 1] = a->blobs.len;
 	}
+	left += unit_bytes / 100 * (SIFT_CSET_FILTER_PCT - SIFT_CSET_PRES_PCT);
 	for (int c = 0; filter && c < w->schema->ncols; c++)
 	{
 		SetAcc	   *a = &w->set[c];

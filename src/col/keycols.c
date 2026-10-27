@@ -476,11 +476,11 @@ sift_col_auto_keys_report(Relation index)
 		append_bytes(&detail, kept_bytes);
 		appendStringInfoString(&detail, " together, which a count(DISTINCT) of one reads instead of its rows.");
 		if (filtered.len > 0)
-			appendStringInfo(&detail, " %s: where no list fits, a bloom filter of what the share has left (at least %d bits a key) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = '%s' lists the rows of each key, so that an equality reads one unit, for about ", filtered.data, SIFT_CSET_BLOOM_MIN_BITS, filtered.data);
+			appendStringInfo(&detail, " %s: where no list fits, a bloom filter of what the share has left (%d to 10 bits a key, within %d%% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = '%s' lists the rows of each key, so that an equality reads one unit, for about ", filtered.data, SIFT_CSET_BLOOM_MIN_BITS, SIFT_CSET_FILTER_PCT, filtered.data);
 		if (filtered.len > 0)
 		{
 			appendStringInfo(&detail, "%.1f MB", point_bytes / 1048576.0);
-			appendStringInfoString(&detail, " more (a b-tree is about as large) and key_columns naming the column keeps 10 bits a key instead.");
+			appendStringInfoString(&detail, " more (a b-tree is about as large).");
 		}
 		if (left.len > 0)
 			appendStringInfo(&detail, " Left out: %s.%s", why.data,

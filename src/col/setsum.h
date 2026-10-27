@@ -23,6 +23,7 @@
 #define SIFT_CSET_BLOOM_K		5
 #define SIFT_CSET_PROBES		8		/* a range that spans at most this many keys is probed key by key in a bloom filter, a wider one is not tested */
 #define SIFT_CSET_PRES_PCT		3		/* the key lists and bitmaps of all the leaves of a unit take at most this share of its bytes together */
+#define SIFT_CSET_FILTER_PCT	5		/* with the bloom filters of the leaves that got no list: at most this share of the bytes of a unit together */
 
 typedef struct SiftCSet
 {
