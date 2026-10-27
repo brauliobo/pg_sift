@@ -86,6 +86,9 @@ conf() {
 	echo "sift.col_auto_merge = off"
 	# and a test that switches it on wants its rewrite when the rule says so, not when the cluster has written enough (the test of the budget sets its own)
 	echo "sift.col_auto_merge_wal_pct = 0"
+	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
+	# partitions took 5.6 s to compile and 11 ms to run (PostgreSQL 17 of the CI runners has the library in its package, 18 in another one)
+	echo "jit = off"
 	# 19 can aggregate below a join (eager aggregation) and prices that plan under some of those of the pushdown tests, which then keep the normal plan
 	(( PG_MAJOR < 19 )) || echo "enable_eager_aggregate = off"
 	(( PG_MAJOR >= 18 )) || return 0
