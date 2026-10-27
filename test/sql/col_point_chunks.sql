@@ -5,19 +5,19 @@ CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
-CREATE TABLE lz (id int, k int, s text, pad text DEFAULT repeat('x', 300));
+CREATE TABLE lz (id int, k int, s text, t text, pad text DEFAULT repeat('x', 300));
 ALTER TABLE lz ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO lz (id, k, s)
-SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END
+INSERT INTO lz (id, k, s, t)
+SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'q' || to_char(i, 'FM00000') END
 FROM generate_series(1, 8000) i;
-CREATE INDEX lz_t ON lz USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'id, k, s', cube_minmax = false);
+CREATE INDEX lz_t ON lz USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops, t sift.col_text_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'id, k, s, t', cube_minmax = false);
 SELECT sift.col_promote('lz_t'::regclass) >= 0 AS promoted;
-INSERT INTO lz (id, k, s)
-SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END
+INSERT INTO lz (id, k, s, t)
+SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'q' || to_char(i, 'FM00000') END
 FROM generate_series(8001, 16000) i;
 SELECT sift.col_promote('lz_t'::regclass) >= 0 AS promoted;
-INSERT INTO lz (id, k, s)
-SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END
+INSERT INTO lz (id, k, s, t)
+SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char((i * 31) % 12000, 'FM00000') END, CASE WHEN i % 53 = 0 THEN NULL ELSE 'q' || to_char(i, 'FM00000') END
 FROM generate_series(16001, 24000) i;
 SELECT sift.col_promote('lz_t'::regclass) >= 0 AS promoted;
 VACUUM (ANALYZE) lz;
@@ -67,12 +67,30 @@ SELECT lz_check('s LIKE ''p000%'' COLLATE "C"') AS prefix_100_keys;
 SELECT lz_check('s LIKE ''p0000%'' COLLATE "C"') AS prefix_10_keys;
 SELECT lz_check('s LIKE ''zz%'' COLLATE "C"') AS prefix_none;
 SELECT lz_check('s >= ''p00500'' AND s < ''p00700'' COLLATE "C"') AS range_with_two_tests;
+SELECT lz_check('s < ''p00300'' COLLATE "C"') AS less_300_keys;
+SELECT lz_check('s <= ''p00300'' COLLATE "C"') AS less_equal_300_keys;
+SELECT lz_check('s > ''p11700'' COLLATE "C"') AS greater_300_keys;
+SELECT lz_check('s >= ''p11700'' COLLATE "C"') AS greater_equal_300_keys;
+SELECT lz_check('s >= ''p11990'' COLLATE "C"') AS greater_equal_10_keys;
+SELECT lz_check('s > ''p11999'' COLLATE "C"') AS greater_none;
+-- a prefix or a range of one segment's dictionary is the places of its sorted order, read a chunk of keys at a time: 100 to 150 keys of a segment of 8,000 rows, or fewer than a chunk
+SELECT lz_check('t LIKE ''q001%'' COLLATE "C"') AS places_prefix_100;
+SELECT lz_check('t LIKE ''q012%'' COLLATE "C"') AS places_prefix_100_second_segment;
+SELECT lz_check('t LIKE ''q0010%'' COLLATE "C"') AS places_prefix_10;
+SELECT lz_check('t LIKE ''q00%'' COLLATE "C"') AS places_prefix_dense;
+SELECT lz_check('t < ''q00150'' COLLATE "C"') AS places_less_150;
+SELECT lz_check('t <= ''q00150'' COLLATE "C"') AS places_less_equal_150;
+SELECT lz_check('t > ''q23900'' COLLATE "C"') AS places_greater_100;
+SELECT lz_check('t >= ''q23900'' COLLATE "C"') AS places_greater_equal_101;
+SELECT lz_check('t >= ''q23990'' COLLATE "C"') AS places_greater_equal_11;
+SELECT lz_check('t LIKE ''q001%'' COLLATE "C" AND k < 1500') AS places_prefix_and_test;
 SELECT lz_check('k IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(10, 400, 3) g) || ')') AS in_list_130_keys;
 SELECT lz_check('k IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(10, 400, 3) g) || ') AND id > 20000') AS in_list_and_range;
 SELECT lz_check('id IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 20000, 97) g) || ')') AS in_list_unique_ids;
 
 -- a LIMIT reads a fraction of the buffers of the whole answer
 SELECT lz_hits('s LIKE ''p1%'' COLLATE "C"', 10) * 4 < lz_hits('s LIKE ''p1%'' COLLATE "C"', 100000) AS limit_reads_less_prefix;
+SELECT lz_hits('t LIKE ''q001%'' COLLATE "C"', 10) * 4 < lz_hits('t LIKE ''q001%'' COLLATE "C"', 100000) AS limit_reads_less_places;
 SELECT lz_hits('k IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(10, 2500, 2) g) || ')', 10) * 4 < lz_hits('k IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(10, 2500, 2) g) || ')', 100000) AS limit_reads_less_in;
 
 -- the write buffer and the dead rows: the rows of a unit that has some are read from the unit, and those of the buffer follow the chunks
@@ -80,6 +98,8 @@ INSERT INTO lz (id, k, s) SELECT 100000 + i, i % 3000, 'p1' || to_char(i, 'FM000
 SELECT lz_check('s LIKE ''p1%'' COLLATE "C"') AS buffer_rows;
 DELETE FROM lz WHERE id % 7 = 0 AND id < 12000;
 SELECT lz_check('s LIKE ''p1%'' COLLATE "C"') AS dead_rows;
+SELECT lz_check('t LIKE ''q001%'' COLLATE "C"') AS places_dead_rows;
+SELECT lz_check('t < ''q00150'' COLLATE "C"') AS places_less_dead_rows;
 UPDATE lz SET s = 'p1' || to_char(id % 90, 'FM000') WHERE id % 11 = 0 AND id BETWEEN 12000 AND 18000;
 SELECT lz_check('s LIKE ''p1%'' COLLATE "C"') AS updated_rows;
 BEGIN;
@@ -91,6 +111,8 @@ VACUUM lz;
 SELECT lz_check('s LIKE ''p1%'' COLLATE "C"') AS after_vacuum;
 SELECT sift.col_merge('lz_t'::regclass, true) >= 0 AS merged;
 SELECT lz_check('s LIKE ''p1%'' COLLATE "C"') AS after_merge;
+SELECT lz_check('t LIKE ''q001%'' COLLATE "C"') AS places_after_merge;
+SELECT lz_check('t > ''q23900'' COLLATE "C"') AS places_greater_after_merge;
 SELECT lz_check('k IN (' || (SELECT string_agg(g::text, ',') FROM generate_series(10, 400, 3) g) || ')') AS in_list_after_merge;
 
 -- a cursor fetched in pieces and a rescan

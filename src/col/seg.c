@@ -893,6 +893,34 @@ sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows)
 		corrupt(seg, "The row counts of the dictionary of leaf %d end at %u rows, not the %u they add up to.", col, last[0], cum);
 }
 
+/* The places [from, to) of the byte order of a dictionary read in place whose strings pass op (EQ, LT, LE, GT, GE or PREFIX, bytewise) against c: two bisections */
+static void
+dict_places(DictLook *l, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to)
+{
+	SiftCSorted so = {l->n, look_sorted_str, l};
+
+	look_cache(l);
+	if (op == SIFT_COLOP_EQ)
+	{
+		*from = sift_csorted_bound(&so, c, false);
+		*to = *from < l->n && sift_csorted_cmp(&so, *from, c) == 0 ? *from + 1 : *from;
+	}
+	else
+		sift_csorted_range(&so, op, c, from, to);
+}
+
+/* dict_places for a leaf whose dictionary is searchable in place (false: it is not) */
+bool
+sift_cseg_dict_places(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to)
+{
+	DictLook   *l;
+
+	if (seg->schema->cols[col].store != SIFT_COLS_STR || (l = dict_look(seg, col)) == NULL || !l->searchable)
+		return false;
+	dict_places(l, op, c, from, to);
+	return true;
+}
+
 /*
  * The rows of the segment whose string of leaf col passes op (EQ, LT, LE, GT, GE or PREFIX, bytewise) against c, from the cumulative counts that a dictionary
  * of the option count_columns stores with its order: two bisections and two reads, whatever the rows. false: the leaf has no counts in this segment.
@@ -901,22 +929,13 @@ bool
 sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint64 *rows)
 {
 	DictLook   *l;
-	SiftCSorted so;
 	uint32		from,
 				to,
 				cum[2];
 
 	if (seg->schema->cols[col].store != SIFT_COLS_STR || (l = dict_look(seg, col)) == NULL || l->cum_at == 0)
 		return false;
-	so = (SiftCSorted) {l->n, look_sorted_str, l};
-	look_cache(l);
-	if (op == SIFT_COLOP_EQ)
-	{
-		from = sift_csorted_bound(&so, c, false);
-		to = from < l->n && sift_csorted_cmp(&so, from, c) == 0 ? from + 1 : from;
-	}
-	else
-		sift_csorted_range(&so, op, c, &from, &to);
+	dict_places(l, op, c, &from, &to);
 	cum[0] = look_cum(l, from);
 	cum[1] = look_cum(l, to);
 	if (cum[1] < cum[0] || cum[1] > seg->entry.ndocs)
@@ -2562,13 +2581,55 @@ sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *k
 	}
 }
 
-static int
-row_cmp(const void *a, const void *b)
+/* a[0, n) ascending: insertion for a short chunk, else a radix sort of bytes (a callback sort costs ten times the instructions on the codes of a chunk) */
+static void
+sort_u32(uint32 *a, uint32 n)
 {
-	uint32		x = *(const uint32 *) a,
-				y = *(const uint32 *) b;
+	uint32		max = 0,
+			   *tmp,
+			   *from = a,
+			   *to;
 
-	return (x > y) - (x < y);
+	if (n <= 48)
+	{
+		for (uint32 i = 1; i < n; i++)
+		{
+			uint32		v = a[i],
+						j = i;
+
+			for (; j > 0 && a[j - 1] > v; j--)
+				a[j] = a[j - 1];
+			a[j] = v;
+		}
+		return;
+	}
+	for (uint32 i = 0; i < n; i++)
+		max |= a[i];
+	to = tmp = palloc(n * sizeof(uint32));
+	for (int shift = 0; shift < 32 && (max >> shift) != 0; shift += 8)
+	{
+		uint32		cnt[256] = {0},
+					sum = 0,
+				   *t;
+
+		for (uint32 i = 0; i < n; i++)
+			cnt[(from[i] >> shift) & 255]++;
+		for (int d = 0; d < 256; d++)
+		{
+			uint32		c = cnt[d];
+
+			cnt[d] = sum;
+			sum += c;
+		}
+		for (uint32 i = 0; i < n; i++)
+			to[cnt[(from[i] >> shift) & 255]++] = from[i];
+		t = from;
+		from = to;
+		to = t;
+	}
+	if (from != a)
+		memcpy(a, from, n * sizeof(uint32));
+	pfree(tmp);
 }
 
 /* The count of the list at word off of the leaf's lists, checked against the lists' words */
@@ -2668,7 +2729,7 @@ sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys,
 		pfree(pr.r);
 		return false;
 	}
-	qsort(pr.r, pr.n, sizeof(uint32), row_cmp);
+	sort_u32(pr.r, pr.n);
 	for (uint32 i = 0; i < pr.n; i++)
 		if (u == 0 || pr.r[u - 1] != pr.r[i])
 			pr.r[u++] = pr.r[i];
@@ -2976,7 +3037,8 @@ struct SiftPointStream
 	int			nslots;
 	int			nlists;
 	/* a lookup of many keys (SIFT_CPOINT_CHUNK_MIN or more) is read a chunk of keys at a time: the keys not looked up yet, and the addresses of the chunk in hand */
-	int64	   *keys;
+	int64	   *keys;			/* NULL for the places of a dictionary: the keys are the codes at places pfrom + kpos on of its byte order (sift_cseg_point_stream_open_places) */
+	uint32		pfrom;
 	int			nkeys;
 	int			kpos;
 	int			kchunk;
@@ -3055,8 +3117,26 @@ stream_chunk(SiftPointStream *s)
 		SiftKey    *tids;
 		uint32		n;
 		bool		found;
+		int64	   *places = NULL;
+		const int64 *kk = s->keys != NULL ? s->keys + s->kpos : NULL;
 
-		found = point_tids(s->seg, s->col, s->keys + s->kpos, k, NULL, 0, s->seen, &tids, &n);
+		if (kk == NULL)
+		{
+			DictLook   *l = dict_look(s->seg, s->col);
+			uint32	   *codes = palloc(k * sizeof(uint32));
+
+			seg_read(s->seg, l->perm_at + ((uint64) s->pfrom + s->kpos) * sizeof(uint32), k * sizeof(uint32), codes);
+			/* in the order of the codes, which follows that of the rows: the addresses of the keys come nearly in order of the heap, and the sort of them finds it so */
+			sort_u32(codes, k);
+			places = palloc(k * sizeof(int64));
+			for (int j = 0; j < k; j++)
+				places[j] = codes[j];
+			pfree(codes);
+			kk = places;
+		}
+		found = point_tids(s->seg, s->col, kk, k, NULL, 0, s->seen, &tids, &n);
+		if (places)
+			pfree(places);
 		SIFT_INVARIANT(found, "sift_col: the directory of heap addresses of leaf %d gave no lookup", s->col);
 		s->kpos += k;
 		s->kchunk = Min(s->kchunk * 4, SIFT_CPOINT_CHUNK_LAST);
@@ -3161,12 +3241,47 @@ sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int
 	return s;
 }
 
+/*
+ * The stream of the lookup of the codes at places [from, to) of the byte order of a dictionary read in place (a prefix or a range of a text leaf), looked up a chunk at a time
+ * without making the keys: NULL when the leaf has no addresses or the segment is too large for chunks (the caller makes the keys)
+ */
+SiftPointStream *
+sift_cseg_point_stream_open_places(SiftColSegment *seg, int col, uint32 from, uint32 to)
+{
+	const PointLeaf *pl = points_read(seg);
+	SiftPointStream *s;
+
+	if (pl == NULL || pl[col].nslots == 0 || !pl[col].tids || (uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows > SIFT_CPOINT_CHUNK_ROWS)
+		return NULL;
+	s = palloc0(sizeof(SiftPointStream));
+	s->seg = seg;
+	s->col = col;
+	s->pfrom = from;
+	s->nkeys = to - from;
+	s->kchunk = SIFT_CPOINT_CHUNK_FIRST;
+	s->seen = palloc0(((Size) pl[col].nslots + 63) / 64 * sizeof(uint64));
+	return s;
+}
+
+/* The codes at places [from, to) of the byte order of a dictionary read in place into keys, to - from of them */
+void
+sift_cseg_dict_codes(SiftColSegment *seg, int col, uint32 from, uint32 to, int64 *keys)
+{
+	DictLook   *l = dict_look(seg, col);
+	uint32	   *codes = palloc((Size) (to - from) * sizeof(uint32));
+
+	seg_read(seg, l->perm_at + (uint64) from * sizeof(uint32), (Size) (to - from) * sizeof(uint32), codes);
+	for (uint32 i = 0; i < to - from; i++)
+		keys[i] = codes[i];
+	pfree(codes);
+}
+
 uint32
 sift_cseg_point_stream_next(SiftPointStream *s, SiftKey *out, uint32 max)
 {
 	uint32		n = 0;
 
-	if (s->keys != NULL)
+	if (s->nkeys > 0)
 	{
 		while (n < max && (s->pbuf < s->nbuf || stream_chunk(s)))
 		{

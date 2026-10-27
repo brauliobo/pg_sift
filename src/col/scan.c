@@ -448,6 +448,31 @@ units_within(const uint64 *keep, const uint64 *held, uint32 nw)
 	return true;
 }
 
+static bool
+keep_some(const ColCursor *c, const uint64 *keep)
+{
+	uint32		nw = SIFT_COL_NWORDS(c->seg->nsb);
+	bool		some = false;
+
+	for (uint32 w = 0; w < nw && !some; w++)
+		some = (w == c->seg->nsb / 64 ? keep[w] & ((UINT64CONST(1) << (c->seg->nsb % 64)) - 1) : keep[w]) != 0;
+	return some;
+}
+
+/* The stream c->ps hands the addresses over: no unit stays kept until it does */
+static void
+point_lazy_adopt(ColCursor *c, int i, uint64 *keep)
+{
+	uint32		nw = SIFT_COL_NWORDS(c->seg->nsb);
+
+	c->pkept = palloc(nw * sizeof(uint64));
+	memcpy(c->pkept, keep, nw * sizeof(uint64));
+	c->ppend = palloc0(nw * sizeof(uint64));
+	memset(keep, 0, nw * sizeof(uint64));
+	c->ptids = true;
+	c->ppred = i;
+}
+
 /*
  * SIFT_COLO_POINT_LAZY: the lists of the lookup stay undecoded (a cursor over each, sift_cseg_point_stream_open) and the units they name are told apart as
  * sift_col_point_next hands the addresses over: no unit stays kept until then (the units with a dead row come back at the end of the segment's addresses). Not
@@ -456,21 +481,9 @@ units_within(const uint64 *keep, const uint64 *held, uint32 nw)
 static bool
 prune_point_lazy(SiftColSource *src, ColCursor *c, int i, int col, const int64 *keys, int nkeys, uint64 *keep)
 {
-	uint32		nw = SIFT_COL_NWORDS(c->seg->nsb);
-	bool		some = false;
-
-	if (!(src->flags & SIFT_COLO_POINT_LAZY) || c->others)
+	if (!(src->flags & SIFT_COLO_POINT_LAZY) || c->others || !keep_some(c, keep) || (c->ps = sift_cseg_point_stream_open(c->seg, col, keys, nkeys)) == NULL)
 		return false;
-	for (uint32 w = 0; w < nw && !some; w++)
-		some = (w == c->seg->nsb / 64 ? keep[w] & ((UINT64CONST(1) << (c->seg->nsb % 64)) - 1) : keep[w]) != 0;
-	if (!some || (c->ps = sift_cseg_point_stream_open(c->seg, col, keys, nkeys)) == NULL)
-		return false;
-	c->pkept = palloc(nw * sizeof(uint64));
-	memcpy(c->pkept, keep, nw * sizeof(uint64));
-	c->ppend = palloc0(nw * sizeof(uint64));
-	memset(keep, 0, nw * sizeof(uint64));
-	c->ptids = true;
-	c->ppred = i;
+	point_lazy_adopt(c, i, keep);
 	return true;
 }
 
@@ -592,6 +605,42 @@ prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col
 	return true;
 }
 
+/*
+ * A prefix or a range of a text leaf whose dictionary is read in place and whose point directory lists addresses: the keys of the lookup are the codes at places [from, to)
+ * of the dictionary's byte order, which two bisections find. A scan that stops early (SIFT_COLO_POINT_LAZY) reads them from the order a chunk at a time and makes neither the
+ * table of codes of the test nor the list of keys; one that does not, or a lookup of few keys, makes the keys and asks the directory as prune_point does.
+ */
+static bool
+prune_places(SiftColSource *src, ColCursor *c, int i, int col, const SiftColPred *p, uint64 *keep)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		from,
+				to,
+				n;
+	uint64		rows = (uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows;
+	int64	   *keys;
+	bool		ok;
+
+	if (!(src->flags & SIFT_COLO_POINT_TIDS) || c->prow != NULL || c->ptids || p->nvals != 1 ||
+		(p->op != SIFT_COLOP_PREFIX && !(p->op == SIFT_COLOP_LT || p->op == SIFT_COLOP_LE || p->op == SIFT_COLOP_GT || p->op == SIFT_COLOP_GE)) ||
+		!sift_cseg_dict_places(seg, col, p->op, &p->vals[0], &from, &to))
+		return false;
+	n = to - from;
+	if (n == 0 || n > SIFT_CPOINT_MAX_KEYS || (n > SIFT_CPOINT_MIN_KEYS && n > rows / 16))
+		return false;
+	if ((src->flags & SIFT_COLO_POINT_LAZY) && !c->others && n >= SIFT_CPOINT_CHUNK_MIN && keep_some(c, keep) &&
+		(c->ps = sift_cseg_point_stream_open_places(seg, col, from, to)) != NULL)
+	{
+		point_lazy_adopt(c, i, keep);
+		return true;
+	}
+	keys = palloc(n * sizeof(int64));
+	sift_cseg_dict_codes(seg, col, from, to, keys);
+	ok = prune_keys(src, seg, c, i, col, keys, n, keep);
+	pfree(keys);
+	return ok;
+}
+
 static bool
 prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col, const SiftCTest *t, uint64 *keep)
 {
@@ -649,6 +698,8 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 				sift_colw_prune(seg, &preds[i], keep);
 				continue;
 			}
+			if (pass == 1 && def->store == SIFT_COLS_STR && pr->top != NULL && prune_places(src, pr->top, i, preds[i].col, &preds[i], keep))
+				continue;
 			if (def->store == SIFT_COLS_STR)
 				seg_test(src, seg, def, &preds[i], &t);
 			else

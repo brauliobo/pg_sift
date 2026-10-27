@@ -271,6 +271,10 @@ extern bool sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys
  * Every address ascends, once; the caller checks that it lies in a unit.
  */
 typedef struct SiftPointStream SiftPointStream;
+/* The places [from, to) of the byte order of leaf col's dictionary that pass op against c (false: the dictionary is not read in place), and a stream, or the codes, of those places */
+extern bool sift_cseg_dict_places(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to);
+extern SiftPointStream *sift_cseg_point_stream_open_places(SiftColSegment *seg, int col, uint32 from, uint32 to);
+extern void sift_cseg_dict_codes(SiftColSegment *seg, int col, uint32 from, uint32 to, int64 *keys);
 extern SiftPointStream *sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int nkeys);
 extern uint32 sift_cseg_point_stream_next(SiftPointStream *s, SiftKey *out, uint32 max);
 extern bool sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const uint64 *nulls, const SiftKey *tid, uint32 n, uint64 *listed);
