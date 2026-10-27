@@ -1181,6 +1181,60 @@ sift_col_point_tids(const SiftColSource *src, uint32 *n)
 	return src->ptid;
 }
 
+/*
+ * Can the rows of the write buffers an equality or IN predicate on leaf def matches be found in the records, without the batches and units a begin builds from them:
+ * a plain integer-like, text or uuid leaf and a short list of values.
+ */
+bool
+sift_col_wbuf_lookup_ok(const SiftColDef *def, const SiftColPred *p)
+{
+	if ((p->op != SIFT_COLOP_EQ && p->op != SIFT_COLOP_IN) || p->nvals < 1 || p->nvals > SIFT_CWBUF_LOOKUP_MAX)
+		return false;
+	if (def->parent >= 0 || def->kind != SIFT_COLK_SCALAR || def->lanes != 0 || def->lane != 0 || (def->flags & (SIFT_COLD_LOSSY | SIFT_COLD_ASTEXT)) ||
+		sift_col_def_has_kinds(def))
+		return false;
+	switch (def->type)
+	{
+		case SIFT_COLT_INT2:
+		case SIFT_COLT_INT4:
+		case SIFT_COLT_INT8:
+		case SIFT_COLT_DATE:
+		case SIFT_COLT_TIMESTAMP:
+		case SIFT_COLT_TIMESTAMPTZ:
+		case SIFT_COLT_TEXT:
+		case SIFT_COLT_UUID:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* The heap addresses (in mcxt, each once) of the rows of the write buffers that p can match, for the heap to check; a source opened with SIFT_COLO_NOWBUF has loaded none of them */
+ItemPointerData *
+sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcxt, uint32 *n)
+{
+	ItemPointerData *all = NULL;
+	uint32		nall = 0;
+
+	for (int i = 0; i < src->dir.nsegs; i++)
+	{
+		ItemPointerData *t;
+		uint32		m;
+
+		if (src->dir.segs[i].kind == SIFT_SEG_IMMUTABLE)
+			continue;
+		t = sift_cwbuf_lookup(src->index, &src->dir.segs[i], src->schema, p, src->mcxt, &m);
+		if (m > 0)
+		{
+			all = all ? repalloc(all, (nall + m) * sizeof(ItemPointerData)) : MemoryContextAlloc(mcxt, m * sizeof(ItemPointerData));
+			memcpy(all + nall, t, m * sizeof(ItemPointerData));
+			nall += m;
+		}
+	}
+	*n = nall;
+	return all;
+}
+
 bool
 sift_col_point_lazy(const SiftColSource *src)
 {

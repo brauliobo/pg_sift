@@ -1,0 +1,173 @@
+-- An equality or IN condition on a plain leaf finds the rows of the write buffers in their records (no batch, dictionary or unit is built for them). The answers
+-- are the heap's over rows only in the buffer, rows in a segment, NULLs, duplicates, text and uuid, updates that change the key, deletes, an aborted insert,
+-- a promotion, VACUUM, lists of every length around the ones the lookup scans by comparison and by binary search, ANY (array) with NULL elements and
+-- repeated values, an array parameter, and a second condition the heap checks.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE wl (id int, k int, s text, u uuid, ts timestamp, pad text DEFAULT repeat('x', 200));
+ALTER TABLE wl ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO wl (id, k, s, u, ts)
+SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7919) % 900 END,
+	   CASE WHEN i % 47 = 0 THEN NULL ELSE 's' || (i * 31) % 600 END,
+	   CASE WHEN i % 59 = 0 THEN NULL ELSE md5((i % 500)::text)::uuid END,
+	   timestamp '2024-01-01' + i * interval '1 minute'
+FROM generate_series(1, 4000) i;
+CREATE INDEX wl_i ON wl USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, ts sift.col_timestamp_ops);
+VACUUM (FREEZE, ANALYZE) wl;
+-- rows that are only in the write buffer
+INSERT INTO wl (id, k, s, u, ts)
+SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 7919) % 900 END,
+	   CASE WHEN i % 47 = 0 THEN NULL ELSE 's' || (i * 31) % 600 END,
+	   CASE WHEN i % 59 = 0 THEN NULL ELSE md5((i % 500)::text)::uuid END,
+	   timestamp '2024-01-01' + i * interval '1 minute'
+FROM generate_series(4001, 6000) i;
+CREATE FUNCTION wl_idx(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM wl WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wl_bmp(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_indexscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM wl WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION wl_seq(w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM wl WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+CREATE TABLE wl_q (n serial, w text);
+INSERT INTO wl_q (w) VALUES
+ ('k = 4321 % 900'), ('k = 0'), ('k = 899'), ('k = 99999'), ('k IS NULL'),
+ ('k IN (1, 2, 3, 400, 899)'), ('k IN (5, 5, 5)'),
+ ('id = 5'), ('id = 4500'), ('id = 6000'), ('id = 6001'), ('id IN (3, 4003, 5999, 9)'),
+ ('s = ''s77'''), ('s = ''nothing'''), ('s IN (''s1'', ''s2'', ''s3'', ''none'')'),
+ ('u = md5(''17'')::uuid'), ('u IN (md5(''1'')::uuid, md5(''2'')::uuid, md5(''499'')::uuid)'),
+ ('ts = timestamp ''2024-01-01'' + 4500 * interval ''1 minute'''),
+ ('k = 77 AND s = ''s77'''), ('k = 77 AND id > 4000'), ('k IN (1, 2, 3) AND ts > timestamp ''2024-01-03'''),
+ ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 8) g))'),
+ ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 9) g))'),
+ ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g))'),
+ ('k = ANY (ARRAY(SELECT g FROM generate_series(1, 300) g) || ARRAY[5, 5, 12345])'),
+ ('id = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 1000) g))'),
+ ('k = ANY (ARRAY[1, NULL, 2, 2, 400, NULL]::int[])'), ('k = ANY (ARRAY[NULL, NULL]::int[])'), ('k = ANY (''{}''::int[])'),
+ ('k = ANY (ARRAY[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, NULL, 10, 10, 899]::int8[])'),
+ ('s = ANY (ARRAY[''s1'', NULL, ''s1'', ''s77'', ''s12'', ''s500'', ''s2'', ''s3'', ''s4'', ''s5'', ''s6'', ''none'']::text[])'),
+ ('s = ANY (ARRAY(SELECT ''s'' || g FROM generate_series(1, 400) g))'),
+ ('u = ANY (ARRAY[md5(''1'')::uuid, NULL, md5(''1'')::uuid, md5(''2'')::uuid, md5(''3'')::uuid, md5(''4'')::uuid, md5(''5'')::uuid, md5(''6'')::uuid, md5(''7'')::uuid, md5(''8'')::uuid, md5(''499'')::uuid])'),
+ ('u = ANY (ARRAY(SELECT md5(g::text)::uuid FROM generate_series(1, 500) g))'),
+ ('ts = ANY (ARRAY(SELECT timestamp ''2024-01-01'' + g * interval ''1 minute'' FROM generate_series(4000, 4400) g))');
+\set check 'SELECT n, w, wl_idx(w) = wl_seq(w) AS idx, wl_bmp(w) = wl_seq(w) AS bmp FROM wl_q WHERE NOT (wl_idx(w) = wl_seq(w) AND wl_bmp(w) = wl_seq(w)) ORDER BY n'
+SELECT count(*) AS shapes FROM wl_q;
+ shapes 
+--------
+     35
+(1 row)
+
+:check;
+ n | w | idx | bmp 
+---+---+-----+-----
+(0 rows)
+
+-- the plan is an index scan on the access method, and it finds buffered rows
+SET sift.enable_col_scan = on; SET enable_seqscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wl WHERE id = 4500;
+         QUERY PLAN          
+-----------------------------
+ Index Scan using wl_i on wl
+   Index Cond: (id = 4500)
+(2 rows)
+
+SELECT id FROM wl WHERE id = 4500;
+  id  
+------
+ 4500
+(1 row)
+
+SELECT count(*) AS buffered FROM sift.col_segments('wl_i') WHERE kind = 'buffer';
+ buffered 
+----------
+        1
+(1 row)
+
+RESET enable_seqscan; RESET enable_bitmapscan; RESET enable_indexonlyscan;
+-- an array parameter (a generic plan): the same rows as the sequential scan, for an int, a text and a uuid array with NULLs and repeats
+CREATE FUNCTION wl_par_idx(kind int, a_i int[], a_t text[], a_u uuid[]) RETURNS bigint[] LANGUAGE plpgsql
+	SET plan_cache_mode = force_generic_plan SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	IF kind = 1 THEN SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE k = ANY (a_i);
+	ELSIF kind = 2 THEN SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE s = ANY (a_t);
+	ELSE SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE u = ANY (a_u);
+	END IF;
+	RETURN r;
+END $$;
+CREATE FUNCTION wl_par_seq(kind int, a_i int[], a_t text[], a_u uuid[]) RETURNS bigint[] LANGUAGE plpgsql
+	SET plan_cache_mode = force_generic_plan SET enable_indexscan = off SET enable_bitmapscan = off SET enable_indexonlyscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	IF kind = 1 THEN SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE k = ANY (a_i);
+	ELSIF kind = 2 THEN SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE s = ANY (a_t);
+	ELSE SELECT coalesce(array_agg(id ORDER BY id), '{}') INTO r FROM wl WHERE u = ANY (a_u);
+	END IF;
+	RETURN r;
+END $$;
+SELECT kind, wl_par_idx(kind, ik, tx, uu) = wl_par_seq(kind, ik, tx, uu) AS same, cardinality(wl_par_seq(kind, ik, tx, uu)) > 0 AS found
+FROM (VALUES
+ (1, ARRAY[1, NULL, 2, 2, 400, 77], NULL::text[], NULL::uuid[]),
+ (1, (SELECT array_agg(g) FROM generate_series(1, 500) g), NULL, NULL),
+ (2, NULL, ARRAY['s1', NULL, 's1', 's77', 's12', 's500', 's2', 's3', 's4', 's5', 's6', 'none'], NULL),
+ (3, NULL, NULL, ARRAY[md5('1')::uuid, NULL, md5('1')::uuid, md5('2')::uuid, md5('3')::uuid, md5('4')::uuid, md5('5')::uuid, md5('6')::uuid, md5('7')::uuid, md5('8')::uuid, md5('499')::uuid])
+) v (kind, ik, tx, uu);
+ kind | same | found 
+------+------+-------
+    1 | t    | t
+    1 | t    | t
+    2 | t    | t
+    3 | t    | t
+(4 rows)
+
+DROP FUNCTION wl_par_idx(int, int[], text[], uuid[]);
+DROP FUNCTION wl_par_seq(int, int[], text[], uuid[]);
+-- DML in the buffer: a key change (a new record, the old one dead), a delete, an aborted insert, a HOT update that keeps the key
+UPDATE wl SET k = 12345 WHERE id IN (4100, 4200, 5100);
+UPDATE wl SET pad = 'y' WHERE id IN (4101, 5101);
+DELETE FROM wl WHERE id IN (4300, 4301, 5300);
+BEGIN;
+INSERT INTO wl (id, k, s, u, ts) VALUES (7000, 12345, 's7000', md5('7000')::uuid, now());
+ROLLBACK;
+INSERT INTO wl (id, k, s, u, ts) VALUES (7001, 12345, 's7001', md5('7001')::uuid, now()), (7001, 12345, 's7001', md5('7001')::uuid, now());
+INSERT INTO wl_q (w) VALUES ('k = 12345'), ('id IN (4100, 4200, 5100, 4300, 4301, 5300, 7000, 7001)'), ('id = 4101'), ('s = ''s7001''');
+:check;
+ n | w | idx | bmp 
+---+---+-----+-----
+(0 rows)
+
+-- a promotion of the buffer into a segment, VACUUM, and rows written after it
+SELECT sift.col_promote('wl_i') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM wl;
+INSERT INTO wl (id, k, s, u, ts) SELECT i, i % 900, 's' || i % 600, md5(i::text)::uuid, now() FROM generate_series(8001, 8500) i;
+INSERT INTO wl_q (w) VALUES ('id = 8100'), ('k = 100'), ('s = ''s100'''), ('u = md5(''8100'')::uuid');
+:check;
+ n | w | idx | bmp 
+---+---+-----+-----
+(0 rows)
+
+DROP TABLE wl CASCADE;
+DROP FUNCTION wl_idx(text);
+DROP FUNCTION wl_bmp(text);
+DROP FUNCTION wl_seq(text);
+DROP TABLE wl_q;
+DROP EXTENSION pg_sift;

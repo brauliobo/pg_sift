@@ -226,6 +226,8 @@ sift_ctest_make_strs(const SiftColPred *p, SiftCTest *t)
 	else
 		t->kind = SIFT_CT_STRS;
 	t->pred = p;
+	if (t->kind == SIFT_CT_STRS && (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN))
+		t->strset = sift_cstrset_make(p->vals, p->nvals);
 }
 
 void
@@ -339,6 +341,10 @@ key_matches(const SiftCTest *t, int64 k)
 {
 	switch (t->kind)
 	{
+		case SIFT_CT_NONE:
+			return false;
+		case SIFT_CT_NONNULL:
+			return true;
 		case SIFT_CT_RANGE:
 			return k >= t->lo && k <= t->hi;
 		case SIFT_CT_NRANGE:
@@ -350,6 +356,12 @@ key_matches(const SiftCTest *t, int64 k)
 		default:					/* NSET */
 			return !set_has(t, k);
 	}
+}
+
+bool
+sift_ctest_key(const SiftCTest *t, int64 key)
+{
+	return key_matches(t, key);
 }
 
 static void
@@ -530,19 +542,62 @@ chunk_lut(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	pfree(shifted);
 }
 
+struct SiftCStrSet
+{
+	int			n;
+	const SiftColValue **v;		/* sorted bytewise above SIFT_CSTRSET_MIN; a repeated constant stays */
+};
+
+static int
+strset_cmp(const void *a, const void *b)
+{
+	const SiftColValue *x = *(const SiftColValue *const *) a,
+			   *y = *(const SiftColValue *const *) b;
+
+	return sift_term_cmp(x->v.s, x->len, y->v.s, y->len);
+}
+
+SiftCStrSet *
+sift_cstrset_make(const SiftColValue *vals, int n)
+{
+	SiftCStrSet *s = palloc(sizeof(SiftCStrSet));
+
+	s->n = n;
+	s->v = palloc(Max(n, 1) * sizeof(SiftColValue *));
+	for (int i = 0; i < n; i++)
+		s->v[i] = &vals[i];
+	if (n > SIFT_CSTRSET_MIN)
+		qsort(s->v, n, sizeof(SiftColValue *), strset_cmp);
+	return s;
+}
+
+bool
+sift_cstrset_has(const SiftCStrSet *s, const char *str, uint32 len)
+{
+	SiftColValue key = {.len = len};
+	const SiftColValue *k = &key;
+
+	if (s->n > SIFT_CSTRSET_MIN)
+	{
+		key.v.s = str;
+		return bsearch(&k, s->v, s->n, sizeof(SiftColValue *), strset_cmp) != NULL;
+	}
+	for (int i = 0; i < s->n; i++)
+		if (len == s->v[i]->len && memcmp(str, s->v[i]->v.s, len) == 0)
+			return true;
+	return false;
+}
+
 /* Whole-string comparison of a STRS or ISTR chunk's row with the predicate's constants (EQ and IN: equal to one of them) */
 static bool
-strs_match(SiftColOp op, const SiftColPred *p, const char *s, uint32 len)
+strs_match(SiftColOp op, const SiftColPred *p, const SiftCStrSet *set, const char *s, uint32 len)
 {
 	switch (op)
 	{
 		case SIFT_COLOP_EQ:
 			return len == p->vals[0].len && memcmp(s, p->vals[0].v.s, len) == 0;
 		case SIFT_COLOP_IN:
-			for (int i = 0; i < p->nvals; i++)
-				if (len == p->vals[i].len && memcmp(s, p->vals[i].v.s, len) == 0)
-					return true;
-			return false;
+			return sift_cstrset_has(set, s, len);
 		default:
 			return sift_cstr_matches(op, s, len, &p->vals[0]);
 	}
@@ -639,7 +694,7 @@ chunk_strs(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		{
 			uint32		i = w * 64 + pg_rightmost_one_pos64(m);
 
-			if (!sift_col_bit_test(c->nulls, i) && strs_match(op, p, bytes + off[i], off[i + 1] - off[i]))
+			if (!sift_col_bit_test(c->nulls, i) && strs_match(op, p, t->strset, bytes + off[i], off[i + 1] - off[i]))
 				tmp[w] |= UINT64CONST(1) << (i % 64);
 		}
 	}

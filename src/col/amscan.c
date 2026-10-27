@@ -654,6 +654,8 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	SiftColRel *r = sift_col_rel(scan->indexRelation);
 	ColKeys		keys;
 	const SiftKey *tids;
+	bool		sat;
+	int			wl = -1;
 
 	so->first = palloc((r->natts + 1) * sizeof(int));
 	memcpy(so->first, r->first, (r->natts + 1) * sizeof(int));
@@ -664,9 +666,18 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	keys = (ColKeys) {.defs = so->defs, .first = so->first, .idesc = RelationGetDescr(scan->indexRelation)};
 	if (so->heap == NULL)
 		so->heap = table_open(scan->indexRelation->rd_index->indrelid, AccessShareLock);
-	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt, SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
-	if (scan_preds(scan, &keys, so->preds))
+	sat = scan_preds(scan, &keys, so->preds);
+	/* an equality or IN on a plain leaf finds the rows of the write buffers in their records, which costs a few instructions a row where their batches cost thousands */
+	for (int i = 0; sat && !scan->xs_want_itup && i < scan->numberOfKeys && wl < 0; i++)
+		if (sift_col_wbuf_lookup_ok(&so->defs[so->preds[i].col], &so->preds[i]))
+			wl = i;
+	so->src = sift_col_open(so->heap, scan->indexRelation, scan->xs_snapshot, so->cxt,
+							SIFT_COLO_NOCHECKS | SIFT_COLO_POINTS | (wl >= 0 ? SIFT_COLO_NOWBUF : 0) | (scan->xs_want_itup ? 0 : SIFT_COLO_POINT_TIDS | (lazy ? SIFT_COLO_POINT_LAZY : 0)));
+	if (sat)
 	{
+		ItemPointerData *wt = NULL;
+		uint32		nw = 0;
+
 		so->npreds = scan->numberOfKeys;
 		sift_col_begin(so->src, so->preds, so->npreds, 0, PG_UINT32_MAX);
 		/* the addresses a directory of heap addresses lists are the fingerprints': the heap checks every condition again */
@@ -675,6 +686,14 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 			so->dtids = palloc(so->ndtids * sizeof(ItemPointerData));
 			for (uint32 i = 0; i < so->ndtids; i++)
 				sift_key_to_tid(tids[i], &so->dtids[i]);
+			keys.recheck = true;
+		}
+		if (wl >= 0 && (wt = sift_col_wbuf_lookup(so->src, &so->preds[wl], so->cxt, &nw)) != NULL)
+		{
+			/* the rows of the buffer are the record's value of one condition: the heap checks them all */
+			so->dtids = so->dtids ? repalloc(so->dtids, (so->ndtids + nw) * sizeof(ItemPointerData)) : palloc(nw * sizeof(ItemPointerData));
+			memcpy(so->dtids + so->ndtids, wt, nw * sizeof(ItemPointerData));
+			so->ndtids += nw;
 			keys.recheck = true;
 		}
 		if (sift_col_point_lazy(so->src))

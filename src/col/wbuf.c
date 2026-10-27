@@ -701,6 +701,74 @@ sift_cwbuf_next(SiftCWbufReader *r, SiftColRow *row, bool *deleted)
 	return true;
 }
 
+static int
+tid_cmp(const void *a, const void *b)
+{
+	return ItemPointerCompare((ItemPointer) a, (ItemPointer) b);
+}
+
+/*
+ * The heap addresses of the live records of a write buffer whose plain leaf holds one of the constants of pred (EQ or IN; INT: the integer, STR: the bytes), found by reading the leaves
+ * up to col out of each record: no batch, no dictionary, no unit. A value the leaf could not store (an overflow) may be any: its record is kept for the heap to check.
+ * Ascending, each once; n = the count. The list is matched as the chunks of the units match it (sift_ctest_make, sift_cstrset_make).
+ */
+ItemPointerData *
+sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n)
+{
+	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer lookup", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext old = MemoryContextSwitchTo(tmp);
+	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
+	int			col = pred->col;
+	bool		str = schema->cols[col].store == SIFT_COLS_STR;
+	SiftCStrSet *set = str ? sift_cstrset_make(pred->vals, pred->nvals) : NULL;
+	SiftCTest	test;
+	ItemPointerData *out = NULL;
+	uint32		cap = 0,
+				m = 0;
+	RawRec		rec;
+
+	if (!str)
+		sift_ctest_make(&schema->cols[col], NULL, pred, &test);
+	while (next_rec(r, &rec))
+	{
+		const uint8 *p = rec.payload,
+				   *end = p + rec.len;
+		const SiftColValue *v = &r->val[col];
+		bool		hit = false;
+
+		if (rec.deleted)
+			continue;
+		for (int id = 0; id <= col; id++)
+			if (schema->cols[id].parent < 0)
+				p = get_value(r, &schema->cols[id], p, end, &r->val[id]);
+		if (v->isnull)
+			hit = v->overflow;
+		else
+			hit = str ? sift_cstrset_has(set, v->v.s, v->len) : sift_ctest_key(&test, v->v.i);
+		if (!hit)
+			continue;
+		if (m == cap)
+			out = out ? repalloc(out, (cap *= 2) * sizeof(ItemPointerData)) : MemoryContextAlloc(mcxt, (cap = 16) * sizeof(ItemPointerData));
+		out[m++] = rec.tid;
+	}
+	sift_cwbuf_close(r);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+	if (m > 1)
+	{
+		uint32		k = 1;
+
+		/* in the order of the heap, a repeated address once */
+		qsort(out, m, sizeof(ItemPointerData), tid_cmp);
+		for (uint32 i = 1; i < m; i++)
+			if (ItemPointerCompare(&out[i], &out[k - 1]) != 0)
+				out[k++] = out[i];
+		m = k;
+	}
+	*n = m;
+	return out;
+}
+
 /* A live record kept for sorting: its payload is at off in the arena */
 typedef struct Held
 {

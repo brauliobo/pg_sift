@@ -633,6 +633,10 @@ extern uint32 sift_col_sel_idx(const SiftColSel *sel, uint32 *idx);		/* position
 extern bool sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel);
 /* The heap addresses the point directories of heap addresses answered at the last begin (SIFT_COLO_POINT_TIDS), ascending: their units are not read; the caller has the heap check the conditions */
 extern const SiftKey *sift_col_point_tids(const SiftColSource *src, uint32 *n);
+/* An equality or IN predicate (at most SIFT_CWBUF_LOOKUP_MAX values, sorted for a binary search above 8) on a plain integer-like, text or uuid leaf finds the rows of the write buffers in their records: sift_col_wbuf_lookup, for a source opened with SIFT_COLO_NOWBUF; their heap addresses are for the heap to check */
+#define SIFT_CWBUF_LOOKUP_MAX	65536	/* the keys of an IN list the point directories answer (SIFT_CPOINT_MAX_KEYS) */
+extern bool sift_col_wbuf_lookup_ok(const SiftColDef *def, const SiftColPred *p);
+extern ItemPointerData *sift_col_wbuf_lookup(SiftColSource *src, const SiftColPred *p, MemoryContext mcxt, uint32 *n);
 /*
  * With SIFT_COLO_POINT_LAZY: whether the begin left lists of addresses to read (sift_col_point_next); the next at most max addresses of the units that are not
  * read, ascending in each segment; 0 once all are handed over, after which sift_col_next returns the units that have a dead row, as the rest of the scan.

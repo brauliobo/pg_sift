@@ -315,7 +315,20 @@ typedef struct SiftCTest
 	uint64		fold[4];		/* LUT / STR EQ: the bits (code & 255) the test can match, to compare with a zone's set */
 	bool		fold_valid;
 	const SiftColPred *pred;	/* STR: the predicate, for the zones of inline units (which have no codes); not copied */
+	const struct SiftCStrSet *strset;	/* STRS: the constants of an IN or NOT IN list longer than SIFT_CSTRSET_MIN, sorted */
 } SiftCTest;
+
+/*
+ * The one matcher of an IN list over strings or bytes: the constants sorted once, a binary search for each value (a comparison with each constant up to
+ * SIFT_CSTRSET_MIN). The chunks of strings and the records of a write buffer (sift_cwbuf_lookup) use it; for the keys of the integer leaves the same
+ * sorted set is the SIFT_CT_SET of sift_ctest_make, probed with sift_ctest_key.
+ */
+#define SIFT_CSTRSET_MIN	8
+typedef struct SiftCStrSet SiftCStrSet;
+extern SiftCStrSet *sift_cstrset_make(const SiftColValue *vals, int n);
+extern bool sift_cstrset_has(const SiftCStrSet *s, const char *str, uint32 len);
+/* Whether key is one of the keys a test of an integer leaf (RANGE, SET, NONE...) holds, as the units' filter decides it */
+extern bool sift_ctest_key(const SiftCTest *t, int64 key);
 
 /* dict: the segment's dictionary of the leaf (STR; may be NULL for the other stores). Allocates the LUT in CurrentMemoryContext. */
 extern void sift_ctest_make(const SiftColDef *def, SiftCDict *dict, const SiftColPred *p, SiftCTest *t);

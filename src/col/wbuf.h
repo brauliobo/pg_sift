@@ -68,6 +68,9 @@ extern void sift_cwbuf_close(SiftCWbufReader *r);
  */
 extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n);
 
+/* The heap addresses of the live records whose plain leaf holds one of the constants of the EQ or IN predicate (an overflow value is kept for the heap to check), ascending, in mcxt; no batch is built (sift_col_wbuf_lookup) */
+extern ItemPointerData *sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, const SiftColPred *pred, MemoryContext mcxt, uint32 *n);
+
 /* VACUUM: calls cb for every live record and flags the ones it reports dead; returns the rows removed (maintenance lock held) */
 extern int64 sift_cwbuf_bulkdelete(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, IndexBulkDeleteCallback cb,
 								  void *cbstate, IndexBulkDeleteResult *stats);
