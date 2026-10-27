@@ -114,9 +114,9 @@ RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
 SET max_parallel_workers_per_gather = 0;
 
--- a table over the budget keeps fewer measures, or none: the sums of mid_id (3,000 keys) are not in it, and many_id (20,000) has none
+-- a table over the budget keeps fewer measures, or none: the sums of mid_id (3,000 keys) are not in it, and many_id (20,000) has none (a range of it scans; an equality is skipped by the filter of the units)
 SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE mid_id = 17')) > 100000 AS mid_id_sums_scan,
-       (SELECT scanned FROM tk_units('SELECT count(*) FROM tk WHERE many_id = 17')) > 100000 AS many_id_scans;
+       (SELECT scanned FROM tk_units('SELECT count(*) FROM tk WHERE many_id BETWEEN 17 AND 40')) > 100000 AS many_id_scans;
 
 -- rows in the write buffer are read whatever the table says; a delete or an update makes a segment not exact, and it is read from its units; VACUUM and the
 -- maintenance compute the table again
