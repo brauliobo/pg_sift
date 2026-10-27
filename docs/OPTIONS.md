@@ -3,10 +3,27 @@
 Every `WITH (...)` option of the index kinds and every `sift.*` setting, with its class and the measured case behind it. The table below lists the name, type, default and range of the C sources. The reference tables
 with range, context and description are in [USAGE.md](USAGE.md#maintenance-and-operations); the one-line version is in the README ("Options at a glance").
 
-A **default** is automatic behaviour: the build or the planner decides and a NOTICE at `CREATE INDEX` says what and how to opt out. It is on when it passes the rule of the 3.3 release:
-at least 5% gain on a relevant class of queries, at most 3% index growth and at most 5% write cost. An **opt-in** failed one of those limits (or changes results, needs hardware,
-takes memory, or has not run on real workloads) and is kept for the workloads where the win is clear; its `why` names the limit, and its gain, growth and write cost are the measured price.
+A **default** is automatic behaviour: the build or the planner decides and a NOTICE at `CREATE INDEX` says what and how to opt out. It is on when it passes the default formula below,
+for the columns where a statistic of the table (correlation, cardinality, type, row count) says it pays, not for every column. An **opt-in** failed a term of the formula (or changes results, needs hardware,
+takes memory, or has not run on real workloads) and is kept for the workloads where the win is clear; its `why` names the term, and its gain, growth and write cost are the measured price.
 A cell that reads **not measured** is a measurement the owning work still owes:
+
+## The default formula
+
+Each structure is measured in instructions of one backend (`perf stat -e instructions:u`, a table with the shape the structure is for):
+
+| Term | Meaning |
+|---|---|
+| S | speedup of the relevant query class: instructions without the structure over instructions with it; it must save at least 100k instructions a query |
+| G | growth of the index in %, for the structure alone |
+| W | write cost in %: instructions of the build, the merge or the promotion |
+| R | relevance: 1 for a class most workloads run, 0.5 for a niche one |
+
+The benefit is `B = R * log2(S) / log2(1.05)` (one point for each 5% of speedup) and the cost `C = G / 3 + W / 5` (one point for each 3% of growth and each 5% of write cost).
+A structure is automatic when `S >= 1.05`, `B >= C` and `G <= 25%` for any single structure; otherwise it is an opt-in whose `why` names what it failed: `gain` (S under 1.05 or under 100k instructions saved),
+`cost` (B under C), `ceiling` (G over 25%) or `detect` (no statistic of the table says the columns it pays on, so it cannot be automatic). `result`, `hardware`, `memory` and `risk` mark the reasons the formula does not cover.
+The terms come from the `s`, `save`, `g`, `w` and `r` cells of the record of each option, which is invalid when an opt-in passes the formula, when its `why` misses a term it fails, or when a default fails it
+(`Formula waived: reason` in `default_why` is the one way to keep such a default).
 
 Every option and every automatic heuristic (an `auto(...)` row, which has no setting of its own) documents seven things, and none may be empty: what it does,
 the measured gain (class of queries, numbers, bench case), the impact (index size, build, merge and write cost, plus planning time, memory and WAL where they apply), when it applies and when it does not,
@@ -19,7 +36,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 | Class | Entries | Meaning |
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
+| [opt-in](#opt-in) | 21 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -305,6 +322,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** count(DISTINCT col) over whole units reads no key chunk (2.0x to 8.6x on the foreign keys of three 200,000-row tables); an equality or IN test skips the units that lack the key (integer equality 0.82 to 0.41 ms)
 - **Gain:** count(DISTINCT fk) over whole units 16.1 to 1.11 ms (1,000,000 rows, 123 units); 2.0x to 8.6x on three 200,000-row tables
+- **Formula:** S 3.49x saving 3946k instructions, G 4.3%, W 5.5%, R 1: B 25.6 against C 2.5, automatic
 - **Impact:** index size: auto 0.0% on a column of 100 distinct values and a named column of 5,000 random keys 0.0% (2.12 MB; 100,000 rows); +1.1% to +1.4% on the foreign keys of three 200,000-row tables; a filter column named in the list +3.9% (1,000,000 rows, four columns); build, merge and writes: build 87 to 80 ms (auto) and 74 to 82 ms (named); insert of 20,000 rows and update of 10% within noise (100,000 rows); other: format minor 15; auto keeps a key list or bitmap of the int2, int4 and date foreign keys and *_id columns that fit 3% of a unit: +1.1% to +1.4% of the index on the copies; a named filter column of random keys adds no bytes and no gain on them (build within noise at 100,000 rows)
 - **When:** count(DISTINCT col) over whole exact units without GROUP BY, and equality or IN tests that skip units lacking the key, on non-unique int2, int4, date foreign keys and *_id. A dead row or a cut zone: scanned.
 - **Default:** '' — auto: lists only within 3% of a unit: +1.1% to +1.4% of the index, build in the noise, count(DISTINCT) of foreign keys 2.0x to 8.6x. A named filter column of random keys adds no bytes or gain. Minors 10 and 15.
@@ -331,6 +349,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** count(*) of one test of the column (`LIKE 'abc%'`, an equality, `<`, `<=`, `>`, `>=` in the C collation) is read from two places of the column's dictionary, not from its rows: 4,012 matching rows of 1,000,000, 5.3 ms to 0.14 ms
 - **Gain:** count(*) WHERE txt LIKE 'k2a%' (4,012 rows) 5.3 to 0.14 ms, LIKE 'k2%' (62,564 rows) 3.7 to 0.14 ms, < 'kf' 5.3 to 0.18 ms, 1,000,000 rows, one text column of unique 13-byte strings, 4 segments, warm, median of 40 runs
+- **Formula:** S 38.00x saving 3200k instructions, G 0.2%, W 0.4%, R 0.5: B 37.3 against C 0.1, automatic
 - **Impact:** index size: +131 KB (+0.17%) of 77.4 MB at 1,000,000 rows with 1,000,000 unique strings in one of eight columns (the first layout, a u32 for each string, was +4.0 MB, +4.5%); a column of few strings has none; build, merge and writes: CREATE INDEX +0.44% instructions (9,338 M without, 9,379 M with the counts, 1,000,000 rows, 8 columns); merge and promotion write the same blocks (the count of each code is kept while the units are written); other: format minor 24; 0.13 bytes for each distinct string of unique strings (+131 KB, +0.17% of the segments of the 8-column test table at 1,000,000 unique strings), about 0.4 bytes for strings of one to three rows; +0.44% instructions on CREATE INDEX
 - **When:** count(*) and nothing else, one test of the column (a prefix, an equality or a range in the C collation), a text leaf whose dictionary is read in place, every unit of the segment exact (clean, all pages all-visible, the directory current), a segment with superunit summaries. A dead row, a second test, another aggregate or inline strings (a string over 255 bytes in a unit): read from the units; the rows of the write buffer are always read.
 - **Default:** '' — The formula of DEFAULT-FORMULA.md: speedup 38x (count of a prefix 5.3 to 0.14 ms, 3.2 M instructions saved), growth 0.17%, write +0.44%: benefit 107 units against a cost of 0.14.
@@ -1238,10 +1257,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · default · since 3.4 · default automatic
 
 - **What it does:** A unit in which one integer leaf is NULL in at least 99% of the rows (a soft-delete stamp) also keeps the pre-aggregates of the rows where it is not NULL, so WHERE stamp IS NULL is the unit's aggregate minus them (IS NOT NULL is them alone), not a scan of the unit
-- **Gain:** count and avg by a key WHERE stamp IS NULL, 353,029 rows: 6.1 to 2.5 ms, 171 of 171 units from pre-aggregates (5 before); soft_delete_exceptions, 1,000,000 rows: 158 ms normal plan to 0.69 ms
-- **Impact:** index size: +1.41% (6,381,568 to 6,471,680 bytes; 353,029 rows, 655 stamped, 166 units with exceptions); build, merge and writes: **not measured**; other: format minor 19; Index +1.4% on a table with 0.2% of the rows stamped. Written by a merge, VACUUM's rewrite and REINDEX; min and max cannot be subtracted (the unit is scanned for that measure) and a float sum is guarded against cancellation. A sift_table writes none; a dirty or not all-visible unit is scanned as before.
+- **Gain:** count and avg by a key WHERE stamp IS NULL, 353,029 rows: 6.1 to 2.5 ms, 171 of 171 units from pre-aggregates (5 before); soft_delete_exceptions, 1,000,000 rows: 158 ms normal plan to 0.69 ms; 600,000 rows with 1,127 stamped: 39.9 M to 9.7 M instructions a query (214 of 214 units from pre-aggregates)
+- **Formula:** S 4.12x saving 30241k instructions, G 1.4%, W 0.9%, R 1: B 29.0 against C 0.7, automatic
+- **Impact:** index size: +1.41% (6,381,568 to 6,471,680 bytes; 353,029 rows, 655 stamped, 166 units with exceptions); build, merge and writes: CREATE INDEX +0.94% instructions (2,238 M to 2,259 M; 600,000 rows, 1,127 stamped, index of an id, a key, the stamp and one integer measure, REINDEX at column format minor 15 against 14); +0.55% bytes (4,980,344 to 5,007,560); other: format minor 19; Index +1.4% on a table with 0.2% of the rows stamped. Written by a merge, VACUUM's rewrite and REINDEX; min and max cannot be subtracted (the unit is scanned for that measure) and a float sum is guarded against cancellation. A sift_table writes none; a dirty or not all-visible unit is scanned as before.
 - **When:** A sift_col unit with exactly one top-level integer leaf, no overflowed value and at most 1 row in 100 not NULL (the fewest, the first of equals), a filter leaf IS NULL or IS NOT NULL beside conjuncts the pre-aggregates decide, and units clean and all-visible. A date range with the filter decides only the units it covers.
-- **Default:** automatic — No option: the unit's own data decides. Growth 1.4% (limit 3%) and 2.4x on the class (limit 5%) meet the 3.3 rule; the write cost was not measured.
+- **Default:** automatic — No option: the unit's own data decides (one integer leaf NULL in 99% of its rows). Growth 1.4% and a write cost under 1% meet the default formula at 4.1x on the class.
 - **Turn off:** SET sift.agg_preagg = off (no unit is answered from pre-aggregates) or SET sift.col_format_minor = 14 (no exceptions are written; units already written keep them until rewritten).
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units Net Of Exceptions. A leaf with 1% or more non-NULL rows has no exceptions and the filter scans the unit.
@@ -1361,7 +1381,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: -3.1% (8.78 to 8.51 MB; 100,000 documents of 30 words, en against none); build, merge and writes: build +22.3% (497 to 609 ms), insert of 20,000 documents +74.7% (95 to 165 ms); other: REINDEX to change
 - **When:** Text indexes of English prose, so running matches runs. English only (en), no stopword list; it changes what matches and the same analyzer applies to every query on the index. Not for other languages.
-- **Default:** '' — Unset (no stemming): it changes results, and en costs insert +74.7% (95 to 165 ms) and build +22.3% for -3.1% size (100,000 documents), over the 5% write limit of the 3.3 rule.
+- **Default:** '' — Unset (no stemming): it changes results, and en costs insert +74.7% (95 to 165 ms) and build +22.3% for -3.1% size (100,000 documents).
 - **Why not the default:** changes results or semantics
 - **Turn off:** Leave unset or stemmer = 'none' at CREATE INDEX. On an existing index ALTER INDEX .. RESET (stemmer) then REINDEX; until then queries and inserts fail. Prefer CREATE INDEX CONCURRENTLY and swap.
 - **Upgrade from 3.4:** unchanged
@@ -1375,8 +1395,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** 1-letter prefix on a million short rows: 10-15 ms first call in a backend (under 1 ms cached) without, under 1 ms with
 - **Impact:** index size: a million rows: 17 MB, 34 MB at n=3, 73 MB at n=15 (2 to 4x); 300,000 rows 8.4 to 20 MB; build, merge and writes: n = 3: build 428 to 854 ms, insert of 20,000 documents 72 to 266 ms; n = 15: build 385 to 1,544 ms, insert 67 to 549 ms (100,000 documents); other: a larger index (more terms, growing with n); REINDEX to change
 - **When:** Prefix queries (ab*) of up to n characters; longer prefixes, wildcard, regex and fuzzy leaves still expand terms. n up to 15. Pairs with fields for autocomplete.
-- **Default:** 0 — 0 (off): grows the index 2 to 4x (17 to 34 to 73 MB on a million rows), build 2-4x and insert 3.7-8x, over the 3% and 5% limits; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
-- **Why not the default:** over 3% index growth
+- **Default:** 0 — 0 (off): grows the index 2 to 4x (17 to 34 to 73 MB on a million rows), over the 25% ceiling, build 2-4x and insert 3.7-8x; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
+- **Why not the default:** the index grows over 25%
 - **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave 0: broad prefixes work without it (cached per backend). Set n to the longest prefix that must be sub-millisecond on first use; it grows the index. Needs REINDEX.
@@ -1389,8 +1409,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** -
 - **Impact:** index size: two sections 15.6 MB against 8.3 MB for the first alone (1,000,000 rows); build, merge and writes: build 489 to 973 ms, insert of 20,000 documents 107 to 340 ms with three fields declared against none (100,000 documents); other: REINDEX to change
 - **When:** Text built with sift.sections() whose leading sections are named; queries name:word, sift.field_query. At most 14 names. Phrases, regex and NOT are not scoped to a field; one analyzer for all.
-- **Default:** '' — Unset: named sections add size and cost (15.6 against 8.3 MB on a million rows; insert 107 to 340 ms with three fields), and a colon is plain text without it.
-- **Why not the default:** changes results or semantics
+- **Default:** '' — Unset: named sections add 88% to the index (15.6 against 8.3 MB on a million rows) and insert 107 to 340 ms with three fields, and a colon is plain text without it.
+- **Why not the default:** changes results or semantics, the index grows over 25%
 - **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
@@ -1404,7 +1424,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +4.6% of the index for two low-cardinality dims (96 cells a unit), +19% for three (200,000 rows); auto +8.5% to +11% (300,000 rows); build, merge and writes: serial build CPU 147 ms without, 159 ms with (200,000 rows, inside +-15%); auto CREATE INDEX +12 to +47 ms of sampling; other: format minor 9; +5.3% of the index, build +25% (two columns); auto picks the pair at CREATE INDEX
 - **When:** GROUP BY of two or more dims, or a key plus a filter on another dim, over 2 to 6 boolean, integer, date, numeric(p,s) or text columns. Not float, count(DISTINCT) or a non-dim filter; too many cells in a unit: none.
 - **Default:** '' — Opt-in: two low-cardinality dims add +4.6% of the index (three +19%), over the 3% limit, for GROUP BY of two columns 171.8 ms to 3.5 ms; auto picks the pair for +8.5% to +11%.
-- **Why not the default:** over 3% index growth
+- **Why not the default:** the history does not say
 - **Turn off:** Off is the default: RESET (rollup_dims) or 'off' writes no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Set it for GROUP BY or filters on the same few low-cardinality columns together; the index grows over 3%. auto picks a pair at CREATE INDEX. Columns of over 300 values store nothing.
@@ -1415,10 +1435,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** an equality, IN list or short range on a column of many distinct keys reads only the units that hold the rows, which the heap then checks again: integer equality 0.119 to 0.020 ms (200,000 rows; a b-tree 0.006)
 - **Gain:** integer equality 0.119 to 0.020 ms, IN of 5 keys 0.193 to 0.028 ms (200,000 rows; a b-tree 0.006 and 0.009)
+- **Formula:** S 2.03x saving 804k instructions, G 58.0%, W 3.4%, R 1: B 14.5 against C 20.0, opt-in (fails: ceiling, cost)
 - **Impact:** index size: index 29.1 to 93.7 MB (+222%) for five leaves at 1,000,000 rows, 170 MB for six b-trees; 4 bytes a row for repeating keys, 4.2 MB for a unique key (200,000 rows); build, merge and writes: build 66 to 94 ms (+42.7%); insert of 20,000 rows 24 to 23 ms and update of 10% of the rows 53 to 52 ms: within noise (100,000 rows); other: format minor 14; 4 bytes a row for keys that repeat (0.8 MB for 200,000 rows), 4.2 MB for a unique key; a leaf with overflow values or inline strings gets no table
 - **When:** Equality, IN list (up to 65,536 keys; over 64 only under a sixteenth of the rows) or range of up to 64 keys on integer, text, uuid columns, in access-method and aggregate scans. Overflow values: no directory.
-- **Default:** '' — Opt-in: five leaves take the index from 29.1 to 93.7 MB (+222%) and the build +42.7%, over the 3% and 5% limits, and a lookup stays 3x slower than a b-tree (0.020 against 0.006 ms).
-- **Why not the default:** over 3% index growth, under 5% on a relevant class
+- **Default:** '' — Opt-in: an equality on a unique id reads 1.58 M instructions with the key filter and 0.78 M with the directory (2.03x), for +58% of the index and +3.4% of the build: the benefit (14.5) is under the cost (20.0) and the growth is over 25%. A lookup stays 3x slower than a b-tree (0.020 against 0.006 ms).
+- **Why not the default:** the index grows over 25%, the benefit B does not reach the cost C
 - **Turn off:** RESET (point_columns): new segments get no directory; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 13 writes none. No directory, no format change to undo.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in: set it only where the b-tree on the column can go and a lookup 3x slower is fine. Prefer point_tid_columns, which reads no unit. Larger index; REINDEX to apply.
@@ -1429,10 +1450,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** an equality or IN list on a column of many distinct keys returns the addresses of its rows from the directory with no unit read, and the heap checks them again: integer equality 0.013 ms at 26,700 to 1,000,000 rows, flat (point_columns 0.015 to 0.022; a btree 0.006); a unit with a dead row is read instead
 - **Gain:** integer equality 0.013 ms flat from 26,700 to 1,000,000 rows (point_columns 0.015-0.022, b-tree 0.006); 100-id IN 45.7 to 0.25 ms (1,000,000 rows)
+- **Formula:** S 2.51x saving 1002k instructions, G 57.6%, W 3.6%, R 1: B 18.9 against C 19.9, opt-in (fails: ceiling, cost)
 - **Impact:** index size: within 3% of point_columns: 91.4 against 93.7 MB, 29.1 MB without a directory, 170 MB for six b-trees (5 leaves, 1,000,000 rows); build, merge and writes: build 1.32 against 0.80 s (+65%), promotion of 100,000 rows 92 against 53 ms (+5% of insert plus promotion), inserts unchanged; other: format minor 16; the size of point_columns within 3% (a key of many rows takes 1 to 3 bytes a row, not 4); the build 65% longer, a promotion 5% longer, inserts unchanged; not for an index-only scan, which reads the units the addresses name
 - **When:** Leaves of point_columns: an equality or IN list of up to 64 keys returns heap addresses with no unit read. A unit with a dead row is read; an index-only scan reads units; a key_cut segment keeps the rows form.
-- **Default:** '' — Opt-in: build 1.32 against 0.80 s (+65%) and the index 91.4 MB against 29.1 MB without a directory (within 3% of point_columns); minor 16 is read by 3.3 and later only. Equality 0.013 against 0.006 ms.
-- **Why not the default:** over 3% index growth, over 5% write cost, under 5% on a relevant class
+- **Default:** '' — Opt-in: an equality on a unique id reads 1.67 M instructions with the key filter and 0.66 M with the addresses (2.51x), for +57.6% of the index and +3.6% of the build: the benefit (18.8) is under the cost (19.9) and the growth is over 25%; minor 16 is read by 3.3 and later only.
+- **Why not the default:** the index grows over 25%, the benefit B does not reach the cost C
 - **Turn off:** RESET (point_tid_columns); a leaf kept in point_columns then has the rows form. New segments only; REINDEX rewrites older ones; sift.col_format_minor <= 14 writes no addresses.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in where the b-tree on an id or key can go: lookups of up to 64 keys read no unit. Not for index-only scans; a unit with a dead row is read. Larger index; REINDEX to apply.
@@ -1443,10 +1465,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** ORDER BY col LIMIT n reads the first rows of each unit only, and a LIMIT of up to 32 over units that are all visible and clean reads no unit
 - **Gain:** ORDER BY an integer LIMIT 100 37.9 ms normal plan, 3.5 without runs, 1.4 with (1,000,000 rows); LIMIT 10 0.128 to 0.051 ms with heads (800,000)
+- **Formula:** S 1.08x saving 1383k instructions, G 8.3%, W 2.5%, R 1: B 1.6 against C 3.3, opt-in (fails: cost)
 - **Impact:** index size: 2 bytes a row per unordered leaf (+50.8% of a 10-column index with 8 unordered leaves, 1,000,000 rows); heads add 0.6% to 2.4% (three order columns); build, merge and writes: with heads (not the runs themselves): build 1.61 against 1.63 s, promotion of 100,000 rows 0.052 s, merge of 500,000 rows 0.74 against 0.66 s; other: format minor 18; the row ordinals per column: 1 B a row (units up to 256 rows), 2 B (to 65,536), else 4 B; 16 B a unit for a column loaded in order; the head of the run (the best 32 keys at each end with their heap addresses) adds 0.24 B a row for a column with no NULL (units of 4,096 rows or more, less for smaller units)
 - **When:** ORDER BY col LIMIT n on one sort key (integer, date, timestamp, numeric or float columns) reads the first rows of each unit; LIMIT up to 32 with no condition, join or aggregate over clean units reads none.
-- **Default:** '' — Opt-in: 1 to 4 bytes a row per column (+50.8% of a 10-column index with 8 unordered leaves), over the 3% limit; heads add 0.6% to 2.4%. ORDER BY an integer LIMIT 100: 3.5 to 1.4 ms (37.9 ms normal plan).
-- **Why not the default:** over 3% index growth
+- **Default:** '' — Opt-in: an ORDER BY a date LIMIT 100 reads 18.3 M instructions without the runs and 16.9 M with them (1.08x), for +8.3% of the index and +2.5% of the build: the benefit (1.6) is under the cost (3.3); an integer column with few distinct values gains 1.04x. ORDER BY an integer LIMIT 100: 3.5 to 1.4 ms (37.9 ms normal plan).
+- **Why not the default:** the benefit B does not reach the cost C
 - **Turn off:** RESET (order_columns): new units get no run; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 12 writes no runs; 13 to 14 writes runs without heads.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
@@ -1460,7 +1483,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +1.5% of the index for the key-ordered column of a 15-column page-view fixture (300,000 and 1,000,000 rows) and +5% for the time column of a 4-column readings fixture; +25% to +62% (page views) and +120% (readings) for two or three order columns of random keys; +14% of a 7-column index of 100,000 rows with 3 order columns; build, merge and writes: CREATE INDEX +14.5%, insert of 20,000 rows with its promotion +6%, merge +28%, delete and VACUUM +4% (instructions, 3 order columns of a 7-column index, 100,000 rows); other: format minor 21; every row of the leaf in 0.8 B (a column in key order) to 3.9 B (random keys) of a segment: a 7-column index of 100,000 rows with 3 order columns 3.22 MB to 3.67 MB; segments are minor 21, which 3.3 and older refuse
 - **When:** ORDER BY col LIMIT n over one integer, date or timestamp key of order_columns, with no join or aggregate, no filter but comparisons of the key with constants (a range, the page after a key), the other sort keys integer, date or timestamp columns and a write buffer of at most 4,096 rows (or 8 times n); any other shape reads the units.
 - **Default:** '' — Opt-in: +14% of a 7-column index for 3 order columns, CREATE INDEX +15% and insert with promotion +14% instructions, where the sorted runs and their heads already answer up to 32 rows from a few units; the segments are minor 21, which 3.3 and older refuse.
-- **Why not the default:** over 3% index growth, over 5% write cost
+- **Why not the default:** the history does not say
 - **Turn off:** RESET (order_array_columns): new segments get no array; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Turn it on (name the column, which must be in order_columns) for a large table, or a key_cut index (its many units cost the heads), where ORDER BY col LIMIT n with n from 1 to a few thousand over a column with scattered values is a frequent, latency-sensitive query that no b-tree serves, and 4-5 bytes a row for the column is affordable; leave it out for LIMIT 32 or less, which the heads of the runs answer.
@@ -1471,10 +1494,11 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** The arrays of order_array_columns are sorted by this column and then the key, so WHERE group = x ORDER BY col LIMIT n (n from 1 to thousands, with a range or the page after a key) reads n entries of the group x in each segment and n rows of the heap, whatever the rows of the table: the shape a b-tree on (group, col) serves. A query that does not pin the group reads the units
 - **Gain:** WHERE grp = x ORDER BY ts DESC LIMIT 10, 1024 groups, scattered timestamp, no b-tree, wall ms at 2,000 / 100,000 / 1,000,000 / 3,000,000 rows: units 0.27 / 0.46 / 1.6 / 3.7, ungrouped array 0.27 / 0.48 / 1.7 / 3.6, grouped array 0.22 / 0.25 / 0.32 / 0.22 (a b-tree on (grp, ts) 0.07 / 0.08 / 0.10 / 0.05)
+- **Formula:** S 22.00x saving 8006k instructions, G 74.0%, W 65.0%, R 1: B 63.4 against C 37.7, opt-in (fails: ceiling)
 - **Impact:** index size: +74% to +77% of the index over the runs for one array column (100,000 and 3,000,000 rows), +14% to +19% over an ungrouped array; build, merge and writes: CREATE INDEX +65% over the runs and +11% over an ungrouped array, insert of 20,000 rows with its promotion +18% over the runs (1,000,000 rows, one array column, wall); other: format minor 21; 6.0 B a row for each array column over the runs (the group is a third part of each entry): 1,000,000 rows, 4 columns, one array column: 7.7 MB with the runs, 12.0 MB with an ungrouped array, 13.7 MB grouped (a b-tree on (group, col) 31.6 MB); a row with no group is not in the arrays
 - **When:** WHERE group = constant [AND range or page after a key on the column] ORDER BY column [, ids] LIMIT n over an index with the option, and a write buffer of at most 4,096 rows of the group (or 8 times n); any other shape reads the units.
-- **Default:** '' — Opt-in: +74% of the index over the runs and CREATE INDEX +65%, because each array column is a third part larger; a table whose group queries are rare should keep the runs only.
-- **Why not the default:** over 3% index growth, over 5% write cost
+- **Default:** '' — Opt-in: the groups of 20 values cost +2.4% of the index, those of 1,024 values +74% over the runs and CREATE INDEX +65%, and no statistic of the table says which grouping column its queries use; a table whose group queries are rare should keep the runs only.
+- **Why not the default:** the index grows over 25%, no statistic says which columns it pays on
 - **Turn off:** RESET (order_array_group): new segments get the ungrouped arrays; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Turn it on (one column, not in order_array_columns) for a table where a frequent, latency-sensitive query pins a column and orders by another (the last events of a device, the newest rows of a tenant) and no b-tree serves it, and 6 bytes a row is affordable; leave it out when the queries order by the column without pinning the group, which the ungrouped array answers.
@@ -1488,7 +1512,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +23% of the index for four columns of a million rows (169 B to 12,307 B a unit and column, by distinct values); build, merge and writes: build +70% for four columns (about +15% a leaf); other: format minor 20; a sketch of 8 B + 3 B a register to 12,296 B a unit and column (169 B for 50 values, 8,209 B for 2,700, 12,307 B above 4,096): the index 23% larger for four columns of a million rows, the build 70% longer; segments are minor 20, which 3.3 and older refuse
 - **When:** sift.approx_count_distinct(col) of the table or of units a filter passes in full; count(DISTINCT) stays exact. Refused: char(n), name, float, numeric, boolean, nondeterministic collation, jsonb-path, key_columns leaves.
 - **Default:** '' — Opt-in: +23% of the index for four columns of a million rows and build +70% (169 B to 12.3 kB a unit and column), over the 3% and 5% limits; 5.4 against 63 ms; minor 20 is refused by 3.3 and older.
-- **Why not the default:** over 3% index growth, over 5% write cost
+- **Why not the default:** changes results or semantics
 - **Turn off:** RESET (hll_columns): new units get no sketch; older units keep theirs until a merge or REINDEX, and approx_count_distinct reads rows of units without one. sift.col_format_minor <= 14 writes none.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave unset unless a dashboard needs an approximate distinct count of a high-cardinality column: sift.approx_count_distinct(col) is the same number in every plan and count(DISTINCT) stays exact; list only the columns that ask for it, each costs up to 12 kB a unit.
@@ -1502,7 +1526,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: no extra storage (reads the segment dictionary); dict_lookup auto adds the string order, +10% to +70% of a one-column index; build, merge and writes: -; other: no extra storage: the strings are the dictionary the index keeps
 - **When:** text, varchar, uuid columns an index-only scan returns from the segment dictionary (tuple scans, sift.enable_col_scan on). Integer, date, timestamp, boolean, float, numeric columns need no option; char(n) never.
 - **Default:** '' — Opt-in: with the heap in memory it is slower (SELECT id of 100 rows 0.066 to 0.158 ms, 300,000 rows) because the executor asks for every returnable column; meant for tables much larger than memory, not measured on disk.
-- **Why not the default:** under 5% on a relevant class, not run on real workloads
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, not run on real workloads
 - **Turn off:** RESET (return_columns) or 'off': no format change, no REINDEX; a query that needs one of these columns reads the heap again.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in: an index-only scan returns text, varchar and uuid columns from the index. Use it for tables much larger than memory, where heap fetches are disk reads; otherwise the heap is faster.
@@ -1515,8 +1539,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** unordered scan with a heavy residual qual 1.8x (218,058 documents); other shapes lose to the Gather cost of milliseconds
 - **Impact:** index size: -; build, merge and writes: -; other: off because a Gather costs milliseconds: only an unordered scan with a heavy residual qual gained (1.8x on 218,058 articles)
 - **When:** Planning with a Gather over a parallel SiftScan or SiftCount; a ranked one needs a LIMIT and one table, never with a pushed-down filter or partitions. Wins only on large heap-bound scans or expensive quals.
-- **Default:** off — off: a Gather costs milliseconds before any work; on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x), other shapes lost, so it fails the 5% gain on a relevant class.
-- **Why not the default:** under 5% on a relevant class
+- **Default:** off — off: a Gather costs milliseconds before any work; on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x), other shapes lost, so the speedup is under 1.05 on most relevant classes.
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** Already off. SET sift.parallel_scan = on to try it; RESET (or off) returns the serial plans; read at planning time.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave off. Try on much larger tables or expensive quals: a ranked scan needs a LIMIT and one table, never with a pushed-down filter or partitions. Rows, scores and ties equal the serial plan.
@@ -1544,7 +1568,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: -; build, merge and writes: VACUUM plus worker WAL equals the whole-index rewrite (15.3 against 15.05 MB uniform, 12.8 against 12.7 MB scraper a round); one step holds the lock for one partition; other: background WAL and I/O: the table is vacuumed every five naptimes while it keeps changing, and the rewrites take at most sift.col_auto_merge_wal_pct (5) of the WAL the server writes: +0.9% to +1.9% total WAL at 1M rows with full-page images and a checkpoint per round, +0.0% without full-page images (it waits for the WAL), against +12% to +28% when it rewrites at every VACUUM; the file is up to twice its live size after a rewrite until later VACUUMs; no rewrite while a snapshot holds back the blocks the last one freed
 - **When:** Size of the segments the rewrite writes, so it rewrites only the ones churn touched, one step each under the lock. An index under half of it is rewritten whole; a segment under half is an overlay.
 - **Default:** 0 — Opt-in (gain): same WAL as the whole-index rewrite (15.3 against 15.05 MB uniform) and an index over sift.vacuum_rewrite_limit is already partitioned; it pays for churn in one place (a hot tail) of a large index.
-- **Why not the default:** under 5% on a relevant class
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** 0 (the default) rewrites the index whole, in partitions of the vacuum_rewrite_limit size above it: SET sift.col_auto_merge_partition_kb = 0 or RESET at server or database level. Segments already cut stay.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it). Set a size to keep the index as segments of that size and rewrite only the ones churn touched.
@@ -1557,8 +1581,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** device vs one CPU core, chunks resident, 6 integer count/sum queries: 0.77x to 1.07x at 1,000,000 rows, 0.99x to 1.00x at 10,000,000 (3.2.0 pass, RTX 3090)
 - **Impact:** index size: -; build, merge and writes: -; other: needs a build with VULKAN=1 and a device; without them the CPU runs whatever this says
 - **When:** sift_col on a VULKAN=1 build: integer count/sum/avg of clean all-visible units; auto takes grouped ones above sift.gpu_min_rows, on also ungrouped. Not floats, min/max, text filters, sift_table.
-- **Default:** off — Off: the 3.2.0 pass found 0.77x-1.07x of one CPU core at 1M rows and 0.99x-1.00x at 10M (under the 5% rule), at 0.2 s and about 100 MB per backend context; packages are built without Vulkan.
-- **Why not the default:** under 5% on a relevant class, needs hardware, not run on real workloads
+- **Default:** off — Off: the 3.2.0 pass found 0.77x-1.07x of one CPU core at 1M rows and 0.99x-1.00x at 10M (speedup under 1.05), at 0.2 s and about 100 MB per backend context; packages are built without Vulkan.
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, needs hardware, not run on real workloads
 - **Turn off:** Default off. SET sift.gpu = off (superuser setting; ALTER ROLE/DATABASE .. SET or postgresql.conf). Without a VULKAN=1 build the CPU runs whatever it says; a failing device is dropped for the session.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave off. Needs make VULKAN=1 and a Vulkan device, and persistent connections (0.2 s and about 100 MB of context per backend). Measure first: the 3.2.0 pass shows no gain over the CPU path.
@@ -1600,7 +1624,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +14.1% of a 6-column table and +10.3% of a table of an integer and a text column, 100,000 distinct 32-character strings (4 bytes a string; measured +2.4% to +63% on other shapes); build, merge and writes: load in 20 statements 357 to 269 ms and 270 to 243 ms: no cost measurable (100,000 rows); other: off by default: the order is +10% to +14% of a sift_table with a column of 100,000 distinct strings (4 bytes a string;: +2.4% to +63% on other shapes) and gains the first statement of a backend only; a row fetch reads the strings in place without it
 - **When:** Column segments of a sift_table written from now on, for a text or uuid column with a dictionary of 1,024 strings or more: string tests (equality, IN, prefix, range) read it in place. Column format minor 14.
 - **Default:** off — off: it adds 4 bytes a string (+10.3% to +14.1% of the table, +2.4% to +63%) and gains only the first statement of a backend (uuid equality 12.1 to 0.43 ms), over the 3% growth limit.
-- **Why not the default:** under 5% on a relevant class, over 3% index growth
+- **Why not the default:** the history does not say
 - **Turn off:** Already off. After SET sift.table_dict_lookup = on, SET it off or RESET: new segments return to the compact form; segments already written keep the order until a merge or VACUUM FULL rewrites them.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave off. Set on for a sift_table whose first statement per backend tests strings (equality, IN, prefix, range) on a high-distinct text or uuid column; warm queries gain nothing. New segments only.
@@ -1613,8 +1637,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Gain:** statements that close a buffer 25-31 ms to at most 2.8 ms; median 65 us, p99 190 us, p99.9 0.6 ms unchanged (single-row INSERTs, 100,000 rows)
 - **Impact:** index size: -; build, merge and writes: 4 clients of single-row INSERT: tps and p99 equal within noise; other: off by default: 4 clients of single-row INSERT, tps and p99 equal within noise
 - **When:** Writers of a sift_table that close a write buffer: a worker promotes it instead of the statement. Needs sift.async_maintenance and table_inline_promote; from half of the directory on the writer promotes itself.
-- **Default:** off — off: it fails the 5% gain on a relevant class - the statements that close a buffer drop from 25-31 ms to at most 2.8 ms, but the median, p99 and tps are equal within noise (single-row INSERTs, 4 clients).
-- **Why not the default:** under 5% on a relevant class
+- **Default:** off — off: the statements that close a buffer drop from 25-31 ms to at most 2.8 ms, but the median, p99 and tps are equal within noise (single-row INSERTs, 4 clients): the speedup of the relevant class is under 1.05.
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** Already off. SET sift.table_async_promote = on to use it; off or RESET returns the writer promoting itself. Session or role setting; pair with the worker settings.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave off. Set on when statements that close a write buffer must not stall for the promotion; needs sift.async_maintenance and table_inline_promote; past half the directory the writer promotes.
@@ -1971,7 +1995,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: as `sift.gpu`; build, merge and writes: as `sift.gpu`; other: device memory per backend for chunks that stay on the device
 - **When:** Per backend, only when the device runs a query: the compressed column chunks kept on it between queries (a cold backend uploads again); many connections multiply it.
 - **Default:** 256 MB — n/a: no source records why 256 MB; the pinned cache is sized for the GPU memory of the host
-- **Why not the default:** under 5% on a relevant class, needs hardware, not run on real workloads
+- **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, needs hardware, not run on real workloads
 - **Turn off:** n/a: a memory cap (16 MB minimum, plus 32 MB staging); sift.gpu = off uses no device memory.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Default 256 MB of device memory per backend for the compressed chunks kept between queries (at least 16), plus 32 MB of staging. A cold backend uploads again. Superuser.
