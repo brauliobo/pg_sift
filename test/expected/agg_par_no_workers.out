@@ -1,0 +1,69 @@
+-- A scan whose plan asked for workers and got none (the pool of parallel workers is spent) runs in the leader alone: the rows of a correlated child
+-- that the processes would have shared lived in the segment of the parallel context, which is gone, so the leader runs the child itself and its rows
+-- are those of the normal plan.
+CREATE EXTENSION pg_sift;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET seq_page_cost = 10000;
+SET sift.agg_preagg = off;
+SET sift.agg_par_min_rows = 0;
+SET max_parallel_workers_per_gather = 3;
+CREATE TABLE fl (id int, g int, h int, v float8) WITH (fillfactor = 10);
+INSERT INTO fl SELECT i, i % 6000, i % 7, (i % 97) * 0.5 FROM generate_series(1, 20000) i;
+CREATE INDEX fl_col ON fl USING sift_col (id, g, h, v);
+CREATE TABLE l_d (h int, tag text);
+INSERT INTO l_d SELECT i % 7, 't' || i FROM generate_series(1, 40) i;
+VACUUM ANALYZE fl;
+ANALYZE l_d;
+CREATE TABLE n_q (q text);
+INSERT INTO n_q VALUES ('SELECT f.h, c.tag, sum(f.v) AS s, count(*) AS n FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true GROUP BY f.h, c.tag');
+CREATE FUNCTION n_rows(push bool, avail int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('max_parallel_workers', avail::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', (SELECT q FROM n_q)) INTO r;
+	RETURN r;
+END $$;
+-- the plan asks for workers and is pushed down
+CREATE FUNCTION n_plan(avail int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; pushed bool := false; planned bool := false;
+BEGIN
+	PERFORM set_config('max_parallel_workers', avail::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM n_q) LOOP
+		planned := planned OR l ~ 'Workers Planned: [1-9]';
+		pushed := pushed OR l ~ 'Custom Scan \(SiftAgg\)';
+	END LOOP;
+	RETURN format('pushed %s, workers planned %s', pushed, planned);
+END $$;
+SELECT n_plan(0) AS no_workers_available;
+    no_workers_available     
+-----------------------------
+ pushed t, workers planned t
+(1 row)
+
+-- none can be launched: the rows are those of the normal plan, as they are when the workers start
+SELECT n_rows(true, 0) = n_rows(false, 0) AS no_workers_equal;
+ no_workers_equal 
+------------------
+ t
+(1 row)
+
+SELECT n_rows(true, 0) = n_rows(true, 8) AS with_workers_equal;
+ with_workers_equal 
+--------------------
+ t
+(1 row)
+
+-- fewer workers than planned (the pool holds one of the three): the same rows
+SELECT n_rows(true, 1) = n_rows(false, 1) AS one_worker_equal;
+ one_worker_equal 
+------------------
+ t
+(1 row)
+
+DROP FUNCTION n_rows(bool, int), n_plan(int);
+DROP TABLE n_q, fl, l_d;
+DROP EXTENSION pg_sift;
