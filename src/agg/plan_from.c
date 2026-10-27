@@ -847,18 +847,38 @@ part_candidates(AggCtx *c, RelOptInfo *leaf)
 }
 
 /*
- * Do two partitions write the same pre-aggregates? The key lists of the integer leaves (key_columns = auto) follow the data of each partition, and a
- * unit without one is read by its rows: acc keeps the leaves every partition so far lists, and what else differs is a layout of its own.
+ * Do two partitions write the same pre-aggregates? The key lists of the integer leaves (key_columns = auto) and the rollups (rollup_dims = auto) follow the
+ * data of each partition, and a unit without one is read by its rows: acc keeps the leaves and the rollups every partition so far lists, and what else
+ * differs is a layout of its own.
  */
+static bool
+part_rollup_same(const SiftSrcPreagg *x, int i, const SiftSrcPreagg *y, int j)
+{
+	return x->rollup[i].list == y->rollup[j].list && x->rollup[i].ndims == y->rollup[j].ndims && x->rollup[i].nmeas == y->rollup[j].nmeas &&
+		memcmp(x->rollup[i].dim, y->rollup[j].dim, x->rollup[i].ndims * sizeof(int)) == 0 &&
+		memcmp(x->rollup[i].meas, y->rollup[j].meas, x->rollup[i].nmeas * sizeof(int)) == 0;
+}
+
 static bool
 part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 {
 	SiftSrcPreagg a,
 				b;
-	int			n = 0;
+	int			n = 0,
+				kept = 0;
 
 	memcpy(&a, acc, sizeof(a));
 	memcpy(&b, pa, sizeof(b));
+	memset(a.rollup, 0, sizeof(a.rollup));
+	for (int i = 0; i < acc->nrollups; i++)
+		for (int j = 0; j < pa->nrollups; j++)
+			if (part_rollup_same(acc, i, pa, j))
+			{
+				a.rollup[kept++] = acc->rollup[i];
+				break;
+			}
+	a.nrollups = b.nrollups = kept;
+	memcpy(b.rollup, a.rollup, sizeof(b.rollup));
 	a.npres = b.npres = 0;
 	memset(a.pres, 0, sizeof(a.pres));
 	memset(b.pres, 0, sizeof(b.pres));
@@ -874,6 +894,8 @@ part_preagg_common(SiftSrcPreagg *acc, const SiftSrcPreagg *pa)
 	for (int c = 0; c < SIFT_SRC_CAL; c++)
 		acc->hll[c] &= pa->hll[c];
 	acc->npres = n;
+	acc->nrollups = kept;
+	memcpy(acc->rollup, a.rollup, sizeof(acc->rollup));
 	return true;
 }
 

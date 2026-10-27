@@ -499,6 +499,20 @@ SET max_parallel_workers_per_gather = 0;
 DROP FUNCTION same_join(text);
 DROP TABLE pt_days, pt_ids, pk, pk_keys, ph_keys;
 
+-- the build picks a rollup of the rows for each partition from its data (rollup_dims = auto): a partition attached later with too few rows to pick one is read with the others, the rollups are left out
+CREATE TABLE pr (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);
+CREATE TABLE pr_a PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2024-04-01') WITH (autovacuum_enabled = false);
+CREATE TABLE pr_b PARTITION OF pr FOR VALUES FROM ('2024-04-01') TO ('2024-07-01') WITH (autovacuum_enabled = false);
+INSERT INTO pr SELECT i, i % 5, DATE '2024-01-01' + i % 180, i FROM generate_series(1, 3000) i;
+CREATE INDEX pr_col ON pr USING sift_col (id, g, d, v);
+CREATE TABLE pr_n (LIKE pr INCLUDING DEFAULTS) WITH (autovacuum_enabled = false);
+INSERT INTO pr_n SELECT 10000 + i, i % 5, DATE '2024-07-01' + i % 90, i FROM generate_series(1, 20) i;
+ALTER TABLE pr ATTACH PARTITION pr_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
+VACUUM (FREEZE, ANALYZE) pr;
+SELECT string_agg(coalesce(c.reloptions::text, 'none'), ' ' ORDER BY c.relname) AS partition_rollups FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' AND c.relname LIKE 'pr\_%';
+SELECT * FROM same_exec('SELECT g, count(*) AS n, sum(v) AS s FROM pr GROUP BY g', 'SELECT g, count(*) AS n, sum(v) AS s FROM pr GROUP BY g');
+DROP TABLE pr;
+
 DROP FUNCTION same_exec(text, text);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);

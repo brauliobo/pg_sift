@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a partitioned table whose partitions did not choose the same rollup of the rows (`rollup_dims = auto` picks it from each partition's data, so a partition attached later with few rows has none) lost the single `Custom Scan (SiftAgg)` over its partitions; the scan now keeps the rollups every partition has and reads the others by their rows.
 - Changed: pg_sift: `sift.table_dict_lookup` is on by default: a `sift_table` stores the order of the strings of a dictionary of 1,024 strings or more, so the first test of a string in a new backend reads it in place instead of loading the dictionary whole, where the orders of a segment take a quarter of it at most; `off` writes the compact form (column format minor 14, which 3.3 and 3.4 read).
 - Improved: pg_sift: the sort that gives a dictionary its order (`dict_lookup`, `count_columns`) skips the prefix that the strings of a run still share and radix sorts the bytes after it, so a column of urls or prefixed ids no longer pays a comparison of whole strings for every step; the order is the same.
 - Improved: pg_sift: the bloom filter that `key_columns = 'auto'` writes for a unique id that no list fits may use up to a share of five percent of the unit together with the lists (three before), which gives it the bits a key of a column named in the option, so `WHERE id = x` skips more of the units whose filter lacks the key; the NOTICE at `CREATE INDEX` says so.
