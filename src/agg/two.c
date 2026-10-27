@@ -246,8 +246,10 @@ arm_inner_prepare(AggExec *ex, ArmSt *a, SiftAggAgg *ia, int ai, int n)
 	const SiftSrcVec *v;
 
 	agg_selection(ex, ia, ex->cstart, ex->cn, n, &all);
-	for (int j = 0; j < n; j++)
-		a->iok[ai][j] = all || sift_colsrc_bit(ex->okm, j);
+	if (all)
+		memset(a->iok[ai], 1, n);
+	else
+		sift_colk->bits_to_flags(ex->okm, n, a->iok[ai]);
 	switch (ia->kind)
 	{
 		case SAA_SUM_INT:
