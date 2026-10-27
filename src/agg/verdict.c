@@ -9,6 +9,10 @@
  * that went stale (the constants of a statement select other rows) is replaced, and sift.stats() counts the ones that changed. A plan in full costs 4 to 6
  * times a hit, so each one that confirms the entry doubles the hits to the next (8, 16, 32, 64: VERDICT_STREAK_MAX); one that changes it starts again at 8.
  *
+ * Two statements of one key can have different verdicts when planned in full (their constants select other rows, so the scans read more or fewer): the key cannot
+ * carry that, so a hit is taken only where the plan it makes is of about the size the verdict was made for (verdict_accept: the rows the inline plan reads, the size
+ * of the shared CTE), else the statement is planned in full and the entry replaced. The cte_inline row of sift.explain_why of a hit has no costs: they are those of the
+ * statement that made the verdict.
  * A stale verdict is a plan of the other variant, never other rows: both variants are plans of the same query. An entry is dropped when a table it
  * names is invalidated (DDL, an index created or dropped, ANALYZE, VACUUM), and the least recently used one goes when the cache holds VERDICT_MAX.
  *
@@ -73,6 +77,7 @@ static HTAB *cache;
 static dlist_head recent = DLIST_STATIC_INIT(recent);
 
 int			sift_verdict_cache_kb = 256;
+bool		sift_agg_verdict_cache = true;
 
 /* the table of all the backends: sets of VSHM_WAYS entries, the set of a key by its remainder; the least recently read of a full set goes */
 #define VSHM_WAYS		4
@@ -464,6 +469,8 @@ verdict_lookup(Query *q, int kind, CteVerdict *vd)
 	TableSizes	sizes = {0};
 
 	memset(vd, 0, sizeof(*vd));
+	if (!sift_agg_verdict_cache)
+		return;
 	sizes.rels = vd->rels;
 	sizes_walker((Node *) q, &sizes);
 	if (sizes.overflow)

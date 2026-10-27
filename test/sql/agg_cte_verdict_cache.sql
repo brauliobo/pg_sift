@@ -51,6 +51,16 @@ SELECT arms(series_query(10));
 SELECT arms(series_query(10));
 SELECT counts();
 
+-- the cte_inline row of a statement planned from the verdict has no costs, as they would be those of the statement that made it; where the hit is far from
+-- the size the verdict was made for (owners 25), the statement is planned in full after it and that plan reports its own
+CREATE FUNCTION costs(q text) RETURNS text LANGUAGE sql AS
+$$ SELECT string_agg(arm || ':' || (scan_cost IS NOT NULL)::text, ' ' ORDER BY arm, scan_cost IS NOT NULL) FROM sift.explain_why(q) WHERE arm IN ('cte_inline', 'verdict_cached') $$;
+SET work_mem = '66MB';
+SELECT costs(series_query(10));
+SELECT costs(series_query(11));
+SELECT costs(series_query(25));
+RESET work_mem;
+
 -- ANALYZE and a change of a setting that moves a plan drop the verdicts
 SELECT sift.stats_reset();
 ANALYZE events;
@@ -130,7 +140,25 @@ SELECT sift.stats_reset();
 SELECT plan_it(series_query(10));
 SELECT digest(series_query(25), true) = digest(series_query(25), false) AS same_rows;
 SELECT counts();
+-- sift.agg_verdict_cache = off: every statement is planned in full and nothing is kept, so the plan of a statement does not depend on the ones planned before it
+CREATE FUNCTION plan_text(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; t text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP t := t || l || E'\n'; END LOOP;
+	RETURN md5(t);
+END $$;
+SET sift.agg_verdict_cache = off;
+SELECT sift.stats_reset();
+CREATE TEMP TABLE plans AS SELECT 1 AS ord, 10 AS key_sets, plan_text(series_query(10)) AS p UNION ALL SELECT 2, 11, plan_text(series_query(11));
+INSERT INTO plans SELECT 3, 11, plan_text(series_query(11));
+INSERT INTO plans SELECT 4, 10, plan_text(series_query(10));
+SELECT key_sets, count(DISTINCT p) AS plans FROM plans GROUP BY key_sets ORDER BY key_sets;
+SELECT counts();
+RESET sift.agg_verdict_cache;
+DROP TABLE plans;
+DROP FUNCTION plan_text;
+
 DROP FUNCTION digest;
-DROP FUNCTION counts, shared_hits, arms, plan_it, series_query, fill;
+DROP FUNCTION counts, shared_hits, arms, costs, plan_it, series_query, fill;
 DROP TABLE events, kinds;
 DROP EXTENSION pg_sift;

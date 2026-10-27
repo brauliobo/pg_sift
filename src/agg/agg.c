@@ -221,6 +221,10 @@ sift_agg_init(void)
 							"The table is allocated, at the size of this setting, by the first backend that plans such a statement after the server starts; a later change turns the use of it on and off (0), not its size. An entry is 56 bytes and a statement keeps up to three; the largest table is about 1 MB.",
 							&sift_verdict_cache_kb, 256, 0, 1024,
 							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.agg_verdict_cache",
+							 "Keeps the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the one as written, for the statements of a backend and the others (off: every statement is planned in full, so a plan does not depend on the statements planned before it).",
+							 NULL, &sift_agg_verdict_cache, true,
+							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.agg_semi_lut_size",
 							"Memory of the byte table of a semi or anti join, per scan and per worker; keys that span more keep the generic join.",
 							NULL, &sift_agg_semi_lut_size, 4096, 0, 1024 * 1024,

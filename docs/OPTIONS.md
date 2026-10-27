@@ -37,7 +37,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 |---|---|---|
 | [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 21 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
-| [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
+| [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
 
@@ -1763,6 +1763,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on: sift.cluster_advice() recommends a physical order or key_cut and CREATE INDEX may print the advice. Off answers not recommended and prints nothing; the index option switches one index.
 
+#### sift.agg_verdict_cache
+
+`sift_col`, `sift_table` · diagnostic · since 3.5 · default on
+
+- **What it does:** a plan that does not depend on the statements planned before it: the choice between a shared CTE and its inline plan, and between the flattened form of a statement and the form as written, is made in full for every statement (support, benchmarks, comparing two plans)
+- **Gain:** plan-gate tables, 30,000 rows, one statement of three scans over a shared CTE planned 64 times with other constants, 3 rounds on and off in turn, instructions of the backend (perf stat): 4.66 million a statement on, 4.61 million off
+- **Impact:** index size: -; build, merge and writes: -; other: every such statement is planned in full: the shared and the inline plan, and the larger sizes of sift.agg_scale_horizon for a close call; on three scans over the 30,000 rows of the plan-gate tables 4.61 million user instructions and 0.7 ms of planning off against 4.66 million and 0.7 ms on (no measurable difference at that size); a 27 KB dashboard statement (21 CTEs, 16 lateral sub-selects) over 3,000,000 rows takes 128 ms to plan in full against 11 ms from the verdict
+- **When:** Statements that read a shared CTE several times or a lateral aggregate that can be flattened; no other statement consults the cache.
+- **Default:** on — the planning of the choice is 4 to 6 times cheaper from a verdict (verdict.c) and an entry is planned in full only at its eighth read and then every 16th, 32nd and 64th; the plan is the same except for a statement whose two variants cost about the same, and the rows are the same either way
+- **Turn off:** SET sift.agg_verdict_cache = off (session, role, database or postgresql.conf).
+- **Upgrade from 3.4:** new in 3.5
+- **Advice:** Leave on. Turn it off to get the same plan for a statement whatever ran before it (a support case, a benchmark, a comparison of two plans); it costs the planning of the choice for every statement.
+
 #### sift.explain_refusals
 
 `sift_col`, `sift_table` · diagnostic · since 3.3 · default off
@@ -2086,12 +2099,13 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.4; new: `sift.agg_par_min_rows`, `sift.col_leaf_cache_kb`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
+No default changed since 3.4; new: `sift.agg_verdict_cache`, `sift.agg_par_min_rows`, `sift.col_leaf_cache_kb`, `sift_col(key_table)`, `sift_col(count_columns)`, `sift.table_key_table`.
 
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift_col(count_columns)` | new | '' | minor 24, unreadable by 3.4 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
+| `sift.agg_verdict_cache` | new | on |  | new in 3.5 |
 | `sift.agg_par_min_rows` | new | 80000 |  | new in 3.5 |
 | `sift.table_key_table` | new | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |

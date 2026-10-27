@@ -787,7 +787,8 @@ static bool verdict_replan;
 
 /*
  * The statement planned as the verdict kept for it says (verdict.c): the inline plan when the scans won, else the plan that keeps the shared CTEs.
- * The totals are those of the plan in full that made the verdict.
+ * The totals are those of the plan in full that made the verdict, a statement of other constants: the cte_inline row reports no costs, since
+ * those would be the other statement's (the verdict_cached row says why).
  */
 static PlannedStmt *
 plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
@@ -805,7 +806,7 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
 		agg_variant = outer_variant;
 		inline_won = true;
-		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, vd->scans, vd->shared);
+		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, 0, 0);
 	}
 	else
 	{
@@ -813,7 +814,7 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 
 		stmt = plan_shared(SIFT_PLANNER_ARGS(parse), cx, &lift);
 		if (vd->scans > 0)
-			agg_report("cte_inline", AGG_REFUSE_CTE_COST, "from the verdict cached", false, vd->scans, vd->shared);
+			agg_report("cte_inline", AGG_REFUSE_CTE_COST, "from the verdict cached", false, 0, 0);
 	}
 	elog(DEBUG1, "sift: shared CTE verdict from the cache: %s", vd->won ? "inline" : "shared");
 	return stmt;
