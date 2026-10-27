@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else (( ${2:?} == 17 )) && echo 5 || echo 3; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else echo 4; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then
@@ -182,17 +182,19 @@ STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_
 COL_SLICES_LEAN=4 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
 COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 declare -A JOB_WEIGHT=(
-	[difftest]=1398 [difftest-col-3]=1067 [difftest-mutants]=1017 [difftest-col-tbl-1]=914 [difftest-col-1]=882 [difftest-col-tbl-4]=877
-	[difftest-col-4]=849 [difftest-col-tbl-2]=800 [difftest-col-2]=789 [difftest-col-tbl-3]=675 [tap-shell-compat_matrix]=578 [fuzz]=558
-	[tap-001_crash]=504 [installcheck-col_key_presence]=30 [tap-shell-store_crash]=341 [tap-shell-col_index_crash]=283
-	[installcheck-col_topn_parallel]=252 [installcheck-agg_group_spill_fuzz]=248 [installcheck-tbl_writepath]=246 [difftest-nopos]=236 [difftest-fuzz]=204
-	[tap-shell-index_build_crash]=197 [soak]=195 [tap-shell-col_auto_merge_partition]=194 [installcheck-col_sorted_run]=186 [tap-014_tbl_writepath]=181
-	[tap-006_truncate]=178 [tap-shell-index_random_crash]=165 [installcheck-agg_preagg_rollup]=158 [installcheck-tbl_preagg_calendar]=154 [hardened]=152
-	[coverage-pct]=126 [installcheck-col_scan]=124 [soak-col]=123 [tap-003_wal_minimal]=117 [installcheck-tbl_preagg]=115 [isolation]=113
-	[tap-shell-maint_fanin]=112 [tap-shell-col_crash_matrix]=111 [installcheck-agg_set_array]=111 [installcheck-build_large_docs]=107
-	[tap-017_tbl_autodefrag]=102 [installcheck-agg_preagg_filter]=102 [tap-shell-col_wbuf_crash]=101 [tap-shell-compat_31_column]=99
-	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
-	[plan-gate-calibrate]=35 [plan-gate-calibrate-tuned]=35 [plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
+	[difftest-col-3]=1203 [difftest-col-1]=1138 [difftest-fuzz-tbl]=550 [difftest-col-tbl-4]=1010 [difftest-col-4]=961 [difftest]=945
+	[difftest-col-tbl-2]=920 [difftest-mutants]=862 [difftest-col-2]=813 [difftest-col-tbl-3]=780 [difftest-fuzz]=330 [fuzz]=428
+	[tap-shell-store_crash]=372 [tap-shell-col_index_crash]=304 [installcheck-tbl_writepath]=285 [difftest-nopos]=259
+	[installcheck-col_topn_parallel]=245 [tap-shell-pg_upgrade_32]=240 [tap-001_crash]=239 [tap-shell-index_build_crash]=227
+	[tap-shell-pg_upgrade_33]=224 [installcheck-tbl_preagg_calendar]=216 [installcheck-agg_partitions_many]=212 [tap-014_tbl_writepath]=207
+	[tap-shell-col_auto_merge_partition]=204 [soak]=202 [installcheck-agg_distinct_narrow]=200 [installcheck-col_scan]=198
+	[installcheck-agg_tid_range]=180 [installcheck-col_topn_gorder]=180 [tap-shell-col_crash_matrix]=172 [isolation-emulated]=165 [hardened]=164
+	[installcheck-tbl_key_table]=153 [tap-shell-pg_upgrade]=152 [installcheck-col_preagg_elem]=136 [tap-shell-index_random_crash]=135 [isolation]=126
+	[installcheck-col_lazy_filter]=123 [soak-col]=123 [installcheck-col_sorted_run]=118 [installcheck-agg_preagg_elem]=115
+	[tap-shell-col_run_heads_crash]=114 [tap-006_truncate]=113 [installcheck-agg_trunc_zone]=112 [installcheck-tbl_preagg]=112
+	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [installcheck-parallel_pushdown]=108
+	[installcheck-index_build_postings]=107 [difftest-col-selftest]=107 [installcheck-agg_preagg_dimfilter]=104 [installcheck-agg_par_arms]=100
+	[tap-shell-pg_upgrade_31]=97 [tap-shell-sb_mask_small]=94 [tap-shell-maint_fanin]=90
 )
 JOB_WEIGHT_DEFAULT=10
 # the deep full tier is cut by the lane seconds each job took on its PostgreSQL major (run 40193282663; the other jobs weigh 10, a major from 19 on weighs like 18):
@@ -223,7 +225,8 @@ if [[ $MODE == --selftest ]]; then
 				want=pool; (( pg < 18 )) && want=after
 				[[ $where == "$want" ]] || { echo "FAIL: PostgreSQL $pg $m: $id installs a flavor and is placed $where, want $want"; bad=1; }
 			done <<<"$plan"
-			(( n )) || { echo "FAIL: PostgreSQL $pg $m: the plan has no job that installs a flavor (the check is void)"; bad=1; }
+			# the lean full tier installs its flavor (hardened) on 18 only
+			(( n )) || { [[ $m == full ]] && (( pg < 18 )); } || { echo "FAIL: PostgreSQL $pg $m: the plan has no job that installs a flavor (the check is void)"; bad=1; }
 		done
 	done
 	# scripts/areas.tsv: every tracked file is in a row, and every job of the plans (batches of short tests are cut from the tests of the areas) is in a group, so that
@@ -281,9 +284,10 @@ if [[ $MODE == --selftest ]]; then
 	done
 	for deep in '' 1; do
 		cs=$COL_SLICES_LEAN; [[ -z $deep ]] || cs=$COL_SLICES_DEEP
-		# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 8): K/N for K = 1..N, nothing else different between them (no subset of the variants,
-		# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects
-		plan=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=18 "$0" --plan full)
+		# the column differential jobs of the full tier are slices of one corpus (lean 4, deep 12): K/N for K = 1..N, nothing else different between them (no subset of the variants,
+		# scenarios or queries), each slice has queries, no query is in two, and together they are the corpus the unsliced script selects. The lean slices are split between 17 and
+		# 18 (each once), the deep ones are all on 18
+		plan=$(for pg in 18 $([[ -n $deep ]] || echo 17); do env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full; done)
 		for prefix in difftest-col difftest-col-tbl; do
 			n=0 ks='' rest='' union='' cd=''
 			while read -r id _ _ cmd; do
@@ -313,7 +317,7 @@ if [[ $MODE == --selftest ]]; then
 		done
 		grep -q '^difftest-col-analytics ' <<<"$plan" || { echo "FAIL: the full plan ${deep:+(deep) }lacks difftest-col-analytics (the analytics suite is not in the slices)"; bad=1; }
 	done
-	# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean), the first six of 12 (deep)
+	# before PostgreSQL 18 the full tier runs half of the slices: the first and second of 4 (lean; 18 runs the others), the first nine of 18 (deep; 18 runs all 12)
 	for pg in 16 17; do
 		for deep in '' 1; do
 			n=$(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | grep -cE '^difftest-col-[0-9]+ ')
@@ -333,7 +337,8 @@ if [[ $MODE == --selftest ]]; then
 		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
 		lo='' hi=0
-		for (( k = 1; k <= ns - (pg < 18 ? 1 : 0); k++ )); do
+		pool=$ns; (( pg < 18 )) && [[ -n $deep ]] && pool=$(( ns - 1 ))   # the deep tier on 17 ends with a shard of the jobs that install a flavor
+		for (( k = 1; k <= pool; k++ )); do
 			l=0
 			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
@@ -467,15 +472,21 @@ if [[ $MODE == full ]]; then
 	# runners: the same jobs, the same checks, shorter loops, a smaller corpus, fixed seeds. The deep one (SIFT_CI_DEEP=1: the nightly run, or a dispatch with deep) has the
 	# sizes of before: lean_or_deep LEAN DEEP
 	lean_or_deep() { [[ -n ${SIFT_CI_DEEP:-} ]] && echo "$2" || echo "$1"; }
+	# A job that exercises no code of its own major (the engine of the corpus, the fuzz harnesses, the control index of the soak, the hardened build of the decoders) runs
+	# on PostgreSQL 18 in the lean tier: the quick tier runs its small form on every major, and what depends on the major (the regression tests, the TAP tests, the plan gate,
+	# the pushdown differential tests, the soaks of the server) runs on both
+	once_on_18() { (( PG_MAJOR >= 18 )) || [[ -n ${SIFT_CI_DEEP:-} ]]; }
 	job soak soak 1 "$S/soak.sh" --duration "$(lean_or_deep 180 600)" --check-every 30
-	job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
+	once_on_18 && job soak-gin soak-gin 1 "$S/soak.sh" --am gin --duration "$(lean_or_deep 60 120)" --rows 20000 --clients 2 --check-every 20
 	job soak-col soak-col 1 "$S/colsoak.sh" --duration "$(lean_or_deep 120 300)"
-	# The deep tier keeps the differential families of the corpus on PostgreSQL 18 only (they are the half of its lane seconds, and 17 runs them in the lean tier and the
-	# quick tier), and cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
+	# The differential families of the corpus run on PostgreSQL 18 only (they are the half of the lane seconds of its tier, and the quick tier runs them on every major).
+	# The deep tier cuts them so that no job passes 25 minutes: the mutants alternate between three jobs, four seeds of the corpus run one round each
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
-		job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
-		job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
-		job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
+		once_on_18 && {
+			job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 4000 --queries 40 --rounds 1 --minimize 1
+			job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 4000 --queries 100 --rounds 3
+			job difftest-nopos difftest-nopos 1 env "INDEX_OPTS=WITH (positions = off)" "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 40 --rounds 1
+		}
 	elif (( PG_MAJOR >= 18 )); then
 		for k in 1 2 3; do
 			job difftest-mutants-$k difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --mutant-slice $k/3 --docs 8000 --queries 40 --rounds 2 --minimize 1
@@ -490,28 +501,32 @@ if [[ $MODE == full ]]; then
 	# in four lanes: they are cut into COL_SLICES disjoint slices of the corpus (coldiff.sh --slice K/N) that the lanes and the shards take like any other job. Every
 	# slice runs every variant and scenario on its share of the queries (--selftest proves the slices are the whole corpus, each query once)
 	# Lean: each scenario runs a third of the scenario queries (the slice moves from one heap state to the next, so every query meets several states and every state
-	# meets queries of every kind), and before PostgreSQL 18 half the corpus (slices 1 and 2 of 4, every other query in name order: the corpus is the same on every major,
-	# the other half runs on 18)
+	# meets queries of every kind), and each query runs on one major: slices 1 and 2 of 4 before PostgreSQL 18, 3 and 4 on 18 (the corpus is the same on every major, the
+	# quick tier runs all of it on each with two variants). The deep tier runs the first half on 17 and all of it on 18
 	slices=$COL_SLICES; (( PG_MAJOR >= 18 )) || [[ -z ${SIFT_CI_DEEP:-} ]] || slices=$COL_SLICES_DEEP17
-	for (( k = 1; k <= slices / (PG_MAJOR >= 18 ? 1 : 2); k++ )); do
+	first=1 last=$slices
+	if (( PG_MAJOR < 18 )); then last=$(( slices / 2 )); elif [[ -z ${SIFT_CI_DEEP:-} ]]; then first=$(( slices / 2 + 1 )); fi
+	for (( k = first; k <= last; k++ )); do
 		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
-	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
-	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; a timing that loses only warns (hosted runners are noisy)
-	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 3 --warn-time
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 3 --warn-time
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 3 --warn-time
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 3 --warn-time
+	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
+	# the plan the planner picks, the cost ratios and the results of 96 shapes at 50000 rows; no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
+	job plan-gate plan-gate 1 "$S/plangate.sh" --rows 50000 --runs 0
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 0
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
+	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 0
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
+	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
-		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
-		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-6 --queries 100 --rows 6000 --leader-on --stop-after 3
+		seeds=1-3; (( PG_MAJOR < 18 )) || seeds=4-6
+		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
+		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 	elif (( PG_MAJOR >= 18 )); then
 		for k in 1 2; do
 			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
@@ -523,8 +538,8 @@ if [[ $MODE == full ]]; then
 	job options-live options-live 1 bash -c 'eval "$("$0/scripts/pgtest.sh" env)"; exec "$0/scripts/gen-options.sh" --live' "$REPO"
 	# the share of the variant matrices the pushdown answers: the full tier recomputes the committed counts, the quick tier is a smoke of a third of the variants
 	job coverage-pct coverage-pct 1 "$S/coverage.sh" --pct --verify
-	job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
-	flavor_job hardened hardened "$S/hardened.sh"
+	once_on_18 && job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
+	once_on_18 && flavor_job hardened hardened "$S/hardened.sh"
 	job static static 0 "$S/static.sh"
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
@@ -595,9 +610,10 @@ fi
 [[ ${SIFT_CI_JOBS:-} != *valgrind* ]] || job valgrind valgrind 0 "$S/valgrind.sh"
 # SIFT_CI_SHARD=K/N: every Nth job of the queue from the Kth, so that N runners share the pool and each keeps the longest-first order; shard 1 runs
 # the checks of the harness. Before PostgreSQL 18 the jobs that run after the pool (flavor installs, serial) are all the last shard's
-# The full tier cuts the queue by weight instead (JOB_WEIGHT: seconds of a lane, the jobs of 90 s and more measured on PostgreSQL 18 in the lean run 40097165396 of
-# 2026-10-24, 13:12 UTC; the others weigh 10): the heaviest job goes to the shard with the least load so far, which put the three shards of PostgreSQL 18 at 98, 118 and
-# 164 lane-minutes by position and balances them to within a few percent (--selftest checks it, and that the shards are the plan exactly once). The deep sizes are
+# The full tier cuts the queue by weight instead (JOB_WEIGHT: seconds of a lane, the jobs of 90 s and more, the mean of the least times of a job on PostgreSQL 17 and 18 in
+# the lean runs 40484446770, 40491216237 and 40494886743 of 2026-10-27; the others weigh 10; the column differential slices of a sift_table and the table form of diff_fuzz
+# have no pass in those runs and keep their sizes of run 40097165396 at 1.15, the plan-gate lanes are half of their time with 3 timing runs): the heaviest job goes to the
+# shard with the least load so far, which balances the shards to within a few percent (--selftest checks it, and that the shards are the plan exactly once). The deep sizes are
 # about 1.5 to 2.5 times the lean ones on the same jobs, the same order.
 # shard_loads N POOL: SHARD_OF[job] (0-based shard of the pool) and LOAD[k] for the jobs of the pool, heaviest first, ties in queue order
 declare -A SHARD_OF
@@ -614,7 +630,8 @@ shard_loads() {
 SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
-	POOL=$(( NSHARDS - (PG_MAJOR < 18 && NSHARDS > 1 ? 1 : 0) ))
+	POOL=$NSHARDS
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done   # the last shard is the one of the jobs that run after the pool
 	[[ $MODE == full && $NSHARDS -gt 1 ]] && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue
