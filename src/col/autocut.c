@@ -53,6 +53,7 @@
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 #define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
+#define AUTOCUT_SECOND_SLACK 1		/* percent the prediction may exceed the cut by the key alone for the date to be its second key: the sample does not see the runs and addresses a date order shrinks */
 #define AUTOCUT_QUICK_SLACK	4		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough */
 
 typedef struct Cell
@@ -324,14 +325,19 @@ encoded_bytes(const Track *t, const uint32 *rows, uint32 n, StringInfo buf, int6
 static int
 row_cmp(const void *a, const void *b, void *arg)
 {
-	const Track *k = arg;
+	const Track *const *kk = arg;
 	uint32		x = *(const uint32 *) a,
 				y = *(const uint32 *) b;
 
-	if (k->nl[x] != k->nl[y])
-		return k->nl[x] ? 1 : -1;
-	if (!k->nl[x] && k->v[x] != k->v[y])
-		return k->v[x] < k->v[y] ? -1 : 1;
+	for (int i = 0; i < 2 && kk[i] != NULL; i++)
+	{
+		const Track *k = kk[i];
+
+		if (k->nl[x] != k->nl[y])
+			return k->nl[x] ? 1 : -1;
+		if (!k->nl[x] && k->v[x] != k->v[y])
+			return k->v[x] < k->v[y] ? -1 : 1;
+	}
 	return x < y ? -1 : x > y;
 }
 
@@ -361,8 +367,9 @@ u32_cmp(const void *a, const void *b)
  * that many rows and the gaps between its blocks, then smaller than the whole heap gives, are widened by the bits of the difference.
  */
 static double
-layout_bytes(const Track *tr, int ntr, const Samp *s, int key, double nsb, double heap_pages, double rows_per_unit)
+layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double nsb, double heap_pages, double rows_per_unit)
 {
+	const Track *order[2] = {key >= 0 ? &tr[key] : NULL, key2 >= 0 ? &tr[key2] : NULL};
 	StringInfoData buf;
 	int64	   *tmp = palloc_array(int64, s->n + 1);
 	uint32	   *rows = palloc_array(uint32, s->n + 1);
@@ -395,7 +402,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, double nsb, doubl
 		uint32		dir_rows = Max(nsel / nsb, AUTOCUT_DIR_ROWS);
 		double		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / dir_rows)));
 
-		qsort_arg(sel, nsel, sizeof(uint32), row_cmp, (void *) &tr[key]);
+		qsort_arg(sel, nsel, sizeof(uint32), row_cmp, (void *) order);
 		for (uint32 from = 0; from < nsel; from += dir_rows)
 		{
 			uint32		n = Min(dir_rows, nsel - from);
@@ -441,6 +448,7 @@ typedef struct CutVerdict
 	bool		maybe;			/* the first look found a key that may be worth cutting by: the full sample decides */
 	const char *reason;
 	char		leaf[NAMEDATALEN];
+	char		second[NAMEDATALEN];	/* the date or timestamp leaf the rows of a key are sorted by, or empty */
 	double		units;
 	double		sampled;
 	double		reads;
@@ -626,7 +634,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 	}
 	/* what a row takes in the index now: the integer leaves as the codec writes them, the others as 1 byte, and the directory of the unit */
-	def_row = layout_bytes(tr, ntr, samp, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+	def_row = layout_bytes(tr, ntr, samp, -1, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
 	/* the keys first, in the order of the index, then the time leaves: a range of a time leaf is the lookup of the rows of a key that has no key */
 	for (int pass = 0; pass < 2; pass++)
 		for (int t = 0; t < ntr; t++)
@@ -685,7 +693,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	{
 		for (int i = first_open; i < nfire; i++)
 			if (!blocked[i] && tr[fire[i]].time &&
-				100.0 * (layout_bytes(tr, ntr, samp, fire[i], nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
+				100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
 			{
 				blocked[i] = true;
 				if (i == 0)
@@ -701,12 +709,29 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	/* the first that fires and does not grow the index is cut by; when every one that fires would grow it, the first is advised */
 	for (int i = 0; i < nfire && v->res != SIFT_AUTOCUT_CUT; i++)
 	{
-		int			pick = fire[i];
+		int			pick = fire[i],
+					sec;
 		double		growth;
 
 		if (blocked[i])
 			continue;
-		kc_row = layout_bytes(tr, ntr, samp, pick, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+		kc_row = layout_bytes(tr, ntr, samp, pick, -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+		/*
+		 * The rows of a key are sorted by the first date or timestamp leaf, scattered over the table like every other leaf (or the cut would be blocked): a key
+		 * with more rows than a unit is split by date, and a window of dates skips the units outside it. Taken when the sample predicts an index not larger by more than AUTOCUT_SECOND_SLACK.
+		 */
+		sec = -1;
+		for (int t = 0; t < ntr && !tr[pick].time && sec < 0; t++)
+			if (t != pick && time_type(tr[t].type))
+			{
+				double		row2 = layout_bytes(tr, ntr, samp, pick, t, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
+
+				if (row2 <= kc_row * (1 + AUTOCUT_SECOND_SLACK / 100.0))
+				{
+					sec = t;
+					kc_row = row2;
+				}
+			}
 		growth = 100.0 * (kc_row - def_row) / def_row;
 		if (tr[pick].time && growth > AUTOCUT_GROWTH_PCT)
 		{
@@ -721,6 +746,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			v->ideal = fills[i];
 			v->range = tr[pick].time;
 			v->growth = growth;
+			v->second[0] = '\0';
+			if (sec >= 0)
+				strlcpy(v->second, NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[sec].c].attno - 1)->attname), sizeof(v->second));
 			v->reason = NULL;
 			v->res = growth <= AUTOCUT_GROWTH_PCT ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
 		}
@@ -767,14 +795,15 @@ sift_col_auto_cut(Relation heap, Relation index)
 		StringInfoData opt;
 
 		initStringInfo(&opt);
-		appendStringInfo(&opt, "auto: %s", v.leaf);
+		appendStringInfo(&opt, "auto: %s%s%s", v.leaf, v.second[0] ? ", " : "", v.second);
 		sift_col_set_option(index, "key_cut", opt.data);
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%)",
-						RelationGetRelationName(index), v.leaf, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth),
-				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s",
+						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth),
+				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
 						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
-						   v.range ? " Reading all the rows of one key of another leaf takes more units." : ""),
+						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
+						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to be no larger), so a key with more rows than a unit is split by it and a range of its values skips the units outside.", v.second) : ""),
 				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else
@@ -782,13 +811,17 @@ sift_col_auto_cut(Relation heap, Relation index)
 		if (v.decided && sift_col_options_key_cut(index)[0] != '\0')
 			sift_col_set_option(index, "key_cut", "auto");
 		if (v.res == SIFT_AUTOCUT_ADVISED)
+		{
+			const char *keys = v.second[0] ? psprintf("%s, %s", v.leaf, v.second) : v.leaf;
+
 			ereport(NOTICE,
 					(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that, and the index would grow by %.1f%%",
-							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.leaf, v.growth),
+							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys, v.growth),
 					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when the index does not grow by more than %d%%. No other leaf follows the order of the table.",
 							   v.sampled, AUTOCUT_GROWTH_PCT),
 					 errhint("CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX, if the lookups of this key matter more than the size.",
-							 v.leaf, quote_identifier(RelationGetRelationName(index)), v.leaf)));
+							 keys, quote_identifier(RelationGetRelationName(index)), keys)));
+		}
 	}
 	return v.res;
 }

@@ -1,0 +1,88 @@
+-- key_cut by default also sorts the rows of a key by the first date or timestamp leaf of the index: a key with more rows than a unit is split by
+-- date and a window of dates skips the units outside it. Sums stay those of the table: exact for integers and numeric, within float rounding for float8.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+-- 20 tenants of 6,000 rows (more than a unit holds), dates and measures independent of the tenant and of the heap order; ten leaves that follow nothing
+CREATE TABLE kd (id int, tenant_id int, d date, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, n numeric(12,2), f float8, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kd SELECT i, (random() * 20)::int, date '2020-01-01' + (random() * 2000)::int,
+	(i * 31) % 1000, (i * 37) % 1000, (i * 41) % 1000, (i * 43) % 1000, (i * 47) % 1000, (i * 53) % 1000, (i * 59) % 1000, (i * 61) % 1000, (i * 67) % 1000, (i * 71) % 1000,
+	(random() * 100000)::numeric(12,2), random() * 1000, repeat('x', 100)
+FROM generate_series(1, 125000) i;
+VACUUM (FREEZE, ANALYZE) kd;
+CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = i AND o ~ '^key_cut'), 'none') $$;
+CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; u text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Units: %' OR l LIKE '%Units Pruned: %' THEN u := u || ' ' || trim(l); END IF;
+	END LOOP;
+	RETURN u;
+END $$;
+-- chosen with the date as the second key; a key list of one column and the time leaf as the key are not extended
+CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f);
+CREATE INDEX kd_key ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id');
+CREATE INDEX kd_off ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'off');
+SELECT kopt('kd_auto'), kopt('kd_key'), kopt('kd_off');
+            kopt            |       kopt        |    kopt     
+----------------------------+-------------------+-------------
+ key_cut=auto: tenant_id, d | key_cut=tenant_id | key_cut=off
+(1 row)
+
+SELECT leaf, decision FROM sift.key_cut_decision('kd_auto');
+   leaf    | decision 
+-----------+----------
+ tenant_id | cut
+(1 row)
+
+SELECT sift.col_verify('kd_auto', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a window of dates reads fewer units of the index sorted by the date than of the one cut by the tenant alone
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
+UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kd_key'::regclass, 'kd_off'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kd WHERE tenant_id = 7 AND d >= '2021-01-01' AND d < '2021-03-01'$$) AS second_key;
+         second_key          
+-----------------------------
+  Units: 2 Units Pruned: 160
+(1 row)
+
+UPDATE pg_index SET indisvalid = (indexrelid = 'kd_key'::regclass) WHERE indexrelid IN ('kd_auto'::regclass, 'kd_key'::regclass);
+SELECT kunits($$SELECT count(*), sum(a1) FROM kd WHERE tenant_id = 7 AND d >= '2021-01-01' AND d < '2021-03-01'$$) AS key_only;
+          key_only           
+-----------------------------
+  Units: 9 Units Pruned: 153
+(1 row)
+
+UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kd_auto'::regclass, 'kd_key'::regclass, 'kd_off'::regclass);
+-- the answers are those of the table: integers and numeric exact, float8 within the rounding a parallel plan has (sums in another order)
+CREATE TABLE kq (t int, lo date, hi date);
+INSERT INTO kq SELECT t, date '2020-01-01' + w, date '2020-01-01' + w + len FROM generate_series(0, 20, 4) t, (VALUES (0, 2000), (100, 30), (900, 365), (1500, 120)) v(w, len);
+CREATE FUNCTION kres(sift bool) RETURNS TABLE (t int, lo date, c bigint, s1 bigint, sn numeric, sf float8) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN sift THEN 'on' ELSE 'off' END, true);
+	RETURN QUERY SELECT q.t, q.lo, count(*), coalesce(sum(a1), 0)::bigint, sum(n), sum(f) FROM kq q LEFT JOIN kd ON kd.tenant_id = q.t AND kd.d >= q.lo AND kd.d < q.hi GROUP BY q.t, q.lo ORDER BY 1, 2;
+END $$;
+SELECT count(*) AS cells,
+	bool_and(a.c = b.c AND a.s1 = b.s1 AND a.sn IS NOT DISTINCT FROM b.sn) AS exact,
+	bool_and(abs(a.sf - b.sf) <= 1e-9 * abs(b.sf) OR (a.sf IS NULL AND b.sf IS NULL)) AS float_within_rounding
+FROM kres(true) a JOIN kres(false) b USING (t, lo);
+ cells | exact | float_within_rounding 
+-------+-------+-----------------------
+    24 | t     | t
+(1 row)
+
+DROP TABLE kq, kd;
+DROP FUNCTION kopt(regclass), kunits(text), kres(bool);
+DROP EXTENSION pg_sift;

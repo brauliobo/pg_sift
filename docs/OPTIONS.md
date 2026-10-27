@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 104 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 105 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1143,6 +1143,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Leave on. With few outer rows (19 in one test) the lookups stay. sift.explain_why shows the rewrite as the arm used; write the tie as equalities of one column on each side.
 
+#### auto(key-cut-second-key)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** When key_cut is chosen by default and the index has a date or timestamp leaf, the rows of a key are sorted by that leaf too: a key with more rows than a unit is split by date, a window of dates on the key skips the units outside it, and the sorted runs and addresses of the rows of a unit encode in fewer bytes
+- **Gain:** 3,000,000 rows, 6,000 keys, dates scattered over 15 years, one segment: the wildcard aggregate of a jsonb map over a 2-year window 760.6 to 722.9 M instructions (-5.0%), over 90 days 536.3 to 498.2 M (-7.1%), count and sum over 2 years -8.0%, key and month aggregate -3.7%; 125,000 rows, 20 keys: a key and a 2-month window reads 2 units against 9
+- **Formula:** S 1.08x saving 38100k instructions, G -20.9%, W 11.0%, R 1: B 1.5 against C -4.8, automatic
+- **Impact:** index size: -20.9% (3,000,000 rows: 76.9 to 60.8 MB; 1,000,000 rows -21%): the dates of a unit span a narrower range; build, merge and writes: build 12.3 to 13.7 s (+11%) at 3,000,000 rows (-7% at 2,000,000), merge 8.1 to 8.3 s, no WAL or insert change; other: CREATE INDEX or REINDEX sorts the rows by two leaves, not one (build +11% at 3,000,000 rows, -7% at 2,000,000; merge 8.1 to 8.3 s); the sample prices one more layout (a few ms); no structure is added
+- **When:** A CREATE INDEX or REINDEX where key_cut is chosen (or advised) for a leaf that is not a time leaf, on an index that has a date or timestamp leaf, when the sample predicts the index no more than 1% larger than the cut by the key alone. Not with a time leaf as the key, key_cut = 'off' or a list, order_columns or point_tid_columns.
+- **Default:** automatic — The sorted order costs nothing the 3.3 rule counts: the index shrinks and the build pays 11% (W 11 gives C = -20.9/3 + 11/5 = -4.8 against B = 1.4). Float8 sums add a key's units in another order, as a parallel plan adds rows; integers and numeric are exact.
+- **Turn off:** ALTER INDEX .. SET (key_cut = 'key') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'key'); the NOTICE names the choice.
+- **Upgrade from 3.5:** Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed.
+- **Advice:** Leave on. The choice is written as key_cut = 'auto: key, date' and the NOTICE names both; key_cut = 'off', or a list of your own (say 'key, date' for an index whose cut you set before), is never changed. sift.key_cut_decision says what a REINDEX would decide.
+
 #### auto(top-n-per-group)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -2120,6 +2134,7 @@ No default changed since 3.5; new: none.
 | `sift.agg_par_min_rows` | 80000 | 80000 |  | new in 3.5 |
 | `sift.table_dict_lookup` | on | on |  | After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4. |
 | `sift.table_key_table` | on | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
+| `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
