@@ -122,7 +122,7 @@ typedef struct SiftAggPred
 	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
-	Node	   *cal;			/* SAP_CMP of a calendar step (agg/pred_cal.c): `f(x) op C` with a placeholder for x; the operand is the least x that satisfies f(x) >= C (calmode 1) or f(x) > C (2) */
+	Node	   *cal;			/* SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
 	int			calmode;
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
@@ -771,7 +771,8 @@ extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
-extern Datum sift_cal_bound(Node *cal, int mode);
+extern Datum sift_cal_bound(Node *cal, int mode, Datum operand);
+extern bool sift_cal_nan(Oid rtype, Datum d);
 /* the bytes the scan allocates and clears to test an IN list of nv values over a range of span values (agg/pred_in.c; 0: a hash table), for the cost */
 extern double sift_agg_in_table_bytes(uint64 span, int nv);
 extern double sift_agg_in_test_ns(uint64 span, int nv);

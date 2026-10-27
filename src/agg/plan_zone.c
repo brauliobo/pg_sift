@@ -72,9 +72,14 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 		SiftCmpOp	op = (SiftCmpOp) p->op;
 		int64		v;
 
+		Datum		d;
+
 		if (!IsA(e, Const) || ((Const *) e)->constisnull)
 			return false;
-		v = sift_aggspec_operand_int(p->argtype, ((Const *) e)->constvalue);
+		d = ((Const *) e)->constvalue;
+		if (p->calmode)
+			d = sift_cal_bound(p->cal, p->calmode, d);
+		v = sift_aggspec_operand_int(p->argtype, d);
 		if (op != SCMP_GT && op != SCMP_GE)
 			r->hi = op == SCMP_LT && v > PG_INT64_MIN ? v - 1 : v;
 		if (op != SCMP_LT && op != SCMP_LE)

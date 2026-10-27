@@ -1,0 +1,146 @@
+-- A calendar step (x::date, date_trunc(unit, x), extract(year FROM x)) or a column of another type compared with a stable operand (current_date - 30,
+-- now() - interval '30 days', a parameter) is the same range of the leaf as with a constant: the operand is evaluated when the scan starts, so the
+-- rolling window of a dashboard is a comparison of the zones and not a function run for every timestamp. Every statement returns the rows of the normal plan,
+-- in the time zones whose clocks jump; one transaction fixes now() for both plans.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE cs (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO cs
+SELECT row_number() OVER (), (t.i AT TIME ZONE 'UTC'), t.i
+FROM (SELECT DISTINCT (date_trunc('day', now() AT TIME ZONE z) AT TIME ZONE z) - make_interval(days => d) + k * interval '37 minutes' AS i
+      FROM unnest(ARRAY['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Pacific/Apia', 'America/Sao_Paulo']) z,
+           unnest(ARRAY[0, 1, 7, 29, 30, 31, 400]) d, generate_series(-40, 40) k) t;
+INSERT INTO cs VALUES (100000, 'infinity', 'infinity'), (100001, '-infinity', '-infinity'), (100002, NULL, NULL),
+	(100003, '0001-01-01', '0001-01-01+00'), (100004, '0099-12-31 23:59:59', '0099-12-31 23:59:59+00'), (100005, '0100-01-01', '0100-01-01+00'), (100006, '9900-01-01', '9900-01-01+00'),
+	(100007, '9901-01-01', '9901-01-01+00'), (100008, '3000-01-01 BC', '3000-01-01 BC+00'), (100009, '200000-06-15', '200000-06-15+00');
+CREATE INDEX cs_col ON cs USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) cs;
+CREATE TABLE cs_shape (name text, cond text);
+INSERT INTO cs_shape VALUES
+	('tz date', 'tz::date %s current_date - %s'), ('ts date', 'ts::date %s current_date - %s'), ('trunc day ts', 'date_trunc(''day'', ts) %s current_date - %s'),
+	('trunc week tz', 'date_trunc(''week'', tz) %s current_date - %s'), ('ts vs date', 'ts %s current_date - %s'), ('tz vs date', 'tz %s current_date - %s'),
+	('ts vs now', 'ts %s now() - make_interval(days => %s)'), ('tz vs now', 'tz %s now() - make_interval(days => %s)'),
+	('trunc month now', 'date_trunc(''month'', tz) %s date_trunc(''month'', now()) - make_interval(days => %s)'),
+	('year now', 'extract(year FROM tz) %s extract(year FROM now() - make_interval(days => %s))');
+CREATE FUNCTION same_rows() RETURNS TABLE (zone text, statements int, same int, scans int) LANGUAGE plpgsql AS $$
+DECLARE z text; sh record; o text; n text; q text; a bigint; b bigint; l text; scan bool;
+BEGIN
+	FOREACH z IN ARRAY ARRAY['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Pacific/Apia', 'America/Sao_Paulo'] LOOP
+		zone := z; statements := 0; same := 0; scans := 0;
+		PERFORM set_config('TimeZone', z, true);
+		FOR sh IN SELECT * FROM cs_shape LOOP
+			FOREACH o IN ARRAY ARRAY['=', '<>', '<', '<=', '>', '>='] LOOP
+				FOREACH n IN ARRAY ARRAY['0', '1', '7', '30', '400'] LOOP
+					q := 'SELECT count(*) FROM cs WHERE ' || format(sh.cond, o, n);
+					PERFORM set_config('sift.enable_agg', 'on', true);
+					EXECUTE q INTO a;
+					scan := false;
+					FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP scan := scan OR l LIKE '%SiftAgg%'; END LOOP;
+					PERFORM set_config('sift.enable_agg', 'off', true);
+					EXECUTE q INTO b;
+					statements := statements + 1; same := same + (a = b)::int; scans := scans + scan::int;
+				END LOOP;
+			END LOOP;
+		END LOOP;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT zone, statements, statements = same AS all_same, scans = statements AS all_scans FROM same_rows();
+        zone         | statements | all_same | all_scans 
+---------------------+------------+----------+-----------
+ UTC                 |        300 | t        | t
+ America/New_York    |        300 | t        | t
+ Australia/Lord_Howe |        300 | t        | t
+ Pacific/Apia        |        300 | t        | t
+ America/Sao_Paulo   |        300 | t        | t
+(5 rows)
+
+-- parameters of a generic plan: the value and the zone of the execution (the function with the setting off is the oracle)
+CREATE FUNCTION by_date(d date) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE tz::date >= d AND ts >= d; RETURN n; END $$;
+CREATE FUNCTION by_instant(t timestamptz) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE date_trunc('day', ts) < t OR extract(year FROM tz) = 2000; RETURN n; END $$;
+CREATE FUNCTION by_date_ref(d date) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE tz::date >= d AND ts >= d; RETURN n; END $$;
+CREATE FUNCTION by_instant_ref(t timestamptz) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE date_trunc('day', ts) < t OR extract(year FROM tz) = 2000; RETURN n; END $$;
+SET plan_cache_mode = force_generic_plan;
+SELECT z AS zone, bool_and(by_date(current_date - d) = by_date_ref(current_date - d)) AS same_date
+FROM unnest(ARRAY['UTC', 'Pacific/Apia', 'America/New_York']) z, unnest(ARRAY[0, 7, 30, 400]) d, set_config('TimeZone', z, false) GROUP BY z ORDER BY z;
+       zone       | same_date 
+------------------+-----------
+ America/New_York | t
+ Pacific/Apia     | t
+ UTC              | t
+(3 rows)
+
+SET TimeZone = 'Pacific/Apia';
+SELECT bool_and(by_instant(now() - make_interval(days => d)) = by_instant_ref(now() - make_interval(days => d))) AS same_instant
+FROM unnest(ARRAY[0, 30]) d;
+ same_instant 
+--------------
+ t
+(1 row)
+
+-- operands beyond the years the rows hold, infinite or NULL, as constants and as parameters of a generic plan: the rows of the normal plan, no error
+CREATE TABLE cs_edge (q text);
+INSERT INTO cs_edge
+SELECT 'SELECT count(*) FROM cs WHERE ' || format(sh.cond, o, v)
+FROM (VALUES ('tz::date %s %L::date', false), ('ts::date %s %L::date', false), ('date_trunc(''year'', ts) %s %L::timestamp', false), ('date_trunc(''day'', tz) %s %L::timestamptz', false),
+             ('ts %s %L::date', false), ('tz %s %L::timestamp', false), ('extract(year FROM tz) %s %L::numeric', true), ('date_part(''year'', ts) %s %L::float8', true)) sh(cond, num),
+     unnest(ARRAY['=', '<>', '<', '<=', '>', '>=']) o,
+     unnest(ARRAY['0001-01-01', '0099-12-31', '0100-01-01', '9900-01-01', '9901-01-01', '3000-01-01 BC', '200000-06-15', '2024-03-10', 'infinity', '-infinity', NULL,
+                  '1', '99', '100', '9900', '9901', '300000', 'NaN']) v
+WHERE (v ~ '^[0-9]+$' OR v = 'NaN') = sh.num OR v IN ('infinity', '-infinity') OR v IS NULL;
+CREATE FUNCTION edge_rows() RETURNS TABLE (statements int, same int, scans int) LANGUAGE plpgsql AS $$
+DECLARE e record; a bigint; b bigint; l text; scan bool;
+BEGIN
+	statements := 0; same := 0; scans := 0;
+	PERFORM set_config('TimeZone', 'America/Sao_Paulo', true);
+	FOR e IN SELECT q FROM cs_edge LOOP
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		EXECUTE e.q INTO a;
+		scan := false;
+		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || e.q LOOP scan := scan OR l LIKE '%SiftAgg%'; END LOOP;
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		EXECUTE e.q INTO b;
+		statements := statements + 1; same := same + (a = b)::int; scans := scans + scan::int;
+	END LOOP;
+	RETURN NEXT;
+END $$;
+SELECT statements > 400 AS enough, statements = same AS all_same, scans AS scanned, statements - scans AS not_scanned FROM edge_rows();
+ enough | all_same | scanned | not_scanned 
+--------+----------+---------+-------------
+ t      | t        |     468 |          48
+(1 row)
+
+CREATE FUNCTION by_year(y numeric, d date, t timestamptz) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE extract(year FROM tz) <= y OR ts::date > d OR date_trunc('month', ts) = t::timestamp; RETURN n; END $$;
+CREATE FUNCTION by_year_ref(y numeric, d date, t timestamptz) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE n bigint;
+BEGIN SELECT count(*) INTO n FROM cs WHERE extract(year FROM tz) <= y OR ts::date > d OR date_trunc('month', ts) = t::timestamp; RETURN n; END $$;
+SELECT bool_and(by_year(y, d, t) IS NOT DISTINCT FROM by_year_ref(y, d, t)) AS same_params, count(*) AS tuples
+FROM unnest(ARRAY[1, 99, 100, 9900, 9901, 300000, 'Infinity', '-Infinity', NULL]::numeric[]) y,
+     unnest(ARRAY['0001-01-01', '0099-12-31', '9901-01-01', 'infinity', '-infinity', NULL]::date[]) d,
+     unnest(ARRAY['0001-01-01+00', '9901-01-01+00', 'infinity', '-infinity', NULL]::timestamptz[]) t;
+ same_params | tuples 
+-------------+--------
+ t           |    270
+(1 row)
+
+RESET plan_cache_mode;
+DROP FUNCTION by_date_ref(date);
+DROP FUNCTION by_instant_ref(timestamptz);
+DROP FUNCTION by_date(date);
+DROP FUNCTION by_instant(timestamptz);
+DROP FUNCTION by_year(numeric, date, timestamptz), by_year_ref(numeric, date, timestamptz), edge_rows(), same_rows();
+DROP TABLE cs_edge;
+DROP TABLE cs_shape, cs;
+DROP EXTENSION pg_sift;

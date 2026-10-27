@@ -119,16 +119,10 @@ eval_operand(AggExec *ex, SiftAggPred *p, PredState *st)
 	ExprState  *e;
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
-	if (p->calmode)
-	{
-		d = sift_cal_bound(p->cal, p->calmode);
-		isnull = false;
-	}
-	else
-	{
-		e = operand_state(ex, p->expr);
-		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
-	}
+	e = operand_state(ex, p->expr);
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+	if (p->calmode && !isnull)
+		d = sift_cal_bound(p->cal, p->calmode, d);
 	st->cnull = isnull;
 	if (p->kind == SAP_GATE)
 		st->konst = !isnull && DatumGetBool(d);
