@@ -1,0 +1,26 @@
+-- The planner prices the dictionary entry of an array image at its real cost: the unit hashes, interns and inflates every new array before a
+-- test reads it, so a scan whose conjuncts all read a column of long arrays keeps the heap plan, which reads the same arrays and tests them for less,
+-- while the same scan of a column of short arrays stays on the index.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE items (id int PRIMARY KEY, kind int, short_tags text[], long_tags text[]);
+INSERT INTO items
+SELECT i, i % 7,
+       ARRAY['t' || i % 400, 't' || (i * 7) % 400, 't' || (i * 13) % 400],
+       ARRAY(SELECT 'amenity_' || (hashint8extended(i * 20 + j, 3) & 8388607) FROM generate_series(1, 12) j)
+FROM generate_series(1, 100000) i;
+CREATE INDEX items_col ON items USING sift_col (kind, short_tags, long_tags);
+VACUUM (FREEZE, ANALYZE) items;
+SELECT attname, avg_width < 64 AS under_knee, avg_width > 100 AS over_knee FROM pg_stats WHERE tablename = 'items' AND attname LIKE '%tags' ORDER BY attname;
+
+CREATE FUNCTION on_index(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT used FROM sift.explain_why(q) $$;
+
+SELECT col, shape, on_index(format('SELECT count(*) FROM items WHERE %s', replace(shape, 'COL', col))) AS on_index
+FROM unnest(ARRAY['short_tags', 'long_tags']) col,
+     unnest(ARRAY['cardinality(COL) > 0', 'COL && ARRAY[''amenity_1'', ''t5'']', '''t5'' = ANY(COL)', 'COL @> ARRAY[''t5'', ''t6'']', 'COL IS NOT NULL']) shape
+ORDER BY col, shape;
+
+DROP FUNCTION on_index(text);
+DROP TABLE items;
+DROP EXTENSION pg_sift;

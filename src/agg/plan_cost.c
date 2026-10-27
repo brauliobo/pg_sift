@@ -140,6 +140,9 @@
 #define AGG_DIST_CHUNK		400.0	/* a chunk of the bitmap of a count(DISTINCT) set allocated and zeroed for a group: 0.4 to 1.1 us measured (1,000 to 4,907 groups of 2 to 200 rows), in the 4 us a unit of a normal plan's cost takes on the same hosts */
 #define AGG_DIST_CHUNK_BITS	4096.0	/* the values a chunk holds (agg/dist.c) */
 #define AGG_DIST_CHUNK_BYTES	512.0
+#define AGG_ARR_KNEE		64		/* the bytes of an array from which the unit's dictionary entry for it costs more than the generic wide entry: 1,670 to 2,030 instructions a row for arrays of 44 to 78 bytes, 4,020 for 122 (1,000,000 rows of almost unique arrays, forced SiftAgg; the heap plan takes about 950 whatever the width) */
+#define AGG_ARR_BIG		6.0		/* the operators a byte of an array beyond the knee adds to a new entry: hash, intern and inflate (about 8.6 instructions an operator counted at 3 ns) */
+#define AGG_ARR_WIDTH		32		/* the bytes of an array whose column has no statistics */
 #define AGG_WIDE_TEST		1.0		/* a conjunct on a wide leaf of images, per dictionary entry: the engine makes its LUT once per segment (about 3 ns an entry) */
 #define AGG_INLINE_WIDTH	200		/* average bytes of a text column from which its units store the strings themselves */
 #define AGG_INLINE_ROW		56.0	/* a row of such a leaf read: the unit's strings are interned into a dictionary of its own */
@@ -1581,15 +1584,23 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 	return kept;
 }
 
+/* does a predicate test the leaf? `values`: its values, not only its null flags, and the leaves of a combo slot */
 static bool
-pred_uses_leaf(const SiftAggPred *p, int leaf)
+pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
 {
 	if (p == NULL)
 		return false;
-	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf))
+	if (values && p->kind == SAP_COMBO)
+	{
+		for (int i = 0; i < s->combo[p->leaf].nleaves; i++)
+			if (s->combo[p->leaf].leaf[i] == leaf)
+				return true;
+		return false;
+	}
+	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && p->kind == SAP_NULL))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
-		if (pred_uses_leaf(p->child[i], leaf))
+		if (pred_uses_leaf(s, p->child[i], leaf, values))
 			return true;
 	return false;
 }
@@ -1607,10 +1618,10 @@ leaf_read_whole(AggCtx *c, SiftAggSpec *s, int leaf)
 		if (s->key[i].leaf == leaf && s->key[i].kind != SAK_NUM && s->key[i].kind != SAK_SET)
 			return true;
 	for (int i = 0; i < s->naggs; i++)
-		if (s->agg[i].leaf == leaf || pred_uses_leaf(s->agg[i].filter, leaf))
+		if (s->agg[i].leaf == leaf || pred_uses_leaf(s, s->agg[i].filter, leaf, false))
 			return true;
 	for (int i = 0; i < s->npred; i++)
-		if (pred_uses_leaf(s->pred[i], leaf) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, c->lay->nleaves - c->nvleaf, &t)))
+		if (pred_uses_leaf(s, s->pred[i], leaf, false) && !(s->pred[i]->leaf == leaf && sift_aggspec_str_test(s->pred[i], c->lay, c->lay->nleaves - c->nvleaf, &t)))
 			return true;
 	return false;
 }
@@ -1887,7 +1898,7 @@ leaf_filtered(const SiftAggSpec *s, int leaf)
 {
 	for (int i = 0; i < s->npred; i++)
 		if ((s->pred[i]->kind == SAP_CMP || s->pred[i]->kind == SAP_IN || s->pred[i]->kind == SAP_NULL || s->pred[i]->kind == SAP_AND) &&
-			pred_uses_leaf(s->pred[i], leaf))
+			pred_uses_leaf(s, s->pred[i], leaf, false))
 			return true;
 	return false;
 }
@@ -1913,7 +1924,7 @@ leaf_copy_only(const SiftAggSpec *s, int leaf, bool *sums, bool *keyed)
 					reads |= a->gen->arg[j].leaf[l] == leaf;
 		if (!reads)
 			continue;
-		if (a->filter != NULL && pred_uses_leaf(a->filter, leaf))
+		if (a->filter != NULL && pred_uses_leaf(s, a->filter, leaf, false))
 			return false;
 		if (a->wsum == leaf + 1)
 			*sums = copied = true;
@@ -1927,7 +1938,7 @@ leaf_copy_only(const SiftAggSpec *s, int leaf, bool *sums, bool *keyed)
 			return false;
 	}
 	for (int i = 0; i < s->npred; i++)
-		if (pred_uses_leaf(s->pred[i], leaf))
+		if (pred_uses_leaf(s, s->pred[i], leaf, false))
 			return false;
 	for (int k = 0; k < s->nkeys; k++)
 		if (s->key[k].kind == SAK_COMBO || s->key[k].leaf == leaf)
@@ -1968,10 +1979,10 @@ leaf_wsum_only(const SiftAggSpec *s, int leaf)
 		const SiftAggAgg *a = &s->agg[ai];
 
 		sums |= a->wsum == leaf + 1;
-		other |= a->leaf == leaf || (a->filter != NULL && pred_uses_leaf(a->filter, leaf));
+		other |= a->leaf == leaf || (a->filter != NULL && pred_uses_leaf(s, a->filter, leaf, false));
 	}
 	for (int i = 0; i < s->npred; i++)
-		other |= pred_uses_leaf(s->pred[i], leaf);
+		other |= pred_uses_leaf(s, s->pred[i], leaf, false);
 	for (int k = 0; k < s->nkeys; k++)
 		other |= s->key[k].kind != SAK_COMBO && s->key[k].leaf == leaf;
 	for (int ci = 0; ci < s->ncombo; ci++)
@@ -2015,16 +2026,77 @@ wide_cold_ops(AggCtx *c, int leaf, const CostAcc *k)
 	return AGG_WIDE_COLD * pow(Min(nd / 2000000.0, 1.0), 0.13) + Min(AGG_WIDE_BIG_MAX, AGG_WIDE_BIG * Max(nd - 2000000.0, 0.0) / 1000000.0);
 }
 
+/* the bytes of an array of the column an image leaf holds, 0 when the leaf is not the image of an array */
+static double
+array_image_width(AggCtx *c, int leaf)
+{
+	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
+	Node	   *e = lf->wide && lf->parent < 0 && lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	int			w;
+
+	if (e == NULL || !OidIsValid(get_element_type(exprType(e))))
+		return 0;
+	w = leaf_heap_width(c, leaf);
+	return w > 0 ? w : AGG_ARR_WIDTH;
+}
+
+/* is a value of the leaf read by a key, an aggregate, a combo or a test (an image decoded), not only its null flags? */
+static bool
+leaf_values_read(const SiftAggSpec *s, int leaf)
+{
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].leaf == leaf && s->key[i].kind != SAK_COMBO)
+			return true;
+	for (int i = 0; i < s->naggs; i++)
+	{
+		const SiftAggAgg *a = &s->agg[i];
+
+		if (a->leaf == leaf || bms_is_member(leaf, a->reads) || pred_uses_leaf(s, a->filter, leaf, true))
+			return true;
+		if (a->kind == SAA_GEN)
+			for (int j = 0; j < a->gen->nargs; j++)
+				for (int l = 0; l < a->gen->arg[j].nleaves; l++)
+					if (a->gen->arg[j].leaf[l] == leaf)
+						return true;
+	}
+	for (int i = 0; i < s->ncombo; i++)
+		for (int p = 0; p < s->combo[i].nleaves; p++)
+			if (s->combo[i].leaf[p] == leaf)
+				return true;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s, s->pred[i], leaf, true))
+			return true;
+	return false;
+}
+
+/*
+ * The bytes of the arrays whose entries a scan decodes and tests: a leaf a filter tests is read whole, one the query only groups or aggregates at the
+ * rows that pass (sparse), and none when all it reads of the leaf are its null flags.
+ */
+static double
+array_bytes_read(AggCtx *c, const SiftAggSpec *s, int leaf, double sparse)
+{
+	double		bytes = array_image_width(c, leaf);
+
+	if (bytes == 0 || !leaf_values_read(s, leaf))
+		return 0;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s, s->pred[i], leaf, true))
+			return bytes;
+	return bytes * sparse;
+}
+
 /* the entries of it, in operators */
 static double
-wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k)
+wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k, double sparse)
 {
 	bool		sums,
 				keyed;
+	double		array = AGG_ARR_BIG * Max(array_bytes_read(c, s, leaf, sparse) - AGG_ARR_KNEE, 0.0);
 
 	if (leaf_copy_only(s, leaf, &sums, &keyed))
-		return wide_entry_frac(c, leaf, k) * (sums ? (keyed ? AGG_WIDE_KEYSUM : AGG_WIDE_NUM) : AGG_WIDE_COPY);
-	return wide_entry_frac(c, leaf, k) * (numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY);
+		return wide_entry_frac(c, leaf, k) * ((sums ? (keyed ? AGG_WIDE_KEYSUM : AGG_WIDE_NUM) : AGG_WIDE_COPY) + array);
+	return wide_entry_frac(c, leaf, k) * ((numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY) + array);
 }
 
 /* The nanoseconds a row costs the tests of the IN lists of the predicate p beyond a small table in the cache: a list of spread values is a hash or bit table */
@@ -2126,7 +2198,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	for (int i = 0; i < s->nleaves; i++)
 		if (leaf_of(c, s->leaves[i])->wide)
 		{
-			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k));
+			k->scan_cost += k->rows * (AGG_WIDE_ROW + wide_entry_cost(c, s, s->leaves[i], k, sparse));
 			if (numeric_image(c, leaf_of(c, s->leaves[i])))
 				k->cold_ops += k->rows * wide_entry_frac(c, s->leaves[i], k) * wide_cold_ops(c, s->leaves[i], k);
 		}
