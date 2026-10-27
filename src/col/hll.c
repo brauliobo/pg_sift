@@ -6,6 +6,7 @@
 #include "core/host.h"
 #include "col/hll.h"
 #include "col/runs.h"
+#include "core/cmp.h"
 
 #define ENT(reg, rank)	((uint32) (reg) << 6 | (rank))
 #define LINEAR_CUTOVER	3.5			/* the estimate by linear counting is used while it is at most this many times the registers: measured, 2.5 is biased +1% at 3 times */
@@ -29,22 +30,13 @@ sift_hll_free(SiftHll *h)
 	h->n = h->cap = 0;
 }
 
-static int
-ent_cmp(const void *a, const void *b)
-{
-	uint32		x = *(const uint32 *) a,
-				y = *(const uint32 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /* the entries sorted, one per register (the highest rank) */
 static void
 compact(SiftHll *h)
 {
 	uint32		d = 0;
 
-	qsort(h->e, h->n, sizeof(uint32), ent_cmp);
+	qsort(h->e, h->n, sizeof(uint32), sift_cmp_u32);
 	for (uint32 i = 0; i < h->n; i++)
 	{
 		if (i + 1 < h->n && (h->e[i + 1] >> 6) == (h->e[i] >> 6))

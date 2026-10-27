@@ -40,6 +40,7 @@
 #include "col/pg.h"
 #include "col/gorder.h"
 #include "col/point.h"
+#include "core/cmp.h"
 
 /*
  * The cost of a scan, in microseconds of an ordinary run (cost units are about that on the default settings: a cached b-tree lookup of 8 units takes 6-8 us and a
@@ -985,15 +986,6 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 
 /* ---- the cost ---- */
 
-static int
-cmp_int64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
-
 /* The range of key values a clause keeps when its operand is a constant of an integer-like type (false: it is not, or the clause is not a comparison) */
 static bool
 clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi, int64 **set, int *nset)
@@ -1072,7 +1064,7 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 		for (int j = 0; j < n; j++)
 			if (!nl[j])
 				vals[m++] = et == INT2OID ? DatumGetInt16(el[j]) : et == INT4OID || et == DATEOID ? DatumGetInt32(el[j]) : DatumGetInt64(el[j]);
-		qsort(vals, m, sizeof(int64), cmp_int64);
+		qsort(vals, m, sizeof(int64), sift_cmp_i64);
 		*set = vals;
 		*nset = m;
 		return true;

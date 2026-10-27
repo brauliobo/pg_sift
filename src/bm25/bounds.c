@@ -11,12 +11,7 @@
 #include "bm25/wbuf.h"
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
-
-static int
-gidkey_cmp(const void *a, const void *b)
-{
-	return pg_cmp_u64(*(const uint64 *) a, *(const uint64 *) b);
-}
+#include "core/cmp.h"
 
 /* The bounds of one leaf in segment s: the max over its terms per SB */
 static void
@@ -57,7 +52,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	for (int i = 0; i < total; i++)
 		key[i] = (uint64) all[i].gid << 32 | i;
 	if (nt > 1)
-		qsort(key, total, sizeof(uint64), gidkey_cmp);
+		qsort(key, total, sizeof(uint64), sift_cmp_u64);
 	out->list = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
 	for (int i = 0; i < total; i++)
 	{

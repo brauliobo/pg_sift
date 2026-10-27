@@ -39,6 +39,7 @@
 #include "col/col.h"
 #include "col/setsum.h"
 #include "core/sql.h"
+#include "core/cmp.h"
 
 #define AUTOCUT_MIN_UNITS	64		/* units an equality reads, at least */
 #define AUTOCUT_RATIO		8		/* times the units its rows fill, at least */
@@ -97,24 +98,6 @@ cell_cmp(const void *a, const void *b)
 	if (x->key != y->key)
 		return x->key < y->key ? -1 : 1;
 	return x->sb < y->sb ? -1 : x->sb > y->sb;
-}
-
-static int
-i64_cmp(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
-static int
-dbl_cmp(const void *a, const void *b)
-{
-	double		x = *(const double *) a,
-				y = *(const double *) b;
-
-	return x < y ? -1 : x > y;
 }
 
 static bool
@@ -242,8 +225,8 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 	if (nk == 0)
 		return 0;
 	*fired = nfire * 2 > nk;
-	qsort(reads, nk, sizeof(double), dbl_cmp);
-	qsort(fills, nk, sizeof(double), dbl_cmp);
+	qsort(reads, nk, sizeof(double), sift_cmp_f64);
+	qsort(fills, nk, sizeof(double), sift_cmp_f64);
 	*ideal = fills[nk / 2];
 	return reads[nk / 2];
 }
@@ -273,7 +256,7 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_u
 		pfree(s);
 		return 0;
 	}
-	qsort(s, n, sizeof(int64), i64_cmp);
+	qsort(s, n, sizeof(int64), sift_cmp_i64);
 	half = Max(1, n / nsb / 2);
 	for (int k = 0; k < AUTOCUT_KEYS; k++)
 	{
@@ -296,8 +279,8 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_u
 	}
 	pfree(s);
 	*fired = nfire * 2 > AUTOCUT_KEYS;
-	qsort(reads, AUTOCUT_KEYS, sizeof(double), dbl_cmp);
-	qsort(fills, AUTOCUT_KEYS, sizeof(double), dbl_cmp);
+	qsort(reads, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
+	qsort(fills, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
 	*ideal = fills[AUTOCUT_KEYS / 2];
 	return reads[AUTOCUT_KEYS / 2];
 }
@@ -338,24 +321,6 @@ row_cmp(const void *a, const void *b, void *arg)
 		if (!k->nl[x] && k->v[x] != k->v[y])
 			return k->v[x] < k->v[y] ? -1 : 1;
 	}
-	return x < y ? -1 : x > y;
-}
-
-static int
-u64_cmp(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
-static int
-u32_cmp(const void *a, const void *b)
-{
-	uint32		x = *(const uint32 *) a,
-				y = *(const uint32 *) b;
-
 	return x < y ? -1 : x > y;
 }
 
@@ -409,7 +374,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 
 			for (uint32 i = 0; i < n; i++)
 				keys[i] = tid[sel[from + i]];
-			qsort(keys, n, sizeof(SiftKey), u64_cmp);
+			qsort(keys, n, sizeof(SiftKey), sift_cmp_u64);
 			bytes += sift_cunit_directory_bytes(keys, n, true, 0, &pages) + wider * pages / 8;
 		}
 	}
@@ -428,7 +393,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 				uint32		n = Min(unit, nsel - from);
 
 				memcpy(rows, sel + from, n * sizeof(uint32));
-				qsort(rows, n, sizeof(uint32), u32_cmp);	/* the rows of a unit are in TID order */
+				qsort(rows, n, sizeof(uint32), sift_cmp_u32);	/* the rows of a unit are in TID order */
 				bytes += encoded_bytes(&tr[t], rows, n, &buf, tmp);
 			}
 	}
@@ -616,7 +581,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 					tmp[n++] = k->v[i];
 			if (n == 0)
 				continue;
-			qsort(tmp, n, sizeof(int64), i64_cmp);
+			qsort(tmp, n, sizeof(int64), sift_cmp_i64);
 			k->has[u] = true;
 			k->lo[u] = (double) tmp[0];
 			k->hi[u] = (double) tmp[n - 1];

@@ -10,6 +10,7 @@
 #include "agg/part.h"
 #include "agg/wide.h"
 #include "agg/agg_int.h"
+#include "core/cmp.h"
 
 /*
  * A tuple of an inner or semi join needs a row of the table with its key, so the keys of the loaded table are a conjunct of the scan,
@@ -115,15 +116,6 @@ typedef struct JoinKeys
 	SiftAggPred *pred;
 } JoinKeys;
 
-static int
-cmp_int64(const void *a, const void *b)
-{
-	int64		x = *(const int64 *) a,
-				y = *(const int64 *) b;
-
-	return (x > y) - (x < y);
-}
-
 static bool
 keys_subset(const JoinKeys *a, const JoinKeys *b)
 {
@@ -153,7 +145,7 @@ join_keys_covered(List **seen, List **add, int leaf, const int64 *vals, int nv, 
 	jk->leaf = leaf;
 	jk->v = palloc(Max(nv, 1) * sizeof(int64));
 	memcpy(jk->v, vals, nv * sizeof(int64));
-	qsort(jk->v, nv, sizeof(int64), cmp_int64);
+	qsort(jk->v, nv, sizeof(int64), sift_cmp_i64);
 	for (int i = 0; i < nv; i++)
 		if (i == 0 || jk->v[i] != jk->v[i - 1])
 			jk->v[n++] = jk->v[i];

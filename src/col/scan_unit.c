@@ -403,12 +403,6 @@ sift_col_zone_range_segs(SiftColSource *src, int col, uint32 sb_lo, uint32 sb_hi
 	return zone_range(src, col, sb_lo, sb_hi, zone, false);
 }
 
-static int
-sb_cmp(const void *a, const void *b)
-{
-	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
-}
-
 /*
  * What the zones of the segments of an index source depend on: its file and the version of the directory it read. The superblocks that hold rows of the
  * write buffers are listed in mem (ascending, nmem of them); false when the source is not that of an index, its buffers are not loaded, or more than cap
@@ -428,7 +422,7 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 				return false;
 			mem[n++] = src->mem[i].b->sb;
 		}
-	qsort(mem, n, sizeof(uint32), sb_cmp);
+	qsort(mem, n, sizeof(uint32), sift_cmp_u32);
 	*nmem = 0;
 	for (int i = 0; i < n; i++)
 		if (i == 0 || mem[i] != mem[i - 1])

@@ -66,6 +66,7 @@
 #include "agg/search.h"
 #include "agg/plan_int.h"
 #include "core/limits.h"
+#include "core/cmp.h"
 
 /* the table of a join's right side: a table, or a pulled up sub-select over one (a FromExpr of one table with a WHERE) */
 static RangeTblRef *
@@ -1154,12 +1155,6 @@ build_attexprs(AggCtx *c)
 	c->attalias = vars_of_rel(c, c->lay->attalias);
 }
 
-static int
-cmp_int(const void *a, const void *b)
-{
-	return *(const int *) a - *(const int *) b;
-}
-
 static Oid member_recheck(AggCtx *c, const SiftAggSpec *s, int j);
 static bool recordset_recheck_ok(AggCtx *c, int grp);
 static Bitmapset *recordset_columns(AggCtx *c, int grp);
@@ -1191,7 +1186,7 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 	while ((m = bms_next_member(c->used, m)) >= 0)
 		s->leaves[n++] = m;
 	s->nleaves = n;
-	qsort(s->leaves, n, sizeof(int), cmp_int);
+	qsort(s->leaves, n, sizeof(int), sift_cmp_i32);
 	s->recheck = palloc0(Max(n, 1));
 	s->gate = palloc0(Max(n, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)

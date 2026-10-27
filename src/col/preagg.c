@@ -813,12 +813,6 @@ ru_distinct(const SiftCPaggCol *c, uint32 n, uint32 limit, int64 *hk, uint8 *hu,
 	return nd;
 }
 
-static int
-cmp_i16(const void *a, const void *b)
-{
-	return *(const int16 *) a - *(const int16 *) b;
-}
-
 /*
  * Builds the rollup of one list over the unit (of the rows of the unit when ru->list is -1: the dims are top-level leaves and the cap is a 10th of
  * the rows, at most SIFT_PAGG_ROWS_CELLS). fixed: exactly the dims of ru (the cap of tuples is the largest one, an explicit rollup(...) or
@@ -918,7 +912,7 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 				continue;
 			for (int i = 0; i < k; i++)
 				leaves[i] = ru->dim[cand[i]];
-			qsort(leaves, k, sizeof(int16), cmp_i16);
+			qsort(leaves, k, sizeof(int16), sift_cmp_i16);
 			b.nd = k;
 			for (int i = 0; i < k; i++)
 			{

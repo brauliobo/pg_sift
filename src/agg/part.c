@@ -413,15 +413,6 @@ typedef struct HashLevel
 	uint64	   *rem;			/* sorted, distinct */
 } HashLevel;
 
-static int
-cmp_u64(const void *a, const void *b)
-{
-	uint64		x = *(const uint64 *) a,
-				y = *(const uint64 *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /*
  * The remainder of each combination of values the sets (KeyVals of the conditions) leave the key columns of the hash level f
  * (satisfies_hash_partition(table, modulus, remainder, columns ..)), computed as PostgreSQL computes it for a row, with the support function of
@@ -496,7 +487,7 @@ hash_level(FuncExpr *f, List *sets, List **levels)
 			break;
 	}
 	relation_close(level, NoLock);
-	qsort(rem, nrem, sizeof(uint64), cmp_u64);
+	qsort(rem, nrem, sizeof(uint64), sift_cmp_u64);
 	{
 		int			k = 0;
 
@@ -521,7 +512,7 @@ hash_refuted(List *bound, List *sets, List **levels)
 			const HashLevel *hl = hash_level(f, sets, levels);
 			uint64		r = DatumGetInt32(((Const *) lthird(f->args))->constvalue);
 
-			if (hl->rem != NULL && bsearch(&r, hl->rem, hl->nrem, sizeof(uint64), cmp_u64) == NULL)
+			if (hl->rem != NULL && bsearch(&r, hl->rem, hl->nrem, sizeof(uint64), sift_cmp_u64) == NULL)
 				return true;
 		}
 	return false;

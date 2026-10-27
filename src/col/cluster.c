@@ -22,6 +22,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/seg.h"
+#include "core/cmp.h"
 
 /* sift.cluster_advice: read by the SQL function sift.cluster_advice() through current_setting */
 bool		sift_cluster_advice = true;
@@ -47,15 +48,6 @@ zone_cmp(const void *a, const void *b)
 {
 	uint32		x = ((const ZoneAt *) a)->sb,
 				y = ((const ZoneAt *) b)->sb;
-
-	return x < y ? -1 : x > y;
-}
-
-static int
-dbl_cmp(const void *a, const void *b)
-{
-	double		x = *(const double *) a,
-				y = *(const double *) b;
 
 	return x < y ? -1 : x > y;
 }
@@ -194,8 +186,8 @@ leaf_clustering(SiftColSegment **seg, int nseg, int c, int64 units, double width
 
 		memcpy(slo, lo, n * sizeof(double));
 		memcpy(shi, hi, n * sizeof(double));
-		qsort(slo, n, sizeof(double), dbl_cmp);
-		qsort(shi, n, sizeof(double), dbl_cmp);
+		qsort(slo, n, sizeof(double), sift_cmp_f64);
+		qsort(shi, n, sizeof(double), sift_cmp_f64);
 		for (int64 i = 0; i < n; i++)
 		{
 			/* the zones that hold the middle of zone i, and those that meet the window around it; a zone with an overflow value is always read */

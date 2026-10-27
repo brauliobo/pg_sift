@@ -23,6 +23,7 @@
 #include "col/pagg.h"
 #include "col/pg.h"
 #include "col/seg.h"
+#include "core/cmp.h"
 
 #define SAMPLE			32		/* units looked at */
 #define AGREE_PCT		90		/* the share of them that must satisfy a rule */
@@ -48,15 +49,6 @@ typedef struct Pair
 	double		cells;			/* of the sampled units that fit, together */
 } Pair;
 
-static int
-cmp_i64(const void *x, const void *y)
-{
-	int64		a = *(const int64 *) x,
-				b = *(const int64 *) y;
-
-	return a < b ? -1 : a > b;
-}
-
 typedef struct Pt
 {
 	int64		a,
@@ -69,7 +61,7 @@ cmp_pt(const void *x, const void *y)
 	const Pt   *p = x,
 			   *q = y;
 
-	return p->a != q->a ? (p->a < q->a ? -1 : 1) : cmp_i64(&p->b, &q->b);
+	return p->a != q->a ? (p->a < q->a ? -1 : 1) : sift_cmp_i64(&p->b, &q->b);
 }
 
 /* the values of leaf l of a unit (a dictionary STR as its codes) in vals[0..n), isnull[i] for a NULL slot; false when the leaf has none to count (inline text) */
@@ -126,7 +118,7 @@ distinct(int64 *vals, const bool *isnull, uint32 n, int64 *scratch)
 		else
 			scratch[m++] = vals[i];
 	}
-	qsort(scratch, m, sizeof(int64), cmp_i64);
+	qsort(scratch, m, sizeof(int64), sift_cmp_i64);
 	for (uint32 i = 0; i < m; i++)
 		k += i == 0 || scratch[i] != scratch[i - 1];
 	return k + nulls;

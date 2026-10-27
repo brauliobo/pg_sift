@@ -17,6 +17,7 @@
 
 #include "core/lane.h"
 #include "core/limits.h"
+#include "core/cmp.h"
 
 void
 sift_lane_init_page(Page page, Size hdrsize)
@@ -584,12 +585,6 @@ sift_lane_blocks(Relation index, const SiftSegEntry *entry, int *n)
 	return blks;
 }
 
-static int
-blk_cmp(const void *a, const void *b)
-{
-	return pg_cmp_u32(*(const BlockNumber *) a, *(const BlockNumber *) b);
-}
-
 SiftExtent *
 sift_lane_extents(Relation index, const SiftSegEntry *entry, int *n)
 {
@@ -599,7 +594,7 @@ sift_lane_extents(Relation index, const SiftSegEntry *entry, int *n)
 
 	blks = repalloc(blks, (nb + 1) * sizeof(BlockNumber));
 	blks[nb++] = entry->header_blk;
-	qsort(blks, nb, sizeof(BlockNumber), blk_cmp);
+	qsort(blks, nb, sizeof(BlockNumber), sift_cmp_u32);
 	*n = 0;
 	for (int i = 0; i < nb; i++)
 		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == blks[i])

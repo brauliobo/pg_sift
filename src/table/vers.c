@@ -41,6 +41,7 @@
 #include "core/ops.h"
 #include "table/table.h"
 #include "table/seg_int.h"
+#include "core/cmp.h"
 
 static const VerGroup *
 ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
@@ -146,12 +147,6 @@ sift_tbl_vers_build(Relation rel, SiftTblRel *st, const SiftDirSnapshot *dir, Me
 	return v;
 }
 
-static int
-cmp_u32(const void *a, const void *b)
-{
-	return pg_cmp_u32(*(const uint32 *) a, *(const uint32 *) b);
-}
-
 /* The group and unit that hold superblock sb (the superblocks of a group belong to it alone) */
 static bool
 vers_find(const SiftTblVers *v, uint32 sb, int *g, uint32 *u)
@@ -163,7 +158,7 @@ vers_find(const SiftTblVers *v, uint32 sb, int *g, uint32 *u)
 
 		if (sb < grp->sb[0] || sb > grp->sb[grp->nsb - 1])
 			continue;
-		if ((hit = bsearch(&sb, grp->sb, grp->nsb, sizeof(uint32), cmp_u32)) != NULL)
+		if ((hit = bsearch(&sb, grp->sb, grp->nsb, sizeof(uint32), sift_cmp_u32)) != NULL)
 		{
 			*g = i;
 			*u = hit - grp->sb;
