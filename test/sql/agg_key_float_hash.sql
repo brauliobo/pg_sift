@@ -1,0 +1,46 @@
+-- A float group key whose values have short mantissas (1.5, 100.0, powers of two) groups as fast as any other and gives the groups of the normal plan: NaN with NaN, the infinities
+-- and NULL apart, 0 as one group, past the 1,024 slots the key's table starts with. Every query runs as the scan and as the normal plan.
+CREATE EXTENSION pg_sift;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE fk (id int, g int, d float8, r float4) WITH (autovacuum_enabled = false);
+INSERT INTO fk
+SELECT i, i % 5,
+       CASE WHEN i % 997 = 0 THEN NULL WHEN i % 991 = 0 THEN 'NaN' WHEN i % 983 = 0 THEN 'Infinity' WHEN i % 977 = 0 THEN '-Infinity'
+            WHEN i % 953 = 0 THEN 0 ELSE (i * 7 % 3000) * 1.5 END,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 40)::float4 / 4 END
+FROM generate_series(1, 30000) i;
+CREATE INDEX fk_col ON fk USING sift_col (id, g, d, r);
+VACUUM (FREEZE, ANALYZE) fk;
+
+CREATE FUNCTION scan_same(q text) RETURNS TABLE (scan bool, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; got text; want text;
+BEGIN
+	scan := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scan := scan OR l LIKE '%SiftAgg%';
+	END LOOP;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || q || ') t' INTO got;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || q || ') t' INTO want;
+	RESET sift.enable_agg;
+	same := got = want;
+	RETURN NEXT;
+END $$;
+
+SELECT q, (scan_same(q)).* FROM (VALUES
+	('SELECT d, count(*) FROM fk GROUP BY d'),
+	('SELECT r, count(*), sum(d) FILTER (WHERE d < ''Infinity'') FROM fk GROUP BY r'),
+	('SELECT d, r, count(*) FROM fk GROUP BY d, r'),
+	('SELECT DISTINCT d FROM fk'),
+	('SELECT g, d, count(*) FROM fk GROUP BY g, d'),
+	('SELECT g, count(DISTINCT d) FROM fk GROUP BY g'),
+	('SELECT count(*) FROM (SELECT d FROM fk GROUP BY d) t')
+) v(q);
+
+DROP FUNCTION scan_same(text);
+DROP TABLE fk;
+DROP EXTENSION pg_sift;

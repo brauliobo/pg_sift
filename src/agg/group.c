@@ -506,10 +506,11 @@ ident_add(AggExec *ex, KeyState *k, int64 v)
 }
 
 
+/* the top bits of the product: a float with a short mantissa (1.5, 100.0) has nothing in its low 40 bits, and the middle bits of the product have nothing either */
 static inline uint32
 wide_hash(int64 v, uint32 cap)
 {
-	return (uint32) (((uint64) v * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & (cap - 1);
+	return (uint32) (((uint64) v * UINT64CONST(0x9E3779B97F4A7C15)) >> (64 - __builtin_ctz(cap)));
 }
 
 static uint32 bucket_id(AggExec *ex, KeyState *k, int64 bucket);
