@@ -341,14 +341,16 @@ sift.async_maintenance = off'
 		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
 		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
 		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
-		withopt=0; for f in "${formats[@]}"; do [[ -z ${OPT[${f%% *}]:-} ]] || withopt=$((withopt + 1)); done
+		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)
+		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|'); pat="$pat|rollup_dims"
+		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
 		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3))"
 		[[ $(grep -c . <<<"$errs") == $((withopt + 3)) ]] || diag "restore errors: $errs"
 		check "3.2 downgrade: those tables are empty in the restored database" test "$(qd rst "SELECT (SELECT count(*) FROM tbl_big) + (SELECT count(*) FROM tbl_wr) + (SELECT count(*) FROM tbl_wr2)")" == 0
 		check "3.2 downgrade: the restored database is at 3.2 with all its rows" test "$(qd rst "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" "SELECT count(*) FROM docs_df" "SELECT count(*) FROM tbl_ca" | tr '\n' ' ')" == \
 			"3.2 $(q "SELECT count(*) FROM docs_df") $(q "SELECT count(*) FROM tbl_ca") "
-		check "3.2 downgrade: the restored indexes without such an option verify" qd rst "SELECT sift.col_verify('docs_df_col', true)" "SELECT sift.col_verify('docs_su_col', true)" "SELECT sift.verify('dgb_idx', true)"
+		check "3.2 downgrade: the restored indexes without such an option verify" qd rst "SELECT sift.col_verify(c.oid::regclass::text, true) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'" "SELECT sift.verify('dgb_idx', true)"
 		node_stop mx
 		# and forward again: the 3.5 library on the same files, the event triggers enabled, the setting reset
 		use_root mx "$newroot"

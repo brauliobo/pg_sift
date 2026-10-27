@@ -295,7 +295,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "the sift_table with minor 3 and minor 8 segments answers the UTC quarters of a timestamptz as the plain plan" test "$(q life upg "SET sift.enable_agg = on" "SET cpu_tuple_cost = 0.5" "$TZQ" | tail -n 1)" == "$TZOFF"
 	# minor 9 segments (the rollup of the rows; opt-in) join an index of minor 3 and minor 7 segments: the units written before scan, the others answer, the results are the heap's
 	q life upg "CREATE TABLE rowr (id int, a int, b int, v numeric(10,2))" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(1, 20000) g" \
-		"SET sift.col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v) WITH (superunit = 0)" "RESET sift.col_format_minor" \
+		"SET sift.col_format_minor = 3" "CREATE INDEX rowr_col ON rowr USING sift_col (id, a, b, v) WITH (superunit = 0, rollup_dims = 'off')" "RESET sift.col_format_minor" \
 		"ALTER INDEX rowr_col SET (cube_minmax = true)" "INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(20001, 30000) g" \
 		"SELECT sift.col_promote('rowr_col')" "ALTER INDEX rowr_col SET (rollup_dims = 'a, b')" \
 		"INSERT INTO rowr SELECT g, g % 9, g % 7, g % 1000 / 8.0 FROM generate_series(30001, 40000) g" "SELECT sift.col_promote('rowr_col')" >/dev/null
