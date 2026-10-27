@@ -180,7 +180,32 @@ sift_col_def_needs_wide(const SiftColDef *d)
 static inline bool
 sift_col_def_lane_tested(const SiftColDef *d)
 {
-	return d->lane == 0 && (d->lanes > 0 || d->type == SIFT_COLT_MONEY || (sift_col_def_is_image(d) && d->type != SIFT_COLT_TIMETZ));
+	return d->lane == 0 && (d->type == SIFT_COLT_VARLENA ? d->lanes == 0 : (d->lanes > 0 || d->type == SIFT_COLT_MONEY || (sift_col_def_is_image(d) && d->type != SIFT_COLT_TIMETZ)));
+}
+
+/*
+ * The head of an array that keeps its lengths: the image, then the INT lanes cardinality(x) (lane 1) and
+ * array_length(x, 1) (lane 2), each NULL where PostgreSQL's function is. A range or inet has no lanes.
+ */
+#define SIFT_COL_ARRLEN_LANES	3
+
+static inline bool
+sift_col_def_arrlen_head(const SiftColDef *d)
+{
+	return d->type == SIFT_COLT_VARLENA && d->lanes == SIFT_COL_ARRLEN_LANES;
+}
+
+static inline bool
+sift_col_def_arrlen_lane(const SiftColDef *d)
+{
+	return d->type == SIFT_COLT_VARLENA && d->lane > 0;
+}
+
+/* how many of a head's leaves hold its value: the lanes of an array's lengths are read apart */
+static inline int
+sift_col_def_value_lanes(const SiftColDef *d)
+{
+	return sift_col_def_arrlen_head(d) || d->lanes < 2 ? 1 : d->lanes;
 }
 
 /* The JSON type of an overflowing value; the numbers are on disk */

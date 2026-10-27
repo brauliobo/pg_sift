@@ -46,6 +46,7 @@ TABLE_SKIP = {
     'zonekey': 'zkf is read through its sift_col index only',
     'keytable': 'ktf is read through its sift_col index only',
     'dictcount': 'dcf is read through its sift_col index only',
+    'arrlen': 'the lengths of an array are two lanes of the sift_col index (array_lengths); a sift_table keeps the image alone',
 }
 
 BASE = 'seq_page_cost=1000;random_page_cost=1000;sift.agg_left_lateral=on'
@@ -1143,6 +1144,49 @@ def gen_nullzone(r, ctx):
     return dict(table='nzf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
 
 
+# ---------- the lengths of arrays: cardinality, array_length(x, 1) and IS [NOT] NULL of an array that the index keeps as two integer lanes, across DML ----------
+AR_ARRAYS = ['ia', 'ta', 'tb', 'na', 'ma']
+
+
+def ar_pred(r, e):
+    c = r.choice(AR_ARRAYS)
+    k = r.randrange(0, 8)
+    form = r.randrange(14)
+    if form < 3:
+        return f'{e}.{c} IS {r.choice(["", "NOT "])}NULL'
+    if form < 6:
+        return f'cardinality({e}.{c}) {r.choice(["=", "<", ">", ">=", "<>"])} {k}'
+    if form < 8:
+        return f'array_length({e}.{c}, 1) {r.choice(["=", "<=", ">"])} {k}'
+    if form == 8:
+        return f'array_length({e}.{c}, {r.choice([0, 2, 2, 3])}) IS {r.choice(["", "NOT "])}NULL'
+    if form == 9:
+        return f'coalesce(cardinality({e}.{c}), 0) {r.choice(["=", ">"])} {k}'
+    if form == 10:
+        return f'({e}.{c} IS NOT NULL AND cardinality({e}.{c}) > 0)'
+    if form == 11:
+        return f'({r.choice(["cardinality({e}.{c})", "array_length({e}.{c}, 1)"]).format(e=e, c=c)} > {k} OR {e}.org = {r.randrange(12)})'
+    if form == 12:
+        return r.choice([f"{e}.ta @> ARRAY['t{k}']", f'{e}.ia && ARRAY[{k}, {k + 1}]', f"{e}.tb IS NOT NULL AND 'u{k % 4}' = ANY({e}.tb)"])
+    return f'{e}.org {r.choice(["=", "<", ">"])} {r.randrange(12)}'
+
+
+AR_KEYS = ['{e}.org', '{e}.kind', 'cardinality({e}.ia)', 'cardinality({e}.ta)', 'array_length({e}.ma, 1)', 'array_length({e}.ta, 1)', '({e}.tb IS NULL)', '(cardinality({e}.na) > 2)']
+AR_AGGS = ['count(*)', 'count({e}.ia)', 'count(cardinality({e}.ta))', 'sum(cardinality({e}.ia))', 'sum(cardinality({e}.ma))', 'avg(array_length({e}.ta, 1))', 'min(cardinality({e}.tb))',
+           'max(array_length({e}.ma, 1))', 'max(cardinality({e}.na))', 'count(DISTINCT cardinality({e}.ta))', 'count(DISTINCT {e}.org)', 'sum({e}.amount)',
+           'count(DISTINCT {e}.id) FILTER (WHERE {e}.ia IS NOT NULL AND cardinality({e}.ia) > 0)', 'count(*) FILTER (WHERE cardinality({e}.ta) = 0)',
+           'count(*) FILTER (WHERE {e}.tb IS NULL)', 'sum({e}.amount) FILTER (WHERE array_length({e}.ma, 1) > 1)']
+
+
+def gen_arrlen(r, ctx):
+    where_ = [ar_pred(r, 'e') for _ in range(r.choice([0, 1, 1, 2, 3]))]
+    if len(where_) > 1 and r.random() < 0.2:
+        where_[:2] = [f'({where_[0]} OR {where_[1]})']
+    ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(AR_KEYS, r.choice([0, 0, 1, 1, 2]))))
+    ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(AR_AGGS, r.randrange(1, 5))))
+    return dict(table='arf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+
+
 # ---------- exceptions: IS NULL on a stamp that is set in a few rows of a unit, answered as the unit net of them (float sums within the tolerance of the others) ----------
 EX_WHERE = ['e.stamp IS NULL'] * 6 + ['e.stamp IS NOT NULL', 'e.stamp IS NULL AND e.org < {k}', 'e.stamp IS NULL AND e.id < {n}', 'e.stamp IS NULL AND e.id > {n}',
                                        "e.stamp IS NULL AND e.kind = 'k{k4}'", 'e.stamp IS NULL AND e.amount >= {k}00', '(e.stamp IS NULL OR e.org = {k})']
@@ -1403,7 +1447,7 @@ FAMILIES = {
     'dirty': (gen_dirty, render_dirty, 4), 'union': (gen_union, render_union, 2), 'topn': (gen_topn, render_topn, 2), 'trail': (gen_trail, render_trail, 3), 'twolevel': (gen_twolevel, render_twolevel, 3),
     'samelookup': (gen_same, render_same, 5), 'keys': (gen_keys, render_preagg, 4),
     'leftlateral': (gen_leftlateral, render_leftlateral, 4), 'lateralagg': (gen_lateralagg, render_lateralagg, 3), 'point': (gen_point, render_point, 3), 'pointagg': (gen_pointagg, render_pointagg, 4),
-    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'toplat': (gen_toplat, render_toplat, 4), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4),
+    'keycut': (gen_keycut, render_keycut, 4), 'floor': (gen_floor, render_keycut, 4), 'dead': (gen_dead, render_keycut, 5), 'latest': (gen_latest, render_latest, 3), 'toplat': (gen_toplat, render_toplat, 4), 'decor': (gen_decor, render_decor, 4), 'exists': (gen_exists, render_exists, 4), 'nullzone': (gen_nullzone, render_preagg, 4), 'arrlen': (gen_arrlen, render_preagg, 4),
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
@@ -1691,6 +1735,34 @@ def dml_nullzone(r, ctx):
     return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
 
 
+def dml_arrlen(r, ctx):
+    """Arrays set to every shape (NULL, empty, longer, two dimensions), deleted, inserted, then the write buffer promoted, merged or the index rebuilt: lanes written by the buffer, the merge and the build."""
+    m = r.choice([13, 40, 97, 211])
+    ids = f'id % {m} = {r.randrange(m)}'
+    e = r.randrange(13)
+    if e == 0:
+        return f'UPDATE arf SET ia = NULL, ta = NULL WHERE {ids}'
+    if e == 1:
+        return f"UPDATE arf SET ta = '{{}}', tb = '{{}}', ia = '{{}}' WHERE {ids}"
+    if e == 2:
+        return f"UPDATE arf SET ta = ARRAY['t1', 't2', 't3'], ia = ia || {r.randrange(9)} WHERE {ids}"
+    if e == 3:
+        return f"UPDATE arf SET ma = ARRAY[[{r.randrange(9)}, 2], [3, 4], [5, 6]], na = ARRAY[1, 2, 3, 4] WHERE {ids}"
+    if e == 4:
+        return f"UPDATE arf SET ma = NULL, na = '{{}}' WHERE {ids}"
+    if e == 5:
+        return f'UPDATE arf SET amount = amount + 1 WHERE {ids}'
+    if e == 6:
+        return f'DELETE FROM arf WHERE {ids}'
+    if e in (7, 8):
+        n = r.choice([5, 40, 300])
+        lo = ctx['next_ar']; ctx['next_ar'] += n
+        return f'INSERT INTO arf SELECT * FROM fz.gen_arf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
+    if e == 9:
+        return r.choice(['VACUUM arf', 'VACUUM (FREEZE) arf'])
+    return r.choice(["SELECT sift.col_promote('arf_col')", "SELECT sift.col_merge('arf_col', true)", 'REINDEX INDEX arf_col'])
+
+
 # ---------- a run ----------
 def sqlq(s):
     assert '$fzq$' not in s
@@ -1733,12 +1805,15 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rd = random.Random(seed * 67867979 + 19)
     rq = random.Random(seed * 86028121 + 23)
     rq2 = random.Random(seed * 94906249 + 29)
+    ra = random.Random(seed * 122949829 + 31)
     rg = random.Random(seed * 32452843 + 13)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
         if not only or 'nullzone' in only:
             st += [dml_nullzone(rn, ctx) for _ in range(rn.randrange(dmls + 1))]
+        if not TABLE and (not only or 'arrlen' in only):
+            st += [dml_arrlen(ra, ctx) for _ in range(ra.randrange(dmls + 1))]
         if not only or 'exceptions' in only:
             st += [dml_exceptions(rx, ctx) for _ in range(rx.randrange(dmls + 1))]
         if not TABLE and (not only or 'trail' in only):
@@ -1926,7 +2001,7 @@ def main():
     TABLE = a.table
     if a.selftest:
         for TABLE in (False, True):
-            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
+            ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ar': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
             sql = data_sql(1, a.rows, a.parts)
             if '-- @' in sql or '@' in re.sub(r"'[^']*'", '', sql) or ('USING sift_col' in sql) == TABLE:
                 sys.exit(f'diff_fuzz selftest: the data of {"--table" if TABLE else "the heap mode"} is not as expected')
@@ -1962,7 +2037,7 @@ def main():
         tag = f"{seed}{'t' if TABLE else ''}"
         base_db = f'fz_{tag}_base'
         build_base(base_db, seed, a.rows, a.parts)
-        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
+        ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ar': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
         eps = episodes(seed, a.queries, ctx, only, a.dml)
         run_db = f'fz_{tag}_run'
         create_db(run_db, base_db)

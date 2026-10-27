@@ -210,6 +210,27 @@ CREATE FUNCTION fz.gen_nzf(lo bigint, hi bigint, salt int) RETURNS SETOF nzf LAN
 INSERT INTO nzf SELECT * FROM fz.gen_nzf(1, @ROWS@, 0);
 CREATE INDEX nzf_col ON nzf USING sift_col (id, org, amount, val, kind, deleted_at, seen_at, tag, score);
 
+-- arrays of every length and shape (NULL, empty, NULL elements, two dimensions, another lower bound) in runs of 256 rows that are mostly NULL, mostly empty or mostly full:
+-- the index keeps cardinality and array_length(x, 1) of each as two integer lanes, and the pushdown reads them for the length functions and the null tests
+CREATE TABLE arf (id int, org int, kind text, amount int, ia int[], ta text[], tb text[], na numeric[], ma int[], pad text) WITH (autovacuum_enabled = false, fillfactor = 10);
+CREATE FUNCTION fz.gen_arf(lo bigint, hi bigint, salt int) RETURNS SETOF arf LANGUAGE sql AS $$
+	SELECT i::int, fz.h(i, 200 + salt) % 12,
+	       CASE WHEN fz.h(i, 201 + salt) % 100 < 5 THEN NULL ELSE 'k' || fz.h(i, 202 + salt) % 5 END,
+	       fz.h(i, 203 + salt) % 1000,
+	       CASE WHEN i / 256 % 5 = 1 AND fz.h(i, 204 + salt) % 4 > 0 THEN NULL WHEN fz.h(i, 205 + salt) % 100 < 6 THEN NULL WHEN fz.h(i, 206 + salt) % 100 < 18 THEN '{}'
+	            WHEN fz.h(i, 207 + salt) % 100 < 22 THEN ARRAY[NULL, NULL]::int[]
+	            ELSE ARRAY(SELECT fz.h(i, 208 + k + salt) % 20 FROM generate_series(1, 1 + fz.h(i, 209 + salt) % 6) k) END,
+	       CASE WHEN i / 256 % 4 = 2 THEN NULL WHEN i / 256 % 4 = 3 AND fz.h(i, 210 + salt) % 3 > 0 THEN '{}'::text[] WHEN fz.h(i, 211 + salt) % 100 < 9 THEN NULL
+	            ELSE ARRAY(SELECT 't' || fz.h(i, 212 + k + salt) % 30 FROM generate_series(1, 1 + fz.h(i, 213 + salt) % 9) k) END,
+	       CASE WHEN fz.h(i, 214 + salt) % 100 < 30 THEN NULL WHEN fz.h(i, 215 + salt) % 100 < 50 THEN '{}'::text[] ELSE ARRAY['u' || fz.h(i, 216 + salt) % 4, NULL, 'u0'] END,
+	       CASE WHEN fz.h(i, 217 + salt) % 100 < 10 THEN NULL ELSE ARRAY[(fz.h(i, 218 + salt) % 3)::numeric, 1.50, (fz.h(i, 219 + salt) % 5) / 4.0] END,
+	       CASE WHEN fz.h(i, 220 + salt) % 100 < 8 THEN NULL WHEN fz.h(i, 221 + salt) % 100 < 30 THEN ARRAY[[1, 2, 3], [4, 5, 6]] WHEN fz.h(i, 222 + salt) % 100 < 40 THEN ARRAY[[[1], [2]], [[3], [4]], [[5], [6]]]
+	            WHEN fz.h(i, 223 + salt) % 100 < 55 THEN '[0:1]={7,8}'::int[] WHEN fz.h(i, 224 + salt) % 100 < 65 THEN '{}'::int[] ELSE ARRAY[fz.h(i, 225 + salt) % 9] END,
+	       repeat('x', 300)
+	FROM generate_series(lo, hi) i $$;
+INSERT INTO arf SELECT * FROM fz.gen_arf(1, @ROWS@, 0);
+CREATE INDEX arf_col ON arf USING sift_col (id, org, kind, amount, ia, ta, tb, na, ma);
+
 -- tables joined on one column of events of each kind of leaf (dictionary code, int8, float8 with NaN, int, date), NULL keys and repeated keys included
 CREATE TABLE ok_kind (k text, tag text, w int) WITH (autovacuum_enabled = false);
 INSERT INTO ok_kind VALUES ('k0', 'a', 1), ('k1', 'b', 2), ('k1', 'c', 3), ('k3', 'd', 4), ('k9', 'e', 5), (NULL, 'f', 6);
@@ -332,4 +353,4 @@ BEGIN
 END $$;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;

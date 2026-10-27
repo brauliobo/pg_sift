@@ -1,0 +1,515 @@
+-- the lengths of an array column: cardinality(x), array_length(x, 1) and x IS [NOT] NULL of an array that an index keeps
+-- as two integer lanes are read without the arrays. Every query runs with and without the pushdown and the rows must be the same; the shapes with
+-- 'scan' read the lanes. The index with array_lengths = off is the index of a release before the option: the same answers from the images.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+CREATE TABLE al (id int, grp int, ia int[], ta text[], na numeric[], ma int[], lb int[]) WITH (autovacuum_enabled = false);
+INSERT INTO al SELECT i, i % 7,
+	CASE WHEN i % 10 = 0 THEN NULL WHEN i % 14 = 0 THEN '{}' WHEN i % 17 = 0 THEN ARRAY[NULL, NULL]::int[] ELSE ARRAY[i % 5, i % 3, i % 11] END,
+	CASE WHEN i % 9 = 0 THEN NULL WHEN i % 13 = 0 THEN '{}' ELSE (SELECT array_agg('t' || (i + k) % 6) FROM generate_series(1, i % 5 + 1) k) END,
+	CASE WHEN i % 8 = 0 THEN NULL ELSE ARRAY[(i % 3)::numeric, 1.50] END,
+	-- two and three dimensions: array_length(x, 1) is the first, cardinality the product; an empty one has no dimension
+	CASE WHEN i % 12 = 0 THEN NULL WHEN i % 6 = 0 THEN ARRAY[[1, 2, 3], [4, 5, 6]] WHEN i % 5 = 0 THEN ARRAY[[[1], [2]], [[3], [4]], [[5], [6]]] WHEN i % 4 = 0 THEN '{}' ELSE ARRAY[1] END,
+	-- a lower bound other than 1 changes no length
+	CASE WHEN i % 7 = 0 THEN NULL WHEN i % 3 = 0 THEN '[0:2]={1,2,3}'::int[] WHEN i % 11 = 0 THEN (SELECT array_agg(k) FROM generate_series(1, 3000) k) ELSE '[5:5]={9}'::int[] END
+FROM generate_series(1, 5000) i;
+CREATE INDEX al_col ON al USING sift_col (id, grp, ia, ta, na, ma, lb);
+CREATE INDEX al_old ON al USING sift_col (id, grp, ia, ta, na, ma, lb) WITH (array_lengths = off);
+VACUUM (FREEZE, ANALYZE) al;
+SELECT sift.col_verify('al_col', true), sift.col_verify('al_old', true);
+ col_verify | col_verify 
+------------+------------
+            | 
+(1 row)
+
+SELECT indexrelid::regclass AS idx, (SELECT option_value FROM pg_options_to_table(reloptions) WHERE option_name = 'array_lengths') AS array_lengths
+FROM pg_index JOIN pg_class ON pg_class.oid = indexrelid WHERE indrelid = 'al'::regclass AND indexrelid::regclass::text LIKE 'al\_%' ORDER BY 1;
+  idx   | array_lengths 
+--------+---------------
+ al_col | on
+ al_old | off
+(2 rows)
+
+SELECT leaf, path, type FROM sift.col_leaves('al_col') ORDER BY leaf;
+ leaf | path |       type       
+------+------+------------------
+    0 | id   | integer
+    1 | grp  | integer
+    2 | ia   | integer[]
+    3 | ia#1 | integer (lane 1)
+    4 | ia#2 | integer (lane 2)
+    5 | ta   | text[]
+    6 | ta#1 | integer (lane 1)
+    7 | ta#2 | integer (lane 2)
+    8 | na   | numeric[]
+    9 | na#1 | integer (lane 1)
+   10 | na#2 | integer (lane 2)
+   11 | ma   | integer[]
+   12 | ma#1 | integer (lane 1)
+   13 | ma#2 | integer (lane 2)
+   14 | lb   | integer[]
+   15 | lb#1 | integer (lane 1)
+   16 | lb#2 | integer (lane 2)
+(17 rows)
+
+SELECT count(*) AS leaves_without_lengths FROM sift.col_leaves('al_old');
+ leaves_without_lengths 
+------------------------
+                      7
+(1 row)
+
+DROP INDEX al_old;
+-- the rows of both plans as the text PostgreSQL prints them; scan: the pushdown ran
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
+BEGIN
+	SET sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
+	SET sift.enable_agg = off;
+	SET enable_sort = off;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_off := SQLERRM; END;
+	RESET sift.enable_agg;
+	RESET enable_sort;
+	IF e_on IS NOT NULL OR e_off IS NOT NULL THEN
+		DROP TABLE IF EXISTS r_on, r_off;
+		RETURN CASE WHEN e_on IS NOT DISTINCT FROM e_off THEN 'error: ' || e_on ELSE 'DIFF on=' || coalesce(e_on, 'ok') || ' off=' || coalesce(e_off, 'ok') END;
+	END IF;
+	SELECT count(*) INTO a FROM ((SELECT d::text FROM r_on d EXCEPT ALL SELECT d::text FROM r_off d)
+								  UNION ALL (SELECT d::text FROM r_off d EXCEPT ALL SELECT d::text FROM r_on d)) x;
+	DROP TABLE r_on, r_off;
+	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
+END $$;
+-- the shapes, on the table's one index at a time
+CREATE FUNCTION shapes(tag text) RETURNS TABLE(shape text, result text) LANGUAGE sql AS $$
+	VALUES (tag || ' presence', chk($q$SELECT count(*) AS c FROM al WHERE ia IS NOT NULL AND cardinality(ia) > 0$q$)),
+	       (tag || ' empty', chk($q$SELECT count(*) AS c FROM al WHERE cardinality(ta) = 0$q$)),
+	       (tag || ' null', chk($q$SELECT count(*) AS c FROM al WHERE ma IS NULL$q$)),
+	       (tag || ' notnull_or', chk($q$SELECT count(*) AS c FROM al WHERE lb IS NOT NULL OR ia IS NULL$q$)),
+	       (tag || ' null_filter', chk($q$SELECT grp AS g, count(*) FILTER (WHERE ta IS NULL) AS a, count(*) FILTER (WHERE ta IS NOT NULL AND cardinality(ta) > 2) AS b FROM al GROUP BY grp$q$)),
+	       (tag || ' array_length', chk($q$SELECT count(*) AS c FROM al WHERE array_length(ma, 1) >= 2$q$)),
+	       (tag || ' array_length_null', chk($q$SELECT count(*) AS c FROM al WHERE array_length(ia, 1) IS NULL$q$)),
+	       (tag || ' array_length_dim2', chk($q$SELECT count(*) AS c FROM al WHERE array_length(ma, 2) = 3$q$)),
+	       (tag || ' array_length_dim0', chk($q$SELECT count(*) AS c FROM al WHERE array_length(ma, 0) IS NULL$q$)),
+	       (tag || ' multidim', chk($q$SELECT cardinality(ma) AS n, array_length(ma, 1) AS d, count(*) AS c FROM al GROUP BY 1, 2$q$)),
+	       (tag || ' lower_bound', chk($q$SELECT cardinality(lb) AS n, array_length(lb, 1) AS d, count(*) AS c FROM al GROUP BY 1, 2$q$)),
+	       (tag || ' key', chk($q$SELECT cardinality(ia) AS n, count(*) AS c FROM al GROUP BY 1$q$)),
+	       (tag || ' aggregates', chk($q$SELECT grp AS g, min(cardinality(ta)) AS a, max(cardinality(ta)) AS b, sum(cardinality(na)) AS s, avg(array_length(ma, 1)) AS v FROM al GROUP BY grp$q$)),
+	       (tag || ' distinct', chk($q$SELECT grp AS g, count(DISTINCT id) FILTER (WHERE ia IS NOT NULL AND cardinality(ia) > 0) AS a, count(DISTINCT id) FILTER (WHERE ta IS NOT NULL AND cardinality(ta) > 0) AS b FROM al GROUP BY grp$q$)),
+	       (tag || ' expression', chk($q$SELECT count(*) AS c FROM al WHERE coalesce(cardinality(ta), 0) + 1 > 3 AND NOT (cardinality(ia) = 1)$q$)),
+	       (tag || ' case', chk($q$SELECT CASE WHEN cardinality(na) IS NULL THEN 'none' WHEN cardinality(na) > 1 THEN 'many' ELSE 'one' END AS k, count(*) AS c FROM al GROUP BY 1$q$)),
+	       (tag || ' two_arrays', chk($q$SELECT count(*) AS c FROM al WHERE cardinality(ia) = cardinality(ta)$q$)),
+	       (tag || ' with_ops', chk($q$SELECT count(*) AS c FROM al WHERE cardinality(ta) > 1 AND ta @> ARRAY['t2'] AND ia IS NOT NULL$q$)),
+	       (tag || ' unnest', chk($q$SELECT e AS k, count(*) AS c FROM al, unnest(ta) e WHERE cardinality(ta) > 2 GROUP BY e$q$)),
+	       (tag || ' other_dims', chk($q$SELECT grp AS g, count(*) AS c FROM al WHERE id < 3000 AND cardinality(ia) > 1 GROUP BY grp$q$))
+$$;
+SELECT * FROM shapes('lanes');
+          shape          |  result   
+-------------------------+-----------
+ lanes presence          | scan same
+ lanes empty             | scan same
+ lanes null              | scan same
+ lanes notnull_or        | scan same
+ lanes null_filter       | scan same
+ lanes array_length      | scan same
+ lanes array_length_null | scan same
+ lanes array_length_dim2 | scan same
+ lanes array_length_dim0 | scan same
+ lanes multidim          | scan same
+ lanes lower_bound       | scan same
+ lanes key               | scan same
+ lanes aggregates        | scan same
+ lanes distinct          | scan same
+ lanes expression        | scan same
+ lanes case              | scan same
+ lanes two_arrays        | scan same
+ lanes with_ops          | scan same
+ lanes unnest            | scan same
+ lanes other_dims        | scan same
+(20 rows)
+
+-- the lanes are what the scan reads: the filter names cardinality, not the array
+EXPLAIN (COSTS OFF) SELECT count(*) FROM al WHERE ia IS NOT NULL AND cardinality(ia) > 0;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: al_col
+   Filters: cardinality(ia) IS NOT NULL AND cardinality(ia) > 0
+   Pushed Aggregates: count(*)
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT grp, avg(cardinality(ta)), max(array_length(ma, 1)) FROM al GROUP BY grp;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: al_col
+   Group Keys: grp
+   Pushed Aggregates: avg(cardinality(ta)), max(array_length(ma, 1))
+(4 rows)
+
+-- a generic plan reads the dimension and the bound from parameters
+PREPARE g(int, int) AS SELECT count(*) FROM al WHERE array_length(ma, $1) > $2;
+SET plan_cache_mode = force_generic_plan;
+EXECUTE g(1, 1);
+ count 
+-------
+  1251
+(1 row)
+
+EXECUTE g(2, 1);
+ count 
+-------
+  1251
+(1 row)
+
+RESET plan_cache_mode;
+DEALLOCATE g;
+-- the write buffer, an update to another shape, a delete, a promotion and a merge
+INSERT INTO al SELECT 5000 + i, i % 7, ARRAY[i], CASE WHEN i % 3 = 0 THEN NULL ELSE '{}'::text[] END, ARRAY[i::numeric], ARRAY[[i, i]], '{1,2}' FROM generate_series(1, 300) i;
+UPDATE al SET ia = NULL, ta = ARRAY['z'], ma = '{}' WHERE id % 13 = 1;
+UPDATE al SET ia = ARRAY[1, 2, 3, 4] WHERE id % 13 = 2;
+DELETE FROM al WHERE id % 11 = 3;
+SELECT * FROM shapes('buffer');
+          shape           |  result   
+--------------------------+-----------
+ buffer presence          | scan same
+ buffer empty             | scan same
+ buffer null              | scan same
+ buffer notnull_or        | scan same
+ buffer null_filter       | scan same
+ buffer array_length      | scan same
+ buffer array_length_null | scan same
+ buffer array_length_dim2 | scan same
+ buffer array_length_dim0 | scan same
+ buffer multidim          | scan same
+ buffer lower_bound       | scan same
+ buffer key               | scan same
+ buffer aggregates        | scan same
+ buffer distinct          | scan same
+ buffer expression        | scan same
+ buffer case              | scan same
+ buffer two_arrays        | scan same
+ buffer with_ops          | scan same
+ buffer unnest            | scan same
+ buffer other_dims        | scan same
+(20 rows)
+
+SELECT sift.col_promote('al_col');
+ col_promote 
+-------------
+           1
+(1 row)
+
+VACUUM al;
+SELECT * FROM shapes('promoted');
+           shape            |  result   
+----------------------------+-----------
+ promoted presence          | scan same
+ promoted empty             | scan same
+ promoted null              | scan same
+ promoted notnull_or        | scan same
+ promoted null_filter       | scan same
+ promoted array_length      | scan same
+ promoted array_length_null | scan same
+ promoted array_length_dim2 | scan same
+ promoted array_length_dim0 | scan same
+ promoted multidim          | scan same
+ promoted lower_bound       | scan same
+ promoted key               | scan same
+ promoted aggregates        | scan same
+ promoted distinct          | scan same
+ promoted expression        | scan same
+ promoted case              | scan same
+ promoted two_arrays        | scan same
+ promoted with_ops          | scan same
+ promoted unnest            | scan same
+ promoted other_dims        | scan same
+(20 rows)
+
+SELECT sift.col_merge('al_col', true);
+ col_merge 
+-----------
+         1
+(1 row)
+
+SELECT sift.col_verify('al_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM shapes('merged');
+          shape           |  result   
+--------------------------+-----------
+ merged presence          | scan same
+ merged empty             | scan same
+ merged null              | scan same
+ merged notnull_or        | scan same
+ merged null_filter       | scan same
+ merged array_length      | scan same
+ merged array_length_null | scan same
+ merged array_length_dim2 | scan same
+ merged array_length_dim0 | scan same
+ merged multidim          | scan same
+ merged lower_bound       | scan same
+ merged key               | scan same
+ merged aggregates        | scan same
+ merged distinct          | scan same
+ merged expression        | scan same
+ merged case              | scan same
+ merged two_arrays        | scan same
+ merged with_ops          | scan same
+ merged unnest            | scan same
+ merged other_dims        | scan same
+(20 rows)
+
+-- a table without NULLs or empty arrays (a constant chunk), parallel workers, REINDEX, and the option changed
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT * FROM shapes('workers');
+           shape           |  result   
+---------------------------+-----------
+ workers presence          | scan same
+ workers empty             | scan same
+ workers null              | scan same
+ workers notnull_or        | scan same
+ workers null_filter       | scan same
+ workers array_length      | scan same
+ workers array_length_null | scan same
+ workers array_length_dim2 | scan same
+ workers array_length_dim0 | scan same
+ workers multidim          | scan same
+ workers lower_bound       | scan same
+ workers key               | scan same
+ workers aggregates        | scan same
+ workers distinct          | scan same
+ workers expression        | scan same
+ workers case              | scan same
+ workers two_arrays        | scan same
+ workers with_ops          | scan same
+ workers unnest            | scan same
+ workers other_dims        | scan same
+(20 rows)
+
+RESET max_parallel_workers_per_gather;
+REINDEX INDEX al_col;
+SELECT sift.col_verify('al_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM shapes('reindexed');
+            shape            |  result   
+-----------------------------+-----------
+ reindexed presence          | scan same
+ reindexed empty             | scan same
+ reindexed null              | scan same
+ reindexed notnull_or        | scan same
+ reindexed null_filter       | scan same
+ reindexed array_length      | scan same
+ reindexed array_length_null | scan same
+ reindexed array_length_dim2 | scan same
+ reindexed array_length_dim0 | scan same
+ reindexed multidim          | scan same
+ reindexed lower_bound       | scan same
+ reindexed key               | scan same
+ reindexed aggregates        | scan same
+ reindexed distinct          | scan same
+ reindexed expression        | scan same
+ reindexed case              | scan same
+ reindexed two_arrays        | scan same
+ reindexed with_ops          | scan same
+ reindexed unnest            | scan same
+ reindexed other_dims        | scan same
+(20 rows)
+
+ALTER INDEX al_col SET (array_lengths = off);
+REINDEX INDEX al_col;
+SELECT count(*) AS leaves_after_off FROM sift.col_leaves('al_col');
+ leaves_after_off 
+------------------
+                7
+(1 row)
+
+SELECT sift.col_verify('al_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM al WHERE ia IS NOT NULL AND cardinality(ia) > 0;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Custom Scan (SiftAgg)
+   Index: al_col
+   Filters: ia IS NOT NULL AND ia: (cardinality(al.ia) > 0)
+   Pushed Aggregates: count(*)
+   Workers Planned: 2
+(5 rows)
+
+SELECT * FROM shapes('off');
+         shape         |  result   
+-----------------------+-----------
+ off presence          | scan same
+ off empty             | scan same
+ off null              | scan same
+ off notnull_or        | scan same
+ off null_filter       | scan same
+ off array_length      | scan same
+ off array_length_null | scan same
+ off array_length_dim2 | scan same
+ off array_length_dim0 | scan same
+ off multidim          | scan same
+ off lower_bound       | scan same
+ off key               | scan same
+ off aggregates        | scan same
+ off distinct          | scan same
+ off expression        | scan same
+ off case              | scan same
+ off two_arrays        | scan same
+ off with_ops          | scan same
+ off unnest            | scan same
+ off other_dims        | scan same
+(20 rows)
+
+INSERT INTO al SELECT 9000 + i, i % 7, ARRAY[i], '{}', ARRAY[i::numeric], ARRAY[[i, i]], '{1,2}' FROM generate_series(1, 100) i;
+UPDATE al SET ta = NULL, ia = '{}' WHERE id % 17 = 1;
+DELETE FROM al WHERE id % 19 = 3;
+SELECT * FROM shapes('off buffer');
+            shape             |  result   
+------------------------------+-----------
+ off buffer presence          | scan same
+ off buffer empty             | scan same
+ off buffer null              | scan same
+ off buffer notnull_or        | scan same
+ off buffer null_filter       | scan same
+ off buffer array_length      | scan same
+ off buffer array_length_null | scan same
+ off buffer array_length_dim2 | scan same
+ off buffer array_length_dim0 | scan same
+ off buffer multidim          | scan same
+ off buffer lower_bound       | scan same
+ off buffer key               | scan same
+ off buffer aggregates        | scan same
+ off buffer distinct          | scan same
+ off buffer expression        | scan same
+ off buffer case              | scan same
+ off buffer two_arrays        | scan same
+ off buffer with_ops          | scan same
+ off buffer unnest            | scan same
+ off buffer other_dims        | scan same
+(20 rows)
+
+SELECT sift.col_promote('al_col');
+ col_promote 
+-------------
+           1
+(1 row)
+
+VACUUM al;
+SELECT sift.col_merge('al_col', true);
+ col_merge 
+-----------
+         1
+(1 row)
+
+SELECT sift.col_verify('al_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT * FROM shapes('off merged');
+            shape             |  result   
+------------------------------+-----------
+ off merged presence          | scan same
+ off merged empty             | scan same
+ off merged null              | scan same
+ off merged notnull_or        | scan same
+ off merged null_filter       | scan same
+ off merged array_length      | scan same
+ off merged array_length_null | scan same
+ off merged array_length_dim2 | scan same
+ off merged array_length_dim0 | scan same
+ off merged multidim          | scan same
+ off merged lower_bound       | scan same
+ off merged key               | scan same
+ off merged aggregates        | scan same
+ off merged distinct          | scan same
+ off merged expression        | scan same
+ off merged case              | scan same
+ off merged two_arrays        | scan same
+ off merged with_ops          | scan same
+ off merged unnest            | scan same
+ off merged other_dims        | scan same
+(20 rows)
+
+ALTER INDEX al_col SET (array_lengths = auto);
+REINDEX INDEX al_col;
+SELECT count(*) AS leaves_after_auto FROM sift.col_leaves('al_col');
+ leaves_after_auto 
+-------------------
+                17
+(1 row)
+
+SELECT option_value AS array_lengths FROM pg_options_to_table((SELECT reloptions FROM pg_class WHERE oid = 'al_col'::regclass)) WHERE option_name = 'array_lengths';
+ array_lengths 
+---------------
+ on
+(1 row)
+
+SELECT * FROM shapes('auto');
+         shape          |  result   
+------------------------+-----------
+ auto presence          | scan same
+ auto empty             | scan same
+ auto null              | scan same
+ auto notnull_or        | scan same
+ auto null_filter       | scan same
+ auto array_length      | scan same
+ auto array_length_null | scan same
+ auto array_length_dim2 | scan same
+ auto array_length_dim0 | scan same
+ auto multidim          | scan same
+ auto lower_bound       | scan same
+ auto key               | scan same
+ auto aggregates        | scan same
+ auto distinct          | scan same
+ auto expression        | scan same
+ auto case              | scan same
+ auto two_arrays        | scan same
+ auto with_ops          | scan same
+ auto unnest            | scan same
+ auto other_dims        | scan same
+(20 rows)
+
+-- no array column: nothing is written; a range keeps its image alone
+CREATE TABLE ar (id int, r int4range, i inet) WITH (autovacuum_enabled = false);
+INSERT INTO ar SELECT i, int4range(i, i + 5), ('10.0.0.' || i % 250)::inet FROM generate_series(1, 300) i;
+CREATE INDEX ar_col ON ar USING sift_col (id, r, i);
+SELECT count(*) AS leaves FROM sift.col_leaves('ar_col');
+ leaves 
+--------
+      3
+(1 row)
+
+SELECT coalesce((SELECT option_value FROM pg_options_to_table(reloptions) WHERE option_name = 'array_lengths'), 'unset') AS array_lengths FROM pg_class WHERE oid = 'ar_col'::regclass;
+ array_lengths 
+---------------
+ unset
+(1 row)
+
+DROP TABLE ar;
+DROP TABLE al;
+DROP FUNCTION chk(text), shapes(text);
+DROP EXTENSION pg_sift;

@@ -994,6 +994,33 @@ rows_stretch(Relation heap, BlockNumber start, BlockNumber len, const CubeCand *
 	table_endscan(scan);
 }
 
+/*
+ * array_lengths = auto: an index with an array column keeps the cardinality and the array_length(x, 1) of every array as two integer lanes, so that a test of either, and x IS [NOT] NULL, never decode the arrays: the images cost a hash, an
+ * interning and a decompression of their own length for every row. Written as 'on' before the build, so that the build, its workers and a REINDEX share one schema.
+ */
+void
+sift_col_auto_arrlen(Relation index)
+{
+	StringInfoData names;
+
+	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_AUTO)
+		return;
+	initStringInfo(&names);
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+
+		if (sift_col_is_array_type(att->atttypid))
+			append_name(&names, NameStr(att->attname));
+	}
+	if (names.len == 0)
+		return;
+	sift_col_set_option(index, "array_lengths", "on");
+	ereport(NOTICE, (errmsg("sift_col index %s keeps the lengths of the arrays %s", quote_identifier(RelationGetRelationName(index)), names.data),
+					 errdetail("cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each."),
+					 errhint("ALTER INDEX %s SET (array_lengths = 'off'), then REINDEX, drops them.", quote_identifier(RelationGetRelationName(index)))));
+}
+
 void
 sift_col_auto_rows(Relation heap, Relation index)
 {

@@ -1,6 +1,7 @@
 -- The planner prices the dictionary entry of an array image at its real cost: the unit hashes, interns and inflates every new array before a
 -- test reads it, so a scan whose conjuncts all read a column of long arrays keeps the heap plan, which reads the same arrays and tests them for less,
 -- while the same scan of a column of short arrays stays on the index.
+-- (the index keeps no lengths here: with the lanes a presence or length test of long arrays reads two integer columns and stays on the index, test col_array_lengths)
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 
@@ -10,7 +11,7 @@ SELECT i, i % 7,
        ARRAY['t' || i % 400, 't' || (i * 7) % 400, 't' || (i * 13) % 400],
        ARRAY(SELECT 'amenity_' || (hashint8extended(i * 20 + j, 3) & 8388607) FROM generate_series(1, 12) j)
 FROM generate_series(1, 100000) i;
-CREATE INDEX items_col ON items USING sift_col (kind, short_tags, long_tags);
+CREATE INDEX items_col ON items USING sift_col (kind, short_tags, long_tags) WITH (array_lengths = off);
 VACUUM (FREEZE, ANALYZE) items;
 SELECT attname, avg_width < 64 AS under_knee, avg_width > 100 AS over_knee FROM pg_stats WHERE tablename = 'items' AND attname LIKE '%tags' ORDER BY attname;
 

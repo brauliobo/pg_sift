@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 105 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 106 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -304,6 +304,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (cube_minmax = false) writes what 3.2 wrote; RESET restores true. Units written afterwards; sift.col_refresh(index) or REINDEX rewrite older ones; sift.col_format_minor <= 6 also writes none.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Leave on. Turn it off (WITH cube_minmax = false) only to write segments a 3.2 library can read or to save the extra bytes when no query takes min or max of an integer per group.
+
+#### sift_col(array_lengths)
+
+`sift_col` · default · since 3.6 · default auto
+
+- **What it does:** cardinality(x), array_length(x, 1) and x IS [NOT] NULL of an array column are read from two integer columns kept next to the arrays, without decoding them
+- **Gain:** presence and length tests of arrays, 1,000,000 rows, six array columns (instructions of one backend): count with IS NOT NULL AND cardinality(x) > 0 1,047 M to 10.8 M (135.9 to 0.91 ms; the sift_col plan before was 4,088 M, 538.9 ms); three arrays at once 1,214 M to 23 M; Inventory QA with count(DISTINCT id) FILTER over five arrays grouped by two columns 21,676 M to 256 M (2,049 to 25 ms); avg(cardinality(x)), max(array_length(x, 1)) grouped 1,867 M to 134 M (374 to 7.9 ms)
+- **Formula:** S 97.00x saving 1036500k instructions, G 10.2%, W 12.0%, R 1: B 93.8 against C 5.8, automatic
+- **Impact:** index size: +10.2% of the index (73,015,296 to 80,486,400 bytes; six array columns, 1,000,000 rows, 2 lanes each: 0.4 to 0.8 MB a lane); +9.8% at 300,000 rows (22.8 to 25.1 MB); build, merge and writes: CREATE INDEX +12.0% instructions (8,114 M to 9,090 M; 300,000 rows), REINDEX +12.5%, insert of 20,000 rows +9.0% (388 M to 423 M), update of 20,000 rows +3.5%, promotion +17%, merge +15%; delete and VACUUM unchanged; other: about 1 byte a row for each array column and lane (+10% of the index on six array columns, 1,000,000 rows); a build, merge or promotion writes two more columns for each array column; after a change the table takes no write until the REINDEX
+- **When:** cardinality(x), array_length(x, 1), x IS [NOT] NULL and the same in FILTER, CASE, GROUP BY and aggregates, for int[], text[], numeric[] and any other array column of the index. Not array_length(x, 2) or higher, array_ndims, @>, &&, <@, = ANY or unnest: those still read the arrays. A range, inet or other image has no lengths.
+- **Default:** auto — Automatic: S 97 on the presence and length tests against G 10.2% and W 12.0% pass the default formula (B 94 against C 5.8) for every array column, so no sample is needed; the NOTICE at CREATE INDEX names the columns and the off switch. The images cost a hash, an interning and a decompression for every row of an almost unique array column (4,100 instructions a row for 30-element arrays against 11 for the lane).
+- **Turn off:** ALTER INDEX .. SET (array_lengths = off), then REINDEX (or array_lengths = off on CREATE INDEX): the index keeps the images alone, as before 3.6. No column format minor: the leaves are ordinary integer leaves of the schema.
+- **Upgrade from 3.5:** An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout").
+- **Advice:** Leave it. CREATE INDEX keeps the lengths of every array column and says so; array_lengths = off drops them (ALTER INDEX .. SET (array_lengths = off), then REINDEX).
 
 #### sift_col(rollup_dims)
 
@@ -2123,10 +2137,11 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.5; new: none.
+No default changed since 3.5; new: `sift_col(array_lengths)`.
 
 | Option | 3.5 | 3.5 | Column format | What a 3.5 user gets after the update |
 |---|---|---|---|---|
+| `sift_col(array_lengths)` | new | auto |  | An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout"). |
 | `sift_col(key_table)` | true | true | minor 22 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift_col(count_columns)` | '' | '' | minor 24 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
 | `sift_col(order_array_columns)` | '' | '' | minor 21 | The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 21, which 3.3 and older refuse (SET (order_array_columns = 'off') and REINDEX first). |
@@ -2170,6 +2185,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
 | NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols.c` |  |
+| NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols.c` | `rollup` |
 | WARNING | maintenance of sift_col index %s failed: %s | `src/col/maint.c` |  |
 | NOTICE | sift_col index %s: the cube dim "%s" has no histogram in %s%%sf %s units, which hold more than %s groups of it | `src/col/rollup.c` |  |

@@ -101,6 +101,14 @@ enum
 	SIFT_COL_DICT_OFF
 };
 
+/* The values of the option array_lengths: the build writes on for an index with an array column (auto is an index built before it, which keeps the images alone) */
+enum
+{
+	SIFT_COL_ARRLEN_AUTO,
+	SIFT_COL_ARRLEN_ON,
+	SIFT_COL_ARRLEN_OFF
+};
+
 typedef struct SiftColOptions
 {
 	int32		vl_len_;
@@ -121,6 +129,7 @@ typedef struct SiftColOptions
 	int			point_columns;	/* offset of the "point_columns" string, 0 = none */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
+	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */

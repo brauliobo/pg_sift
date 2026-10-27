@@ -102,6 +102,11 @@ leaf_name(AggCtx *c, int id)
 	const char *att = att_name(c, l->attno);
 
 	initStringInfo(&s);
+	if (l->arrlen > 0)
+	{
+		appendStringInfo(&s, l->arrlen == 1 ? "cardinality(%s)" : "array_length(%s, 1)", att);
+		return s.data;
+	}
 	if (l->parent >= 0)
 	{
 		const char *p = leaf_name(c, l->parent);
@@ -236,9 +241,39 @@ scalar_leaf(AggCtx *c, int att, List *path, Oid typid)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && paths_equal(l->path, path) &&
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && l->arrlen == 0 && paths_equal(l->path, path) &&
 			l->typid == typid)
 			return i;
+	}
+	return -1;
+}
+
+/*
+ * `cardinality(x)` and `array_length(x, 1)` of an array attribute that keeps its lengths (option array_lengths): the integer lane after its image, NULL
+ * where PostgreSQL's function is. Any other dimension keeps the image.
+ */
+static int
+array_lane_leaf(AggCtx *c, Node *e, Oid fid)
+{
+	List	   *args = func_args(e);
+	Node	   *arr = strip_relabel(linitial(args));
+	int			att = attr_of_expr(c, arr);
+
+	if (att == 0)
+		return -1;
+	if (fid == F_ARRAY_LENGTH)
+	{
+		Node	   *dim = strip_relabel(lsecond(args));
+
+		if (!IsA(dim, Const) || ((Const *) dim)->constisnull || DatumGetInt32(((Const *) dim)->constvalue) != 1)
+			return -1;
+	}
+	for (int i = 0; i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->arrhead && l->parent < 0)
+			return i + (fid == F_CARDINALITY ? 1 : 2);
 	}
 	return -1;
 }
@@ -637,6 +672,8 @@ match_leaf_node(AggCtx *c, Node *e)
 	fid = func_of(e);
 	if (fid == F_JSONB_ARRAY_LENGTH)
 		return array_length_leaf(c, e);
+	if (fid == F_CARDINALITY || fid == F_ARRAY_LENGTH)
+		return array_lane_leaf(c, e, fid);
 	if (fid == F_JSONB_TYPEOF)
 		return types_leaf(c, e);
 	inner = e;
@@ -726,6 +763,20 @@ nulltest_mutator(Node *n, AggCtx *c)
 		*out = *(NullTest *) n;
 		out->arg = (Expr *) typed;
 		return (Node *) out;
+	}
+	/* `x IS [NOT] NULL` of an array that keeps its lengths is the null test of its cardinality: the lane, not the image */
+	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow && OidIsValid(get_element_type(exprType((Node *) ((NullTest *) n)->arg))) &&
+		attr_of_expr(c, strip_relabel((Node *) ((NullTest *) n)->arg)) > 0)
+	{
+		NullTest   *out = makeNode(NullTest);
+		Node	   *call = (Node *) makeFuncExpr(F_CARDINALITY, INT4OID, list_make1(((NullTest *) n)->arg), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+
+		if (array_lane_leaf(c, call, F_CARDINALITY) >= 0)
+		{
+			*out = *(NullTest *) n;
+			out->arg = (Expr *) call;
+			return (Node *) out;
+		}
 	}
 	return expression_tree_mutator(n, nulltest_mutator, c);
 }

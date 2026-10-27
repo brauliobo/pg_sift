@@ -114,7 +114,7 @@ check_wide(Relation index, const SiftColSchema *sc, const SiftColRow *row)
 		const SiftColDef *def = &sc->cols[c];
 		const SiftColValue *v = &row->val[c];
 
-		if (def->lanes < 2)
+		if (def->lanes < 2 || sift_col_def_arrlen_head(def))	/* the lengths of an array are checked with its value: array_length of an empty array is NULL */
 			continue;
 		for (int k = 1; k < def->lanes; k++)
 			if (row->val[c + k].isnull != v->isnull || row->val[c + k].overflow != v->overflow)

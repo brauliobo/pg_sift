@@ -7,6 +7,7 @@
 
 #include "catalog/pg_type_d.h"
 #include "fmgr.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/inet.h"
 #include "utils/cash.h"
@@ -100,6 +101,8 @@ type_of_tag(uint8 tag)
 Oid
 sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 {
+	if (sift_col_def_arrlen_lane(def))
+		return INT4OID;
 	if (def->attno > 0 && def->path[0] == '\0')
 		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
 	return type_of_tag(def->type);
@@ -174,8 +177,17 @@ make_lanes(Form_pg_attribute att, SiftColDef *defs, int lanes)
 	return lanes;
 }
 
+/* an array type proper (not int2vector, oidvector, a range or a domain): the image is an ArrayType whose header gives the lengths */
+bool
+sift_col_is_array_type(Oid typid)
+{
+	Oid			elem = get_element_type(typid);
+
+	return OidIsValid(elem) && get_array_type(elem) == typid;
+}
+
 int
-sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs)
+sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen)
 {
 	Oid			typid = att->atttypid;
 	SiftColStore store = SIFT_COLS_INT;
@@ -215,7 +227,7 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs)
 			if (defs[0].type == SIFT_COLT_UUID || defs[0].type == SIFT_COLT_BYTEA || sift_col_def_is_image(&defs[0]))
 			{
 				defs[0].store = SIFT_COLS_STR;
-				return make_lanes(att, defs, 1);
+				return make_lanes(att, defs, arrlen && sift_col_is_array_type(typid) ? SIFT_COL_ARRLEN_LANES : 1);
 			}
 	}
 	ereport(ERROR,
@@ -483,6 +495,14 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 
 				v->v.s = (const char *) image;
 				v->len = VARSIZE(image);
+				if (sift_col_def_arrlen_head(def))
+				{
+					const ArrayType *a = (const ArrayType *) image;
+
+					v[1].v.i = ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
+					v[2].v.i = ARR_NDIM(a) > 0 && v[1].v.i > 0 ? ARR_DIMS(a)[0] : 0;
+					v[2].isnull = v[2].v.i == 0;	/* array_length of an empty array is NULL */
+				}
 			}
 			break;
 		case SIFT_COLT_NUMERIC:

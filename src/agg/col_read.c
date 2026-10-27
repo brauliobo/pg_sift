@@ -57,7 +57,7 @@ wide_unit(ColSource *src, int leaf)
 		const SiftColDef *def = sift_col_def(src->cs, leaf);
 		SiftColVec	v[SIFT_COL_MAX_LANES];
 
-		for (int k = 0; k < Max(def->lanes, 1); k++)
+		for (int k = 0; k < sift_col_def_value_lanes(def); k++)
 			sift_aggsel_read(&src->sel, &src->unit, leaf + k, &v[k]);
 		w->cxt = src->cxt;
 		sift_aggwide_build(w, def, v, v[0].n);
@@ -156,7 +156,7 @@ wide_scatter(ColSource *src, int leaf, const SiftColSel *sel, const uint32 *idx,
 
 	sift_aggsel_leaf_buf(src->cxt, b, nrow);
 	codes = b->data;
-	for (int k = 0; k < Max(def->lanes, 1); k++)
+	for (int k = 0; k < sift_col_def_value_lanes(def); k++)
 		sift_col_read(&src->unit, leaf + k, sel, &v[k]);
 	w->cxt = src->cxt;
 	sift_aggwide_build(w, def, v, sel->count);

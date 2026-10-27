@@ -88,7 +88,7 @@ leaf_vtype(const SiftColDef *def)
 static bool
 leaf_hidden(const SiftColDef *def)
 {
-	return def->lane > 0;
+	return def->lane > 0 && !sift_col_def_arrlen_lane(def);
 }
 
 /* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
@@ -151,6 +151,8 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 	l->attno = def->attno;
 	l->parent = def->parent;
 	l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(desc, def);
+	l->arrhead = sift_col_def_arrlen_head(def);
+	l->arrlen = sift_col_def_arrlen_lane(def) ? def->lane : 0;
 	l->wide = leaf_wide(def);
 	l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(desc, def) : InvalidOid;
 	l->scale = def->scale;

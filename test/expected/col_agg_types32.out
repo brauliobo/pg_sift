@@ -41,12 +41,18 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('wt_col') ORDER BY leaf;
     4 | t    | time without time zone | scalar
     5 | e    | lvl3                   | scalar
     6 | ia   | integer[]              | scalar
-    7 | ta   | text[]                 | scalar
-    8 | na   | numeric[]              | scalar
-    9 | r    | int4range              | scalar
-   10 | tr   | tstzrange              | scalar
-   11 | mr   | int4multirange         | scalar
-(12 rows)
+    7 | ia#1 | integer (lane 1)       | scalar
+    8 | ia#2 | integer (lane 2)       | scalar
+    9 | ta   | text[]                 | scalar
+   10 | ta#1 | integer (lane 1)       | scalar
+   11 | ta#2 | integer (lane 2)       | scalar
+   12 | na   | numeric[]              | scalar
+   13 | na#1 | integer (lane 1)       | scalar
+   14 | na#2 | integer (lane 2)       | scalar
+   15 | r    | int4range              | scalar
+   16 | tr   | tstzrange              | scalar
+   17 | mr   | int4multirange         | scalar
+(18 rows)
 
 SELECT format FROM sift.col_segments('wt_col') WHERE kind = 'immutable';
  format 

@@ -22,6 +22,9 @@ SELECT n,
 FROM generate_series(1, 4000) n;
 UPDATE im SET u = md5('late')::uuid WHERE id = 3999;
 CREATE INDEX im_col ON im USING sift_col (id, u, b, i, c, m, m8, bt, vb, ar);
+NOTICE:  sift_col index im_col keeps the lengths of the arrays ar
+DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
+HINT:  ALTER INDEX im_col SET (array_lengths = 'off'), then REINDEX, drops them.
 VACUUM (FREEZE, ANALYZE) im;
 INSERT INTO im SELECT 5000 + n, md5((n % 3)::text)::uuid, '\x01'::bytea, '203.0.113.1'::inet, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) n;
 CREATE TABLE im_q (name text, q text);

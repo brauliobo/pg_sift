@@ -79,6 +79,8 @@ extern void sift_col_auto_paths(Relation heap, Relation index);
 extern void sift_col_auto_cube(Relation heap, Relation index);
 /* rollup_dims = 'auto' (col/keycols.c): the columns whose combinations fit the rollup of the rows of a unit, written to the option as 'auto: a, b' */
 extern void sift_col_auto_rows(Relation heap, Relation index);
+/* array_lengths = auto (col/keycols.c): written as on for an index with an array column, before the build */
+extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index);
 extern void sift_col_set_option(Relation index, const char *name, const char *value);
@@ -126,9 +128,11 @@ extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
 extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
 /*
  * The leaves of one attribute of a sift_col index (col/types.c): defs[0 .. result) with the type, storage class, scale, lanes, lane and path set;
- * the caller sets id and attno (parent is -1). defs has room for SIFT_COL_MAX_LANES. ERROR for a type the engine does not hold.
+ * the caller sets id and attno (parent is -1). defs has room for SIFT_COL_MAX_LANES. arrlen: an array keeps its lengths as two lanes (option array_lengths). ERROR for a type the engine does not hold.
  */
-extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs);
+/* An array type proper (not int2vector, oidvector, a range or a domain): only its image has lengths */
+extern bool sift_col_is_array_type(Oid typid);
+extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen);
 /* The values of one datum for the leaf def and the leaves after it (its lanes): v[0 .. max(def->lanes, 1)); strings are palloc'd or point into the datum */
 extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v);
 
