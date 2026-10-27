@@ -967,6 +967,33 @@ wal_budget_spent(const XLogRecPtr *lsn, const uint64 *sbytes, int n, uint64 byte
 }
 
 /*
+ * Do the segments the budget counts from (those of at least half the bytes of the largest) overlap each other? A build in parallel, or one that
+ * outgrew the memory of a segment writer, leaves peers that all cover the same superblocks, and the rewrite that merges them is the first, not
+ * a repeat of the churn that the budget limits. A rewrite leaves peers that do not overlap, and the segments a promotion adds are small.
+ */
+static bool
+peers_overlap(const RewriteView *v)
+{
+	SiftDirSnapshot *peers = palloc(sizeof(SiftDirSnapshot));
+	uint64		large = 0,
+				listed = 0;
+	bool		overlap;
+
+	for (int i = 0; i < v->n; i++)
+		large = Max(large, v->imm[i].bytes);
+	peers->nsegs = 0;
+	for (int i = 0; i < v->n; i++)
+		if (v->imm[i].bytes * 2 >= large)
+		{
+			peers->segs[peers->nsegs++] = v->imm[i];
+			listed += v->seg[i]->nsb;
+		}
+	overlap = peers->nsegs > 1 && (double) listed >= sift_col_auto_merge_fragmentation * (double) sift_cseg_dir_units(peers);
+	pfree(peers);
+	return overlap;
+}
+
+/*
  * Is the index worth a rewrite of all its segments? A DELETE or UPDATE spread over the table puts a dead row in most units while
  * the share of dead rows stays under dead_rewrite_pct, and each promotion of the write buffer adds a segment over the same superblocks, so the
  * index slowly loses the units that answer from their pre-aggregates and gains units to read. The rule is on what a rewrite changes, measured on
@@ -985,7 +1012,8 @@ rewrite_check(Relation index, bool automatic, int *gates)
 	RewriteView *v;
 	const char *why = NULL;
 	bool		partitioned,
-				part_dirty = false;
+				part_dirty = false,
+				build_peers;
 	uint64		listed = 0,
 				dirty = 0,
 				rows = 0,
@@ -1003,6 +1031,7 @@ rewrite_check(Relation index, bool automatic, int *gates)
 	partitioned = part_kb > 0;
 	v = view_open(index, snap, cx);
 	nseg = v->n;
+	build_peers = peers_overlap(v);
 	for (int i = 0; i < v->n; i++)
 	{
 		const SiftSegEntry *e = &v->imm[i];
@@ -1047,8 +1076,10 @@ rewrite_check(Relation index, bool automatic, int *gates)
 		why = "fragmented units";
 	if (why == NULL && buffered > 0 && (double) buffered * 100 > sift_col_auto_merge_buffer_pct * (double) (rows + buffered))
 		why = WHY_BUFFER;
-	/* the budget is of the rewrite of the segments; the promotion of a write buffer costs its rows */
-	if (why != NULL && automatic && rewrite_all(why) && wal_budget_spent(lsn, sbytes, nseg, bytes))
+	/* the budget is of the rewrite of the segments that churn calls for, not of the first one, which the peers of a build call for; the promotion of a write buffer costs its rows */
+	if (why != NULL && automatic && build_peers && gates != NULL && rewrite_all(why))
+		*gates |= SIFT_COL_PEERS;
+	if (why != NULL && automatic && rewrite_all(why) && !build_peers && wal_budget_spent(lsn, sbytes, nseg, bytes))
 	{
 		if (gates != NULL)
 			*gates |= SIFT_COL_GATE_WAL;
@@ -1089,6 +1120,41 @@ rewrite_request(Relation index)
 		return;
 	if (rewrite_due(index, true) != NULL)
 		sift_maint_register_worker(index, "sift_col_rewrite_worker_main");
+}
+
+/*
+ * The peers a build left are rewritten without a VACUUM to ask for it: a table nothing changes is never vacuumed, and its scans would walk the units of every
+ * peer for good. A look at the directory (the ranges of the largest segments overlap) comes before the rule, which opens the segments; the request is
+ * the one of VACUUM, so that its backoff and the stamp in the index keep the backends that look from starting a worker each.
+ */
+void
+sift_col_rewrite_tick(Relation index)
+{
+	SiftDirSnapshot *snap;
+	SiftDirSnapshot *peers;
+	uint64		large = 0,
+				ranges = 0;
+	int			gates = 0;
+
+	if (!sift_col_auto_merge || !sift_async_maintenance || RecoveryInProgress() || index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		return;
+	snap = palloc(sizeof(SiftDirSnapshot));
+	peers = palloc(sizeof(SiftDirSnapshot));
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			large = Max(large, snap->segs[i].bytes);
+	peers->nsegs = 0;
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && snap->segs[i].bytes * 2 >= large)
+		{
+			peers->segs[peers->nsegs++] = snap->segs[i];
+			ranges += (uint64) snap->segs[i].sb_hi + 1 - snap->segs[i].sb_lo;
+		}
+	if (peers->nsegs > 1 && sift_cseg_dir_units(peers) < ranges && rewrite_check(index, true, &gates) != NULL && (gates & SIFT_COL_PEERS))
+		(void) sift_maint_request_worker(index, "sift_col_rewrite_worker_main");
+	pfree(peers);
+	pfree(snap);
 }
 
 static const SiftMaintOps col_ops = {

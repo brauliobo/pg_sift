@@ -129,6 +129,8 @@ worker_at(Oid heapoid)
 	return false;
 }
 
+static Oid	vacuum_heap_of(Oid indexoid);
+
 /*
  * A backend looks at the table of the index: once per naptime for each index, whether it inserted a row version (vetted 0) or read the rows of the
  * index in the heap (vetted, which must be many to be worth a look).
@@ -149,11 +151,14 @@ sift_col_vacuum_tick(Oid indexoid, Oid heapoid, int64 vetted)
 		return;
 	looked = indexoid;
 	looked_at = now;
-	if (table_state(heapoid, vetted > 0) != TABLE_DUE || worker_at(heapoid))
-		return;
 	index = index_open(indexoid, AccessShareLock);
-	if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
-		sift_maint_register_worker(index, vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main");
+	if (table_state(heapoid, vetted > 0) == TABLE_DUE && !worker_at(heapoid))
+	{
+		if (index->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
+			sift_maint_register_worker(index, vetted > 0 ? "sift_col_vacuum_scan_worker_main" : "sift_col_vacuum_worker_main");
+	}
+	else if (OidIsValid(vacuum_heap_of(indexoid)))
+		sift_col_rewrite_tick(index);
 	index_close(index, AccessShareLock);
 }
 
