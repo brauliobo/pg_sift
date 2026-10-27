@@ -465,13 +465,6 @@ lut_expr_ok(AggCtx *c, int leaf, Node *expr)
  * day boundary, so the executor evaluates them once per such step of the data instead of once per distinct timestamp (which is
  * once per row): the key id of a row is a lookup of its step.
  */
-typedef struct BucketUnit
-{
-	const char *name;
-	int			secs;			/* the step the result changes on */
-	double		len;			/* average seconds of a unit */
-	int			cycle;			/* extract: the values it repeats after, 0: it does not */
-} BucketUnit;
 
 #define DAY_SECS		86400
 #define MONTH_SECS		2629800
@@ -501,7 +494,7 @@ session_zone_call(Oid funcid)
 }
 
 /* the unit of a date_trunc, date_part or extract of a timestamp (of a timestamptz in the session's zone with `session`); NULL for another call, or a unit this does not know */
-static const BucketUnit *
+const BucketUnit *
 bucket_unit(Node *e, bool session)
 {
 	FuncExpr   *f;

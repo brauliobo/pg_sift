@@ -97,6 +97,8 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_int(p, pr->late);
 	put_int(p, pr->pass_poison);
 	put_node(p, pr->expr);
+	put_node(p, pr->cal);
+	put_int(p, pr->calmode);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
 	put_int(p, pr->nchild);
@@ -514,6 +516,8 @@ get_pred(Unpack *u)
 	pr->late = get_int(u);
 	pr->pass_poison = get_int(u);
 	pr->expr = get_node(u);
+	pr->cal = get_node(u);
+	pr->calmode = get_int(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
 	pr->nchild = get_int(u);

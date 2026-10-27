@@ -804,11 +804,14 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&
 		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
 	{
-		bool		isnull;
+		bool		isnull = false;
 		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
-		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+		Datum		d;
 
+		if (p->calmode)
+			d = sift_cal_bound(p->cal, p->calmode);
+		else
+			d = ExecEvalExprSwitchContext(ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex)), ex->lutcx, &isnull);
 		MemoryContextSwitchTo(old);
 		if (isnull)
 			return NULL;

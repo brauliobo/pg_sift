@@ -342,6 +342,14 @@ extern bool leaf_span(AggCtx *c, int leaf, int64 *lo, int64 *hi);
 extern bool lut_expr_ok(AggCtx *c, int leaf, Node *expr);
 extern double key_groups(AggCtx *c, const SiftAggKey *k);
 extern const char *bucket_text(int secs);
+typedef struct BucketUnit
+{
+	const char *name;
+	int			secs;			/* the step the result changes on */
+	double		len;			/* average seconds of a unit */
+	int			cycle;			/* extract: the values it repeats after, 0: it does not */
+} BucketUnit;
+extern const BucketUnit *bucket_unit(Node *e, bool session);
 extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned);
 extern int leaf_digits(Oid typid, int32 typmod);
 extern bool nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2);
@@ -365,6 +373,7 @@ extern SiftAggPred *new_junction(AggCtx *c, SiftAggPredKind kind, int nchild);
 extern void junction_done(SiftAggPred *p);
 extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args);
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
+extern SiftAggPred *compile_calendar_cmp(AggCtx *c, OpExpr *op);
 
 extern int typeof_leaf(AggCtx *c, Node *e);
 extern bool source_can_types(AggCtx *c);

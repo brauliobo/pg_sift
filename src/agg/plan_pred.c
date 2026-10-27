@@ -792,6 +792,8 @@ compile_pred(AggCtx *c, Node *n)
 	}
 	if (IsA(n, OpExpr) && (p = compile_cmp(c, (OpExpr *) n)) != NULL)
 		return p;
+	if (IsA(n, OpExpr) && (p = compile_calendar_cmp(c, (OpExpr *) n)) != NULL)
+		return p;
 	if (IsA(n, ScalarArrayOpExpr) && (p = compile_in(c, (ScalarArrayOpExpr *) n)) != NULL)
 		return p;
 	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
