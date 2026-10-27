@@ -680,6 +680,13 @@ par_forget_memo(AggExec *ex)
 	memset(ex->cmemo, 0, Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
 }
 
+/* The shared child rows live in the segment of the parallel context: the leader reads none of them once it is destroyed */
+static void
+par_forget_memo(AggExec *ex)
+{
+	memset(ex->cmemo, 0, Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
+}
+
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
 void
 par_launch(AggExec *ex)
