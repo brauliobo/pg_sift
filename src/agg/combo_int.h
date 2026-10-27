@@ -106,6 +106,8 @@ typedef struct ComboSt
 	ComboEnt   *ent;
 	uint32		nht;
 	uint32	   *ht;				/* ent + 1 */
+	int			reuse_debt;		/* combo_resolve_gen: the misses of testing for the last tuple's values, less what its hits saved */
+	bool		reuse_off;		/* the debt ran out: no more tests */
 	uint32		dircap;			/* one input: entry + 1 of the id (below COMBO_DIR_MAX) by index, 0 not seen (combo_ent) */
 	uint32	   *dir;
 	uint32	   *byrow;			/* a combo of one earlier lookup's output row (and of that lookup's own leaf): entry + 1 by that row, 0 not seen (combo_resolve) */
@@ -120,6 +122,7 @@ typedef struct ComboSt
 #define COMBO_UNEVAL	UINT32_MAX
 #define COMBO_NONE		UINT32_MAX
 
+#define COMBO_REUSE_CREDIT 256	/* the misses a combo that tests tuples against their predecessor may run up before it stops */
 #define COMBO_DIR_MAX	((uint64) 1 << 16)	/* the ids a combo of one input finds its entry by index (256 kB at most) */
 
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */

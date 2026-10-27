@@ -1266,6 +1266,42 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 	}
 }
 
+/* eid[0..n) of the leaf values in cvid; reuse: a tuple with the values of the one before it takes its entry; returns how many did */
+static pg_attribute_always_inline int
+combo_ents(AggExec *ex, int ci, int n, uint32 *eid, const uint64 *alive, bool reuse)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	int			hits = 0,
+				last = -1;
+
+	for (int i = 0; i < n; i++)
+	{
+		uint64		v[SIFT_AGG_MAX_CLEAVES];
+		bool		same = reuse && last >= 0;
+
+		if (alive && !sift_colsrc_bit(alive, i))
+		{
+			eid[i] = COMBO_NONE;
+			continue;
+		}
+		for (int p = 0; same && p < cb->nleaves; p++)
+			same = ex->cvid[p][i] == ex->cvid[p][last];
+		if (same)
+		{
+			eid[i] = eid[last];
+			hits++;
+			continue;
+		}
+		/* combo_ent reads ninputs values: one even for a combo without leaves, whose value is 0 */
+		v[0] = cb->nleaves > 0 ? ex->cvid[0][i] : 0;
+		for (int p = 1; p < cb->nleaves; p++)
+			v[p] = ex->cvid[p][i];
+		eid[i] = combo_ent(ex, ci, v);
+		last = i;
+	}
+	return hits;
+}
+
 /*
  * eid[i] = the entry of the combo's leaf values at tuple i: an element's leaf is read at tidx, a row's at ridx. A tuple that is not
  * alive (alive: bit i; NULL: all) has none (COMBO_NONE): no value of it reaches PostgreSQL's evaluation.
@@ -1275,6 +1311,7 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 {
 	SiftAggCombo *cb = &ex->spec->combo[ci];
 	ComboSt    *cs = &ex->cs[ci];
+	int			hits;
 
 	if (cs->resettable && cs->nent >= (uint32) sift_agg_combo_cache && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
@@ -1329,21 +1366,18 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 			}
 		}
 	}
-	for (int i = 0; i < n; i++)
+	/*
+	 * The tuples of a row come together and often carry the same values. The test costs about as much as a hit saves a sixth of the times: a
+	 * combo whose misses outrun what its hits pay back stops testing for the rest of the query.
+	 */
+	if (cs->reuse_off)
 	{
-		uint64		v[SIFT_AGG_MAX_CLEAVES];
-
-		if (alive && !sift_colsrc_bit(alive, i))
-		{
-			eid[i] = COMBO_NONE;
-			continue;
-		}
-		/* combo_ent reads ninputs values: one even for a combo without leaves, whose value is 0 */
-		v[0] = cb->nleaves > 0 ? ex->cvid[0][i] : 0;
-		for (int p = 1; p < cb->nleaves; p++)
-			v[p] = ex->cvid[p][i];
-		eid[i] = combo_ent(ex, ci, v);
+		combo_ents(ex, ci, n, eid, alive, false);
+		return;
 	}
+	hits = combo_ents(ex, ci, n, eid, alive, true);
+	cs->reuse_debt = Max(cs->reuse_debt + (n - hits) - 5 * hits, -COMBO_REUSE_CREDIT);
+	cs->reuse_off = cs->reuse_debt > COMBO_REUSE_CREDIT / 4;
 }
 
 /*
