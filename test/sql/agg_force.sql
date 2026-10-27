@@ -1,5 +1,5 @@
 -- sift.agg_force takes the aggregate scan wherever the planner can build it, whatever the plans cost, to time the plan the cost model refused: a probe
--- of one key keeps its index scan by cost, and a shared CTE read by two scalar subqueries stays shared; forced, both take the scan. A statement the scan
+-- of one key keeps its index scan by cost, and a shared CTE of a few rows that two scalar subqueries read stays shared; forced, both take the scan. A statement the scan
 -- cannot compute stays refused for its shape. The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -29,7 +29,7 @@ BEGIN
 END $$;
 
 CREATE FUNCTION probe() RETURNS text LANGUAGE sql AS $$ SELECT 'SELECT kind, count(*) AS n, sum(amount) AS s FROM events WHERE parent_id = 7 GROUP BY 1' $$;
-CREATE FUNCTION shared() RETURNS text LANGUAGE sql AS $$ SELECT 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)' $$;
+CREATE FUNCTION shared() RETURNS text LANGUAGE sql AS $$ SELECT 'WITH c AS (SELECT kind, parent_id FROM events WHERE amount = 3 AND id < 5000) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)' $$;
 
 -- by cost: the index scan of the probe
 SELECT plan_of(probe()) AS probe, (SELECT slug FROM sift.explain_why(probe()) WHERE NOT used LIMIT 1) AS slug;

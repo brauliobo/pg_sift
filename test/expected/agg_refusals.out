@@ -104,55 +104,53 @@ INSERT INTO shapes VALUES
  ('spine rows', 'two_level', spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')),
  ('spine grouping sets', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
  ('rows', 'rows', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
- ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
- ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
+ ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)'));
 SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
-        name         |    arm     | used |       slug       
----------------------+------------+------+------------------
- used                | single     | t    | 
- no index            | single     | f    | no_source
- query kind          | single     | f    | query_kind
- table kind          | single     | f    | table_kind
- partitions          | single     | f    | partition_source
- from shape          | single     | f    | from_shape
- outer join          | single     | f    | outer_join
- unnest leaf         | single     | f    | unnest_leaf
- where               | single     | f    | where
- volatile            | single     | f    | volatile
- join condition      | single     | f    | join_condition
- join child          | single     | f    | join_child
- volatile child      | single     | f    | volatile
- group key           | single     | f    | group_key
- volatile key        | single     | f    | volatile
- too many keys       | single     | f    | too_many_keys
- output              | single     | f    | output_expr
- error parity        | single     | f    | error_parity
- aggregate           | single     | f    | aggregate
- volatile filter     | single     | f    | volatile
- dirty cast          | single     | f    | dirty_units
- distinct            | distinct   | t    | 
- distinct on         | distinct   | f    | distinct_on
- top n               | topn       | t    | 
- top n order         | topn       | f    | topn_shape
- top n where         | topn       | f    | where
- top n volatile      | topn       | f    | volatile
- top n locked        | topn       | f    | query_kind
- top n window        | topn       | f    | topn_shape
- top n limit         | topn       | f    | topn_shape
- top n no index      | topn       | f    | no_source
- limit 1 lookup      | lookup     | f    | lateral_limit
- two level           | two_level  | t    | 
- two level arms      | two_level  | f    | two_arms
- two level key       | two_level  | f    | two_keys
- two level aggregate | two_level  | f    | two_aggs
- spine               | two_level  | t    | 
- spine join          | two_level  | f    | spine_shape
- spine rows          | two_level  | t    | 
- spine grouping sets | two_level  | t    | 
- rows                | rows       | f    | rows_shape
- rows grouping sets  | rows       | f    | grouping_sets
- shared cte          | cte_inline | f    | cte_cost
-(43 rows)
+        name         |    arm    | used |       slug       
+---------------------+-----------+------+------------------
+ used                | single    | t    | 
+ no index            | single    | f    | no_source
+ query kind          | single    | f    | query_kind
+ table kind          | single    | f    | table_kind
+ partitions          | single    | f    | partition_source
+ from shape          | single    | f    | from_shape
+ outer join          | single    | f    | outer_join
+ unnest leaf         | single    | f    | unnest_leaf
+ where               | single    | f    | where
+ volatile            | single    | f    | volatile
+ join condition      | single    | f    | join_condition
+ join child          | single    | f    | join_child
+ volatile child      | single    | f    | volatile
+ group key           | single    | f    | group_key
+ volatile key        | single    | f    | volatile
+ too many keys       | single    | f    | too_many_keys
+ output              | single    | f    | output_expr
+ error parity        | single    | f    | error_parity
+ aggregate           | single    | f    | aggregate
+ volatile filter     | single    | f    | volatile
+ dirty cast          | single    | f    | dirty_units
+ distinct            | distinct  | t    | 
+ distinct on         | distinct  | f    | distinct_on
+ top n               | topn      | t    | 
+ top n order         | topn      | f    | topn_shape
+ top n where         | topn      | f    | where
+ top n volatile      | topn      | f    | volatile
+ top n locked        | topn      | f    | query_kind
+ top n window        | topn      | f    | topn_shape
+ top n limit         | topn      | f    | topn_shape
+ top n no index      | topn      | f    | no_source
+ limit 1 lookup      | lookup    | f    | lateral_limit
+ two level           | two_level | t    | 
+ two level arms      | two_level | f    | two_arms
+ two level key       | two_level | f    | two_keys
+ two level aggregate | two_level | f    | two_aggs
+ spine               | two_level | t    | 
+ spine join          | two_level | f    | spine_shape
+ spine rows          | two_level | t    | 
+ spine grouping sets | two_level | t    | 
+ rows                | rows      | f    | rows_shape
+ rows grouping sets  | rows      | f    | grouping_sets
+(42 rows)
 
 -- a condition on a column the index does not hold names it
 CREATE TABLE narrow (id int, kind text, note int);
@@ -282,7 +280,7 @@ SET client_min_messages = error;
 SELECT count(*) AS shapes, count(*) FILTER (WHERE plan_of(q, false) <> plan_of(q, true)) AS plans_that_differ FROM shapes;
  shapes | plans_that_differ 
 --------+-------------------
-     43 |                 0
+     42 |                 0
 (1 row)
 
 SHOW sift.explain_refusals;

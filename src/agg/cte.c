@@ -364,6 +364,28 @@ any_sift_agg(List *plans)
 	return a.n > 0;
 }
 
+/* the plans (their ids among the subplans of the statement) the expressions of a node run: its InitPlans (scalar subqueries) and the SubPlans of its target list and quals; not the CTEs, which a CteScan names */
+static bool
+subplan_ids_walker(Node *n, List **ids)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) && ((SubPlan *) n)->subLinkType != CTE_SUBLINK)
+		*ids = lappend_int(*ids, ((SubPlan *) n)->plan_id);
+	return expression_tree_walker(n, subplan_ids_walker, ids);
+}
+
+static List *
+subplan_ids(Plan *plan)
+{
+	List	   *ids = NIL;
+
+	subplan_ids_walker((Node *) plan->initPlan, &ids);
+	subplan_ids_walker((Node *) plan->targetlist, &ids);
+	subplan_ids_walker((Node *) plan->qual, &ids);
+	return ids;
+}
+
 /* the CTEs (plan ids) that a CteScan of the plan, or of a CTE it reads, names */
 static void cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs);
 
@@ -384,6 +406,12 @@ cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs)
 		*refs = bms_add_member(*refs, ((CteScan *) plan)->ctePlanId);
 		cte_refs(stmt, list_nth(stmt->subplans, ((CteScan *) plan)->ctePlanId - 1), refs);
 	}
+	foreach_int(id, subplan_ids(plan))
+		if (!bms_is_member(id, *refs))
+		{
+			*refs = bms_add_member(*refs, id);
+			cte_refs(stmt, list_nth(stmt->subplans, id - 1), refs);
+		}
 	switch (nodeTag(plan))
 	{
 		case T_Append:
@@ -551,6 +579,13 @@ shared_work(SharedWork *w, Plan *plan, Plan *agg)
 			shared_work(w, body, NULL);
 		}
 	}
+	/* the aggregates of a scalar subquery read the CTE too, and cost what the scans of the inline plan replace */
+	foreach_int(id, subplan_ids(plan))
+		if (!bms_is_member(id, w->seen))
+		{
+			w->seen = bms_add_member(w->seen, id);
+			shared_work(w, list_nth(w->stmt->subplans, id - 1), NULL);
+		}
 	foreach_ptr(Plan, p, child_plans(plan))
 		shared_work(w, p, agg);
 	shared_work(w, plan->lefttree, agg);

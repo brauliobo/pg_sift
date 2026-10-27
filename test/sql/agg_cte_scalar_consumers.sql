@@ -1,0 +1,32 @@
+-- A CTE that scalar subqueries read (InitPlans: they are not in the plan tree of the statement, but among its subplans) is weighed like one that joins read.
+-- The shared plan was priced as if it did no work (the cost of the subplans no CteScan names is taken off as the cost of CTEs nobody reads, and the
+-- aggregates of the subqueries were not looked at), so the scans lost to it however much it costs: here the plan with the CTE shared reads the
+-- table twice, and the scans cost a fraction of it.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 100;
+
+CREATE TABLE sc_rows (id int PRIMARY KEY, grp int NOT NULL, v int NOT NULL, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO sc_rows SELECT i, i % 50, i % 17, jsonb_build_object('a', i % 9, 'b', i % 5, 'c', i % 3) FROM generate_series(1, 100000) i;
+SET client_min_messages = warning;
+CREATE INDEX sc_rows_col ON sc_rows USING sift_col (id, grp, v, doc);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) sc_rows;
+
+CREATE FUNCTION scans_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg)%' THEN n := n + 1; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the scans of two scalar subqueries over the CTE, for ranges of the table
+SELECT w, scans_of(format($q$WITH r AS (SELECT * FROM sc_rows WHERE id BETWEEN 1 AND %s AND v >= 0)
+	SELECT (SELECT count(*) FROM r) AS c, (SELECT sum(x.value::int) FROM r CROSS JOIN LATERAL jsonb_each_text(r.doc) x) AS s$q$, w)) > 0 AS scanned
+FROM unnest(ARRAY[20000, 100000]) w ORDER BY w;
+
+DROP FUNCTION scans_of(text);
+DROP TABLE sc_rows;
+DROP EXTENSION pg_sift;

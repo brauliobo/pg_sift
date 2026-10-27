@@ -101,8 +101,7 @@ INSERT INTO shapes VALUES
  ('spine rows', 'two_level', spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')),
  ('spine grouping sets', 'two_level', spine_q('(SELECT a FROM ticks WHERE a < 100)', 'm.parent_id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
  ('rows', 'rows', spine_q('generate_series(1, 20)', 'm.id > sp.k')),
- ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)')),
- ('shared cte', 'cte_inline', 'WITH c AS (SELECT kind, parent_id FROM events) SELECT (SELECT sum(parent_id) FROM c), (SELECT count(*) FROM c)');
+ ('rows grouping sets', 'rows', spine_q('generate_series(1, 20)', 'm.id = sp.k', 'GROUP BY ROLLUP (1, 2)'));
 SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * FROM sift.explain_why(s.q) WHERE arm = s.arm) w ON true ORDER BY s.ctid;
 
 -- a condition on a column the index does not hold names it
