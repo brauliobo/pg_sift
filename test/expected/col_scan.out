@@ -36,6 +36,9 @@ INSERT INTO sc_b SELECT * FROM sc;
 CREATE INDEX sc_col ON sc USING sift_col (id sift.col_int4_ops, v sift.col_int4_ops, k2 sift.col_int2_ops, k8 sift.col_int8_ops, d sift.col_date_ops,
 	ts sift.col_timestamp_ops, tz sift.col_timestamptz_ops, s sift.col_text_ops, u sift.col_uuid_ops, g sift.col_int4_ops,
 	f4 sift.col_float4_ops, f8 sift.col_float8_ops, b sift.col_bool_ops, nm sift.col_numeric_ops, c sift.col_bpchar_ops, vc sift.col_text_ops) WITH (write_buffer_limit = 256, return_columns = 's, u, vc');
+NOTICE:  sift_col index sc_col writes a rollup of the rows by g, b
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX sc_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE INDEX sc_b_id ON sc_b (id);
 CREATE INDEX sc_b_v ON sc_b (v);
 CREATE INDEX sc_b_k2 ON sc_b (k2);

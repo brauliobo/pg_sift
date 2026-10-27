@@ -5,6 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, code text, payload text);
 INSERT INTO facts SELECT i, i % 40, CASE WHEN i % 40 = 0 THEN 'none' ELSE (i % 9)::text END, repeat('payload', 50) FROM generate_series(1, 40000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, code);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by dim_a_id, code
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 352 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE TABLE dims (id int, ok bool);
 INSERT INTO dims SELECT i, i % 3 <> 0 FROM generate_series(1, 39) i;
 CREATE TABLE tags (id int, dim_a_id int);

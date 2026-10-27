@@ -8,6 +8,9 @@ SET random_page_cost = 1000;
 CREATE TABLE hot (id int PRIMARY KEY, parent_id int, amount int) WITH (autovacuum_enabled = false, fillfactor = 75);
 INSERT INTO hot SELECT i, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 50 END, i % 10 FROM generate_series(1, 6000) i;
 CREATE INDEX hot_col ON hot USING sift_col (id, parent_id, amount);
+NOTICE:  sift_col index hot_col writes a rollup of the rows by parent_id, amount
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX hot_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) hot;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION hot_check(q text) RETURNS text LANGUAGE plpgsql AS $$

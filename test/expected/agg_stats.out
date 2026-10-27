@@ -6,7 +6,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- in id order, padded to about 1800 rows a unit
 CREATE TABLE ev (id int, grp int, day date, amount int, expr_key int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, date '2020-01-01' + i / 300, i % 100, i % 13, repeat('x', 1000) FROM generate_series(0, 59999) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount);
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_dims = 'off');
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats() WHERE name = n), 0) $$;
 -- the statement's EXPLAIN ANALYZE figures against the counters of a session that ran nothing else

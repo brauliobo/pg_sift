@@ -174,6 +174,9 @@ CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministi
 CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
 INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
 CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
+NOTICE:  sift_col index tr_col writes a rollup of the rows by c, nm
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 20 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX tr_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 ANALYZE tr;
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;

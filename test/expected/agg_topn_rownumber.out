@@ -10,6 +10,9 @@ INSERT INTO events SELECT i, i % 37, CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 EN
        CASE WHEN i % 6 = 0 THEN NULL ELSE 't' || i % 13 END, CASE WHEN i % 9 = 0 THEN NULL ELSE i / 7.0 END, ARRAY[i, i + 1]
 FROM generate_series(1, 5000) i;
 CREATE INDEX events_col ON events USING sift_col (id, grp, sub, ts, amount, tie, txt, num);
+NOTICE:  sift_col index events_col writes a rollup of the rows by sub, tie
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 16 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX events_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE TABLE plain_events (id int PRIMARY KEY, grp int NOT NULL, ts int) WITH (autovacuum_enabled = false);
 INSERT INTO plain_events SELECT i, i % 37, i FROM generate_series(1, 500) i;
 VACUUM (FREEZE, ANALYZE) events;
@@ -253,6 +256,9 @@ SELECT * FROM check_query('the second row only', $q$ SELECT * FROM (SELECT id, g
 CREATE TABLE ranked (id int PRIMARY KEY, k37 int NOT NULL, k1000 int NOT NULL, ts int NOT NULL, amount int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ranked SELECT i, i % 37, i % 1000, (i * 31) % 1000, i % 11 FROM generate_series(1, 5000) i;
 CREATE INDEX ranked_col ON ranked USING sift_col (id, k37, k1000, ts, amount);
+NOTICE:  sift_col index ranked_col writes a rollup of the rows by k37, amount
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 407 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ranked_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ranked;
 CREATE FUNCTION plan_in_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE line text; found bool := false;

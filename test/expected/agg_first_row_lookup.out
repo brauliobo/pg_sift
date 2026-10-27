@@ -12,6 +12,9 @@ SELECT i, i % 200, i % 101, 'k' || (i % 200), 'v' || (i % 101), 't' || ((i % 200
 INSERT INTO facts VALUES (20001, NULL, 1, 'k1', 'v1', 't1', 1), (20002, 1, NULL, 'k1', NULL, 't1', 2), (20003, 500, 1, 'zz', 'v1', 't1', 3),
  (20004, 1, 500, 'k1', 'zz', 'zz', 4), (20005, NULL, NULL, NULL, NULL, NULL, 5);
 CREATE INDEX facts_col ON facts USING sift_col (id, a, b, k, v, t, amount, w);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by b, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 103 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE TABLE dims (a int, b int, label text, score int);
 INSERT INTO dims SELECT x, y, 'l' || x || '_' || y, x * 3 + y FROM generate_series(0, 199) x, generate_series(0, 100) y;
 CREATE UNIQUE INDEX dims_key ON dims (a, b);

@@ -8,11 +8,17 @@ CREATE TABLE vo (id int, set_id int, updated_at timestamptz, a_count int, commen
 INSERT INTO vo SELECT i, i % 10, now(), i % 5, i % 3, 0, i, current_date FROM generate_series(1, 1000) i;
 -- one, several (in the order of the index), with the case of the name ignored
 CREATE INDEX vo_one ON vo USING sift_col (set_id, updated_at, amt);
+NOTICE:  sift_col index vo_one writes a rollup of the rows by set_id, updated_at
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 10 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX vo_one SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index "vo_one": an UPDATE of updated_at is not a HOT update, since the index covers it
 DETAIL:  Each such update writes a new row version into every index of the table (measured on a 13-column index: 0% HOT updates against 28%, 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update), and the index keeps the old one until a merge or a REINDEX.
 HINT:  Leave the column out of the index if it is rewritten far more often than it is aggregated; keep it if its aggregates are the reason for the index.
 CREATE INDEX vo_many ON vo USING sift_col (a_count, set_id, comment_count, lock_version, "Updated_On");
-NOTICE:  sift_col index "vo_many": an UPDATE of likes, comment_count, lock_version, Updated_On is not a HOT update, since the index covers them
+NOTICE:  sift_col index vo_many writes a rollup of the rows by lock_version, Updated_On
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX vo_many SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "vo_many": an UPDATE of a_count, comment_count, lock_version, Updated_On is not a HOT update, since the index covers them
 DETAIL:  Each such update writes a new row version into every index of the table (measured on a 13-column index: 0% HOT updates against 28%, 23.7k against 38.7k updates a second, 2,175 against 1,493 bytes of WAL an update), and the index keeps the old one until a merge or a REINDEX.
 HINT:  Leave the column out of the index if it is rewritten far more often than it is aggregated; keep it if its aggregates are the reason for the index.
 -- covered columns that are not volatile: silent

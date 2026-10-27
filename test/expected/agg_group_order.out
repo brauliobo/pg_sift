@@ -15,6 +15,9 @@ SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 301) END, (i % 40)
        CASE i % 9 WHEN 0 THEN 0.0 WHEN 1 THEN -0.0 WHEN 2 THEN 'NaN' WHEN 3 THEN NULL WHEN 4 THEN 'Infinity' WHEN 5 THEN '-Infinity' ELSE i % 5 - 2.5 END, i * 0.1
 FROM generate_series(1, 30000) i;
 CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
+NOTICE:  sift_col index o_col writes a rollup of the rows by c, e
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 5 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX o_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM ANALYZE o;
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
 CREATE FUNCTION o_keys(q text, k int, push bool, workers int) RETURNS text LANGUAGE plpgsql AS $$
@@ -141,6 +144,9 @@ UPDATE o2 SET t = NULL WHERE id % 37 = 0;
 UPDATE o2 SET b = NULL WHERE id % 41 = 0;
 UPDATE o2 SET i8 = NULL WHERE id % 43 = 0;
 CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
+NOTICE:  sift_col index o2_col writes a rollup of the rows by b, g
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 7 sampled stretches of about a unit, about 8 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX o2_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM ANALYZE o2;
 -- a collation that is not the byte order, when the server has one
 SELECT coalesce((SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'und-x-icu') ORDER BY collname LIMIT 1), 'C') AS coll \gset
@@ -239,6 +245,9 @@ SELECT i, (ARRAY['1.0', '1.00', '2', '2.000', '0', '0.0', '-0.0', '3.10', '3.1']
 FROM generate_series(1, 20000) i;
 UPDATE o3 SET n = NULL WHERE id % 13 = 0;
 CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
+NOTICE:  sift_col index o3_col writes a rollup of the rows by s, g
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 21 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX o3_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM ANALYZE o3;
 CREATE FUNCTION o3_check(col text, canon text, dir text) RETURNS TABLE (plan text, same_groups bool) LANGUAGE plpgsql AS $$
 DECLARE q text; a text; b text;

@@ -13,7 +13,7 @@ INSERT INTO nz SELECT i, i % 5, i % 100, CASE WHEN i / 256 < 10 THEN NULL ELSE i
        CASE WHEN i / 256 = 5 THEN 'NaN' WHEN i / 256 = 6 THEN NULL ELSE (i % 50) / 4.0 END,
        CASE WHEN i / 256 >= 15 THEN NULL ELSE timestamp '2025-01-01' + i * interval '1 minute' END, repeat('x', 600)
 FROM generate_series(0, 20 * 256 - 1) i;
-CREATE INDEX nz_idx ON nz USING sift_col (id, g, a, a_all, mixed, tx, nu, ts) WITH (preagg = 'cube(g: a)');
+CREATE INDEX nz_idx ON nz USING sift_col (id, g, a, a_all, mixed, tx, nu, ts) WITH (rollup_dims = 'off', preagg = 'cube(g: a)');
 VACUUM (FREEZE, ANALYZE) nz;
 SELECT units FROM sift.col_segments('nz_idx') WHERE kind = 'immutable';
  units 

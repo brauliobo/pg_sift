@@ -28,12 +28,12 @@ VACUUM (FREEZE, ANALYZE) kp;
 VACUUM (FREEZE, ANALYZE) kp_b;
 
 -- the minor of the segments: 4 (this schema has no jsonb paths) without the option or under a setting below 10, 15 with both (a setting from 10 to 14 writes the summaries of section 2.13 for the option's leaves, not the lists)
-CREATE INDEX kp_off ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096);
+CREATE INDEX kp_off ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096);
 SET sift.col_format_minor = 9;
-CREATE INDEX kp_old0 ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096);
-CREATE INDEX kp_old ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+CREATE INDEX kp_old0 ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096);
+CREATE INDEX kp_old ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 RESET sift.col_format_minor;
-CREATE INDEX kp_on ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+CREATE INDEX kp_on ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 SELECT 'kp_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kp_off')
 UNION ALL SELECT 'kp_old', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_old')
 UNION ALL SELECT 'kp_on', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_on') ORDER BY 1;
@@ -48,10 +48,10 @@ SELECT bytes > 0 AS sets_take_bytes, bytes * 100 < pg_relation_size('kp_on') * 8
 DROP INDEX kp_old, kp_old0;
 
 -- the options are checked
-CREATE INDEX kp_bad1 ON kp USING sift_col (id, k) WITH (key_columns = 'nosuch');
-CREATE INDEX kp_bad2 ON kp USING sift_col (id, k, val) WITH (key_columns = 'k,,val');
+CREATE INDEX kp_bad1 ON kp USING sift_col (id, k) WITH (rollup_dims = 'off', key_columns = 'nosuch');
+CREATE INDEX kp_bad2 ON kp USING sift_col (id, k, val) WITH (rollup_dims = 'off', key_columns = 'k,,val');
 CREATE TABLE kp_t (id int, t text, b bigint, f float8, ts timestamp, u uuid);
-CREATE INDEX kp_bad5 ON kp_t USING sift_col (id, f) WITH (key_columns = 'f');
+CREATE INDEX kp_bad5 ON kp_t USING sift_col (id, f) WITH (rollup_dims = 'off', key_columns = 'f');
 DROP TABLE kp_t;
 
 -- three ways: the bitmaps on, the twin table's index without them, the plain plan; the units the bitmaps answered
@@ -118,7 +118,7 @@ BEGIN
 	END LOOP;
 END $$;
 DROP INDEX kp_off;
-CREATE INDEX kp_b_off ON kp_b USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096);
+CREATE INDEX kp_b_off ON kp_b USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096);
 -- from_pre: the scan read fewer rows than the twin's, because units came from their bitmaps
 SELECT n, shape, same, from_pre, twin_scans FROM kp_check('kp', 'kp_b');
 
@@ -186,7 +186,7 @@ CREATE TABLE kp_f (LIKE kp) WITH (autovacuum_enabled = off);
 ALTER TABLE kp_f ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kp_f SELECT * FROM kp WHERE id <= 15000 ORDER BY id;
 VACUUM (FREEZE, ANALYZE) kp_f;
-CREATE INDEX kp_f_on ON kp_f USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+CREATE INDEX kp_f_on ON kp_f USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 SELECT runs > 0 AS has_sections, damaged > 1000 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_set_file_damage('kp_f_on', 7);
 DROP TABLE kp_f;
 
@@ -199,7 +199,7 @@ ALTER TABLE kp_w SET (parallel_workers = 3);
 SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET parallel_setup_cost = 0;
-CREATE INDEX kp_w_on ON kp_w USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
+CREATE INDEX kp_w_on ON kp_w USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;
@@ -215,7 +215,7 @@ DROP TABLE kp_w;
 CREATE TABLE ka (id int, k int, val int, ts date, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 2000, g % 1000, date '2024-01-01' + g / 150, repeat('x', 200) FROM generate_series(1, 30000) g;
-CREATE INDEX ka_idx ON ka USING sift_col (id, k, val, ts) WITH (write_buffer_limit = 4096);
+CREATE INDEX ka_idx ON ka USING sift_col (id, k, val, ts) WITH (rollup_dims = 'off', write_buffer_limit = 4096);
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'k');
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 2000, g % 1000, date '2024-01-01' + g / 150, repeat('x', 200) FROM generate_series(30001, 60000) g;
@@ -253,7 +253,7 @@ SELECT kp_rows('SELECT count(DISTINCT k), count(*) FROM ka', true) = kp_rows('SE
 CREATE TABLE kb (id int, k int, big int, val int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE kb ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kb SELECT g, (hashint4(g) & 2147483647) % 2000, hashint4(g), g % 1000, repeat('x', 200) FROM generate_series(1, 30000) g;
-CREATE INDEX kb_idx ON kb USING sift_col (id, k, big, val) WITH (write_buffer_limit = 4096, key_columns = 'k, big');
+CREATE INDEX kb_idx ON kb USING sift_col (id, k, big, val) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, big');
 SELECT sift.col_verify('kb_idx', true);
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kb_idx');
 SELECT kp_rows('SELECT count(*), sum(val) FROM kb WHERE k = 17', true) = kp_rows('SELECT count(*), sum(val) FROM kb WHERE k = 17', false) AS k_point_same,

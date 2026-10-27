@@ -8,6 +8,9 @@ CREATE TABLE sk_facts (id int PRIMARY KEY, set_id int, kind int, score float8, p
 INSERT INTO sk_facts SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 100000 + (i / 2000) * 60000 + i % 5 END, i % 3, (i % 10)::float8,
 	repeat('x', 300) FROM generate_series(1, 120000) i;
 CREATE INDEX sk_facts_col ON sk_facts USING sift_col (id, set_id, kind, score);
+NOTICE:  sift_col index sk_facts_col writes a rollup of the rows by set_id, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 57 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX sk_facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) sk_facts;
 \ir test/agg_check_pushed.sql
 \set ECHO none

@@ -10,6 +10,15 @@ CREATE TABLE pk_b PARTITION OF pk FOR VALUES FROM (20000) TO (40000) WITH (autov
 CREATE TABLE pk_c PARTITION OF pk FOR VALUES FROM (40000) TO (60000) WITH (autovacuum_enabled = false);
 INSERT INTO pk SELECT i, ((i::bigint * 7919) % 300)::int, ((i::bigint * 104729) % 40)::int, i % 17 FROM generate_series(0, 59999) i;
 CREATE INDEX pk_col ON pk USING sift_col (id, g, h, v) WITH (key_columns = 'g, h');
+NOTICE:  sift_col index pk_a_id_g_h_v_idx writes a rollup of the rows by h, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 680 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pk_a_id_g_h_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pk_b_id_g_h_v_idx writes a rollup of the rows by h, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 680 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pk_b_id_g_h_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pk_c_id_g_h_v_idx writes a rollup of the rows by h, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 680 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pk_c_id_g_h_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) pk;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE d bigint;

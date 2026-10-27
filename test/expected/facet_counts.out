@@ -20,6 +20,9 @@ SELECT (ARRAY['wireless','wired','portable','compact','classic'])[1 + i % 5] || 
 FROM generate_series(1, 12000) i;
 CREATE INDEX fc_bm ON fc USING sift (title);
 CREATE INDEX fc_col ON fc USING sift_col (brand, category, price, qty, added, ts, active) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index fc_col writes a rollup of the rows by brand, active
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 6 sampled stretches of about a unit, about 21 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX fc_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (ANALYZE) fc;
 -- the plans that are not SiftAgg are disabled for the pushed run; the planner's own choice with sift.enable_agg off is the other
 CREATE FUNCTION fc_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$

@@ -12,6 +12,9 @@ INSERT INTO kinds VALUES ('a'), ('b');
 CREATE TABLE ev (id int PRIMARY KEY, zone_id int, day date, kind text, price float8) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 13) + 0.5 FROM generate_series(1, 6000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, price);
+NOTICE:  sift_col index ev_col writes a rollup of the rows by day, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 120 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE zones, kinds;
 CREATE FUNCTION arms_shared(q text) RETURNS int LANGUAGE plpgsql AS $$

@@ -14,6 +14,9 @@ FROM generate_series(1, 15000) i;
 CREATE TABLE tp_dim (k int PRIMARY KEY, label text);
 INSERT INTO tp_dim SELECT i, 'g' || i FROM generate_series(0, 3) i;
 CREATE INDEX tp_col ON tp USING sift_col (id, dev, dev8, ts, v, g, nm, w);
+NOTICE:  sift_col index tp_col writes a rollup of the rows by dev8, nm
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 60 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX tp_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (ANALYZE) tp, tp_dim;
 CREATE FUNCTION tp_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

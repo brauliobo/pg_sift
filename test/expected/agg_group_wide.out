@@ -8,6 +8,9 @@ CREATE TABLE wd_facts (id int, k1 int, k2 int, k3 int, k4 int, k5 int, k6 int, k
 INSERT INTO wd_facts SELECT i, g % 3, g % 5, g % 7, g % 6, g % 2, g % 9, g % 4, g % 8, g % 3, g % 10, i % 17 + 0.5, i % 5 + 0.25, i % 29
 FROM (SELECT i, i % 40 AS g FROM generate_series(1, 30000) i) s;
 CREATE INDEX wd_facts_col ON wd_facts USING sift_col (id, k1, k2, k3, k4, k5, k6, k7, k8, k9, k10, a, b, c);
+NOTICE:  sift_col index wd_facts_col writes a rollup of the rows by k1, k9
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 3 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX wd_facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) wd_facts;
 CREATE FUNCTION same_rows(q text) RETURNS TABLE (scan text, rows_pushed bigint, differences bigint) LANGUAGE plpgsql AS $$
 DECLARE

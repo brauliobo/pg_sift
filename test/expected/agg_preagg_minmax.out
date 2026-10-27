@@ -75,13 +75,13 @@ INSERT INTO mf SELECT * FROM mm;
 INSERT INTO mx SELECT * FROM mm;
 DROP TABLE mm;
 CREATE INDEX mc_col ON mc USING sift_col (id, kind, grp, val, small, amt, flt)
-	WITH (write_buffer_limit = 4096, cube_minmax = true, preagg = 'cube(kind: val, small, amt, flt; grp: val, small, amt)', superunit = 0);
-CREATE INDEX md_col ON md USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
-CREATE INDEX mo_col ON mo USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+	WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = true, preagg = 'cube(kind: val, small, amt, flt; grp: val, small, amt)', superunit = 0);
+CREATE INDEX md_col ON md USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+CREATE INDEX mo_col ON mo USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 6;
-CREATE INDEX mf_col ON mf USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+CREATE INDEX mf_col ON mf USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 RESET sift.col_format_minor;
-CREATE INDEX mx_col ON mx USING sift_col (id, kind, grp, val, small, amt, flt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX mx_col ON mx USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) mc, md, mo, mf, mx;

@@ -749,7 +749,7 @@ sift_col_auto_cube(Relation heap, Relation index)
  * The rows rollup of rollup_dims = 'auto' (docs/COL-PREAGG.md): the pair advice of sift.index_advice, chosen before the build. Of the columns that fit the cube's
  * histograms in ROWS_AGREE_PCT of the sampled stretches (the SIFT_PAGG_MAX_RDIMS with the fewest values), the pair whose combinations fit the cells a unit may
  * keep (a tenth of its rows, at most SIFT_PAGG_ROWS_CELLS) in as many stretches, and has the fewest of them (the cheapest rollup, far from the limit of a unit),
- * is written to the option as 'auto: a, b'; none fits, nothing. It is not the default: the cells grew the index by more than 3% and the build by more than 5%.
+ * is written to the option as 'auto: a, b'; none fits, nothing. It is the default (an empty option): the cells pay by the default formula (docs/OPTIONS.md); 'off' writes none.
  */
 #define ROWS_AGREE_PCT	90
 #define ROWS_CAP		(1 << 16)		/* rows of a stretch looked at */
@@ -861,7 +861,7 @@ sift_col_auto_rows(Relation heap, Relation index)
 	BlockNumber nblocks;
 	StringInfoData v;
 
-	if (pg_strcasecmp(opt, "auto") != 0)
+	if (*opt != '\0' && pg_strcasecmp(opt, "auto") != 0)
 		return;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	if ((n = cube_cands(index, rel->schema, cand)) < 2 || (nst = cube_sample(heap, cand, n)) == 0)

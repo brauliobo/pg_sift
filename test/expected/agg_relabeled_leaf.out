@@ -6,6 +6,9 @@ INSERT INTO countries VALUES ('US', 'United States'), ('BR', 'Brazil');
 CREATE TABLE facts (id int, kind text, country_code varchar(2));
 INSERT INTO facts SELECT i, CASE i % 3 WHEN 0 THEN 'a' WHEN 1 THEN 'b' END, CASE i % 4 WHEN 0 THEN 'US' WHEN 1 THEN 'BR' WHEN 2 THEN 'XX' END FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, kind, country_code);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by kind, country_code
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 12 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE countries;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.

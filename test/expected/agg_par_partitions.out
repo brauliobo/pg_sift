@@ -28,8 +28,47 @@ FROM generate_series(1, 6000) i;
 INSERT INTO pr SELECT * FROM ph;
 INSERT INTO pl SELECT * FROM ph;
 CREATE INDEX ph_col ON ph USING sift_col (id, grp, kind, ts, amount, val);
+NOTICE:  sift_col index ph_0_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ph_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index ph_1_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ph_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index ph_2_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ph_2_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index ph_3_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ph_3_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE INDEX pr_col ON pr USING sift_col (id, grp, kind, ts, amount, val);
+NOTICE:  sift_col index pr_0_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pr_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pr_1_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pr_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pr_2_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pr_2_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pr_3_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 78 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pr_3_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE INDEX pl_col ON pl USING sift_col (id, grp, kind, ts, amount, val);
+NOTICE:  sift_col index pl_0_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pl_0_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pl_1_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pl_1_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pl_2_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pl_2_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pl_3_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 18 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pl_3_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pl_none_id_grp_kind_ts_amount_val_idx writes a rollup of the rows by grp, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 6 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pl_none_id_grp_kind_ts_amount_val_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ph, pr, pl;
 CREATE FUNCTION p_rows(q text, push bool, workers int, leader bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

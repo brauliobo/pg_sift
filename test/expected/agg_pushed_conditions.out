@@ -7,6 +7,9 @@ INSERT INTO dim_a SELECT i, (ARRAY['a', 'b', 'c'])[1 + i % 3] FROM generate_seri
 CREATE TABLE facts (id int, day date, dim_a_id int, deleted_at timestamp);
 INSERT INTO facts SELECT i, '2026-01-01'::date + (i % 15), 1 + (i * i) % 97, CASE WHEN i % 17 = 0 THEN now() END FROM generate_series(1, 40000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, day, dim_a_id, deleted_at);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by day, deleted_at
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 30 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
 \ir test/agg_check_query.sql

@@ -13,7 +13,7 @@ SELECT g, CASE WHEN g % 13 = 0 THEN NULL ELSE g % 12 END, CASE WHEN g % 17 = 0 T
 FROM generate_series(1, 30000) g;
 
 -- the minor of the segments of an index: 4 without the option (this schema has no jsonb paths), under the setting 8 with it, 9 with it, 9 with both options
-CREATE INDEX cr_off ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX cr_off ON cr USING sift_col (id, a, b, c, v, w, f) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 8;
 CREATE INDEX cr_seven ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b', cube_minmax = false, superunit = 0);
 RESET sift.col_format_minor;

@@ -10,6 +10,9 @@ INSERT INTO facts
 SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 7 END, CASE WHEN i % 13 = 0 THEN NULL ELSE date '2025-01-01' + (i / 3) % 8 END, i % 5 + 0.5, i % 11
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, k, ts, amount, val);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by k, ts
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 72 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 -- days of the dimension are timestamps: several in one day, a NULL, one no fact has, 'infinity'; the small and wide integers repeat and have a NULL
 CREATE TABLE dims (at timestamp, n2 smallint, n4 int, n8 bigint, label text) WITH (autovacuum_enabled = false);

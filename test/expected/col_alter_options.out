@@ -76,7 +76,7 @@ SELECT relname, reloptions FROM pg_class WHERE relname IN ('ao_paths', 'ap_plain
  ad_dates | {calendar_columns=off}
  ao_paths | {"paths=metrics.* float8, parts[]{kind text}",calendar_columns=all}
  ap_plain | 
- aw_wide  | {"calendar_columns=d1, d2"}
+ aw_wide  | {"rollup_dims=auto: c2, c9","calendar_columns=d1, d2"}
 (4 rows)
 
 SET client_min_messages = warning;

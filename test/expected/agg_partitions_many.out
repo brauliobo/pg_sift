@@ -135,6 +135,306 @@ BEGIN
 END $$;
 INSERT INTO pc SELECT i, i % 7, DATE '2020-01-01' + i % 100, i % 100 FROM generate_series(1, 3000) i;
 CREATE INDEX pc_col ON pc USING sift_col (id, g, d, v);
+NOTICE:  sift_col index pc_0_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_0_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_1_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_1_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_2_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_2_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_3_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_3_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_4_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_4_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_5_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_5_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_6_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_6_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_7_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_7_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_8_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_8_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_9_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_9_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_10_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_10_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_11_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_11_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_12_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_12_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_13_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_13_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_14_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_14_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_15_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_15_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_16_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_16_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_17_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_17_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_18_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_18_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_19_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_19_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_20_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_20_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_21_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_21_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_22_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_22_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_23_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_23_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_24_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_24_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_25_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_25_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_26_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_26_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_27_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_27_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_28_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_28_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_29_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_29_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_30_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_30_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_31_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_31_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_32_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_32_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_33_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_33_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_34_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_34_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_35_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_35_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_36_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_36_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_37_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_37_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_38_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_38_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_39_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_39_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_40_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_40_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_41_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_41_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_42_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_42_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_43_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_43_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_44_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_44_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_45_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_45_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_46_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_46_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_47_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_47_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_48_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_48_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_49_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_49_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_50_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_50_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_51_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_51_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_52_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_52_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_53_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_53_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_54_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_54_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_55_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_55_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_56_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_56_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_57_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_57_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_58_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_58_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_59_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_59_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_60_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_60_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_61_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_61_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_62_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_62_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_63_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_63_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_64_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_64_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_65_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_65_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_66_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_66_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_67_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_67_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_68_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_68_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_69_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_69_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_70_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_70_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_71_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_71_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_72_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_72_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_73_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_73_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_74_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_74_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_75_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_75_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_76_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_76_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_77_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_77_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_78_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_78_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_79_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_79_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_80_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_80_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_81_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_81_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_82_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_82_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_83_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_83_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_84_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_84_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_85_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_85_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_86_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_86_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_87_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_87_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_88_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_88_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_89_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_89_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_90_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_90_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_91_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_91_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_92_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_92_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_93_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_93_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_94_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_94_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_95_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_95_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_96_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_96_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_97_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_97_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_98_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_98_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index pc_99_id_g_d_v_idx writes a rollup of the rows by d, v
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 1 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX pc_99_id_g_d_v_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) pc;
 SELECT * FROM many_scan('SELECT g, count(*) AS n, sum(v) AS s FROM pc GROUP BY g');
   scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 

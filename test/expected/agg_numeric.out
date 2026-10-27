@@ -14,6 +14,9 @@ FROM generate_series(1, 4000) g;
 INSERT INTO items VALUES (4001, 9, 9999999999.99, 1, 999999999999.999999, 9999999999), (4002, 9, -9999999999.99, 1, -999999999999.999999, -9999999999),
 	   (4003, 9, 0.05, 1, 0.000001, 0), (4004, 9, 0.00, 1, 0, 0);
 CREATE INDEX items_col ON items USING sift_col (id, store, price, qty, rate, weight);
+NOTICE:  sift_col index items_col writes a rollup of the rows by store, qty
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 25 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX items_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 ANALYZE items;
 -- the plans: a numeric predicate, a numeric key, an expression, count(DISTINCT)
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 10.005 AND weight IN (1, 2.5, 3) GROUP BY store;

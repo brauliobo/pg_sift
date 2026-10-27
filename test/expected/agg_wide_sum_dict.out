@@ -24,6 +24,9 @@ INSERT INTO s (g, k, x) VALUES
  (26, 0, -170141183460469231731687303715884105727), (27, 0, 170141183460469231731687303715884105725.5), (27, 1, 1.5),
  (28, 0, 5), (28, 1, 170141183460469231731687303715884105727);
 CREATE INDEX s_col ON s USING sift_col (g, k, x, w);
+NOTICE:  sift_col index s_col writes a rollup of the rows by g, k
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 37 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX s_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) s;
 CREATE FUNCTION answer(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;

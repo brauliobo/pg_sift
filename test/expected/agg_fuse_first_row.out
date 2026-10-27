@@ -7,6 +7,9 @@ SET enable_nestloop = off;
 CREATE TABLE ff_facts (id int, k int, g int, h int, skip bool);
 INSERT INTO ff_facts SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE i % 2600 END, i % 5, i % 7, i % 13 = 0 FROM generate_series(1, 9000) i;
 CREATE INDEX ff_facts_col ON ff_facts USING sift_col (id, k, g, h, skip);
+NOTICE:  sift_col index ff_facts_col writes a rollup of the rows by g, skip
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 10 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ff_facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CREATE TABLE ff_map (k int, v int, w text);
 INSERT INTO ff_map SELECT k, k * 2, 'w' || k FROM generate_series(1, 2400) k;
 INSERT INTO ff_map SELECT k, k * 2, 'w' || k FROM generate_series(1, 2400) k WHERE k % 3 = 1;

@@ -12,6 +12,9 @@ SELECT i, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 9 END, CASE WHEN i % 17 = 0 TH
        CASE WHEN i % 13 = 0 THEN NULL ELSE date '2025-01-01' + (i / 3) % 6 END, CASE WHEN i % 3 = 0 THEN round(i % 5 + 0.5, 1) ELSE round(i % 5 + 0.5, 2) END, i % 7
 FROM generate_series(1, 6000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, parent_id, kind, ts, amount, val);
+NOTICE:  sift_col index facts_col writes a rollup of the rows by parent_id, ts
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 34 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX facts_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) facts;
 -- buckets: a NULL kind and a NULL day (they equal the facts without one), a bucket twice, buckets no fact has, one with a numeric amount of another scale
 CREATE TABLE buckets (kind text, ts date, pid int, flag bool, amt numeric, label text) WITH (autovacuum_enabled = false);

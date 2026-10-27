@@ -182,6 +182,12 @@ CREATE TABLE ev_a PARTITION OF ev FOR VALUES FROM ('2026-01-01') TO ('2026-02-01
 CREATE TABLE ev_b PARTITION OF ev FOR VALUES FROM ('2026-02-01') TO ('2026-04-01');
 INSERT INTO ev SELECT i, i % 7, date '2026-01-01' + i % 80, CASE WHEN i % 10 = 0 THEN timestamp '2026-03-01' END, i % 13 FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, deleted_at, score) WHERE deleted_at IS NULL;
+NOTICE:  sift_col index ev_a_id_grp_day_deleted_at_score_idx writes a rollup of the rows by grp, deleted_at
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 14 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_a_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index ev_b_id_grp_day_deleted_at_score_idx writes a rollup of the rows by grp, deleted_at
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 14 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_b_id_grp_day_deleted_at_score_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 SELECT * FROM check_query('partitions, implied', 'SELECT grp, count(*), sum(score) FROM ev WHERE deleted_at IS NULL AND day >= ''2026-01-20'' GROUP BY grp');
         label        | scan | same |                                               outcome                                                

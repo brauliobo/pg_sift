@@ -41,11 +41,17 @@ HINT:  Name fewer columns, or columns with fewer values per unit.
 CREATE TABLE caps_cal (c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, d1 date, d2 date) WITH (autovacuum_enabled = off);
 INSERT INTO caps_cal SELECT g, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 2, date '2024-01-01' + g % 30, date '2024-01-01' + g % 20 FROM generate_series(1, 5000) g;
 CREATE INDEX caps_cal_all ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2) WITH (calendar_columns = 'all');
+NOTICE:  sift_col index caps_cal_all writes a rollup of the rows by c2, c9
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 3 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX caps_cal_all SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index caps_cal_all: the cube holds 16 dimensions and left out the histograms of 4 columns: "c15", "c16", "d1", "d2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
 -- the default is the same list
 CREATE INDEX caps_cal_default ON caps_cal USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, d1, d2);
+NOTICE:  sift_col index caps_cal_default writes a rollup of the rows by c2, c9
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 3 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX caps_cal_default SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index caps_cal_default: the cube holds 16 dimensions and left out the histograms of 4 columns: "c15", "c16", "d1", "d2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
@@ -55,6 +61,9 @@ INSERT INTO caps_dates SELECT date '2024-01-01' + g % 30, date '2024-01-01' + g 
 	date '2024-01-01' + g % 6, date '2024-01-01' + g % 5, date '2024-01-01' + g % 4, date '2024-01-01' + g % 3, date '2024-01-01' + g % 2, date '2024-01-01', date '2024-02-01' + g % 12, date '2024-03-01' + g % 13,
 	date '2024-04-01' + g % 14, date '2024-05-01' + g % 15, date '2024-06-01' + g % 16 FROM generate_series(1, 5000) g;
 CREATE INDEX caps_dates_all ON caps_dates USING sift_col (d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13, d14, d15, d16, d17);
+NOTICE:  sift_col index caps_dates_all writes a rollup of the rows by d11, d12
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 2 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX caps_dates_all SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index caps_dates_all: the cube holds 16 dimensions and left out the histograms of 17 columns: "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "d9", "d10", "d11", "d12", "d13", "d14", "d15", "d16", "d17"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
@@ -63,6 +72,9 @@ DETAIL:  The cube holds at most 16 dimensions, and the other columns of the inde
 HINT:  Name the columns the queries group by in calendar_columns (the list must fit the 16 dimensions), or give preagg = 'cube(...)' only the dims they need.
 -- all of them fit
 CREATE INDEX caps_cal_two ON caps_cal USING sift_col (c1, c2, d1, d2) WITH (calendar_columns = 'all');
+NOTICE:  sift_col index caps_cal_two writes a rollup of the rows by c2, d1
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 30 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX caps_cal_two SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 -- off says nothing
 ALTER INDEX caps_a SET (key_columns = 'off');
 REINDEX INDEX caps_a;

@@ -40,11 +40,17 @@ BEGIN
 	END LOOP;
 END $$;
 
--- no option: the cube holds one column at a time, so a GROUP BY of two scans the units
-CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h);
+-- off: the cube holds one column at a time, so a GROUP BY of two scans the units
+CREATE INDEX ra_none ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'off');
 SELECT ra_option('ra_none');
 SELECT * FROM ra_check();
 DROP INDEX ra_none;
+
+-- no option: the same choice as 'auto'
+CREATE INDEX ra_default ON ra USING sift_col (id, v, a, b, c, e, h);
+SELECT ra_option('ra_default');
+SELECT * FROM ra_check();
+DROP INDEX ra_default;
 
 CREATE INDEX ra_auto ON ra USING sift_col (id, v, a, b, c, e, h) WITH (rollup_dims = 'auto');
 SELECT ra_option('ra_auto');

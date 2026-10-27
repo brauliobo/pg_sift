@@ -11,6 +11,9 @@ INSERT INTO ev
 SELECT i, date '2020-01-01' + i / 300, (i / 10000) * 1000 + i % 100, i % 50, abs(hashint4(i)) % 100000, 'k' || i % 7, repeat('x', 1000)
 FROM generate_series(0, 59999) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, day, blk, grp, rnd, lbl);
+NOTICE:  sift_col index ev_col writes a rollup of the rows by day, lbl
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) ev;
 SELECT leaf, path, units > 20 AS several_units, zoned_units = units AS all_zoned, round(useful_pct::numeric) AS useful_pct,

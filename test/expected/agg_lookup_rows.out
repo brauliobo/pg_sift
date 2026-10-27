@@ -14,6 +14,9 @@ SELECT i,
 	(i % 1000) / 10.0
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
+NOTICE:  sift_col index ev_col writes a rollup of the rows by n, n8
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 571 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- every column type a join reads: by value (int, bigint, float8, bool, date), by reference (text, numeric, bytea, a fixed length uuid), NULLs among them
 CREATE TABLE dims (k text, kv varchar(20), n int, n8 bigint, label text, num numeric, f float8, b bool, dd date, bytes bytea, u uuid) WITH (autovacuum_enabled = false);

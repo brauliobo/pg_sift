@@ -43,7 +43,7 @@ BEGIN
 END $$;
 
 -- preagg = 'auto': the columns that fit take the first dimensions
-CREATE INDEX cr_auto ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (preagg = 'auto');
+CREATE INDEX cr_auto ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_dims = 'off', preagg = 'auto');
 SELECT cr_option('cr_auto');
 SELECT sift.col_verify('cr_auto', true);
 SELECT * FROM cr_check();
@@ -55,7 +55,7 @@ REINDEX INDEX cr_auto;
 SELECT cr_option('cr_auto');
 -- no option is the order of the columns, and auto decides again at the next REINDEX
 DROP INDEX cr_auto;
-CREATE INDEX cr_order ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t);
+CREATE INDEX cr_order ON cr USING sift_col (id, v, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13, h14, l1, l2, l3, t) WITH (rollup_dims = 'off');
 SELECT cr_option('cr_order');
 SELECT * FROM cr_check();
 ALTER INDEX cr_order SET (preagg = 'auto');
@@ -67,7 +67,7 @@ SELECT sift.col_verify('cr_order', true);
 -- 16 columns or fewer keep their order and write nothing, auto or not
 CREATE TABLE cr_few (id int, a int, b int, c text) WITH (autovacuum_enabled = off);
 INSERT INTO cr_few SELECT i, i, i % 5, 'k' || i % 7 FROM generate_series(1, 2000) i;
-CREATE INDEX cr_few_col ON cr_few USING sift_col (id, a, b, c) WITH (preagg = 'auto');
+CREATE INDEX cr_few_col ON cr_few USING sift_col (id, a, b, c) WITH (rollup_dims = 'off', preagg = 'auto');
 SELECT cr_option('cr_few_col');
 
 DROP TABLE cr, cr_q, cr_few;

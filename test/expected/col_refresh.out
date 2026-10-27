@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE rf (id int, kind int, grp text, val bigint, amt numeric(10, 2), pad text) WITH (autovacuum_enabled = off);
 INSERT INTO rf SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), CASE WHEN g % 7 = 0 THEN NULL ELSE (g * 977) % 100000 - 50000 END,
                       ((g * 91) % 20000) / 100.0 - 50, repeat('p', 100) FROM generate_series(1, 20000) g;
-CREATE INDEX rf_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX rf_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 -- four segments: the build and three promotions
 INSERT INTO rf SELECT g, g % 6, 'g' || lpad((g % 30)::text, 2, '0'), (g * 977) % 100000 - 50000, ((g * 91) % 20000) / 100.0 - 50, repeat('p', 100) FROM generate_series(20001, 25000) g;
 SELECT sift.col_promote('rf_idx') >= 0 AS promoted;
@@ -271,7 +271,7 @@ SELECT * FROM sift.col_refresh('rf_idx');
          0 |         0
 (1 row)
 
-CREATE INDEX rf3_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+CREATE INDEX rf3_idx ON rf USING sift_col (id, kind, grp, val, amt) WITH (rollup_dims = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('rf3_idx');
  minors 
 --------
@@ -403,7 +403,7 @@ SELECT sift.col_verify('rf_idx', true);
 CREATE TABLE rfl (id int, lines jsonb, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO rfl SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 4, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e)
                            FROM generate_series(1, g % 4 + 1) e), repeat('p', 100) FROM generate_series(1, 12000) g;
-DO $$ BEGIN EXECUTE format('CREATE INDEX rfl_idx ON rfl USING sift_col (id, lines) WITH (paths = %L, write_buffer_limit = 4096, rollup = ''off'')',
+DO $$ BEGIN EXECUTE format('CREATE INDEX rfl_idx ON rfl USING sift_col (id, lines) WITH (rollup_dims = ''off'', paths = %L, write_buffer_limit = 4096, rollup = ''off'')',
                            'lines[]' || chr(123) || 'a text, b text, q int4' || chr(125)); END $$;
 INSERT INTO rfl SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 4, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e)
                            FROM generate_series(1, g % 4 + 1) e), repeat('p', 100) FROM generate_series(12001, 16000) g;

@@ -10,7 +10,7 @@ ALTER TABLE ad ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ad SELECT i, i / 600, i % 4, (hashint4(i) & 2147483647) % 300, (hashint4(i + 1) & 2147483647) % 900, (hashint4(i + 2) & 2147483647) % 100000,
                       date '2024-01-01' + i / 200, 'l' || i % 20, repeat('x', 200) FROM generate_series(1, 60000) i;
 VACUUM (FREEZE, ANALYZE) ad;
-CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label);
+CREATE INDEX ad_col ON ad USING sift_col (id, dim_a_id, source, region, parent_id, val, d, label) WITH (rollup_dims = 'off');
 SELECT * FROM sift.index_advice('ad_col');
        leaf       |   kind    |                        held                         | sampled | share |                                                                           advice                                                                            
 ------------------+-----------+-----------------------------------------------------+---------+-------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ SET client_min_messages = warning;
 -- a covered column that looks rewritten often: its UPDATEs are not HOT
 CREATE TABLE ad_vol (id int, set_id int, updated_at timestamptz, a_count int, val int) WITH (autovacuum_enabled = off);
 INSERT INTO ad_vol SELECT i, i % 7, now(), i % 5, i FROM generate_series(1, 2000) i;
-CREATE INDEX ad_vol_col ON ad_vol USING sift_col (id, set_id, updated_at, a_count, val);
+CREATE INDEX ad_vol_col ON ad_vol USING sift_col (id, set_id, updated_at, a_count, val) WITH (rollup_dims = 'off');
 SELECT leaf, kind, advice FROM sift.index_advice('ad_vol_col') WHERE advice LIKE '%HOT%' ORDER BY leaf;
     leaf    |   kind    |                                                               advice                                                                
 ------------+-----------+-------------------------------------------------------------------------------------------------------------------------------------
@@ -68,7 +68,7 @@ SELECT leaf, kind, advice FROM sift.index_advice('ad_vol_col') WHERE advice LIKE
 
 -- no unit yet, a wrong object
 CREATE TABLE ad_empty (id int, k int) WITH (autovacuum_enabled = off);
-CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k);
+CREATE INDEX ad_empty_col ON ad_empty USING sift_col (id, k) WITH (rollup_dims = 'off');
 SELECT leaf, kind, held, sampled, share, advice FROM sift.index_advice('ad_empty_col');
  leaf |  kind   | held | sampled | share | advice 
 ------+---------+------+---------+-------+--------

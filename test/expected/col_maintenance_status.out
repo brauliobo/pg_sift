@@ -6,6 +6,9 @@ SET sift.async_maintenance = on;
 CREATE TABLE ms_facts (id int, key int, kind text, amount numeric(10,2)) WITH (autovacuum_enabled = false);
 INSERT INTO ms_facts SELECT g, g % 100, 'cat_' || (g % 8), g % 997 FROM generate_series(1, 20000) g;
 CREATE INDEX ms_idx ON ms_facts USING sift_col (id, key, kind, amount);
+NOTICE:  sift_col index ms_idx writes a rollup of the rows by key, kind
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 200 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX ms_idx SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 VACUUM ms_facts;
 CREATE FUNCTION ms_status() RETURNS TABLE (heap regclass, rewrite_due text, blocked_by text[]) LANGUAGE sql AS
 $$ SELECT s.heap, s.rewrite_due, s.blocked_by FROM sift.col_maintenance_status('ms_idx') s $$;

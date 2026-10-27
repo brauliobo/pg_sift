@@ -45,6 +45,9 @@ INSERT INTO cp_q VALUES
 	(5, 'a dimension',      'SELECT l5, count(*), sum(m) FROM cp GROUP BY 1');
 -- the NOTICE names what was left out; the dates keep their cells
 CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m, id, h1, h2) WITH (key_columns = 'off');
+NOTICE:  sift_col index cp_col writes a rollup of the rows by l1, l2
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 4 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX cp_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index cp_col: the cube holds 16 dimensions and left out the histograms of 7 columns: "d1", "d2", "d3", "m", "id", "h1", "h2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
@@ -78,6 +81,9 @@ SELECT cp_held('cp_col');
 DROP INDEX cp_col;
 -- all fit: 9 plain columns, the 3 dates and 1 more, and the cells of the 3 dates (16): the dates' own histograms kept
 CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
+NOTICE:  sift_col index cp_fit writes a rollup of the rows by l1, l2
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 4 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX cp_fit SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 NOTICE:  sift_col index cp_fit: the cube holds 16 dimensions and left out the histograms of 1 column: "d3"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
 HINT:  Give preagg = 'cube(...)' the dimensions the queries group by (sift.index_advice lists the columns that qualify), or preagg = 'auto' to give them to the columns whose histograms fit.
@@ -90,6 +96,9 @@ SELECT cp_held('cp_fit');
 DROP INDEX cp_fit;
 -- a cube(...) of the user is kept as written, and calendar_columns names the dates it wants
 CREATE INDEX cp_fixed ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m) WITH (key_columns = 'off', preagg = 'cube(l1; l2; l3; l4; l5; l6; l7; l8; l9; l10; l11; l12; d1; d2; d3; v)', calendar_columns = 'off');
+NOTICE:  sift_col index cp_fixed writes a rollup of the rows by l1, l2
+DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 4 of them a unit; the cells add to the index and to its build.
+HINT:  ALTER INDEX cp_fixed SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 SELECT cp_held('cp_fixed');
                                           cp_held                                          
 -------------------------------------------------------------------------------------------
