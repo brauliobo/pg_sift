@@ -87,9 +87,9 @@ sift_cgord_chunk_rows(const SiftCGOrdHdr *h, uint32 c)
 }
 
 /*
- * Decodes the m entries of a chunk from its two blobs (kb, klen) and (ab, alen) into key[0..m) and addr[0..m) (heap addresses); both need SIFT_CGORD_CAP
- * slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
+ * Decodes the first w entries (all m when w >= m) of a chunk of m from its two blobs (kb, klen) and (ab, alen) into key[0..w) and addr[0..w) (heap addresses); both need
+ * SIFT_CGORD_CAP slots. A chunk of NULL rows gives 0 for every key. False when the blobs are malformed.
  */
-extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m, int64 *key, uint64 *addr);
+extern bool sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m, uint32 w, int64 *key, uint64 *addr);
 
 #endif

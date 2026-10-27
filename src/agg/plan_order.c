@@ -964,6 +964,18 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 	return gl >= 0 ? group_pinned : s->npred == 0 || bounded;
 }
 
+/*
+ * Do the heads of the sorted runs answer the LIMIT for less than the order array? The head holds the best 32 keys at each end of a unit with the addresses of their rows, and a
+ * key that follows the order of the heap (a zone walk reads about 8 units) reads a few of them where the array opens and decodes a chunk of each segment (ascending: 25 to
+ * 30 thousand instructions more for 10 rows of 1,000,000 in 4 segments; descending, which cannot decode the end of a chunk without its start: 130 thousand). Past 32 rows
+ * the heads are not enough and the run of a unit is read whole (100 rows: 1.2 M against 0.5 M instructions), and a scan with a condition reads no head.
+ */
+static bool
+topn_heads_win(const AggCtx *c, const SiftAggSpec *s, int leaf, double rows)
+{
+	return sift_topn_heads && sift_topn_walk && s->npred == 0 && c->stats.head_cover[leaf] >= 0.9 && rows <= SIFT_SRC_HEAD_MAX && c->topn_frac * Max(c->stats.nunits, 1.0) <= TOPN_HEADS_UNITS;
+}
+
 /* The scan with the given number of workers (agg/topn.h: each keeps a heap, the leader merges them); the cheaper of the paths wins */
 static void
 topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, List *scan_tlist, double rows, int nworkers, int nordered, double wanted)
@@ -1336,6 +1348,11 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
+		if (c->topn_array && topn_heads_win(c, s, leaf[0], rows))
+		{
+			c->topn_array = false;
+			flags |= TOPN_NOGORD;
+		}
 		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */

@@ -1466,6 +1466,19 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 			acc->point_rows += pl[col].count;
 		}
 	}
+	if (seg->entry.format >= SIFT_COL_FORMAT_HEADS && sift_cseg_run_kinds(seg, col) != 0)
+	{
+		/* a unit has the head of its run or not (a key-cut segment's, a unit with a NULL or an overflowed row): the share of an even sample */
+		uint32		stride = Max(seg->nsb / SET_STATS_UNITS, 1),
+					seen = 0,
+					with = 0;
+		SiftCRun	r;
+		uint64		at;
+
+		for (uint32 u = 0; u < seg->nsb; u += stride, seen++)
+			with += sift_cseg_run(seg, col, u, &r, &at) && r.heads > 0;
+		acc->head_units += (double) seg->nsb * with / Max(seen, 1);
+	}
 	{
 		const GOrdLeaf *g = gord_leaf(seg, col);
 
@@ -3453,9 +3466,9 @@ sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 	return true;
 }
 
-/* The entries [c * SIFT_CGORD_ROWS, + m) of leaf col: keys and heap addresses, each SIFT_CGORD_CAP slots */
+/* The first w entries (the m of the chunk when fewer) of the entries [c * SIFT_CGORD_ROWS, + m) of leaf col: keys and heap addresses, each SIFT_CGORD_CAP slots; the count decoded */
 uint32
-sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr)
+sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr)
 {
 	GOrdLeaf   *g = gord_leaf(seg, col);
 	SiftCGOrdDir d;
@@ -3468,10 +3481,16 @@ sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint6
 	m = sift_cgord_chunk_rows(&g->hdr, c);
 	buf = palloc(ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen) + SIFT_COL_PAD);
 	seg_read(seg, g->at + d.off, ALIGN8((Size) d.klen) + ALIGN8((Size) d.alen), buf);
-	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, m, key, addr))
+	if (!sift_cgord_decode(seg->mcxt, buf, d.klen, buf + ALIGN8((Size) d.klen), d.alen, m, w, key, addr))
 		corrupt(seg, "The global order of leaf %d has a malformed chunk %u.", col, c);
 	pfree(buf);
-	return m;
+	return Min(w, m);
+}
+
+uint32
+sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr)
+{
+	return sift_cseg_gorder_head(seg, col, c, UINT32_MAX, key, addr);
 }
 
 /* The leaf the block of col is grouped by, -1 when it is not */

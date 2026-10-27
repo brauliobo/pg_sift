@@ -289,6 +289,7 @@ extern Node *null_guarded_arm(Node *n);
 extern bool has_exec_param_walker(Node *node, void *context);
 extern bool pseudo_const(Node *n);
 #define AGG_JOIN_ROW		4.0		/* a row of a joined table, read when the scan starts */
+#define TOPN_HEADS_UNITS	16.0	/* the units a top-N walk may read for the heads of their runs to beat the order array (topn_heads_win) */
 #define AGG_ORDER_MIN_COST	1000.0	/* the cost of the normal join under which the other tables of an inner join are not tried as the scanned one: the order saves less than the 60 to 90 us the extra paths take to plan (about 2 ms of the normal plan) */
 #define AGG_LOAD_ROW		20.0	/* ... of a table read whole from its heap, not kept from an earlier query: the visibility test, the key hashed and the row stored (66 ns a row measured on a 500,000-row read, 100 ns with the first touches), beyond the pages */
 #define AGG_LOAD_ROW_COLS	8.0	/* ... of a table read whole from the leaves of a column index that holds its columns (map_load_cols): the units are decoded a unit at a time and a tuple of the columns is made for the rows that are visible (65 ns a row against 160 ns from the heap, measured) */

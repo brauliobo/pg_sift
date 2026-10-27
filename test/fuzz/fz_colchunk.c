@@ -141,6 +141,20 @@ cc_run(void *a)
 			sift_cc_decode_sel(cc, idx, 64, sel);
 			for (uint32 k = 0; k < 64; k++)
 				j->digest = mix(j->digest, (uint64) (sift_cc_get(cc, idx[k]) ^ sel[k]));
+			/* the first w keys are those of the whole decode */
+			{
+				uint32		w = 1 + (uint32) ((j->arg * UINT64CONST(2246822519)) % n);
+				int64	   *head = palloc(sizeof(int64) * (n + SIFT_COL_PAD / 8));
+
+				sift_cc_decode_head(cc, w, head);
+				for (uint32 k = 0; k < w; k++)
+					if (dec[k] != head[k])
+					{
+						fprintf(stderr, "decode_head: key %u of %u differs\n", k, w);
+						abort();
+					}
+				pfree(head);
+			}
 		}
 	}
 	sift_cc_close(cc);

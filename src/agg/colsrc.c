@@ -358,9 +358,9 @@ sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 v
 }
 
 uint32
-sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr)
 {
-	return src->prov->gorder_chunk(src->impl, i, leaf, c, key, addr);
+	return src->prov->gorder_head(src->impl, i, leaf, c, w, key, addr);
 }
 
 void

@@ -399,6 +399,7 @@ struct SiftTopN
 	int			nresid;
 	int			rleaf[TOP_RESID];	/* ... the leaves they read, and whether each is an int64 (else int32) vector */
 	bool		rwide[TOP_RESID];
+	bool		nogord;			/* TOPN_NOGORD: the plan counts on the heads of the sorted runs */
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
@@ -674,6 +675,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->skip = offset;
 	t->all = !bounded;
 	t->totals = (flags & TOPN_TOTALS) != 0;
+	t->nogord = (flags & TOPN_NOGORD) != 0;
 	if (flags & TOPN_RAWKEY)
 		sift_colsrc_set_raw(src, t->key[0].leaf);
 	if (t->all && t->nblob > 0)
@@ -3948,7 +3950,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	int			gl;
 
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (!t->gok || t->skip > 0 || t->all)
+	if (!t->gok || t->nogord || t->skip > 0 || t->all)
 		return false;
 	if (cond != NULL)
 	{

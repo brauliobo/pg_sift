@@ -228,6 +228,7 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
 			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
+		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
 		st->gord_cover[i] = ls[i].nvals > 0 ? Min(ls[i].gord_rows / ls[i].nvals, 1.0) : 0;
 		st->gord_group[i] = ls[i].gord_rows > 0 && ls[i].gord_grp_rows == ls[i].gord_rows ? ls[i].gord_gcol : -1;
 		st->ndistinct[i] = nonnull;
@@ -648,9 +649,9 @@ col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bo
 }
 
 static uint32
-col_gorder_chunk(void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr)
+col_gorder_head(void *impl, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr)
 {
-	return sift_col_gorder_chunk(((ColSource *) impl)->cs, i, leaf, c, key, addr);
+	return sift_col_gorder_head(((ColSource *) impl)->cs, i, leaf, c, w, key, addr);
 }
 
 static void
@@ -832,7 +833,7 @@ static const SiftSrcProvider col_provider = {
 	.run_read = col_run_read,
 	.gorder_open = col_gorder_open,
 	.gorder_info = col_gorder_info,
-	.gorder_chunk = col_gorder_chunk,
+	.gorder_head = col_gorder_head,
 	.gorder_range = col_gorder_range,
 	.gorder_seek = col_gorder_seek,
 	.read_rows = col_read_rows,

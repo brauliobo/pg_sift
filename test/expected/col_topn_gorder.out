@@ -44,8 +44,24 @@ BEGIN
 END $$;
 CREATE FUNCTION gt_all(lims int[]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gt_chk(c, d, nl, l), 1::bigint FROM unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(lims) l $$;
-SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
+-- a LIMIT of 32 rows or fewer is read from the heads of the sorted runs, which the array opens and decodes a chunk of each segment to answer; the tests below turn the heads off
+-- to read the array at every limit
+SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 32]) GROUP BY 1 ORDER BY 1;
 NOTICE:  schema "pg_temp" does not exist, skipping
+    result    | count 
+--------------+-------
+ global order |    72
+ units        |    12
+(2 rows)
+
+SELECT result, count(*) FROM gt_all(ARRAY[33, 200, 2000]) GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |    84
+(1 row)
+
+SET sift.test_topn_heads = off;
+SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
     result    | count 
 --------------+-------
  global order |   112
@@ -275,6 +291,7 @@ SELECT gt_chk('b', 'ASC', 'LAST', 100) AS reindexed, gt_chk('id', 'DESC', 'LAST'
  global order | global order
 (1 row)
 
+RESET sift.test_topn_heads;
 -- a key_cut index (a unit for each range of the key, thousands of them): the array answers the small LIMITs the heads of the runs would read a unit for
 DROP INDEX gt_m;
 CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');

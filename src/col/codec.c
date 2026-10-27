@@ -315,6 +315,49 @@ sift_cc_decode(const SiftCc *c, int64 *dst)
 		nd_i64(c->root, dst);
 }
 
+/* The first w keys of a node: the nodes that store a row after another (a constant, frame of reference, delta) decode w rows and no more, the others all of them */
+static void
+nd_i64_head(const CcNode *nd, int64 *dst, uint32 w)
+{
+	CcNode		h;
+
+	switch (nd->tag)
+	{
+		case SIFT_CCN_CONST:
+		case SIFT_CCN_FORBIT:
+		case SIFT_CCN_FORBYTE:
+		case SIFT_CCN_DELTA:
+			h = *nd;
+			h.n = w;
+			nd_i64(&h, dst);
+			break;
+		case SIFT_CCN_SCALE:
+			nd_i64_head(nd->a, dst, w);
+			sift_cck->scale64(dst, w, nd->base, nd->mind);
+			break;
+		case SIFT_CCN_WRAP:
+			nd_i64_head(nd->a, dst, w);
+			break;
+		default:
+			{
+				int64	   *all = palloc(sizeof(int64) * ((size_t) nd->n + SIFT_COL_PAD / 8));
+
+				nd_i64(nd, all);
+				memcpy(dst, all, sizeof(int64) * w);
+				pfree(all);
+			}
+	}
+}
+
+void
+sift_cc_decode_head(const SiftCc *c, uint32 w, int64 *dst)
+{
+	if (w >= c->n)
+		sift_cc_decode(c, dst);
+	else if (w > 0)
+		nd_i64_head(c->root, dst, w);
+}
+
 /* The doubles of the keys: an ALP node is divided straight into doubles (its exceptions are keys), any other node decodes the keys and turns them in place */
 static void
 nd_f8(const CcNode *nd, double *dst)

@@ -319,6 +319,7 @@ typedef struct SiftColLeafStats
 	double		point_keys;		/* ... the distinct keys of those lists ... */
 	double		point_rows;		/* ... and the rows they list */
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
+	double		head_units;		/* the units of the segments whose sorted runs hold heads (column format minor 18) */
 	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
@@ -643,7 +644,7 @@ extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
  */
 extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
-extern uint32 sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr);
+extern uint32 sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after);
 /*

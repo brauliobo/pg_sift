@@ -45,6 +45,11 @@ END $$;
 
 CREATE FUNCTION gt_all(lims int[]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gt_chk(c, d, nl, l), 1::bigint FROM unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(lims) l $$;
+-- a LIMIT of 32 rows or fewer is read from the heads of the sorted runs, which the array opens and decodes a chunk of each segment to answer; the tests below turn the heads off
+-- to read the array at every limit
+SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 32]) GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gt_all(ARRAY[33, 200, 2000]) GROUP BY 1 ORDER BY 1;
+SET sift.test_topn_heads = off;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
 
 -- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
@@ -166,6 +171,7 @@ SELECT gt_chk('b', 'ASC', 'LAST', 100) AS mixed_segments, gt_chk('id', 'DESC', '
 REINDEX INDEX gt_m;
 SELECT gt_chk('b', 'ASC', 'LAST', 100) AS reindexed, gt_chk('id', 'DESC', 'LAST', 10) AS reindexed_id;
 
+RESET sift.test_topn_heads;
 -- a key_cut index (a unit for each range of the key, thousands of them): the array answers the small LIMITs the heads of the runs would read a unit for
 DROP INDEX gt_m;
 CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');

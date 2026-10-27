@@ -1720,16 +1720,16 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 }
 
 uint32
-sift_col_gorder_chunk(SiftColSource *src, int i, int col, uint32 c, int64 *key, uint64 *addr)
+sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 c, uint32 w, int64 *key, uint64 *addr)
 {
 	const ColGOrdMem *g = src->gmem;
 	uint32		from,
 				m;
 
 	if (i < src->nseg)
-		return sift_cseg_gorder_chunk(src->seg[i].seg, col, c, key, addr);
+		return sift_cseg_gorder_head(src->seg[i].seg, col, c, w, key, addr);
 	from = c * SIFT_CGORD_ROWS;
-	m = Min(g->n - from, (uint32) SIFT_CGORD_ROWS);
+	m = Min(Min(g->n - from, (uint32) SIFT_CGORD_ROWS), w);
 	memcpy(key, g->key + from, m * sizeof(int64));
 	for (uint32 k = 0; k < m; k++)
 		addr[k] = g->tid[from + k];

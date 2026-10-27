@@ -269,14 +269,15 @@ sift_cgord_dirent(const uint8 *dir, const SiftCGOrdHdr *h, uint64 len, uint32 c,
 }
 
 bool
-sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m, int64 *key, uint64 *addr)
+sift_cgord_decode(MemoryContext mcxt, const uint8 *kb, uint32 klen, const uint8 *ab, uint32 alen, uint32 m, uint32 w, int64 *key, uint64 *addr)
 {
 	SiftCc	   *k = sift_cc_open_rows(mcxt, kb, klen, false, m),
 			   *a = sift_cc_open_rows(mcxt, ab, alen, false, m);
 
-	sift_cc_decode(k, key);
-	sift_cc_decode(a, (int64 *) addr);
-	for (uint32 i = 0; i < m; i++)
+	w = Min(w, m);
+	sift_cc_decode_head(k, w, key);
+	sift_cc_decode_head(a, w, (int64 *) addr);
+	for (uint32 i = 0; i < w; i++)
 		addr[i] = sift_cpoint_tid_key(addr[i]);
 	sift_cc_close(k);
 	sift_cc_close(a);

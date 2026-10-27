@@ -8,6 +8,8 @@
 #include "agg/gord.h"
 #include "core/cmp.h"
 
+#define GORD_HEAD_MIN	32
+
 /* A cursor over one source: the entries in the order of the scan, one chunk decoded at a time */
 typedef struct GCur
 {
@@ -19,7 +21,7 @@ typedef struct GCur
 	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
 	uint32		ne;
 	uint32		chunk;			/* the chunk in key/addr, UINT32_MAX: none */
-	uint32		cm;
+	uint32		cm;				/* the entries of the chunk decoded: the first cm, the scan asks for more when it goes past them */
 	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
 	uint32		pos;			/* the next entry of the region (a group of a descending scan: pos in [gs, ge)) */
 	uint32		end;
@@ -41,6 +43,7 @@ struct SiftGOrd
 	bool		nulls_first;
 	int			grouped;		/* the leaf the arrays are grouped by (the scan reads the group of its condition), -1 */
 	bool		bounded;		/* a range of the key: the rows with no value are not in it */
+	uint32		head;			/* the entries of a chunk decoded when the scan enters it (the rows asked for, shared by the sources, at least GORD_HEAD_MIN) */
 	int			ncur;
 	GCur	  **cur;
 	bool		started;
@@ -50,19 +53,22 @@ struct SiftGOrd
 	uint64		last_tid;
 };
 
-/* the entry p of the cursor's source: its chunk is decoded when it is not the one at hand */
+/* the entry p of the cursor's source: the head of its chunk is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
 static void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	uint32		ch = p / SIFT_CGORD_ROWS;
+	uint32		ch = p / SIFT_CGORD_ROWS,
+				off = p % SIFT_CGORD_ROWS;
 
-	if (c->chunk != ch)
+	if (c->chunk != ch || off >= c->cm)
 	{
-		c->cm = sift_colsrc_gorder_chunk(g->src, c->src, g->leaf, ch, c->key, c->addr);
+		uint32		w = Max(c->chunk == ch ? c->cm * 2 : g->head, off + 1);
+
+		c->cm = sift_colsrc_gorder_head(g->src, c->src, g->leaf, ch, Min(w, (uint32) SIFT_CGORD_ROWS), c->key, c->addr);
 		c->chunk = ch;
 	}
-	*key = c->key[p % SIFT_CGORD_ROWS];
-	*addr = c->addr[p % SIFT_CGORD_ROWS];
+	*key = c->key[off];
+	*addr = c->addr[off];
 }
 
 /* a descending scan reads the entries of a key in the order of their addresses, the keys backwards: the group [gs, ge) ends where the last one starts */
@@ -196,6 +202,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 			continue;
 		g->cur[g->ncur++] = c;
 	}
+	g->head = Max(GORD_HEAD_MIN, Min((uint32) SIFT_CGORD_ROWS, g->ncur > 0 ? 5 * (uint32) Max(rows, 0) / (4 * g->ncur) : 0));
 	return g;
 }
 

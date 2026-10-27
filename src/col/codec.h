@@ -125,6 +125,8 @@ extern uint8 sift_cc_tag(const SiftCc *c);		/* tag of the root node under any wr
 
 /* dst[0..n) = the keys; dst needs n + SIFT_COL_PAD/8 slots */
 extern void sift_cc_decode(const SiftCc *c, int64 *dst);
+/* dst[0..w) = the first w keys (all of them when w >= n); dst needs the slots of a decode of n keys */
+extern void sift_cc_decode_head(const SiftCc *c, uint32 w, int64 *dst);
 /* dst[i] = the low 32 bits of key i (the keys of an int4, a date, a dictionary code); dst needs SIFT_CC_CAP32(n) slots */
 extern void sift_cc_decode_u32(const SiftCc *c, uint32 *dst);
 /* dst[i] = the double whose key (sift_col_f8_key) is key i, of a F4 or F8 chunk; an ALP chunk never forms the keys; dst needs n + SIFT_COL_PAD/8 slots */

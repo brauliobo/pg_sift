@@ -120,6 +120,7 @@ typedef struct SiftSrcStats
 	double		point_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose segment keeps a point directory of the leaf, which lists the rows of a short list of keys (0: none does) */
 	double		set_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units that hold a small-set summary of the leaf (0: none do) */
 	double		set_keys[SIFT_COLSRC_MAX_LEAVES];	/* ... and the distinct keys such a unit holds on average */
+	double		head_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the units whose sorted run of the leaf holds a head, the best 32 keys at each end with their heap addresses (order_columns): ORDER BY .. LIMIT 32 or less reads the head of a few units (0: none does) */
 	double		gord_cover[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that the segments keep in a global order (order_array_columns): ORDER BY .. LIMIT reads n entries of it, not the units (0: none does) */
 	int			gord_group[SIFT_COLSRC_MAX_LEAVES];	/* ... and the leaf the order is grouped by (order_array_group), -1 when it is not grouped */
 	double		zone_span[SIFT_COLSRC_MAX_LEAVES];	/* integer leaves: the mean width of the zone of a unit as a share of the leaf's range (0: the source has no zones to tell) */
@@ -654,12 +655,12 @@ typedef struct SiftSrcProvider
 	/*
 	 * The global order of a leaf (optional, col/gorder.h): every row's key and heap address sorted, in sources (stored segments, the rows of the write
 	 * buffers). gorder_open: their number, or -1 when the order cannot answer. gorder_info: the entries of source i and how many have a value (the first ones;
-	 * the others are NULL rows by address). gorder_chunk: entries [c * 1024, + the count returned) as keys and heap addresses, each 1032 slots. The entries are
+	 * the others are NULL rows by address). gorder_head: of entries [c * 1024, + 1024), the first w (fewer in the last chunk) as keys and heap addresses, each 1032 slots; the count returned. The entries are
 	 * of rows that may have died since: the caller has the heap say which are live and what they hold.
 	 */
 	int			(*gorder_open) (void *impl, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);	/* grouped: the leaf the blocks are grouped by, -1; pins: conditions leaf = value of the query, which a block grouped by one of the leaves needs */
 	bool		(*gorder_info) (void *impl, int i, int leaf, uint32 *entries, uint32 *values);
-	uint32		(*gorder_chunk) (void *impl, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
+	uint32		(*gorder_head) (void *impl, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr);
 	void		(*gorder_range) (void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the value entries [vs, ve) and the NULL ones [ns, ne) of the pinned group (all of a source that is not grouped) */
 	uint32		(*gorder_seek) (void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none */
 	/*
@@ -845,7 +846,7 @@ extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSr
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
 extern bool sift_colsrc_gorder_info(SiftSrcSource *src, int i, int leaf, uint32 *entries, uint32 *values);
-extern uint32 sift_colsrc_gorder_chunk(SiftSrcSource *src, int i, int leaf, uint32 c, int64 *key, uint64 *addr);
+extern uint32 sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr);
 extern void sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after);
 extern void sift_colsrc_run_read(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);

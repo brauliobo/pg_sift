@@ -47,6 +47,7 @@ extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
  * of the whole set of rows that pass (the window functions over (), SiftAggSpec.agg), after the columns of the heap in the scan tuple: no unit
  * is left out for the sort key's zone, and the scan is serial. TOPN_RAWKEY: the first key is a uuid or bytea leaf that nothing else of the scan reads: the
  * source reads it as the codes of the dictionary it stores (SiftSrcProvider.set_raw), not through the per-unit dictionary of datums.
+ * TOPN_NOGORD: the heads of the sorted runs answer a LIMIT this small (planner: topn_heads_win), so the order array is not opened.
  * TOPN_TIES: the keys of the spec are a prefix of the query's ORDER BY and the Sort above puts the rest in order: the scan gives the rows in the order
  * of the prefix, up to the last row that ties with the LIMIT + OFFSET-th on it. The heap holds LIMIT + OFFSET + slack rows (the slack is flags >> TOPN_SLACK_SHIFT, the
  * planner's estimate of the rows that tie), and when the last of them ties with the one that counts, the scan starts again with a heap 16 times
@@ -57,6 +58,7 @@ extern bool sift_topn_out_ok(const SiftSrcLeaf *lf);
 #define TOPN_TOTALS			4
 #define TOPN_RAWKEY			8
 #define TOPN_TIES			16
+#define TOPN_NOGORD			32
 #define TOPN_SLACK_SHIFT	8
 #define TOPN_WIDEN_MAX		2
 /*
