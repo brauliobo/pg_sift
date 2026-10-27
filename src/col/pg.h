@@ -148,7 +148,7 @@ extern const char *sift_col_options_point_tid_columns(Relation index);	/* "" whe
 extern const char *sift_col_options_count_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_cut(Relation index);	/* "" when none */
 extern const char *sift_col_options_order_columns(Relation index);	/* "" when none */
-extern const char *sift_col_options_order_array_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_order_array_columns(Relation index);	/* NULL when not set: the build chooses */
 extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */

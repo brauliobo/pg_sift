@@ -568,7 +568,7 @@ BEGIN
 				 'the units written before the option are cut by superblock, so a lookup or a range of the key reads units from every part of the heap; a REINDEX cuts them by the key'),
 				('^hll_columns=.', 20, 'hll_columns', false,
 				 'the units written before the option have no sketch of the column, so sift.approx_count_distinct reads their rows; a REINDEX writes it'),
-				('^order_array_columns=.', 21, 'order_array_columns', false,
+				('^order_array_columns=(?!off$|auto$)', 21, 'order_array_columns', false,
 				 'the segments written before the option have no global order of the columns, so an ORDER BY .. LIMIT above 32 rows on one reads their units; a REINDEX writes it')
 			 ) v(pat, minor, what, dflt, why)
 			 WHERE lo < v.minor AND EXISTS (SELECT 1 FROM unnest(r.opts) opt WHERE opt ~ v.pat) <> v.dflt;

@@ -82,37 +82,18 @@ sift_cset_pres_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 		(d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_INT8 || d->type == SIFT_COLT_DATE);
 }
 
-/* the list of key_columns without its 'auto' word and colon; *autolist: the build chose it (or is to) */
-static const char *
-keys_list(const char *opt, bool *autolist)
-{
-	const char *p = opt ? opt : "";
-
-	while (*p == ' ')
-		p++;
-	*autolist = strncmp(p, "auto", 4) == 0 && (p[4] == '\0' || p[4] == ':' || p[4] == ' ');
-	if (*autolist)
-	{
-		for (p += 4; *p == ' '; p++)
-			;
-		if (*p == ':')
-			p++;
-	}
-	return p;
-}
-
 const char *
 sift_cset_keys_syntax(const char *opt)
 {
 	bool		autolist;
 
-	return sift_cpagg_leaf_list(keys_list(opt, &autolist), NULL, NULL, NULL, NULL, NULL);
+	return sift_cpagg_leaf_list(sift_cpagg_auto_list(opt, &autolist), NULL, NULL, NULL, NULL, NULL);
 }
 
 const char *
 sift_cset_keys_parse(const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
 {
-	const char *err = sift_cpagg_leaf_list(keys_list(opt, &spec->keyauto), s, names, spec->set, sift_cset_leaf_ok, "not a plain integer, text or uuid column");
+	const char *err = sift_cpagg_leaf_list(sift_cpagg_auto_list(opt, &spec->keyauto), s, names, spec->set, sift_cset_leaf_ok, "not a plain integer, text or uuid column");
 
 	for (int c = 0; err == NULL && c < s->ncols; c++)
 		spec->pres[c] = spec->set[c] && sift_cset_pres_leaf_ok(s, &s->cols[c]);

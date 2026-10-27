@@ -15,6 +15,7 @@ SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid i
 SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
 SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
 SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
+SIFT_CORDER_MAX_ROWS	a range of more rows than this is read from the units: the addresses of a range are sorted by position before the heap is read
 SIFT_CPOINT_MAX_KEYS	keys of one lookup that the point directory answers: a speed threshold, the answer is the same either way
 SIFT_CPOINT_MAX_RANGE	keys of one range that the point directory enumerates: a speed threshold, the zones answer a longer range the same way
 SIFT_CPOINT_MAX_ROWS	rows of one lookup that the point directory answers: a speed threshold, the answer is the same either way

@@ -203,7 +203,8 @@ sift_col_validate_order_array_group(const char *value)
 void
 sift_col_validate_order_array_columns(const char *value)
 {
-	const char *err = sift_crun_syntax(value);
+	bool		autolist;
+	const char *err = sift_crun_syntax(sift_cpagg_auto_list(value, &autolist));
 
 	if (err)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option \"%s\": %s", value, err)));
@@ -435,8 +436,8 @@ sift_col_init(void)
 						 "the integer, date, timestamp, numeric and float columns whose rows every unit written from now on keeps in the order of the column (a sorted run that lets ORDER BY .. LIMIT read the first rows of each unit only); the segments are column format minor 13 (default none)",
 						 "", sift_col_validate_order_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
-						 "the columns of order_columns (integer, date and timestamp) whose segments written from now on also keep every row's key and heap address sorted, so that ORDER BY column LIMIT n above 32 reads n entries whatever the number of units; 1 to 4 bytes a row for each column; the segments are column format minor 21 (default none)",
-						 "", sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
+						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted (with the sorted run of the column), so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
+						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_group",
 						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
 						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
@@ -667,7 +668,7 @@ sift_col_options_order_array_columns(Relation index)
 {
 	const SiftColOptions *o = sift_col_options(index);
 
-	return o->order_array_columns ? (const char *) o + o->order_array_columns : "";
+	return o->order_array_columns ? (const char *) o + o->order_array_columns : NULL;
 }
 
 const char *
@@ -808,7 +809,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		r->pagg.super = sift_col_options(index)->superunit;
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
-		if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_columns(index), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
+		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
 										"not an integer, date or timestamp column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
 		if (sift_col_options_order_array_group(index)[0] != '\0')
@@ -831,7 +832,9 @@ build_rel(Relation index, MemoryContext mcxt)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: one column, not %d", ng)));
 		}
 		for (int i = 0; i < n; i++)
-			if (r->pagg.gorder[i] && !r->pagg.run[i])
+			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
+				r->pagg.run[i] = true;
+			else if (r->pagg.gorder[i] && !r->pagg.run[i])
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
 								errhint("The global order extends the sorted run of a column: add it to order_columns.")));
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)

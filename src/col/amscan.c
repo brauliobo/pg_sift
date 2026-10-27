@@ -36,6 +36,7 @@
 
 #include "col/am.h"
 #include "col/pg.h"
+#include "col/gorder.h"
 #include "col/point.h"
 
 /*
@@ -44,6 +45,8 @@
  */
 #define COL_SCAN_FIXED		24.0	/* opening the index, the snapshot and the directory of the segment: the startup */
 #define COL_SCAN_FIXED_TID	12.0	/* ... for a lookup the directory of heap addresses answers: the source is opened and the first addresses read in 67,000 instructions (16 us measured, 4 of them the probe) */
+#define COL_SCAN_GORD_CHUNK	10.0	/* a chunk of the sorted keys of a segment (1,024 entries): its directory entry and its two blobs, for the bounds and each chunk between them */
+#define COL_SCAN_GORD_SORT	0.03	/* an address of a range sorted by its position in the heap */
 #define COL_SCAN_WALK		0.03	/* the zones and summaries of one unit tested against the constants */
 #define COL_SCAN_WORD		0.002	/* ... when the point directory answered, so only the bits of the kept units are walked */
 #define COL_SCAN_PROBE		4.0		/* one key looked up in a point directory: its slots are a page or two of a table the lookups of other keys do not share */
@@ -1069,7 +1072,7 @@ prefix_clause(const OpExpr *op, int strategy)
  * share of those units whose directory lists heap addresses (point_tid_columns): the scan returns their rows without reading the unit (an index-only scan reads it, for the values).
  */
 static double
-point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid)
+point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int *nprobes, double *tid, double *extra)
 {
 	const SiftColLeafStats *ls = sift_col_leaf_stats(irel);
 	IndexOptInfo *index = path->indexinfo;
@@ -1077,6 +1080,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 
 	*nprobes = 0;
 	*tid = 0.0;
+	*extra = 0.0;
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
 		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[ic->indexcol + 1]];
@@ -1113,6 +1117,43 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 			}
 		}
 	}
+	/* a range on a leaf with a global order is a seek in the sorted keys: the addresses of the rows between the bounds, in as many units as a lookup of that many rows finds */
+	for (int col = 0; col < index->nkeycolumns; col++)
+	{
+		const SiftColLeafStats *l = &ls[sift_col_rel(irel)->first[col + 1]];
+		List	   *ranges = NIL;
+		bool		other = false;
+
+		foreach_node(IndexClause, ic, path->indexclauses)
+		{
+			if (ic->indexcol != col)
+				continue;
+			foreach_node(RestrictInfo, ri, ic->indexquals)
+			{
+				int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[col]) : 0;
+
+				if (strategy == BTLessStrategyNumber || strategy == BTLessEqualStrategyNumber || strategy == BTGreaterStrategyNumber || strategy == BTGreaterEqualStrategyNumber)
+					ranges = lappend(ranges, ri);
+				else
+					other = true;
+			}
+		}
+		if (ranges != NIL && !other && l->nunits > 0 && l->gord_rows > l->gord_grp_rows)
+		{
+			double		rows = clauselist_selectivity(root, ranges, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples,
+						cover = Min((l->gord_rows - l->gord_grp_rows) / Max(index->rel->tuples, 1.0), 1.0),
+						share = 1.0 - exp(-rows / units);
+
+			if (rows <= SIFT_CORDER_MAX_ROWS && (*nprobes == 0 ? 1.0 - cover + cover * share <= kept : 1.0 - cover + cover * share < kept))
+			{
+				kept = 1.0 - cover + cover * share;
+				*nprobes = 1;
+				*tid = path->path.pathtype == T_IndexOnlyScan ? 0.0 : cover;
+				*extra = (2.0 + ceil(rows / 1024.0)) * COL_SCAN_GORD_CHUNK + rows * COL_SCAN_GORD_SORT;
+			}
+		}
+		list_free(ranges);
+	}
 	return kept;
 }
 
@@ -1131,6 +1172,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	double		kept,
 				pkept,
 				tid,
+				extra,
 				units,
 				kept_units,
 				idx_rows,
@@ -1141,13 +1183,13 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	genericcostestimate(root, path, loop_count, &costs);
 	irel = index_open(index->indexoid, AccessShareLock);
 	units = Max(1.0, ceil(index->rel->pages / 256.0));
-	pkept = point_kept(root, path, irel, units, &nprobes, &tid);
+	pkept = point_kept(root, path, irel, units, &nprobes, &tid, &extra);
 	kept = Min(Min(zones_kept(root, path, irel), sets_kept(root, path, irel)), pkept);
 	index_close(irel, AccessShareLock);
 	kept_units = kept * units;
 	/* an IN list or ANY (array) is a scan for each element, and genericcostestimate counts the tuples of one */
 	idx_rows = costs.numIndexTuples * Max(costs.num_sa_scans, 1);
-	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
+	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
 		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
@@ -1202,7 +1244,7 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
 		IndexPath  *ip = (IndexPath *) p;
 		IndexPath  *bp;
 
-		if (!IsA(p, IndexPath) || p->pathtype != T_IndexOnlyScan || ip->indexinfo->relam != sift_col_am_oid() || list_length(ip->indexclauses) != 1 ||
+		if (!IsA(p, IndexPath) || p->pathtype != T_IndexOnlyScan || ip->indexinfo->relam != sift_col_am_oid() || ip->indexclauses == NIL ||
 			ip->indexorderbys != NIL)
 			continue;
 		bp = create_index_path(root, ip->indexinfo, ip->indexclauses, ip->indexorderbys, ip->indexorderbycols, ip->path.pathkeys, ip->indexscandir, false,

@@ -40,6 +40,8 @@ typedef struct ColCursor
 	uint32		nprow;
 	int			ppred;
 	bool		ptids;			/* a point directory of heap addresses answered a predicate: the addresses went to the source (SiftColSource.ptid) */
+	uint32		rhint;			/* the rows of the narrowest range of the scan that its leaf's global order counts in this segment (UINT32_MAX: none) */
+	uint32		prun;			/* ... from this position of SiftColSource.ptid, the run of this segment (a range of the global order narrows it) */
 	bool		others;			/* the scan has predicates besides the directory's: a unit with many of its addresses is read and filtered, not handed to the heap */
 	SiftKey    *ptidv;			/* ... and, for a source that narrows its units (SIFT_COLO_POINT_ROWS), the addresses of the segment, ascending */
 	uint32		nptidv;

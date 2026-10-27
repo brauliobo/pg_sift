@@ -35,8 +35,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 21 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
+| [default](#default) | 102 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 20 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -386,6 +386,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** n/a: a size, not a switch. RESET (key_cut_rows) or 0 returns to superblock-sized units; it has no effect without key_cut. Applies to units written afterwards.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave at 0: units aim at the rows of an average superblock. Fewer rows make more units, more rows a coarser key range per unit. Only used with key_cut.
+
+#### sift_col(order_array_columns)
+
+`sift_col` · default · since 3.4 · default ''
+
+- **What it does:** A range of a column whose values are scattered over the heap (up to 16,384 rows) hands the heap the addresses between its bounds from the sorted keys of each segment, with no unit read: 790 of 800,000 rows 18.4M to 2.4M instructions, 7,900 rows 44.1M to 19.1M; ORDER BY col LIMIT from 1 to thousands (no join or aggregate; comparisons of the key with constants bound the part read) merges the arrays of the segments and fetches n rows of the heap, whatever the number of units
+- **Gain:** narrow range (790 of 800,000 rows, random int4), instructions per statement: covering 18.4M to 2.4M, rows 18.7M to 2.6M, count(*) 8.3M to 2.6M; 7,900 rows covering 44.1M to 19.1M, rows 45.8M to 20.8M; range plus an equality of a directory column (grp = 7) 8.3M to 2.8M; ranges over 16,384 rows, IN lists and count(*) of 7,900 and 160,000 rows unchanged (8.7M, 11.5M, 0.46M); LIMIT n as in the earlier row
+- **Formula:** S 7.00x saving 16000k instructions, G 21.0%, W 22.0%, R 1: B 39.9 against C 11.4, automatic
+- **Impact:** index size: auto adds nothing to a table under 100,000 rows or to an index it would grow by more than 25%; +21% of a 7-column index of 30 bytes a row and +7% of a 93-byte one (800,000 rows, one scattered int4 column); at most two columns; build, merge and writes: CREATE INDEX +22% instructions (5.99G to 7.32G, 800,000 rows, one column, 7-column index); the earlier row's insert, merge and VACUUM figures per order column; other: format minor 21; auto: 4.4 bytes a row for a 4-byte key and 5.6 for an 8-byte one, plus the sorted run it extends (2.2 and 3.5): a 7-column index of 800,000 rows 24.3 to 29.4 MB (+21%), +7% of the 93 bytes a row of an index with point_tid_columns; the build +22% instructions (5.99G to 7.32G); segments are minor 21, which 3.3 and older refuse
+- **When:** A range of a scattered column up to 16,384 rows, and ORDER BY col LIMIT n over one integer, date or timestamp key of order_columns with no join or aggregate; any other shape reads the units (a unit with a dead row is read).
+- **Default:** '' — Default on by the formula of benefit B = log2(S)/log2(1.05) = 33 for S = 5 (narrow ranges, 18.4M to 2.4M instructions) against cost G/3 + W/5 = 7.0 + 4.4 = 11.4 for G = 21% and W = 22%; G is under the 25% ceiling and the saving is 16M instructions a query. Built only where it pays: 100,000 rows or more, 1,000 or more distinct values, correlation under 0.99, not a column that cuts the units, within 25% of the index.
+- **Turn off:** SET (order_array_columns = 'off') then REINDEX (the build NOTICE names the columns and the MB); RESET returns to auto, decided again at the next REINDEX. New segments only; older ones keep their arrays until a merge or REINDEX, and the scan of the units answers meanwhile.
+- **Upgrade from 3.4:** The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 21, which 3.3 and older refuse (SET (order_array_columns = 'off') and REINDEX first).
+- **Advice:** Leave at auto: a column of 1,000 or more distinct values whose correlation with the heap order is under 0.99, on a table of 100,000 rows or more with statistics (ANALYZE, then REINDEX), gets the array while the arrays stay within 25% of the index. Name the columns of order_columns for ORDER BY .. LIMIT on a smaller table or a column the rule leaves out; off removes it. REINDEX to apply.
 
 #### sift_col(superunit)
 
@@ -1479,20 +1493,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
 
-#### sift_col(order_array_columns)
-
-`sift_col` · opt-in · since 3.4 · default ''
-
-- **What it does:** Ordered runs, optionally with a global order array for LIMIT from 1 to thousands: a subset of order_columns keeps every row's (key, heap address) sorted per segment, so ORDER BY col LIMIT n with no join or aggregate (and no filter but comparisons of the key with constants, which bound the part of the array read) merges the arrays of the segments and of the write buffer and fetches n rows of the heap, whatever the number of units
-- **Gain:** ORDER BY a random-key column LIMIT 200 over 100,000 rows (23 units): 2.20M instructions against 0.85M, LIMIT 1000 6.74M against 2.50M; LIMIT 10 0.40M against 0.43M (callgrind, per statement); scattered column, 800,000 rows, wall ms with no runs / runs / runs + array: LIMIT 200 2.54 / 0.69 / 0.15, LIMIT 1000 5.53 / 1.71 / 0.47 (index 8.96 / 10.77 / 13.39 MB); up to 32 rows the run heads answer too and the array costs the same on a few units (0.14-0.26 ms at 200,000 and 1,000,000 rows); on a key_cut index (a unit for each key range, so a head for each) unkeyed ORDER BY a scattered timestamp, 1,000,000 rows, wall ms heads / array: LIMIT 1 0.64 / 0.14, LIMIT 10 2.0 / 0.22, LIMIT 32 4.8 / 0.20, LIMIT 200 4.6 (runs) / 0.52, LIMIT 1000 6.3 / 1.2 (index 11.1 MB runs, 15.5 MB with the array); 4-column table of random keys, no b-tree, wall ms (seq scan + sort with 2 workers / runs only / runs + array): 3,000,000 rows LIMIT 33 159 / 1.8 / 0.28, LIMIT 200 115 / 3.5 / 0.46, LIMIT 1000 118 / 4.8 / 1.6; 10,000,000 rows LIMIT 33 456 / 1.6 / 0.29, LIMIT 200 432 / 6.9 / 0.70, LIMIT 1000 437 / 11.6 / 1.6 (index 72 MB runs, 116 MB with the array); with a range of the key, wall ms at 100,000 / 1,000,000 / 3,000,000 rows (scattered timestamp, no b-tree): ORDER BY ts LIMIT 10 over ts >= x 0.25 / 0.27 / 0.31 against 0.60 / 12.3 / 12.5 for the units, a window of 1,000 rows LIMIT 50 0.33 / 0.34 / 0.47 against 0.67 / 1.9 / 4.0, the page after a key ORDER BY ts, id LIMIT 50 0.29 / 0.29 / 0.29 against 1.4 / 17.1 / 17.3 (descending 3.0 / 14.4 / 53.4), a b-tree 0.20 / 0.21 / 0.12
-- **Impact:** index size: +1.5% of the index for the key-ordered column of a 15-column page-view fixture (300,000 and 1,000,000 rows) and +5% for the time column of a 4-column readings fixture; +25% to +62% (page views) and +120% (readings) for two or three order columns of random keys; +14% of a 7-column index of 100,000 rows with 3 order columns; build, merge and writes: CREATE INDEX +14.5%, insert of 20,000 rows with its promotion +6%, merge +28%, delete and VACUUM +4% (instructions, 3 order columns of a 7-column index, 100,000 rows); other: format minor 21; every row of the leaf in 0.8 B (a column in key order) to 3.9 B (random keys) of a segment: a 7-column index of 100,000 rows with 3 order columns 3.22 MB to 3.67 MB; segments are minor 21, which 3.3 and older refuse
-- **When:** ORDER BY col LIMIT n over one integer, date or timestamp key of order_columns, with no join or aggregate, no filter but comparisons of the key with constants (a range, the page after a key), the other sort keys integer, date or timestamp columns and a write buffer of at most 4,096 rows (or 8 times n); any other shape reads the units.
-- **Default:** '' — Opt-in: +14% of a 7-column index for 3 order columns, CREATE INDEX +15% and insert with promotion +14% instructions, where the sorted runs and their heads already answer up to 32 rows from a few units; the segments are minor 21, which 3.3 and older refuse.
-- **Why not the default:** the history does not say
-- **Turn off:** RESET (order_array_columns): new segments get no array; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
-- **Upgrade from 3.4:** unchanged
-- **Advice:** Turn it on (name the column, which must be in order_columns) for a large table, or a key_cut index (its many units cost the heads), where ORDER BY col LIMIT n with n from 1 to a few thousand over a column with scattered values is a frequent, latency-sensitive query that no b-tree serves, and 4-5 bytes a row for the column is affordable; leave it out for LIMIT 32 or less, which the heads of the runs answer.
-
 #### sift_col(order_array_group)
 
 `sift_col` · opt-in · since 3.4 · default ''
@@ -2111,6 +2111,7 @@ No default changed since 3.4; new: `sift.agg_verdict_cache`, `sift.agg_par_min_r
 |---|---|---|---|---|
 | `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift_col(count_columns)` | new | '' | minor 24, unreadable by 3.4 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
+| `sift_col(order_array_columns)` | '' | '' | minor 21 | The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 21, which 3.3 and older refuse (SET (order_array_columns = 'off') and REINDEX first). |
 | `sift.agg_verdict_cache` | new | on |  | new in 3.5 |
 | `sift.agg_par_min_rows` | new | 80000 |  | new in 3.5 |
 | `sift.table_key_table` | new | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
@@ -2140,6 +2141,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs | `src/col/build.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": the foreign key columns %s of "%s" are not columns of the index | `src/col/build.c` |  |

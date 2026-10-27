@@ -26,6 +26,25 @@ sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d)
 	return depth1(s, d) && plain_type(d) && (d->store == SIFT_COLS_INT || d->store == SIFT_COLS_STR);
 }
 
+/* The list of an option that may be the choice of the build, without its 'auto' word and colon; *autolist: the build chose it (or is to), 'auto' alone is none chosen yet */
+const char *
+sift_cpagg_auto_list(const char *opt, bool *autolist)
+{
+	const char *p = opt ? opt : "";
+
+	while (*p == ' ')
+		p++;
+	*autolist = strncmp(p, "auto", 4) == 0 && (p[4] == '\0' || p[4] == ':' || p[4] == ' ');
+	if (*autolist)
+	{
+		for (p += 4; *p == ' '; p++)
+			;
+		if (*p == ':')
+			p++;
+	}
+	return p;
+}
+
 /* 'a, b': the names of the leaves an option takes, each one ok(); empty or 'off': none. s NULL: the syntax only. Returns NULL, or why the option is not valid */
 const char *
 sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,

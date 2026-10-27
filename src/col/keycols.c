@@ -34,6 +34,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/ktab.h"
 #include "col/pagg.h"
 #include "col/preagg.h"
@@ -536,6 +537,153 @@ sift_col_auto_paths(Relation heap, Relation index)
 								   SIFT_COL_AUTO_PATHS_SAMPLE),
 						 errhint("Write paths = '...' to fix them by hand.")));
 	}
+}
+
+/*
+ * Before a build: the columns that get the global order array (order_array_columns, col/gorder.h) when the option is unset or 'auto' (not 'off', not a list). A
+ * range of a column of up to SIFT_CORDER_MAX_ROWS rows reads the entries between its bounds, where the units are all read when the values are scattered over the
+ * heap (their min and max cover the range): 18.4M instructions against 2.6M for 790 of 800,000 rows. It costs the array (4.4 bytes a row for an int4, 5.6 for a
+ * timestamp) and the sorted run it extends (2.2 and 3.5), so it is built where it pays only, from the statistics of the table: a column of GORD_AUTO_DISTINCT or
+ * more distinct values (fewer are answered by a key list, a point directory or the units) whose correlation with the heap order is under GORD_AUTO_CORR (a
+ * column in heap order has narrow zones), on a table of GORD_AUTO_ROWS or more rows (below it a scan of the units is within 100k instructions), not a column
+ * that cuts the units, and no more than GORD_AUTO_GROWTH_PCT% of the index: the bytes of the index a row are estimated from the statistics of its columns (the
+ * bits of their distinct values, the strings of a dictionary, at most their width), so a narrow index of a few small columns gets none. At most GORD_AUTO_MAX
+ * columns, the least correlated first. A table with no statistics decides nothing; ANALYZE and a REINDEX do. A REINDEX decides again.
+ */
+#define GORD_AUTO_ROWS		100000
+#define GORD_AUTO_DISTINCT	1000
+#define GORD_AUTO_CORR		0.99
+#define GORD_AUTO_GROWTH_PCT 25
+#define GORD_AUTO_MAX		2
+
+/* the statistics of heap column hatt: distinct values, the correlation with the heap order (1 when unknown) and the average width; false without them */
+static bool
+col_stats(Relation heap, AttrNumber hatt, double *ndistinct, double *corr, int32 *width)
+{
+	HeapTuple	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false));
+	AttStatsSlot sslot;
+
+	if (tp == NULL)
+		return false;
+	*ndistinct = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+	if (*ndistinct < 0)
+		*ndistinct = -*ndistinct * heap->rd_rel->reltuples;
+	*width = ((Form_pg_statistic) GETSTRUCT(tp))->stawidth;
+	*corr = 1.0;
+	if (get_attstatsslot(&sslot, tp, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		if (sslot.nnumbers > 0)
+			*corr = fabs(sslot.numbers[0]);
+		free_attstatsslot(&sslot);
+	}
+	ReleaseSysCache(tp);
+	return true;
+}
+
+/* about how many bytes a row of the index takes, from the statistics of its columns: the bits of their distinct values, and the strings of a dictionary, at most their width */
+static double
+est_index_bytes(Relation heap, Relation index)
+{
+	double		bytes = 0;
+
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+	{
+		AttrNumber	hatt = index->rd_index->indkey.values[i];
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+		double		d,
+					corr;
+		int32		width;
+
+		if (hatt == 0 || !col_stats(heap, hatt, &d, &corr, &width))
+		{
+			bytes += att->attlen > 0 ? att->attlen : 32;
+			continue;
+		}
+		bytes += Min(width, log2(Max(d, 2)) / 8 + (att->attlen > 0 ? 0 : width * d / Max(heap->rd_rel->reltuples, 1)));
+	}
+	return bytes;
+}
+
+void
+sift_col_auto_gorder(Relation heap, Relation index)
+{
+	const char *opt = sift_col_options_order_array_columns(index);
+	const SiftColRel *rel;
+	bool		autolist;
+	int			pick[GORD_AUTO_MAX];
+	double		corr[GORD_AUTO_MAX];
+	int			npick = 0;
+	double		room,
+				added = 0;
+	StringInfoData v;
+
+	(void) sift_cpagg_auto_list(opt, &autolist);
+	if (opt != NULL && !autolist)
+		return;
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || sift_col_options_order_array_group(index)[0] != '\0' || heap->rd_rel->reltuples < GORD_AUTO_ROWS)
+		return;
+	room = est_index_bytes(heap, index) * GORD_AUTO_GROWTH_PCT / 100;
+	rel = sift_col_rel_private(index, CurrentMemoryContext);
+	for (int c = 0; c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	hatt = heap_attno(index, d);
+		double		ndistinct,
+					cr;
+		int32		width;
+		bool		cut = false;
+
+		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d))
+			continue;
+		for (int k = 0; k < rel->ncut; k++)
+			cut |= rel->cut[k] == c;
+		if (cut && sift_col_key_cut(rel))
+			continue;
+		if (!col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR)
+			continue;
+		/* the least correlated first, in the order of the schema among equals */
+		{
+			int			at = npick;
+
+			while (at > 0 && corr[at - 1] > cr)
+				at--;
+			if (at >= GORD_AUTO_MAX)
+				continue;
+			for (int j = Min(npick, GORD_AUTO_MAX - 1); j > at; j--)
+			{
+				pick[j] = pick[j - 1];
+				corr[j] = corr[j - 1];
+			}
+			pick[at] = c;
+			corr[at] = cr;
+			npick = Min(npick + 1, GORD_AUTO_MAX);
+		}
+	}
+	/* as many as fit the room, in that order; the sorted run of a column not in order_columns comes with it */
+	for (int i = 0; i < npick; i++)
+	{
+		const SiftColDef *d = &rel->schema->cols[pick[i]];
+		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
+		double		cost = (narrow ? 4.4 : 5.6) + (rel->pagg.run[pick[i]] ? 0 : (narrow ? 2.2 : 3.5));
+
+		if (added + cost > room)
+		{
+			npick = i;
+			break;
+		}
+		added += cost;
+	}
+	if (npick == 0)
+	{
+		if (opt != NULL)
+			sift_col_set_option(index, "order_array_columns", "auto");
+		return;
+	}
+	initStringInfo(&v);
+	appendStringInfoString(&v, "auto: ");
+	for (int i = 0; i < npick; i++)
+		appendStringInfo(&v, "%s%s", i ? ", " : "", leaf_name(index, &rel->schema->cols[pick[i]]));
+	sift_col_set_option(index, "order_array_columns", v.data);
 }
 
 /*

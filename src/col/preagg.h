@@ -119,6 +119,7 @@ typedef struct SiftCPaggSpec
 	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
 	bool		hll[SIFT_COL_MAX_COLS];	/* the leaves that keep a HyperLogLog sketch of their values in every unit (option hll_columns, column format minor 20; col/hll.h) */
 	bool		gorder[SIFT_COL_MAX_COLS];	/* the leaves that get a global order block in the segment (column format minor 21; col/gorder.h) */
+	bool		gorderauto;				/* order_array_columns is the choice of the build ('auto: a, b'): the leaves of it get their sorted run too */
 	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
 	bool		count[SIFT_COL_MAX_COLS];	/* the text leaves whose dictionary of many strings also stores the rows of each string (option count_columns, column format minor 24; col/seg_write.c) */
 	bool		point[SIFT_COL_MAX_COLS];	/* the leaves that get a point directory in the segment (option point_columns, column format minor 14; col/point.h) */
@@ -137,6 +138,8 @@ typedef struct SiftCPaggSpec
  */
 extern bool sift_cpagg_dim_ok(const SiftColSchema *s, const SiftColDef *d);
 /* The leaf names of an option that lists columns ('a, b', empty or off for none): sets leaf[c] for each, checked by ok (false: the message bad); s NULL checks the syntax only */
+/* The list of an option that the build may choose ('auto: a, b'): the text after the word, and whether the word is there */
+extern const char *sift_cpagg_auto_list(const char *opt, bool *autolist);
 extern const char *sift_cpagg_leaf_list(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf,
 										bool (*ok) (const SiftColSchema *, const SiftColDef *), const char *bad);
 extern bool sift_cpagg_meas_ok(const SiftColSchema *s, const SiftColDef *m, const SiftColDef *dim);

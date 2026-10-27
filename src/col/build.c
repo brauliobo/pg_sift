@@ -613,33 +613,45 @@ notice_point_tid(Relation index)
 			 errhint("Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.")));
 }
 
-/* The option keeps a sorted array of every row of an order_columns column: its bytes are said once, where they are paid */
+/* The option keeps a sorted array of every row of a column: its bytes are said once, where they are paid, and the columns the build chose by name */
 static void
 notice_order_array(Relation index)
 {
 	const SiftColLeafStats *ls;
 	const SiftColIndexMeta *d;
+	const char *opt = sift_col_options_order_array_columns(index);
+	StringInfoData names;
+	bool		autolist;
 	double		rows = 0,
 				bytes = 0;
 	int			n = 0;
 
-	if (sift_col_options_order_array_columns(index)[0] == '\0')
+	(void) sift_cpagg_auto_list(opt, &autolist);
+	if (opt == NULL || (opt[0] == '\0' && !autolist))
 		return;
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
+	initStringInfo(&names);
 	for (int c = 0; c < d->ncols; c++)
 		if (ls[c].gord_rows > 0)
 		{
 			rows += ls[c].gord_rows;
 			bytes += ls[c].gord_bytes;
+			appendStringInfo(&names, "%s%s", n ? ", " : "", NameStr(TupleDescAttr(RelationGetDescr(index), c)->attname));
 			n++;
 		}
 	if (n == 0)
 		return;
-	ereport(NOTICE,
-			(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
-			 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
-			 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
+	if (autolist)
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs", RelationGetRelationName(index), names.data),
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index.", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.")));
+	else
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
 }
 
 /*
@@ -839,6 +851,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_col_auto_rows(heap, index);
 	chosen = sift_col_auto_keys(heap, index);
 	autocut = sift_col_auto_cut(heap, index);
+	sift_col_auto_gorder(heap, index);
 	if (info->ii_ParallelWorkers > 0)	/* with an order key every participant writes a key-sorted segment of the superblocks it claimed */
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)

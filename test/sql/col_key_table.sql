@@ -29,10 +29,10 @@ VACUUM (FREEZE, ANALYZE) kt_b;
 VACUUM (FREEZE, ANALYZE) kt_c;
 
 -- the minor of the segments: 22 with the table, 15 under a setting of 15 or the option off
-CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
-CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, key_table = off);
+CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, order_array_columns = off);
+CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, key_table = off, order_array_columns = off);
 SET sift.col_format_minor = 14;
-CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
+CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, order_array_columns = off);
 RESET sift.col_format_minor;
 SELECT 'kt_on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kt_on')
 UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_b_off')

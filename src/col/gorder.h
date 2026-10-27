@@ -28,6 +28,7 @@
 #define SIFT_CGORD_ROWS		1024
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
+#define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan.c, prune_range_tids) */
 #define SIFT_CGORD_MEM_ROWS	4096		/* rows of the write buffers a scan sorts for the order, at least (sift_col_gorder_open) */
 #define SIFT_CGORD_CAP		(SIFT_CGORD_ROWS + 8)		/* slots of the arrays sift_cgord_decode fills */
 

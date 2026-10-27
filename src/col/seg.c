@@ -3554,16 +3554,36 @@ sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, ui
 	*vs = *ve = *ns = *ne = 0;
 }
 
+/* The chunk of the global order read last by a seek: the bounds of a range are usually in one chunk, which the addresses are then read from */
+typedef struct GOrdMemo
+{
+	bool		have;
+	uint32		c;
+	uint32		m;
+	int64		key[SIFT_CGORD_CAP];
+	uint64		addr[SIFT_CGORD_CAP];
+} GOrdMemo;
+
+static uint32
+gorder_chunk_memo(SiftColSegment *seg, int col, uint32 c, GOrdMemo *memo)
+{
+	if (!memo->have || memo->c != c)
+	{
+		memo->m = sift_cseg_gorder_chunk(seg, col, c, memo->key, memo->addr);
+		memo->c = c;
+		memo->have = true;
+	}
+	return memo->m;
+}
+
 /*
  * The first entry of [vs, ve) (value entries ascending by key there) whose key is not before key (after: is after it), found in the directory by the first keys of the
  * chunks that start inside the range and in one chunk; ve when there is none.
  */
-uint32
-sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after)
+static uint32
+gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, GOrdMemo *memo)
 {
 	GOrdLeaf   *g = gord_leaf(seg, col);
-	int64		ks[SIFT_CGORD_CAP];
-	uint64		as[SIFT_CGORD_CAP];
 	uint32		c0,
 				lo,
 				hi,
@@ -3589,13 +3609,80 @@ sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 
 			hi = mid;
 	}
 	lo--;
-	m = sift_cseg_gorder_chunk(seg, col, lo, ks, as);
+	m = gorder_chunk_memo(seg, col, lo, memo);
 	from = Max(vs, lo * SIFT_CGORD_ROWS);
 	to = Min(ve, lo * SIFT_CGORD_ROWS + m);
 	for (uint32 i = from; i < to; i++)
-		if (after ? ks[i - lo * SIFT_CGORD_ROWS] > key : ks[i - lo * SIFT_CGORD_ROWS] >= key)
+		if (after ? memo->key[i - lo * SIFT_CGORD_ROWS] > key : memo->key[i - lo * SIFT_CGORD_ROWS] >= key)
 			return i;
 	return to;
+}
+
+uint32
+sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after)
+{
+	GOrdMemo	memo;
+
+	memo.have = false;
+	return gorder_seek(seg, col, vs, ve, key, after, &memo);
+}
+
+/* The entries [*a, *b) of the global order of leaf col (ungrouped) whose key lies in [lo, hi]; false when the segment has no such block */
+static bool
+gorder_span(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 *a, uint32 *b, GOrdMemo *memo)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+
+	if (g == NULL || g->hdr.gcol >= 0)
+		return false;
+	*a = lo > hi ? 0 : gorder_seek(seg, col, 0, g->hdr.values, lo, false, memo);
+	*b = lo > hi ? 0 : gorder_seek(seg, col, *a, g->hdr.values, hi, true, memo);
+	return true;
+}
+
+/* How many rows of the segment have a key in [lo, hi], by the global order of the leaf; UINT32_MAX when it has none */
+uint32
+sift_cseg_gorder_count(SiftColSegment *seg, int col, int64 lo, int64 hi)
+{
+	GOrdMemo	memo;
+	uint32		a,
+				b;
+
+	memo.have = false;
+	return gorder_span(seg, col, lo, hi, &a, &b, &memo) ? b - a : UINT32_MAX;
+}
+
+/*
+ * The heap addresses of the rows whose key lies in [lo, hi], from the global order of leaf col (ungrouped), ascending: the two bounds are sought in the directory and
+ * one chunk each, and the chunks between are decoded. False when the segment has no such block or the range holds more than limit entries (the caller reads the units).
+ */
+bool
+sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids)
+{
+	GOrdMemo	memo;
+	uint32		a,
+				b,
+				n = 0;
+	SiftKey    *t;
+
+	memo.have = false;
+	if (!gorder_span(seg, col, lo, hi, &a, &b, &memo) || b - a > limit)
+		return false;
+	t = palloc(Max(b - a, 1) * sizeof(SiftKey));
+	for (uint32 c = a / SIFT_CGORD_ROWS; a < b && c <= (b - 1) / SIFT_CGORD_ROWS; c++)
+	{
+		uint32		from = Max(a, c * SIFT_CGORD_ROWS),
+					to = Min(b, (c + 1) * SIFT_CGORD_ROWS);
+
+		(void) gorder_chunk_memo(seg, col, c, &memo);
+		for (uint32 i = from; i < to; i++)
+			t[n++] = memo.addr[i - c * SIFT_CGORD_ROWS];
+	}
+	if (n > 1)
+		qsort(t, n, sizeof(SiftKey), tid_cmp);
+	*tids = t;
+	*ntids = n;
+	return true;
 }
 
 /* The global order of a leaf holds every row of the segment once, the values by key then address, the rows with no value by address */
