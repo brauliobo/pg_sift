@@ -592,19 +592,58 @@ col_whole_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
 }
 
 /*
- * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns) answers the count for all its units
+ * The range of keys that the comparisons of an integer leaf (sift_col_count_cmp) select, all on that leaf: false when a test is of another leaf or is not a range
+ */
+static bool
+count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, int64 *lo, int64 *hi)
+{
+	const SiftColDef *def = &seg->schema->cols[src->pcnt - 1];
+
+	*lo = PG_INT64_MIN;
+	*hi = PG_INT64_MAX;
+	if (npreds == 0 || def->store == SIFT_COLS_STR || sift_colw_is_wide_int(def))
+		return false;
+	for (int i = 0; i < npreds; i++)
+	{
+		SiftCTest	t;
+
+		if (preds[i].col != src->pcnt - 1)
+			return false;
+		make_test(src, def, NULL, &preds[i], &t);
+		if (t.kind != SIFT_CT_RANGE)
+			return false;
+		*lo = Max(*lo, t.lo);
+		*hi = Min(*hi, t.hi);
+	}
+	return true;
+}
+
+/*
+ * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), or whose global order holds the keys of the
+ * leaf of sift_col_count_cmp (order_array_columns: the rows of the range are the entries between its bounds), answers the count for all its units
  * at once when every one is exact on its own, as col_whole_take wants of a segment: every page all-visible, no dead row or exception, the directory current.
  * The checks come in the order of col_super_take (all-visible bits, directory, liveness). Then col_super_take hands the segment over as one unit.
  */
 bool
-col_count_segment(SiftColSource *src, ColCursor *c)
+col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds)
 {
 	SiftColSegment *seg = c->seg;
 	uint32		fan = sift_cseg_super_fan(seg),
-				rows = 0;
+				rows = 0,
+				entries,
+				values;
 	uint64		n;
+	int64		lo = 0,
+				hi = 0;
 
-	if (fan == 0 || seg->nsb == 0 || !sift_cseg_dict_counted(seg, src->pcnt - 1))
+	if (fan == 0 || seg->nsb == 0)
+		return false;
+	if (src->pcnt_int)
+	{
+		if (!sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_keys(src, seg, preds, npreds, &lo, &hi))
+			return false;
+	}
+	else if (!sift_cseg_dict_counted(seg, src->pcnt - 1))
 		return false;
 	for (uint32 u = 0; u < seg->nsb; u += fan)
 		if (!units_allvisible(src, seg, u, Min(fan, seg->nsb - u)))
@@ -614,7 +653,15 @@ col_count_segment(SiftColSource *src, ColCursor *c)
 	SIFT_COL_JITTER();
 	if (!units_clean(seg, 0, seg->nsb, &rows))
 		return false;
-	if (!sift_cseg_dict_count(seg, src->pcnt - 1, src->pcnt_op, &src->pcnt_val, &n))
+	if (src->pcnt_int)
+	{
+		uint32		m = sift_cseg_gorder_count(seg, src->pcnt - 1, lo, hi);
+
+		if (m == UINT32_MAX)
+			return false;
+		n = m;
+	}
+	else if (!sift_cseg_dict_count(seg, src->pcnt - 1, src->pcnt_op, &src->pcnt_val, &n))
 		return false;
 	c->count_ok = true;
 	c->count_rows = n;

@@ -1062,7 +1062,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	c->full = pr.ulo == 0 && pr.uhi == seg->nsb;
 	c->ps = NULL;
 	c->count_ok = false;
-	if (src->pcnt && c->full && col_count_segment(src, c))
+	if (src->pcnt && c->full && col_count_segment(src, c, preds, npreds))
 	{
 		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
 		c->prow = NULL;
@@ -1500,14 +1500,23 @@ sift_col_super(SiftColSource *src, bool on)
 	src->super = on;
 	src->whole = 0;
 	src->pcnt = 0;
+	src->pcnt_int = false;
 }
 
 void
 sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	src->pcnt = leaf + 1;
+	src->pcnt_int = false;
 	src->pcnt_op = op;
 	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
+}
+
+void
+sift_col_count_cmp(SiftColSource *src, int leaf)
+{
+	src->pcnt = leaf + 1;
+	src->pcnt_int = true;
 }
 
 void

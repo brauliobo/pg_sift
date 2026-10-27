@@ -1091,10 +1091,13 @@ preagg_unit_try(AggExec *ex)
 	{
 		int64		rows;
 
-		if (!sift_colsrc_unit_count(ex->src, &ex->unit, &rows))
+		if (sift_colsrc_unit_count(ex->src, &ex->unit, &rows))
+		{
+			preagg_count(ex, rows);
+			return true;
+		}
+		if (!ex->pcount_cmp)
 			return false;
-		preagg_count(ex, rows);
-		return true;
 	}
 	if (ex->pa.ktab && ex->unit.nsu == 0)
 		return false;
@@ -1267,18 +1270,33 @@ preagg_init(AggExec *ex)
 		}
 	}
 	/* a count(*) of one text test (equality, range or prefix): the source may count a segment from its dictionary (option count_columns) */
-	ex->pcount = false;
-	if (ex->super_on && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred == 1 && !ex->spec->left_lateral && ex->nfilter == 0 && ex->ntype == 0 && ex->nwide == 0)
+	ex->pcount = ex->pcount_cmp = false;
+	if (ex->super_on && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred >= 1 && !ex->spec->left_lateral && ex->ntype == 0 && ex->nwide == 0)
 	{
-		const SiftSrcStrTest *t = ex->ps[ex->spec->pred[0]->id].str;
-		bool		only = t != NULL && t->nvals == 1 && (!ex->pushed || !ex->pushed[0]);
+		const SiftSrcStrTest *t = ex->spec->npred == 1 && ex->nfilter == 0 ? ex->ps[ex->spec->pred[0]->id].str : NULL;
+		bool		only = true,
+					text;
 
 		for (int ai = 0; only && ai < ex->spec->naggs; ai++)
 			only = ex->spec->agg[ai].kind == SAA_COUNT_STAR && ex->spec->agg[ai].filter == NULL;
-		if (only && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX))
+		for (int i = 0; only && ex->pushed && t != NULL && i < ex->spec->npred; i++)
+			only = !ex->pushed[i];
+		text = only && t != NULL && t->nvals == 1 && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX);
+		if (text)
 		{
 			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0], t->lens[0]);
 			ex->pcount = true;
+		}
+		/* ... or of comparisons of one integer leaf (the source applies them to the units it reads): a segment with the global order of it counts the rows between the bounds */
+		else if (only && t == NULL)
+		{
+			int			leaf = sift_agg_cmp_only_leaf(ex);
+
+			if (leaf >= 0)
+			{
+				sift_colsrc_count_cmp(ex->src, leaf);
+				ex->pcount = ex->pcount_cmp = true;
+			}
 		}
 	}
 	/* the key table of the leaf the histogram is of answers for a segment, when the comparisons are all on that leaf */

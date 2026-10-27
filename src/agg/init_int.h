@@ -16,6 +16,7 @@ extern bool level_param(Node *n);
 void init_states(AggExec *ex);
 void register_preds(AggExec *ex);
 void prune_init(AggExec *ex);
+int sift_agg_cmp_only_leaf(AggExec *ex);
 void part_prune_init(AggExec *ex);
 void str_init(AggExec *ex);
 void filter_init(AggExec *ex);

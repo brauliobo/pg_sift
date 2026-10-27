@@ -504,6 +504,15 @@ col_count_range(void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len
 		sift_col_count_range(src->cs, leaf, ops[op], s, len);
 }
 
+static void
+col_count_cmp(void *impl, int leaf)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep == NULL)
+		sift_col_count_cmp(src->cs, leaf);
+}
+
 static bool
 col_unit_count(void *impl, const SiftSrcUnit *unit, int64 *rows)
 {
@@ -809,6 +818,7 @@ static const SiftSrcProvider col_provider = {
 	.super = col_super,
 	.whole = col_whole,
 	.count_range = col_count_range,
+	.count_cmp = col_count_cmp,
 	.unit_count = col_unit_count,
 	.split = col_split,
 	.super_span = col_super_span,

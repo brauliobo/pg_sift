@@ -53,7 +53,7 @@ TESTING_REGRESS += col_census_sample col_unit_floor col_key_cut_auto agg_dict_bl
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow
-TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure
+TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure col_range_count
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)

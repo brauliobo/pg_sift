@@ -442,5 +442,6 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | VACUUM, crash recovery, physical replication, upgrade | works | works | test/t col_* and tbl_* scripts |
 | Differential tests against the normal plan | works | works | coldiff (`--table`), diff_fuzz |
 | GPU kernels (`sift.gpu`) | works | missing | build option, off by default |
+| Row counts of a range of an integer leaf (`order_array_columns`) | works | missing | `count(*)` of comparisons of one integer, date or timestamp column of an index is read from the entries between the bounds in the global order of each segment whose units are all exact; a table writes no global order |
 
 <!-- /gen:parity -->

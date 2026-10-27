@@ -298,6 +298,7 @@ typedef struct AggExec
 	int64		n_super;		/* of them, in groups answered from the summary of the group (superunits) */
 	int			n_split;		/* superunits split back into units while none answered: a query a summary cannot answer stops asking for them */
 	bool		pcount;			/* the source may hand over a segment whose dictionary counts the rows of the one text test (count_range) */
+	bool		pcount_cmp;		/* pcount for the comparisons of one integer leaf (sift_colsrc_count_cmp): a superunit the source did not count is still a unit of the pre-aggregates */
 	bool		super_on;		/* the source may hand over superunits: a row level scan that the pre-aggregates can answer, with no match set */
 	bool		whole_on;		/* the source takes a segment whole for the key table of the leaf of the comparisons, and an item of the scan has to span one */
 	int64		n_rollup_miss;	/* exact units scanned for lack of their rollup, and of them those a refresh was queued for */

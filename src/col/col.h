@@ -537,6 +537,8 @@ extern void sift_col_super(SiftColSource *src, bool on);
 extern void sift_col_super_whole(SiftColSource *src, int leaf, const int *meas, int nmeas);
 /* A count of the rows of a text leaf that pass one test (EQ, LT, LE, GT, GE, PREFIX against s, bytewise) and nothing else: a segment whose dictionary of the leaf holds row counts (option count_columns), and whose units are all exact (clean, every page all-visible), is handed over as one unit of cu->nsu units whose rows sift_col_unit_counted gives; call after sift_col_super */
 extern void sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len);
+/* ... or of an integer leaf with a global order (order_array_columns): a segment of exact units counts the rows of the range of the scan's comparisons, all on that leaf, from it */
+extern void sift_col_count_cmp(SiftColSource *src, int leaf);
 extern bool sift_col_unit_counted(const SiftColUnit *unit, uint64 *rows);
 extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 /* The superblocks a parallel range should span for a group of units to fit in it: several groups of the largest fan, whatever the number of segments that interleave */

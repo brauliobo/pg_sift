@@ -261,6 +261,50 @@ part_prune_init(AggExec *ex)
 	MemoryContextSwitchTo(old);
 }
 
+/*
+ * Is the WHERE of the statement only comparisons (<, <=, =, >=, >) of one integer, date or timestamp leaf with constants of its own type, and which leaf: a count(*) of
+ * it is the number of rows whose key lies in the range they make, which a segment's global order counts (sift_colsrc_count_cmp)
+ */
+static bool
+cmp_only(AggExec *ex, SiftAggPred *p, int *leaf)
+{
+	SiftSrcPrune z;
+	Oid			typid;
+
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (!cmp_only(ex, p->child[i], leaf))
+				return false;
+		return true;
+	}
+	if (p->kind != SAP_CMP || p->op == SCMP_NE || !sift_aggspec_zone_cmp(p, ex->lay, ex->nbase) || !cmp_zone(ex, p, &z) || z.nkids > 0 || z.any || z.nvals > 0 || z.nulltest)
+		return false;
+	typid = ex->lay->leaf[p->leaf].typid;
+	/* integers compare with integers of any width (the constant is the integer it is); a date or timestamp with its own type only */
+	if (!((typid == INT2OID || typid == INT4OID || typid == INT8OID) ? (p->argtype == INT2OID || p->argtype == INT4OID || p->argtype == INT8OID) :
+		  ((typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID) && p->argtype == typid)))
+		return false;
+	if (*leaf >= 0 && *leaf != p->leaf)
+		return false;
+	*leaf = p->leaf;
+	return true;
+}
+
+/* the leaf of the only comparisons of the statement (cmp_only), -1 when the conditions are anything else */
+int
+sift_agg_cmp_only_leaf(AggExec *ex)
+{
+	int			leaf = -1;
+
+	if (ex->spec->npred == 0)
+		return -1;
+	for (int i = 0; i < ex->spec->npred; i++)
+		if (!cmp_only(ex, ex->spec->pred[i], &leaf))
+			return -1;
+	return leaf;
+}
+
 /* the entries of the leaves the conjuncts compare (preagg_zones), then those of the ORs: all of them prune the scan */
 void
 prune_init(AggExec *ex)

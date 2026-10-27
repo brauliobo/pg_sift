@@ -620,6 +620,8 @@ typedef struct SiftSrcProvider
 	bool		(*whole) (void *impl, int leaf, const int *meas, int nmeas);	/* a unit may be a whole segment whose key table of leaf, with these measures, answers (a superunit that has that histogram only); true: an item of the scan has to span a segment for that, which a source with no superunits does not do alone */
 	/* Optional (NULL: none), after super: the count(*) of the rows of text leaf that pass one test (op a SiftSrcStrOp of EQ, LT, LE, GT, GE or PREFIX against s) and nothing else; a segment whose dictionary holds the rows of each string may be handed over as one unit (nsu > 0) whose unit_count is the rows that pass: the consumer folds them and reads nothing */
 	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
+	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
+	void		(*count_cmp) (void *impl, int leaf);
 	bool		(*unit_count) (void *impl, const SiftSrcUnit *unit, int64 *rows);
 	void		(*split) (void *impl, const SiftSrcUnit *unit);
 	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
@@ -963,6 +965,13 @@ sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftSrcStrOp op, const cha
 {
 	if (src->prov->count_range != NULL)
 		src->prov->count_range(src->impl, leaf, op, s, len);
+}
+
+static inline void
+sift_colsrc_count_cmp(SiftSrcSource *src, int leaf)
+{
+	if (src->prov->count_cmp != NULL)
+		src->prov->count_cmp(src->impl, leaf);
 }
 
 static inline bool

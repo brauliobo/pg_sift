@@ -181,6 +181,7 @@ struct SiftColSource
 	int			whole;			/* sift_col_super_whole: 1 + the key leaf whose table may answer for a whole segment, 0: none */
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
 	SiftColOp	pcnt_op;
+	bool		pcnt_int;		/* ... an integer leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp) */
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
 	int			wmeas[SIFT_PAGG_MAX_MEAS];
@@ -220,7 +221,7 @@ struct SiftColSource
 
 /* scan_unit.c: the group of units at the cursor as one unit in cu, when its summary can answer (docs/COL-PREAGG.md section 10); false: read the units one by one */
 extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
-extern bool col_count_segment(SiftColSource *src, ColCursor *c);
+extern bool col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int npreds);
 /* scan.c: sel narrowed to the rows of the unit that the point directory lists, and the index of the predicate it answers; -1: the unit has none */
 extern int sift_col_point_sel(const SiftColUnit *unit, SiftColSel *sel);
 
