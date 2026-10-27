@@ -130,15 +130,23 @@ SELECT count(*) > 0 AS analyzed FROM (SELECT * FROM io WHERE a BETWEEN 100 AND 4
  t
 (1 row)
 
-EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM io WHERE a BETWEEN 100 AND 400;
-                          QUERY PLAN                           
----------------------------------------------------------------
- Index Only Scan using io_i on io (actual rows=581.00 loops=1)
+-- the lines of PostgreSQL 18 and later that 17 does not print (the decimals of the actual rows, Index Searches) are left out
+CREATE FUNCTION io_analyze(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l !~ 'Index Searches' THEN RETURN NEXT regexp_replace(l, '(rows=[0-9]+)\.00', '\1'); END IF;
+	END LOOP;
+END $$;
+SELECT io_analyze('SELECT id FROM io WHERE a BETWEEN 100 AND 400');
+                         io_analyze                         
+------------------------------------------------------------
+ Index Only Scan using io_i on io (actual rows=581 loops=1)
    Index Cond: ((a >= 100) AND (a <= 400))
    Heap Fetches: 0
-   Index Searches: 1
-(4 rows)
+(3 rows)
 
+DROP FUNCTION io_analyze(text);
 -- a transaction that aborts after the plan was made and a statement that fails before its scan runs, then the same statement again
 DO $$ BEGIN
 	PERFORM io_mode(true);

@@ -80,7 +80,16 @@ FETCH 2 FROM io_c;
 CLOSE io_c;
 COMMIT;
 SELECT count(*) > 0 AS analyzed FROM (SELECT * FROM io WHERE a BETWEEN 100 AND 400 AND n > 10) x;
-EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM io WHERE a BETWEEN 100 AND 400;
+-- the lines of PostgreSQL 18 and later that 17 does not print (the decimals of the actual rows, Index Searches) are left out
+CREATE FUNCTION io_analyze(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l !~ 'Index Searches' THEN RETURN NEXT regexp_replace(l, '(rows=[0-9]+)\.00', '\1'); END IF;
+	END LOOP;
+END $$;
+SELECT io_analyze('SELECT id FROM io WHERE a BETWEEN 100 AND 400');
+DROP FUNCTION io_analyze(text);
 
 -- a transaction that aborts after the plan was made and a statement that fails before its scan runs, then the same statement again
 DO $$ BEGIN
