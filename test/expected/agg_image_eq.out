@@ -1,0 +1,90 @@
+-- = <> IN and NOT IN of a uuid, bytea, inet, cidr, macaddr, macaddr8, bit or varbit column are tests of the stored image, run in the source like the
+-- numeric and money ones (a unit whose dictionary lacks the constant is skipped): the rows are those of the normal plan, with duplicates, NULLs, the empty and
+-- the zero byte values, a mask length that makes two values of one address, both families, constants of a list that are NULL or absent. An OR, an ordering
+-- operator and an array of an image type stay with the executor.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+\ir test/agg_helpers.sql
+\set ECHO none
+CREATE TABLE im (id int, u uuid, b bytea, i inet, c cidr, m macaddr, m8 macaddr8, bt bit(6), vb varbit, ar uuid[]) WITH (autovacuum_enabled = false);
+INSERT INTO im
+SELECT n,
+       CASE WHEN n % 11 = 0 THEN NULL ELSE md5((n % 40)::text)::uuid END,
+       CASE n % 13 WHEN 0 THEN NULL WHEN 1 THEN ''::bytea WHEN 2 THEN '\x00'::bytea WHEN 3 THEN '\x0000'::bytea ELSE decode(md5((n % 30)::text), 'hex') END,
+       CASE n % 9 WHEN 0 THEN NULL WHEN 1 THEN '203.0.113.1/24'::inet WHEN 2 THEN '203.0.113.1/32'::inet WHEN 3 THEN '2001:db8::1'::inet WHEN 4 THEN '2001:db8::1/64'::inet
+            ELSE ('198.51.100.0'::inet + n % 25) END,
+       CASE n % 7 WHEN 0 THEN NULL WHEN 1 THEN '198.51.0.0/16'::cidr WHEN 2 THEN '198.51.0.0/24'::cidr ELSE ('45.0.0.0/16'::cidr) END,
+       CASE n % 5 WHEN 0 THEN NULL ELSE ('08:00:2b:01:02:' || lpad(to_hex(n % 20), 2, '0'))::macaddr END,
+       CASE n % 6 WHEN 0 THEN NULL ELSE ('08:00:2b:ff:fe:01:02:' || lpad(to_hex(n % 20), 2, '0'))::macaddr8 END,
+       CASE n % 8 WHEN 0 THEN NULL ELSE (n % 64)::bit(6) END,
+       CASE n % 10 WHEN 0 THEN NULL WHEN 1 THEN B'' ELSE (n % 16)::bit(4)::varbit END,
+       ARRAY[md5((n % 5)::text)::uuid]
+FROM generate_series(1, 4000) n;
+UPDATE im SET u = md5('late')::uuid WHERE id = 3999;
+CREATE INDEX im_col ON im USING sift_col (id, u, b, i, c, m, m8, bt, vb, ar);
+VACUUM (FREEZE, ANALYZE) im;
+INSERT INTO im SELECT 5000 + n, md5((n % 3)::text)::uuid, '\x01'::bytea, '203.0.113.1'::inet, NULL, NULL, NULL, NULL, NULL, NULL FROM generate_series(1, 20) n;
+CREATE TABLE im_q (name text, q text);
+INSERT INTO im_q
+SELECT v.col || ' ' || t.name, format('SELECT count(*), sum(id) FROM im WHERE %s', replace(replace(t.cond, '{c}', v.col), '{k}', v.k))
+FROM (VALUES ('u', $$'$$ || md5('7') || $$'::uuid$$), ('b', $$'\x00'::bytea$$), ('i', $$'203.0.113.1/24'::inet$$), ('c', $$'198.51.0.0/24'::cidr$$),
+             ('m', $$'08:00:2b:01:02:07'::macaddr$$), ('m8', $$'08:00:2b:ff:fe:01:02:07'::macaddr8$$), ('bt', $$B'000111'$$), ('vb', $$B'0101'::varbit$$)) v(col, k),
+     (VALUES ('eq', '{c} = {k}'), ('ne', '{c} <> {k}'), ('commuted', '{k} = {c}'), ('and', '{c} = {k} AND id > 100'), ('or', '{c} = {k} OR id = 5'),
+             ('not', 'NOT ({c} = {k})'), ('null', '{c} IS NULL'), ('in one', '{c} IN ({k})'), ('not in one', '{c} NOT IN ({k})'),
+             ('in null', '{c} IN ({k}, NULL)'), ('not in null', '{c} NOT IN ({k}, NULL)')) t(name, cond);
+INSERT INTO im_q VALUES
+	('u in list', format('SELECT count(*), sum(id) FROM im WHERE u IN (%L, %L, %L)', md5('1')::uuid, md5('2')::uuid, md5('absent')::uuid)),
+	('u not in list', format('SELECT count(*), sum(id) FROM im WHERE u NOT IN (%L, %L)', md5('1')::uuid, md5('absent')::uuid)),
+	('u in array', format('SELECT count(*), sum(id) FROM im WHERE u = ANY (ARRAY[%L, %L]::uuid[])', md5('1')::uuid, md5('3')::uuid)),
+	('u absent', format('SELECT count(*) FROM im WHERE u = %L', md5('absent')::uuid)),
+	('u late', format('SELECT count(*) FROM im WHERE u = %L', md5('late')::uuid)),
+	('b empty', $$SELECT count(*), sum(id) FROM im WHERE b = ''::bytea$$),
+	('b in empty and zero', $$SELECT count(*), sum(id) FROM im WHERE b IN ('', '\x00', '\x0000')$$),
+	('i family 6', $$SELECT count(*), sum(id) FROM im WHERE i = '2001:db8::1'$$),
+	('i mask', $$SELECT count(*), sum(id) FROM im WHERE i IN ('203.0.113.1/24', '203.0.113.1/32', '2001:db8::1/64')$$),
+	('i inet against cidr value', $$SELECT count(*), sum(id) FROM im WHERE i = '203.0.113.1'::inet AND c = '198.51.0.0/16'$$),
+	('bt wrong length', $$SELECT count(*), sum(id) FROM im WHERE vb IN (B'1', B'01', B'0001', B'')$$),
+	('group by under filter', $$SELECT c, count(*) FROM im WHERE u = md5('3')::uuid GROUP BY c$$),
+	('two images', format('SELECT count(*), sum(id) FROM im WHERE u = %L AND b = %L', md5('7')::uuid, decode(md5('7'), 'hex'))),
+	('uuid array column', format('SELECT count(*) FROM im WHERE ar = ARRAY[%L]::uuid[]', md5('1')::uuid)),
+	('ordering', format('SELECT count(*) FROM im WHERE u < %L', md5('7')::uuid)),
+	('timetz-free text compare', $$SELECT count(*) FROM im WHERE u::text = md5('7')$$);
+-- each statement returns the rows of the normal plan
+SELECT count(*) AS statements, count(*) FILTER (WHERE outcome(q, true) = outcome(q, false)) AS same FROM im_q;
+ statements | same 
+------------+------
+        104 |  104
+(1 row)
+
+SELECT name FROM im_q WHERE outcome(q, true) <> outcome(q, false) ORDER BY name;
+ name 
+------
+(0 rows)
+
+-- the conjuncts are tests of the source ("Wide Filters In Source"); an OR, a NOT, an ordering operator, an array column and a cast stay with the executor
+CREATE FUNCTION source_tests(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Wide Filters In Source' THEN n := regexp_replace(l, '\D', '', 'g')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT name FROM im_q WHERE name ~ ' (eq|ne|commuted|and|in one|not in one|in null|not in null)$' AND source_tests(q) <> 1
+   OR name IN ('u in list', 'u not in list', 'u in array', 'u absent', 'b empty', 'b in empty and zero', 'i family 6', 'i mask', 'bt wrong length') AND source_tests(q) <> 1
+   OR name = 'two images' AND source_tests(q) <> 2 ORDER BY name;
+ name 
+------
+(0 rows)
+
+SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ (or|null)$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
+ name 
+------
+(0 rows)
+
+DROP FUNCTION source_tests(text);
+DROP FUNCTION outcome(text, bool), pushed(text), runq(text, bool), runs_in_scan(text);
+DROP TABLE im_q, im;
+DROP EXTENSION pg_sift;

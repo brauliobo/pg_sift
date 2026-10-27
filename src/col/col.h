@@ -176,11 +176,11 @@ sift_col_def_needs_wide(const SiftColDef *d)
 		d->type == SIFT_COLT_ENUM || sift_col_def_is_image(d);
 }
 
-/* a leaf whose value the column engine tests on its stored lanes (numeric, money, interval: col/widescan.c) */
+/* a leaf whose value the column engine tests on its stored lanes or image (numeric, money, interval: col/widescan.c; an image: its equality and IN, for the types the query side names) */
 static inline bool
 sift_col_def_lane_tested(const SiftColDef *d)
 {
-	return d->lane == 0 && (d->lanes > 0 || d->type == SIFT_COLT_MONEY);
+	return d->lane == 0 && (d->lanes > 0 || d->type == SIFT_COLT_MONEY || (sift_col_def_is_image(d) && d->type != SIFT_COLT_TIMETZ));
 }
 
 /* The JSON type of an overflowing value; the numbers are on disk */

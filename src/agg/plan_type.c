@@ -224,9 +224,29 @@ compile_typeof(AggCtx *c, Node *n)
 	return p;
 }
 
+/* the types a wide leaf keeps as lanes (all the comparisons run on the lanes), and those it keeps as an image that is the same bytes exactly when the values are equal (= <> IN NOT IN run on it) */
+static bool
+lane_type(Oid t)
+{
+	return t == NUMERICOID || t == CASHOID || t == INTERVALOID;
+}
+
+/* is an expression of type `expr` the value of a leaf of type `leaf`, or its operand: inet and cidr are one type to the operators (cidr has none) and one image */
+static bool
+wide_type_is(Oid expr, Oid leaf)
+{
+	return expr == leaf || ((leaf == INETOID || leaf == CIDROID) && (expr == INETOID || expr == CIDROID));
+}
+
+static bool
+bytes_equal_type(Oid t)
+{
+	return t == UUIDOID || t == BYTEAOID || t == INETOID || t == CIDROID || t == MACADDROID || t == MACADDR8OID || t == BITOID || t == VARBITOID;
+}
+
 /*
  * The wide leaf an expression is exactly the value of: an attribute or index expression of numeric, money or
- * interval that the index keeps as lanes. No expression reads their values (their SiftSrcLeaf.typid is InvalidOid), so only compile_wide finds them.
+ * interval that the index keeps as lanes, or of an image type compared for equality. The other tests of an image leaf are the executor's.
  */
 static int
 wide_leaf(AggCtx *c, Node *e)
@@ -237,7 +257,8 @@ wide_leaf(AggCtx *c, Node *e)
 	{
 		SiftSrcLeaf *l = leaf_of(c, i);
 
-		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && OidIsValid(l->wtypid) && l->wtypid == exprType(e))
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && OidIsValid(l->wtypid) && wide_type_is(exprType(e), l->wtypid) &&
+			(lane_type(l->wtypid) || bytes_equal_type(l->wtypid)))
 			return i;
 	}
 	return -1;
@@ -263,7 +284,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
 	{
 		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SWT_NOTNULL : SWT_ISNULL;
-		return (*leaf = wide_leaf(c, strip_relabel((Node *) ((NullTest *) n)->arg))) >= 0;
+		return (*leaf = wide_leaf(c, strip_relabel((Node *) ((NullTest *) n)->arg))) >= 0 && lane_type(leaf_of(c, *leaf)->wtypid);
 	}
 	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && (*op = builtin_cmp(((OpExpr *) n)->opno, &lt, &rt)) >= 0)
 	{
@@ -279,7 +300,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 		else
 			return false;
 		*argtype = exprType(*operand);
-		return *argtype == leaf_of(c, *leaf)->wtypid;
+		return wide_type_is(*argtype, leaf_of(c, *leaf)->wtypid) && (lane_type(*argtype) || *op == SCMP_EQ || *op == SCMP_NE);
 	}
 	if (IsA(n, ScalarArrayOpExpr) && list_length(((ScalarArrayOpExpr *) n)->args) == 2)
 	{
@@ -293,7 +314,7 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 		*op = sa->useOr ? SWT_IN : SWT_NOTIN;
 		*operand = r;
 		*argtype = rt;
-		return (*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r) && lt == leaf_of(c, *leaf)->wtypid && rt == lt;
+		return (*leaf = wide_leaf(c, l)) >= 0 && pseudo_const(r) && wide_type_is(lt, leaf_of(c, *leaf)->wtypid) && rt == lt;
 	}
 	return false;
 }

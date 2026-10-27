@@ -258,7 +258,9 @@ exact_key(const SiftColDef *def, Datum d, SiftColValue *v)
 	int64		md;
 
 	memset(v, 0, sizeof(*v));
-	if (def->type == SIFT_COLT_MONEY)
+	if (sift_col_def_is_image(def))
+		sift_col_datum_values(def, d, false, v);
+	else if (def->type == SIFT_COLT_MONEY)
 		v->v.i = DatumGetInt64(d);
 	else if (def->type == SIFT_COLT_INTERVAL)
 		sift_col_interval_lanes(DatumGetIntervalP(d), &v->v.i, &v->lo, &md);
