@@ -47,28 +47,33 @@ struct SiftGOrd
 	int			ncur;
 	GCur	  **cur;
 	bool		started;
+	GCur	   *prev;			/* the source of the last entry given, and the best of the others at that time (NULL: the sources are scanned) */
+	GCur	   *runner;
 	bool		last_set;
 	int			last_cls;
 	int64		last_key;
 	uint64		last_tid;
 };
 
-/* the entry p of the cursor's source: the head of its chunk is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
-static void
-cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
+/* the chunk of the entry p is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
+static pg_noinline void
+cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 {
 	uint32		ch = p / SIFT_CGORD_ROWS,
-				off = p % SIFT_CGORD_ROWS;
+				w = Max(c->chunk == ch ? c->cm * 2 : g->head, p % SIFT_CGORD_ROWS + 1);
 
-	if (c->chunk != ch || off >= c->cm)
-	{
-		uint32		w = Max(c->chunk == ch ? c->cm * 2 : g->head, off + 1);
+	c->cm = sift_colsrc_gorder_head(g->src, c->src, g->leaf, ch, Min(w, (uint32) SIFT_CGORD_ROWS), c->key, c->addr);
+	c->chunk = ch;
+}
 
-		c->cm = sift_colsrc_gorder_head(g->src, c->src, g->leaf, ch, Min(w, (uint32) SIFT_CGORD_ROWS), c->key, c->addr);
-		c->chunk = ch;
-	}
-	*key = c->key[off];
-	*addr = c->addr[off];
+/* the entry p of the cursor's source */
+static inline void
+cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
+{
+	if (c->chunk != p / SIFT_CGORD_ROWS || p % SIFT_CGORD_ROWS >= c->cm)
+		cur_fill(g, c, p);
+	*key = c->key[p % SIFT_CGORD_ROWS];
+	*addr = c->addr[p % SIFT_CGORD_ROWS];
 }
 
 /* a descending scan reads the entries of a key in the order of their addresses, the keys backwards: the group [gs, ge) ends where the last one starts */
@@ -186,10 +191,11 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	g->cur = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
 	for (int i = 0; i < n; i++)
 	{
-		GCur	   *c = MemoryContextAllocZero(cxt, sizeof(GCur));
+		GCur	   *c = MemoryContextAlloc(cxt, sizeof(GCur));		/* the arrays are read after they are filled: no need to clear their 16 KB */
 		uint32		rvs,
 					rve;
 
+		memset(c, 0, offsetof(GCur, key));
 		c->src = i;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
@@ -238,24 +244,47 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		for (int i = 0; i < g->ncur; i++)
 			cur_start(g, g->cur[i]);
 		g->started = true;
+		g->prev = NULL;
 	}
 	for (;;)
 	{
-		GCur	   *best = NULL;
+		GCur	   *best = g->prev;
 
-		for (int i = 0; i < g->ncur; i++)
-			if (g->cur[i]->have && (best == NULL || cand_cmp(g, g->cur[i], best) < 0))
-				best = g->cur[i];
+		/*
+		 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row
+		 * where the scan of every source costs one for each
+		 */
+		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner) >= 0))
+		{
+			best = g->runner = NULL;
+			for (int i = 0; i < g->ncur; i++)
+			{
+				GCur	   *c = g->cur[i];
+
+				if (!c->have)
+					continue;
+				if (best == NULL || cand_cmp(g, c, best) < 0)
+				{
+					g->runner = best;
+					best = c;
+				}
+				else if (g->runner == NULL || cand_cmp(g, c, g->runner) < 0)
+					g->runner = c;
+			}
+		}
 		if (best == NULL)
 			return false;
 		*key = best->k;
 		*isnull = best->cls != 1;
 		ItemPointerSet(tid, (BlockNumber) (best->tid >> 16), (OffsetNumber) (best->tid & 0xFFFF));
-		if (g->last_set && g->last_cls == best->cls && g->last_key == best->k && g->last_tid == best->tid)
+		/* a source holds an entry once: only the entry of another source can repeat the last one */
+		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_key == best->k && g->last_tid == best->tid)
 		{
+			g->prev = best;
 			cur_next(g, best);
 			continue;
 		}
+		g->prev = best;
 		g->last_set = true;
 		g->last_cls = best->cls;
 		g->last_key = best->k;
