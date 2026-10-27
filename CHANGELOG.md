@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: a backend crashed (signal 11) when a parallel aggregate scan with a correlated lookup (`LEFT JOIN LATERAL (..) LIMIT 1`) was planned with workers and none could be launched because the pool of parallel workers was spent: the scan kept pointers into the parallel shared memory, PostgreSQL destroyed the parallel context and the leader read the unmapped segment (`memo_find`); the pointers are dropped before the context is destroyed (test `agg_par_no_workers`). Until the update: `max_parallel_workers_per_gather = 0` or a larger `max_worker_processes` and `max_parallel_workers`.
+
 ## 3.5.0 - 2026-10-27
 
 - Fixed: pg_sift: a partitioned table whose partitions did not choose the same rollup of the rows (`rollup_dims = auto` picks it from each partition's data, so a partition attached later with few rows has none) lost the single `Custom Scan (SiftAgg)` over its partitions; the scan now keeps the rollups every partition has and reads the others by their rows.
