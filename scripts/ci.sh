@@ -803,6 +803,7 @@ else HARNESS=(); fi
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
 step build build "$S/pgtest.sh" install || { wait ${lint:-} ${spantest:-}; cat "$LOG/build.log"; failed=1; exit 1; }
+step simd-level simd-level "$S/simd_level.sh" || cat "$LOG/simd-level.log"
 
 pids=()
 for (( n = 1; n <= LANES; n++ )); do
@@ -830,7 +831,7 @@ green=$'\e[32m' red=$'\e[31m' off=$'\e[0m'
 [[ -t 1 ]] || green= red= off=
 failed=0
 # the suites in the order of the report (a suite not listed follows the others)
-ORDER=(build "${HARNESS[@]}")
+ORDER=(build simd-level "${HARNESS[@]}")
 for s in isa-baseline installcheck isolation-emulated isolation fuzz hardened static difftest-mutants soak soak-gin soak-col difftest difftest-nopos tap-shell tap "${SUITES[@]}"; do
 	[[ " ${SUITES[*]} " != *" $s "* || " ${ORDER[*]} " == *" $s "* ]] || ORDER+=("$s")
 done
