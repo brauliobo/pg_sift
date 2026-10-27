@@ -174,7 +174,7 @@ DROP INDEX pd_n;
 -- into segments by how its workers take the heap blocks, so the units of a lookup are bounded by the superblocks of the rows and by the rows (every unit read holds one);
 -- a build without workers (pd_one) is one segment, and a lookup reads exactly the superblocks that hold its rows
 CREATE INDEX pd_all ON pd USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_int8_ops, id sift.col_int4_ops)
-	WITH (write_buffer_limit = 256, point_columns = 'k, s, u, v');
+	WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 'k, s, u, v');
 SELECT sift.col_verify('pd_all', true);
  col_verify 
 ------------
@@ -238,7 +238,7 @@ FROM sift._test_col_counters('pd_all', '2:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849
 (1 row)
 
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_columns = 's, u, k');
+CREATE INDEX pd_one ON pd USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, k sift.col_int4_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_columns = 's, u, k');
 RESET max_parallel_maintenance_workers;
 SELECT sift.col_verify('pd_one', true), (SELECT count(*) FROM sift.col_segments('pd_one') WHERE kind = 'immutable') AS segments;
  col_verify | segments 
@@ -699,7 +699,7 @@ SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 CREATE TABLE ph (id int, k int, s text, pad text DEFAULT repeat('x', 100));
 INSERT INTO ph SELECT i, CASE WHEN i % 10 = 0 THEN i ELSE 1 END, CASE WHEN i = 2500 THEN repeat('long', 3000) ELSE 's' || i % 700 END FROM generate_series(1, 9000) i;
 CREATE INDEX ph_k ON ph USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops) WITH (point_columns = 'k');
-CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's');
+CREATE INDEX ph_s ON ph USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's');
 SELECT (SELECT min(format) FROM sift.col_segments('ph_k') WHERE kind = 'immutable') >= 14 AS hot_key_has_a_directory,
 	   (SELECT min(format) FROM sift.col_segments('ph_s') WHERE kind = 'immutable') < 14 AS inline_string_has_no_directory;
  hot_key_has_a_directory | inline_string_has_no_directory 

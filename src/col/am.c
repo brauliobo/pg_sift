@@ -447,7 +447,7 @@ sift_col_init(void)
 						 "the plain integer, text and uuid columns whose rows every segment written from now on lists by value (a point directory that lets an equality or a short IN list of the access method find its rows with a probe, and the heap check them); the segments are column format minor 14 (default none)",
 						 "", sift_col_validate_point_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "count_columns",
-						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order, so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 4 bytes for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default none)",
+						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
 						 "", sift_col_validate_count_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
 						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 16, which only 3.3 and later read, and the lists take 1 to 5 bytes per row (default none)",
@@ -866,6 +866,11 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int a = 1; a <= natts; a++)
 			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
 				r->pagg.lookup[r->first[a]] = true;
+		/* a text leaf whose dictionary is read in place (and would have its order, whatever it holds) also counts the rows of each string, unless the option says off */
+		if (strcmp(sift_col_options_count_columns(index), "off") != 0)
+			for (int i = 0; i < n; i++)
+				if (r->schema->cols[i].store == SIFT_COLS_STR && r->schema->cols[i].type == SIFT_COLT_TEXT && r->pagg.lookup[i])
+					r->pagg.count[i] = true;
 		{
 			char	   *list = pstrdup(sift_col_options_key_cut(index)),
 					   *save = NULL;

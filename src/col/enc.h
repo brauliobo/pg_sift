@@ -107,7 +107,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_STRS		1
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
-#define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) u32 cum[n + 1]: the rows of the strings below each place in byte order (column format minor 24) */
+#define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 #define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
@@ -119,8 +119,14 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
  * is read in place: u32 form 3 (DICT_BLOCKS), u32 n, u32 length of every string (0: they differ), u32 bytes of the strings,
  * u32 boff[blocks + 1], the blocks of DICT_BLOCK strings each in code order (a length byte for each string unless they have one length, then the strings,
  * compressed when that is smaller; DICT_BLOCK_HEAD bytes of header); form 2 (DICT_LOOKUP) adds u32 code[n] in byte order of the strings (4-aligned),
- * which the search of a string reads; form 4 (DICT_LOOKUP_COUNT, d->rows set) adds u32 cum[n + 1] after code[]: the rows of the codes at the places below i
+ * which the search of a string reads; form 4 (DICT_LOOKUP_COUNT, d->rows set) adds after code[], for nb = n / DICT_BLOCK rounded up: {u32 base, u32 off}[nb + 1]
+ * (the rows of the codes at the places below the block, and where its packed bytes start; the last entry is the total and the bytes in all), u8 cmin[nb] (padded to 4),
+ * and the packed bytes: the rows of the codes of block b, less cmin[b] (the smaller of their least count and 255), as DICT_BLOCK values of w bits each, w = (off[b + 1] - off[b]) / 8,
+ * lowest first (a block of one count, as a dictionary of unique strings has, takes no bytes)
  */
+/* The bytes of the row counts of a form 4 dictionary of n strings before the packed bytes (the records and cmin), and the number of blocks */
+#define DICT_COUNT_NB(n)		(((n) + DICT_BLOCK - 1) / DICT_BLOCK)
+#define DICT_COUNT_HEAD(n)		((uint64) 8 * (DICT_COUNT_NB(n) + 1) + ((uint64) DICT_COUNT_NB(n) + 3) / 4 * 4)
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);

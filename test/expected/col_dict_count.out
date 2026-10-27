@@ -312,6 +312,90 @@ SELECT count(*) FROM dcs WHERE s COLLATE "C" LIKE 'k1%';
   4400
 (1 row)
 
+-- by default a text leaf whose dictionary is read in place (here a point directory asks for it) counts the rows of each string too, with counts of every size
+-- (one row, a few, 300, 70,000: the blocks of 64 strings pack each as its excess over the block's least); count_columns = 'off' leaves them out
+CREATE TABLE dk (id int, s text) WITH (autovacuum_enabled = off);
+INSERT INTO dk SELECT g, 'a' || to_char(g % 200, 'FM000') FROM generate_series(1, 200) g;
+INSERT INTO dk SELECT 1000 + g, 'b' || to_char(g % 200, 'FM000') FROM generate_series(1, 60000) g;
+INSERT INTO dk SELECT 100000 + g, 'c' || to_char(g % 200, 'FM000') FROM generate_series(1, 800) g WHERE g % 200 < 40 OR g % 200 > 100;
+INSERT INTO dk SELECT 200000 + g, 'd' || to_char(CASE WHEN g <= 70000 THEN 5 ELSE g % 100 END, 'FM000') FROM generate_series(1, 70100) g;
+INSERT INTO dk SELECT 300000 + g, 'e' || to_char(g, 'FM00000') FROM generate_series(1, 3000) g;
+CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
+VACUUM dk;
+SELECT max(format) AS format_by_default FROM sift._test_col_formats('dk_idx'::regclass);
+ format_by_default 
+-------------------
+                24
+(1 row)
+
+SELECT bool_and(counted) AS every_segment_counts FROM sift._test_col_dict_count('dk_idx'::regclass, 1, 'prefix', 'b');
+ every_segment_counts 
+----------------------
+ t
+(1 row)
+
+CREATE FUNCTION dk_check() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	k text;
+	t record;
+	got bigint;
+	want bigint;
+	bad int := 0;
+	n int := 0;
+BEGIN
+	FOR k IN VALUES ('a'), ('a1'), ('a199'), ('b'), ('b0'), ('b05'), ('b100'), ('c'), ('c0'), ('c039'), ('c101'), ('d'), ('d005'), ('d0'), ('d5'), ('e'), ('e00'), ('e01500'), ('e03000'), ('e03001'), ('f'), ('') LOOP
+		FOR t IN SELECT * FROM (VALUES ('='), ('<'), ('<='), ('>'), ('>='), ('^')) v(op) LOOP
+			EXECUTE format('SELECT count(*) FROM dk WHERE s COLLATE "C" %s %L', CASE t.op WHEN '^' THEN 'LIKE' ELSE t.op END, CASE t.op WHEN '^' THEN k || '%' ELSE k END) INTO got;
+			EXECUTE format('SELECT count(*) FROM (SELECT s FROM dk OFFSET 0) x WHERE s COLLATE "C" %s %L', CASE t.op WHEN '^' THEN 'LIKE' ELSE t.op END, CASE t.op WHEN '^' THEN k || '%' ELSE k END) INTO want;
+			n := n + 1;
+			IF got IS DISTINCT FROM want THEN
+				bad := bad + 1;
+				RAISE NOTICE '% %: index %, heap %', t.op, k, got, want;
+			END IF;
+		END LOOP;
+	END LOOP;
+	RETURN n || ' counts, ' || bad || ' differ';
+END $$;
+SELECT dk_check();
+       dk_check       
+----------------------
+ 132 counts, 0 differ
+(1 row)
+
+SELECT dc_rows_scanned($$SELECT count(*) FROM dk WHERE s COLLATE "C" LIKE 'd0%'$$) AS prefix_rows_scanned;
+ prefix_rows_scanned 
+---------------------
+                   0
+(1 row)
+
+SELECT sift.col_verify('dk_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+ALTER INDEX dk_idx SET (count_columns = 'off');
+REINDEX INDEX dk_idx;
+SELECT max(format) AS format_with_count_columns_off FROM sift._test_col_formats('dk_idx'::regclass);
+ format_with_count_columns_off 
+-------------------------------
+                            14
+(1 row)
+
+SELECT count(*) FILTER (WHERE counted) AS counted_segments FROM sift._test_col_dict_count('dk_idx'::regclass, 1, 'prefix', 'b');
+ counted_segments 
+------------------
+                0
+(1 row)
+
+SELECT dk_check();
+       dk_check       
+----------------------
+ 132 counts, 0 differ
+(1 row)
+
+DROP FUNCTION dk_check();
+DROP TABLE dk;
 -- the option takes text columns only
 CREATE INDEX dc_bad ON dc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 'id');
 ERROR:  invalid count_columns option: "id" is not a text column

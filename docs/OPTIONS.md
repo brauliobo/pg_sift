@@ -18,8 +18,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 100 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 22 | off or empty by default; `why` is the limit of the default rule it failed |
+| [default](#default) | 101 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 21 | off or empty by default; `why` is the limit of the default rule it failed |
 | [diagnostic](#diagnostic) | 12 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -324,6 +324,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** ALTER INDEX .. SET (key_table = off), then REINDEX or the next merge; segments written before keep theirs and are still read.
 - **Upgrade from 3.4:** A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read.
 - **Advice:** Leave on. Set off for an index that is written far more than it is read by key, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
+
+#### sift_col(count_columns)
+
+`sift_col` · default · since 3.5 · default ''
+
+- **What it does:** count(*) of one test of the column (`LIKE 'abc%'`, an equality, `<`, `<=`, `>`, `>=` in the C collation) is read from two places of the column's dictionary, not from its rows: 4,012 matching rows of 1,000,000, 5.3 ms to 0.14 ms
+- **Gain:** count(*) WHERE txt LIKE 'k2a%' (4,012 rows) 5.3 to 0.14 ms, LIKE 'k2%' (62,564 rows) 3.7 to 0.14 ms, < 'kf' 5.3 to 0.18 ms, 1,000,000 rows, one text column of unique 13-byte strings, 4 segments, warm, median of 40 runs
+- **Impact:** index size: +131 KB (+0.17%) of 77.4 MB at 1,000,000 rows with 1,000,000 unique strings in one of eight columns (the first layout, a u32 for each string, was +4.0 MB, +4.5%); a column of few strings has none; build, merge and writes: CREATE INDEX +0.44% instructions (9,338 M without, 9,379 M with the counts, 1,000,000 rows, 8 columns); merge and promotion write the same blocks (the count of each code is kept while the units are written); other: format minor 24; 0.13 bytes for each distinct string of unique strings (+131 KB, +0.17% of the segments of the 8-column test table at 1,000,000 unique strings), about 0.4 bytes for strings of one to three rows; +0.44% instructions on CREATE INDEX
+- **When:** count(*) and nothing else, one test of the column (a prefix, an equality or a range in the C collation), a text leaf whose dictionary is read in place, every unit of the segment exact (clean, all pages all-visible, the directory current), a segment with superunit summaries. A dead row, a second test, another aggregate or inline strings (a string over 255 bytes in a unit): read from the units; the rows of the write buffer are always read.
+- **Default:** '' — The formula of DEFAULT-FORMULA.md: speedup 38x (count of a prefix 5.3 to 0.14 ms, 3.2 M instructions saved), growth 0.17%, write +0.44%: benefit 107 units against a cost of 0.14.
+- **Turn off:** ALTER INDEX .. SET (count_columns = 'off'), then REINDEX or the next merge; segments written before keep theirs and are still read.
+- **Upgrade from 3.4:** A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX.
+- **Advice:** Leave on. Set off for an index that is written far more than it is counted by prefix or range, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
 
 #### sift_col(key_cut)
 
@@ -1410,20 +1423,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Opt-in: set it only where the b-tree on the column can go and a lookup 3x slower is fine. Prefer point_tid_columns, which reads no unit. Larger index; REINDEX to apply.
 
-#### sift_col(count_columns)
-
-`sift_col` · opt-in · since 3.5 · default ''
-
-- **What it does:** count(*) of one test of the column (`LIKE 'abc%'`, an equality, `<`, `<=`, `>`, `>=` in the C collation) is read from two places of the column's dictionary, not from its rows: 4,012 matching rows of 1,000,000, 5.3 ms to 0.14 ms
-- **Gain:** count(*) WHERE txt LIKE 'k2a%' (4,012 rows) 5.3 to 0.14 ms, LIKE 'k2%' (62,564 rows) 3.7 to 0.14 ms, < 'kf' 5.3 to 0.18 ms, 1,000,000 rows, one text column of unique 13-byte strings, 4 segments, warm, median of 40 runs
-- **Impact:** index size: +4.0 MB (+4.5%) of 90.0 MB at 1,000,000 rows with 1,000,000 unique strings in one of eight columns: 4 bytes a distinct string, which is +25% of that dictionary; none for a column of few strings; build, merge and writes: CREATE INDEX +1.0% instructions (9,337 M to 9,427 M, 1,000,000 rows, 8 columns); merge and promotion write the same array (the count of each code is kept while the units are written); other: format minor 24; 4 bytes for each distinct string (+4.0 MB, +4.5% of the segments of the 8-column test table at 1,000,000 unique strings); +1.0% instructions on CREATE INDEX
-- **When:** count(*) and nothing else, one test of the column (a prefix, an equality or a range in the C collation), every unit of the segment exact (clean, all pages all-visible, the directory current), a segment with superunit summaries. A dead row, a second test, another aggregate or inline strings (a string over 255 bytes in a unit): read from the units; the rows of the write buffer are always read.
-- **Default:** '' — Four bytes a distinct string is +25% of a unique text dictionary, over the 3% of the 3.3 rule: it is opt-in.
-- **Why not the default:** over 3% index growth
-- **Turn off:** ALTER INDEX .. RESET (count_columns), then REINDEX or the next merge; segments written before keep their counts and are still read.
-- **Upgrade from 3.4:** A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index. Set `count_columns` back to the empty string and REINDEX before the older files are installed.
-- **Advice:** Set it on a text column whose prefix or range counts matter and whose strings are mostly distinct; leave it off where the column has few values (a histogram answers) or the index must stay readable by 3.4. REINDEX or the next merge applies it.
-
 #### sift_col(point_tid_columns)
 
 `sift_col` · opt-in · since 3.3 · default ''
@@ -2068,7 +2067,7 @@ No default changed since 3.4; new: `sift.agg_par_min_rows`, `sift.col_leaf_cache
 | Option | 3.4 | 3.5 | Column format | What a 3.4 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(key_table)` | new | true | minor 22, unreadable by 3.4 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
-| `sift_col(count_columns)` | new | '' | minor 24, unreadable by 3.4 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index. Set `count_columns` back to the empty string and REINDEX before the older files are installed. |
+| `sift_col(count_columns)` | new | '' | minor 24, unreadable by 3.4 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
 | `sift.agg_par_min_rows` | new | 80000 |  | new in 3.5 |
 | `sift.table_key_table` | new | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |

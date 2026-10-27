@@ -11,7 +11,7 @@ ALTER TABLE kpt ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kpt (id, cust, k, s)
 SELECT i, (i * 7919) % 97, CASE WHEN i % 53 = 0 THEN NULL ELSE (i * 31) % 9000 END, 's' || (i * 13) % 5000
 FROM generate_series(1, 40000) i;
-CREATE INDEX kpt_idx ON kpt USING sift_col (id, cust, k, s) WITH (key_cut = 'cust', point_tid_columns = 'id, cust, k, s');
+CREATE INDEX kpt_idx ON kpt USING sift_col (id, cust, k, s) WITH (count_columns = 'off', key_cut = 'cust', point_tid_columns = 'id, cust, k, s');
 VACUUM (ANALYZE) kpt;
 SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('kpt_idx', true);

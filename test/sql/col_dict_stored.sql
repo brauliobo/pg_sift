@@ -60,7 +60,7 @@ INSERT INTO ds_q (preds, heapwhere) VALUES
  ('0:eq:ab;1:eq:c4ca4238-a0b9-2382-0dcc-509a6f75849b', 's = ''ab'' AND u = ''c4ca4238-a0b9-2382-0dcc-509a6f75849b''');
 
 -- the stored form: the segment is minor 14, the dictionaries are not parsed by an equality, an IN list or a prefix, and every answer is the heap's
-CREATE INDEX ds_new ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = on);
+CREATE INDEX ds_new ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
 VACUUM (ANALYZE) ds;
 SELECT sift.col_verify('ds_new', true);
 SELECT count(*) AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
@@ -74,9 +74,9 @@ SELECT loads > 0 AS parsed, hits > 0 AS then_cached FROM sift._test_col_dict_cac
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
 -- the option off (blocks for the dictionaries that pay, without the order) and the compact form (the setting 13): the same answers, the dictionaries are parsed
-CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = off);
+CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = off);
 SET sift.col_format_minor = 13;
-CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, dict_lookup = on);
+CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
 RESET sift.col_format_minor;
 SELECT index, min(format) AS format FROM (SELECT 'off' AS index, format FROM sift.col_segments('ds_off') WHERE kind = 'immutable'
 	UNION ALL SELECT '13', format FROM sift.col_segments('ds_13') WHERE kind = 'immutable') x GROUP BY index ORDER BY index;
@@ -88,7 +88,7 @@ DROP INDEX ds_off, ds_13;
 
 -- a dictionary under the minimum is kept compact (the minimum is a limit)
 CREATE TABLE dfew AS SELECT i AS id, 'few' || i % 300 AS s FROM generate_series(1, 6000) i;
-CREATE INDEX dfew_i ON dfew USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
+CREATE INDEX dfew_i ON dfew USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
 SELECT min(format) AS format FROM sift.col_segments('dfew_i') WHERE kind = 'immutable';
 DROP TABLE dfew;
 SELECT set_config('sift.test_limits', 'dict_lookup_min=1', false) IS NOT NULL AS lowered;
@@ -96,8 +96,8 @@ CREATE TABLE dt (id int, s text);
 INSERT INTO dt SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN 'one' WHEN 2 THEN '' ELSE repeat('x', 255) END FROM generate_series(1, 400) i;
 CREATE TABLE dt1 (id int, s text);
 INSERT INTO dt1 SELECT i, 'same' FROM generate_series(1, 100) i;
-CREATE INDEX dt_i ON dt USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
-CREATE INDEX dt1_i ON dt1 USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
+CREATE INDEX dt_i ON dt USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+CREATE INDEX dt1_i ON dt1 USING sift_col (s sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
 SELECT (SELECT min(format) FROM sift.col_segments('dt_i') WHERE kind = 'immutable') AS format,
 	   (SELECT min(format) FROM sift.col_segments('dt1_i') WHERE kind = 'immutable') AS format_one_string;
 SELECT (SELECT count(*) FROM sift._test_col_tids('dt_i', '0:eq:one')) AS one,
@@ -146,13 +146,13 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
 -- the default (auto) stores the order of the strings of a leaf that a lookup structure reads (set_columns, point_columns, return_columns) and of no other; on stores every one, off none
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = on);
-CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (dict_lookup = off);
-CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops);
-CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (key_columns = 's');
-CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 'u');
-CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (return_columns = 's, v');
-CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's, u', dict_lookup = off);
+CREATE INDEX ds_on ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = on);
+CREATE INDEX ds_off2 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', dict_lookup = off);
+CREATE INDEX ds_auto ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off');
+CREATE INDEX ds_auto_set ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', key_columns = 's');
+CREATE INDEX ds_auto_point ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 'u');
+CREATE INDEX ds_auto_ret ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', return_columns = 's, v');
+CREATE INDEX ds_auto_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_columns = 's, u', dict_lookup = off);
 RESET max_parallel_maintenance_workers;
 SELECT i.idx, d.leaf, d.bytes = (SELECT x.bytes FROM sift.col_sections('ds_on') x WHERE x.section = 'dict' AND x.leaf = d.leaf) AS with_order
 FROM (VALUES ('ds_on'), ('ds_off2'), ('ds_auto'), ('ds_auto_set'), ('ds_auto_point'), ('ds_auto_ret'), ('ds_auto_off')) i(idx), LATERAL sift.col_sections(i.idx::regclass) d
@@ -167,9 +167,9 @@ DROP INDEX ds_bool;
 CREATE TABLE dw AS SELECT i AS id, md5((i % 5000)::text)::uuid AS u,
 	(SELECT string_agg(substr(md5((1 + (hashint4((i % 5000) * 31 + j) & 2147483647) % 400)::text), 1, 3 + j % 5), ' ') FROM generate_series(1, 5) j) AS w
 FROM generate_series(1, 20000) i;
-CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops);
+CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
 SET sift.col_format_minor = 13;
-CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops);
+CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
 RESET sift.col_format_minor;
 SELECT d.leaf, d.bytes <= x.bytes * 1.03 AS within_3_percent, d.bytes > x.bytes AS blocks
 FROM sift.col_sections('dw_i') d JOIN sift.col_sections('dw_13') x ON x.section = d.section AND x.leaf = d.leaf WHERE d.section = 'dict' ORDER BY d.leaf;

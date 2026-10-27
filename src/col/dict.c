@@ -328,6 +328,60 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
  * (1) with the codec's list (the lengths as an integer cascade, the bytes under the cold wrapper rule), which starts 8-aligned.
  */
 
+/* The rows of the codes in byte order, by block: the layout of DICT_LOOKUP_COUNT (col/enc.h) */
+static void
+put_counts(const SiftCDict *d, StringInfo out)
+{
+	uint32		nb = DICT_COUNT_NB(d->n),
+				cum = 0;
+	uint32	   *rec = palloc0(((Size) nb + 1) * 2 * sizeof(uint32));
+	uint8	   *cmin = palloc0(((Size) nb + 3) / 4 * 4);
+	StringInfoData data;
+
+	initStringInfo(&data);
+	for (uint32 b = 0; b < nb; b++)
+	{
+		uint32		lo = b * DICT_BLOCK,
+					cnt = Min(DICT_BLOCK, d->n - lo),
+					least = UINT32_MAX,
+					most = 0,
+					w = 0,
+					at;
+		uint8	   *bits;
+
+		for (uint32 i = 0; i < cnt; i++)
+			least = Min(least, d->rows[d->sorted[lo + i]]);
+		cmin[b] = (uint8) Min(least, 255);
+		for (uint32 i = 0; i < cnt; i++)
+			most = Max(most, d->rows[d->sorted[lo + i]] - cmin[b]);
+		while (most >> w)
+			w++;
+		rec[2 * b] = cum;
+		rec[2 * b + 1] = data.len;
+		at = data.len;
+		for (uint32 i = 0; i < DICT_BLOCK * w / 8; i++)
+			appendStringInfoChar(&data, '\0');
+		bits = (uint8 *) data.data + at;
+		for (uint32 i = 0; i < cnt; i++)
+		{
+			uint32		x = d->rows[d->sorted[lo + i]] - cmin[b];
+
+			cum += d->rows[d->sorted[lo + i]];
+			for (uint32 k = 0; k < w; k++)
+				if (x >> k & 1)
+					bits[(i * w + k) / 8] |= 1 << ((i * w + k) % 8);
+		}
+	}
+	rec[2 * nb] = cum;
+	rec[2 * nb + 1] = data.len;
+	put_bytes(out, rec, ((Size) nb + 1) * 2 * sizeof(uint32));
+	put_bytes(out, cmin, ((Size) nb + 3) / 4 * 4);
+	put_bytes(out, data.data, data.len);
+	pfree(rec);
+	pfree(cmin);
+	pfree(data.data);
+}
+
 /*
  * The forms read in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a string
  * is one read of its block), and for DICT_LOOKUP the codes in byte order of the strings (the work of a bisection is a few block reads)
@@ -401,16 +455,7 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 			appendStringInfoChar(out, '\0');
 		put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
 		if (form == DICT_LOOKUP_COUNT)
-		{
-			uint32		cum = 0;
-
-			put_val(out, cum);
-			for (uint32 i = 0; i < d->n; i++)
-			{
-				cum += d->rows[d->sorted[i]];
-				put_val(out, cum);
-			}
-		}
+			put_counts(d, out);
 	}
 	pfree(boff);
 	pfree(raw);
@@ -608,7 +653,8 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 				nblk,
 				pos = 0;
 	uint64		blk0,
-				total;
+				total,
+				perm_end;
 	uint32	   *boff,
 			   *off;
 	uint8	   *raw;
@@ -633,8 +679,19 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	total = blk0 + boff[nblk];
 	if (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT)
 		total = (total + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32) + (uint64) n * sizeof(uint32);
+	perm_end = total;
 	if (form == DICT_LOOKUP_COUNT)
-		total += ((uint64) n + 1) * sizeof(uint32);
+	{
+		uint32		last;
+
+		if (total + DICT_COUNT_HEAD(n) > len)
+		{
+			pfree(boff);
+			return NULL;
+		}
+		memcpy(&last, p + total + (uint64) 8 * DICT_COUNT_NB(n) + sizeof(uint32), sizeof(last));
+		total += DICT_COUNT_HEAD(n) + last;
+	}
 	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
 		pfree(boff);
@@ -719,7 +776,7 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	}
 	d->stored_order = true;
 	d->sorted = MemoryContextAlloc(mcxt, (Size) n * sizeof(uint32));
-	memcpy(d->sorted, p + (total - (uint64) n * sizeof(uint32) - (form == DICT_LOOKUP_COUNT ? ((uint64) n + 1) * sizeof(uint32) : 0)), (Size) n * sizeof(uint32));
+	memcpy(d->sorted, p + (perm_end - (uint64) n * sizeof(uint32)), (Size) n * sizeof(uint32));
 	for (uint32 i = 0; i < n; i++)
 		if (d->sorted[i] >= n)
 			return NULL;

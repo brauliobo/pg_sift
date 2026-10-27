@@ -76,7 +76,7 @@ UNION ALL SELECT format('u IN (%s)', string_agg(quote_literal(md5((i % 6000)::te
 UNION ALL SELECT format('id IN (%s)', string_agg((i * 17 % 31000)::text, ',' ORDER BY i)) FROM generate_series(1, 1000) i;
 
 -- the directory: the segments are minor 16, verify lists the address of every row under its key, and a lookup reads no unit of a segment without a dead row
-CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k, s, u');
+CREATE INDEX pt_t ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, point_tid_columns = 'k, s, u');
 VACUUM (ANALYZE) pt;
 SELECT sift.col_verify('pt_t', true);
 SELECT count(*) > 0 AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('pt_t') WHERE kind = 'immutable';
@@ -139,7 +139,7 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refu
 
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
 SET sift.col_format_minor = 14;
-CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, s, u');
+CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
 RESET sift.col_format_minor;
 SELECT max(format) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
@@ -203,7 +203,7 @@ CREATE TABLE pj_2 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 2);
 CREATE TABLE pj_3 PARTITION OF pj FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 INSERT INTO pj SELECT i, (i * 7) % 600, 'k' || i % 5, i % 1000 FROM generate_series(1, 1500) i;
 SET client_min_messages = warning;
-CREATE INDEX pj_pt ON pj USING sift_col (id sift.col_int4_ops, parent_id sift.col_int4_ops, kind sift.col_text_ops, amount sift.col_int4_ops) WITH (point_tid_columns = 'id, parent_id, kind');
+CREATE INDEX pj_pt ON pj USING sift_col (id sift.col_int4_ops, parent_id sift.col_int4_ops, kind sift.col_text_ops, amount sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'id, parent_id, kind');
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) pj, pj_i;
 BEGIN;

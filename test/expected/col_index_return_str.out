@@ -25,7 +25,7 @@ ERROR:  invalid return_columns option: not a text, varchar or uuid column
 CREATE INDEX rs_bad4 ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (return_columns = 's,');
 ERROR:  invalid return_columns option "s,": empty column name
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
-	WITH (return_columns = 's, u, vc', write_buffer_limit = 256);
+	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256);
 VACUUM (ANALYZE) rs;
 SELECT min(format) AS format FROM sift.col_segments('rs_i'::regclass) WHERE kind = 'immutable';
  format 
@@ -240,7 +240,7 @@ RESET sift.test_limits;
 DROP INDEX rs_i;
 SET sift.col_format_minor = 13;
 CREATE INDEX rs_p ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
-	WITH (return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off, compression = 'none');
+	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off, compression = 'none');
 SELECT min(format) < 14 AS not_in_blocks FROM sift.col_segments('rs_p'::regclass) WHERE kind = 'immutable';
  not_in_blocks 
 ---------------
@@ -284,7 +284,7 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 
 DROP INDEX rs_p;
 CREATE INDEX rs_c ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
-	WITH (return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off);
+	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off);
 RESET sift.col_format_minor;
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
  n  | rows  | agree |    scan    
@@ -305,7 +305,7 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 
 DROP INDEX rs_c;
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
-	WITH (return_columns = 's, u, vc', write_buffer_limit = 256);
+	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256);
 -- strings the index could not keep (the strings of a leaf in a unit passed unit_bytes: the value is overflow and comes from the heap; conditions on the id only,
 -- as a row with an overflow value is a candidate of every test of its leaf), and an expression
 SELECT set_config('sift.test_limits', 'unit_bytes=3000', false) IS NOT NULL AS lowered;
@@ -318,11 +318,11 @@ SET client_min_messages = warning;
 CREATE TABLE ro (id int, s text, u uuid, pad text DEFAULT repeat('x', 300));
 ALTER TABLE ro ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ro SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE 'o' || i || repeat('z', 20) END, CASE WHEN i % 31 = 0 THEN NULL ELSE md5(i::text)::uuid END FROM generate_series(1, 3000) i;
-CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (return_columns = 's, u', write_buffer_limit = 256);
-CREATE INDEX ro_x ON ro USING sift_col (id sift.col_int4_ops, lower(s) sift.col_text_ops) WITH (return_columns = 'lower');
+CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (count_columns = 'off', return_columns = 's, u', write_buffer_limit = 256);
+CREATE INDEX ro_x ON ro USING sift_col (id sift.col_int4_ops, lower(s) sift.col_text_ops) WITH (count_columns = 'off', return_columns = 'lower');
 ERROR:  invalid return_columns option: "lower" is an expression, not a column
 DROP INDEX ro_i;
-CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (return_columns = 's, u', write_buffer_limit = 256);
+CREATE INDEX ro_i ON ro USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops) WITH (count_columns = 'off', return_columns = 's, u', write_buffer_limit = 256);
 VACUUM (ANALYZE) ro;
 UPDATE ro SET s = s || 'u', u = md5('x' || id)::uuid WHERE id % 10 = 0;
 CREATE TABLE rs_q2 (n serial, q text);

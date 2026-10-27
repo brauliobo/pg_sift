@@ -126,7 +126,7 @@ q clean "DROP TABLE run_facts" >/dev/null
 # the row counts of a text dictionary (count_columns) are column format 24: 3.4 refuses it too
 q clean "CREATE INDEX facts_cnt ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, count_columns = 'pad')" >/dev/null
 check "an index with row counts is column format 24" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 24' <<<"$(uc clean)"
-check "to 3.4: an index with row counts is a blocker that says to reset count_columns" grep -q -E "^blocker +facts_cnt .*ALTER INDEX facts_cnt RESET \(count_columns\), SET \(key_columns = 'off', key_table = off\), then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
+check "to 3.4: an index with row counts is a blocker that says to turn count_columns off" grep -q -E "^blocker +facts_cnt .*ALTER INDEX facts_cnt SET \(count_columns = 'off', key_columns = 'off', key_table = off\), then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
 q clean "DROP INDEX facts_cnt" >/dev/null
 q clean "DROP TABLE key_facts" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list

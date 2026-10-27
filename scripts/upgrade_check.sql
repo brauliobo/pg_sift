@@ -101,7 +101,7 @@ BEGIN
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 24 THEN
-				adv := format('ALTER INDEX %s RESET (count_columns), SET (key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without row counts, lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
+				adv := format('ALTER INDEX %s SET (count_columns = ''off'', key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without row counts, lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
 			ELSIF hi = 23 THEN
 				adv := format('ALTER INDEX %s SET (key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
 			ELSIF hi = 22 THEN
