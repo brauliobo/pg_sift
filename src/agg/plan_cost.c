@@ -714,6 +714,10 @@ lookup_sure(AggCtx *c, const JoinCtx *jc)
 }
 
 static bool lookup_counted(AggCtx *c, const JoinCtx *jc);
+
+/* agg_cost prices a path again for the tuples its lookup joins would not filter (workers_ratio): nothing it reports comes from that pass */
+static bool pricing_wide,
+			pricing_scratch;
 static double cte_list_keys(AggCtx *c, const JoinCtx *jc, int key);
 static double cte_list_worth(AggCtx *c, const JoinCtx *jc, int k, Var *key);
 static PlannerInfo *cte_inner_body(PlannerInfo *body, int *resno);
@@ -797,7 +801,9 @@ point_kept(AggCtx *c, int leaf, double keys, double nd)
  * HUGE_VAL without a filter. The keys of a lookup PostgreSQL has no statistics for (a CTE or sub-select of ids) are its floor of one row,
  * whatever the list holds: they stay as estimated where they leave a handful of units (an index cut by the key reads a few for any key),
  * and are the geometric mean of them and the leaf's distinct values where they leave more (the planner cannot tell a key of ten rows from
- * one of ten thousand, and an index not cut by the key reads tens of units for one, so the scan is priced for a guess that is not a floor).
+ * one of ten thousand, and an index not cut by the key reads tens of units for one, so the scan is priced for a guess that is not a floor). The price of
+ * the workers (workers_ratio) takes that mean always: a guess of a key or two that leaves three units prices a scan no worker pays for, where the keys are
+ * tens and the scan reads a hundred units, and the workers that start for a scan that turns out short are called back by par_scan_small.
  */
 static double
 join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share, double *excess)
@@ -845,7 +851,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 			}
 			nkeys = Min(keys, list_keys);
 			kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
-			if (nd > keys && !lookup_counted(c, jc) && kept_keys * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS)
+			if (nd > keys && !lookup_counted(c, jc) && (pricing_wide || kept_keys * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS))
 			{
 				nkeys = Min(sqrt(keys * nd), list_keys);
 				kept_keys = Min(zone_keys_kept(c, leaf, nkeys, nd), point_kept(c, leaf, nkeys, nd));
@@ -2112,10 +2118,6 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->scan_cost = (k->scan_cost + k->units * AGG_UNIT_COST) * Max(k->zone_kept, 1.0 / k->units);
 	k->cold_ops *= Max(k->zone_kept, 1.0 / k->units);
 }
-
-/* agg_cost prices a path again for the tuples its lookup joins would not filter (workers_ratio): nothing it reports comes from that pass */
-static bool pricing_wide,
-			pricing_scratch;
 
 /* The tuples that reach the groups and what each takes */
 static void

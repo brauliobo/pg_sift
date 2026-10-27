@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: pg_sift: a scan that joins a lookup PostgreSQL has no statistics for (a CTE or sub-select of ids it expects to hold one key) is priced for workers at the mean of that guess and the column's distinct values whatever units the guess leaves, as its scan price already was where the guess left more than a handful: a statement whose lookup held tens of keys and whose scan read most units ran its second node in one process (the ranking scan of a two-scan statement, 3.4.0 had 4 workers on it)
 - Fixed: pg_sift: a scan whose workers the planner prices for the rows it reads kept one process only when the units it keeps times the average unit of the index were fewer than `sift.agg_par_min_rows`, and the average unit of an index built by workers is several times the real one (its statistics count the superblocks the segments span, not the units they hold), so a scan of a few thousand rows started workers that cost more than the scan (4.2 ms with 2 workers, 0.2 ms alone, 4,500 rows). The floor now compares the rows of the units the scan keeps, which the unit directory holds.
 
 ## 3.5.0 - 2026-10-27

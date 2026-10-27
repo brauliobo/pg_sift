@@ -1,0 +1,56 @@
+-- The workers of a scan are priced for the keys a lookup may hold, not for the one key PostgreSQL guesses. A CTE of ids it has no statistics for (the id of
+-- a table filtered by an array it builds, 9 rows here) is expected to hold a few keys, which the units of the index leave at a handful of its units, where the
+-- keys it holds are tens of the 40 of the column and the scan reads most units: a scan priced for the guess alone costs less than the workers' start, and the
+-- statement ran in one process (a 171-unit index on a large table, the lookup of 32 keys guessed at 1: 3 units priced, 122 read). sift.plan_scale
+-- plans the table at a size where the scan is long enough for the workers to pay; the fixture is too small to tell the two prices apart, it keeps the plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 4;
+SET seq_page_cost = 100;
+
+CREATE TABLE props (id int PRIMARY KEY, kind text);
+INSERT INTO props SELECT i, 'k' || i % 4 FROM generate_series(1, 40) i;
+CREATE TABLE grp (id serial PRIMARY KEY, sub int, prop_id int, deleted_at timestamptz);
+INSERT INTO grp (sub, prop_id) SELECT 9, i FROM generate_series(1, 30) i;
+INSERT INTO grp (sub, prop_id) SELECT 7, i FROM generate_series(1, 40) i;
+CREATE TABLE ev (id int PRIMARY KEY, prop_id int NOT NULL, day date NOT NULL, v int) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO ev SELECT i, 1 + (i - 1) / 500, date '2026-01-01' + i % 90, i % 17 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
+CREATE INDEX ev_col ON ev USING sift_col (id, prop_id, day, v);
+RESET client_min_messages;
+VACUUM (FREEZE, ANALYZE) ev;
+ANALYZE props;
+ANALYZE grp;
+
+CREATE TABLE w_q (q text);
+INSERT INTO w_q VALUES ($q$
+WITH ids AS MATERIALIZED (SELECT p.id FROM props p WHERE p.kind = ANY (string_to_array('k0,k1,k2,k3', ',')) AND p.id = ANY ((SELECT array_agg(g.prop_id) FROM grp g WHERE g.sub = 9 AND g.deleted_at IS NULL)::int[]))
+SELECT e.day, sum(e.v) AS s, count(*) AS n FROM ev e JOIN ids ON ids.id = e.prop_id GROUP BY 1
+$q$);
+
+-- the workers the plan asks for at a size of the table (the plan with them is chosen where it costs less than the one without)
+CREATE FUNCTION w_planned(scale float8) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	PERFORM set_config('sift.plan_scale', scale::text, true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM w_q) LOOP
+		IF l ~ 'Workers Planned: [0-9]' THEN n := substring(l FROM 'Workers Planned: ([0-9]+)')::int; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+-- the keys are guessed: the lookup is expected to hold 9 of the 40 ids and holds 30; the scan keeps one process at the size of the table and plans the workers
+-- at a larger one
+SELECT w_planned(1) AS planned_as_is, w_planned(64) > 0 AS workers_planned_at_scale;
+
+CREATE FUNCTION w_rows(push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', (SELECT q FROM w_q)) INTO r;
+	RETURN r;
+END $$;
+SELECT w_rows(true) = w_rows(false) AS same_rows;
+
+DROP FUNCTION w_planned(float8), w_rows(bool);
+DROP TABLE w_q, ev, grp, props;
+DROP EXTENSION pg_sift;
