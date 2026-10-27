@@ -525,13 +525,17 @@ sift_col_options(Relation index)
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }
 
-const char *
-sift_col_options_paths_raw(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->paths ? (const char *) o + o->paths : "";
+/* a string reloption: stored as an offset from the options struct, 0 when unset */
+#define COL_OPT_STR(fn, field, unset) \
+const char * \
+fn(Relation index) \
+{ \
+	const SiftColOptions *o = sift_col_options(index); \
+\
+	return o->field ? (const char *) o + o->field : (unset); \
 }
+
+COL_OPT_STR(sift_col_options_paths_raw, paths, "")
 
 /* 'auto' (decided at the build) or 'auto: spec' (decided by an earlier build); a spec starts with a key and a type, so it never reads like this */
 /* the option is empty or a bare 'auto' on an index with a jsonb column: its paths are read from the documents at the next build */
@@ -565,21 +569,9 @@ sift_col_options_paths(Relation index)
 	return opt[4] == ':' ? opt + 5 + strspn(opt + 5, " ") : "";
 }
 
-const char *
-sift_col_options_compression(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_compression, compression, "")
 
-	return o->compression ? (const char *) o + o->compression : "";
-}
-
-const char *
-sift_col_options_preagg(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->preagg ? (const char *) o + o->preagg : "";
-}
+COL_OPT_STR(sift_col_options_preagg, preagg, "")
 
 /*
  * An ALTER INDEX is checked by building the state the new options give. paths = 'auto' without a spec (or RESET (paths)) asks for the documents to be read
@@ -595,37 +587,13 @@ sift_col_alter_check(Relation index)
 	(void) sift_col_rel(index);
 }
 
-const char *
-sift_col_options_key_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_key_columns, key_columns, NULL)
 
-	return o->key_columns ? (const char *) o + o->key_columns : NULL;
-}
+COL_OPT_STR(sift_col_options_point_columns, point_columns, "")
 
-const char *
-sift_col_options_point_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_count_columns, count_columns, "")
 
-	return o->point_columns ? (const char *) o + o->point_columns : "";
-}
-
-const char *
-sift_col_options_count_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->count_columns ? (const char *) o + o->count_columns : "";
-}
-
-const char *
-sift_col_options_point_tid_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->point_tid_columns ? (const char *) o + o->point_tid_columns : "";
-}
+COL_OPT_STR(sift_col_options_point_tid_columns, point_tid_columns, "")
 
 /* the leaves the option names: 'auto: a, b' is the choice of a build, 'auto' and 'off' name none */
 const char *
@@ -648,69 +616,21 @@ sift_col_options_key_cut_auto(Relation index)
 	return o->key_cut == 0 || strncmp((const char *) o + o->key_cut, "auto", 4) == 0;
 }
 
-const char *
-sift_col_options_order_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_order_columns, order_columns, "")
 
-	return o->order_columns ? (const char *) o + o->order_columns : "";
-}
+COL_OPT_STR(sift_col_options_order_array_group, order_array_group, "")
 
-const char *
-sift_col_options_order_array_group(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_order_array_columns, order_array_columns, NULL)
 
-	return o->order_array_group ? (const char *) o + o->order_array_group : "";
-}
+COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
 
-const char *
-sift_col_options_order_array_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_return_columns, return_columns, "")
 
-	return o->order_array_columns ? (const char *) o + o->order_array_columns : NULL;
-}
+COL_OPT_STR(sift_col_options_rollup, rollup, "")
 
-const char *
-sift_col_options_hll_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
+COL_OPT_STR(sift_col_options_rollup_dims, rollup_dims, "")
 
-	return o->hll_columns ? (const char *) o + o->hll_columns : "";
-}
-
-const char *
-sift_col_options_return_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->return_columns ? (const char *) o + o->return_columns : "";
-}
-
-const char *
-sift_col_options_rollup(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->rollup ? (const char *) o + o->rollup : "";
-}
-
-const char *
-sift_col_options_rollup_dims(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->rollup_dims ? (const char *) o + o->rollup_dims : "";
-}
-
-const char *
-sift_col_options_calendar_columns(Relation index)
-{
-	const SiftColOptions *o = sift_col_options(index);
-
-	return o->calendar_columns ? (const char *) o + o->calendar_columns : "";
-}
+COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
