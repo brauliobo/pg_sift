@@ -1,0 +1,84 @@
+-- An IN or NOT IN list of 32 integer-like keys or more is tested with a hash table of its members in each chunk of a unit that has about as many rows: the answers
+-- are the heap's for lists around that size, repeated members, a key that is the smallest integer (the table's free-slot marker is another key), NULLs, NOT IN, and a chunk with fewer rows than keys.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE sh (id int, k int, b bigint, d date, ts timestamp);
+INSERT INTO sh
+SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 3000 END, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN -9223372036854775808 ELSE i * 100000000003 END,
+	   date '2020-01-01' + i % 800, timestamp '2024-01-01' + i * interval '1 minute'
+FROM generate_series(1, 20000) i;
+CREATE INDEX sh_i ON sh USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
+VACUUM (FREEZE, ANALYZE) sh;
+CREATE TABLE sh_small (id int, k int, b bigint, d date, ts timestamp);
+INSERT INTO sh_small SELECT i, i % 50, i, date '2020-01-01', timestamp '2024-01-01' FROM generate_series(1, 40) i;
+CREATE INDEX sh_small_i ON sh_small USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
+
+CREATE FUNCTION sh_idx(tbl text, w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM (SELECT id, k, b, d, ts FROM %s WHERE %s) q', tbl, w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION sh_seq(tbl text, w text) RETURNS bigint[] LANGUAGE plpgsql
+	SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint[];
+BEGIN
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM %s WHERE %s', tbl, w) INTO r;
+	RETURN r;
+END $$;
+
+-- the same conditions in a count the aggregate scan answers from the units (NOT IN is a condition of that scan only), against the plain plan
+CREATE FUNCTION sh_cnt_agg(tbl text, w text) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, w) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION sh_cnt_seq(tbl text, w text) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = off SET sift.enable_col_scan = off SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r bigint;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, w) INTO r;
+	RETURN r;
+END $$;
+
+CREATE TABLE sh_q (n serial, tbl text, w text);
+INSERT INTO sh_q (tbl, w) VALUES
+ ('sh', 'k = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 31) g))'),
+ ('sh', 'k = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 32) g))'),
+ ('sh', 'k = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 33) g))'),
+ ('sh', 'k = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 600) g))'),
+ ('sh', 'k = ANY (ARRAY(SELECT g * 7 FROM generate_series(1, 600) g) || ARRAY[7, 7, 14, NULL]::int[])'),
+ ('sh', 'k <> ALL (ARRAY(SELECT g * 7 FROM generate_series(1, 40) g))'),
+ ('sh', 'k NOT IN (SELECT g * 3 FROM generate_series(1, 200) g)'),
+ ('sh', 'id = ANY (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))'),
+ ('sh', 'id <> ALL (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))'),
+ ('sh', 'b = ANY (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808]::bigint[])'),
+ ('sh', 'b <> ALL (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808]::bigint[])'),
+ ('sh', 'd = ANY (ARRAY(SELECT date ''2020-01-01'' + g * 3 FROM generate_series(1, 100) g))'),
+ ('sh', 'ts = ANY (ARRAY(SELECT timestamp ''2024-01-01'' + g * 5 * interval ''1 minute'' FROM generate_series(1, 400) g))'),
+ ('sh', 'k = ANY (ARRAY(SELECT g FROM generate_series(1, 2999) g))'),
+ ('sh_small', 'k = ANY (ARRAY(SELECT g FROM generate_series(0, 60) g))'),
+ ('sh_small', 'k <> ALL (ARRAY(SELECT g FROM generate_series(0, 60) g))'),
+ ('sh_small', 'k <> ALL (ARRAY(SELECT g FROM generate_series(0, 20) g))');
+
+-- the same conditions with the members written out, as a statement of an application has them (a list of constants is one the aggregate scan pushes down)
+INSERT INTO sh_q (tbl, w)
+SELECT 'sh', format('%s %s (%s)', col, op, string_agg(val::text, ',' ORDER BY val))
+FROM (VALUES ('k', 'IN', 40), ('k', 'NOT IN', 40), ('k', 'NOT IN', 600), ('id', 'IN', 500), ('id', 'NOT IN', 500), ('k', 'NOT IN', 31)) v (col, op, cnt),
+	 LATERAL (SELECT g * 7 AS val FROM generate_series(1, v.cnt) g) m
+GROUP BY col, op, cnt;
+INSERT INTO sh_q (tbl, w)
+SELECT 'sh_small', format('k NOT IN (%s)', string_agg(g::text, ',')) FROM generate_series(0, 60) g;
+
+SELECT n, tbl, w FROM sh_q WHERE sh_idx(tbl, w) IS DISTINCT FROM sh_seq(tbl, w) ORDER BY n;
+SELECT n, tbl, w, sh_cnt_agg(tbl, w) AS agg, sh_cnt_seq(tbl, w) AS seq FROM sh_q WHERE sh_cnt_agg(tbl, w) IS DISTINCT FROM sh_cnt_seq(tbl, w) ORDER BY n;
+SELECT count(*) AS shapes, count(*) FILTER (WHERE cardinality(sh_seq(tbl, w)) > 0) AS with_rows FROM sh_q;
+DROP TABLE sh, sh_small, sh_q;
+DROP FUNCTION sh_idx(text, text);
+DROP FUNCTION sh_seq(text, text);
+DROP FUNCTION sh_cnt_agg(text, text);
+DROP FUNCTION sh_cnt_seq(text, text);
+DROP EXTENSION pg_sift;

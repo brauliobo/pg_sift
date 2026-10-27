@@ -403,17 +403,81 @@ chunk_range(const SiftCChunk *c, int64 lo, int64 hi, uint64 *tmp)
 	}
 }
 
+/*
+ * The members of a set of many keys in an open-addressing table, for a chunk that has about as many rows: a probe of the table costs a few instructions, a
+ * bisection of the set one for each of its halvings (the 10,000 ids of an index-only scan: 260 instructions a row against 15). `empty` marks a free slot: a key not in the set.
+ */
+#define SET_HASH_MIN	32
+
+typedef struct KeyHash
+{
+	int64	   *slot;
+	uint32		shift;
+	int64		empty;
+} KeyHash;
+
+static uint32
+key_slot(int64 k, uint32 shift)
+{
+	return (uint32) (((uint64) k * UINT64CONST(0x9E3779B97F4A7C15)) >> shift);
+}
+
+static void
+key_hash_make(KeyHash *h, const SiftCTest *t)
+{
+	uint32		bits = 1;
+
+	while (((Size) 1 << bits) < (Size) t->nset * 2)
+		bits++;
+	h->shift = 64 - bits;
+	for (h->empty = PG_INT64_MIN; set_has(t, h->empty); h->empty++)
+		;
+	h->slot = palloc(((Size) 1 << bits) * sizeof(int64));
+	for (Size i = 0; i < ((Size) 1 << bits); i++)
+		h->slot[i] = h->empty;
+	for (uint32 i = 0; i < t->nset; i++)
+	{
+		uint32		p = key_slot(t->set[i], h->shift);
+
+		while (h->slot[p] != h->empty)
+			p = (p + 1) & ((1U << bits) - 1);
+		h->slot[p] = t->set[i];
+	}
+}
+
+static bool
+key_hash_has(const KeyHash *h, int64 k)
+{
+	uint32		mask = (1U << (64 - h->shift)) - 1;
+
+	for (uint32 p = key_slot(k, h->shift); h->slot[p] != h->empty; p = (p + 1) & mask)
+		if (h->slot[p] == k)
+			return true;
+	return false;
+}
+
 /* tmp = rows matching, evaluated key by key (sets of many members, and what has no vector path) */
 static void
 chunk_scalar(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 {
 	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+	bool		set = t->kind == SIFT_CT_SET || t->kind == SIFT_CT_NSET;
+	KeyHash		h;
 
 	memset(tmp, 0, SIFT_COL_NWORDS(c->n) * sizeof(uint64));
 	sift_cchunk_decode(c, key);
-	for (uint32 i = 0; i < c->n; i++)
-		if (key_matches(t, key[i]))
-			tmp[i >> 6] |= UINT64CONST(1) << (i & 63);
+	if (set && t->nset >= SET_HASH_MIN && c->n >= t->nset)
+	{
+		key_hash_make(&h, t);
+		for (uint32 i = 0; i < c->n; i++)
+			if (key_hash_has(&h, key[i]) == (t->kind == SIFT_CT_SET))
+				tmp[i >> 6] |= UINT64CONST(1) << (i & 63);
+		pfree(h.slot);
+	}
+	else
+		for (uint32 i = 0; i < c->n; i++)
+			if (key_matches(t, key[i]))
+				tmp[i >> 6] |= UINT64CONST(1) << (i & 63);
 	pfree(key);
 }
 

@@ -103,7 +103,7 @@ check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, 
 				nw = SIFT_COL_NWORDS(n);
 	uint64	   *bits = palloc(nw * sizeof(uint64)),
 			   *want = palloc(nw * sizeof(uint64));
-	SiftColValue consts[16];
+	SiftColValue consts[96];
 
 	for (int k = 0; k < NPREDS; k++)
 	{
@@ -112,7 +112,7 @@ check_tests(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict, 
 		bool		any = false,
 					masked = RAND(t, 2);
 
-		gen_pred(t, d, ref, &p, consts, 13);
+		gen_pred(t, d, ref, &p, consts, RAND(t, 4) == 0 ? 90 : 13);
 		if (direct)
 			sift_ctest_make_strs(&p, &test);
 		else
