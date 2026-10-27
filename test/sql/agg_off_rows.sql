@@ -11,8 +11,9 @@ BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	RETURN (jsonb_path_query_first(j, format('$.** ? (@."Node Type" == "%s")', node)::jsonpath) ->> 'Plan Rows')::int;
 END $$;
+-- the sub-select has the kind of the join: PostgreSQL 19 merges a join of a table with itself on its key and then proves two kinds empty, a CTE of no rows
 CREATE FUNCTION cte_query() RETURNS text LANGUAGE sql AS $$
-	SELECT $q$WITH c AS MATERIALIZED (SELECT e.id, e.payload FROM events e JOIN dims d ON d.id = e.parent_id WHERE d.kind = 'kind_a' AND d.id IN (SELECT id FROM dims WHERE kind = 'kind_b' AND id < 0))
+	SELECT $q$WITH c AS MATERIALIZED (SELECT e.id, e.payload FROM events e JOIN dims d ON d.id = e.parent_id WHERE d.kind = 'kind_a' AND d.id IN (SELECT id FROM dims WHERE kind = 'kind_a' AND id < 0))
 	SELECT (SELECT count(*) FROM c), (SELECT max(id) FROM c)$q$ $$;
 CREATE FUNCTION sub_query() RETURNS text LANGUAGE sql AS $$
 	SELECT $q$SELECT count(*) FROM (SELECT id, payload ->> 'a' AS a, payload ->> 'b' AS b FROM events ORDER BY id LIMIT 10000) s WHERE s.a = 'x' AND s.b = 'y'$q$ $$;
