@@ -11,9 +11,7 @@ use Test::More;
 my $node = sift_node('space_cache');
 $node->append_conf('postgresql.conf', "sift.async_maintenance = off\nmax_parallel_maintenance_workers = 0");
 $node->start;
-install_sift($node);
-plan skip_all => 'publication error injection needs the testing build' unless $node->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
-$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+install_sift_test($node, 'publication error injection needs the testing build');
 sub fixture
 {
 	my ($kind) = @_;

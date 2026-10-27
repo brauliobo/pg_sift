@@ -28,9 +28,7 @@ sub kinds { return $_[0]->safe_psql('postgres', sprintf($kinds, $_[1])) }
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', $conf);
 $primary->start;
-plan skip_all => 'the load needs the testing build' unless $primary->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
-install_sift($primary);
-$primary->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+install_sift_test($primary, 'the load needs the testing build');
 $primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('bulk_standby')");
 $primary->backup('base');
 my $standby = PostgreSQL::Test::Cluster->new('standby');

@@ -13,9 +13,7 @@ my $standby;
 my $primary = sift_node('space_primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', "sift.async_maintenance = off\nwal_consistency_checking = 'generic'\nmax_parallel_maintenance_workers = 0");
 $primary->start;
-install_sift($primary);
-plan skip_all => 'space crash injection needs the testing build' unless $primary->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
-$primary->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+install_sift_test($primary, 'space crash injection needs the testing build');
 
 sub fixture
 {

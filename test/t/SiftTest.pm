@@ -12,7 +12,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-our @EXPORT = qw(sift_node install_sift ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait);
+our @EXPORT = qw(sift_node install_sift install_sift_test check_dump_restore ams sift_am knob load_corpus agree verify_agree crash_during kill_expected kill9_wait);
 
 my $repo = $ENV{SIFT_REPO} or die "SIFT_REPO not set; run through scripts/tap.sh";
 
@@ -75,6 +75,34 @@ sub install_sift
 	$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift; CREATE EXTENSION amcheck;');
 	$node->safe_psql('postgres', '',
 		extra_params => [ '-v', 'sift_ref_lib=1', '-f', "$repo/test/sql/reference.sql" ]);
+}
+
+# install_sift and the testing extension; the test is skipped (why) when the build is not the testing one
+sub install_sift_test
+{
+	my ($node, $why) = @_;
+	plan skip_all => $why unless $node->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
+	install_sift($node);
+	$node->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+}
+
+# pg_dump of table $t of $primary restored in one transaction into a node with $conf: the same rows by $digest->($node, $t), and after VACUUM
+sub check_dump_restore
+{
+	my ($primary, $conf, $digest, $t) = @_;
+	my $want = $digest->($primary, $t);
+	my $file = $primary->basedir . '/dump.sql';
+	$primary->command_ok([ 'pg_dump', '-p', $primary->port, '-h', $primary->host, '-d', 'postgres', '-t', $t, '-f', $file ], 'pg_dump');
+	my $dst = sift_node('dump_dst');
+	$dst->append_conf('postgresql.conf', $conf);
+	$dst->start;
+	install_sift_test($dst, 'the restore needs the testing build');
+	$dst->command_ok([ 'psql', '-X', '-q', '-1', '-v', 'ON_ERROR_STOP=1', '-p', $dst->port, '-h', $dst->host, '-d', 'postgres', '-f', $file ], 'restore in one transaction');
+	is($digest->($dst, $t), $want, 'the restored rows are identical');
+	$dst->safe_psql('postgres', "VACUUM $t");
+	is($digest->($dst, $t), $want, 'and after VACUUM');
+	$dst->stop;
+	$dst->clean_node;
 }
 
 # $ENV{$var}, else $full, or $quick under SIFT_QUICK=1 (scripts/ci.sh quick)

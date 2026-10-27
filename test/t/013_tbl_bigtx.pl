@@ -26,9 +26,7 @@ sub count { return $_[0]->safe_psql('postgres', "SELECT count(*) FROM $_[1]") }
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', $conf);
 $primary->start;
-plan skip_all => 'the table limit is a testing setting' unless $primary->safe_psql('postgres', "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'");
-install_sift($primary);
-$primary->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
+install_sift_test($primary, 'the table limit is a testing setting');
 # a slot keeps the WAL the standby has not replayed: with consistency checking it replays slower than the primary writes
 $primary->safe_psql('postgres', "SELECT pg_create_physical_replication_slot('big_standby')");
 $primary->backup('base');
@@ -123,21 +121,7 @@ subtest 'promoting the standby keeps the rows' => sub {
 };
 $standby->stop;
 
-subtest 'pg_dump and restore reload the table in one transaction' => sub {
-	my $want = digest($primary, 'd');
-	my $file = $primary->basedir . '/dump.sql';
-	$primary->command_ok([ 'pg_dump', '-p', $primary->port, '-h', $primary->host, '-d', 'postgres', '-t', 'd', '-f', $file ], 'pg_dump');
-	my $dst = sift_node('dump_dst');
-	$dst->append_conf('postgresql.conf', $conf);
-	$dst->start;
-	install_sift($dst);
-	$dst->safe_psql('postgres', 'CREATE EXTENSION pg_sift_test');
-	$dst->command_ok([ 'psql', '-X', '-q', '-1', '-v', 'ON_ERROR_STOP=1', '-p', $dst->port, '-h', $dst->host, '-d', 'postgres', '-f', $file ], 'restore in one transaction');
-	is(digest($dst, 'd'), $want, 'the restored rows are identical');
-	$dst->safe_psql('postgres', 'VACUUM d');
-	is(digest($dst, 'd'), $want, 'and after VACUUM');
-	$dst->stop;
-};
+subtest 'pg_dump and restore reload the table in one transaction' => sub { check_dump_restore($primary, $conf, \&digest, 'd') };
 
 $primary->stop;
 done_testing();
