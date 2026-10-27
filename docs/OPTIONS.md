@@ -35,8 +35,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 103 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 19 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
+| [default](#default) | 104 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -304,6 +304,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (cube_minmax = false) writes what 3.2 wrote; RESET restores true. Units written afterwards; sift.col_refresh(index) or REINDEX rewrite older ones; sift.col_format_minor <= 6 also writes none.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave on. Turn it off (WITH cube_minmax = false) only to write segments a 3.2 library can read or to save the extra bytes when no query takes min or max of an integer per group.
+
+#### sift_col(rollup_dims)
+
+`sift_col` · default · since 3.3 · default ''
+
+- **What it does:** GROUP BY and filter of two low-cardinality scalar columns read from the rollup of each unit: the pair is picked at CREATE INDEX (auto) or named
+- **Gain:** GROUP BY of the pair, count 26.5 M to 17.7 M instructions a query and with a sum 36.4 M to 21.4 M (600,000 rows); 171.8 ms normal plan, 8.0 scanned, 3.5 ms from the rollup (1,000,000 rows); a filter on both values of the pair is slower (12.3 M to 16.0 M instructions)
+- **Formula:** S 1.50x saving 8871k instructions, G 5.7%, W 1.6%, R 1: B 8.3 against C 2.2, automatic
+- **Impact:** index size: +5.7% of the index (15,296,488 against 14,466,400 bytes; 600,000 rows, 214 units); +4.6% for two dims (96 cells a unit), +19% for three (200,000 rows); build, merge and writes: CREATE INDEX +1.6% instructions (13,214 M to 13,503 M; 600,000 rows); CREATE INDEX +12 to +47 ms of sampling; other: format minor 9; +5.3% of the index, build +25% (two columns); auto picks the pair at CREATE INDEX
+- **When:** GROUP BY of two or more dims, or a key plus a filter on another dim, over 2 to 6 boolean, integer, date, numeric(p,s) or text columns; auto takes the pair with the fewest combinations that fits the cells of a unit (a tenth of its rows, at most 4,096) in 90% of 8 sampled stretches. Not float, count(DISTINCT) or a non-dim filter; too many cells in a unit: none.
+- **Default:** '' — Automatic: S 1.50 on the GROUP BY of the pair against G 5.7% and W 1.6% pass the default formula (B 8.3 against C 2.2), for the pair a statistic of the table picks (sampled stretches); a point filter on both values of the pair reads more. The NOTICE at CREATE INDEX names the columns and the off switch, not the MB: the size of the cells is known only after the build (sift.col_sections).
+- **Turn off:** ALTER INDEX .. SET (rollup_dims = 'off'), then REINDEX (or rollup_dims = 'off' on CREATE INDEX): no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
+- **Upgrade from 3.4:** unchanged
+- **Advice:** Leave it. CREATE INDEX picks the pair when two columns of a unit have combinations that fit its cells and tells which; rollup_dims = 'off' writes none, a list of columns names the pair.
 
 #### sift_col(calendar_columns)
 
@@ -1200,6 +1214,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** The first and last keys of a sorted run (up to 32 at each end, with the heap addresses of their rows) answer ORDER BY .. LIMIT n (n <= 32, one sort key, no condition, join or aggregate) for a clean, all-visible unit without reading the unit
 - **Gain:** ORDER BY k LIMIT 10 0.128 to 0.051 ms (800,000 rows; b-tree 0.010), executor 645k to 245k instructions; LIMIT above 32 or a filtered LIMIT gain nothing
+- **Formula:** S 2.63x saving 400k instructions, G 0.6%, W 0.0%, R 0.5: B 9.9 against C 0.2, automatic
 - **Impact:** index size: +0.60% (94,044,160 against 93,478,912 bytes, three order columns, 800,000 rows); +2.4% (narrow index, 353,029 rows); build, merge and writes: Build 1.61 against 1.63 s (800,000 rows), promotion of 100,000 rows 0.052 against 0.052 s, merge of 500,000 rows 0.74 against 0.66 s (noise +-10%); other: format minor 18; Index +0.6% to +2.4% (0.24 B a row at units of 4,096 rows or more); build, promotion and merge within noise. Needs order_columns; none for a unit under 128 rows, a leaf with NULL or overflow, or a key_cut segment. A 3.3 library cannot read minor 18.
 - **When:** An index with order_columns, ORDER BY one sort key LIMIT n of at most min(32, rows / 128) of a unit, no filter, join or aggregate, a unit alone in its superblock with every page all-visible and clean, no write buffer rows. Not for LIMIT above 32, a filtered LIMIT or a leaf with NULL.
 - **Default:** automatic — Meets the 3.3 rule: 2-3x on unfiltered ORDER BY .. LIMIT <= 32 (limit 5%), growth 0.6% to 2.4% (limit 3%), write cost inside noise (limit 5%). It follows order_columns, so no second opt-in.
@@ -1213,6 +1228,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** GROUP BY with min or max of an int2, int4, int8 or numeric(p,s) column, by a key the cube has a dim for, over whole units, reads no row (EXPLAIN ANALYZE shows Units From Pre-aggregates).
 - **Gain:** GROUP BY g with min and max of an integer column, 500,000 rows, 7 columns, 50 groups, 7 units: 2.860 to 0.140 ms, 55.46M to 1.31M instructions
+- **Formula:** S 42.30x saving 54150k instructions, G 3.1%, W 0.2%, R 0.5: B 38.4 against C 1.1, automatic
 - **Impact:** index size: +3.1% of the column groups of a 4-integer-column table (532,480 to 548,864 bytes, 500,000 rows) and +0.7% of an 8-column one (2,457,600 to 2,473,984 bytes); build, merge and writes: User instructions of the writer (perf stat, 500,000 rows, 3 runs, 3.5 library with and without the change): CTAS and VACUUM FREEZE of 4 integer columns 3,427M to 3,426M (0.0%), of 8 columns 4,898M to 4,907M (+0.2%); other: format minor 7; The cube of every unit holds, for each integer measure of a dim, the smallest and largest value of each group (zigzag keys after the sums): within the cube's byte budget, none for the calendar cells of a date or timestamp column (their bytes fit the calendar budget only without them), none for a float measure. A 3.2 library cannot read minor 7.
 - **When:** A sift_table with a low-cardinality key (a store, a status, a kind) and integer or numeric measures, units clean and all-visible. Not a float measure, a calendar cell or a unit with a dead row.
 - **Default:** automatic — Meets the 3.3 rule: 20x at 50 groups (limit 5%), growth 0.7% to 3.1% (limit 3%; the 4-column table is a narrow one with nothing else in the unit), write cost 0.0% to 0.2% of the writer's instructions (limit 5%). It is the default of cube_minmax for an index since 3.3.
@@ -1239,6 +1255,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** count(DISTINCT col) of a sift_table column that is an int2, int4, int8 or date foreign key or *_id and not unique reads the key list or bitmap of each clean, all-visible unit, not its rows
 - **Gain:** count(DISTINCT fk) of 500,000 rows, 7 columns, 21 units: 2.10 to 0.053 ms, executor 36.2M to 0.69M instructions; with a date filter 2.10 to 0.106 ms, 36.5M to 1.30M
+- **Formula:** S 52.50x saving 35510k instructions, G 0.6%, W 1.2%, R 0.5: B 40.6 against C 0.4, automatic
 - **Impact:** index size: +0.00% to +0.55% of the column groups (8 KB page granularity, 500,000 rows, 7 columns: 1,490,944 to 1,499,136 bytes after COPY with the lists, none visible after INSERT and VACUUM); build, merge and writes: User instructions of the writer: INSERT 3,393,416,045 to 3,393,024,718 (-0.01%), VACUUM FREEZE 5,732,666,520 to 5,800,252,851 (+1.18%), COPY 6,453,099,597 to 6,486,689,588 (+0.52%), 100 batches of 1,000 rows 29,270,531,273 to 29,273,684,061 (+0.01%), UPDATE of 10% 2,006,963,472 to 2,006,942,673 (0.00%), VACUUM after it +0.54%, merge +1.58%; lists and run heads together; other: format minor 15; A list or bitmap per unit and column, written only where the lists of all the columns of the unit take at most 3% of its bytes (a column of random keys keeps none). A dirty unit (a tombstone or a write buffer row) is read as before; groups written earlier have none until VACUUM or a merge rewrites them.
 - **When:** A sift_table with an int2, int4, int8 or date column that is a foreign key or ends in _id and is not unique, a layout with no jsonb path, units clean and all-visible, count(DISTINCT col) over whole units.
 - **Default:** automatic — Meets the 3.3 rule: 40x in instructions on count(DISTINCT fk) (limit 5%), growth under 0.6% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The columns are the default of key_columns for an index, so there is no second choice to make.
@@ -1252,6 +1269,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** ORDER BY ts LIMIT n (n <= 32, one sort key, no condition, join or aggregate) of a timestamp or timestamptz column the rows follow reads the first and last keys of each clean, all-visible unit, not the unit
 - **Gain:** ORDER BY ts DESC LIMIT 10 of 500,000 rows, 7 columns, 19 units: 0.140 to 0.038 ms, executor 1.74M to 0.40M instructions; ASC LIMIT 10 0.80M to 0.44M; LIMIT 32 0.82M to 0.58M (ASC), 2.26M to 0.67M (DESC); LIMIT 33 to 10,000 within 1%
+- **Formula:** S 4.35x saving 1340k instructions, G 1.4%, W 1.2%, R 0.5: B 15.1 against C 0.7, automatic
 - **Impact:** index size: +1.42% of the column groups with one timestamp column (1,736,704 to 1,761,280 bytes, 500,000 rows, 7 columns, 19 units); +0.55% after COPY; build, merge and writes: User instructions of the writer: INSERT 3,393,416,045 to 3,393,024,718 (-0.01%), VACUUM FREEZE 5,732,666,520 to 5,800,252,851 (+1.18%), COPY 6,453,099,597 to 6,486,689,588 (+0.52%), 100 batches of 1,000 rows 29,270,531,273 to 29,273,684,061 (+0.01%), UPDATE of 10% 2,006,963,472 to 2,006,942,673 (0.00%), VACUUM after it +0.54%, merge +1.58%; lists and run heads together; other: format minor 18; A run header and its head (up to 32 keys at each end with the heap addresses of their rows: 16 B a key) per unit, written only where the run takes at most 3% of the unit's bytes, which is a column the rows follow (a run of any other takes 2 B a row and is not written); none for a unit with NULL or under 128 rows. A source does not walk a run that is the rows in their own order (LIMIT above 32 reads the unit as before). A 3.3 library cannot read minor 18.
 - **When:** A sift_table timestamp or timestamptz column loaded in order (created_at), ORDER BY it LIMIT up to 32 with no filter, join or aggregate, units clean and all-visible with no NULL in the column. Not a column the rows do not follow, a filtered LIMIT or LIMIT above 32.
 - **Default:** automatic — Meets the 3.3 rule: 3.7x at LIMIT 10 DESC (limit 5%), growth 0.55% to 1.42% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The column is the one whose run fits 3% of a unit, so there is no second choice to make.
@@ -1425,11 +1443,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `BM25` · opt-in · since 1.0 · default 0
 
 - **What it does:** prefix queries of up to n characters need no term expansion (autocomplete)
-- **Gain:** 1-letter prefix on a million short rows: 10-15 ms first call in a backend (under 1 ms cached) without, under 1 ms with
-- **Impact:** index size: a million rows: 17 MB, 34 MB at n=3, 73 MB at n=15 (2 to 4x); 300,000 rows 8.4 to 20 MB; build, merge and writes: n = 3: build 428 to 854 ms, insert of 20,000 documents 72 to 266 ms; n = 15: build 385 to 1,544 ms, insert 67 to 549 ms (100,000 documents); other: a larger index (more terms, growing with n); REINDEX to change
+- **Gain:** prefix queries of up to n characters, 200,000 short rows (instructions of one backend): the first call of a backend for a 1-letter prefix 112.1 M to 0.9 M, 3-letter 111.3 M to 0.2 M, warm 0.5 M to 0.2 M; a prefix of 4 or more characters is expanded as before. 1-letter prefix on a million short rows: 10-15 ms first call in a backend (under 1 ms cached) without, under 1 ms with
+- **Formula:** S 124.00x saving 111200k instructions, G 100.0%, W 92.6%, R 0.5: B 49.4 against C 51.9, opt-in (fails: ceiling, cost)
+- **Impact:** index size: a million rows: 17 MB, 34 MB at n=3, 73 MB at n=15 (2 to 4x); 300,000 rows 8.4 to 20 MB; build, merge and writes: n = 3: CREATE INDEX +92.6% instructions (1,321 M to 2,544 M, 200,000 rows); build 428 to 854 ms, insert of 20,000 documents 72 to 266 ms; n = 15: build 385 to 1,544 ms, insert 67 to 549 ms (100,000 documents); other: a larger index (more terms, growing with n); REINDEX to change
 - **When:** Prefix queries (ab*) of up to n characters; longer prefixes, wildcard, regex and fuzzy leaves still expand terms. n up to 15. Pairs with fields for autocomplete.
 - **Default:** 0 — 0 (off): grows the index 2 to 4x (17 to 34 to 73 MB on a million rows), over the 25% ceiling, build 2-4x and insert 3.7-8x; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
-- **Why not the default:** the index grows over 25%
+- **Why not the default:** the index grows over 25%, the benefit B does not reach the cost C
 - **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave 0: broad prefixes work without it (cached per backend). Set n to the longest prefix that must be sub-millisecond on first use; it grows the index. Needs REINDEX.
@@ -1447,20 +1466,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
 - **Upgrade from 3.4:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
-
-#### sift_col(rollup_dims)
-
-`sift_col` · opt-in · since 3.3 · default ''
-
-- **What it does:** GROUP BY of the named scalar columns read from the rollup of each unit: 1.25 to 0.72 ms (200,000 rows)
-- **Gain:** GROUP BY of two columns 171.8 ms normal plan, 8.0 scanned, 3.5 ms from the rollup (1,000,000 rows); 104 to 0.63 ms at 200,000
-- **Impact:** index size: +4.6% of the index for two low-cardinality dims (96 cells a unit), +19% for three (200,000 rows); auto +8.5% to +11% (300,000 rows); build, merge and writes: serial build CPU 147 ms without, 159 ms with (200,000 rows, inside +-15%); auto CREATE INDEX +12 to +47 ms of sampling; other: format minor 9; +5.3% of the index, build +25% (two columns); auto picks the pair at CREATE INDEX
-- **When:** GROUP BY of two or more dims, or a key plus a filter on another dim, over 2 to 6 boolean, integer, date, numeric(p,s) or text columns. Not float, count(DISTINCT) or a non-dim filter; too many cells in a unit: none.
-- **Default:** '' — Opt-in: two low-cardinality dims add +4.6% of the index (three +19%), over the 3% limit, for GROUP BY of two columns 171.8 ms to 3.5 ms; auto picks the pair for +8.5% to +11%.
-- **Why not the default:** the history does not say
-- **Turn off:** Off is the default: RESET (rollup_dims) or 'off' writes no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
-- **Upgrade from 3.4:** unchanged
-- **Advice:** Set it for GROUP BY or filters on the same few low-cardinality columns together; the index grows over 3%. auto picks a pair at CREATE INDEX. Columns of over 300 values store nothing.
 
 #### sift_col(point_columns)
 
