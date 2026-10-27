@@ -32,9 +32,9 @@
 ^test/(sql|expected)/(.+)\.(sql|out)$	^installcheck-\2$|{ci}
 ^test/expected/(.+)_[0-9]+\.out$	^installcheck-\1$|{ci}
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
-^test/col/	^difftest-col|^plan-gate(-tuned|-table(-tuned)?)?$|^coverage$|{ci}
+^test/col/	^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$|^coverage$|{ci}
 ^test/matrix/	^coverage-pct$|{ci}
-^test/plan/	^plan-gate(-tuned|-table(-tuned)?)?$|{ci}
+^test/plan/	^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$|{ci}
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/[^d]	^(fuzz|hardened)$|{ci}
 ^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl)?(-[12])?$|{ci}

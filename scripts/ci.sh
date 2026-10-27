@@ -155,9 +155,9 @@ if [[ $MODE == affected ]]; then
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
-		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-table(-tuned)?)?$'
+		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
-		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-table(-tuned)?)?$'; fi
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi
 	done
 	case $OUT in
 		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos; do echo "gh:$f $(flag $f)"; done ;;
@@ -192,7 +192,7 @@ declare -A JOB_WEIGHT=(
 	[tap-shell-maint_fanin]=112 [tap-shell-col_crash_matrix]=111 [installcheck-agg_set_array]=111 [installcheck-build_large_docs]=107
 	[tap-017_tbl_autodefrag]=102 [installcheck-agg_preagg_filter]=102 [tap-shell-col_wbuf_crash]=101 [tap-shell-compat_31_column]=99
 	[installcheck-agg_tid_range]=98 [installcheck-facets]=96 [isolation-emulated]=94 [installcheck-parallel_scan]=91
-	[plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
+	[plan-gate-calibrate]=35 [plan-gate-calibrate-tuned]=35 [plan-gate-table-tuned]=235 [plan-gate-table]=140 [plan-gate-tuned]=43 [plan-gate]=35  # the plan-gate lanes, full tier (--runs 3), PostgreSQL 17 and 18 of run 40177960778
 )
 JOB_WEIGHT_DEFAULT=10
 # the deep full tier is cut by the lane seconds each job took on its PostgreSQL major (run 40193282663; the other jobs weigh 10, a major from 19 on weighs like 18):
@@ -504,6 +504,9 @@ if [[ $MODE == full ]]; then
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 3 --warn-time
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 3 --warn-time
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 3 --warn-time
+	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, at 30000 rows (docs/AGG.md); skipped without perf
+	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
+	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
