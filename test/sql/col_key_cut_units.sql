@@ -43,6 +43,8 @@ SELECT (SELECT count(*) || ' ' || sum(amt) FROM nk WHERE cust = 4242) = (SELECT 
 -- after deletes and a merge the units are cut again and the answers hold
 DELETE FROM nk WHERE id % 11 = 0;
 DELETE FROM nu WHERE id % 11 = 0;
+-- a checkpoint writing the pages the deletes dirtied pins them, and VACUUM skips a page it cannot get the cleanup lock of and leaves it not all-visible
+CHECKPOINT;
 VACUUM nk; VACUUM nu;
 
 -- units with dead rows over an all-visible heap are read without the heap: no row is vetted
