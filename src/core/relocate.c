@@ -274,7 +274,7 @@ cmp_part_src(const void *a, const void *b)
 
 /*
  * Moves the runs of an immutable segment that lie highest in the file (up to budget) into the lowest free runs below each of them,
- * and writes the header page again, at the lowest free block, with the extents they now are: a segment far larger than the budget
+ * and writes the header page again, at the lowest free block below it, with the extents they now are (when only the header has a free block below it, it moves alone): a segment far larger than the budget
  * walks down the file a round at a time, and the file can be cut where it ended. The pages are copied as they are (the segment keeps its
  * generation), so a data run moves in pieces and the header lists more extents; the liveness run moves whole or not at all. Like
  * sift_store_relocate, nothing extends the file, and the caller publishes the new entry and the released runs together (sift_wt_publish).
@@ -302,6 +302,7 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 	int			nlist = 0;
 	BlockNumber newhdr = InvalidBlockNumber;
 	int			hdrbest;
+	bool		hdrfirst = false;
 	uint64		gen = entry->gen;
 
 	Assert(space_exclusive);
@@ -321,6 +322,18 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 	metabuf = lock_meta(rel, BUFFER_LOCK_SHARE);
 	read_chain(rel, metabuf, &free, InvalidFullTransactionId);
 	UnlockReleaseBuffer(metabuf);
+	/*
+	 * The header goes first, to the lowest free block below its own: the data runs fill the free blocks from the bottom up and would leave it none
+	 * (a merge's output the size of the blocks its inputs freed: its header is the last block of the segment, and the cut stops there)
+	 */
+	hdrbest = relocation_pick(&free, 1, entry->header_blk);
+	if (hdrbest >= 0)
+	{
+		newhdr = free.ext[hdrbest].start;
+		free.ext[hdrbest].start++;
+		free.ext[hdrbest].nblocks--;
+		hdrfirst = true;
+	}
 	for (int p = 0; p < npiece && moved < maxblocks; p++)
 	{
 		const SiftExtent *run = &piece[p].run;
@@ -357,8 +370,13 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 			ndata++;
 		}
 	}
-	hdrbest = nparts > 0 ? relocation_pick(&free, 1, RelationGetNumberOfBlocks(rel)) : -1;
-	if (hdrbest < 0 || !relocation_leaves_spare(&free, nparts + 1))
+	if (!hdrfirst)
+	{
+		hdrbest = nparts > 0 ? relocation_pick(&free, 1, RelationGetNumberOfBlocks(rel)) : -1;
+		if (hdrbest >= 0)
+			newhdr = free.ext[hdrbest].start;
+	}
+	if ((!hdrfirst && hdrbest < 0) || !relocation_leaves_spare(&free, nparts + 1))
 	{
 		pfree(piece);
 		pfree(part);
@@ -366,20 +384,27 @@ sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, u
 		pfree(free.page);
 		return 0;
 	}
-	newhdr = free.ext[hdrbest].start;
 	pfree(free.ext);
 	pfree(free.page);
 	pfree(piece);
 
 	/* the same lowest-fit picks, now taken from the free list: the order is the order of the plan */
+	if (hdrfirst)
+	{
+		space_limit = entry->header_blk;
+		SIFT_INVARIANT(sift_wt_reserve(wt, 1) == newhdr, "sift: shift allocation differs from its plan");
+	}
 	for (int i = 0; i < nparts; i++)
 	{
 		space_limit = part[i].ext < 0 ? part[i].src.start :
 			h->extents[part[i].ext].start;
 		SIFT_INVARIANT(sift_wt_reserve(wt, part[i].src.nblocks) == part[i].dst, "sift: shift allocation differs from its plan");
 	}
-	space_limit = RelationGetNumberOfBlocks(rel);
-	SIFT_INVARIANT(sift_wt_reserve(wt, 1) == newhdr, "sift: shift allocation differs from its plan");
+	if (!hdrfirst)
+	{
+		space_limit = RelationGetNumberOfBlocks(rel);
+		SIFT_INVARIANT(sift_wt_reserve(wt, 1) == newhdr, "sift: shift allocation differs from its plan");
+	}
 	space_limit = InvalidBlockNumber;
 	for (int i = 0; i < nparts; i++)
 		for (uint32 j = 0; j < part[i].src.nblocks; j++)

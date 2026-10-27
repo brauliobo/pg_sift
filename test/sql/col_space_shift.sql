@@ -37,6 +37,25 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) sh;
 SELECT answers FROM sh_state();
 SELECT sift.col_verify('sh_idx', true);
 
-DROP TABLE sh;
+-- a merge writes its segment above the blocks of its inputs, and a segment that took the first blocks of those leaves the output more blocks than the hole below it:
+-- the header goes first to the lowest free block, or the data runs would take every block of the hole and the header, the last of the segment, would hold the file
+CREATE TABLE sh2 (id int, k int, amount int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO sh2 SELECT i, i % 500, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 60000) i;
+CREATE INDEX sh2_idx ON sh2 USING sift_col (id, k, amount, pad);
+INSERT INTO sh2 SELECT i, i % 500, i % 100, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(60001, 120000) i;
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) sh2;
+SELECT sift.col_promote('sh2_idx') >= 0 AS promoted;
+SELECT sift.col_merge('sh2_idx', true) > 0 AS merged;
+INSERT INTO sh2 SELECT i, i % 500, i % 100, md5(i::text) FROM generate_series(120001, 120200) i;
+SELECT sift.col_promote('sh2_idx') >= 0 AS small_segment_in_the_hole;
+SELECT count(*) AS segments, (SELECT (100 * relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('sh2_idx') WHERE section <> 'free'))::int > 170 FROM sift.col_index_info('sh2_idx')) AS file_twice_the_bytes
+  FROM sift.col_segments('sh2_idx') WHERE kind = 'immutable';
+SET sift.vacuum_rewrite_limit = 1;
+VACUUM sh2;
+SELECT (SELECT (100 * relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('sh2_idx') WHERE section <> 'free'))::int < 115 FROM sift.col_index_info('sh2_idx')) AS file_near_the_bytes;
+SELECT sift.col_verify('sh2_idx', true);
+SELECT (SELECT count(*) FROM sh2) = 120200 AS answers;
+
+DROP TABLE sh, sh2;
 DROP FUNCTION sh_state();
 DROP EXTENSION pg_sift;
