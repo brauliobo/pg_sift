@@ -8,7 +8,10 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE lk_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO lk_facts SELECT i, CASE WHEN i % 4 = 0 THEN 1 ELSE 2 + (i::bigint * 7919 % 3000)::int END,
 	date '2024-01-01' + (i % 700), i % 50 FROM generate_series(1, 400000) i;
+-- the NOTICE of the build gives the bytes of the key lists, which depend on how the parallel workers split the heap: not part of the expected output
+SET client_min_messages = warning;
 CREATE INDEX lk_facts_col ON lk_facts USING sift_col (id, parent_id, ts, amount) WITH (key_cut = parent_id);
+RESET client_min_messages;
 CREATE TABLE lk_dims (id int PRIMARY KEY, partner int NOT NULL, grp int NOT NULL);
 INSERT INTO lk_dims SELECT p, 1 + (p * 31) % 3000, p % 10 FROM generate_series(1, 3000) p;
 VACUUM (FREEZE, ANALYZE) lk_facts, lk_dims;
