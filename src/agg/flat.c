@@ -269,7 +269,8 @@ flatten_query(Query *q, bool apply)
 	foreach_node(RangeTblEntry, rte, q->rtable)
 		if (rte->rtekind == RTE_SUBQUERY)
 			changed |= flatten_query(rte->subquery, apply);
-	query_tree_walker(q, flatten_sublinks, &sublinks, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
+	if (q->hasSubLinks)
+		query_tree_walker(q, flatten_sublinks, &sublinks, QTW_IGNORE_RANGE_TABLE | QTW_IGNORE_CTE_SUBQUERIES);
 	changed |= sublinks.changed;
 	q->jointree = (FromExpr *) flatten_jointree(q, (Node *) q->jointree, apply, &pulled, &decor, &changed);
 	/* the copy ReplaceVarsFromTargetList makes takes the place of the query; a sub-select may read the columns of an earlier one */

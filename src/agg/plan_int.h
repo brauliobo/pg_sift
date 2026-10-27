@@ -82,6 +82,14 @@ typedef struct RecFunc
 	RangeTblFunction *f;
 } RecFunc;
 
+typedef struct AggZoneMemo
+{
+	int			leaf;
+	double		keys;
+	double		nd;
+	double		kept;
+} AggZoneMemo;
+
 typedef struct AggCtx
 {
 	PlannerInfo *root;
@@ -141,6 +149,8 @@ typedef struct AggCtx
 	List	   *level_params;	/* top-N: the Params of the scanned table's conditions that an enclosing query level sets (the scan starts over for each value) */
 	double		elem_work;		/* element predicate evaluations per row of those, for the cost */
 	SiftSrcStats stats;
+	AggZoneMemo zone_memo[4];	/* zone_keys_kept's last answers */
+	int			nzone_memo;
 	SiftSrcPreagg pa;			/* what the units of the index store besides their rows */
 	SiftSearchPlan *search;		/* the BM25 conjuncts of the WHERE taken out: the scan reads the rows they match (agg/search.h) */
 	double		path_rows;		/* the groups of the rows the lookup lists can pass (at the geometric mean of PostgreSQL's count and all of them), 0 where PostgreSQL's count of them stands: what the path reports to the plan above */

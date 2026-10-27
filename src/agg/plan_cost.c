@@ -738,7 +738,7 @@ lookup_guessed(AggCtx *c, const JoinCtx *jc)
  * values the zone spans), hold one of the keys with the probability 1 - exp(-keys * n / nd). A source with no sample has the mean width.
  */
 static double
-zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
+zone_share(AggCtx *c, int leaf, double keys, double nd)
 {
 	const SiftSrcZones *z = c->stats.zones;
 	double		range = c->stats.max[leaf] - c->stats.min[leaf] + 1.0,
@@ -768,6 +768,23 @@ zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
 		kept += in_zone * held;
 	}
 	return z->covered * kept / z->n + (1.0 - z->covered);
+}
+
+/* the same keys of a leaf are asked again by every path and every pricing pass of a plan, and the sum is over the sample of the zones: the last few answers are kept */
+static double
+zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
+{
+	AggZoneMemo *m;
+
+	for (int i = 0; i < c->nzone_memo; i++)
+	{
+		m = &c->zone_memo[i];
+		if (m->leaf == leaf && m->keys == keys && m->nd == nd)
+			return m->kept;
+	}
+	m = &c->zone_memo[c->nzone_memo < lengthof(c->zone_memo) ? c->nzone_memo++ : 0];
+	*m = (AggZoneMemo) {leaf, keys, nd, zone_share(c, leaf, keys, nd)};
+	return m->kept;
 }
 
 /*

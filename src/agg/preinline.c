@@ -8,9 +8,11 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_proc.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/lsyscache.h"
 
 #include "agg/agg.h"
 
@@ -22,7 +24,14 @@ typedef struct InlineCte
 } InlineCte;
 
 static bool
-contain_dml_walker(Node *n, void *context)
+volatile_fn(Oid funcid, void *context)
+{
+	return func_volatile(funcid) == PROVOLATILE_VOLATILE;
+}
+
+/* does the query write (or lock) rows or call a volatile function: contain_volatile_functions' walk, with the check of the statements in the same pass */
+static bool
+dml_or_volatile(Node *n, void *context)
 {
 	if (n == NULL)
 		return false;
@@ -30,9 +39,11 @@ contain_dml_walker(Node *n, void *context)
 	{
 		Query	   *q = (Query *) n;
 
-		return q->commandType != CMD_SELECT || q->rowMarks != NIL || query_tree_walker(q, contain_dml_walker, context, 0);
+		return q->commandType != CMD_SELECT || q->rowMarks != NIL || query_tree_walker(q, dml_or_volatile, context, 0);
 	}
-	return expression_tree_walker(n, contain_dml_walker, context);
+	if (check_functions_in_node(n, volatile_fn, NULL) || IsA(n, NextValueExpr))
+		return true;
+	return expression_tree_walker(n, dml_or_volatile, context);
 }
 
 /* the reads of the CTE become the sub-select (inline_cte of PostgreSQL: the one reference takes the body, the outer references of it a level up) */
@@ -78,7 +89,7 @@ inlinable(CommonTableExpr *cte)
 	Query	   *q = castNode(Query, cte->ctequery);
 
 	return !cte->cterecursive && cte->cterefcount == 1 && cte->ctematerialized != CTEMaterializeAlways && q->commandType == CMD_SELECT &&
-		!contain_dml_walker((Node *) q, NULL) && !contain_volatile_functions((Node *) q);
+		!dml_or_volatile((Node *) q, NULL);
 }
 
 /* the single-reference CTEs of this query level, in the order PostgreSQL takes them; an inlined CTE leaves the list, nothing reads it */
