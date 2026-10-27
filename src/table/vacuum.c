@@ -267,15 +267,6 @@ group_dead(const SiftTblRel *st, VacState *v, const SiftTblTomb *a, uint32 n, ui
 	}
 }
 
-static int
-cmp_run(const void *a, const void *b)
-{
-	SiftKey		x = ((const SiftKey *) a)[0],
-				y = ((const SiftKey *) b)[0];
-
-	return SIFT_CMP3(x, y);
-}
-
 /* Is the row dead for the indexes: a dead TID, or a row of an aborted writer in a group (a key in one of the runs) */
 static bool
 dead_has(ItemPointer itemptr, void *state)
@@ -326,7 +317,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 	sift_tbl_aborted_runs(rel, st, &v->dead_runs, &sb_lo, &sb_hi);
 	tid_sort(&v->dead_tids);
 	if (v->dead_runs.n > 0)
-		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), cmp_run);
+		qsort(v->dead_runs.run, v->dead_runs.n, sizeof(SiftKey[2]), sift_cmp_u64);
 	if (sb_lo <= sb_hi)
 		(void) sift_tbl_group_bulkdelete(rel, st, dead_has, v, sb_lo, sb_hi);
 	/* the bulk delete flagged the segments dirty: their liveness is read from entries that say so */

@@ -322,15 +322,6 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 }
 
 static int
-osa_cmp_pos(const void *pa, const void *pb)
-{
-	uint64		a = *(const uint64 *) pa,
-				b = *(const uint64 *) pb;
-
-	return SIFT_CMP3(a, b);
-}
-
-static int
 osa_cmp(const void *pa, const void *pb)
 {
 	const OsaSlot *a = pa,
@@ -593,7 +584,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 				pos[nt++] = (uint64) pick[ai].pos[0];
 				pos[nt++] = (uint64) pick[ai].pos[1];
 			}
-		qsort(pos, nt, sizeof(uint64), osa_cmp_pos);
+		qsort(pos, nt, sizeof(uint64), sift_cmp_u64);
 		osa_select(sl, 0, m, 0, pos, key, nt);
 		for (int ai = 0; ai < s->naggs; ai++)
 			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner && !osa_is_mode(&s->agg[ai]))
