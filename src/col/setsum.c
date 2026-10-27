@@ -15,20 +15,10 @@
 
 #include "core/host.h"
 
+#include "col/point.h"
 #include "col/setsum.h"
 #include "core/cmp.h"
 #include "core/popcount.h"
-
-static inline uint64
-mix64(uint64 x)
-{
-	x ^= x >> 33;
-	x *= UINT64CONST(0xff51afd7ed558ccd);
-	x ^= x >> 33;
-	x *= UINT64CONST(0xc4ceb9fe1a85ec53);
-	x ^= x >> 33;
-	return x;
-}
 
 static inline uint32
 bloom_bit(uint64 h, uint32 j, uint64 nbits)
@@ -42,7 +32,7 @@ bloom_bit(uint64 h, uint32 j, uint64 nbits)
 static void
 bloom_add(uint8 *bits, uint64 nbits, uint32 k, int64 key)
 {
-	uint64		h = mix64((uint64) key);
+	uint64		h = sift_cpoint_hash(key);
 
 	for (uint32 j = 0; j < k; j++)
 	{
@@ -55,7 +45,7 @@ bloom_add(uint8 *bits, uint64 nbits, uint32 k, int64 key)
 static bool
 bloom_has(const SiftCSet *s, int64 key)
 {
-	uint64		h = mix64((uint64) key);
+	uint64		h = sift_cpoint_hash(key);
 
 	for (uint32 j = 0; j < s->aux; j++)
 	{

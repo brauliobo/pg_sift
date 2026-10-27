@@ -43,7 +43,7 @@ get_zz(Rd *r)
 {
 	uint64		u = get_u(r);
 
-	return (int64) (u >> 1) ^ -(int64) (u & 1);
+	return sift_unzigzag(u);
 }
 
 static SiftCI128
@@ -68,7 +68,7 @@ get_zz128(Rd *r)
 		if (!(b & 0x80))
 		{
 			r->p = p;
-			return (SiftCI128) ((int64) (w >> 1) ^ -(int64) (w & 1));
+			return (SiftCI128) sift_unzigzag(w);
 		}
 	}
 	for (int sh = 0; sh < 133; sh += 7)

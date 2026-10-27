@@ -16,7 +16,7 @@
 static inline void
 put_zz(StringInfo out, int64 v)
 {
-	sift_col_put_varint(out, ((uint64) v << 1) ^ (uint64) (v >> 63));
+	sift_col_put_varint(out, sift_zigzag(v));
 }
 
 static inline void
