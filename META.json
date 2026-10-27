@@ -2,7 +2,7 @@
   "name": "pg_sift",
   "abstract": "Exact BM25 full-text index and column-store aggregates for PostgreSQL",
   "description": "pg_sift adds a BM25 full-text index access method (sift), a column index (sift_col) and a column table access method (sift_table), and answers grouped aggregates from them as Custom Scan (SiftAgg), with one CREATE EXTENSION and no shared_preload_libraries.",
-  "version": "3.4.2",
+  "version": "3.5.0",
   "maintainer": "Braulio Oliveira <brauliobo@gmail.com>",
   "license": "postgresql",
   "provides": {
@@ -10,7 +10,7 @@
       "abstract": "BM25 full-text index, column index and aggregate pushdown",
       "file": "sql/pg_sift--3.3.sql",
       "docfile": "docs/USAGE.md",
-      "version": "3.4.2"
+      "version": "3.5.0"
     }
   },
   "prereqs": {

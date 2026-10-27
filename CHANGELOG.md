@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.5.0 - 2026-10-27
 
 - Fixed: pg_sift: a partitioned table whose partitions did not choose the same rollup of the rows (`rollup_dims = auto` picks it from each partition's data, so a partition attached later with few rows has none) lost the single `Custom Scan (SiftAgg)` over its partitions; the scan now keeps the rollups every partition has and reads the others by their rows.
 - Changed: pg_sift: `sift.table_dict_lookup` is on by default: a `sift_table` stores the order of the strings of a dictionary of 1,024 strings or more, so the first test of a string in a new backend reads it in place instead of loading the dictionary whole, where the orders of a segment take a quarter of it at most; `off` writes the compact form (column format minor 14, which 3.3 and 3.4 read).

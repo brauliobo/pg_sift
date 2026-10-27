@@ -21,7 +21,7 @@ ship such a SQLite; RHEL 9 and Ubuntu 22.04 do not.
 [latest release](https://github.com/brauliobo/pg_sift/releases/latest):
 
 ```sh
-V=3.4.2
+V=3.5.0
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz
