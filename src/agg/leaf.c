@@ -455,6 +455,9 @@ static pg_attribute_always_inline void
 vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, const uint32 *offs, int nrow, size_t esz)
 {
 	const uint32 m = offs[nrow];
+	/* in locals: the stores to data and isnull may alias what val points at, so the compiler would load them again for every element */
+	const void *vd = val->data;
+	const uint8 *vn = val->isnull;
 	int			r = 0;
 
 	for (uint32 w = 0; w * 64 < m; w++)
@@ -466,8 +469,11 @@ vleaf_fill(char *data, uint8 *isnull, const SiftSrcVec *val, const uint64 *eq, c
 				return;
 			while (offs[r + 1] <= e)
 				r++;
-			memcpy(data + (size_t) r * esz, (const char *) val->data + (size_t) e * esz, esz);
-			isnull[r] = val->isnull ? val->isnull[e] : 0;
+			if (esz == 8)
+				((uint64 *) data)[r] = ((const uint64 *) vd)[e];
+			else
+				((uint32 *) data)[r] = ((const uint32 *) vd)[e];
+			isnull[r] = vn ? vn[e] : 0;
 		}
 }
 
