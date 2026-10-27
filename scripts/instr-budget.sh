@@ -8,18 +8,9 @@
 # Measured at 200,000 rows, 5% deleted (12 units): 908,000 instructions with a byte-wise popcount of each sparse bitmap, 435,000 with 8 bytes at a time; BUDGET is 600,000.
 set -euo pipefail
 
-REPO=$(cd "$(dirname "$0")/.." && pwd)
+. "$(dirname "$0")/instr-budget-lib.sh"
 BUDGET=${BUDGET:-600000}
-command -v valgrind >/dev/null || { echo "instr-budget: valgrind is not installed, skipped"; exit 0; }
-export SIFT_TMP=${SIFT_TMP:-/tmp/sift-instr} SIFT_PORT=${SIFT_PORT:-56230}
-cd "$REPO"
-scripts/pgtest.sh stop >/dev/null 2>&1 || true
-rm -rf "$SIFT_TMP/data"
-scripts/pgtest.sh start >/dev/null
-eval "$(scripts/pgtest.sh env | grep '^export')"
-P="psql -X -q -At -d postgres"
-$P -c "CREATE EXTENSION pg_sift" -c "ALTER DATABASE postgres SET sift.col_auto_merge = off" >/dev/null
-$P >/dev/null <<'SQL'
+ib_begin instr-budget 56230 <<'SQL'
 CREATE TABLE ib (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off);
 INSERT INTO ib SELECT g, g % 7, g % 1000, repeat('x', 100) FROM generate_series(1, 200000) g;
 DELETE FROM ib WHERE id % 20 = 3;
@@ -27,11 +18,9 @@ VACUUM ib;
 CREATE INDEX ib_idx ON ib USING sift_col (id, grp, amount);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) ib;
 SQL
-scripts/pgtest.sh stop >/dev/null
 Q="SELECT grp, count(DISTINCT id), sum(amount) FROM ib GROUP BY grp"
 { echo "SET max_parallel_workers_per_gather = 0"; echo "SET sift.agg_preagg = off"; echo "$Q"; } > "$SIFT_TMP/ib.sql"
-ir=$(valgrind --tool=callgrind --collect-atstart=no --toggle-collect=sift_cunit_parse_head --callgrind-out-file="$SIFT_TMP/ib.cg" \
-	postgres --single -D "$SIFT_TMP/data" -c sift.async_maintenance=off -c jit=off -c autovacuum=off postgres < "$SIFT_TMP/ib.sql" 2>&1 >/dev/null | sed -n 's/.*Collected : *\([0-9]*\).*/\1/p' | tail -n 1)
-rm -rf "$SIFT_TMP/data"
+ir=$(ib_ir "$SIFT_TMP/ib.sql" sift_cunit_parse_head)
+ib_end
 echo "instr-budget: unit heads read in $ir instructions (budget $BUDGET)"
 [[ -n $ir && $ir -le $BUDGET ]]
