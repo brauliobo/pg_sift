@@ -1,0 +1,24 @@
+-- The key of a wildcard (`scores.*`, the keys of a JSON object) is a field of the object, a handful of names: the planner prices the dictionaries of
+-- the units for it from the keys the object has, not from the statistics of the jsonb column (every document differs: every value distinct), which priced
+-- the scan of this table at several times its cost. The scan stays the cheaper plan by a wide margin.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE wk_facts (id int, d date NOT NULL, metrics_a jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO wk_facts SELECT i, date '2020-01-01' + i % 1000,
+	(SELECT jsonb_object_agg(k, 1 + (hashint4(i * 16 + n::int) & 7))
+	   FROM unnest(ARRAY['a_1', 'a_2', 'b_1', 'b_2', 'c_1', 'c_2', 'd_1', 'd_2', 'e_1', 'e_2', 'f_1', 'f_2']) WITH ORDINALITY t(k, n))
+	FROM generate_series(1, 100000) i;
+SET client_min_messages = warning;
+CREATE INDEX wk_facts_col ON wk_facts USING sift_col (id, d, metrics_a);
+RESET client_min_messages;
+VACUUM ANALYZE wk_facts;
+SELECT used, scan_cost * 4 < normal_cost AS scan_far_cheaper
+FROM sift.explain_why($$SELECT split_part(e.key, '_', 1), avg((e.value #>> '{}')::int) FROM wk_facts, jsonb_each(wk_facts.metrics_a) e
+	WHERE d >= date '2021-01-01' AND d < date '2021-02-01' GROUP BY 1$$);
+ used | scan_far_cheaper 
+------+------------------
+ t    | t
+(1 row)
+
+DROP TABLE wk_facts;
+DROP EXTENSION pg_sift;

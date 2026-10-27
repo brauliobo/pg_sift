@@ -580,12 +580,12 @@ parallel_divisor(int workers)
 	return d;
 }
 
-/* The correlation of the heap column a leaf is read from with the heap order (0: unknown, or the leaf is a jsonb path or an expression) */
+/* The correlation of the heap column a leaf is read from with the heap order (0: unknown, or the leaf is a jsonb path, a field of a list or an expression) */
 double
 leaf_correlation(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
-	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	Node	   *e = lf->path == NIL && lf->parent < 0 ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 	HeapTuple	tp;
 	AttStatsSlot sslot;
 	double		corr = 0.0;
@@ -1602,7 +1602,7 @@ static int
 leaf_heap_width(AggCtx *c, int leaf)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
-	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	Node	   *e = lf->path == NIL && lf->parent < 0 ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 
 	return e && IsA(e, Var) ? get_attavgwidth(planner_rt_fetch(c->relid, c->root)->relid, ((Var *) e)->varattno) : 0;
 }
@@ -1612,7 +1612,7 @@ static double
 leaf_stat_frac(AggCtx *c, int leaf, double rows)
 {
 	const SiftSrcLeaf *lf = &c->lay->leaf[leaf];
-	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	Node	   *e = lf->path == NIL && lf->parent < 0 ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 	HeapTuple	tup;
 	double		nd = 0;
 
@@ -1966,7 +1966,7 @@ leaf_wsum_only(const SiftAggSpec *s, int leaf)
 static bool
 numeric_image(AggCtx *c, const SiftSrcLeaf *lf)
 {
-	Node	   *e = lf->path == NIL ? list_nth(c->attexpr, lf->attno - 1) : NULL;
+	Node	   *e = lf->path == NIL && lf->parent < 0 ? list_nth(c->attexpr, lf->attno - 1) : NULL;
 	int32		typmod = e && IsA(e, Var) ? ((Var *) e)->vartypmod : -1;
 	int			precision = ((typmod - VARHDRSZ) >> 16) & 0xffff,
 				scale = (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
