@@ -1163,7 +1163,7 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 
 /*
  * sift._test_col_set_damage(index, units): the small-set summaries of the first units of the index, opened as stored, cut at every length, with
- * each byte set to some other values (one at a time) and with the fields of the header the decoder must check set by name (flag bits, kind, count,
+ * each byte (of a large blob a sample of them) set to some other values (one at a time) and with the fields of the header the decoder must check set by name (flag bits, kind, count,
  * width, probes, bits, order). A decode must never read outside the blob (meaningful under SANITIZE=1) and must refuse a cut one and each named
  * damage; a damaged blob it accepts is a valid summary of other keys, which the verifier's comparison with the chunk (sift_cset_matches) refuses.
  */
@@ -1241,17 +1241,21 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 				bloom += s.kind == SIFT_CSET_BLOOM;
 				matching += sift_cset_matches(&s, keys, nd);
 			}
+			/* copy is the blob and nothing else: a cut reads its first l bytes, a damage changes one byte and puts it back (a whole copy for each of them is quadratic in the blob) */
+			memcpy(copy, orig, len);
 			for (uint32 l = 0; l < len; l++)
 			{
-				memcpy(copy, orig, l);
 				cut++;
 				cut_accepted += sift_cset_open(copy, l, &s);
 			}
 			for (uint32 i = 0; i < len; i++)
+			{
+				/* a large blob (a filter of thousands of keys): every byte of its first and last 64, and about 256 of the others, a different set for each blob; a damaged byte costs a comparison with the chunk (sift_cset_matches) when the decoder accepts it, so all of them are quadratic in the keys */
+				if (len > 512 && i >= 64 && i + 64 < len && (i + blobs) % (len / 256) != 0)
+					continue;
 				for (int k = 0; k < lengthof(vals); k++)
 				{
-					memcpy(copy, orig, len);
-					if (copy[i] == vals[k])
+					if (orig[i] == vals[k])
 						continue;
 					/* a list read as an exact summary of the same layout is one, and a correct one while it holds at most SIFT_CSET_LIMIT_MAX keys */
 					if (i == 0 && orig[0] == SIFT_CSET_PLIST && vals[k] == SIFT_CSET_EXACT)
@@ -1264,6 +1268,8 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 						missed += sift_cset_matches(&s, keys, nd);
 					}
 				}
+				copy[i] = orig[i];
+			}
 			/* the named damages of the header: flag bits, unknown kinds, counts, and (exact) width, order; (bloom) probes and bits */
 			for (int f = 0; f < 11; f++)
 			{
