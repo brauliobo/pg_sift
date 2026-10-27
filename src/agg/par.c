@@ -673,6 +673,13 @@ par_scan_small(AggExec *ex)
 	return m->ok && m->rows < sift_agg_par_min_rows;
 }
 
+/* The shared child rows live in the segment of the parallel context: the leader reads none of them once it is destroyed */
+static void
+par_forget_memo(AggExec *ex)
+{
+	memset(ex->cmemo, 0, Max(ex->spec->njoin, 1) * sizeof(ChildMemo *));
+}
+
 /* Starts the workers of the plan; the leader scans alone when none could be launched */
 void
 par_launch(AggExec *ex)
@@ -838,6 +845,7 @@ par_launch(AggExec *ex)
 	LaunchParallelWorkers(pcxt);
 	if (pcxt->nworkers_launched == 0)
 	{
+		par_forget_memo(ex);
 		DestroyParallelContext(pcxt);
 		ExitParallelMode();
 		return;
@@ -977,6 +985,7 @@ par_finish(AggExec *ex)
 		CHECK_FOR_INTERRUPTS();
 	}
 	WaitForParallelWorkersToFinish(par->pcxt);
+	par_forget_memo(ex);
 	DestroyParallelContext(par->pcxt);
 	par->pcxt = NULL;
 	ExitParallelMode();
