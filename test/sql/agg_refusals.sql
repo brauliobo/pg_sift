@@ -180,7 +180,8 @@ SET sift.explain_refusals = on;
 SET client_min_messages = error;
 EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
 SET sift.enable_agg = off;
-EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
+-- PostgreSQL 18 prints a Disabled line under the scan, 17 does not
+SELECT l FROM regexp_split_to_table(plan_of('SELECT min(v) FROM minmax_leftover', true), E'\n') l WHERE l <> '' AND l !~ 'Disabled:';
 RESET sift.enable_agg;
 RESET sift.explain_refusals;
 RESET client_min_messages;

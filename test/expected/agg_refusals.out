@@ -315,13 +315,13 @@ EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
 (3 rows)
 
 SET sift.enable_agg = off;
-EXPLAIN (COSTS OFF) SELECT min(v) FROM minmax_leftover;
-            QUERY PLAN             
+-- PostgreSQL 18 prints a Disabled line under the scan, 17 does not
+SELECT l FROM regexp_split_to_table(plan_of('SELECT min(v) FROM minmax_leftover', true), E'\n') l WHERE l <> '' AND l !~ 'Disabled:';
+                 l                 
 -----------------------------------
  Aggregate
    ->  Seq Scan on minmax_leftover
-         Disabled: true
-(3 rows)
+(2 rows)
 
 RESET sift.enable_agg;
 RESET sift.explain_refusals;
