@@ -90,6 +90,7 @@
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
 #define AGG_VLEAF_ELEM		9.0		/* an element of an object looked up by key (a metric of a free key object), per row and key */
 #define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
+#define AGG_JOIN_PROBE		58.0	/* a tuple's probe of a lookup table of 250,000 rows by its join key: the key's hash and the rows it finds, in the operators AGG_SCAN_SPEED scales (35 ns measured); it grows with the square root of the rows, as the table leaves the cache */
 #define AGG_WIDE_LEAF		3.0		/* a 64-bit leaf of a combo, per tuple: the hash probe for the id of its value */
 #define AGG_DIRECT_NUM		2.0		/* the transition of a PostgreSQL-evaluated value (numeric_add): the normal plan pays it per row too, at the price PostgreSQL gives a transition function */
 #define AGG_DIRECT_CMP		1.0		/* the type's comparison of one (min, max): the same in both plans */
@@ -386,15 +387,28 @@ combo_wsum_only(const SiftAggSpec *s, int ci)
 	return only;
 }
 
+static bool real_cost_walker(Node *n, double *excess);
+
+/* does the rest of the ON clause of combo ci compare the tuple's values with the table's? Then it is tested for each tuple (a condition on the table alone is tested when the table loads) */
+static bool
+on_tests_tuple(const SiftAggSpec *s, int ci)
+{
+	const SiftAggCombo *cb = &s->combo[ci];
+
+	return cb->join >= 0 && s->join[cb->join].fslot >= 0 && cb->nleaves > 1;
+}
+
 /*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
  * dictionary and small integer leaves have few combinations and keep the price they had.
  */
 static double
-combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows)
+combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, double scan_rows, double kept_rows, double alive, double *entry_cost)
 {
 	double		cost = 0;
+
+	*entry_cost = 0;
 
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
@@ -410,6 +424,28 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			const SiftAggJoin *j = &s->join[cb->join];
 			JoinCtx    *jc = list_nth(c->joins, cb->join);
 
+			/*
+			 * With equality keys, every tuple the filters keep probes the table before the joins narrow the rows to the ones that reach the groups
+			 * (a join keyed by the output of an earlier lookup sees what that one let through: the mean of the two counts), and the rest of the
+			 * ON clause is evaluated for each distinct combination of the values it reads, which for a key of many values is nearly every tuple.
+			 */
+			if (j->nkey > 0 && j->params == NIL)
+			{
+				double		probes = alive;
+
+				for (int p = 0; p < cb->nleaves; p++)
+					if (cb->leaf[p] < 0)
+						probes = Min(alive, sqrt(alive * Max(agg_rows, 1.0)));
+				cost += probes * AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0);
+				/* the rest of the ON clause is PostgreSQL's expression, for each entry; the executor's evaluation does not get AGG_SCAN_SPEED's share (110 ns an entry measured, 36 counted) */
+				if (on_tests_tuple(s, ci) && !combo_wsum_only(s, ci))
+				{
+					double		real = 0;
+
+					real_cost_walker((Node *) cb->slot[j->fslot].expr, &real);
+					*entry_cost += combo_entries(c, s, cb, probes, false) * (AGG_EVAL_SLOT + real) / AGG_SCAN_SPEED;
+				}
+			}
 			/* Without equality keys, every cached input tests every child row. */
 			if (j->nkey == 0 && j->params == NIL)
 			{
@@ -453,7 +489,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 			continue;
 		cost += tuples * wide * AGG_WIDE_LEAF + combo_entries(c, s, cb, tuples, false) * cb->nslots * AGG_EVAL_SLOT;
 	}
-	return cost;
+	return cost + *entry_cost;
 }
 
 /* a tuple of a bucket key: the number of its step, the lookup of the id */
@@ -838,6 +874,13 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 	*excess = 1.0;
 	if (!sift_agg_join_filter || s->topn)
 		return kept;
+	/*
+	 * A rest of an ON clause that compares values of the tuple holds only for the tuple: the tables are loaded whole, their keys are all there
+	 * are, and the rows PostgreSQL expects of a lookup are what the join keeps, not what a filter can cut.
+	 */
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (on_tests_tuple(s, ci))
+			return kept;
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
@@ -1568,7 +1611,7 @@ point_narrows(AggCtx *c, SiftAggSpec *s)
  * the ORs of them, the join key filters and a ctid range. The most selective counts, and the scan reads at least one unit (docs/COL-PLAN.md, "Zone pruning").
  */
 static double
-zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
+zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters, double *key_share)
 {
 	double		sel_keys,
 				share,
@@ -1577,6 +1620,7 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters)
 	List	   *rest;
 
 	kept = join_key_zone(c, s, nkeyfilters, &sel_keys, &share, &excess);
+	*key_share = Min(share, 1.0);
 	kept = Min(kept, zone_sample_kept(c, s, &rest));
 	kept = Min(kept, set_kept(c, s));
 	foreach_ptr(SiftAggPred, p, rest)
@@ -1852,6 +1896,7 @@ typedef struct CostAcc
 	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
 	double		zone_kept;
+	double		key_share;		/* of the rows the filters keep, the share whose join key a lookup holds (join_key_zone) */
 	double		agg_rows;
 	double		scan_rows;
 	double		rows_out;
@@ -2176,7 +2221,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	double		sparse,
 				tested;
 
-	k->zone_kept = zone_kept(c, s, &nkeyfilters);
+	k->zone_kept = zone_kept(c, s, &nkeyfilters, &k->key_share);
 	/*
 	 * A unit that few rows pass the filters is read at those rows only (docs/COL-SEARCH.md: a unit with a kept row in eight or fewer is
 	 * compacted, its leaves decoded for the kept rows): the leaves the filters test are read whole, the others for the share that passes.
@@ -2516,7 +2561,8 @@ distinct_id_ops(AggCtx *c, const SiftAggSpec *s, const CostAcc *k)
 static void
 cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
-	double		chunks = 0;
+	double		chunks = 0,
+				entry_cost;
 
 	for (int i = 0; i < s->naggs; i++)
 	{
@@ -2530,7 +2576,9 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
-	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units)) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
+	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
+	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
+	k->cold_ops += entry_cost * (parallel_divisor(s->nworkers) - 1.0);
 	for (int i = 0; i < s->nkeys; i++)
 		k->scan_cost += k->agg_rows * num_cost(&s->key[i].num);
 	for (int i = 0; i < s->npred; i++)

@@ -1,0 +1,28 @@
+-- A lookup join probes its table for every tuple the filters keep, before the joins narrow the rows to the groups, and evaluates the rest of its
+-- ON clause for each distinct combination of the values it reads. A condition that compares the columns of both tables is tested per tuple: the
+-- lookup table is loaded whole, so its keys cut no unit. The planner prices both, and leaves the normal plan where the lookup is the cost.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE jp_items (id int PRIMARY KEY, kind text, size int) WITH (autovacuum_enabled = false);
+INSERT INTO jp_items SELECT i, 'k' || i % 40, 1 + i % 50 FROM generate_series(1, 20000) i;
+CREATE TABLE jp_sales (id int, item int, qty numeric(5,1), amount numeric(10,2), channel text) WITH (autovacuum_enabled = false);
+INSERT INTO jp_sales SELECT i, 1 + (i::bigint * 7919) % 20000, 1 + i % 30, (i % 1000) / 10.0, (ARRAY['AIR', 'RAIL', 'TRUCK', 'SHIP', 'MAIL', 'FOB', 'REG AIR'])[1 + i % 7] FROM generate_series(1, 300000) i;
+SET client_min_messages = warning;
+CREATE INDEX jp_sales_col ON jp_sales USING sift_col (id, item, qty, amount, channel);
+RESET client_min_messages;
+CREATE INDEX jp_sales_item ON jp_sales (item);
+VACUUM ANALYZE jp_items, jp_sales;
+SELECT q, used FROM (VALUES
+	(1, $$SELECT sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item AND ((i.kind = 'k3' AND s.qty >= 1 AND s.qty <= 11 AND i.size IN (1, 2, 3)) OR (i.kind = 'k7' AND s.qty >= 10 AND s.qty <= 20 AND i.size IN (4, 5, 6))) AND s.channel IN ('AIR', 'REG AIR')$$),
+	(2, $$SELECT sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item AND i.kind = 'k3'$$),
+	(3, $$SELECT i.kind, sum(amount) FROM jp_sales s, jp_items i WHERE i.id = s.item GROUP BY 1$$)
+) v(q, sql), LATERAL (SELECT bool_or(used) AS used FROM sift.explain_why(v.sql)) w ORDER BY q;
+ q | used 
+---+------
+ 1 | f
+ 2 | t
+ 3 | t
+(3 rows)
+
+DROP TABLE jp_sales, jp_items;
+DROP EXTENSION pg_sift;

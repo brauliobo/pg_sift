@@ -107,20 +107,38 @@ join_own_rows(AggExec *ex, int ci, bool *live)
 	return live;
 }
 
-/* the sorted distinct keys of a filter */
+/* the keys of a filter: sorted and distinct once a filter of the same leaf asks (jk_sort) */
 typedef struct JoinKeys
 {
 	int			leaf;
 	int			n;
 	int64	   *v;
 	SiftAggPred *pred;
+	bool		sorted;
 } JoinKeys;
 
+static void
+jk_sort(JoinKeys *jk)
+{
+	int			n = 0;
+
+	if (jk->sorted)
+		return;
+	qsort(jk->v, jk->n, sizeof(int64), sift_cmp_i64);
+	for (int i = 0; i < jk->n; i++)
+		if (i == 0 || jk->v[i] != jk->v[i - 1])
+			jk->v[n++] = jk->v[i];
+	jk->n = n;
+	jk->sorted = true;
+}
+
 static bool
-keys_subset(const JoinKeys *a, const JoinKeys *b)
+keys_subset(JoinKeys *a, JoinKeys *b)
 {
 	int			j = 0;
 
+	jk_sort(a);
+	jk_sort(b);
 	for (int i = 0; i < a->n; i++)
 	{
 		while (j < b->n && b->v[j] < a->v[i])
@@ -138,18 +156,13 @@ keys_subset(const JoinKeys *a, const JoinKeys *b)
 static bool
 join_keys_covered(List **seen, List **add, int leaf, const int64 *vals, int nv, JoinKeys **out)
 {
-	JoinKeys   *jk = palloc(sizeof(JoinKeys));
-	int			n = 0;
+	JoinKeys   *jk = palloc0(sizeof(JoinKeys));
 	ListCell   *lc;
 
 	jk->leaf = leaf;
 	jk->v = palloc(Max(nv, 1) * sizeof(int64));
 	memcpy(jk->v, vals, nv * sizeof(int64));
-	qsort(jk->v, nv, sizeof(int64), sift_cmp_i64);
-	for (int i = 0; i < nv; i++)
-		if (i == 0 || jk->v[i] != jk->v[i - 1])
-			jk->v[n++] = jk->v[i];
-	jk->n = n;
+	jk->n = nv;
 	foreach(lc, *seen)
 	{
 		JoinKeys   *o = lfirst(lc);
