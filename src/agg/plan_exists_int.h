@@ -24,6 +24,8 @@ typedef struct Lit
 /* agg/plan_exists.c */
 extern SiftAggPred *any_elem(AggCtx *c, int grp, ElemBuild build, void *arg);
 extern SiftAggPred *lit_test(AggCtx *c, int grp, const char *name, int op, const Lit *lit, bool neg);
+extern SiftAggPred *leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit);
+extern bool lit_is_plain_text(const Lit *lit);
 
 /* agg/plan_path.c */
 extern bool jsonb_lit(const JsonbValue *v, Lit *lit);

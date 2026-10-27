@@ -82,25 +82,21 @@ child_named(AggCtx *c, int group, const char *name, bool astext)
 }
 
 /* a string no number or boolean prints as: the text of an astext leaf equals it for a JSON string only */
-static bool
+bool
 lit_is_plain_text(const Lit *lit)
 {
 	return lit->kind == 's' && (lit->len == 0 || (!isdigit((unsigned char) lit->s[0]) && lit->s[0] != '-')) &&
 		!(lit->len == 4 && memcmp(lit->s, "true", 4) == 0) && !(lit->len == 5 && memcmp(lit->s, "false", 5) == 0);
 }
 
-/* element leaf (JSON member `name`) op lit with the semantics of a jsonpath / containment comparison of JSON values, or NULL when not provable */
-static SiftAggPred *
-lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
+/* leaf op lit with the semantics of a jsonpath / containment comparison of JSON values, or NULL when not provable */
+SiftAggPred *
+leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit)
 {
-	int			leaf = child_named(c, grp, name, false);
 	SiftAggPred *p;
 	Const	   *k;
 	Oid			typid;
 
-	/* the text leaf of any scalar answers an equality with a string of its own kind: the comparison of another JSON type is unknown, not equal */
-	if (leaf < 0 && op == SCMP_EQ && lit_is_plain_text(lit))
-		leaf = child_named(c, grp, name, true);
 	if (leaf < 0)
 		return NULL;
 	typid = leaf_of(c, leaf)->typid;
@@ -141,6 +137,18 @@ lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
 	p->argtype = k->consttype;
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(op), expr_text(c, (Node *) k));
 	return p;
+}
+
+/* element leaf (JSON member `name`) op lit */
+static SiftAggPred *
+lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
+{
+	int			leaf = child_named(c, grp, name, false);
+
+	/* the text leaf of any scalar answers an equality with a string of its own kind: the comparison of another JSON type is unknown, not equal */
+	if (leaf < 0 && op == SCMP_EQ && lit_is_plain_text(lit))
+		leaf = child_named(c, grp, name, true);
+	return leaf_lit_cmp(c, leaf, op, lit);
 }
 
 static SiftAggPred *
