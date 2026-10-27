@@ -2523,7 +2523,7 @@ point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off)
 
 /* Calls fn(slot payload) for each slot of leaf pl whose fingerprint is that of key's hash: the slots from the position of the hash to the first empty one */
 static void
-point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*fn) (void *, uint64), void *arg)
+point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*fn) (void *, uint64, uint32), void *arg)
 {
 	uint32		p = sift_cpoint_pos(h, pl->nslots);
 
@@ -2538,7 +2538,7 @@ point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*
 		seg_read(seg, pl->at + (uint64) p * sizeof(uint64), m * sizeof(uint64), win);
 		for (j = 0; j < m && win[j] != SIFT_CPOINT_EMPTY; j++)
 			if (pl->tids ? sift_cpoint_tid_slot_is(win[j], h) : sift_cpoint_slot_is(win[j], h))
-				fn(arg, win[j]);
+				fn(arg, win[j], p + j);
 		if (j < m)
 			break;
 		p = (p + m) & (pl->nslots - 1);
@@ -2558,7 +2558,7 @@ typedef struct PointRows
 } PointRows;
 
 static void
-point_add_rows(void *arg, uint64 slot)
+point_add_rows(void *arg, uint64 slot, uint32 pos)
 {
 	PointRows  *pr = arg;
 	uint32		payload = (uint32) slot,
@@ -2623,7 +2623,7 @@ typedef struct PointHas
 } PointHas;
 
 static void
-point_find_row(void *arg, uint64 slot)
+point_find_row(void *arg, uint64 slot, uint32 pos)
 {
 	PointHas   *ph = arg;
 	uint32		payload = (uint32) slot,
@@ -2690,6 +2690,7 @@ typedef struct TidAcc
 	bool		some;			/* keep has a unit */
 	const uint64 *keep;			/* the units the caller still reads (NULL: all): the addresses of the others are not kept, and a list ends at the last of these */
 	uint32		last_keep;
+	uint64	   *slot_seen;		/* NULL, or one bit for each slot of the table: a slot visited before (by a lookup of other keys, one fingerprint) gives its addresses once */
 } TidAcc;
 
 #define TID_PAYLOAD(slot)	((slot) & ((UINT64CONST(1) << 48) - 1))
@@ -2787,10 +2788,16 @@ tid_slot_read(TidAcc *a, uint64 slot)
 }
 
 static void
-point_add_tids(void *arg, uint64 slot)
+point_add_tids(void *arg, uint64 slot, uint32 pos)
 {
 	TidAcc	   *a = arg;
 
+	if (a->slot_seen != NULL)
+	{
+		if (a->slot_seen[pos / 64] >> (pos % 64) & 1)
+			return;
+		a->slot_seen[pos / 64] |= UINT64CONST(1) << (pos % 64);
+	}
 	if (!a->over)
 		tid_slot_read(a, slot);
 }
@@ -2812,11 +2819,11 @@ sift_cseg_point_is_tid(SiftColSegment *seg, int col)
 	return pl != NULL && pl[col].nslots != 0 && pl[col].tids;
 }
 
-bool
-sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, SiftKey **tids, uint32 *ntids)
+static bool
+point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, uint32 limit, uint64 *seen, SiftKey **tids, uint32 *ntids)
 {
 	const PointLeaf *pl = points_read(seg);
-	TidAcc		a = {.seg = seg,.col = col,.limit = SIFT_CPOINT_MAX_ROWS,.keep = keep};
+	TidAcc		a = {.seg = seg,.col = col,.limit = limit,.keep = keep,.slot_seen = seen};
 	uint32		u = 0;
 
 	if (pl == NULL || pl[col].nslots == 0 || !pl[col].tids)
@@ -2863,6 +2870,12 @@ sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys,
 	return true;
 }
 
+bool
+sift_cseg_point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uint64 *keep, SiftKey **tids, uint32 *ntids)
+{
+	return point_tids(seg, col, keys, nkeys, keep, SIFT_CPOINT_MAX_ROWS, NULL, tids, ntids);
+}
+
 /* ---- the addresses of a lookup read as far as the caller goes: a cursor over each list the keys name, merged ---- */
 
 #define TCUR_BUF		2048		/* the bytes of a list read at a time: a code is at most 10 */
@@ -2898,10 +2911,19 @@ struct SiftPointStream
 	uint64	   *slots;
 	int			nslots;
 	int			nlists;
+	/* a lookup of many keys (SIFT_CPOINT_CHUNK_MIN or more) is read a chunk of keys at a time: the keys not looked up yet, and the addresses of the chunk in hand */
+	int64	   *keys;
+	int			nkeys;
+	int			kpos;
+	int			kchunk;
+	SiftKey    *buf;
+	uint32		nbuf;
+	uint32		pbuf;
+	uint64	   *seen;			/* a bit for each slot of the table that a chunk visited: two keys with one fingerprint list the same slot, and the executor must not get a row twice */
 };
 
 static void
-stream_slot(void *arg, uint64 slot)
+stream_slot(void *arg, uint64 slot, uint32 pos)
 {
 	SiftPointStream *s = arg;
 
@@ -2957,6 +2979,38 @@ tcur_advance(SiftPointStream *s, TidCur *t)
 	t->remaining--;
 }
 
+/* The addresses of the next chunk of keys of a chunked stream into buf, those not given before; false when every key was looked up */
+static bool
+stream_chunk(SiftPointStream *s)
+{
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(s));
+
+	while (s->kpos < s->nkeys)
+	{
+		int			k = Min(s->nkeys - s->kpos, s->kchunk);
+		SiftKey    *tids;
+		uint32		n;
+		bool		found;
+
+		found = point_tids(s->seg, s->col, s->keys + s->kpos, k, NULL, 0, s->seen, &tids, &n);
+		SIFT_INVARIANT(found, "sift_col: the directory of heap addresses of leaf %d gave no lookup", s->col);
+		s->kpos += k;
+		s->kchunk = Min(s->kchunk * 4, SIFT_CPOINT_CHUNK_LAST);
+		if (s->buf)
+			pfree(s->buf);
+		s->buf = tids;
+		s->nbuf = n;
+		s->pbuf = 0;
+		if (n > 0)
+		{
+			MemoryContextSwitchTo(old);
+			return true;
+		}
+	}
+	MemoryContextSwitchTo(old);
+	return false;
+}
+
 SiftPointStream *
 sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int nkeys)
 {
@@ -2967,6 +3021,21 @@ sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int
 	if (pl == NULL || pl[col].nslots == 0 || !pl[col].tids)
 		return NULL;
 	s = palloc0(sizeof(SiftPointStream));
+	/*
+	 * A list of many keys is looked up a chunk at a time (a LIMIT stops after the first): the first chunk's keys cost what they cost, the others wait. The cap on
+	 * the rows of the segment bounds what a key can list, as a lookup that finds more rows than SIFT_CPOINT_MAX_ROWS cannot be refused halfway.
+	 */
+	if (nkeys >= SIFT_CPOINT_CHUNK_MIN && (uint64) seg->sbdir[seg->nsb - 1].rank_base + seg->sbdir[seg->nsb - 1].nrows <= SIFT_CPOINT_CHUNK_ROWS)
+	{
+		s->seg = seg;
+		s->col = col;
+		s->keys = palloc(nkeys * sizeof(int64));
+		memcpy(s->keys, keys, nkeys * sizeof(int64));
+		s->nkeys = nkeys;
+		s->kchunk = SIFT_CPOINT_CHUNK_FIRST;
+		s->seen = palloc0(((Size) pl[col].nslots + 63) / 64 * sizeof(uint64));
+		return s;
+	}
 	s->seg = seg;
 	s->col = col;
 	for (int k = 0; k < nkeys && s->nlists <= TCUR_MAX; k++)
@@ -3033,6 +3102,18 @@ sift_cseg_point_stream_next(SiftPointStream *s, SiftKey *out, uint32 max)
 {
 	uint32		n = 0;
 
+	if (s->keys != NULL)
+	{
+		while (n < max && (s->pbuf < s->nbuf || stream_chunk(s)))
+		{
+			uint32		take = Min(max - n, s->nbuf - s->pbuf);
+
+			memcpy(out + n, s->buf + s->pbuf, take * sizeof(SiftKey));
+			s->pbuf += take;
+			n += take;
+		}
+		return n;
+	}
 	while (n < max)
 	{
 		TidCur	   *best = NULL;

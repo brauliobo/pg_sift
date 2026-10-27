@@ -942,8 +942,8 @@ def gen_point(r, ctx):
     form = r.randrange(6)
     if form == 0:
         cond = f'e.{col} = {val()}'
-    elif form == 5:  # a list past 64 keys, which the directory answers up to a share of the rows (misses and repeats among the keys)
-        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(65, 400)))})'
+    elif form == 5:  # a list past 64 keys, which the directory answers up to a sixteenth of the rows (misses and repeats among the keys)
+        cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(65, max(66, min(400, n // 16)))))})'
     elif form == 1:
         cond = f'e.{col} IN ({", ".join(val() for _ in range(r.randrange(2, 9)))})'
     elif form == 2:
@@ -952,10 +952,13 @@ def gen_point(r, ctx):
         cond = f'e.{col} = {val()} AND e.amount {r.choice(["<", ">"])} {r.randrange(100, 900)}'
     else:
         cond = f'(e.{col} = {val()} OR e.{col} = {val()})'
-    return dict(where=[cond])
+    # a LIMIT stops the index scan between the chunks of keys it looks up: the number of rows is the same whichever rows come
+    return dict(where=[cond], limit=r.choice([0, 0, 1, 5, 50, 300]))
 
 
 def render_point(p):
+    if p['limit']:
+        return f"SELECT count(*) FROM (SELECT e.id FROM ev_part e WHERE {p['where'][0]} LIMIT {p['limit']}) l", True
     return f"SELECT e.id, e.kind, e.amount FROM ev_part e WHERE {p['where'][0]} ORDER BY e.id", True
 
 
