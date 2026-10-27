@@ -38,6 +38,7 @@
 #include "agg/plan_int.h"
 #include "agg/refuse.h"
 #include "agg/rows.h"
+#include "col/am.h"
 
 /*
  * The inline plan is kept when the scans cost this many times less than what the shared plan spends on the work they replace (the plans of the
@@ -1175,6 +1176,8 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 		prev_executor_start(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		sift_col_ioss_want(queryDesc);
 }
 
 void

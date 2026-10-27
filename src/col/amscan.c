@@ -16,6 +16,8 @@
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "catalog/pg_type.h"
+#include "executor/executor.h"
+#include "access/xact.h"
 #include "executor/tuptable.h"
 #include "utils/datum.h"
 #include "mb/pg_wchar.h"
@@ -53,6 +55,7 @@
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
 #define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
+#define COL_SCAN_EMIT_IOS	0.15	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 1,200 instructions a row (272M for 160,000 rows of 800,000, a sequential scan 570M) */
 #define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
 
 bool		sift_enable_col_scan = true;
@@ -90,9 +93,134 @@ typedef struct ColScanOpaque
 	Datum	   *vals;			/* n * natts, only when the executor wants index tuples */
 	bool	   *nulls;
 	IndexTuple	itup;
+	bool		project;		/* an index-only scan forms its tuples from the columns of want (the attribute numbers of the index the plan reads) only (sift_col_ioss_want) */
+	Bitmapset  *want;
 	IndexFetchTableData *fetch;	/* the heap, for a string the index could not keep (an overflow value) */
 	TupleTableSlot *slot;
 } ColScanOpaque;
+
+/*
+ * An index-only scan of a sift_col index forms its index tuples from the columns the plan node reads, the others NULL (a column it never reads is not decoded,
+ * converted or formed: for `select id` over 7 columns that was most of the scan's instructions). The node reads what its target list, its quals and its recheck
+ * quals reference (INDEX_VAR); the index conditions are the access method's. The scan descriptor is made by the node's first call, so after ExecutorStart
+ * (sift_col_ioss_want) the node's function is replaced by one that, on that first call, tells ambeginscan which columns this scan is for, and puts the node's own
+ * function back. A scan that begins without the entry (a plain index scan, a node the hook did not see) reads every column, as before.
+ */
+typedef struct IossWant
+{
+	PlanState  *ps;
+	Bitmapset  *want;
+	bool		project;
+	bool		taken;
+} IossWant;
+
+static List *ioss_pending;		/* IossWant of the nodes that have not run yet, in TopMemoryContext; emptied at the end of the transaction */
+static IossWant *ioss_cur;		/* the entry of the node whose first call is running */
+static ExecProcNodeMtd ioss_real;	/* ExecIndexOnlyScan, the same for every node */
+static bool ioss_xact_registered;
+
+static void
+ioss_free_pending(void)
+{
+	foreach_ptr(IossWant, w, ioss_pending)
+	{
+		bms_free(w->want);
+		pfree(w);
+	}
+	list_free(ioss_pending);
+	ioss_pending = NIL;
+}
+
+static void
+ioss_xact_callback(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_PARALLEL_ABORT)
+	{
+		ioss_cur = NULL;
+		ioss_free_pending();
+	}
+}
+
+static TupleTableSlot *
+ioss_first(PlanState *ps)
+{
+	IossWant   *mine = NULL;
+	IossWant   *outer = ioss_cur;
+	TupleTableSlot *slot;
+
+	foreach_ptr(IossWant, w, ioss_pending)
+		if (w->ps == ps)
+			mine = w;
+	if (ps->ExecProcNode == ioss_first)
+		ps->ExecProcNode = ioss_real;
+	ps->ExecProcNodeReal = ioss_real;
+	if (mine == NULL)
+		return ioss_real(ps);
+	ioss_pending = list_delete_ptr(ioss_pending, mine);
+	ioss_cur = mine;
+	PG_TRY();
+	{
+		slot = ioss_real(ps);
+	}
+	PG_FINALLY();
+	{
+		ioss_cur = outer;
+		bms_free(mine->want);
+		pfree(mine);
+	}
+	PG_END_TRY();
+	return slot;
+}
+
+static bool
+ioss_walk(PlanState *ps, void *context)
+{
+	if (IsA(ps, IndexOnlyScanState))
+	{
+		IndexOnlyScanState *is = (IndexOnlyScanState *) ps;
+		IndexOnlyScan *plan = (IndexOnlyScan *) ps->plan;
+
+		if (is->ioss_ScanDesc == NULL && is->ioss_RelationDesc->rd_rel->relam == sift_col_am_oid() && (ioss_real == NULL || ioss_real == ps->ExecProcNodeReal))
+		{
+			Bitmapset  *attrs = NULL;
+			IossWant   *w;
+			MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+			int			x = -1;
+
+			if (!ioss_xact_registered)
+			{
+				RegisterXactCallback(ioss_xact_callback, NULL);
+				ioss_xact_registered = true;
+			}
+			w = palloc0(sizeof(IossWant));
+			w->ps = ps;
+			w->project = true;
+			pull_varattnos((Node *) plan->scan.plan.targetlist, INDEX_VAR, &attrs);
+			pull_varattnos((Node *) plan->scan.plan.qual, INDEX_VAR, &attrs);
+			pull_varattnos((Node *) plan->recheckqual, INDEX_VAR, &attrs);
+			while ((x = bms_next_member(attrs, x)) >= 0)
+			{
+				AttrNumber	a = x + FirstLowInvalidHeapAttributeNumber;
+
+				/* a whole-row reference or a system column of the index tuple: every column */
+				w->project &= a > 0;
+				w->want = bms_add_member(w->want, a);
+			}
+			ioss_pending = lappend(ioss_pending, w);
+			MemoryContextSwitchTo(old);
+			bms_free(attrs);
+			ioss_real = ps->ExecProcNodeReal;
+			ps->ExecProcNodeReal = ioss_first;
+		}
+	}
+	return planstate_tree_walker(ps, ioss_walk, context);
+}
+
+void
+sift_col_ioss_want(QueryDesc *queryDesc)
+{
+	(void) ioss_walk(queryDesc->planstate, NULL);
+}
 
 IndexScanDesc
 sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
@@ -104,6 +232,12 @@ sift_col_ambeginscan(Relation index, int nkeys, int norderbys)
 	so->batch = AllocSetContextCreate(so->cxt, "sift_col scan batch", ALLOCSET_DEFAULT_SIZES);
 	scan->opaque = so;
 	scan->xs_itupdesc = RelationGetDescr(index);
+	if (ioss_cur != NULL && !ioss_cur->taken && ((IndexOnlyScanState *) ioss_cur->ps)->ioss_RelationDesc == index)
+	{
+		ioss_cur->taken = true;
+		so->project = ioss_cur->project;
+		so->want = bms_copy(ioss_cur->want);
+	}
 	return scan;
 }
 
@@ -766,7 +900,7 @@ col_fill_batch(IndexScanDesc scan)
 			SiftColVec	vec;
 			bool		isstr;
 
-			if (!sift_col_amcanreturn(scan->indexRelation, a))
+			if (!sift_col_amcanreturn(scan->indexRelation, a) || (so->project && !bms_is_member(a, so->want)))
 				continue;
 			isstr = so->defs[so->first[a]].store == SIFT_COLS_STR;
 			if (isstr)
@@ -1194,7 +1328,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
 		+ index->pages * cpu_tuple_cost
-		+ idx_rows * (scale * COL_SCAN_EMIT + cpu_index_tuple_cost);
+		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
 	*indexSelectivity = costs.indexSelectivity;

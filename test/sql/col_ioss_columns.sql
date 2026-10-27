@@ -1,0 +1,107 @@
+-- An index-only scan of a sift_col index forms its tuples from the columns the plan node reads (target list, quals, recheck quals), the others NULL. The rows must be the heap's
+-- for every shape that reads some columns and not others: a column only in a qual, in an expression, in no list, the whole index, two scans of one index in a plan, a parametrised
+-- scan that is rescanned, a prepared statement, a cursor, EXPLAIN ANALYZE, a transaction that aborts, and a scan inside a function that a runtime key calls.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
+
+CREATE TABLE io (id int, a int, n numeric(12,2), s text, u uuid, d date, pad text DEFAULT repeat('x', 300));
+ALTER TABLE io ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO io (id, a, n, s, u, d)
+SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7919) % 10007 END, CASE WHEN i % 31 = 0 THEN NULL ELSE ((i * 104729) % 100003) / 100.0 END,
+	   CASE WHEN i % 37 = 0 THEN NULL ELSE 's' || i % 500 END, CASE WHEN i % 41 = 0 THEN NULL ELSE md5(i::text)::uuid END, date '2020-01-01' + i % 900
+FROM generate_series(1, 20000) i;
+CREATE INDEX io_i ON io USING sift_col (id sift.col_int4_ops, a sift.col_int4_ops, n sift.col_numeric_ops, s sift.col_text_ops, u sift.col_uuid_ops, d sift.col_date_ops)
+	WITH (return_columns = 's, u', count_columns = 'off', write_buffer_limit = 256);
+VACUUM (ANALYZE) io;
+
+CREATE FUNCTION io_mode(ios bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	PERFORM set_config('sift.enable_col_scan', ios::text, true);
+	PERFORM set_config('enable_seqscan', (NOT ios)::text, true);
+	PERFORM set_config('enable_indexscan', 'false', true);
+	PERFORM set_config('enable_indexonlyscan', ios::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	PERFORM set_config('enable_nestloop', 'true', true);
+END $$;
+
+CREATE FUNCTION io_run(q text, ios bool, OUT n bigint, OUT md5 text, OUT scans int) LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM io_mode(ios);
+	scans := 0;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF line ~ 'Index Only Scan using io_i' THEN scans := scans + 1; END IF;
+	END LOOP;
+	EXECUTE 'SELECT count(*), md5(string_agg(r, ''|'' ORDER BY r)) FROM (SELECT row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO n, md5;
+END $$;
+
+CREATE FUNCTION io_check(q text, OUT rows bigint, OUT agree bool, OUT index_only_scans int) LANGUAGE plpgsql AS $$
+DECLARE a record; h record;
+BEGIN
+	SELECT * INTO a FROM io_run(q, true);
+	SELECT * INTO h FROM io_run(q, false);
+	rows := h.n; agree := a.n = h.n AND a.md5 IS NOT DISTINCT FROM h.md5; index_only_scans := a.scans;
+END $$;
+
+CREATE TABLE io_q (n int, q text);
+INSERT INTO io_q VALUES
+ (1, 'SELECT id FROM io WHERE a BETWEEN 100 AND 400'),
+ (2, 'SELECT n FROM io WHERE a BETWEEN 100 AND 400'),
+ (3, 'SELECT id, n, s FROM io WHERE a BETWEEN 100 AND 400'),
+ (4, 'SELECT s, u FROM io WHERE a BETWEEN 100 AND 400'),
+ (5, 'SELECT d FROM io WHERE a BETWEEN 100 AND 400 AND s <> ''s7'''),
+ (6, 'SELECT id FROM io WHERE a BETWEEN 100 AND 400 AND n * 2 > 50'),
+ (7, 'SELECT length(s) + id FROM io WHERE a BETWEEN 100 AND 400'),
+ (8, 'SELECT 1 FROM io WHERE a BETWEEN 100 AND 400'),
+ (9, 'SELECT id, a, n, s, u, d FROM io WHERE a BETWEEN 100 AND 400'),
+ (10, 'SELECT u FROM io WHERE s = ''s11'' AND d > date ''2021-06-01'''),
+ (11, 'SELECT coalesce(n, -1) FROM io WHERE a IN (5, 77, 1234, 9000)'),
+ (12, 'SELECT a.id, b.s FROM io a JOIN io b ON b.id = a.id + 1 WHERE a.a BETWEEN 100 AND 130'),
+ (13, 'SELECT a.n, b.d FROM io a JOIN io b ON b.a = a.a WHERE a.id BETWEEN 100 AND 130'),
+ (14, 'SELECT id FROM io WHERE a BETWEEN 100 AND 400 UNION ALL SELECT id FROM io WHERE a BETWEEN 5000 AND 5050');
+SELECT n, left(q, 70) AS q, (io_check(q)).* FROM io_q ORDER BY n;
+
+-- a prepared statement run twice, a cursor, EXPLAIN ANALYZE (the node's function is the instrumented one)
+SELECT io_mode(true) IS NOT NULL AS mode;
+PREPARE io_p(int, int) AS SELECT count(*), sum(id), sum(n) FROM (SELECT id, n FROM io WHERE a BETWEEN $1 AND $2 OFFSET 0) x;
+SET plan_cache_mode = force_generic_plan;
+EXECUTE io_p(100, 400);
+EXECUTE io_p(100, 400);
+EXECUTE io_p(7000, 7300);
+RESET plan_cache_mode;
+DEALLOCATE io_p;
+BEGIN;
+DECLARE io_c CURSOR FOR SELECT id, s FROM io WHERE a BETWEEN 100 AND 400 ORDER BY id;
+FETCH 3 FROM io_c;
+FETCH 2 FROM io_c;
+CLOSE io_c;
+COMMIT;
+SELECT count(*) > 0 AS analyzed FROM (SELECT * FROM io WHERE a BETWEEN 100 AND 400 AND n > 10) x;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM io WHERE a BETWEEN 100 AND 400;
+
+-- a transaction that aborts after the plan was made and a statement that fails before its scan runs, then the same statement again
+DO $$ BEGIN
+	PERFORM io_mode(true);
+	BEGIN
+		PERFORM count(*) FROM io WHERE a BETWEEN 100 AND 400 AND 1 / (id - id) > 0;
+	EXCEPTION WHEN division_by_zero THEN NULL;
+	END;
+END $$;
+SELECT io_mode(true) IS NOT NULL AS mode;
+SELECT count(*), sum(id) FROM (SELECT id FROM io WHERE a BETWEEN 100 AND 400) x;
+BEGIN; SELECT io_mode(true) IS NOT NULL; SELECT count(*) FROM (SELECT id, n FROM io WHERE a BETWEEN 100 AND 400) x; ROLLBACK;
+SELECT count(*), sum(n) FROM (SELECT id, n FROM io WHERE a BETWEEN 100 AND 400) x;
+
+-- a scan called by the runtime key of another scan of the same index
+CREATE FUNCTION io_lo(i int) RETURNS int LANGUAGE sql STABLE AS $$ SELECT min(a) FROM io WHERE id BETWEEN i AND i + 50 $$;
+SELECT io_mode(true) IS NOT NULL AS mode;
+SELECT count(*), sum(id) FROM (SELECT id FROM io WHERE a BETWEEN io_lo(100) AND io_lo(100) + 200) x;
+SELECT io_mode(false) IS NOT NULL AS mode;
+SELECT count(*), sum(id) FROM (SELECT id FROM io WHERE a BETWEEN io_lo(100) AND io_lo(100) + 200) x;
+
+DROP FUNCTION io_lo(int), io_check(text), io_run(text, bool), io_mode(bool);
+DROP TABLE io_q, io;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
