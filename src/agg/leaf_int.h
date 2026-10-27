@@ -116,7 +116,6 @@ uint32 idmap_id(IdMap *m, sift_i128 v);
 const sift_i128 *eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint32 *ir, uint8 *isnull, const uint64 *alive);
 const uint32 *unit_parent(AggExec *ex);
 Datum scaled_numeric(__int128 v, int scale);
-Datum scaled_numeric_exact(__int128 v, int scale);
 
 #pragma GCC visibility pop
 

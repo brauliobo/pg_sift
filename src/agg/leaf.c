@@ -77,6 +77,7 @@
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
+#include "col/am.h"
 
 static bool
 collation_deterministic(Oid collid)
@@ -866,41 +867,13 @@ unit_parent(AggExec *ex)
 }
 
 /*
- * v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale. The integer of a sum can be any
- * 128-bit value, SIFT_NX_NAN (2^127 - 1) included, so the sums use this one; scaled_numeric reads that value as NaN, as the values of the
- * numeric programs (at most 38 digits, which never reach it) do.
+ * v / 10^scale as a numeric of that scale; SIFT_NX_NAN is the NaN. The integer of a sum can be any 128-bit value, SIFT_NX_NAN (2^127 - 1) included, so the
+ * sums use sift_col_w128_numeric, which reads every value as a number; the values of the numeric programs (at most 38 digits) never reach it.
  */
-Datum
-scaled_numeric_exact(__int128 v, int scale)
-{
-	char		tmp[48],
-				buf[64];
-	char	   *o = buf;
-	int			n = 0;
-	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
-
-	do
-	{
-		tmp[n++] = '0' + (int) (u % 10);
-		u /= 10;
-	} while (u > 0 || n <= scale);
-	if (v < 0)
-		*o++ = '-';
-	for (int i = n - 1; i >= 0; i--)
-	{
-		*o++ = tmp[i];
-		if (i == scale && scale > 0)
-			*o++ = '.';
-	}
-	*o = '\0';
-	return DirectFunctionCall3(numeric_in, CStringGetDatum(buf), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-}
-
-/* v / 10^scale as a numeric of that scale; SIFT_NX_NAN is the NaN */
 Datum
 scaled_numeric(__int128 v, int scale)
 {
 	if (v == SIFT_NX_NAN)
 		return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-	return scaled_numeric_exact(v, scale);
+	return sift_col_w128_numeric(v, scale);
 }

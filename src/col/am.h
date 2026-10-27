@@ -177,7 +177,7 @@ extern Datum sift_col_key_numeric(int scale, int64 key);
  * the canonical bytes of the number (col/wide.h) and its display scale; an interval is the lane keys of its total and its month and day counts.
  */
 extern int	sift_col_numeric_wide_key(int scale, Datum value, SiftColRound round, int64 *hi, int64 *lo);
-extern Datum sift_col_wide_numeric(int scale, int64 hi, int64 lo);
+extern Datum sift_col_w128_numeric(SiftCI128 v, int scale);
 extern uint8 *sift_col_numeric_image(Datum value, uint32 *len, int32 *dscale);
 extern Datum sift_col_image_numeric(const uint8 *img, uint32 len, int32 dscale);
 extern void sift_col_interval_lanes(const Interval *iv, int64 *hi, int64 *lo, int64 *md);

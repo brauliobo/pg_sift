@@ -11,6 +11,7 @@
 #include "col/kern.h"
 #include "agg/dense_int.h"
 #include "agg/vnum.h"
+#include "col/am.h"
 
 /* the id (1..) over all dictionaries of entry c of d, for the values count(DISTINCT) of aggregate ai counts */
 uint32
@@ -266,13 +267,13 @@ numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
 		}
 	}
 	if (x == (Datum) 0)
-		x = scaled_numeric_exact(m->m, m->scale);
+		x = sift_col_w128_numeric(m->m, m->scale);
 	if (!acc->nf[g])
 	{
 		/* leaves the integer form */
 		acc->nf[g] = 1;
 		if (acc->n[g] > 0)
-			acc->v[g] = scaled_numeric_exact(acc->w[g], (int) acc->i[g]);
+			acc->v[g] = sift_col_w128_numeric(acc->w[g], (int) acc->i[g]);
 	}
 	if (acc->n[g] == 0)
 		acc->v[g] = datumCopy(x, false, -1);

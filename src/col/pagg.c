@@ -544,34 +544,6 @@ find_leaf(Relation index, const char *name, bool scalar)
 }
 
 /* A 128-bit integer scaled by 10^scale as a numeric */
-static Datum
-i128_numeric(SiftCI128 v, int scale)
-{
-	char		digits[48],
-				out[64];
-	unsigned __int128 u = v < 0 ? -(unsigned __int128) v : (unsigned __int128) v;
-	int			n = 0,
-				o = 0;
-
-	do
-	{
-		digits[n++] = '0' + (int) (u % 10);
-		u /= 10;
-	} while (u);
-	while (n <= scale)
-		digits[n++] = '0';
-	if (v < 0)
-		out[o++] = '-';
-	for (int i = n - 1; i >= 0; i--)
-	{
-		out[o++] = digits[i];
-		if (i == scale && scale > 0)
-			out[o++] = '.';
-	}
-	out[o] = '\0';
-	return DirectFunctionCall3(numeric_in, CStringGetDatum(out), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
-}
-
 /* The text of a key-domain value of a non-text leaf, as its SQL type prints it */
 static Datum
 key_text(Relation index, const SiftColDef *def, int64 key)
@@ -697,8 +669,8 @@ sift_col_unit_aggs_sql(PG_FUNCTION_ARGS)
 		{
 			int			scale = def->lane > 0 || def->lanes > 1 ? 0 : def->scale;
 
-			v[8] = i128_numeric(a.sum, scale);
-			v[9] = i128_numeric(a.sumsq, 2 * scale);
+			v[8] = sift_col_w128_numeric(a.sum, scale);
+			v[9] = sift_col_w128_numeric(a.sumsq, 2 * scale);
 			nulls[9] = (a.flags & SIFT_CAGG_SUMSQ_OVF) != 0;
 		}
 		nulls[10] = !is_float(def);
@@ -770,7 +742,7 @@ sift_col_unit_hists_sql(PG_FUNCTION_ARGS)
 				nulls[6] = d->sum[slot] == NULL;
 				nulls[7] = d->sumf[slot] == NULL;
 				if (d->sum[slot])
-					v[6] = i128_numeric(d->sum[slot][g], md->scale);
+					v[6] = sift_col_w128_numeric(d->sum[slot][g], md->scale);
 				if (d->sumf[slot])
 					v[7] = Float8GetDatum(d->sumf[slot][g]);
 			}

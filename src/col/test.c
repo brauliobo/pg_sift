@@ -375,7 +375,7 @@ append_wide(StringInfo buf, const SiftColDef *def, const SiftColVec *vecs, uint3
 		out = DirectFunctionCall1(numeric_out, sift_col_image_numeric((const uint8 *) SIFT_COL_DICT_STR(vecs[0].dict, vecs[0].codes[k]),
 																	  SIFT_COL_DICT_LEN(vecs[0].dict, vecs[0].codes[k]), (int32) vecs[1].i[k]));
 	else
-		out = DirectFunctionCall1(numeric_out, sift_col_wide_numeric(def->scale, vecs[0].i[k], vecs[1].i[k]));
+		out = DirectFunctionCall1(numeric_out, sift_col_w128_numeric(sift_col_wide_join(vecs[0].i[k], vecs[1].i[k]), def->scale));
 	appendStringInfoString(buf, DatumGetCString(out));
 }
 

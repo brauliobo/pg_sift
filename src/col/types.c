@@ -377,12 +377,13 @@ sift_col_numeric_wide_key(int scale, Datum value, SiftColRound round, int64 *hi,
 	return st == SIFT_W128_ABOVE ? 1 : st == SIFT_W128_BELOW ? -1 : 0;
 }
 
+/* v / 10^scale as a numeric of that scale: the text carries all the digits, so 1.50 keeps its display scale */
 Datum
-sift_col_wide_numeric(int scale, int64 hi, int64 lo)
+sift_col_w128_numeric(SiftCI128 v, int scale)
 {
 	char		txt[SIFT_COL_W128_TEXT];
 
-	sift_col_w128_to_decimal(sift_col_wide_join(hi, lo), scale, txt);
+	sift_col_w128_to_decimal(v, scale, txt);
 	return DirectFunctionCall3(numeric_in, CStringGetDatum(txt), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
 
