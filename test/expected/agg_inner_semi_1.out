@@ -87,7 +87,7 @@ SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_
 SELECT * FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id JOIN dims d2 ON d2.id = ev.dim_a_id WHERE d.country < 5 GROUP BY d2.country');
                        plan                        | result_rows | vs_no_table | vs_normal_plan 
 ---------------------------------------------------+-------------+-------------+----------------
- SiftAgg,Join Key Filters: 2,Semi Lookup Tables: 1 |           5 |           0 |              0
+ SiftAgg,Join Key Filters: 1,Semi Lookup Tables: 1 |           5 |           0 |              0
 (1 row)
 
 -- a repeated key repeats the tuple: the generic join
