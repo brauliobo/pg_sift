@@ -2267,14 +2267,25 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	k->cold_ops *= Max(k->zone_kept, 1.0 / k->units);
 }
 
+/* are the rows PostgreSQL expects of the joins counted: no correlated child and no function (its default is a thousand rows a call) */
+static bool
+joins_counted(AggCtx *c)
+{
+	bool		counted = true;
+
+	foreach_ptr(JoinCtx, jc, c->joins)
+		counted &= jc->j.params == NIL && planner_rt_fetch(jc->rti, c->root)->rtekind != RTE_FUNCTION;
+	return counted;
+}
+
 /* The tuples that reach the groups and what each takes */
 static void
 cost_tuples(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, CostAcc *k)
 {
 	k->agg_rows = k->sel_rows * (s->group >= 0 ? k->elems : 1.0);
-	/* the lookup joins filter before the groups: no more tuples reach them than the rows PostgreSQL expects of the join */
+	/* the lookup joins reach the groups with the rows PostgreSQL expects of the join: fewer where they filter, more where a key of the table repeats (an unnest has its own count, tuple_group_count) */
 	if (c->joins != NIL && !pricing_wide)
-		k->agg_rows = Min(k->agg_rows, Max(input_rel->rows, 1.0));
+		k->agg_rows = s->group < 0 && joins_counted(c) ? Max(input_rel->rows, 1.0) : Min(k->agg_rows, Max(input_rel->rows, 1.0));
 	else if (pricing_wide)
 		k->agg_rows *= sqrt(Max(Min(k->zone_kept, 1.0), 1.0 / k->units));
 	k->scan_rows = k->agg_rows;
@@ -2399,7 +2410,11 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 
 	if (jc->cpath != NULL)
 	{
-		*row_cost = AGG_JOIN_ROW;
+		int			nnum = 0;
+
+		foreach_ptr(Var, v, jc->cvars)
+			nnum += v->vartype == NUMERICOID;
+		*row_cost = jc->cvars == NIL ? AGG_JOIN_ROW : AGG_PLAN_ROW + nnum * AGG_LOAD_NUMERIC;
 		return Max(jc->cpath->rows, 1.0);
 	}
 	if (jc->j.nidx > 0 && join_index_usable(jrel, &jc->j))
