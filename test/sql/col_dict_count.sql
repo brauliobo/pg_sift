@@ -113,7 +113,7 @@ SELECT count(*) FILTER (WHERE counted) < count(*) AS the_inline_segment_has_no_c
 SELECT dc_check('inline strings');
 SELECT sift.col_verify('dc_idx', true);
 
--- the option off, the setting below 15, a leaf of too few strings: the format stays what it was and the counts are the heap's
+-- the option off, the setting below 15, a leaf of too few strings: the format is the hash's (25: the blocks of the large dictionaries carry it), not the counts' (24), and the counts are the heap's
 ALTER INDEX dc_idx RESET (count_columns);
 REINDEX INDEX dc_idx;
 SELECT max(format) AS format_without_the_option FROM sift._test_col_formats('dc_idx'::regclass);

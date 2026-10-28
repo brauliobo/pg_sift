@@ -1153,6 +1153,12 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 				continue;
 			}
 		}
+		/* a dictionary in blocks that no leaf asked to search keeps the hash alone (5 bytes a string): the first equality of a backend finds its code in a few pages, not by parsing the dictionary */
+		if (form == DICT_BLOCKS && w->pagg.dict_hash && w->setting >= SIFT_COL_FORMAT_PRESENCE && w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
+		{
+			w->dict[c]->hashed = true;
+			w->format = Max(w->format, SIFT_COL_FORMAT_HASH);
+		}
 		if (form == DICT_BLOCKS)
 			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
 		/* a dictionary of long strings read in blocks gets the trigram signature of each (a substring test then reads the blocks that may hold the part) */

@@ -39,6 +39,26 @@ One single-column `sift_col` index per column, 200,000 rows, instructions of the
 
 The plain index reads the zones and key lists of the units (about 0.3 M instructions to find one key, 1.6 times a b-tree, 0.05 ms) and costs 0.2 to 0.5 MB in 200,000 rows for a number or a date, the dictionary for a string. Where a key has many rows (a smallint or date with 6 to 40 rows a key, a text with 200) or an `IN` list is long, the units are read and the directory pays: smallint 1.14 M to 0.24 M, date 1.35 M to 0.39 M, a list of 16 smallints 19.2 M to 0.98 M. It costs 16 bytes a row for a unique key (the size of a b-tree) and 1 to 10 for a key that repeats, so it is opt-in for the columns whose lookups matter.
 
+## The first statement of a backend, and the next ones
+
+A pooled application connection is often new, so the first equality of a backend counts as much as the warm ones above. `SELECT * FROM p WHERE c = K` in a fresh backend (buffers of its execution as `EXPLAIN (ANALYZE, BUFFERS)` shows them, the milliseconds and the instructions of the backend from `perf stat`, which include about 2.0 million for starting and reading the catalogs, a b-tree pays them too), then the instructions of the next statement of that backend. The plain index is `USING sift_col (c)`; `point_columns` is that with `WITH (point_columns = 'c')`. One single-column index, tables of the column and its row number only:
+
+| rows | column | b-tree: buffers / ms / instructions | plain: buffers / ms / instructions, next statement | `point_columns`: buffers / ms / instructions |
+|---|---|---|---|---|
+| 200,000 | uuid, unique | 4 / 1.9 / 2.04 M | 19 / 1.9 / 2.33 M, 0.32 M | 22 / 2.6 / 2.26 M |
+| 200,000 | text, unique | 4 / 1.8 / 2.05 M | 20 / 2.0 / 2.35 M, 0.35 M | 24 / 2.2 / 2.29 M |
+| 200,000 | bigint, random, unique | 4 / 1.7 / 2.04 M | 268 / 2.3 / 3.07 M, 1.07 M | 18 / 1.8 / 2.21 M |
+| 1,000,000 | uuid, unique | 4 / 1.7 / 2.04 M | 24 / 2.5 / 2.34 M, 0.33 M | 25 / 2.4 / 2.27 M |
+| 1,000,000 | text, unique | 4 / 1.8 / 2.05 M | 34 / 2.6 / 2.40 M, 0.37 M | 45 / 2.5 / 2.38 M |
+| 1,000,000 | bigint, random, unique | 4 / 1.8 / 2.04 M | 1,287 / 3.6 / 6.67 M, 4.66 M | 19 / 2.5 / 2.21 M |
+| 3,000,000 | uuid, unique | 4 / 2.8 / 2.04 M | 51 / 5.0 / 2.42 M, 0.37 M | 55 / 5.5 / 2.43 M |
+| 3,000,000 | text, unique | 5 / 2.5 / 2.05 M | 31 / 1.9 / 2.39 M, 0.36 M | 80 / 2.6 / 2.59 M |
+| 3,000,000 | bigint, random, unique | 4 / 3.7 / 2.04 M | 3,831 / 18.6 / 15.65 M, 13.63 M | 20 / 4.0 / 2.22 M |
+
+Until 3.6 the dictionary of a plain index was parsed whole by the first equality of a backend: 410 buffers (uuid) and 445 (text) on 200,000 rows, the whole index, and 5,977 buffers, 31 ms and 136 M instructions on 3,000,000 uuids. A dictionary of 1,024 strings or more now carries the hash of its strings, so the code of the string is found with a window of slots and one block, and the lookup of its rows reads the head of the unit: 19 to 51 buffers for a uuid and 20 to 34 for a text, against 4 for a b-tree, and the next statement 0.3 to 0.4 M instructions (the first costs the process start and the read of the head, not the index).
+
+A key that the index cannot place without reading the column still reads all of it, on every statement, warm or not: a bigint of random values (a customer or user id) has no zone that excludes a unit and no dictionary, so the equality reads the 25 MB of 3,000,000 values (3,831 buffers, 18.6 ms), where a point directory (`point_columns`) reads 20. Keys that arrive in order (an increasing id, a timestamp) are skipped by their zones and read 11 to 24 buffers on 200,000 rows.
+
 ## A probe whose key a parent query passes down
 
 An `EXISTS (SELECT .. FROM fact WHERE fact.k = outer.k)` (or a scalar subselect) is planned twice by PostgreSQL: as a correlated subplan, which probes the index for each outer row, and as a hashed subplan, which reads the fact once. `setrefs.c` chooses by multiplying the price of one probe by twice the rows it expects of the node that holds the filter, and a few correlated filters (four columns that move together) put that estimate 1,000 times below the rows that arrive: 5 expected, 5,374 evaluated. A probe of a point directory (0.2 to 0.4 ms, 270 cost units) against one pass of a 720,000-row table (90 ms, 28,000 units) then looked cheaper by 9 times and ran 14,000 times: 2,860 ms against 92 ms with `sift.enable_col_scan = off`.

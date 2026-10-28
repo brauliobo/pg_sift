@@ -116,7 +116,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
-#define DICT_HASHED		0x10		/* or'ed into form 2 or 4: after everything of the form, a hash of the strings to their codes */
+#define DICT_HASHED		0x10		/* or'ed into form 2, 3 or 4: after everything of the form (4-aligned), a hash of the strings to their codes */
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 #define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */

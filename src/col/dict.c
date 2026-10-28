@@ -596,7 +596,7 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		l = palloc(lcap);
 	if (form == DICT_LOOKUP && d->rows != NULL)
 		form = DICT_LOOKUP_COUNT;
-	if (d->hashed && (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT))
+	if (d->hashed && (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT || form == DICT_BLOCKS))
 		form |= DICT_HASHED;
 	put_val(out, form);
 	put_val(out, d->n);
@@ -661,6 +661,12 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 			put_counts(d, out);
 		if (form & DICT_HASHED)
 			put_hash(d, out);
+	}
+	else if (form == (DICT_BLOCKS | DICT_HASHED))
+	{
+		while ((out->len - start) % sizeof(uint32))
+			appendStringInfoChar(out, '\0');
+		put_hash(d, out);
 	}
 	if (d->tsig)
 		put_tsig(d, nblk, out, start);
@@ -976,7 +982,11 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 		total += DICT_COUNT_HEAD(n) + last;
 	}
 	if (hashed)
+	{
+		if (form == DICT_BLOCKS)
+			total = (total + sizeof(uint32) - 1) / sizeof(uint32) * sizeof(uint32);
 		total += (uint64) SIFT_CDICT_HASH_SLOTS(n) * sizeof(uint32);
+	}
 	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
 		pfree(boff);
@@ -1079,7 +1089,7 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (len < DICT_HEAD)
 		return NULL;
 	memcpy(head, p, DICT_HEAD);
-	if ((head[0] & ~DICT_HASHED) == DICT_LOOKUP || (head[0] & ~DICT_HASHED) == DICT_LOOKUP_COUNT || head[0] == DICT_BLOCKS)
+	if ((head[0] & ~DICT_HASHED) == DICT_LOOKUP || (head[0] & ~DICT_HASHED) == DICT_LOOKUP_COUNT || (head[0] & ~DICT_HASHED) == DICT_BLOCKS)
 		return parse_blocks(mcxt, p, len, head[0], used);
 	p += DICT_HEAD;
 	len -= DICT_HEAD;

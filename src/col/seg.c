@@ -855,6 +855,17 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int n
 	return to - from;
 }
 
+/* A dictionary of blocks and a hash without an order: CONTAINS reads the blocks, every other test needs the strings in order, so the dictionary is parsed (and kept, as for a dictionary read whole) */
+static uint32
+look_match_blocks(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut)
+{
+	const DictLook *l = (const DictLook *) look;
+
+	if (op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS)
+		return look_contains((DictLook *) l, op, c, nvals, lut, &(uint32) {0});
+	return sift_cdict_match(sift_cseg_dict(l->seg, l->col), op, c, nvals, lut);
+}
+
 /* The blocks and the string buffer of a DictLook are written before they are read: only what comes before them is cleared (clearing them costs 34,000 instructions a query and segment) */
 static DictLook *
 look_alloc(SiftColSegment *seg)
@@ -1025,9 +1036,17 @@ dict_look(SiftColSegment *seg, int col)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		else
 		{
-			/* form 3 is searched only by a substring test (sift_cseg_dict_search): that stub has no find */
+			if (hashed)
+			{
+				/* blocks, then the hash, no order: an equality finds its code in place, any other test parses the dictionary (look_match_blocks) */
+				l->hash_at = (l->blk_at + blen + 3) / 4 * 4;
+				if (l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32) > off + len)
+					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+				end = l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32);
+			}
 			look_sig(l, off, len, end);
-			l->look = (SiftCDictLook) {NULL, look_match};
+			/* without the hash, form 3 is searched only by a substring test (sift_cseg_dict_search): that stub has no find */
+			l->look = (SiftCDictLook) {hashed ? look_find : NULL, hashed ? look_match_blocks : look_match};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 		}
@@ -1239,7 +1258,7 @@ sift_cseg_dict_search(SiftColSegment *seg, int col, SiftColOp op)
 		return pv->dict[col];
 	l = dict_look(seg, col);
 	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost; a substring test of a blocked one reads its blocks (those the signatures leave) until then, and for good where the parse is lost */
-	if (l && (l->searchable || (SIFT_COLOP_SCANS(op) && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
+	if (l && (l->searchable || l->hash_at != 0 || (SIFT_COLOP_SCANS(op) && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
 		((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
 		  l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;

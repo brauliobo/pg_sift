@@ -819,6 +819,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int i = 0; i < n; i++)
 			if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid count_columns option: \"%s\" is not a text column", names[i])));
+		r->pagg.dict_hash = sift_col_options(index)->dict_lookup != SIFT_COL_DICT_OFF;
 		for (int i = 0; i < n; i++)
 			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||
 				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point[i] || r->pagg.point_tid[i]));

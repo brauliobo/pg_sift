@@ -29,10 +29,10 @@ VACUUM (FREEZE, ANALYZE) kt_b;
 VACUUM (FREEZE, ANALYZE) kt_c;
 
 -- the minor of the segments: 22 with the table, 15 under a setting of 15 or the option off
-CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 10, order_array_columns = off);
-CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, key_table = off, order_array_columns = off);
+CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, dead_rewrite_pct = 10, order_array_columns = off);
+CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, key_table = off, order_array_columns = off);
 SET sift.col_format_minor = 14;
-CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096, order_array_columns = off);
+CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, order_array_columns = off);
 RESET sift.col_format_minor;
 SELECT 'kt_on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kt_on')
 UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT format) FROM sift._test_col_formats('kt_b_off')
@@ -139,7 +139,7 @@ CREATE TABLE ka (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) 
 ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2024-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 60000) g;
 SET sift.col_format_minor = 14;
-CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (write_buffer_limit = 4096);
+CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096);
 RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'grp_id');
@@ -174,8 +174,8 @@ SELECT (SELECT scanned FROM kt_units('SELECT count(*) FROM kt WHERE mid_id = 17'
 CREATE TABLE kr (id int, kk_id int, val int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO kr SELECT g, g % 20, g % 100, md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 20000) g;
 VACUUM (FREEZE, ANALYZE) kr;
-CREATE INDEX kr_on ON kr USING sift_col (id, kk_id, val, pad) WITH (write_buffer_limit = 4096, cube_minmax = false);
-CREATE INDEX kr_off ON kr USING sift_col (id, kk_id, val, pad) WITH (write_buffer_limit = 4096, cube_minmax = false, key_table = off);
+CREATE INDEX kr_on ON kr USING sift_col (id, kk_id, val, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, cube_minmax = false);
+CREATE INDEX kr_off ON kr USING sift_col (id, kk_id, val, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, cube_minmax = false, key_table = off);
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('kr_on');
 ALTER INDEX kr_on SET (cube_minmax = true);
 ALTER INDEX kr_off SET (cube_minmax = true);
@@ -201,7 +201,7 @@ CREATE TABLE kt_f (LIKE kt) WITH (autovacuum_enabled = off);
 ALTER TABLE kt_f ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO kt_f SELECT * FROM kt WHERE id <= 9000 ORDER BY id;
 VACUUM (FREEZE, ANALYZE) kt_f;
-CREATE INDEX kt_f_on ON kt_f USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (write_buffer_limit = 4096);
+CREATE INDEX kt_f_on ON kt_f USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096);
 SELECT runs > 0 AS has_sections, damaged > 500 AS many, refused > 0 AS some_refused, unnoticed FROM sift._test_col_ktab_file_damage('kt_f_on', 5);
 DROP TABLE kt_f;
 

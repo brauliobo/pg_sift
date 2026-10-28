@@ -66,13 +66,13 @@ CREATE TABLE ap_off (LIKE ap) WITH (autovacuum_enabled = off);
 ALTER TABLE ap_off ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ap_off SELECT * FROM ap ORDER BY id;
 CREATE INDEX ap_i ON ap USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WITH (write_buffer_limit = 4096, superunit = 0, hll_columns = 'k, b, t, d, ts, tz, u, s, v');
-CREATE INDEX ap_o ON ap_off USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WITH (write_buffer_limit = 4096, superunit = 0);
+CREATE INDEX ap_o ON ap_off USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WITH (write_buffer_limit = 4096, superunit = 0, dict_lookup = 'off');
 SELECT 'on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ap_i')
 UNION ALL SELECT 'off', array_agg(DISTINCT format) FROM sift._test_col_formats('ap_o') ORDER BY 1;
  idx | minors 
 -----+--------
  off | {14}
- on  | {20}
+ on  | {25}
 (2 rows)
 
 VACUUM ap, ap_off;

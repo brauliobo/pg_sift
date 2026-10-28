@@ -575,7 +575,8 @@ DROP INDEX ds_bool;
 CREATE TABLE dw AS SELECT i AS id, md5((i % 5000)::text)::uuid AS u,
 	(SELECT string_agg(substr(md5((1 + (hashint4((i % 5000) * 31 + j) & 2147483647) % 400)::text), 1, 3 + j % 5), ' ') FROM generate_series(1, 5) j) AS w
 FROM generate_series(1, 20000) i;
-CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
+-- (dict_lookup = 'off': the blocks alone, the hash they carry by default is 5 bytes a string more: col_dict_blocks_hash)
+CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off', dict_lookup = 'off');
 SET sift.col_format_minor = 13;
 CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
 RESET sift.col_format_minor;
