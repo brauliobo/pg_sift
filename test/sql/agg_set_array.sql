@@ -112,6 +112,24 @@ SELECT * FROM compare_modes('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id <
 SELECT * FROM compare_modes('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id <> ALL ($1) GROUP BY kind', '''{}''::int4[]');
 SELECT * FROM compare_modes('SELECT count(*) AS n, count(dim_a_id) AS nn, min(dim_a_id) AS lo, max(dim_a_id) AS hi FROM ev WHERE dim_a_id = ANY ($1)', '''{-3,-2,40000,2147483640}''::int4[]');
 
+-- a text list is tested once for each entry of a dictionary, with the hash of its elements built at the first test: a NULL list is no list (it crashed), and a list a PL/pgSQL
+-- variable holds, packed or expanded, is read again for each entry
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE kind = ANY ($1)', '''{a,c}''::text[]');
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE kind = ANY ($1)', '''{a,NULL}''::text[]');
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE kind = ANY ($1)', 'NULL::text[]');
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE kind <> ALL ($1)', '''{a,c}''::text[]');
+SELECT * FROM compare_modes('SELECT count(*) AS n, sum(amount) AS s FROM ev WHERE kind <> ALL ($1)', 'NULL::text[]');
+CREATE FUNCTION kind_count(kinds text[], expand bool) RETURNS bigint LANGUAGE plpgsql SET plan_cache_mode = force_generic_plan AS $$
+DECLARE n bigint;
+BEGIN
+	IF expand THEN kinds[cardinality(kinds) + 1] := 'd'; END IF;
+	SELECT count(*) INTO n FROM ev WHERE kind = ANY (kinds);
+	RETURN n;
+END $$;
+SELECT kind_count('{a,c}', false) = (SELECT count(*) FROM ev WHERE kind IN ('a', 'c')) AS packed,
+       kind_count('{a,c}', true) = (SELECT count(*) FROM ev WHERE kind IN ('a', 'c', 'd')) AS expanded;
+DROP FUNCTION kind_count(text[], bool);
+
 -- a long list over a range wider than a byte table (4 million values) is a bit table (a hash table below sift.test_limits bits_set_values, 1024 members), for int4 and int8
 -- columns, IN and NOT IN, with a NULL element, an empty list and a value far beyond the others
 CREATE FUNCTION wide_set(far int, step int) RETURNS int4[] LANGUAGE sql AS 'SELECT array_agg(x) FROM (SELECT generate_series(1, 40000, step) UNION ALL SELECT far) s(x)';
