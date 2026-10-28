@@ -82,6 +82,8 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
 		('int any', $q$SELECT count(*) AS c FROM %1$I WHERE 2004 = ANY (ids)$q$),
+		('int contained', $q$SELECT count(*) AS c FROM %1$I WHERE ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4]$q$),
+		('int not contained', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4])$q$),
 		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[1]$q$),
 		('keys', $q$SELECT id %% 5 AS k, (tags @> ARRAY['t3']) AS t, count(*) AS c FROM %1$I WHERE tags IS NULL AND id %% 17 = 3 GROUP BY 1, 2$q$),
 		('count', $q$SELECT count(tags) AS c, count(DISTINCT tags) AS d FROM %1$I$q$)) s(name, q) $$;

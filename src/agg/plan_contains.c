@@ -351,7 +351,7 @@ array_contained(AggCtx *c, int grp, Const *arr, Oid collid)
 		return NULL;
 	a = DatumGetArrayTypeP(arr->constvalue);
 	elem = ARR_ELEMTYPE(a);
-	if (elem != TEXTOID && elem != VARCHAROID)
+	if (!sift_shred_array_elem_ok(elem))
 		return NULL;
 	get_typlenbyvalalign(elem, &len, &byval, &align);
 	deconstruct_array(a, elem, len, byval, align, &vals, &nulls, &n);

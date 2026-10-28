@@ -104,6 +104,8 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
 		('int any', $q$SELECT count(*) AS c FROM %1$I WHERE 2004 = ANY (ids)$q$),
+		('int contained', $q$SELECT count(*) AS c FROM %1$I WHERE ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4]$q$),
+		('int not contained', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4])$q$),
 		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[1]$q$),
 		('keys', $q$SELECT id %% 5 AS k, (tags @> ARRAY['t3']) AS t, count(*) AS c FROM %1$I WHERE tags IS NULL AND id %% 17 = 3 GROUP BY 1, 2$q$),
 		('count', $q$SELECT count(tags) AS c, count(DISTINCT tags) AS d FROM %1$I$q$)) s(name, q) $$;
@@ -157,6 +159,8 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built int two           | scan same
  built int overlap       | scan same
  built int any           | scan same
+ built int contained     | scan same
+ built int not contained | plain same
  built int null element  | scan same
  built keys              | plain same
  built count             | plain same
@@ -190,10 +194,12 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built int two           | scan same
  built int overlap       | scan same
  built int any           | scan same
+ built int contained     | scan same
+ built int not contained | plain same
  built int null element  | scan same
  built keys              | scan same
  built count             | scan same
-(66 rows)
+(70 rows)
 
 -- the same on arrays that cannot be NULL, where a NOT may be pushed
 CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
@@ -233,10 +239,12 @@ SELECT * FROM shapes('not null', 'an');
  not null int two           | scan same
  not null int overlap       | scan same
  not null int any           | scan same
+ not null int contained     | scan same
+ not null int not contained | scan same
  not null int null element  | scan same
  not null keys              | plain same
  not null count             | plain same
-(33 rows)
+(35 rows)
 
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
@@ -274,6 +282,8 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
  insert int two           | scan same
  insert int overlap       | scan same
  insert int any           | scan same
+ insert int contained     | scan same
+ insert int not contained | plain same
  insert int null element  | scan same
  insert keys              | plain same
  insert count             | plain same
@@ -307,10 +317,12 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
  insert int two           | scan same
  insert int overlap       | scan same
  insert int any           | scan same
+ insert int contained     | scan same
+ insert int not contained | plain same
  insert int null element  | scan same
  insert keys              | scan same
  insert count             | scan same
-(66 rows)
+(70 rows)
 
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
@@ -347,6 +359,8 @@ SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'a
  update int two           | scan same
  update int overlap       | scan same
  update int any           | scan same
+ update int contained     | scan same
+ update int not contained | plain same
  update int null element  | scan same
  update keys              | plain same
  update count             | plain same
@@ -380,10 +394,12 @@ SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'a
  update int two           | scan same
  update int overlap       | scan same
  update int any           | scan same
+ update int contained     | scan same
+ update int not contained | plain same
  update int null element  | scan same
  update keys              | scan same
  update count             | scan same
-(66 rows)
+(70 rows)
 
 -- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
 UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
@@ -429,6 +445,8 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders int two           | scan same
  orders int overlap       | scan same
  orders int any           | scan same
+ orders int contained     | scan same
+ orders int not contained | plain same
  orders int null element  | scan same
  orders keys              | plain same
  orders count             | plain same
@@ -462,10 +480,12 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders int two           | scan same
  orders int overlap       | scan same
  orders int any           | scan same
+ orders int contained     | scan same
+ orders int not contained | plain same
  orders int null element  | scan same
  orders keys              | scan same
  orders count             | scan same
-(66 rows)
+(70 rows)
 
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
@@ -502,6 +522,8 @@ SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'a
  delete int two           | scan same
  delete int overlap       | scan same
  delete int any           | scan same
+ delete int contained     | scan same
+ delete int not contained | plain same
  delete int null element  | scan same
  delete keys              | plain same
  delete count             | plain same
@@ -535,10 +557,12 @@ SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'a
  delete int two           | scan same
  delete int overlap       | scan same
  delete int any           | scan same
+ delete int contained     | scan same
+ delete int not contained | plain same
  delete int null element  | scan same
  delete keys              | scan same
  delete count             | scan same
-(66 rows)
+(70 rows)
 
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
  col_verify | col_verify 
@@ -581,6 +605,8 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum int two           | scan same
  vacuum int overlap       | scan same
  vacuum int any           | scan same
+ vacuum int contained     | scan same
+ vacuum int not contained | plain same
  vacuum int null element  | scan same
  vacuum keys              | plain same
  vacuum count             | plain same
@@ -614,10 +640,12 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum int two           | scan same
  vacuum int overlap       | scan same
  vacuum int any           | scan same
+ vacuum int contained     | scan same
+ vacuum int not contained | plain same
  vacuum int null element  | scan same
  vacuum keys              | scan same
  vacuum count             | scan same
-(66 rows)
+(70 rows)
 
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
  merged | merged 
@@ -658,6 +686,8 @@ SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad'
  merge int two           | scan same
  merge int overlap       | scan same
  merge int any           | scan same
+ merge int contained     | scan same
+ merge int not contained | plain same
  merge int null element  | scan same
  merge keys              | plain same
  merge count             | plain same
@@ -691,10 +721,12 @@ SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad'
  merge int two           | scan same
  merge int overlap       | scan same
  merge int any           | scan same
+ merge int contained     | scan same
+ merge int not contained | plain same
  merge int null element  | scan same
  merge keys              | scan same
  merge count             | scan same
-(66 rows)
+(70 rows)
 
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
 INSERT INTO ad SELECT * FROM gen(40001, 44000);
@@ -737,6 +769,8 @@ SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'a
  merge2 int two           | scan same
  merge2 int overlap       | scan same
  merge2 int any           | scan same
+ merge2 int contained     | scan same
+ merge2 int not contained | plain same
  merge2 int null element  | scan same
  merge2 keys              | plain same
  merge2 count             | plain same
@@ -770,10 +804,12 @@ SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'a
  merge2 int two           | scan same
  merge2 int overlap       | scan same
  merge2 int any           | scan same
+ merge2 int contained     | scan same
+ merge2 int not contained | plain same
  merge2 int null element  | scan same
  merge2 keys              | scan same
  merge2 count             | scan same
-(66 rows)
+(70 rows)
 
 SELECT sift.col_verify('ae_col', true);
  col_verify 
@@ -816,6 +852,8 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex int two           | scan same
  reindex int overlap       | scan same
  reindex int any           | scan same
+ reindex int contained     | scan same
+ reindex int not contained | plain same
  reindex int null element  | scan same
  reindex keys              | plain same
  reindex count             | plain same
@@ -849,10 +887,12 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex int two           | scan same
  reindex int overlap       | scan same
  reindex int any           | scan same
+ reindex int contained     | scan same
+ reindex int not contained | plain same
  reindex int null element  | scan same
  reindex keys              | scan same
  reindex count             | scan same
-(66 rows)
+(70 rows)
 
 -- a value no row owns is answered by the directory: no unit is read and no heap row vetted
 CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$

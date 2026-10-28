@@ -171,6 +171,48 @@ leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit)
 static SiftAggPred *or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b);
 static SiftAggPred *null_pred(AggCtx *c, int leaf, int op);
 
+static bool
+int_elem_type(Oid typid)
+{
+	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
+}
+
+/* the element of a list of integers is one of the literals (outside: none of them, or NULL): one IN test of the integer leaf, as `x IN (..)` is */
+static SiftAggPred *
+build_int_in(AggCtx *c, int leaf, const LitSet *set)
+{
+	Oid			typid = leaf_of(c, leaf)->typid;
+	Datum	   *d = palloc(set->n * sizeof(Datum));
+	StringInfoData desc;
+	SiftAggPred *p;
+
+	initStringInfo(&desc);
+	for (int i = 0; i < set->n; i++)
+	{
+		bool		err;
+		int64		v;
+
+		if (set->lit[i].kind != 'n')
+			return NULL;
+		v = sift_numeric_int8(set->lit[i].num, &err);
+		if (err)
+			return NULL;
+		d[i] = typid == INT2OID ? Int16GetDatum((int16) v) : typid == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
+		appendStringInfo(&desc, "%s" INT64_FORMAT, i ? ", " : "", v);
+	}
+	p = make_leaf_pred(c, SAP_IN, leaf);
+	p->op = set->outside;
+	p->argtype = typid;
+	p->expr = (Node *) makeConst(get_array_type(typid), -1, InvalidOid, -1,
+								 PointerGetDatum(construct_array(d, set->n, typid, typid == INT2OID ? 2 : typid == INT4OID ? 4 : 8, FLOAT8PASSBYVAL || typid != INT8OID,
+																 typid == INT2OID ? TYPALIGN_SHORT : typid == INT4OID ? TYPALIGN_INT : TYPALIGN_DOUBLE)),
+								 false, false);
+	p->desc = psprintf("%s %s (%s)", leaf_name(c, leaf), set->outside ? "NOT IN" : "IN", desc.data);
+	if (set->outside)
+		return or_of(c, p, null_pred(c, leaf, 0));
+	return p;
+}
+
 /*
  * the element of a list of strings is one of the literals (outside: none of them, or NULL): one test of the dictionary, as an IN list is. The elements
  * of the list that pass are what a row owns for @>, && and ?|, and what it must not own for <@
@@ -185,6 +227,8 @@ build_elem_in(AggCtx *c, int grp, void *arg)
 	SiftAggPred *p;
 	StringInfoData desc;
 
+	if (leaf >= 0 && int_elem_type(leaf_of(c, leaf)->typid) && leaf_of(c, leaf)->kind == SCL_SCALAR)
+		return build_int_in(c, leaf, set);
 	if (leaf < 0 || leaf_of(c, leaf)->typid != TEXTOID || !lut_leaf_ok(c, leaf))
 		return NULL;
 	d = palloc(set->n * sizeof(Datum));
