@@ -133,7 +133,7 @@ BEGIN
 END $$;
 
 -- equality (the rows an index scan returns for `col = value`, every value the table holds and every constant above, NULL rows never): the lanes decide a range, the lanes and
--- PostgreSQL's operator an address (its host bits are not in its node)
+-- PostgreSQL's operator an IPv6 address (its host bits are in lane 2 for IPv4 only)
 CREATE FUNCTION eq_matrix() RETURNS TABLE (col text, equal boolean, rows boolean) LANGUAGE plpgsql AS $$
 DECLARE c record; lit text; s record; allequal boolean; allrows boolean;
 BEGIN
@@ -188,6 +188,26 @@ SELECT (same('SELECT count(*) FROM nt WHERE ip = ''20.1.2.3/24''::inet')).equal,
        (same('SELECT count(*) FROM rt WHERE a = int4range(1, 5)')).equal, (same('SELECT count(*) FROM rt WHERE t = ''empty''::tsrange')).equal;
 SELECT count(DISTINCT a), count(*) FILTER (WHERE a = int4range(1, 5)), count(*) FILTER (WHERE a IS NULL) FROM rt;
 SELECT count(*) FROM (SELECT ip FROM nt GROUP BY ip) g;
+
+-- the rows scan tests the lanes: it does not return every row for the heap to recheck (the result alone cannot tell, the heap decides either way)
+CREATE TABLE ng (id int, ip inet, r int4range) WITH (autovacuum_enabled = false);
+INSERT INTO ng SELECT i, '20.0.0.0'::inet + (hashint8extended(i, 5) & 16777215)::int, int4range((hashint8extended(i, 7) & 1048575)::int, (hashint8extended(i, 7) & 1048575)::int + 1 + (i % 500)) FROM generate_series(1, 20000) i;
+CREATE INDEX ng_col ON ng USING sift_col (ip, r);
+VACUUM (FREEZE, ANALYZE) ng;
+CREATE FUNCTION rechecked(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE l text; n bigint := 0;
+BEGIN
+	PERFORM set_config('enable_seqscan', 'off', true); PERFORM set_config('enable_bitmapscan', 'off', true); PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Rows Removed by Index Recheck' THEN n := substring(l from '[0-9]+')::bigint; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+SELECT q, rechecked(q) < 200 AS lanes_decide FROM (VALUES
+	('SELECT * FROM ng WHERE ip = (SELECT ip FROM ng WHERE id = 777)'), ('SELECT * FROM ng WHERE ip <<= ''20.7.0.0/16'''), ('SELECT * FROM ng WHERE ip >>= ''20.7.1.5/32'''),
+	('SELECT * FROM ng WHERE ip && ''20.7.0.0/16'''), ('SELECT * FROM ng WHERE r @> 500000'), ('SELECT * FROM ng WHERE r && int4range(500000, 500100)')) v (q);
+DROP TABLE ng;
+DROP FUNCTION rechecked(text);
 
 DROP TABLE rt, nt, nr, ranges, rconst, econst, nconst;
 DROP FUNCTION same(text), range_matrix(), net_matrix(), eq_matrix();

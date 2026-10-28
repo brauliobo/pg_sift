@@ -321,6 +321,8 @@ typedef struct SiftSrcStrTest
 #define SWT_N_SUP		27
 #define SWT_N_SUPEQ		28
 #define SWT_N_OVERLAP	29
+#define SWT_R_EQ		30
+#define SWT_N_EQ		31
 
 typedef struct SiftSrcWideTest
 {

@@ -408,7 +408,34 @@ chunk_range(const SiftCChunk *c, int64 lo, int64 hi, uint64 *tmp)
  * The members of a set of many keys in an open-addressing table, for a chunk that has about as many rows: a probe of the table costs a few instructions, a
  * bisection of the set one for each of its halvings (the 10,000 ids of an index-only scan: 260 instructions a row against 15). `empty` marks a free slot: a key not in the set.
  */
-#define SET_HASH_MIN	32
+#define SET_HASH_MIN	9
+
+/* The bit a key is searched by in lowbit_table: its lowest set bit, 63 for 0 */
+static inline int
+lowbit(int64 k)
+{
+	return pg_rightmost_one_pos64((uint64) k | (UINT64CONST(1) << 63));
+}
+
+/*
+ * A set whose members differ in their lowest set bit (the nodes on the way to a network: a block of 2^h addresses has bit h lowest) is searched by that bit:
+ * k is a member when tab[lowbit(k)] is k, one load for a key. A slot no member took holds a value whose lowest bit is another slot's, so no key equals it.
+ */
+static bool
+lowbit_table(const int64 *set, uint32 n, int64 *tab)
+{
+	for (int h = 0; h < 64; h++)
+		tab[h] = h == 0 ? 2 : 1;
+	for (uint32 i = 0; i < n; i++)
+	{
+		int			h = lowbit(set[i]);
+
+		if (tab[h] != (h == 0 ? 2 : 1))
+			return false;
+		tab[h] = set[i];
+	}
+	return true;
+}
 
 /* tmp = rows matching, evaluated key by key (sets of many members, and what has no vector path) */
 static void
@@ -417,10 +444,19 @@ chunk_scalar(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 	bool		set = t->kind == SIFT_CT_SET || t->kind == SIFT_CT_NSET;
 	SiftI64Set	h;
+	int64		tab[64];
 
 	memset(tmp, 0, SIFT_COL_NWORDS(c->n) * sizeof(uint64));
 	sift_cchunk_decode(c, key);
-	if (set && t->nset >= SET_HASH_MIN && c->n >= t->nset)
+	if (set && t->nset >= SET_HASH_MIN && lowbit_table(t->set, t->nset, tab))
+	{
+		bool		want = t->kind == SIFT_CT_SET;
+
+		for (uint32 i = 0; i < c->n; i++)
+			if ((tab[lowbit(key[i])] == key[i]) == want)
+				tmp[i >> 6] |= UINT64CONST(1) << (i & 63);
+	}
+	else if (set && t->nset >= SET_HASH_MIN && c->n >= t->nset)
 	{
 		sift_i64set_build(&h, t->set, t->nset);
 		for (uint32 i = 0; i < c->n; i++)

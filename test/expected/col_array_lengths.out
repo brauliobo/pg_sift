@@ -500,7 +500,7 @@ CREATE INDEX ar_col ON ar USING sift_col (id, r, i);
 SELECT count(*) AS leaves FROM sift.col_leaves('ar_col');
  leaves 
 --------
-      6
+      7
 (1 row)
 
 SELECT coalesce((SELECT option_value FROM pg_options_to_table(reloptions) WHERE option_name = 'array_lengths'), 'unset') AS array_lengths FROM pg_class WHERE oid = 'ar_col'::regclass;

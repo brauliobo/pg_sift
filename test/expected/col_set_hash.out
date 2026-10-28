@@ -72,6 +72,20 @@ FROM (VALUES ('k', 'IN', 40), ('k', 'NOT IN', 40), ('k', 'NOT IN', 600), ('id', 
 GROUP BY col, op, cnt;
 INSERT INTO sh_q (tbl, w)
 SELECT 'sh_small', format('k NOT IN (%s)', string_agg(g::text, ',')) FROM generate_series(0, 60) g;
+-- a list of 9 to 31 members that differ in their lowest set bit (the nodes on the way to a network) is searched by that bit: powers of two, one member of each lowest bit
+-- of the table's bigint column, 0 (which has no bit) and the smallest integer (whose lowest bit is 63 as well, so that both are searched in the table of members)
+INSERT INTO sh_q (tbl, w) VALUES
+ ('sh', 'k = ANY (ARRAY[1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])'),
+ ('sh', 'k = ANY (ARRAY[0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])'),
+ ('sh', 'k <> ALL (ARRAY[0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048])'),
+ ('sh', 'k = ANY (ARRAY[3, 6, 12, 24, 48, 96, 192, 384, 768, 1536, 1, 5])'),
+ ('sh', 'b = ANY (ARRAY[0, -9223372036854775808, 1, 2, 4, 8, 16, 32, 64, 128, 256])'),
+ ('sh', 'b <> ALL (ARRAY[0, -9223372036854775808, 1, 2, 4, 8, 16, 32, 64, 128, 256])');
+INSERT INTO sh_q (tbl, w)
+SELECT 'sh', format('b %s (%s)', op, string_agg(b::text, ',' ORDER BY tz))
+FROM (VALUES ('IN'), ('NOT IN')) o (op),
+	 (SELECT DISTINCT ON (tz) b, tz FROM (SELECT b, (SELECT min(p) FROM generate_series(0, 62) p WHERE (b >> p) & 1 = 1) AS tz FROM sh WHERE b > 0) q WHERE tz < 20 ORDER BY tz, b) m
+GROUP BY op;
 SELECT n, tbl, w FROM sh_q WHERE sh_idx(tbl, w) IS DISTINCT FROM sh_seq(tbl, w) ORDER BY n;
  n | tbl | w 
 ---+-----+---
@@ -85,7 +99,7 @@ SELECT n, tbl, w, sh_cnt_agg(tbl, w) AS agg, sh_cnt_seq(tbl, w) AS seq FROM sh_q
 SELECT count(*) AS shapes, count(*) FILTER (WHERE cardinality(sh_seq(tbl, w)) > 0) AS with_rows FROM sh_q;
  shapes | with_rows 
 --------+-----------
-     26 |        24
+     34 |        32
 (1 row)
 
 DROP TABLE sh, sh_small, sh_q;

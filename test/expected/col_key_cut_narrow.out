@@ -42,7 +42,7 @@ SELECT pg_relation_size('kr') / 8192 / 256 < 32 AS under_32_units;
 (1 row)
 
 CREATE INDEX kr_i ON kr USING sift_col (r);
-NOTICE:  sift_col index "kr_i": key_cut = 'r#1' was chosen: a range holding the rows of one unit of "r#1" would read about 23 of 23 units, where 1 hold its rows (predicted index size +0.1%, benefit 19 against cost 8)
+NOTICE:  sift_col index "kr_i": key_cut = 'r#1' was chosen: a range holding the rows of one unit of "r#1" would read about 23 of 23 units, where 1 hold its rows (predicted index size -5.0%, benefit 19 against cost 8)
 DETAIL:  A sample of 23 superblocks shows the values of "r#1" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
 HINT:  ALTER INDEX kr_i SET (key_cut = 'off') and REINDEX keep the units by block range.
 SELECT leaf, decision, benefit_over_cost FROM (SELECT leaf, decision, reason LIKE '%benefit of the cut is at least its cost' AS benefit_over_cost FROM sift.key_cut_decision('kr_i')) d;

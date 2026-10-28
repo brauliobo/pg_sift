@@ -230,8 +230,8 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 			if ((shape = sift_col_shape_of(typid)) != 0)
 			{
 				defs[0].store = SIFT_COLS_STR;
-				defs[0].flags = SIFT_COLD_SHAPE;
-				return make_lanes(att, defs, shape == SIFT_COL_SHAPE_INET ? 2 : 3);
+				defs[0].flags = SIFT_COLD_SHAPE | (shape == SIFT_COL_SHAPE_INET ? SIFT_COLD_NET : 0);
+				return make_lanes(att, defs, 3);
 			}
 			if (defs[0].type == SIFT_COLT_UUID || defs[0].type == SIFT_COLT_BYTEA || sift_col_def_is_image(&defs[0]))
 			{

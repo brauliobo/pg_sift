@@ -672,7 +672,6 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 			}
 			op = shape_op(&k->defs[leaf], key->sk_strategy);
 			sift_colw_test(&k->defs[leaf], att->atttypid, op, 1, &key->sk_argument, &nul, CurrentMemoryContext, t);
-			k->recheck |= op == SIFT_COLW_N_EQ;
 			v->v.s = (const char *) t;
 			p->op = SIFT_COLOP_SHAPE;
 			p->nvals = 1;

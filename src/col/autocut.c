@@ -84,6 +84,7 @@ typedef struct Track
 	bool		time;			/* a date or timestamp that is not a key, or the start lane of a range or inet column: a range of its values is tested */
 	const SiftColDef *shape;	/* the head of the range or network whose lane this is (col/shape.c); NULL for a column's own value */
 	int			lane;			/* which lane of the head */
+	bool		image;			/* the first lane of a range or network: the image of its head, taken as untracked, is dictionary-coded in the order of the rows, and a unit of the cut by the lane lists it in the order of the lane, so it is priced like the lane */
 	int64	   *v;				/* the value of each sampled row, 0 for a NULL */
 	bool	   *nl;
 	Cell	   *cells;
@@ -402,7 +403,8 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 				unit,
 				pages;
 	int			nused = 0;
-	double		bytes = 0;
+	double		bytes = 0,
+				narrower;
 
 	for (int u = 0; u < s->nsb; u += stride, nused++)
 	{
@@ -417,6 +419,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 			bytes += sift_cunit_directory_bytes(tid + s->start[u], nsel - from, false, nused, &pages);
 	}
 	unit = key >= 0 ? Max(nsel / nsb, AUTOCUT_DIR_ROWS) : Max(1, nsel / nused);	/* a unit of the cut holds the rows of the whole heap in a range of the key, the sampled share of them */
+	narrower = Max(0, log2(nsb / nused));	/* the units of the sample are sorted slices of nused superblocks: a unit of the whole heap holds a key range this much narrower, so its gaps take this many bits fewer */
 	initStringInfo(&buf);
 	if (key >= 0)
 	{
@@ -455,16 +458,20 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 			{
 				for (uint32 i = s->start[u]; i < s->start[u + 1]; i++)
 					rows[i - s->start[u]] = i;
-				bytes += encoded_bytes(&tr[t], rows, s->start[u + 1] - s->start[u], &buf, tmp);
+				bytes += (1 + tr[t].image) * encoded_bytes(&tr[t], rows, s->start[u + 1] - s->start[u], &buf, tmp);
 			}
 		else
 			for (uint32 from = 0; from < nsel; from += unit)
 			{
 				uint32		n = Min(unit, nsel - from);
+				double		b;
 
 				memcpy(rows, sel + from, n * sizeof(uint32));
 				sift_sort_u32(rows, n);	/* the rows of a unit are in TID order */
-				bytes += encoded_bytes(&tr[t], rows, n, &buf, tmp);
+				b = encoded_bytes(&tr[t], rows, n, &buf, tmp);
+				if (&tr[t] == order[0] && tr[t].shape != NULL)
+					b = Max(n / 8.0, b - n * narrower / 8);
+				bytes += (1 + tr[t].image) * b;
 			}
 	}
 	pfree(buf.data);
@@ -578,8 +585,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		{
 			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
 			 * do not repeat, and a range of them is read like a range of dates */
-			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .image = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
 			ncand += d->lane == 1;
+			untracked -= d->lane == 1;
 			ntr++;
 		}
 		else

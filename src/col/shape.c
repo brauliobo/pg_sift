@@ -7,7 +7,8 @@
  *     (INT64_MAX, INT64_MIN). Any operator of PostgreSQL's on two ranges is then a comparison of these positions, inclusive and exclusive bounds
  *     and real-valued ranges included. A bound with |v| >= 2^62 does not fit: the lanes are stored as an overflow (NULL with the flag), which the
  *     engine keeps as a candidate of every test, and PostgreSQL's own operator decides it.
- *   network (2 leaves): lane 1 is the node of the block of addresses in the binary tree of prefixes, as the doubled middle of the block, 2 * first +
+ *   network (3 leaves): lane 2 is the offset of an IPv4 address inside its block (0 for a host or a network address; NULL for IPv6), so the node and the offset
+ *     are the address and the mask of the value and `=` is exact on the lanes. Lane 1 is the node of the block of addresses in the binary tree of prefixes, as the doubled middle of the block, 2 * first +
  *     size (size = 2^(32 - mask), IPv4; the high 62 bits for IPv6, shifted below zero so that the families never meet): the address and the mask are
  *     one number. The blocks inside a block have their node between 2 * first + 1 and 2 * last + 1, a containing block is one of the mask + 1 nodes on
  *     the way to it (an IN list), and no other node is in either set. A mask over 62 bits of IPv6 is a node of the 62nd bit: a test of such a mask
@@ -176,8 +177,15 @@ sift_col_shape_values(const SiftColDef *def, Datum d, SiftColValue *v)
 	else
 	{
 		inet	   *ip = DatumGetInetPP(d);
+		int			family = ip_family(ip),
+					h = family == PGSQL_AF_INET ? NET_W4 - Min(ip_bits(ip), NET_W4) : 0;
+		uint64		t = net_prefix(ip);
 
-		v[1].v.i = net_node(ip_family(ip), net_prefix(ip), ip_bits(ip), NULL, NULL);
+		v[1].v.i = net_node(family, t, ip_bits(ip), NULL, NULL);
+		if (family == PGSQL_AF_INET)
+			v[2].v.i = (int64) (t & ((UINT64CONST(1) << h) - 1));
+		else
+			v[2].isnull = true;		/* the address of a family 6 value does not fit the node and this lane: its equality is decided by PostgreSQL's operator */
 	}
 }
 
@@ -287,13 +295,15 @@ net_test(SiftColShape *sh, int col, int op, Datum operand)
 				node = net_node(family, net_prefix(ip), bits, &lo, &hi);
 
 	/* the node of a mask over what it holds is the node of the rows with the same first bits, strictly inside or not: they are all candidates */
-	sh->decide_rows = family == PGSQL_AF_INET6 && bits >= NET_W6;
+	sh->decide_rows = family == PGSQL_AF_INET6 && (bits >= NET_W6 || op == SIFT_COLW_N_EQ);
 	if (sh->decide_rows)
 		op = op == SIFT_COLW_N_SUB ? SIFT_COLW_N_SUBEQ : op == SIFT_COLW_N_SUP ? SIFT_COLW_N_SUPEQ : op;
 	switch (op)
 	{
 		case SIFT_COLW_N_EQ:
-			between(sh, 0, lane, node, node);
+			add(sh, 0, lane, SIFT_COLOP_EQ, node);
+			if (family == PGSQL_AF_INET)
+				add(sh, 0, lane + 1, SIFT_COLOP_EQ, (int64) (net_prefix(ip) & ((UINT64CONST(1) << (NET_W4 - bits)) - 1)));
 			break;
 		case SIFT_COLW_N_SUBEQ:
 			between(sh, 0, lane, lo, hi);
@@ -456,9 +466,18 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 {
 	const SiftColShape *sh = t->shape;
 	int			col = t->pred.col;
-	SiftColSel *res = sift_colw_sel_copy(unit, sel),
-			   *hard = sift_colw_sel_copy(unit, sel);
+	SiftColSel *res,
+			   *hard;
 
+	/* the lanes alone decide a network test with one alternative (the node, then the offset on the rows it kept): the predicates narrow sel in place */
+	if (sh->nalt == 1 && !sh->decide_all && !sh->decide_rows && sift_col_def_shape(sift_col_def(unit->src, col)) == SIFT_COL_SHAPE_INET)
+	{
+		if (!sift_col_filter(unit, sh->pred[0], sh->npred[0], sel))
+			memset(sel->bits, 0, sel->nwords * sizeof(uint64));
+		return sift_col_sel_count(sel) > 0;
+	}
+	res = sift_colw_sel_copy(unit, sel);
+	hard = sift_colw_sel_copy(unit, sel);
 	memset(res->bits, 0, res->nwords * sizeof(uint64));
 	memset(hard->bits, 0, hard->nwords * sizeof(uint64));
 	if (sh->decide_all)

@@ -288,7 +288,9 @@ static const struct
 	{F_NETWORK_SUBEQ, SWT_N_SUBEQ, SWT_N_SUPEQ},
 	{F_NETWORK_SUP, SWT_N_SUP, SWT_N_SUB},
 	{F_NETWORK_SUPEQ, SWT_N_SUPEQ, SWT_N_SUBEQ},
-	{F_NETWORK_OVERLAP, SWT_N_OVERLAP, SWT_N_OVERLAP}
+	{F_NETWORK_OVERLAP, SWT_N_OVERLAP, SWT_N_OVERLAP},
+	{F_RANGE_EQ, SWT_R_EQ, SWT_R_EQ},
+	{F_NETWORK_EQ, SWT_N_EQ, SWT_N_EQ}
 };
 
 static int
@@ -326,7 +328,7 @@ shape_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 			else
 				return false;
 			side = leaf_of(c, *leaf)->shape;
-			at = *op >= SWT_N_SUB;
+			at = *op >= SWT_N_SUB && *op != SWT_R_EQ;
 			*argtype = exprType(*operand);
 			return (side == 2) == at;
 		}

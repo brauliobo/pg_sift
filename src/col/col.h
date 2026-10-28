@@ -94,6 +94,7 @@ typedef enum SiftColStore
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
 #define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */
 #define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
+#define SIFT_COLD_NET		0x0010	/* with SIFT_COLD_SHAPE: the head of a network (inet, cidr): the node of its block and the host bits inside it, a range has the start and the end */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
@@ -187,7 +188,7 @@ sift_col_def_needs_wide(const SiftColDef *d)
 
 /*
  * The head of a range or a network: the image of the datum (a STR leaf) followed by the INT lanes its containment operators test (col/shape.c):
- * a range has the start and the end of the set it holds, a network the first address of its block and its family and mask length (3 leaves each). Reads of the value use the head alone.
+ * a range has the start and the end of the set it holds, a network the node of its block (first address, mask and family) and the offset of an IPv4 address inside it (3 leaves each). Reads of the value use the head alone.
  */
 #define SIFT_COL_SHAPE_RANGE	1
 #define SIFT_COL_SHAPE_INET		2
@@ -197,7 +198,7 @@ sift_col_def_shape(const SiftColDef *d)
 {
 	if (d->lane != 0 || d->type != SIFT_COLT_VARLENA || !(d->flags & SIFT_COLD_SHAPE))
 		return 0;
-	return d->lanes == 3 ? SIFT_COL_SHAPE_RANGE : d->lanes == 2 ? SIFT_COL_SHAPE_INET : 0;
+	return d->flags & SIFT_COLD_NET ? SIFT_COL_SHAPE_INET : d->lanes == 3 ? SIFT_COL_SHAPE_RANGE : 0;
 }
 
 /* the first lane of the head def[i - 1] of a range or a network: the start of the set, an integer key the units can be cut by */
@@ -780,7 +781,7 @@ typedef enum SiftColWVerdict
 #define SIFT_COLW_N_SUPEQ		28		/* >>= */
 #define SIFT_COLW_N_OVERLAP		29		/* && */
 #define SIFT_COLW_R_EQ			30		/* = a range (only the access method scan asks for it) */
-#define SIFT_COLW_N_EQ			31		/* = a network: the rows of its node (the host bits are not in it) are candidates, the heap decides */
+#define SIFT_COLW_N_EQ			31		/* = a network: the node and the host bits of an IPv4 value, the rows of the node of an IPv6 one are decided by PostgreSQL's operator */
 #define SIFT_COL_SHAPE_PREDS	4		/* the lane tests of one alternative of a shape test */
 
 typedef struct SiftColShape SiftColShape;

@@ -807,7 +807,8 @@ enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRo
 		uint32		bits = sift_cc_bits_of(st.range);
 		Size		sz = CC_NHDR + CC_RUP8(4 * (Size) sift_cc_words(n, bits));
 
-		if (sz <= best.size)
+		/* a node of 3-byte values has no range kernel (the filter decodes every value: 7 instructions a row against 1): the packed form of 24 bits does, for a rounding up of the last block */
+		if (sz <= best.size || (W == 3 && bits <= 24 && sz <= best.size + best.size / 64))
 		{
 			best.size = sz;
 			tag = SIFT_CCN_FORBIT;

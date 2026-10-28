@@ -115,6 +115,38 @@ SELECT kopt('kr_auto');
  key_cut=auto: r#1
 (1 row)
 
+-- an index of the address alone: the image of the head is dictionary-coded in the order of the rows and a unit of the cut lists it in the order of the node, so the cut
+-- is priced as the shrink it is (7% smaller on 3M random addresses, where the head was priced at one byte a row and the cut at a growth), chosen with no option, and a
+-- containment test reads the few units of its node
+CREATE TABLE ki (ip inet, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO ki SELECT '20.0.0.0'::inet + (random() * 16777215)::int, repeat('x', 100) FROM generate_series(1, 250000);
+VACUUM (FREEZE, ANALYZE) ki;
+CREATE INDEX ki_ip ON ki USING sift_col (ip);
+SELECT kopt('ki_ip');
+        kopt        
+--------------------
+ key_cut=auto: ip#1
+(1 row)
+
+SELECT leaf, decision, growth_pct < 0 AS shrinks FROM sift.key_cut_decision('ki_ip');
+ leaf | decision | shrinks 
+------+----------+---------
+ ip#1 | cut      | t
+(1 row)
+
+SELECT same('SELECT count(*) FROM ki WHERE ip <<= ''20.5.0.0/20'''), same('SELECT count(*) FROM ki WHERE ip >>= ''20.5.7.9'''), same('SELECT count(*) FROM ki WHERE ip = ''20.5.7.9''');
+ same | same | same 
+------+------+------
+ t    | t    | t
+(1 row)
+
+SELECT kept_share('SELECT count(*) FROM ki WHERE ip <<= ''20.5.0.0/20''') < 0.2;
+ ?column? 
+----------
+ t
+(1 row)
+
+DROP TABLE ki;
 DROP TABLE kr;
 -- another leaf whose zones skip about half of the units (a date that drifts over the table): the cut by a lane would keep all of them for it, so it is not chosen
 CREATE TABLE kp (r int4range, d int, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
