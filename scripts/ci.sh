@@ -151,7 +151,7 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
@@ -549,6 +549,7 @@ if [[ $MODE == full ]]; then
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
+	job tools-build tools-build 0 "$S/check-tools-build.sh"
 else
 	# 2500 documents: past 2200 the corpus crosses a superblock boundary (the drop_sb_boundary mutant survives below it); 12 queries and 2 rounds still
 	# visit every stage, the write buffers, the promotion and the merge
@@ -604,6 +605,7 @@ else
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
 	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
+	job tools-build tools-build 0 "$S/check-tools-build.sh"
 fi
 # opt-in lanes on a PostgreSQL built from source (scripts/pg-assert.sh, cached outside the repo; docs/SAFETY.md): queued only when
 # SIFT_CI_JOBS names them, e.g. `SIFT_CI_JOBS=assert scripts/ci.sh quick`

@@ -14,12 +14,12 @@
 =col	^(installcheck-(roles_|col_|segfmt_mixed|facet_counts|colcodec_|shred_|cache_discard)|tap-shell-(col_|leaf_stats_shared|compat_matrix|scaling_slope|sb_mask_small)|tap-01[56]_space|soak-col$|difftest-col)
 =agg	^(installcheck-(roles_|agg|col_agg|col_topn|col_search|col_preagg|col_tags|gpu_agg)|tap-shell-(agg_first_statement|interrupt_dict_filter|relcache_slots|vacuum_agg|topn_vacuum|leak_path_vets|scaling_slope|sb_mask_small|verdict_shared)|tap-0(18|20)_lookup_shared|difftest-(col|fuzz)|plan-gate)
 =tbl	^(installcheck-(roles_|tbl_|segfmt_mixed)|tap-shell-old_lib_refusal|tap-0[0-9]+_(tbl|truncate|space)|difftest-col|difftest-fuzz-tbl)
-=dec	^(fuzz|hardened)$
+=dec	^(fuzz|hardened|tools-build)$
 =any	^(release-library-regress|installcheck-json_build_object|coverage|coverage-pct|reference-live|options-live|isa-baseline|isolation(-emulated)?|static)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
-=cheap	^(coverage|isolation-emulated)$
+=cheap	^(coverage|isolation-emulated|tools-build)$
 
 # the whole build and every harness: a change here can break anything
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/build-id\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
@@ -36,7 +36,7 @@
 ^test/matrix/	^coverage-pct$|{ci}
 ^test/plan/	^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$|{ci}
 ^test/diff/	^difftest|{ci}
-^test/fuzz/[^d]	^(fuzz|hardened)$|{ci}
+^test/fuzz/[^d]	^(fuzz|hardened|tools-build)$|{ci}
 ^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl)?(-[12])?$|{ci}
 ^test/isolation/	^isolation|{ci}
 # the fast tier: the tests of the area of a source file (the stack above it, and the other versions, run on the push to main)
@@ -57,6 +57,7 @@
 ^scripts/colsoak\.sh$	^soak-col$
 ^scripts/soak\.sh$	^soak(-gin)?$
 ^scripts/fuzz\.sh$	^fuzz$
+^(tools/|scripts/check-tools-build\.sh$)	^tools-build$
 ^scripts/coverage\.sh$	^(coverage|difftest-col)
 ^scripts/hardened\.sh$	^hardened$
 ^scripts/isa_check\.sh$	^isa-baseline$
