@@ -12,7 +12,8 @@ typedef int32 cc_vi32 __attribute__((vector_size(CC_VB), aligned(4), may_alias))
 typedef float cc_vf32 __attribute__((vector_size(CC_VB), aligned(4), may_alias));
 typedef int64 cc_vi64 __attribute__((vector_size(CC_VB), aligned(8), may_alias));
 typedef uint64 cc_vu64 __attribute__((vector_size(CC_VB), aligned(8), may_alias));
-typedef double cc_vf64 __attribute__((vector_size(CC_VB), aligned(8), may_alias));
+/* values only, never loaded through a pointer: the natural alignment (GCC 14 on arm64 ends with an internal compiler error on a by-value parameter of a type aligned below it) */
+typedef double cc_vf64 __attribute__((vector_size(CC_VB)));
 /* one u32 or float per 64-bit lane */
 typedef int32 cc_hi32 __attribute__((vector_size(CC_VB / 2), aligned(4), may_alias));
 typedef uint32 cc_hu32 __attribute__((vector_size(CC_VB / 2), aligned(4), may_alias));
