@@ -71,7 +71,8 @@ INSERT INTO kp SELECT int4range(a, a + 1 + (random() * 5000)::int), (i::bigint *
 	('20.0.0.0'::inet + (random() * 16777215)::int), repeat('x', 100)
 FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
 VACUUM (FREEZE, ANALYZE) kp;
-CREATE INDEX kp_auto ON kp USING sift_col (r, d, ip);
+-- no order array: it answers the range of d from the heap addresses, with no unit counted pruned, and this asks what the zones skip
+CREATE INDEX kp_auto ON kp USING sift_col (r, d, ip) WITH (order_array_columns = off);
 SELECT kopt('kp_auto');
 SELECT leaf, decision, reason FROM sift.key_cut_decision('kp_auto');
 SELECT kept_share('SELECT count(*) FROM kp WHERE d BETWEEN 500000 AND 501000') < 0.6;
