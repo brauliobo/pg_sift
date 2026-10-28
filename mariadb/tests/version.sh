@@ -63,7 +63,7 @@ check "the installed headers compile cleanly" "" "$out"
 if command -v cmake >/dev/null; then
   cmake -S "$HERE" -B "$TMP/cmake" -DCMAKE_BUILD_TYPE=Release >"$TMP/cmake.log" 2>&1 && nice cmake --build "$TMP/cmake" -j4 >>"$TMP/cmake.log" 2>&1
   check "CMake builds libsift_udf.so" 1 "$([[ -f $TMP/cmake/libsift_udf.so ]] && echo 1)"
-  check "and exports the functions of the Makefile build" "$(nm -D "$SIFT_BUILD/libsift_udf.so" | awk '$2=="T"{print $3}' | sort | paste -sd' ')" \
-    "$(nm -D "$TMP/cmake/libsift_udf.so" | awk '$2=="T"{print $3}' | sort | paste -sd' ')"
+  check "and exports the functions of the Makefile build" "$(nm -D "$SIFT_BUILD/libsift_udf.so" | awk '$2=="T"{print $3}' | sort | paste -sd' ' -)" \
+    "$(nm -D "$TMP/cmake/libsift_udf.so" | awk '$2=="T"{print $3}' | sort | paste -sd' ' -)"
 fi
 finish

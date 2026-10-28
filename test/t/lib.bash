@@ -11,6 +11,9 @@ set -uo pipefail
 export LC_ALL=C
 . "$(dirname "${BASH_SOURCE[0]}")/../../scripts/leakcheck.sh"
 
+# timeout SECONDS COMMAND on a host without timeout(1) (macOS before 26)
+command -v timeout >/dev/null || timeout() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV' "$s" "$@"; }
+
 # knob VAR FULL QUICK: $VAR when set, else FULL, or QUICK under SIFT_QUICK=1 (scripts/ci.sh quick)
 knob() { echo "${!1:-$([[ -n ${SIFT_QUICK:-} ]] && echo "$3" || echo "$2")}"; }
 # the largest segment the store churn writes: 2 MB (full), 500 KB quick (8 times less live data and file growth per node; still
@@ -23,6 +26,7 @@ ROOT=${SIFT_ROOT:-}
 SHAREDIR=$ROOT$(pg_config --sharedir 2>/dev/null)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir 2>/dev/null)
 PG_MAJOR=$(pg_config --version 2>/dev/null | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
+DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a PostgreSQL module
 NTEST=0
 NFAIL=0
 NODES=()

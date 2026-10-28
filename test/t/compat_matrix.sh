@@ -342,7 +342,7 @@ sift.async_maintenance = off'
 		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
 		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
 		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)
-		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|'); pat="$pat|rollup_dims"
+		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims"
 		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
 		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
 		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3))"

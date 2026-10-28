@@ -33,7 +33,7 @@ plan_of() {
 	out=$(sql "$1" "${SETTINGS[@]}" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $Q")
 	for f in 'Units' 'Units From Pre-aggregates' 'Units Without The Rollup' 'Rollup Refresh Queued'; do
 		grep -E "^\s*$f: [0-9]+" <<<"$out" | grep -oE '[0-9]+$' || echo 0
-	done | paste -sd' '
+	done | paste -sd' ' -
 }
 answer() { sql "$1" "${SETTINGS[@]}" "SET sift.enable_agg = $2" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM ($Q) x" | tail -1; }
 state() { sql "$1" "SELECT requested, refreshed, skipped FROM sift.col_rollup_state" | tr '|' ' '; }

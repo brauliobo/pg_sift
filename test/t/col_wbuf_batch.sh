@@ -142,7 +142,7 @@ pgbench -n -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -c 2 -j 2 -
 READER=$!
 wait "$WRITERS"
 wait "$READER"
-check "writers and readers ran with no failed transaction" test "$(grep -h -c 'number of failed transactions: 0 ' "$D/pgbench.log" "$D/reader.log" | paste -sd+ | bc)" == 2
+check "writers and readers ran with no failed transaction" test "$(grep -h -c 'number of failed transactions: 0 ' "$D/pgbench.log" "$D/reader.log" | paste -sd+ - | bc)" == 2
 check "the primary after the writers: the pushdown, the heap and the index agree" same primary
 catchup primary standby
 check "the standby after the writers: the same rows as the primary, and the index agrees" same_rows

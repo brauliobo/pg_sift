@@ -31,7 +31,7 @@ NAME=${S_NAME:-sift-store}
 PORT=${S_PORT:-56280}                 # PostgreSQL, the pg_sift server, Elasticsearch, ClickHouse, Citus: PORT .. PORT + 4
 CPU_LIST=${S_CPUS_LIST:-${S_CPUS:-${S_COMPRESSION:+3}}}      # the thread budgets that are timed; the compression run is one point
 CPU_LIST=${CPU_LIST:-$P_CPUS_LIST}
-POINTS=$(tr ',' '\n' <<<"$CPU_LIST" | sort -nu | paste -sd' ')
+POINTS=$(tr ',' '\n' <<<"$CPU_LIST" | sort -nu | paste -sd' ' -)
 NPOINTS=$(wc -w <<<"$POINTS")
 CPUS=${S_CPUS:-${POINTS##* }} MEMORY=${S_MEMORY:-8g}          # the budget the containers start with and the load runs at: the largest point
 for c in $POINTS $CPUS; do [[ $c =~ ^[1-9][0-9]*$ ]] && (( c <= 16 )) || die "--cpus and --cpus-list take whole numbers from 1 to 16, not '$c'"; done
@@ -80,7 +80,7 @@ wanted() { local c; for c in pg sift citus es ch; do [[ $c == pg || $c == sift ]
 data_keys() { # SIZE: key and volume of every container the pass uses (steps/store.py datakey)
   local c k v s extra=()
   mapfile -t extra < <(engine_args)
-  while read -r c k v s; do KEY[$c]=$k VOL[$c]=$v REUSE[$c]=$s; done < <(py datakey --rows "$1" --cpus "$CPUS" --containers "$(wanted | paste -sd,)" ${S_COMPRESSION:+--compression} "${extra[@]}")
+  while read -r c k v s; do KEY[$c]=$k VOL[$c]=$v REUSE[$c]=$s; done < <(py datakey --rows "$1" --cpus "$CPUS" --containers "$(wanted | paste -sd, -)" ${S_COMPRESSION:+--compression} "${extra[@]}")
 }
 vols() { # the volumes of the containers of this pass: `up` runs in a stage (a child process) and leaves them in a file
   [[ -n ${VOLS_LOADED:-} ]] || { . "$DATA/vols-$NAME.env"; VOLS_LOADED=1; }
@@ -184,7 +184,7 @@ up() { # SIZE
   wait_up
   budget "$CPUS"
   verify "$CPUS"
-  log "containers up: $(containers | paste -sd' ') (--cpus $CPUS, ${MEMORY} each); data: $(for c in $(wanted); do printf '%s %s ' "$c" "${REUSE[$c]}"; done)"
+  log "containers up: $(containers | paste -sd' ' -) (--cpus $CPUS, ${MEMORY} each); data: $(for c in $(wanted); do printf '%s %s ' "$c" "${REUSE[$c]}"; done)"
 }
 # the budget of the containers now (docker's quota), so that a development step (store.sh run) finds out where it stands
 current() { echo $(( $(docker inspect -f '{{.HostConfig.NanoCpus}}' "$NAME-pg") / 1000000000 )); }

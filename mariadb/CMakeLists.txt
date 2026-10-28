@@ -67,7 +67,11 @@ target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
   # the codec's names are those of two UDFs
   sift_count=codec_count sift_topk=codec_topk)
 target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -Wno-declaration-after-statement
-  -Wno-unused-function -Wno-misleading-indentation -march=x86-64 -mtune=generic -fvisibility=hidden)
+  -Wno-unused-function -Wno-misleading-indentation -fvisibility=hidden)
+# the portable x86-64 baseline; -march=x86-64 is an error on other architectures
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+  target_compile_options(sift_engine PRIVATE -march=x86-64 -mtune=generic)
+endif()
 
 # the UDFs include MariaDB headers and nothing of the engine
 add_library(sift_udf SHARED ${UDF} $<TARGET_OBJECTS:sift_engine>)

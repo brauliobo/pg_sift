@@ -8,7 +8,7 @@ set -uo pipefail
 NAME=keys
 # the primary keys of the rows sift_search returns, in rank order: the first column(s) of the table
 found() { sql "CALL sift_search('$1', '$2', ${3:-20}, NULL)" | cut -f"${4:-1}" | tr '\n' ',' | sed 's/,$//'; }
-sorted() { found "$@" | tr ',' '\n' | sort | paste -sd,; }
+sorted() { found "$@" | tr ',' '\n' | sort | paste -sd, -; }
 
 fresh_db kt ku kc ki
 sql "CREATE TABLE kt (code VARCHAR(40) PRIMARY KEY, body TEXT)"
@@ -52,11 +52,11 @@ sql "CREATE TABLE kc (tenant INT, slug VARCHAR(20), body TEXT, PRIMARY KEY (tena
 sql "INSERT INTO kc VALUES (1, 'a', 'cold soup'), (2, 'a', 'cold tea'), (1, 'b', 'hot soup')"
 sql "CALL sift_attach('kc', 'kc', 'tenant,slug', 't.body', 8)" >/dev/null
 sync kc
-check "composite key: the same slug in two tenants" "1	a,2	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2 | sort | paste -sd,)"
+check "composite key: the same slug in two tenants" "1	a,2	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2 | sort | paste -sd, -)"
 sql "UPDATE kc SET body = 'warm tea' WHERE tenant = 2 AND slug = 'a'"
 check "composite key: update at once" "1	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2)"
 sql "INSERT INTO kc VALUES (3, 'a', 'cold rain')"
-check "composite key: insert at once" "1	a,3	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2 | sort | paste -sd,)"
+check "composite key: insert at once" "1	a,3	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2 | sort | paste -sd, -)"
 sql "DELETE FROM kc WHERE tenant = 1"
 check "composite key: delete at once" "3	a" "$(sql "CALL sift_search('kc', 'cold', 5, NULL)" | cut -f1,2)"
 sync kc

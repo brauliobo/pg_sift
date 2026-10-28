@@ -7,7 +7,7 @@ BENCH=$(dirname "$STEPS")
 registry() { awk -F'\t' -v col="$1" -v want="${2:-}" '!/^#/ && NF && $8 != "analytic" && (want == "" || $col == want) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv"; }   # ids of the text engines whose column COL is WANT (any when empty), table order
 ALL_ENGINES=$(registry 1)                    # every text engine of bench/engines.tsv (the analytic ones are the generic suites': steps/generic.py)
 DEFAULT_ENGINES=$(registry 6 yes)            # what `bench run` measures without --engines
-REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.tsv" | sort -u | paste -sd' ')   # the engines that are references for `bench regress`
+REF_ENGINES=$(awk -F'\t' '!/^#/ && NF && $7 != "-" {print $7}' "$BENCH/engines.tsv" | sort -u | paste -sd' ' -)   # the engines that are references for `bench regress`
 PAIR_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && ($7 != "-" || index(refs, " " $1 " ")) {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # engines and references
 SUITE_ENGINES=$(awk -F'\t' -v refs=" $REF_ENGINES " '!/^#/ && NF && $8 != "analytic" && !index(refs, " " $1 " ") {printf "%s%s", sep, $1; sep = " "}' "$BENCH/engines.tsv")   # every engine but the references
 REPO=$(dirname "$BENCH")
@@ -38,8 +38,8 @@ export PGHOST=$SOCK PGPORT=${PORT:-${TIER_PORT[$TIER]}} PGDATABASE=${DB:-bench} 
 # Where the cluster looks for extensions (bench/steps/cluster.sh): every engine root first, then the system.
 SHAREDIR=$(pg_config --sharedir 2>/dev/null || true) PKGLIBDIR=$(pg_config --pkglibdir 2>/dev/null || true)   # preflight (bench/bench) says what is missing
 engine_paths() { { find "$ENG"/*/root -name "$1" -printf '%h\n' 2>/dev/null || true; } | sort -u; }   # directories holding files named $1
-EXT_SHARE=$(engine_paths '*.control' | sed 's,/extension$,,' | paste -sd:)
-EXT_LIB=$(engine_paths '*.so' | paste -sd:)
+EXT_SHARE=$(engine_paths '*.control' | sed 's,/extension$,,' | paste -sd: -)
+EXT_LIB=$(engine_paths '*.so' | paste -sd: -)
 
 q()  { psql -X -v ON_ERROR_STOP=1 -qAt "$@"; }
 log() { printf '[%s %s%s] %s\n' "$(date +%T)" "$TIER" "${LOG_TAG:+ $LOG_TAG}" "$*" >&2; }

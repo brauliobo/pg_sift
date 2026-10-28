@@ -52,7 +52,10 @@ build() {
 			if [[ -n ${SIFT_OLD_SRC:-} ]]; then cp -a "$SIFT_OLD_SRC/." "$dir/src/"; else git -C "$REPO" archive "$rev" | tar -x -C "$dir/src"; fi
 			# the release flavor, the library users get (not the ASan one of a sanitized run: the older server does not preload the runtime); its own
 			# scratch and port (the port is only checked, the cluster is not started)
-			( cd "$dir/src" && SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= SANITIZE= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
+			# CPATH and LIBRARY_PATH carry the directories of pg_config's flags to a release whose Makefile does not (lz4 and zstd of Homebrew): else it is built
+			# without them and cannot read the chunks this tree writes
+			( cd "$dir/src" && CPATH=$(pg_config --cppflags | tr ' ' '\n' | sed -n 's/^-I//p' | paste -sd: -) LIBRARY_PATH=$(pg_config --ldflags | tr ' ' '\n' | sed -n 's/^-L//p' | paste -sd: -) \
+				SIFT_TMP=$dir SIFT_ROOT=$dir/root SIFT_PORT=56100 SIFT_TESTING= SANITIZE= scripts/pgtest.sh install >"$dir/build.log" 2>&1 ) ||
 				{ tail -20 "$dir/build.log" >&2; echo "FAIL building $OLD_REF" >&2; exit 1; }
 		fi
 		exec 9>&-

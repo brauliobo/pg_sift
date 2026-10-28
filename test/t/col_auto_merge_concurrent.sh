@@ -40,7 +40,7 @@ wait "$wp" "$vp" "$mp" "$rp"
 check "the writer's transactions all committed" test ! -s "$D/writer.err"
 check "the rewrite ran at least three times beside them" test "$(grep -c "rewrote (.*) the segments of index" "$D/postgres.log")" -ge 3
 check "VACUUM and the rewrite ran without an error" test ! -s "$D/vacuum.err" -a ! -s "$D/maintain.err"
-check "the reader ran 30 snapshots without an error" test "$(wc -l <"$D/reader.out")|$(wc -c <"$D/reader.err")" == "30|0"
+check "the reader ran 30 snapshots without an error" test "$(wc -l <"$D/reader.out" | tr -d ' ')|$(wc -c <"$D/reader.err" | tr -d ' ')" == "30|0"
 check "the column scan and the heap agreed in every snapshot" test "$(sort -u "$D/reader.out")" == 0
 sql cc "VACUUM facts" "SELECT sift.col_maintain('facts_idx')" >/dev/null
 check "afterwards the index verifies" test -z "$(sql cc "SELECT sift.col_verify('facts_idx', true)" 2>&1)"

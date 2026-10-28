@@ -105,7 +105,7 @@ query() {
 
 sql() {
 	local log=$TMP/postgres.log off
-	off=$(stat -c %s "$log")
+	off=$(wc -c <"$log" | tr -d ' ')
 	q -v sift_ref_lib=1 -f "$REPO/test/sql/reference.sql" -f "$REPO/test/diff/diff.sql" -f "$REPO/test/fuzz/fuzz.sql" \
 		-c "TRUNCATE sift_fuzz.findings" -c "SELECT sift_diff.build(0.$SEED, 50, 300)" >/dev/null || return 1
 	if ! q -c "SELECT * FROM sift_fuzz.run(0.$SEED, $((100 * SCALE)))"; then

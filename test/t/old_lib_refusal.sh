@@ -12,7 +12,7 @@ export SIFT_OLD_DIR="$TAPDIR/old-lib-cache"
 parent="$TAPDIR/old-lib-parent"
 rm -rf "$SIFT_OLD_DIR" "$parent"
 mkdir -p "$parent$(pg_config --pkglibdir)" "$parent$(pg_config --sharedir)/extension"
-files=("$parent/.flavor" "$parent$(pg_config --pkglibdir)/pg_sift.so" "$parent$(pg_config --sharedir)/extension/pg_sift.control")
+files=("$parent/.flavor" "$parent$(pg_config --pkglibdir)/pg_sift$DLSUFFIX" "$parent$(pg_config --sharedir)/extension/pg_sift.control")
 for file in "${files[@]}"; do echo current-testing-install >"$file"; done
 before=$("$REPO/scripts/sha256.sh" "${files[@]}")
 root=$(SIFT_ROOT="$parent" "$REPO/scripts/old-lib-check.sh" build)
@@ -22,7 +22,7 @@ if ((rc == 77)); then echo '1..0 # SKIP older library unavailable'; exit 0; fi
 check 'released build preserves the inherited install' test "$("$REPO/scripts/sha256.sh" "${files[@]}")" == "$before"
 check 'released build returns its private root' test "$root" == "$SIFT_OLD_DIR/root"
 check 'released root contains its flavor' test -f "$root/.flavor"
-check 'released root contains its library' test -f "$root$(pg_config --pkglibdir)/pg_sift.so"
+check 'released root contains its library' test -f "$root$(pg_config --pkglibdir)/pg_sift$DLSUFFIX"
 check 'released root contains its control file' test -f "$root$(pg_config --sharedir)/extension/pg_sift.control"
 ((NFAIL == 0)) || bail 'released install escaped its root'
 rm -rf "$parent"
