@@ -3317,7 +3317,7 @@ point_tids(SiftColSegment *seg, int col, const int64 *keys, int nkeys, const uin
 	/* the addresses of one slot ascend and are distinct; those of several slots (several keys, or keys that share a fingerprint) are sorted and made so */
 	if (a.slots > 1)
 	{
-		qsort(a.t, a.n, sizeof(SiftKey), sift_cmp_u64);
+		sift_sort_u64(a.t, a.n);
 		for (uint32 i = 0; i < a.n; i++)
 			if (u == 0 || a.t[u - 1] != a.t[i])
 				a.t[u++] = a.t[i];
@@ -3564,7 +3564,7 @@ sift_cseg_point_stream_open(SiftColSegment *seg, int col, const int64 *keys, int
 	{
 		uint32		u = 1;
 
-		qsort(s->one, s->none, sizeof(SiftKey), sift_cmp_u64);
+		sift_sort_u64(s->one, s->none);
 		for (uint32 i = 1; i < s->none; i++)
 			if (s->one[u - 1] != s->one[i])
 				s->one[u++] = s->one[i];
@@ -3691,7 +3691,7 @@ sift_cseg_point_check_tids(SiftColSegment *seg, int col, const int64 *key, const
 			;
 		point_probe(seg, col, a.pl, sift_cpoint_hash(e[i].key), point_add_tids, &a);
 		if (a.n > 0)
-			qsort(a.t, a.n, sizeof(SiftKey), sift_cmp_u64);
+			sift_sort_u64(a.t, a.n);
 		for (uint32 r = i; r < j && ok; r++)
 		{
 			while (k < a.n && a.t[k] < e[r].tid)
@@ -4022,7 +4022,7 @@ sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 l
 			t[n++] = memo.addr[i - c * crows];
 	}
 	if (n > 1)
-		qsort(t, n, sizeof(SiftKey), sift_cmp_u64);
+		sift_sort_u64(t, n);
 	*tids = t;
 	*ntids = n;
 	return true;

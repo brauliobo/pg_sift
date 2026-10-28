@@ -173,7 +173,7 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 		st->in_vals = palloc(nv * sizeof(int64));
 		for (int i = 0; i < nv; i++)
 			st->in_vals[i] = vals[i];
-		qsort(st->in_vals, nv, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(st->in_vals, nv);
 		for (int i = 0; i < nv; i++)
 			if (st->in_nvals == 0 || st->in_vals[st->in_nvals - 1] != st->in_vals[i])
 				st->in_vals[st->in_nvals++] = st->in_vals[i];

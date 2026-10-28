@@ -107,7 +107,7 @@ sift_cset_keys(const SiftCPaggCol *c, int64 *out)
 	{
 		uint32		d = 1;
 
-		qsort(out, m, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(out, m);
 		for (uint32 i = 1; i < m; i++)
 			if (out[i] != out[d - 1])
 				out[d++] = out[i];
@@ -256,7 +256,7 @@ distinct_offsets(const SiftCPaggCol *c, int64 lo, uint64 cap, uint32 *nd)
 		if (slot[h] != 0)
 			out[n++] = slot[h] - 1;
 	pfree(slot);
-	qsort(out, n, sizeof(uint64), sift_cmp_u64);
+	sift_sort_u64(out, n);
 	*nd = n;
 	return out;
 }

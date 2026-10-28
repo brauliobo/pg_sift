@@ -32,7 +32,7 @@ set_values(const PredState *st, int *n)
 		for (uint64 h = 0; h <= st->in_hset.mask; h++)
 			if (st->in_hset.slot[h] != st->in_hset.empty)
 				vals[(*n)++] = st->in_hset.slot[h];
-		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(vals, *n);
 	}
 	else
 		for (uint64 w = 0; w < (st->in_nbits + 63) / 64; w++)

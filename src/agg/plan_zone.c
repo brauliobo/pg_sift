@@ -107,7 +107,7 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r)
 				continue;
 			r->vals[nv++] = v;
 		}
-		qsort(r->vals, nv, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(r->vals, nv);
 		r->nvals = nv;
 		r->lo = nv > 0 ? r->vals[0] : PG_INT64_MAX;
 		r->hi = nv > 0 ? r->vals[nv - 1] : PG_INT64_MIN;

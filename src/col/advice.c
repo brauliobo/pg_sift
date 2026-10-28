@@ -118,7 +118,7 @@ distinct(int64 *vals, const bool *isnull, uint32 n, int64 *scratch)
 		else
 			scratch[m++] = vals[i];
 	}
-	qsort(scratch, m, sizeof(int64), sift_cmp_i64);
+	sift_sort_i64(scratch, m);
 	for (uint32 i = 0; i < m; i++)
 		k += i == 0 || scratch[i] != scratch[i - 1];
 	return k + nulls;

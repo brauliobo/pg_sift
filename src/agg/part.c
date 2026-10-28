@@ -487,7 +487,7 @@ hash_level(FuncExpr *f, List *sets, List **levels)
 			break;
 	}
 	relation_close(level, NoLock);
-	qsort(rem, nrem, sizeof(uint64), sift_cmp_u64);
+	sift_sort_u64(rem, nrem);
 	{
 		int			k = 0;
 
@@ -868,7 +868,7 @@ sift_aggpart_prune_keys(SiftSrcSource *src, Oid parent, const Node *col, const i
 		return prune(ps, parent, NIL, NIL, true);
 	sorted = palloc(n * sizeof(int64));
 	memcpy(sorted, vals, n * sizeof(int64));
-	qsort(sorted, n, sizeof(int64), sift_cmp_i64);
+	sift_sort_i64(sorted, n);
 	keys = palloc(n * sizeof(Datum));
 	for (int i = 0; i < n; i++)
 		if (i == 0 || sorted[i] != sorted[i - 1])

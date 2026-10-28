@@ -52,7 +52,7 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	for (int i = 0; i < total; i++)
 		key[i] = (uint64) all[i].gid << 32 | i;
 	if (nt > 1)
-		qsort(key, total, sizeof(uint64), sift_cmp_u64);
+		sift_sort_u64(key, total);
 	out->list = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
 	for (int i = 0; i < total; i++)
 	{

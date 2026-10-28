@@ -154,7 +154,7 @@ NAME##_rec(T *a, size_t n, int depth) \
 	} \
 } \
 \
-static void \
+static inline void \
 NAME(T *a, size_t n) \
 { \
 	int			depth = 0; \
@@ -163,5 +163,21 @@ NAME(T *a, size_t n) \
 		depth += 2; \
 	NAME##_rec(a, n, depth); \
 }
+
+/* sift_sort_i16, _i32, _i64, _u32 and _u64 (a, n): sort an array of that scalar ascending in line, where qsort(a, n, sizeof(T), sift_cmp_*) calls a function for each comparison; a is void * as qsort's is */
+#define SIFT_DEFINE_SORT_SCALAR(name, T) \
+SIFT_DEFINE_SORT(name##_typed, T, SIFT_SORT_LESS_SCALAR) \
+static inline void \
+name(void *a, size_t n) \
+{ \
+	name##_typed((T *) a, n); \
+}
+
+#define SIFT_SORT_LESS_SCALAR(x, y) (*(x) < *(y))
+SIFT_DEFINE_SORT_SCALAR(sift_sort_i16, int16_t)
+SIFT_DEFINE_SORT_SCALAR(sift_sort_i32, int32_t)
+SIFT_DEFINE_SORT_SCALAR(sift_sort_i64, int64_t)
+SIFT_DEFINE_SORT_SCALAR(sift_sort_u32, uint32_t)
+SIFT_DEFINE_SORT_SCALAR(sift_sort_u64, uint64_t)
 
 #endif							/* SIFT_CMP_H */

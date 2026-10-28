@@ -235,7 +235,7 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
 			out[cnt++] = v[i];
 		}
 	}
-	qsort(out, cnt, sizeof(int64), sift_cmp_i64);
+	sift_sort_i64(out, cnt);
 	pfree(tab);
 	pfree(used);
 	*d = cnt;

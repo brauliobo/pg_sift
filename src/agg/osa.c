@@ -584,7 +584,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 				pos[nt++] = (uint64) pick[ai].pos[0];
 				pos[nt++] = (uint64) pick[ai].pos[1];
 			}
-		qsort(pos, nt, sizeof(uint64), sift_cmp_u64);
+		sift_sort_u64(pos, nt);
 		osa_select(sl, 0, m, 0, pos, key, nt);
 		for (int ai = 0; ai < s->naggs; ai++)
 			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner && !osa_is_mode(&s->agg[ai]))

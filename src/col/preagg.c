@@ -912,7 +912,7 @@ build_rollup(const SiftColSchema *s, const SiftCPaggRollup *ru, const SiftCPaggC
 				continue;
 			for (int i = 0; i < k; i++)
 				leaves[i] = ru->dim[cand[i]];
-			qsort(leaves, k, sizeof(int16), sift_cmp_i16);
+			sift_sort_i16(leaves, k);
 			b.nd = k;
 			for (int i = 0; i < k; i++)
 			{

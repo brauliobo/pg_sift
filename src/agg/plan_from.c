@@ -1186,7 +1186,7 @@ finish_leaves(AggCtx *c, SiftAggSpec *s)
 	while ((m = bms_next_member(c->used, m)) >= 0)
 		s->leaves[n++] = m;
 	s->nleaves = n;
-	qsort(s->leaves, n, sizeof(int), sift_cmp_i32);
+	sift_sort_i32(s->leaves, n);
 	s->recheck = palloc0(Max(n, 1));
 	s->gate = palloc0(Max(n, 1) * sizeof(uint64));
 	for (int i = 0; i < n; i++)

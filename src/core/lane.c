@@ -595,7 +595,7 @@ sift_lane_extents(Relation index, const SiftSegEntry *entry, int *n)
 
 	blks = repalloc(blks, (nb + 1) * sizeof(BlockNumber));
 	blks[nb++] = entry->header_blk;
-	qsort(blks, nb, sizeof(BlockNumber), sift_cmp_u32);
+	sift_sort_u32(blks, nb);
 	*n = 0;
 	for (int i = 0; i < nb; i++)
 		if (*n > 0 && ext[*n - 1].start + ext[*n - 1].nblocks == blks[i])

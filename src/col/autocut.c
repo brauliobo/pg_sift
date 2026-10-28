@@ -275,7 +275,7 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_u
 		pfree(s);
 		return 0;
 	}
-	qsort(s, n, sizeof(int64), sift_cmp_i64);
+	sift_sort_i64(s, n);
 	half = Max(1, n / nsb / 2);
 	for (int k = 0; k < AUTOCUT_KEYS; k++)
 	{
@@ -393,7 +393,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 
 			for (uint32 i = 0; i < n; i++)
 				keys[i] = tid[sel[from + i]];
-			qsort(keys, n, sizeof(SiftKey), sift_cmp_u64);
+			sift_sort_u64(keys, n);
 			bytes += sift_cunit_directory_bytes(keys, n, true, 0, &pages) + wider * pages / 8;
 		}
 	}
@@ -412,7 +412,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 				uint32		n = Min(unit, nsel - from);
 
 				memcpy(rows, sel + from, n * sizeof(uint32));
-				qsort(rows, n, sizeof(uint32), sift_cmp_u32);	/* the rows of a unit are in TID order */
+				sift_sort_u32(rows, n);	/* the rows of a unit are in TID order */
 				bytes += encoded_bytes(&tr[t], rows, n, &buf, tmp);
 			}
 	}
@@ -616,7 +616,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 					tmp[n++] = k->v[i];
 			if (n == 0)
 				continue;
-			qsort(tmp, n, sizeof(int64), sift_cmp_i64);
+			sift_sort_i64(tmp, n);
 			k->has[u] = true;
 			k->lo[u] = (double) tmp[0];
 			k->hi[u] = (double) tmp[n - 1];

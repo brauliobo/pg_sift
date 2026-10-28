@@ -124,7 +124,7 @@ jk_sort(JoinKeys *jk)
 
 	if (jk->sorted)
 		return;
-	qsort(jk->v, jk->n, sizeof(int64), sift_cmp_i64);
+	sift_sort_i64(jk->v, jk->n);
 	for (int i = 0; i < jk->n; i++)
 		if (i == 0 || jk->v[i] != jk->v[i - 1])
 			jk->v[n++] = jk->v[i];

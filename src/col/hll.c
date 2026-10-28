@@ -36,7 +36,7 @@ compact(SiftHll *h)
 {
 	uint32		d = 0;
 
-	qsort(h->e, h->n, sizeof(uint32), sift_cmp_u32);
+	sift_sort_u32(h->e, h->n);
 	for (uint32 i = 0; i < h->n; i++)
 	{
 		if (i + 1 < h->n && (h->e[i + 1] >> 6) == (h->e[i] >> 6))

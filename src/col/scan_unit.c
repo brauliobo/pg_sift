@@ -448,7 +448,7 @@ sift_col_walk_stamp(SiftColSource *src, SiftColWalkStamp *st, uint32 *mem, int c
 				return false;
 			mem[n++] = src->mem[i].b->sb;
 		}
-	qsort(mem, n, sizeof(uint32), sift_cmp_u32);
+	sift_sort_u32(mem, n);
 	*nmem = 0;
 	for (int i = 0; i < n; i++)
 		if (i == 0 || mem[i] != mem[i - 1])

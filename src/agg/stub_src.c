@@ -458,7 +458,7 @@ vec_summary(SiftSrcVecType vt, const SiftSrcVec *v, double *mn, double *mx, bool
 	if (vt == SCV_F64)
 		qsort(f, n, sizeof(double), sift_cmp_f64);
 	else
-		qsort(i, n, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(i, n);
 	for (int64 k = 0; k < n; k++)
 	{
 		double		x = vt == SCV_F64 ? f[k] : (double) i[k];

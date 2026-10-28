@@ -1094,7 +1094,7 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 		for (int j = 0; j < n; j++)
 			if (!nl[j])
 				vals[m++] = et == INT2OID ? DatumGetInt16(el[j]) : et == INT4OID || et == DATEOID ? DatumGetInt32(el[j]) : DatumGetInt64(el[j]);
-		qsort(vals, m, sizeof(int64), sift_cmp_i64);
+		sift_sort_i64(vals, m);
 		*set = vals;
 		*nset = m;
 		return true;
