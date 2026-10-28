@@ -30,6 +30,7 @@ typedef struct JbSlot
 {
 	JsonTypeCategory cat;
 	Oid			outf;
+	bool		raw;			/* an unknown literal, read as the C string it is: the text it would be converted to writes the same bytes */
 	FmgrInfo	out;
 } JbSlot;
 
@@ -37,6 +38,7 @@ typedef struct JbCache
 {
 	uint64		gen;
 	int			n;
+	bool		direct;			/* the arguments are the call's own: no VARIADIC array, no unknown literal turned into text */
 	Oid		   *types;
 	JbSlot	   *slot;
 } JbCache;
@@ -85,6 +87,11 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 		appendStringInfoString(out, "null");
 		return;
 	}
+	if (s->raw)
+	{
+		escape_json(out, DatumGetCString(v));
+		return;
+	}
 	switch (s->cat)
 	{
 		case JSONTYPE_BOOL:
@@ -128,22 +135,16 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 Datum
 sift_json_build_object(PG_FUNCTION_ARGS)
 {
+	Datum		own[FUNC_MAX_ARGS];
+	bool		own_null[FUNC_MAX_ARGS];
 	Datum	   *args;
 	bool	   *nulls;
 	Oid		   *types;
-	int			nargs = extract_variadic_args(fcinfo, 0, true, &args, &types, &nulls);
+	int			nargs = PG_NARGS();
 	JbCache    *c = fcinfo->flinfo->fn_extra;
 	StringInfoData out;
 	const char *sep = "";
 
-	if (nargs < 0)
-		PG_RETURN_NULL();
-	if (nargs % 2 != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("argument list must have even number of elements"),
-		/* translator: %s is a SQL function name */
-				 errhint("The arguments of %s must consist of alternating keys and values.", "json_build_object()")));
 	if (!jb_registered)
 	{
 		CacheRegisterSyscacheCallback(TYPEOID, jb_invalidate, (Datum) 0);
@@ -152,9 +153,36 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 	}
 	if (c == NULL)
 		c = fcinfo->flinfo->fn_extra = MemoryContextAllocZero(fcinfo->flinfo->fn_mcxt, sizeof(JbCache));
-	if (c->gen != jb_gen || c->n != nargs || (nargs > 0 && memcmp(c->types, types, nargs * sizeof(Oid)) != 0))
-		jb_fill(c, fcinfo->flinfo->fn_mcxt, nargs, types);
+	if (!(c->direct && c->gen == jb_gen && c->n == nargs))
+	{
+		bool		direct = !get_fn_expr_variadic(fcinfo->flinfo);
 
+		nargs = extract_variadic_args(fcinfo, 0, true, &args, &types, &nulls);
+		if (nargs < 0)
+			PG_RETURN_NULL();
+		if (nargs % 2 != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("argument list must have even number of elements"),
+			/* translator: %s is a SQL function name */
+					 errhint("The arguments of %s must consist of alternating keys and values.", "json_build_object()")));
+		if (c->gen != jb_gen || c->n != nargs || (nargs > 0 && memcmp(c->types, types, nargs * sizeof(Oid)) != 0))
+			jb_fill(c, fcinfo->flinfo->fn_mcxt, nargs, types);
+		for (int i = 0; i < nargs; i++)
+			c->slot[i].raw = direct && get_fn_expr_argtype(fcinfo->flinfo, i) == UNKNOWNOID;
+		c->direct = direct;
+	}
+	/* a call site types its arguments once, the plan fixes them: the arrays extract_variadic_args builds for every call are the call's own */
+	if (c->direct)
+	{
+		for (int i = 0; i < nargs; i++)
+		{
+			own[i] = fcinfo->args[i].value;
+			own_null[i] = fcinfo->args[i].isnull;
+		}
+		args = own;
+		nulls = own_null;
+	}
 	initStringInfo(&out);
 	appendStringInfoChar(&out, '{');
 	for (int i = 0; i < nargs; i += 2)

@@ -202,6 +202,15 @@ SELECT count(*) AS groups, bool_and(a = b) AS same FROM (
       5 | t
 (1 row)
 
+-- one call site, unknown literals (read as C strings) and a VARIADIC array, for every row
+SELECT count(*) AS rows, bool_and(json_build_object('k"e\y', E'v"é\n\t', 'n', id, 'u', 'x', 't', t)::text
+	= sift.json_build_object('k"e\y', E'v"é\n\t', 'n', id, 'u', 'x', 't', t)::text) AS same_literals,
+	bool_and(json_build_object(VARIADIC ARRAY['a', t, 'b', anyv])::text = sift.json_build_object(VARIADIC ARRAY['a', t, 'b', anyv])::text) AS same_variadic FROM jb_rows;
+ rows | same_literals | same_variadic 
+------+---------------+---------------
+  200 | t             | t
+(1 row)
+
 -- one call site, polymorphic argument of different types in turn
 CREATE FUNCTION jb_poly(anyelement) RETURNS TABLE (core text, sift text) LANGUAGE plpgsql AS $$
 BEGIN

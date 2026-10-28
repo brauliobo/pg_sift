@@ -79,6 +79,10 @@ SELECT count(*) AS rows, bool_and(json_build_object('id', id, 't', t, 'n', n, 'd
 	= sift.json_build_object('id', id, 't', t, 'n', n, 'd', d, 'j', j, 'r', ROW(id, t)::jb_pair)::text) AS same FROM jb_rows;
 SELECT count(*) AS groups, bool_and(a = b) AS same FROM (
 	SELECT json_agg(json_build_object('id', id, 't', t))::text AS a, json_agg(sift.json_build_object('id', id, 't', t))::text AS b FROM jb_rows GROUP BY id % 5) s;
+-- one call site, unknown literals (read as C strings) and a VARIADIC array, for every row
+SELECT count(*) AS rows, bool_and(json_build_object('k"e\y', E'v"é\n\t', 'n', id, 'u', 'x', 't', t)::text
+	= sift.json_build_object('k"e\y', E'v"é\n\t', 'n', id, 'u', 'x', 't', t)::text) AS same_literals,
+	bool_and(json_build_object(VARIADIC ARRAY['a', t, 'b', anyv])::text = sift.json_build_object(VARIADIC ARRAY['a', t, 'b', anyv])::text) AS same_variadic FROM jb_rows;
 -- one call site, polymorphic argument of different types in turn
 CREATE FUNCTION jb_poly(anyelement) RETURNS TABLE (core text, sift text) LANGUAGE plpgsql AS $$
 BEGIN
