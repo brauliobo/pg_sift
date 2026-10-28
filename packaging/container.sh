@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG (Amazon Linux 2023: from the distribution).
 #   container.sh build   build the package of /src/pg_sift-$VER.tar.gz into /out
-#   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade), remove it
+#   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade; on aarch64 also the instruction scan of its library), remove it
 # /pkg is the packaging/ directory. Env: PG (the major, build; the test reads it from the package name), VER, EPOCH (source date),
 # HOST_UID (owner of /out files), PKG (test).
 set -euo pipefail
@@ -75,6 +75,8 @@ test_pkg() {
 	[[ $FMT == deb ]] || { bin=/usr/pgsql-$PG/bin libdir=/usr/pgsql-$PG/lib share=/usr/pgsql-$PG/share; }
 	[[ $ID != amzn ]] || { bin=/usr/bin libdir=/usr/lib64/pgsql share=/usr/share/pgsql; }
 	export PATH=$bin:$PATH
+	# every aarch64 library must run on any ARMv8-A CPU (scripts/check-aarch64-baseline.sh, mounted by scripts/package.sh); objdump is binutils
+	if [[ $(uname -m) == aarch64 ]]; then install_pkg binutils >/dev/null; /check-aarch64-baseline.sh "$libdir/pg_sift.so"; fi
 	ver=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$share/extension/pg_sift.control")
 	t=$(mktemp -d) && chown postgres "$t"
 	pg() { runuser -u postgres -- env PATH="$PATH" PGHOST="$t" PGPORT=55432 "$@"; }

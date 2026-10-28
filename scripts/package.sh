@@ -35,7 +35,7 @@ TEST_AMZN=${TEST_AMZN:-amazonlinux:2023}
 
 run() { # run IMAGE OUTDIR MODE [docker args...]: packaging/container.sh MODE in a throwaway container
 	local image=$1 out=$2 mode=$3; shift 3
-	docker run --rm --cpus 4 -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
+	docker run --rm --cpus 4 -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/scripts/check-aarch64-baseline.sh:/check-aarch64-baseline.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
 }
 
 build() {
@@ -118,6 +118,8 @@ selftest() {
 	verify "$d" 2>/dev/null && { echo "FAIL: verify accepts a set without $f"; bad=1; }
 	# the major is a placeholder (@PG@, %{pgmajor}) in the recipes, never a literal one
 	! grep -nE 'postgresql-[0-9]|pgsql-[0-9]|pg_sift_[0-9]' "$REPO"/packaging/debian/* "$REPO"/packaging/pg_sift.spec || { echo "FAIL: a literal PostgreSQL major in packaging/"; bad=1; }
+	# the smoke test of an aarch64 package scans its library for instructions above armv8-a (a -march in a distribution's flags would fail the release)
+	grep -q '/check-aarch64-baseline.sh' "$REPO/packaging/container.sh" && grep -q 'check-aarch64-baseline.sh:/check-aarch64-baseline.sh' "$REPO/scripts/package.sh" || { echo "FAIL: the smoke test does not run scripts/check-aarch64-baseline.sh"; bad=1; }
 	grep -q @PG@ "$REPO/packaging/debian/control" || { echo "FAIL: packaging/debian/control has no @PG@"; bad=1; }
 	# no architecture in the recipes either: dpkg and rpmbuild name the package after the host
 	! grep -nE 'Architecture: (amd64|arm64)|ExclusiveArch: *x86_64 *$' "$REPO/packaging/debian/control" "$REPO/packaging/pg_sift.spec" || { echo "FAIL: a single architecture in packaging/"; bad=1; }
