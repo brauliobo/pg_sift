@@ -96,6 +96,7 @@ build_parents(AggExec *ex)
 	ex->offs = elem_offs(ex, ex->spec->group);
 	ex->nelem = ex->offs[ex->unit.nrow];
 	ex->parent = NULL;
+	ex->prow = 0;
 }
 
 /* the row that owns each element of the array or object leaf `group` (the unnested one is unit_parent's) */

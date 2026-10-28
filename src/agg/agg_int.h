@@ -228,6 +228,7 @@ typedef struct AggExec
 	uint32	  **gpar;			/* per array leaf: the row that owns each of its elements in the unit (array_parent), NULL when not built yet */
 	int			qlevel;			/* 1: element queries */
 	uint32	   *parent;
+	int			prow;			/* tuple_rows: the row the last tuple of the unit belonged to */
 	uint32	   *offs;
 	int			nelem;
 	uint64		row_base;		/* unique number of the unit's first row */

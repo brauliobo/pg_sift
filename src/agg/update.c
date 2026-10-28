@@ -1028,6 +1028,37 @@ join_stage(AggExec *ex, int s, Tup *in)
 	}
 }
 
+/*
+ * The row of every tuple of t (ridx), the tuples and the rows both ascending: one walk over the offsets, from the row the last chunk ended in. A chunk that
+ * keeps most of its elements takes the owners of the unit, which one pass makes for all of them; a few kept ones do not pay for those of the others.
+ */
+static void
+tuple_rows(AggExec *ex, Tup *t, int n)
+{
+	if (ex->parent != NULL || (uint64) t->n * 3 >= n)
+	{
+		const uint32 *par = unit_parent(ex);
+
+		for (int j = 0; j < t->n; j++)
+			t->ridx[j] = par[t->tidx[j]];
+	}
+	else
+	{
+		const uint32 *end = ex->offs + 1;
+		int			r = ex->prow;
+
+		if (t->tidx[0] < ex->offs[r])
+			r = 0;
+		for (int j = 0; j < t->n; j++)
+		{
+			while (end[r] <= t->tidx[j])
+				r++;
+			t->ridx[j] = r;
+		}
+		ex->prow = r;
+	}
+}
+
 /* one chunk of tuples [start, start + n) selected by mask */
 void
 agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
@@ -1046,12 +1077,7 @@ agg_chunk(AggExec *ex, int start, int n, const uint64 *mask)
 	for (int j = 0; j < t->n; j++)
 		t->tidx[j] = start + t->sel[j];
 	if (ex->spec->group >= 0 && !ex->nullpass)
-	{
-		const uint32 *par = unit_parent(ex);
-
-		for (int j = 0; j < t->n; j++)
-			t->ridx[j] = par[t->tidx[j]];
-	}
+		tuple_rows(ex, t, n);
 	else
 		memcpy(t->ridx, t->tidx, t->n * sizeof(uint32));
 	join_stage(ex, 0, t);
