@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Improved: packaging: the release attaches the `.deb` and `.rpm` for PostgreSQL 17, 18 and 19 (`postgresql-N-pg-sift_X.Y.Z-1_amd64.deb`, `pg_sift_N-X.Y.Z-1.el9.x86_64.rpm`), each smoke-tested in fresh Debian, Ubuntu, Rocky and Alma containers, where it attached the PostgreSQL 18 pair only (2 packages): one Debian recipe and one spec serve every major, `scripts/package.sh` (`PGS`) lists the majors, and the release refuses to publish a set that lacks one (`scripts/package.sh verify`).
+
 - Fixed: test tools: `make check` on macOS arm64 failed in `pg_upgrade*`, `replica_mixed`, `leakcheck_gate`, the column crash and batch tests, `scaling_slope` and 5 checks of `scripts/lint.sh`. The scripts spelled `paste -sd` and `seq -s` the GNU way, read file sizes with `stat -c`, compared the padded output of `wc`, used a `sed` pattern with `\?`, `timeout` (missing before macOS 26), `-march=x86-64` in the MariaDB build and the module suffix `.so` (macOS: `.dylib`, so the upgrade tests ran the library the user had installed instead of the one under test); the benchmark generators and the scaling gate used Python 3.12 f-strings and `X | None` annotations that Python 3.9 of macOS rejects. The older releases that the tests build now see the lz4 and zstd directories of Homebrew. Only the test scripts change; the library is the same.
 
 ## 3.5.2 - 2026-10-28
