@@ -55,16 +55,16 @@ typedef struct PointEnt
 	uint64		val;				/* the row, or the heap address of the row */
 } PointEnt;
 
-static int
-ent_cmp(const void *a, const void *b)
+static inline int
+ent_cmp(const PointEnt *x, const PointEnt *y)
 {
-	const PointEnt *x = a,
-			   *y = b;
-
 	if (x->key != y->key)
 		return x->key < y->key ? -1 : 1;
 	return SIFT_CMP3(x->val, y->val);
 }
+
+#define ENT_SORT_LESS(x, y) (ent_cmp(x, y) < 0)
+SIFT_DEFINE_SORT(ent_sort, PointEnt, ENT_SORT_LESS)
 
 static int
 fp_cmp(const void *a, const void *b)
@@ -135,7 +135,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 
 	for (uint32 i = 0; i < n; i++)
 		e[i] = (PointEnt) {key[i], tid ? tid[i] : row[i]};
-	qsort(e, n, sizeof(PointEnt), ent_cmp);
+	ent_sort(e, n);
 	if (dense > 0)
 	{
 		uint32		m = 0;

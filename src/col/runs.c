@@ -22,14 +22,14 @@ typedef struct RunEnt
 	uint32		ord;
 } RunEnt;
 
-static int
-ent_cmp(const void *a, const void *b)
+static inline int
+ent_cmp(const RunEnt *x, const RunEnt *y)
 {
-	const RunEnt *x = a,
-			   *y = b;
-
 	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->ord, y->ord);
 }
+
+#define ENT_SORT_LESS(x, y) (ent_cmp(x, y) < 0)
+SIFT_DEFINE_SORT(ent_sort, RunEnt, ENT_SORT_LESS)
 
 static bool
 isset64(const uint64 *bits, uint32 i)
@@ -177,7 +177,7 @@ sift_crun_build(const SiftColDef *def, const SiftCPaggCol *c, const uint64 *addr
 	else
 	{
 		put_head(out, SIFT_CRUN_ORD, w, h, n, nvals, nnull);
-		qsort(e, nvals, sizeof(RunEnt), ent_cmp);
+		ent_sort(e, nvals);
 		for (uint32 i = 0; i < nvals; i++)
 			put_entry(out, w, e[i].ord);
 		for (uint32 i = 0; i < n; i++)

@@ -17,16 +17,16 @@ typedef struct OrdEnt
 	uint64		code;			/* the address as sift_cpoint_tid_code: it sorts as the address does and takes 9 bits for the offset */
 } OrdEnt;
 
-static int
-ord_cmp(const void *a, const void *b)
+static inline int
+ord_cmp(const OrdEnt *x, const OrdEnt *y)
 {
-	const OrdEnt *x = a,
-			   *y = b;
-
 	if (x->group != y->group)
 		return SIFT_CMP3(x->group, y->group);
 	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->code, y->code);
 }
+
+#define ORD_SORT_LESS(x, y) (ord_cmp(x, y) < 0)
+SIFT_DEFINE_SORT(ord_sort, OrdEnt, ORD_SORT_LESS)
 
 bool
 sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
@@ -101,8 +101,8 @@ build_block(OrdEnt *ent, uint32 nvals, uint32 nnull, int gcol, bool grouped, Str
 	uint32		hdr[8] = {SIFT_CGORD_MAGIC, SIFT_CGORD_VERSION, (uint32) n, nvals, nchunks, SIFT_CGORD_ROWS, 0, 0};
 	SiftCcPolicy pol;
 
-	qsort(ent, nvals, sizeof(OrdEnt), ord_cmp);
-	qsort(ent + nvals, nnull, sizeof(OrdEnt), ord_cmp);
+	ord_sort(ent, nvals);
+	ord_sort(ent + nvals, nnull);
 	if (grouped)
 	{
 		uint32		i = 0,
