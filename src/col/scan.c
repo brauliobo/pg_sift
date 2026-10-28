@@ -1466,8 +1466,9 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 	src->counted = ok ? src->sig_gen : 0;
 	if (ok)
 	{
-		src->ahead_kept = MemoryContextAlloc(GetMemoryChunkContext(src), SIFT_COL_NWORDS(nspace) * sizeof(uint64));
-		memcpy(src->ahead_kept, kept, SIFT_COL_NWORDS(nspace) * sizeof(uint64));
+		/* kept holds (nspace + 63) / 64 words, what the caller allocates; SIFT_COL_NWORDS rounds up to the words of a selection vector and read past it */
+		src->ahead_kept = MemoryContextAlloc(GetMemoryChunkContext(src), (nspace + 63) / 64 * sizeof(uint64));
+		memcpy(src->ahead_kept, kept, (nspace + 63) / 64 * sizeof(uint64));
 		for (int i = 0; i < src->nseg; i++)
 			src->seg[i].ahead = src->seg[i].ahead_end = 0;
 	}
