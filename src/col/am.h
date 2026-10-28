@@ -198,6 +198,7 @@ extern void sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *va
 /* col/widescan.c: the hooks of the column source for wide integers (two INT lanes): the pair test of a predicate, and the zone pruning of one */
 struct SiftColSegment;
 extern bool sift_colw_is_wide_int(const SiftColDef *d);
+extern bool sift_colw_is_wide_pred(const SiftColDef *d, const SiftColPred *p);
 extern bool sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel);
 extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, uint64 *keep);
 

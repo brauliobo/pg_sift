@@ -245,7 +245,7 @@ sift_col_filter(const SiftColUnit *unit, const SiftColPred *preds, int npreds, S
 			continue;
 		SIFT_INVARIANT(cu->src->schema->cols[preds[i].col].parent < 0, "sift_col: leaf %d is an element column, use the group filters",
 					   preds[i].col);
-		if (sift_colw_is_wide_int(&cu->src->schema->cols[preds[i].col]))
+		if (sift_colw_is_wide_pred(&cu->src->schema->cols[preds[i].col], &preds[i]))
 		{
 			if (!sift_colw_filter(unit, &preds[i], sel))
 				return false;

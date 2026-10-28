@@ -41,9 +41,7 @@ typedef struct SiftColShape
 	int			npred[2];		/* each is the intersection of its predicates */
 	SiftColPred pred[2][SIFT_COL_SHAPE_PREDS];
 	SiftColValue val[2][SIFT_COL_SHAPE_PREDS];
-	bool		anc[2];			/* the alternative selects the blocks that contain a network (ancestor_rows); its predicates only prune */
-	int64		anc_leaf[2];	/* the node of the first address of the network */
-	uint64		anc_size[2];	/* the least size of a block that contains it */
+	SiftColValue anc[NET_W6 + 1];	/* the nodes of the blocks on the way to a network: those that contain it (net_ancestors) */
 	bool		decide_all;		/* the constant has no lane form: PostgreSQL's operator on every non-NULL row */
 	bool		decide_rows;	/* the lanes only select candidates: PostgreSQL's operator decides them (an IPv6 mask over what the node holds) */
 	FmgrInfo	fn;				/* the operator as a function of (image, operand) */
@@ -220,6 +218,10 @@ range_test(SiftColShape *sh, int col, int op, int64 lc, int64 uc)
 			add(sh, 0, s, SIFT_COLOP_LE, lc);
 			add(sh, 0, e, SIFT_COLOP_GE, lc);
 			break;
+		case SIFT_COLW_R_EQ:
+			between(sh, 0, s, lc, lc);
+			between(sh, 0, e, uc, uc);
+			break;
 		case SIFT_COLW_R_CONTAINED:
 			add(sh, 0, s, SIFT_COLOP_GE, lc);
 			add(sh, 0, e, SIFT_COLOP_LE, uc);
@@ -257,31 +259,20 @@ range_test(SiftColShape *sh, int col, int op, int64 lc, int64 uc)
 }
 
 /*
- * The rows whose node is one of the blocks of 0 .. maxdepth bits on the way to the network contain it: their node is within `size` of the leaf at its
- * first address (the node of a block is its middle, the distance to the ends its size) and of at least the size of a block of maxdepth bits. The lane
- * is only pruned by the least and the greatest of those nodes; the rows are tested by ancestor_rows.
+ * The blocks of 0 .. maxdepth bits on the way to the network contain it, and a node names one block (its first address and its size), so the rows whose node is one of
+ * those nodes are exactly the blocks that contain the network: an IN list of at most 63 nodes, which the units are pruned by as well.
  */
 static void
 net_ancestors(SiftColShape *sh, int alt, int lane, const inet *ip, int maxdepth)
 {
 	int			family = ip_family(ip),
-				w = net_width(family),
-				n = Min(maxdepth, w);
+				n = Min(maxdepth, net_width(family));
 	uint64		t = net_prefix(ip);
-	int64		lo = PG_INT64_MAX,
-				hi = PG_INT64_MIN;
+	int			k = sh->npred[alt]++;
 
 	for (int d = 0; d <= n; d++)
-	{
-		int64		k = net_node(family, t, d, NULL, NULL);
-
-		lo = Min(lo, k);
-		hi = Max(hi, k);
-	}
-	between(sh, alt, lane, lo, hi);
-	sh->anc[alt] = true;
-	sh->anc_leaf[alt] = net_node(family, t, w, NULL, NULL);
-	sh->anc_size[alt] = UINT64CONST(1) << (w - n);
+		sh->anc[d] = (SiftColValue) {.v.i = net_node(family, t, d, NULL, NULL)};
+	sh->pred[alt][k] = (SiftColPred) {lane, SIFT_COLOP_IN, n + 1, sh->anc};
 }
 
 static void
@@ -301,6 +292,9 @@ net_test(SiftColShape *sh, int col, int op, Datum operand)
 		op = op == SIFT_COLW_N_SUB ? SIFT_COLW_N_SUBEQ : op == SIFT_COLW_N_SUP ? SIFT_COLW_N_SUPEQ : op;
 	switch (op)
 	{
+		case SIFT_COLW_N_EQ:
+			between(sh, 0, lane, node, node);
+			break;
 		case SIFT_COLW_N_SUBEQ:
 			between(sh, 0, lane, lo, hi);
 			break;
@@ -346,7 +340,9 @@ static const Oid shape_fn[] = {
 	[SIFT_COLW_N_SUBEQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_SUBEQ,
 	[SIFT_COLW_N_SUP - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_SUP,
 	[SIFT_COLW_N_SUPEQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_SUPEQ,
-	[SIFT_COLW_N_OVERLAP - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_OVERLAP
+	[SIFT_COLW_N_OVERLAP - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_OVERLAP,
+	[SIFT_COLW_R_EQ - SIFT_COLW_SHAPE_FIRST] = F_RANGE_EQ,
+	[SIFT_COLW_N_EQ - SIFT_COLW_SHAPE_FIRST] = F_NETWORK_EQ
 };
 
 void
@@ -384,7 +380,7 @@ sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, Mem
 	}
 	if (!fits)
 		sh->decide_all = true;
-	else if (empty)
+	else if (empty && op != SIFT_COLW_R_EQ)
 	{
 		/* an empty constant: contained in every range, contains only empty rows, overlaps and precedes nothing */
 		if (op == SIFT_COLW_R_CONTAINS)
@@ -455,33 +451,6 @@ andnot_into(SiftColSel *dst, const SiftColSel *src)
 	sift_col_sel_count(dst);
 }
 
-/* The rows of sel whose node (lane) is the node of a block that contains the leaf anc_leaf and is at least anc_size big */
-static void
-ancestor_rows(const SiftColUnit *unit, int lane, const SiftColShape *sh, int alt, SiftColSel *sel)
-{
-	SiftColVec	v;
-	int64		x = sh->anc_leaf[alt];
-	uint64		least = sh->anc_size[alt];
-
-	sift_col_read(unit, lane, NULL, &v);
-	for (uint32 w = 0; w * 64 < v.n; w++)
-	{
-		uint64		bits = 0;
-
-		for (uint32 i = w * 64; i < Min(v.n, (w + 1) * 64); i++)
-		{
-			int64		k = v.i[i];
-			uint64		size = (uint64) k & -(uint64) k;	/* the offset of the IPv6 nodes is the sign bit, above every size */
-
-			/* x - size < k < x + size, and the block is big enough: one unsigned comparison */
-			bits |= (uint64) ((size >= least) & ((uint64) (x - k + (int64) size - 1) < 2 * size - 1)) << (i & 63);
-		}
-		sel->bits[w] &= bits & (v.nulls ? ~v.nulls[w] : ~UINT64CONST(0));
-	}
-	sift_col_sel_count(sel);
-}
-
-/* The rows of sel the test passes: the lanes' answer, where the lanes hold the value; the rows they do not decide, PostgreSQL's operator's */
 bool
 sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel)
 {
@@ -505,12 +474,7 @@ sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel 
 		{
 			SiftColSel *one = sift_colw_sel_copy(unit, sel);
 
-			if (sh->anc[a])
-			{
-				ancestor_rows(unit, col + 1, sh, a, one);
-				or_into(res, one);
-			}
-			else if (sift_col_filter(unit, sh->pred[a], sh->npred[a], one))
+			if (sift_col_filter(unit, sh->pred[a], sh->npred[a], one))
 				or_into(res, one);
 		}
 		if (sift_col_def_shape(sift_col_def(unit->src, col)) == SIFT_COL_SHAPE_RANGE)

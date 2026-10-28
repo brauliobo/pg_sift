@@ -824,7 +824,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 				const SiftColDef *def = &seg->schema->cols[preds[i].col];
 				SiftCTest	t;
 
-				if (range[i] || sift_colw_is_wide_int(def) || sift_cseg_point_count(seg, preds[i].col) == 0)
+				if (range[i] || sift_colw_is_wide_pred(def, &preds[i]) || sift_cseg_point_count(seg, preds[i].col) == 0)
 					continue;
 				first = first < 0 ? preds[i].col : first;
 				keys |= preds[i].col != first;
@@ -847,7 +847,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 				continue;
 			if (window_empty(keep, pr))
 				break;
-			if (sift_colw_is_wide_int(def))
+			if (sift_colw_is_wide_pred(def, &preds[i]))
 			{
 				sift_colw_prune(seg, &preds[i], keep);
 				continue;
@@ -982,7 +982,7 @@ keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const Sift
 {
 	for (int i = 0; i < npreds; i++)
 	{
-		if (sift_colw_is_wide_int(&src->schema->cols[preds[i].col]))
+		if (sift_colw_is_wide_pred(&src->schema->cols[preds[i].col], &preds[i]))
 			return false;
 		/* the access method asks the directory at every begin; a source that narrows its units asks once, for the segment (prune_points_once) */
 		if ((src->flags & SIFT_COLO_POINTS) && !(src->flags & SIFT_COLO_POINT_ROWS))
@@ -1032,7 +1032,7 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 		const SiftColDef *def = &seg->schema->cols[preds[i].col];
 		SiftCTest	t;
 
-		if (sift_cseg_point_count(seg, preds[i].col) == 0 || sift_colw_is_wide_int(def))
+		if (sift_cseg_point_count(seg, preds[i].col) == 0 || sift_colw_is_wide_pred(def, &preds[i]))
 			continue;
 		if (def->store == SIFT_COLS_STR)
 			seg_test(src, seg, def, &preds[i], &t);

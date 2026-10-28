@@ -18,6 +18,13 @@ sift_colw_is_wide_int(const SiftColDef *d)
 	return sift_col_def_is_wide(d) && d->store == SIFT_COLS_INT;
 }
 
+/* a predicate that sift_colw_filter and sift_colw_prune answer: any on a wide integer, and the containment test of a range or a network (its other tests are of the image) */
+bool
+sift_colw_is_wide_pred(const SiftColDef *d, const SiftColPred *p)
+{
+	return p->op == SIFT_COLOP_SHAPE || sift_colw_is_wide_int(d);
+}
+
 /* The predicate op leaf v: the plain test of one lane, v the key of the constant */
 static SiftColPred
 lane_pred(int leaf, SiftColOp op, const SiftColValue *v)
@@ -83,6 +90,8 @@ sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 		case SIFT_COLOP_ISNULL:
 		case SIFT_COLOP_NOTNULL:
 			return sift_col_filter_lane(unit, p, sel);
+		case SIFT_COLOP_SHAPE:
+			return sift_colw_apply(unit, (const SiftColWTest *) p->vals[0].v.s, sel);
 		case SIFT_COLOP_EQ:
 		case SIFT_COLOP_GT:
 		case SIFT_COLOP_GE:
@@ -180,6 +189,20 @@ sift_colw_prune(SiftColSegment *seg, const SiftColPred *p, uint64 *keep)
 
 		sift_ctest_make(&seg->schema->cols[p->col], NULL, p, &t);
 		sift_cseg_prune(seg, p->col, &t, keep, 0, seg->nsb, NULL, true);
+		return;
+	}
+	if (p->op == SIFT_COLOP_SHAPE)
+	{
+		SiftColPred lanes[SIFT_COL_SHAPE_PREDS];
+		int			n = sift_colw_preds((const SiftColWTest *) p->vals[0].v.s, lanes);
+
+		for (int i = 0; i < n; i++)
+		{
+			SiftCTest	t;
+
+			sift_ctest_make(&seg->schema->cols[lanes[i].col], NULL, &lanes[i], &t);
+			sift_cseg_prune(seg, lanes[i].col, &t, keep, 0, seg->nsb, NULL, true);
+		}
 		return;
 	}
 	for (uint32 u = 0; u < seg->nsb; u++)

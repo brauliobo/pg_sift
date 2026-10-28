@@ -1355,7 +1355,7 @@ col_amvalidate(Oid opclassoid)
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = sift_am_routine(8, 1, true);
+	IndexAmRoutine *am = sift_am_routine(25, 1, true);
 
 	am->ambuild = sift_col_ambuild;
 	am->ambuildempty = sift_col_ambuildempty;

@@ -1,18 +1,18 @@
 -- A column of the default class sift.col_ops (what CREATE INDEX .. USING sift_col (col) gives) is read by the planner as the class of its type, so one plain index
 -- serves the aggregates and the filters that return rows (docs/COL-SCAN.md): equality, IN, range, LIKE 'abc%', IS NULL, index-only scans, for the types that have
--- a class; a type that has none (inet) and a column that names a class keep their behaviour. The rows are the heap's in every case.
+-- a class; a type that has none (an interval) and a column that names a class keep their behaviour. The rows are the heap's in every case.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 
 CREATE TABLE dc (id int, big int8, small int2, d date, ts timestamp, tz timestamptz, n numeric(12,2), b bool, f4 float4, f8 float8, c char(8), v varchar(40), t text, u uuid,
-				 ip inet, nn numeric, nb numeric(30,5), cb bpchar, pad text DEFAULT repeat('x', 100));
-INSERT INTO dc (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, nn, nb, cb)
+				 ip inet, iv interval, nn numeric, nb numeric(30,5), cb bpchar, pad text DEFAULT repeat('x', 100));
+INSERT INTO dc (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, iv, nn, nb, cb)
 SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE (g % 4000)::int8 * 7919 + 1000000007 END, (g % 3000)::int2, date '2000-01-01' + g % 5000, timestamp '2022-01-01' + g * interval '17 seconds',
 	   timestamptz '2022-01-01' + g * interval '31 seconds', (g * 7 % 90000)::numeric / 100, g % 2 = 0, (g % 977)::float4 / 4, g / 3.0, lpad((g % 700)::text, 8, 'z'),
-	   'name' || g % 1500, CASE WHEN g % 61 = 0 THEN NULL ELSE 'k' || md5(g::text) END, md5((g % 15000)::text)::uuid, ('10.0.0.0'::inet + g % 2000),
+	   'name' || g % 1500, CASE WHEN g % 61 = 0 THEN NULL ELSE 'k' || md5(g::text) END, md5((g % 15000)::text)::uuid, ('10.0.0.0'::inet + g % 2000), g % 777 * interval '1 minute',
 	   CASE WHEN g % 977 = 0 THEN 'NaN'::numeric ELSE g::numeric * 123456789012345678901234567 / 1000 END, g::numeric(30,5) * 1000000000000000000 + 0.12345, 'cb' || g % 900
 FROM generate_series(1, 30000) g;
-CREATE INDEX dc_plain ON dc USING sift_col (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, nn, nb, cb);
+CREATE INDEX dc_plain ON dc USING sift_col (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, iv, nn, nb, cb);
 VACUUM (ANALYZE) dc;
 
 CREATE FUNCTION dc_scan(w text, via text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
@@ -51,7 +51,8 @@ SELECT count(*) FILTER (WHERE cardinality(dc_rows(w, false)) > 0) AS with_rows F
 -- the planner takes the index for a selective test, and not for a type with no class
 SELECT dc_scan('SELECT * FROM dc WHERE id = 777', '') AS id_eq, dc_scan('SELECT id FROM dc WHERE id = 777', '') AS id_only,
 	   dc_scan('SELECT * FROM dc WHERE u = md5(''777'')::uuid', '') AS uuid_eq, dc_scan('SELECT * FROM dc WHERE t = ''k'' || md5(''777'')', '') AS text_eq,
-	   dc_scan('SELECT * FROM dc WHERE id BETWEEN 100 AND 130', '') AS id_range, dc_scan('SELECT * FROM dc WHERE ip = ''10.0.0.9''', '') AS inet_eq;
+	   dc_scan('SELECT * FROM dc WHERE id BETWEEN 100 AND 130', '') AS id_range, dc_scan('SELECT * FROM dc WHERE ip = ''10.0.0.9''', '') AS inet_eq,
+	   dc_scan('SELECT * FROM dc WHERE iv = interval ''5 minutes''', '') AS interval_eq;
 -- an index-only scan returns the values of the default class
 SELECT dc_scan('SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11', '') AS big_only;
 SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11 ORDER BY small LIMIT 3;

@@ -446,7 +446,8 @@ typedef enum SiftColOp
 	SIFT_COLOP_ISNULL,
 	SIFT_COLOP_NOTNULL,
 	SIFT_COLOP_PREFIX,			/* STR only: vals[0] is a prefix of the value (LIKE 'abc%' in the C collation) */
-	SIFT_COLOP_CONTAINS			/* STR only: vals[0] (not empty) is a substring of the value, bytewise (LIKE '%abc%') */
+	SIFT_COLOP_CONTAINS,		/* STR only: vals[0] (not empty) is a substring of the value, bytewise (LIKE '%abc%') */
+	SIFT_COLOP_SHAPE			/* the head of a range or a network: vals[0].v.s is the SiftColWTest of a containment operator (col/shape.c), made by the access method scan */
 } SiftColOp;
 
 /*
@@ -775,6 +776,8 @@ typedef enum SiftColWVerdict
 #define SIFT_COLW_N_SUP			27		/* >> */
 #define SIFT_COLW_N_SUPEQ		28		/* >>= */
 #define SIFT_COLW_N_OVERLAP		29		/* && */
+#define SIFT_COLW_R_EQ			30		/* = a range (only the access method scan asks for it) */
+#define SIFT_COLW_N_EQ			31		/* = a network: the rows of its node (the host bits are not in it) are candidates, the heap decides */
 #define SIFT_COL_SHAPE_PREDS	4		/* the lane tests of one alternative of a shape test */
 
 typedef struct SiftColShape SiftColShape;

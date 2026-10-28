@@ -16,3 +16,15 @@ BEGIN
 	END LOOP;
 END
 $$;
+
+-- The same family has the containment operators of the ranges and networks (docs/CONTAINMENT.md): a sift_col index with such a column returns the rows of
+-- WHERE r @> x, r && range, ip <<= net and r = x, ip = x from the integer lanes of the column (col/shape.c) as it does for a number. Strategies: 3 =, for a range 10 @>,
+-- 11 <@, 12 &&, 13 <<, 14 >>, 15 &<, 16 &>, 17 -|- and 18 @> an element, for a network 21 <<, 22 <<=, 23 >>, 24 >>=, 25 &&. An index built by 3.5 or older has no lanes
+-- for them: it asks for a REINDEX, as for the lanes themselves.
+ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD
+	OPERATOR 3 pg_catalog.= (anyrange, anyrange), OPERATOR 10 pg_catalog.@> (anyrange, anyrange), OPERATOR 11 pg_catalog.<@ (anyrange, anyrange),
+	OPERATOR 12 pg_catalog.&& (anyrange, anyrange), OPERATOR 13 pg_catalog.<< (anyrange, anyrange), OPERATOR 14 pg_catalog.>> (anyrange, anyrange),
+	OPERATOR 15 pg_catalog.&< (anyrange, anyrange), OPERATOR 16 pg_catalog.&> (anyrange, anyrange), OPERATOR 17 pg_catalog.-|- (anyrange, anyrange),
+	OPERATOR 18 pg_catalog.@> (anyrange, anyelement),
+	OPERATOR 3 pg_catalog.= (inet, inet), OPERATOR 21 pg_catalog.<< (inet, inet), OPERATOR 22 pg_catalog.<<= (inet, inet), OPERATOR 23 pg_catalog.>> (inet, inet),
+	OPERATOR 24 pg_catalog.>>= (inet, inet), OPERATOR 25 pg_catalog.&& (inet, inet);

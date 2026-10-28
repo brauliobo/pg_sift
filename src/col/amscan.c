@@ -32,6 +32,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/rangetypes.h"
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/uuid.h"
@@ -383,9 +384,31 @@ key_any(SiftColPred *p, ColKeys *k)
 	k->recheck = true;
 }
 
-/* The strategies of the operator classes: btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@) */
+/*
+ * The strategies of the operator classes: btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@). The default class also has the
+ * containment operators of a range (10 @>, 11 <@, 12 &&, 13 <<, 14 >>, 15 &<, 16 &>, 17 -|-, 18 @> an element) and of a network (21 <<, 22 <<=, 23 >>, 24 >>=, 25 &&),
+ * in the order of SIFT_COLW_R_* and SIFT_COLW_N_* (col/col.h), and 3 = for both.
+ */
 #define COL_STRAT_LIKE			7
 #define COL_STRAT_STARTS_WITH	8
+#define COL_STRAT_RANGE_FIRST	10
+#define COL_STRAT_RANGE_LAST	18
+#define COL_STRAT_NET_FIRST		21
+#define COL_STRAT_NET_LAST		25
+
+/* the SIFT_COLW_* operator of a strategy on the head of a range or a network */
+static int
+shape_op(const SiftColDef *def, StrategyNumber s)
+{
+	if (s == BTEqualStrategyNumber)
+		return sift_col_def_shape(def) == SIFT_COL_SHAPE_RANGE ? SIFT_COLW_R_EQ : SIFT_COLW_N_EQ;
+	if (s >= COL_STRAT_RANGE_FIRST && s <= COL_STRAT_RANGE_LAST)
+		return SIFT_COLW_R_CONTAINS + (int) (s - COL_STRAT_RANGE_FIRST);
+	if (s >= COL_STRAT_NET_FIRST && s <= COL_STRAT_NET_LAST)
+		return SIFT_COLW_N_SUB + (int) (s - COL_STRAT_NET_FIRST);
+	SIFT_INVARIANT(false, "sift_col: strategy %d is not an operator of a range or network column", s);
+	return 0;
+}
 
 static SiftColOp
 strategy_op(StrategyNumber s)
@@ -571,6 +594,29 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 			p->op = SIFT_COLOP_NOTNULL;
 		else if (key->sk_flags & SK_ISNULL)
 			return false;
+		else if (sift_col_def_shape(&k->defs[leaf]))
+		{
+			/* a containment test the lanes decide (an overflow row by PostgreSQL's operator, col/shape.c): the heap needs no second look, but for the host bits of = on an address; an IN list is left to it */
+			bool		nul = false;
+			SiftColWTest *t = palloc(sizeof(SiftColWTest));
+			SiftColValue *v = palloc0(sizeof(SiftColValue));
+			int			op;
+
+			if (key->sk_flags & SK_SEARCHARRAY)
+			{
+				key_any(p, k);
+				continue;
+			}
+			op = shape_op(&k->defs[leaf], key->sk_strategy);
+			sift_colw_test(&k->defs[leaf], att->atttypid, op, 1, &key->sk_argument, &nul, CurrentMemoryContext, t);
+			k->recheck |= op == SIFT_COLW_N_EQ;
+			v->v.s = (const char *) t;
+			p->op = SIFT_COLOP_SHAPE;
+			p->nvals = 1;
+			p->vals = v;
+		}
+		else if (key->sk_strategy >= COL_STRAT_RANGE_FIRST || (key->sk_strategy == BTEqualStrategyNumber && type_is_range(getBaseType(att->atttypid))))
+			key_any(p, k);			/* a containment operator or = on a range the lanes do not cover (numrange, a range of a user type): the heap decides */
 		else if (k->defs[leaf].type == SIFT_COLT_NUMERIC)
 		{
 			if (!numeric_preds(&k->defs[leaf], key, p, k))

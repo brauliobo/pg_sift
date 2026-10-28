@@ -78,9 +78,10 @@ SELECT DISTINCT format FROM sift.col_segments('rt_col') WHERE kind = 'immutable'
      26
 (1 row)
 
--- the count of a query with the pushdown (and the lanes' filter in the plan) and without it
-CREATE FUNCTION same(q text, OUT equal boolean, OUT lanes boolean) LANGUAGE plpgsql AS $$
-DECLARE n_on bigint; n_off bigint; l text;
+-- the count of a query with the pushdown (and the lanes' filter in the plan) and without it; rows: the ids the same filter returns through the index scan (the plain
+-- index is offered to a statement with no aggregate) are the heap's, and the plan used the index
+CREATE FUNCTION same(q text, OUT equal boolean, OUT lanes boolean, OUT rows boolean) LANGUAGE plpgsql AS $$
+DECLARE n_on bigint; n_off bigint; l text; rq text := replace(q, 'count(*)', 'id'); viaindex boolean := false; got int[] := '{}'; want int[] := '{}'; x int;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
@@ -90,6 +91,16 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE q INTO n_off;
 	equal := n_on = n_off;
+	PERFORM set_config('enable_seqscan', 'off', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || rq LOOP viaindex := viaindex OR l ~ 'Index Scan (using|on) (rt|nt|nr)_col'; END LOOP;
+	FOR x IN EXECUTE rq LOOP got := got || x; END LOOP;
+	PERFORM set_config('enable_seqscan', 'on', true);
+	PERFORM set_config('enable_indexscan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	FOR x IN EXECUTE rq LOOP want := want || x; END LOOP;
+	PERFORM set_config('enable_indexscan', 'on', true);
+	PERFORM set_config('enable_bitmapscan', 'on', true);
+	rows := viaindex AND (SELECT array_agg(v ORDER BY v) FROM unnest(got) v) IS NOT DISTINCT FROM (SELECT array_agg(v ORDER BY v) FROM unnest(want) v);
 END $$;
 CREATE TABLE ranges (col text, ty text);
 INSERT INTO ranges VALUES ('a', 'int4range'), ('d', 'daterange'), ('t', 'tsrange'), ('z', 'int8range'), ('w', 'tstzrange');
@@ -109,26 +120,26 @@ INSERT INTO econst VALUES ('a', '3::int4'), ('a', '(-2147483648)::int4'), ('a', 
 	('t', 'timestamp ''2000-01-01 00:00:00.000003'''), ('t', '''infinity''::timestamp'), ('z', '3::int8'), ('z', '9223372036854775807::int8'), ('z', '4611686018427387904::int8'),
 	('w', 'timestamptz ''2000-01-01 00:00:00.000003+00'''), ('w', '''-infinity''::timestamptz');
 -- every operator against every constant, per column type; and the elements, which are on either side
-CREATE FUNCTION range_matrix() RETURNS TABLE (col text, op text, equal boolean, lanes boolean) LANGUAGE plpgsql AS $$
-DECLARE r record; o text; lit text; s record; allequal boolean; alllanes boolean;
+CREATE FUNCTION range_matrix() RETURNS TABLE (col text, op text, equal boolean, lanes boolean, rows boolean) LANGUAGE plpgsql AS $$
+DECLARE r record; o text; lit text; s record; allequal boolean; alllanes boolean; allrows boolean;
 BEGIN
 	FOR r IN SELECT * FROM ranges ORDER BY col LOOP
 		FOREACH o IN ARRAY ARRAY['@>', '<@', '&&', '<<', '>>', '&<', '&>', '-|-'] LOOP
-			allequal := true; alllanes := true;
+			allequal := true; alllanes := true; allrows := true;
 			FOR lit IN EXECUTE format('SELECT quote_literal(%I::text) FROM rconst WHERE %I IS NOT NULL ORDER BY k', r.col, r.col) LOOP
 				SELECT * INTO s FROM same(format('SELECT count(*) FROM rt WHERE %I %s %s::%s', r.col, o, lit, r.ty));
-				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes;
+				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes; allrows := allrows AND s.rows;
 			END LOOP;
-			col := r.col; op := o; equal := allequal; lanes := alllanes; RETURN NEXT;
+			col := r.col; op := o; equal := allequal; lanes := alllanes; rows := allrows; RETURN NEXT;
 		END LOOP;
-		allequal := true; alllanes := true;
+		allequal := true; alllanes := true; allrows := true;
 		FOR lit IN SELECT e FROM econst WHERE econst.col = r.col LOOP
 			SELECT * INTO s FROM same(format('SELECT count(*) FROM rt WHERE %I @> %s', r.col, lit));
-			allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes;
+			allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes; allrows := allrows AND s.rows;
 			SELECT * INTO s FROM same(format('SELECT count(*) FROM rt WHERE %s <@ %I', lit, r.col));
-			allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes;
+			allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes; allrows := allrows AND s.rows;
 		END LOOP;
-		col := r.col; op := 'element'; equal := allequal; lanes := alllanes; RETURN NEXT;
+		col := r.col; op := 'element'; equal := allequal; lanes := alllanes; rows := allrows; RETURN NEXT;
 	END LOOP;
 END $$;
 CREATE TABLE nconst AS SELECT row_number() OVER () k, x::inet n FROM unnest(ARRAY[
@@ -136,86 +147,126 @@ CREATE TABLE nconst AS SELECT row_number() OVER () k, x::inet n FROM unnest(ARRA
 	'255.255.255.255', '0.0.0.0', '::/0', '::1', '::ffff:20.0.0.1', '2001:db8::/32', '2001:db8::/48', '2001:db8:0:1::/64', '2001:db8:0:1::1/128', '2001:db8:0:1::1/65', '2001:db8:0:1::/97',
 	'2001:db8:0:1:8000::/65', '2001:db8:0:2::/64', '2001:db8:0:1:ffff:ffff:ffff:ffff', 'fe80::1/64', '8000::/1', 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', '::/128', '2001:db8::/127',
 	'2001:db8::/96', '2001:db8::/16']) x;
-CREATE FUNCTION net_matrix() RETURNS TABLE (col text, op text, equal boolean, lanes boolean) LANGUAGE plpgsql AS $$
-DECLARE c text; o text; lit text; s record; allequal boolean; alllanes boolean;
+CREATE FUNCTION net_matrix() RETURNS TABLE (col text, op text, equal boolean, lanes boolean, rows boolean) LANGUAGE plpgsql AS $$
+DECLARE c text; o text; lit text; s record; allequal boolean; alllanes boolean; allrows boolean;
 BEGIN
 	FOREACH c IN ARRAY ARRAY['ip', 'cd'] LOOP
 		FOREACH o IN ARRAY ARRAY['<<', '<<=', '>>', '>>=', '&&'] LOOP
-			allequal := true; alllanes := true;
+			allequal := true; alllanes := true; allrows := true;
 			FOR lit IN SELECT quote_literal(n::text) FROM nconst ORDER BY k LOOP
 				SELECT * INTO s FROM same(format('SELECT count(*) FROM nt WHERE %I %s %s::inet', c, o, lit));
-				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes;
+				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes; allrows := allrows AND s.rows;
 				SELECT * INTO s FROM same(format('SELECT count(*) FROM nt WHERE %s::inet %s %I', lit, o, c));
-				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes;
+				allequal := allequal AND s.equal; alllanes := alllanes AND s.lanes; allrows := allrows AND s.rows;
 			END LOOP;
-			col := c; op := o; equal := allequal; lanes := alllanes; RETURN NEXT;
+			col := c; op := o; equal := allequal; lanes := alllanes; rows := allrows; RETURN NEXT;
 		END LOOP;
 	END LOOP;
 END $$;
+-- equality (the rows an index scan returns for `col = value`, every value the table holds and every constant above, NULL rows never): the lanes decide a range, the lanes and
+-- PostgreSQL's operator an address (its host bits are not in its node)
+CREATE FUNCTION eq_matrix() RETURNS TABLE (col text, equal boolean, rows boolean) LANGUAGE plpgsql AS $$
+DECLARE c record; lit text; s record; allequal boolean; allrows boolean;
+BEGIN
+	FOR c IN SELECT * FROM (VALUES ('rt', 'a', 'int4range'), ('rt', 'd', 'daterange'), ('rt', 't', 'tsrange'), ('rt', 'z', 'int8range'), ('rt', 'w', 'tstzrange'), ('nt', 'ip', 'inet'), ('nt', 'cd', 'inet')) v(tbl, col, ty) LOOP
+		allequal := true; allrows := true;
+		FOR lit IN EXECUTE format('SELECT quote_literal(%I::text) FROM (SELECT %I FROM %s UNION SELECT %I FROM %s) v WHERE %I IS NOT NULL',
+								  c.col, c.col, c.tbl, c.col, CASE WHEN c.tbl = 'rt' THEN 'rconst' ELSE '(SELECT n AS ip, n AS cd FROM nconst) n' END, c.col) LOOP
+			SELECT * INTO s FROM same(format('SELECT count(*) FROM %s WHERE %I = %s::%s', c.tbl, c.col, lit, c.ty));
+			allequal := allequal AND s.equal; allrows := allrows AND s.rows;
+		END LOOP;
+		col := c.col; equal := allequal; rows := allrows; RETURN NEXT;
+	END LOOP;
+END $$;
 SELECT * FROM range_matrix() ORDER BY col, op;
- col |   op    | equal | lanes 
------+---------+-------+-------
- a   | &&      | t     | t
- a   | &<      | t     | t
- a   | &>      | t     | t
- a   | -|-     | t     | t
- a   | <<      | t     | t
- a   | <@      | t     | t
- a   | >>      | t     | t
- a   | @>      | t     | t
- a   | element | t     | t
- d   | &&      | t     | t
- d   | &<      | t     | t
- d   | &>      | t     | t
- d   | -|-     | t     | t
- d   | <<      | t     | t
- d   | <@      | t     | t
- d   | >>      | t     | t
- d   | @>      | t     | t
- d   | element | t     | t
- t   | &&      | t     | t
- t   | &<      | t     | t
- t   | &>      | t     | t
- t   | -|-     | t     | t
- t   | <<      | t     | t
- t   | <@      | t     | t
- t   | >>      | t     | t
- t   | @>      | t     | t
- t   | element | t     | t
- w   | &&      | t     | t
- w   | &<      | t     | t
- w   | &>      | t     | t
- w   | -|-     | t     | t
- w   | <<      | t     | t
- w   | <@      | t     | t
- w   | >>      | t     | t
- w   | @>      | t     | t
- w   | element | t     | t
- z   | &&      | t     | t
- z   | &<      | t     | t
- z   | &>      | t     | t
- z   | -|-     | t     | t
- z   | <<      | t     | t
- z   | <@      | t     | t
- z   | >>      | t     | t
- z   | @>      | t     | t
- z   | element | t     | t
+ col |   op    | equal | lanes | rows 
+-----+---------+-------+-------+------
+ a   | &&      | t     | t     | t
+ a   | &<      | t     | t     | t
+ a   | &>      | t     | t     | t
+ a   | -|-     | t     | t     | t
+ a   | <<      | t     | t     | t
+ a   | <@      | t     | t     | t
+ a   | >>      | t     | t     | t
+ a   | @>      | t     | t     | t
+ a   | element | t     | t     | t
+ d   | &&      | t     | t     | t
+ d   | &<      | t     | t     | t
+ d   | &>      | t     | t     | t
+ d   | -|-     | t     | t     | t
+ d   | <<      | t     | t     | t
+ d   | <@      | t     | t     | t
+ d   | >>      | t     | t     | t
+ d   | @>      | t     | t     | t
+ d   | element | t     | t     | t
+ t   | &&      | t     | t     | t
+ t   | &<      | t     | t     | t
+ t   | &>      | t     | t     | t
+ t   | -|-     | t     | t     | t
+ t   | <<      | t     | t     | t
+ t   | <@      | t     | t     | t
+ t   | >>      | t     | t     | t
+ t   | @>      | t     | t     | t
+ t   | element | t     | t     | t
+ w   | &&      | t     | t     | t
+ w   | &<      | t     | t     | t
+ w   | &>      | t     | t     | t
+ w   | -|-     | t     | t     | t
+ w   | <<      | t     | t     | t
+ w   | <@      | t     | t     | t
+ w   | >>      | t     | t     | t
+ w   | @>      | t     | t     | t
+ w   | element | t     | t     | t
+ z   | &&      | t     | t     | t
+ z   | &<      | t     | t     | t
+ z   | &>      | t     | t     | t
+ z   | -|-     | t     | t     | t
+ z   | <<      | t     | t     | t
+ z   | <@      | t     | t     | t
+ z   | >>      | t     | t     | t
+ z   | @>      | t     | t     | t
+ z   | element | t     | t     | t
 (45 rows)
 
 SELECT * FROM net_matrix() ORDER BY col, op;
- col | op  | equal | lanes 
------+-----+-------+-------
- cd  | &&  | t     | t
- cd  | <<  | t     | t
- cd  | <<= | t     | t
- cd  | >>  | t     | t
- cd  | >>= | t     | t
- ip  | &&  | t     | t
- ip  | <<  | t     | t
- ip  | <<= | t     | t
- ip  | >>  | t     | t
- ip  | >>= | t     | t
+ col | op  | equal | lanes | rows 
+-----+-----+-------+-------+------
+ cd  | &&  | t     | t     | t
+ cd  | <<  | t     | t     | t
+ cd  | <<= | t     | t     | t
+ cd  | >>  | t     | t     | t
+ cd  | >>= | t     | t     | t
+ ip  | &&  | t     | t     | t
+ ip  | <<  | t     | t     | t
+ ip  | <<= | t     | t     | t
+ ip  | >>  | t     | t     | t
+ ip  | >>= | t     | t     | t
 (10 rows)
+
+SELECT * FROM eq_matrix() ORDER BY col;
+ col | equal | rows 
+-----+-------+------
+ a   | t     | t
+ cd  | t     | t
+ d   | t     | t
+ ip  | t     | t
+ t   | t     | t
+ w   | t     | t
+ z   | t     | t
+(7 rows)
+
+-- a range the lanes do not cover (numrange): the planner offers the index its operators, the scan leaves them to the heap, and the rows are the heap's
+CREATE TABLE nr (id serial PRIMARY KEY, n numrange) WITH (autovacuum_enabled = false);
+INSERT INTO nr (n) SELECT numrange(i, i + 2.5) FROM generate_series(1, 200) i;
+INSERT INTO nr (n) VALUES (NULL), ('empty'), ('(,)');
+CREATE INDEX nr_col ON nr USING sift_col (id, n);
+VACUUM (FREEZE, ANALYZE) nr;
+SELECT (same('SELECT count(*) FROM nr WHERE n @> 5::numeric')).rows, (same('SELECT count(*) FROM nr WHERE n && numrange(10, 12)')).rows,
+       (same('SELECT count(*) FROM nr WHERE n = numrange(3, 5.5)')).rows, (same('SELECT count(*) FROM nr WHERE n = ''empty''::numrange')).rows;
+ rows | rows | rows | rows 
+------+------+------+------
+ t    | t    | t    | t
+(1 row)
 
 -- writes after the build (the write buffer), a merge and a REINDEX
 INSERT INTO rt (a, d, t, z, w) SELECT int4range(i, i + 3), daterange(date '2000-01-01' + i, date '2000-01-01' + i + 3), tsrange(timestamp '2000-01-01' + i * interval '1 microsecond', NULL),
@@ -224,13 +275,19 @@ INSERT INTO nt (ip) SELECT ('20.1.' || i || '.1/' || (16 + i))::inet FROM genera
 UPDATE nt SET cd = network(ip) WHERE cd IS NULL AND ip IS NOT NULL;
 UPDATE rt SET a = int4range(1, 5) WHERE id % 7 = 0;
 DELETE FROM rt WHERE id % 11 = 0;
-SELECT bool_and(equal), bool_and(lanes) FROM range_matrix();
- bool_and | bool_and 
-----------+----------
- t        | t
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM range_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
 (1 row)
 
-SELECT bool_and(equal), bool_and(lanes) FROM net_matrix();
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM net_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
+(1 row)
+
+SELECT bool_and(equal), bool_and(rows) FROM eq_matrix();
  bool_and | bool_and 
 ----------+----------
  t        | t
@@ -249,13 +306,19 @@ SELECT sift.col_verify('rt_col', true), sift.col_verify('nt_col', true);
             | 
 (1 row)
 
-SELECT bool_and(equal), bool_and(lanes) FROM range_matrix();
- bool_and | bool_and 
-----------+----------
- t        | t
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM range_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
 (1 row)
 
-SELECT bool_and(equal), bool_and(lanes) FROM net_matrix();
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM net_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
+(1 row)
+
+SELECT bool_and(equal), bool_and(rows) FROM eq_matrix();
  bool_and | bool_and 
 ----------+----------
  t        | t
@@ -263,13 +326,19 @@ SELECT bool_and(equal), bool_and(lanes) FROM net_matrix();
 
 REINDEX INDEX rt_col;
 REINDEX INDEX nt_col;
-SELECT bool_and(equal), bool_and(lanes) FROM range_matrix();
- bool_and | bool_and 
-----------+----------
- t        | t
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM range_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
 (1 row)
 
-SELECT bool_and(equal), bool_and(lanes) FROM net_matrix();
+SELECT bool_and(equal), bool_and(lanes), bool_and(rows) FROM net_matrix();
+ bool_and | bool_and | bool_and 
+----------+----------+----------
+ t        | t        | t
+(1 row)
+
+SELECT bool_and(equal), bool_and(rows) FROM eq_matrix();
  bool_and | bool_and 
 ----------+----------
  t        | t
@@ -295,6 +364,6 @@ SELECT count(*) FROM (SELECT ip FROM nt GROUP BY ip) g;
     50
 (1 row)
 
-DROP TABLE rt, nt, ranges, rconst, econst, nconst;
-DROP FUNCTION same(text), range_matrix(), net_matrix();
+DROP TABLE rt, nt, nr, ranges, rconst, econst, nconst;
+DROP FUNCTION same(text), range_matrix(), net_matrix(), eq_matrix();
 DROP EXTENSION pg_sift;
