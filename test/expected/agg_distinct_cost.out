@@ -80,6 +80,24 @@ SELECT sum_workers AS small_scan_workers FROM workers_at(1);
                   0
 (1 row)
 
+-- at the default setup cost a group by key of a table priced as 15 times larger stays in one process (1,500,000 rows of this width: the 2 workers of the heap's size
+-- cost 3 ms to start and 11 million instructions, and 100,000 rows of the same shape took 5 to 10 ms with them against 3 to 5 alone); priced as 40 times larger
+-- it takes them
+SET sift.plan_scale = 15;
+SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_15;
+ workers_at_15 
+---------------
+             0
+(1 row)
+
+SET sift.plan_scale = 40;
+SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_40;
+ workers_at_40 
+---------------
+             2
+(1 row)
+
+RESET sift.plan_scale;
 RESET parallel_setup_cost; RESET min_parallel_table_scan_size; RESET parallel_tuple_cost; RESET sift.agg_preagg;
 DROP FUNCTION scan_cost(text), differences(text), workers(text), workers_at(int);
 DROP TABLE items;
