@@ -128,6 +128,7 @@ if [[ $MODE == affected ]]; then
 	elif [[ $BASE == --files ]]; then   # for tests of the map: the jobs of named files (--focus: FILE:FUNCTION tokens)
 		if [[ -n $FOCUS ]]; then RE=$(focus_regex "${@:2}") || exit $?; FASTRE=$RE
 		else
+			FILES=("${@:2}")
 			RE=$(areas_regex "${@:2}") || exit $?
 			FASTRE=$(areas_fast_regex "${@:2}") || exit $?
 		fi
@@ -155,16 +156,21 @@ if [[ $MODE == affected ]]; then
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation$'
+		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi
 	done
+	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run
+	fastpg=false
+	for id in "${PICK[@]}"; do [[ $id =~ $FAST && ( $id == installcheck-batch* || $id =~ $FASTRE ) ]] && fastpg=true; done
 	case $OUT in
 		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos; do echo "gh:$f $(flag $f)"; done ;;
 		github)
 			echo "jobs=$RE"
 			echo "fast=$FAST"
 			echo "fastjobs=$FASTRE"
+			echo "fastpg=$fastpg"
 			echo "cassert=$cassert"
 			echo "cassertjobs=$ASSERT_JOBS"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
@@ -377,6 +383,10 @@ if [[ $MODE == --selftest ]]; then
 	# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
 	out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 	[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
+	for f in "docs/USAGE.md false" "docs/COL-PLAN.md false" "src/agg/update.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
+		fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
+		[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
+	done
 	rm -f "$t"
 	(( bad )) || echo "plan-selftest: no flavor installs while the lanes run (PostgreSQL 16, 17, 18; quick, full); every file and job is in scripts/areas.tsv; the column differential slices are the whole corpus"
 	exit $bad
