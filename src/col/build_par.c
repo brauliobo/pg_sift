@@ -40,7 +40,7 @@ typedef struct ColShared
 	pg_atomic_uint32 ready;		/* the metapage is written */
 	ConditionVariable readycv;
 	pg_atomic_uint32 next;		/* the next superblock nobody has claimed */
-	pg_atomic_uint64 scan_seen[2];	/* the leaves a NOTICE has named (sift_colb_scan_notice) */
+	ColScanAcc	scan;			/* what the formula of the strings looked at, for the NOTICE of the leader */
 	slock_t		mutex;
 	double		reltuples;
 	double		indexed;
@@ -88,7 +88,7 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 
 	PG_TRY();
 	{
-		sift_colb_scan_notice(index, sh->scan_seen);
+		sift_colb_scan_watch(&sh->scan);
 		for (uint32 sb = slot; sb < sh->nsbs; sb = pg_atomic_fetch_add_u32(&sh->next, 1))
 		{
 #ifdef SIFT_TESTING
@@ -101,7 +101,7 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 	}
 	PG_FINALLY();
 	{
-		sift_colb_scan_notice(NULL, NULL);
+		sift_colb_scan_watch(NULL);
 	}
 	PG_END_TRY();
 	sift_wt_finish(wt);
@@ -139,8 +139,7 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 	sh->nsbs = ((uint64) sh->nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 	pg_atomic_init_u32(&sh->ready, 0);
 	pg_atomic_init_u32(&sh->next, 0);
-	pg_atomic_init_u64(&sh->scan_seen[0], 0);
-	pg_atomic_init_u64(&sh->scan_seen[1], 0);
+	SpinLockInit(&sh->scan.mutex);
 	ConditionVariableInit(&sh->readycv);
 	SpinLockInit(&sh->mutex);
 }
@@ -201,6 +200,7 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
 	participate(sh, ldr->parts, sh->nlaunched, heap, index, info, ldr->snapshot);
 	sift_par_wait(ldr);
+	sift_colb_scan_report(index, &sh->scan);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
 #ifdef SIFT_TESTING
 	sift_test_phase_wait(SIFT_COL_PHASE_WRITE);

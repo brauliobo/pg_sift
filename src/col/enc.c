@@ -373,7 +373,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 
 /* The chunk of an STR leaf stored inline: the strings of the rows (the batch's codes looked up in its dictionary bd), no codes of the segment */
 /* set by the host while it builds an index, to name the leaf whose strings the formula wrapped otherwise than the cold rule (col/build.c) */
-void		(*sift_cenc_scan_hook) (int leaf, const SiftCcScan *scan);
+void		(*sift_cenc_scan_hook) (int leaf, int kind, const SiftCcScanSum *chosen, const SiftCcScanSum *kept);
 
 static void
 chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const SiftCcPolicy *pol, bool tags, SiftCZone *z, SiftCcScan *scan)
@@ -633,10 +633,15 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl
 		if (inline_str)
 		{
 			SiftCcScan	scan;
+			SiftCcScanSum chosen = {0},
+						kept = {0};
 
 			chunk_encode_istr(out, v, b->dict[col], pol ? &pol[col] : NULL, tags, &zone, &scan);
-			if (scan.alg >= 0 && sift_cenc_scan_hook)
-				sift_cenc_scan_hook(col, &scan);
+			if (scan.seen && sift_cenc_scan_hook)
+			{
+				sift_cc_scan_add(scan.lz4 ? &chosen : &kept, &scan);
+				sift_cenc_scan_hook(col, SIFT_SCAN_INLINE, &chosen, &kept);
+			}
 		}
 		else
 			chunk_encode(out, s->cols[col].store, v, key, pol ? &pol[col] : NULL, tags, &zone);

@@ -537,33 +537,93 @@ sift_colb_init_meta(Relation index)
 	sift_wt_finish(wt);
 }
 
-static Relation scan_index;
-static pg_atomic_uint64 *scan_seen;
+/* LZ4 that stores the strings in more than this share of their bytes does not shrink them (hex, ids): the column is not a choice worth a word */
+#define SCAN_NO_SHRINK	0.95
+/* A column that kept zstd is named when the benefit of LZ4 came within this share of its cost */
+#define SCAN_CLOSE		0.75
+
+static ColScanAcc *scan_acc;
 
 static void
-scan_note(int leaf, const SiftCcScan *scan)
+scan_add(int leaf, int kind, const SiftCcScanSum *chosen, const SiftCcScanSum *kept)
 {
-	TupleDesc	desc = RelationGetDescr(scan_index);
-	uint64		bit = UINT64CONST(1) << (leaf % 64);
-	const char *name,
-			   *iname;
-
-	if (leaf >= 128 || leaf >= desc->natts || (pg_atomic_fetch_or_u64(&scan_seen[leaf / 64], bit) & bit))
+	if (leaf >= SIFT_COL_SCAN_LEAVES)
 		return;
-	name = quote_identifier(NameStr(TupleDescAttr(desc, leaf)->attname));
-	iname = quote_identifier(RelationGetRelationName(scan_index));
-	ereport(NOTICE, (errmsg("sift_col index %s stores the long text of %s with lz4", iname, name),
-					 errdetail("Every test of the column unwraps its strings: against zstd a substring test reads %.1f times fewer instructions and the strings take %.0f%% more bytes, which the default formula accepts.",
-							   scan->speedup, scan->growth),
-					 errhint("ALTER INDEX %s SET (compression = 'auto; %s=zstd'), then REINDEX, keeps zstd.", iname, name)));
+	SpinLockAcquire(&scan_acc->mutex);
+	for (int i = 0; i < 2; i++)
+	{
+		SiftCcScanSum *to = &scan_acc->sum[kind][leaf][i];
+		const SiftCcScanSum *from = i == 0 ? chosen : kept;
+
+		to->n += from->n;
+		to->raw += from->raw;
+		to->z += from->z;
+		to->l += from->l;
+	}
+	SpinLockRelease(&scan_acc->mutex);
 }
 
 void
-sift_colb_scan_notice(Relation index, pg_atomic_uint64 *seen)
+sift_colb_scan_watch(ColScanAcc *acc)
 {
-	scan_index = index;
-	scan_seen = seen;
-	sift_cenc_scan_hook = seen ? scan_note : NULL;
+	scan_acc = acc;
+	sift_cenc_scan_hook = acc ? scan_add : NULL;
+}
+
+static char *
+scan_bytes(double b)
+{
+	return b >= 1e6 ? psprintf("%.1f MB", b / 1e6) : psprintf("%.1f kB", b / 1e3);
+}
+
+/*
+ * One NOTICE per CREATE INDEX for the strings the formula of the design notes decided: the columns that took LZ4, and those that kept zstd when the benefit of LZ4 came within
+ * a quarter of the cost of its extra bytes. The terms are those of the sums of the leaf: instructions a MB of text costs a test with each algorithm, and B against C.
+ */
+void
+sift_colb_scan_report(Relation index, ColScanAcc *acc)
+{
+	TupleDesc	desc = RelationGetDescr(index);
+	StringInfoData detail;
+	const char *iname = quote_identifier(RelationGetRelationName(index));
+	const char *first = NULL;
+	int			nlz4 = 0,
+				nkept = 0;
+	bool		dict = false;
+
+	initStringInfo(&detail);
+	for (int kind = 0; kind < SIFT_SCAN_KINDS; kind++)
+		for (int leaf = 0; leaf < Min(desc->natts, SIFT_COL_SCAN_LEAVES); leaf++)
+		{
+			const SiftCcScanSum *lz4 = &acc->sum[kind][leaf][0],
+					   *kept = &acc->sum[kind][leaf][1];
+			SiftCcScanTerms t;
+			const char *name = quote_identifier(NameStr(TupleDescAttr(desc, leaf)->attname));
+			double		z = lz4->z + kept->z;
+
+			if (lz4->n + kept->n == 0)
+				continue;
+			sift_cc_scan_terms(z, lz4->l + kept->l, lz4->raw + kept->raw, &t);
+			if (lz4->n == 0 && (lz4->l + kept->l > SCAN_NO_SHRINK * (lz4->raw + kept->raw) || t.benefit < SCAN_CLOSE * t.cost))
+				continue;
+			if (lz4->n > 0)
+				nlz4++;
+			else
+				nkept++;
+			dict |= kind == SIFT_SCAN_DICT && lz4->n > 0;
+			first = first ? first : name;
+			appendStringInfo(&detail, "%s%s (%s): %s; a test reads %.1f M instructions a MB of text with zstd and %.1f M with lz4 (%.1f times fewer), lz4 takes %s more (%+.0f%%): benefit %.0f against cost %.0f.",
+							 detail.len ? "\n" : "", name, kind == SIFT_SCAN_DICT ? "dictionary" : "long strings",
+							 lz4->n == 0 ? "zstd kept" : kept->n == 0 ? "lz4" : psprintf("lz4 in %llu of %llu parts, zstd in the rest", (unsigned long long) lz4->n, (unsigned long long) (lz4->n + kept->n)),
+							 t.zipb, t.lipb, t.speedup, scan_bytes(lz4->l + kept->l - z), t.growth, t.benefit, t.cost);
+		}
+	if (first == NULL)
+		return;
+	ereport(NOTICE,
+			(errmsg("sift_col index %s: compression of the text of %d column%s chosen by the formula (lz4 for %d, zstd kept for %d)", iname, nlz4 + nkept, nlz4 + nkept == 1 ? "" : "s", nlz4, nkept),
+			 errdetail_internal("%s", detail.data),
+			 errhint("ALTER INDEX %s SET (compression = 'auto; %s=zstd') and REINDEX keeps zstd for a column, 'auto; %s=lz4' takes lz4.%s", iname, first, first,
+					 dict ? " SET sift.col_format_minor = 14 before CREATE INDEX writes no LZ4 blocks of dictionaries (they need minor 29), which releases before 3.6 refuse." : "")));
 }
 
 static IndexBuildResult *
@@ -575,17 +635,16 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	SiftWriteTarget *wt;
 	ColBuild   *b;
 	int			nsegs;
-	pg_atomic_uint64 seen[2];
+	ColScanAcc *acc = palloc0(sizeof(ColScanAcc));
 
 	if (key_cut)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
 	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false);
-	pg_atomic_init_u64(&seen[0], 0);
-	pg_atomic_init_u64(&seen[1], 0);
+	SpinLockInit(&acc->mutex);
 	PG_TRY();
 	{
-		sift_colb_scan_notice(index, seen);
+		sift_colb_scan_watch(acc);
 		if (heap->rd_rel->reltuples > 0)
 			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
@@ -598,9 +657,10 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	}
 	PG_FINALLY();
 	{
-		sift_colb_scan_notice(NULL, NULL);
+		sift_colb_scan_watch(NULL);
 	}
 	PG_END_TRY();
+	sift_colb_scan_report(index, acc);
 	res->index_tuples = sift_colb_rows(b);
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);

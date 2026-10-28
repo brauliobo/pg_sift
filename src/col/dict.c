@@ -583,6 +583,8 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 				lcap = sift_colz_bound(SIFT_CC_ALG_LZ4, DICT_BLOCK_RAW_MAX);
 	bool		zip = pol != NULL && pol->mode != SIFT_CCM_NONE && sift_colz_available(SIFT_CC_ALG_ZSTD);
 	/* a dictionary the cache cannot hold is unwrapped by every test that reads it: its blocks take LZ4 where the default formula says so (codec.h) */
+	SiftCcScanSum chosen = {0},
+				kept = {0};
 	bool		fast = zip && d->scan && pol->mode == SIFT_CCM_AUTO && pol->alg == SIFT_CC_ALG_AUTO && sift_colz_available(SIFT_CC_ALG_LZ4);
 
 	for (uint32 c = 1; c < d->n && fixed != 0; c++)
@@ -625,11 +627,13 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		hdr[3] = (uint8) (rawlen >> 8);
 		if (fast && clen > 0 && clen < rawlen)
 		{
-			SiftCcScan	scan;
+			SiftCcScan	scan = {.seen = true,.raw = rawlen,.z = clen};
 			Size		llen = sift_colz_compress(SIFT_CC_ALG_LZ4, 0, raw, rawlen, l, lcap);
 
-			if (sift_cc_scan_lz4(clen, llen, rawlen, &scan))
+			scan.l = llen;
+			if (sift_cc_scan_lz4(clen, llen, rawlen))
 			{
+				sift_cc_scan_add(&chosen, &scan);
 				hdr[0] = SIFT_CC_ALG_LZ4;
 				put_bytes(out, hdr, sizeof(hdr));
 				put_bytes(out, l, llen);
@@ -637,6 +641,7 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 				boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
 				continue;
 			}
+			sift_cc_scan_add(&kept, &scan);
 		}
 		if (clen > 0 && clen < rawlen)
 		{
@@ -668,6 +673,8 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 			appendStringInfoChar(out, '\0');
 		put_hash(d, out);
 	}
+	if (fast && d->leaf1 > 0 && sift_cenc_scan_hook)
+		sift_cenc_scan_hook(d->leaf1 - 1, SIFT_SCAN_DICT, &chosen, &kept);
 	if (d->tsig)
 		put_tsig(d, nblk, out, start);
 	pfree(boff);
@@ -829,6 +836,14 @@ sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 blocks, Strin
 
 		initStringInfo(&z);
 		sift_cc_encode_strs(&z, d->off, d->bytes, d->n, pol, d->scan ? &scan : NULL);
+		if (d->scan && scan.seen && d->leaf1 > 0 && sift_cenc_scan_hook)
+		{
+			SiftCcScanSum chosen = {0},
+						kept = {0};
+
+			sift_cc_scan_add(scan.lz4 ? &chosen : &kept, &scan);
+			sift_cenc_scan_hook(d->leaf1 - 1, SIFT_SCAN_DICT, &chosen, &kept);
+		}
 		if ((Size) z.len < plain)
 			form = DICT_STRS;
 	}

@@ -78,13 +78,33 @@ typedef enum SiftCcKind
 #define SIFT_CC_IPC_ZSTD	45.0	/* the unwrap of zstd, by compressed byte */
 #define SIFT_CC_SCAN_R		1.0		/* relevance of the class: any test of a text column unwraps its strings */
 
-/* What the formula decided for the strings of a chunk (alg -1: the zstd of the cold rule stays) */
+/* What the formula looked at for the strings of a chunk or of a dictionary: LZ4 against the zstd of the cold rule */
 typedef struct SiftCcScan
 {
-	int			alg;			/* SIFT_CC_ALG_LZ4 when it replaced the zstd of the cold rule */
-	double		speedup;		/* S: instructions of a test with the cold rule's wrapper over with this one */
-	double		growth;			/* G: percent more bytes than the cold rule's */
+	bool		seen;			/* LZ4 was tried against zstd: the bytes below are filled */
+	bool		lz4;			/* LZ4 replaced the zstd */
+	double		raw,			/* bytes of the strings */
+				z,				/* ... with zstd */
+				l;				/* ... with LZ4 */
 } SiftCcScan;
+
+/* What was looked at in a dictionary or a leaf, summed: n items with these bytes */
+typedef struct SiftCcScanSum
+{
+	uint64		n;
+	double		raw,
+				z,
+				l;
+} SiftCcScanSum;
+
+static inline void
+sift_cc_scan_add(SiftCcScanSum *sum, const SiftCcScan *s)
+{
+	sum->n++;
+	sum->raw += s->raw;
+	sum->z += s->z;
+	sum->l += s->l;
+}
 
 typedef enum SiftCcMode
 {
@@ -174,7 +194,18 @@ extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
 
 /* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule, or, when scan is not NULL (the strings of an inline text chunk), under the formula above. */
 /* Whether strings that the cold rule stores in zlen bytes of zstd are better stored in llen of LZ4 (rawlen bytes) by the formula above; *scan gets S and G */
-extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen, SiftCcScan *scan);
+/* The terms of the formula for LZ4 (l bytes) against zstd (z bytes) over raw bytes of strings: instructions a byte of text with each, S their ratio, G percent more bytes, B, C */
+typedef struct SiftCcScanTerms
+{
+	double		zipb,
+				lipb,
+				speedup,
+				growth,
+				benefit,
+				cost;
+} SiftCcScanTerms;
+extern void sift_cc_scan_terms(double z, double l, double raw, SiftCcScanTerms *t);
+extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen);
 extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan);
 /* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt */
 extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 **off, char **bytes);

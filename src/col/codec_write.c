@@ -354,29 +354,33 @@ scan_ipb(int alg, double bytes, double rawlen)
 								 alg == SIFT_CC_ALG_ZSTD ? SIFT_CC_IPC_ZSTD * bytes / rawlen : 0.0);
 }
 
-/* B - C of the default formula for the strings stored as (alg, bytes) instead of (ref, ref_bytes) */
-static double
-scan_net(int ref, double ref_bytes, int alg, double bytes, double rawlen)
+void
+sift_cc_scan_terms(double z, double l, double raw, SiftCcScanTerms *t)
 {
-	return SIFT_CC_SCAN_R * log2(scan_ipb(ref, ref_bytes, rawlen) / scan_ipb(alg, bytes, rawlen)) / log2(1.05) - 100.0 * (bytes - ref_bytes) / ref_bytes / 3.0;
+	t->zipb = scan_ipb(SIFT_CC_ALG_ZSTD, z, raw);
+	t->lipb = scan_ipb(SIFT_CC_ALG_LZ4, l, raw);
+	t->speedup = t->zipb / t->lipb;
+	t->growth = 100.0 * (l - z) / z;
+	t->benefit = SIFT_CC_SCAN_R * log2(t->speedup) / log2(1.05);
+	t->cost = t->growth / 3.0;
 }
 
 bool
-sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen, SiftCcScan *scan)
+sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen)
 {
-	if (zlen == 0 || llen == 0 || llen >= rawlen || scan_net(SIFT_CC_ALG_ZSTD, (double) zlen, SIFT_CC_ALG_LZ4, (double) llen, (double) rawlen) <= 0.0)
+	SiftCcScanTerms t;
+
+	if (zlen == 0 || llen == 0 || llen >= rawlen)
 		return false;
-	scan->alg = SIFT_CC_ALG_LZ4;
-	scan->speedup = scan_ipb(SIFT_CC_ALG_ZSTD, (double) zlen, (double) rawlen) / scan_ipb(SIFT_CC_ALG_LZ4, (double) llen, (double) rawlen);
-	scan->growth = 100.0 * ((double) llen - (double) zlen) / (double) zlen;
-	return true;
+	sift_cc_scan_terms((double) zlen, (double) llen, (double) rawlen, &t);
+	return t.benefit > t.cost;
 }
 
 /*
  * The wrapper of the strings of an inline text chunk, true when there is one (z): the cold rule's choice is the reference, and when that is
  * zstd, LZ4 replaces it if the default formula says so, the most the growth can be of the index being the growth of the strings themselves (no wrapper is not
  * tried: it doubles the pages of text that zstd halves, and a user who wants it says none). A policy that names an algorithm or none decides as it does for any
- * stream. *scan tells that LZ4 replaced the reference.
+ * stream. *scan tells what was looked at and whether LZ4 replaced the reference.
  */
 bool
 wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftCcScan *scan)
@@ -384,11 +388,19 @@ wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftC
 	CcZTry		lz4;
 	bool		found;
 
-	scan->alg = -1;
+	scan->seen = scan->lz4 = false;
 	if (w->pol->mode != SIFT_CCM_AUTO || w->pol->alg != SIFT_CC_ALG_AUTO)
 		return wrap_choose(w, raw, rawlen, CCR_COLD, z);
 	found = wrap_choose_keep(w, raw, rawlen, CCR_COLD, z, &lz4);
-	if (found && z->alg == SIFT_CC_ALG_ZSTD && lz4.buf && sift_cc_scan_lz4(z->len, lz4.len, rawlen, scan))
+	if (found && z->alg == SIFT_CC_ALG_ZSTD)
+	{
+		scan->seen = true;
+		scan->raw = rawlen;
+		scan->z = z->len;
+		scan->l = lz4.buf ? lz4.len : rawlen;	/* LZ4 that cannot shrink the strings stores them as they are */
+		scan->lz4 = lz4.buf && sift_cc_scan_lz4(z->len, lz4.len, rawlen);
+	}
+	if (scan->lz4)
 	{
 		pfree(z->buf);
 		*z = lz4;

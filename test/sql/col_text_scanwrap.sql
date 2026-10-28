@@ -1,5 +1,6 @@
 -- The strings of a text leaf stored inline (a string over 255 bytes) are wrapped by the default formula: LZ4 where it reads 3 times fewer instructions for the
--- bytes it adds (words of a skewed vocabulary, LZ4 1.5 times the zstd bytes), zstd where it adds too many (hex, which LZ4 cannot shrink); a NOTICE names the leaf and the off switch, and the rows are the normal plan's with each wrapper.
+-- bytes it adds (words of a skewed vocabulary, LZ4 1.5 times the zstd bytes), zstd where it adds too many (hex, which LZ4 cannot shrink); one NOTICE per CREATE INDEX names the columns
+-- that took LZ4 and the ones that kept zstd when the formula was close (mid, a vocabulary of 2,200 words: B 23 against C 28), with the numbers and the off switch, and the rows are the normal plan's with each wrapper.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -7,17 +8,19 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.agg_force = on;
 \ir test/agg_rows_helpers.sql
 
-CREATE TABLE sw (id int, txt text, hx text) WITH (autovacuum_enabled = off);
+CREATE TABLE sw (id int, txt text, hx text, mid text) WITH (autovacuum_enabled = off);
 INSERT INTO sw SELECT i,
 	(SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ')
 	 FROM (SELECT floor(400 * power((get_byte(decode(md5(i || ':' || w), 'hex'), 0) * 256 + get_byte(decode(md5(i || ':' || w), 'hex'), 1)) / 65536.0, 2))::int AS k FROM generate_series(1, 60) w) x),
-	(SELECT string_agg(md5(i || '/' || w), '') FROM generate_series(1, 10) w)
+	(SELECT string_agg(md5(i || '/' || w), '') FROM generate_series(1, 10) w),
+	(SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ')
+	 FROM (SELECT floor(2200 * (get_byte(decode(md5(i || ':' || w), 'hex'), 0) * 256 + get_byte(decode(md5(i || ':' || w), 'hex'), 1)) / 65536.0)::int AS k FROM generate_series(1, 60) w) x)
 FROM generate_series(1, 6000) i;
-INSERT INTO sw VALUES (6001, '', ''), (6002, NULL, NULL), (6003, 'short', 'x');
+INSERT INTO sw VALUES (6001, '', '', ''), (6002, NULL, NULL, NULL), (6003, 'short', 'x', 'short');
 
 SET client_min_messages = notice;
--- the text takes LZ4, the hex strings (LZ4 cannot shrink them) keep zstd
-CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops);
+-- the text takes LZ4, the hex strings (LZ4 cannot shrink them) keep zstd without a word, mid keeps it and says how close LZ4 came
+CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops, mid sift.col_text_ops);
 SET client_min_messages = warning;
 VACUUM sw;
 
@@ -30,7 +33,7 @@ DECLARE
 	bad int := 0;
 	n int := 0;
 BEGIN
-	FOR r IN SELECT col, pat FROM sw_pat, (VALUES ('txt'), ('hx')) c(col) ORDER BY col, pat LOOP
+	FOR r IN SELECT col, pat FROM sw_pat, (VALUES ('txt'), ('hx'), ('mid')) c(col) ORDER BY col, pat LOOP
 		FOREACH q IN ARRAY ARRAY[format('SELECT count(*), sum(id) FROM sw WHERE %I LIKE %L', r.col, r.pat), format('SELECT id FROM sw WHERE %I LIKE %L AND id %% 7 = 1', r.col, r.pat),
 			format('SELECT %I, count(*) FROM sw WHERE id %% 11 = 0 GROUP BY 1', r.col)] LOOP
 			n := n + 1;
@@ -56,8 +59,8 @@ DROP INDEX sw_zstd;
 DROP INDEX sw_lz4;
 
 -- a write buffer, a promotion and a merge write the same wrappers
-CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops);
-INSERT INTO sw SELECT 10000 + id, txt, hx FROM sw WHERE id % 3 = 0;
+CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops, mid sift.col_text_ops);
+INSERT INTO sw SELECT 10000 + id, txt, hx, mid FROM sw WHERE id % 3 = 0;
 SELECT sw_check('write buffer');
 SELECT sift.col_promote('sw_idx') >= 0 AS promoted;
 SELECT sw_check('promoted');
@@ -69,7 +72,9 @@ SELECT sift.col_verify('sw_idx', true);
 SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1,dict_cache_kb=1', false) IS NOT NULL AS lowered;
 CREATE TABLE sw_dict (id int, w text) WITH (autovacuum_enabled = off);
 INSERT INTO sw_dict SELECT i, (SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ') FROM (SELECT floor(400 * power((hashint8extended(i * 7 + g, 0) & 65535) / 65536.0, 2))::int AS k FROM generate_series(1, 12) g) x) || ' ' || i FROM generate_series(1, 20000) i;
+SET client_min_messages = notice;
 CREATE INDEX sw_dict_idx ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops);
+SET client_min_messages = warning;
 VACUUM sw_dict;
 CREATE INDEX sw_dict_zstd ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops) WITH (compression = 'auto; w=zstd');
 SELECT pg_relation_size('sw_dict_zstd') < pg_relation_size('sw_dict_idx') AS zstd_blocks_smaller;

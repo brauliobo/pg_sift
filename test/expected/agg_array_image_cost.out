@@ -11,6 +11,9 @@ SELECT i, i % 7,
        ARRAY(SELECT 'amenity_' || (hashint8extended(i * 20 + j, 3) & 8388607) FROM generate_series(1, 12) j)
 FROM generate_series(1, 100000) i;
 CREATE INDEX items_col ON items USING sift_col (kind, short_tags, long_tags) WITH (array_lengths = off);
+NOTICE:  sift_col index items_col: compression of the text of 1 column chosen by the formula (lz4 for 1, zstd kept for 0)
+DETAIL:  long_tags (long strings): lz4; a test reads 12.1 M instructions a MB of text with zstd and 4.3 M with lz4 (2.8 times fewer), lz4 takes 3.4 MB more (+57%): benefit 21 against cost 19.
+HINT:  ALTER INDEX items_col SET (compression = 'auto; long_tags=zstd') and REINDEX keeps zstd for a column, 'auto; long_tags=lz4' takes lz4.
 VACUUM (FREEZE, ANALYZE) items;
 SELECT attname, avg_width < 64 AS under_knee, avg_width > 100 AS over_knee FROM pg_stats WHERE tablename = 'items' AND attname LIKE '%tags' ORDER BY attname;
   attname   | under_knee | over_knee 

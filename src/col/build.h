@@ -9,9 +9,11 @@
 #include "access/genam.h"
 #include "nodes/execnodes.h"
 #include "port/atomics.h"
+#include "storage/s_lock.h"
 #include "utils/snapshot.h"
 
 #include "col/am.h"
+#include "col/enc.h"
 #include "col/seg.h"
 
 #define SIFT_COL_PHASE_SCAN		2
@@ -34,8 +36,17 @@ extern void sift_colb_init_meta(Relation index);
  * maxsegs allows. shared: a participant of a parallel build, which writes through a SHARED target and takes the generations of its
  * segments from the metapage; the rows and heap blocks it did go to the progress of the leader.
  */
-/* while a participant of a build writes, a NOTICE names the leaf whose strings are wrapped by the formula, once for the participants that share seen (two words, zeroed) */
-extern void sift_colb_scan_notice(Relation index, pg_atomic_uint64 *seen);
+/* What the formula of the design notes looked at in the strings of an index being built, by kind and leaf (past the first SIFT_COL_SCAN_LEAVES none), summed over its participants: [0] the LZ4 chosen, [1] the zstd kept */
+#define SIFT_COL_SCAN_LEAVES	64
+typedef struct ColScanAcc
+{
+	slock_t		mutex;
+	SiftCcScanSum sum[SIFT_SCAN_KINDS][SIFT_COL_SCAN_LEAVES][2];
+} ColScanAcc;
+
+/* The writes of this backend add to acc until it is watched with NULL; the leader reports the sums with one NOTICE at the end of the build */
+extern void sift_colb_scan_watch(ColScanAcc *acc);
+extern void sift_colb_scan_report(Relation index, ColScanAcc *acc);
 extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared);
 /* Scans the whole heap (serial build) or the superblock sb of nblocks heap blocks (parallel); both return the heap tuples scanned */
 extern double sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info);

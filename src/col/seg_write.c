@@ -1111,7 +1111,10 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	 */
 	for (int c = 0; c < ncols; c++)
 		if (w->dict[c] != NULL)
+		{
 			w->dict[c]->scan = w->setting >= SIFT_COL_FORMAT_PRESENCE && dict_uncached(w, c);
+			w->dict[c]->leaf1 = c + 1;
+		}
 	for (int c = 0; blocks && c < ncols; c++)
 	{
 		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))

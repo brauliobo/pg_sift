@@ -1542,9 +1542,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: +23.7% (554.2 against 448.2 MB, 3,000,000 rows, 6 columns); +54% (252.6 against 164.3 MB, sentences alone); +9.2% (309.9 against 283.8 MB, unique URLs and referers); build, merge and writes: Build 73,335 against 73,213 M instructions (+0.2%); 32,327 against 32,196 (+0.4%); other: Index +23.7% (6 columns, one of long prose), +54% (the sentences alone), +9.2% (unique URLs and referers); build within +0.4% of the instructions. Nothing for text that repeats (dictionary) or that LZ4 does not shrink (hex). Dictionary blocks: +12.7% to +18.9% (cut network index), +4.9% uncut. Format minor 29 for a segment with LZ4 blocks.
 - **When:** A text leaf with inline units whose strings compress to 0.3 to 0.6 of their bytes under zstd (prose, long text); not a leaf kept in the dictionary, not text that LZ4 cannot shrink (hex), not text that compresses so well that the extra bytes cost more than the unwrap saves.
 - **Default:** automatic — Weighted formula per chunk: B = log2(S) / log2(1.05) with S from 1.8 + the unwrap (zstd 45 instructions a compressed byte, LZ4 0.5 a byte + 5.5 a compressed byte), against C = G / 3 for the growth of the strings: sentences B 25.2 against C 18.0 take LZ4, titles B 9.6 against 32 keep what they have.
-- **Turn off:** compression = 'auto; col=zstd' (the NOTICE at CREATE INDEX says it), then REINDEX
+- **Turn off:** compression = 'auto; col=zstd' (the NOTICE at CREATE INDEX gives the line), then REINDEX; sift.col_format_minor = 14 writes no LZ4 dictionary blocks
 - **Upgrade from 3.5:** Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice.
-- **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX.
+- **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX; the NOTICE at CREATE INDEX lists the columns that took LZ4 (and the ones that came close) with their numbers.
 
 ### opt-in
 
@@ -2277,7 +2277,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut.c` | `key_cut` |
 | NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
 | NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
-| NOTICE | sift_col index %s stores the long text of %s with lz4 | `src/col/build.c` |  |
+| NOTICE | sift_col index %s: compression of the text of %s column%s chosen by the formula (lz4 for %s, zstd kept for %s) | `src/col/build.c` | `compression` |
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
