@@ -41,14 +41,12 @@ SET sift.enable_agg = off;                                                      
 
 Medians of six runs, warm, PostgreSQL 18.6, the same table and answers with `sift.enable_agg` on and off:
 
-| query | pg_sift | PostgreSQL |
-|---|---:|---:|
-| `SELECT category, count(*), sum(amount), avg(amount) FROM orders GROUP BY 1` | 0.14 ms | 54 ms |
-| `SELECT count(DISTINCT customer_id) FROM orders WHERE country = 'DE'` | 2.5 ms | 68 ms |
-| `SELECT customer_id, sum(amount) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 5` | 12 ms | 177 ms |
-| `SELECT country, category, count(*), sum(amount) FROM orders WHERE created_at >= '2025-06-01' AND created_at < '2025-07-01' GROUP BY 1, 2` | 20 ms | 30 ms |
+| system | count, sum, avg<br>by category | distinct customers<br>where country = 'DE' | top 5 customers<br>by sum | a month of orders<br>by country, category |
+|---|---:|---:|---:|---:|
+| pg_sift | 0.14 ms | 2.5 ms | 12 ms | 20 ms |
+| PostgreSQL | 54 ms | 68 ms | 177 ms | 30 ms |
 
-The last row is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen and still wins, but 4 to 19 times less than with the precision ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
+The last column is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen and still wins, but 4 to 19 times less than with the precision ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
 
 **Use it** when the data stays in PostgreSQL and you want dashboards, reports or ranked search from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
 

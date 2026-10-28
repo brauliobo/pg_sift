@@ -15,9 +15,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import cases as cases_mod  # noqa: E402
 import extras  # noqa: E402
+import mdtable  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
+MEASURES = ('PostgreSQL ms', 'pg_sift ms', 'speed-up', 'slope PostgreSQL', 'slope pg_sift')
 OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
 UNIT = {'ms': 'ms', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
 VARIANT = {'agg_forced': 'the aggregate scan forced whatever the plans cost (`sift.agg_force = on`)', 'scan': 'the units scanned (`sift.agg_preagg = off`)', 'runs_off': 'the sorted runs not read (`sift.topn_runs = off`)', 'zone_off': 'the zones of the keys after the first not used (`sift.topn_zone_keys = off`)',
@@ -267,8 +269,25 @@ def scale_lines(meta, rows, registry):
         '', 'Raw results: [bench/results/cases-scale.tsv](bench/results/cases-scale.tsv); reproduce with `bench/bench cases --scales 1,10,100 --docs`.']
 
 
+# the tables of the headline cases: the families of bench_charts.FAMILY that share a table
+CONTEXTS = (('Top-N and pre-aggregates', ('Top-N', 'Pre-aggregates, cubes and calendar cells')), ('Reports, windows and aggregates of aggregates', ('Reports, windows and aggregates of aggregates',)),
+            ('Lookups by key, keyset pages and joins', ('Dictionary strings and lookups by key', 'Joins, semi joins, key sets and lookups')), ('JSON arrays, laterals, CTEs and the rest', ('JSON arrays, laterals, CTEs and series', 'Other')))
+
+
+def wrap_id(case_id, width=12):
+    """a case id as a header that breaks after its underscores: `ranked_top_`<br>`per_group`"""
+    lines = ['']
+    for w in case_id.split('_'):
+        if lines[-1] and len(lines[-1]) + len(w) >= width:
+            lines.append('')
+        lines[-1] += w + '_'
+    lines[-1] = lines[-1][:-1]
+    return '<br>'.join('`%s`' % l for l in lines)
+
+
 def featured(rows, registry, scale_rows):
-    """the cases the registry marks `headline`, the ones that read like an application's query: a narrow table with the log-log slope of each engine over the sizes of cases-scale.tsv when it has them"""
+    """the cases the registry marks `headline`, the ones that read like an application's query: a table for each context, a column for each case (its header links the SQL), rows PostgreSQL, pg_sift,
+    the speed-up and the log-log slope of each over the sizes of cases-scale.tsv when it has them"""
     import bench_charts
     figs = {f['case'].id: f for f in collect(rows, registry) if f['metric'] == f['case'].metrics[0]}
     ser = {}
@@ -276,18 +295,22 @@ def featured(rows, registry, scale_rows):
         cid, _, n = r['case'].partition('@')
         if r['metric'] == 'ms' and r['arm'] in ('native', 'sift') and r['value'] not in ('', 'NA', 'error') and n:
             ser.setdefault(cid, {}).setdefault(r['arm'], []).append((int(n), float(r['value'])))
-    head = ['case', 'what it stresses', 'PostgreSQL ms', 'pg_sift ms', 'speed-up', 'slope PostgreSQL / pg_sift']
     flips = plan_flips(scale_rows)
-    body = []
+    line = {}   # (measure, case id) -> cell
     for c in registry:
         f = figs.get(c.id)
         if not c.headline or not f or c.metrics[0] != 'ms':
             continue
         r = verdict(f)
-        sp = declined(f) if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
-        sl = ['%.2f' % bench_charts.slope(*zip(*sorted(ser[c.id][a]))) if len(ser.get(c.id, {}).get(a, [])) >= 3 else '-' for a in ('native', 'sift')]
-        body.append(['[`%s`](bench/cases/%s.sql)' % (c.id, c.id), c.label.replace('|', '\\|'), figure(f['native']), "PostgreSQL's plan" if f['kept'] else figure(f['sift']), sp, ' / '.join(sl)])
-    return (extras.table(head, body, ['---', '---', '---:', '---:', '---:', '---:']) + ([''] + flips if flips else [])) if body else []
+        sp = declined(f).replace("default: PostgreSQL's plan; ", '') if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
+        sl = ['%.2f' % bench_charts.slope(*zip(*sorted(ser[c.id][a]))) if len(ser.get(c.id, {}).get(a, [])) >= 3 else 'n/a' for a in ('native', 'sift')]
+        line.update({(m, c.id): v for m, v in zip(MEASURES, (figure(f['native']), "PostgreSQL's plan" if f['kept'] else figure(f['sift']), sp, *sl))})
+    groups = []
+    for title, families in CONTEXTS:
+        ids = [c.id for c in registry if (MEASURES[0], c.id) in line and bench_charts.family(c.id) in families]
+        if ids:
+            groups.append((title, [(i, '[%s](bench/cases/%s.sql)' % (wrap_id(i), i)) for i in ids]))
+    return (mdtable.tables(MEASURES, groups, lambda m, i: line[m, i], first='') + ([''] + flips if flips else [])) if groups else []
 
 
 def plan_flips(scale_rows):
@@ -316,7 +339,7 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
            '**Takeaway:** ' + takeaway(figs, brief=True), '']
     table = featured(rows, registry, scale_rows)
     if table:
-        out += ['The cases that read like an application\'s query, with the SQL in `bench/cases/` and the slope of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows):' % results_dir, ''] + table + ['']
+        out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows):' % results_dir, ''] + table + ['']
     out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
             'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
             '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (

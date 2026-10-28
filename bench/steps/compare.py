@@ -20,13 +20,14 @@ import bench_charts  # noqa: E402  (steps/bench_charts.py: the tenants, the pg_d
 import cases as cases_mod  # noqa: E402
 import cases_render  # noqa: E402
 import extras  # noqa: E402
+import mdtable  # noqa: E402
 import readme  # noqa: E402  (steps/readme.py: the search tier, replace_block)
 import store_charts  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 MINE = ('sift', 'sift_table')
-NOT = 'not measured'
+NOT = 'n/a'
 LABEL = {'pg': 'PostgreSQL', 'ch': 'ClickHouse', 'es': 'Elasticsearch', 'citus': 'Citus columnar', 'duckdb': 'pg_duckdb'}
 
 
@@ -90,8 +91,8 @@ def shape_pairs(results, what):
     return out
 
 
-GENERIC = (('Generic suite, TPC-H-like (5 queries, 1,000,000 lineitem rows, generated)', 'tpch_'), ('Generic suite, ClickBench-like (10 queries, a generated wide table of 1,000,000 rows)', 'hits_'),
-           ('Generic suite, time series (4 queries, 1,000,000 readings)', 'ts_'), ('Write overhead of a `sift_col` index on a heap table (20,000 single-row INSERTs, 20,000 UPDATEs)', 'oltp_'))
+GENERIC = (('TPC-H-like', 'the TPC-H-like suite (5 queries, 1,000,000 lineitem rows, generated)', 'tpch_'), ('ClickBench-like', 'the ClickBench-like suite (10 queries, a generated wide table of 1,000,000 rows)', 'hits_'),
+           ('time series', 'the time series suite (4 queries, 1,000,000 readings)', 'ts_'), ('index write overhead', 'the write overhead of a `sift_col` index on a heap table (20,000 single-row INSERTs, 20,000 UPDATEs)', 'oltp_'))
 
 
 def case_pairs(results, prefix=None):
@@ -100,7 +101,7 @@ def case_pairs(results, prefix=None):
     if not os.path.exists(path):
         return []
     figs = [f for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()) if f['metric'] == 'ms' and f['native'] and f['sift']
-            and (f['case'].id.startswith(prefix) if prefix else not f['case'].id.startswith(tuple(p for _, p in GENERIC)))]
+            and (f['case'].id.startswith(prefix) if prefix else not f['case'].id.startswith(tuple(g[2] for g in GENERIC)))]
     return [(f['case'].id, f['native'] / f['sift']) for f in figs if not f['kept']], sum(1 for f in figs if f['kept'])
 
 
@@ -150,46 +151,46 @@ def rows_of(results):
     est = ('pg', 'ch', 'es', 'citus', 'duckdb')
     rows = []
 
-    def store_row(name, qq, st=S, D=D1, tier=t1):
-        rows.append((name, {e: cell(store_pairs(st, D, tier, e, qq)) for e in est}))
+    def store_row(slug, what, qq, st=S, D=D1, tier=t1):
+        rows.append((slug, what, {e: cell(store_pairs(st, D, tier, e, qq)) for e in est}))
 
-    store_row('Point lookup by key', ['point-lookup'])
-    store_row('Counts and sums by group, distinct counts, time buckets', ['orders-per-country', 'revenue-per-month', 'top-categories', 'customers-per-month'])
-    store_row('Filtered average, range count', ['average-shipped-order', 'big-recent-orders'])
-    store_row('Text search with filters: a count, a group-by, the newest 10 (pg_duckdb: a substring match)', ['search-count', 'search-facets', 'search-newest'])
+    store_row('point lookup', 'point lookup by key', ['point-lookup'])
+    store_row('groups, distinct, buckets', 'counts and sums by group, distinct counts, time buckets (4 questions)', ['orders-per-country', 'revenue-per-month', 'top-categories', 'customers-per-month'])
+    store_row('filtered avg, range count', 'a filtered average and a range count', ['average-shipped-order', 'big-recent-orders'])
+    store_row('text search', 'text search with filters: a count, a group-by, the newest 10 (pg_duckdb: a substring match)', ['search-count', 'search-facets', 'search-newest'])
     if SS:
         t10 = SS.tier_of(10_000_000, 3)
         if t10:
-            store_row('The 7 questions at 10,000,000 orders (400x the rows of the smallest size)', qs, SS, D10, t10)
+            store_row('7 questions, 10M orders', 'the 7 questions at 10,000,000 orders (400x the rows of the smallest size)', qs, SS, D10, t10)
     whole, sets = shape_pairs(results, 'whole'), shape_pairs(results, 'set')
     if whole.get('pg'):
-        rows.append(('Application shapes, whole table (8 reports: counts, groups, distinct, percentiles)', {'pg': cell(whole['pg']), 'ch': cell(whole['ch']), 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+        rows.append(('whole-table reports', 'application shapes on the whole table (8 reports: counts, groups, distinct, percentiles)', {'pg': cell(whole['pg']), 'ch': cell(whole['ch']), 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
     if sets.get('pg'):
-        rows.append(('Application shapes, reports of a set of tenants (7 shapes at 10, 400 and 4,000 tenants)', {'pg': cell(sets['pg']), 'ch': cell(sets['ch']), 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+        rows.append(('tenant-set reports', 'application shapes, reports of a set of tenants (7 shapes at 10, 400 and 4,000 tenants)', {'pg': cell(sets['pg']), 'ch': cell(sets['ch']), 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
     cp = case_pairs(results)
     if cp:
         pairs, kept = cp
-        rows.append((f'Benchmark cases ({len(pairs) + kept} query shapes; the planner kept PostgreSQL\'s plan on {kept})', {'pg': cell(pairs), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
-    for name, prefix in GENERIC:
+        rows.append(('benchmark cases', f'the benchmark cases ({len(pairs) + kept} query shapes; the planner kept PostgreSQL\'s plan on {kept})', {'pg': cell(pairs), 'ch': NOT, 'es': NOT, 'citus': NOT, 'duckdb': NOT}))
+    for slug, what, prefix in GENERIC:
         gp = case_pairs(results, prefix)
         if gp and (gp[0] or gp[1]):
             pairs, kept = gp
-            rows.append((name, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': cell(engine_pairs(results, prefix, 'clickhouse')),
+            rows.append((slug, what, {'pg': cell(pairs) + (f"; the planner kept PostgreSQL's plan on {kept}" if kept else ''), 'ch': cell(engine_pairs(results, prefix, 'clickhouse')),
                                 'es': cell(engine_pairs(results, prefix, 'elasticsearch')), 'citus': cell(engine_pairs(results, prefix, 'citus', 'citus_dist')), 'duckdb': cell(engine_pairs(results, prefix, 'pg_duckdb', 'duckdb'))}))
     ids = {c.id for c in cases_mod.read_registry() if c.dataset == 'orders'} & {r['case'] for r in generic_rows(results)}
     if ids:
-        rows.append((f'Headline benchmark cases that only read the orders table ({len(ids)} of them)', {'pg': NOT, 'ch': cell(engine_pairs(results, '', 'clickhouse', ids=ids)), 'es': cell(engine_pairs(results, '', 'elasticsearch', ids=ids)),
+        rows.append(('orders-only cases', f'the headline benchmark cases that only read the orders table ({len(ids)} of them)', {'pg': NOT, 'ch': cell(engine_pairs(results, '', 'clickhouse', ids=ids)), 'es': cell(engine_pairs(results, '', 'elasticsearch', ids=ids)),
                      'citus': cell(engine_pairs(results, '', 'citus', 'citus_dist', ids=ids)), 'duckdb': cell(engine_pairs(results, '', 'pg_duckdb', 'duckdb', ids=ids))}))
     tier = t1
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
-    for name, variant, metric, inv in (('Update 10% of the rows, rows per second (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),
-                                       ('Delete 5% of the rows, rows per second', 'delete 5%', 'phase_rows_s', False),
-                                       ('Load of the 1,000,000 rows (data, indexes, merge)', '-', 'load_s', True)):
+    for slug, what, variant, metric, inv in (('update 10%', 'rows per second of an update of 10% of the rows (ClickHouse: its fastest way)', 'update 10%', 'phase_rows_s', False),
+                                             ('delete 5%', 'rows per second of a delete of 5% of the rows', 'delete 5%', 'phase_rows_s', False),
+                                             ('load 1M rows', 'the load of the 1,000,000 rows (data, indexes, merge)', '-', 'load_s', True)):
         r = rate_pairs(S, tier, others, variant, metric, inv)
         row = {e: single(r[e][0][1], 'faster', 'slower') if e in r else NOT for e in est}
         if metric == 'phase_rows_s':
-            row['citus'] = 'n/a: columnar tables are append-only'
-        rows.append((name, row))
+            row['citus'] = NOT
+        rows.append((slug, what, row))
     return rows
 
 
@@ -200,7 +201,7 @@ def size_row(S, tier):
     for e in ('pg', 'ch', 'es', 'citus'):
         s = store_charts.sizes(S, tier, e)[2] if e in S.engines(tier) else None
         out[e] = single(s / mine, 'smaller', 'larger') if s else NOT
-    return ('Size on disk, table and indexes (against `sift_table`, the smaller layout; `sift_col` keeps the heap)', {**out, 'duckdb': NOT})
+    return ('size on disk', 'the size on disk of table and indexes (against `sift_table`, the smaller layout; `sift_col` keeps the heap)', {**out, 'duckdb': NOT})
 
 
 def sources(results):
@@ -239,22 +240,23 @@ def search_tables(results):
         return []
     engines = [e for e in tt.articles if e not in ('sift', 'sift_nopos')]
     n = f'{tt.corpus("articles"):,}'
-    head = ['| pg_sift\'s queries per second over | ' + ' | '.join(f'`{c}`' for c in tt.classes) + ' | index MiB |', '|---|' + '---:|' * (len(tt.classes) + 1)]
     mine_mib = tt.num('articles', 'sift', metric='index_mib')
-    body, slower = [], {}
+    cells, slower = {}, {}
     for e in engines:
-        cells = []
         for c in tt.classes:
             r = readme.ratio(tt.qps('sift', c), tt.qps(e, c))[0]
-            cells.append(x(r) if r else 'n/a')
+            cells[tt.label(e), c] = x(r) if r else 'n/a'
             if r and r <= 1 - TIE:
                 slower.setdefault(tt.label(e), []).append(f'`{c}` ({x(1 / r)})')
         mib = tt.num('articles', e, metric='index_mib')
-        body.append(f'| {tt.label(e)} | ' + ' | '.join(cells) + f' | {mib:.0f} |' if mib else f'| {tt.label(e)} | ' + ' | '.join(cells) + ' | n/a |')
-    body.append(f'| pg_sift (the row compared) | ' + ' | '.join(f'{tt.qps("sift", c)["value"] if isinstance(tt.qps("sift", c), dict) else readme.number(tt.qps("sift", c)):,.0f} qps' for c in tt.classes) + f' | {mine_mib:.0f} |')
+        cells[tt.label(e), 'index MiB'] = f'{mib:.0f}' if mib else 'n/a'
+    mine = 'pg_sift (the row compared)'
+    cells.update({(mine, c): f'{tt.qps("sift", c)["value"] if isinstance(tt.qps("sift", c), dict) else readme.number(tt.qps("sift", c)):,.0f} qps' for c in tt.classes})
+    cells[mine, 'index MiB'] = f'{mine_mib:.0f}'
+    body = mdtable.tables([tt.label(e) for e in engines] + [mine], [('', [(c, f'`{c}`') for c in tt.classes] + [('index MiB', 'index MiB')])], lambda r, c: cells[r, c], max_cols=7, first="pg_sift's queries per second over")
     s = tt.session
     out = [f'{n} Simple English Wikipedia articles, 8 clients, every engine on the same data and queries ({s.get("quota", "3 CPUs")} for each server, {s.get("cpu", "?")}, {s.get("date", "?")}, PostgreSQL 18.6, Elasticsearch {s.get("elasticsearch", "?")}); '
-           'the ratio is pg_sift\'s throughput over the engine\'s, so above 1x pg_sift is faster. Not in the table: PostgreSQL\'s own full-text search (the `gin` engine of `bench/engines.tsv` has no stored result) and OpenSearch (no adapter).', ''] + head + body
+           'the ratio is pg_sift\'s throughput over the engine\'s, so above 1x pg_sift is faster. Not in the tables: PostgreSQL\'s own full-text search (the `gin` engine of `bench/engines.tsv` has no stored result) and OpenSearch (no adapter).', ''] + body
     if slower:
         out += ['', 'pg_sift is slower than ' + '; '.join(f'{e} on ' + ', '.join(cs) for e, cs in slower.items()) + '.']
     return out
@@ -295,15 +297,29 @@ def ports_table():
     return rows
 
 
+# the columns of "At a glance", one table for each group of benchmarks
+GLANCE = (('The orders dataset', ('point lookup', 'groups, distinct, buckets', 'filtered avg, range count', 'text search', '7 questions, 10M orders')),
+          ('Application shapes and benchmark cases', ('whole-table reports', 'tenant-set reports', 'benchmark cases', 'orders-only cases')),
+          ('Generic suites', ('TPC-H-like', 'ClickBench-like', 'time series', 'index write overhead')),
+          ('Writes and size (Citus columnar tables are append-only: n/a for updates and deletes)', ('update 10%', 'delete 5%', 'load 1M rows', 'size on disk')))
+
+
 def compare_block(results):
     S = store_charts.Store(os.path.join(results, 'store.json'))
     rows = rows_of(results)
     rows.append(size_row(S, S.tier_of(1_000_000, 3)))
     est = ('pg', 'ch', 'es', 'citus', 'duckdb')
-    head = ['| workload | ' + ' | '.join(LABEL[e] for e in est) + ' |', '|---|' + '---|' * len(est)]
-    body = [f'| {name} | ' + ' | '.join(cells.get(e, NOT) for e in est) + ' |' for name, cells in rows]
-    return ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. '
-            f'Losses are in bold; `{NOT}` is a comparison no result file holds. The conditions of every number (engine and version, data size, host, settings, date) are under the table.', ''] + head + body
+    cells = {(slug, e): c.replace(' (', '<br>(', 1).partition('; ') for slug, _, cs in rows for e, c in cs.items()}   # (cell, '; ', notes): the losses and the plans the planner kept go under the table
+    shown = {(LABEL[e], k): f'**{c[0]}**' if 'slower' in c[2] else c[0] for (k, e), c in cells.items()}   # 'N of M (a to b)' breaks after the count
+    desc = {slug: what for slug, what, _ in rows}
+    out = ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. '
+           f'Losses are in bold and named under their table; `{NOT}` is a comparison no result file holds. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
+    for title, slugs in GLANCE:
+        slugs = [k for k in slugs if k in desc]
+        out += ['', f'{title}: ' + '; '.join(f'{k} = {desc[k]}' for k in slugs) + '.', ''] + mdtable.tables([LABEL[e] for e in est], [('', [(k, k) for k in slugs])], lambda r, k: shown[r, k])
+        notes = [f'- {k}, {LABEL[e]}: ' + cells[k, e][2].replace('**', '') + '.' for k in slugs for e in est if cells[k, e][2]]
+        out += [''] * bool(notes) + notes
+    return out
 
 
 def generic_block(results):
@@ -322,12 +338,26 @@ def generic_block(results):
             if r['value'] in ('NA', ''):
                 why.setdefault(r['note'] or 'no reason recorded', []).append(r['case'])
         pairs = engine_pairs(results, '', arm) if arm != 'pg' else []
-        body.append('| %s | %d of %d | %s | %s |' % (ARM_LABEL.get(arm, arm), len(ran), len(mine), cell(pairs) if pairs else 'the reference (see the cases)' if arm == 'pg' else NOT,
+        body.append('| %s | %d of %d | %s | %s |' % (ARM_LABEL.get(arm, arm), len(ran), len(mine), cell(pairs) if pairs else 'the reference (see the cases)' if arm == 'pg' else 'not measured',
                                                    '; '.join('%s (%s)' % (reason.replace('|', '\\|'), ', '.join('`%s`' % c for c in cs)) for reason, cs in why.items()) or '-'))
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
             'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
+
+
+def write_cost_block(results):
+    """what a write costs on the primary and the standby, from write-single-statements.tsv and write-concurrent-inserts.tsv: backend instructions / WAL bytes / standby replay instructions, per row"""
+    k = lambda v: f'{int(v) / 1000:.1f}k'  # noqa: E731
+    cost = lambda r, instr: f'{k(r[instr])} / {int(r["wal_B/row"]):,} / {k(r["replay_instr/row"])}'  # noqa: E731
+    single = {(r['variant'], r['cell']): r for r in extras.read(os.path.join(results, 'write-single-statements.tsv'))[1]}
+    writers = {(r['variant'], r['clients']): r for r in extras.read(os.path.join(results, 'write-concurrent-inserts.tsv'))[1]}
+    system = {'`pk`': 'pk', '`btree`': 'bt', '`sift_col`': 'sd'}
+    groups = [('Inserts and `COPY` (a row a statement, 100 rows a statement, 50,000 rows)', [('ins1', '`INSERT`, 1 row'), ('ins100', '`INSERT`, 100 rows'), ('copy', '`COPY`')]),
+              ('Updates, deletes and `VACUUM`', [('upd_hot', '`UPDATE`, no index covers the column'), ('upd_cov', '`UPDATE`, only the `sift_col` covers it'), ('upd_key', '`UPDATE`, every index covers it'),
+                                                  ('del', '`DELETE`'), ('vacuum', '`VACUUM` after the deletes')])]
+    return (mdtable.tables(list(system), groups, lambda r, c: cost(single[system[r], c], 'instr_backend/row'))
+            + [''] + mdtable.tables(list(system), [('Inserts of one row a transaction, by number of writers', [(n, f'{n} writer' + 's' * (n != '1')) for n in ('1', '4', '16')])], lambda r, c: cost(writers[system[r], c], 'instr/row')))
 
 
 def sources_block(results):
@@ -348,30 +378,26 @@ def numbers_block(results):
     t1 = S.tier_of(1_000_000, 3)
     est = [e for e in bench_charts.ORDER]
 
-    def table(st, D, tier, qs, size_label):
+    def table(st, D, tier, qs):
         es = [e for e in est if e in st.engines(tier) or e == 'duckdb' and D]
-        head = ['| question | ' + ' | '.join(bench_charts.SHORT[e] + ('†' if e == 'duckdb' else '') for e in es) + ' |', '|---|' + '---:|' * len(es)]
-        body = []
-        for q in qs:
-            vals = {e: bench_charts.lat(st, D, tier, e, q) for e in es}
-            vals = {e: v[0] for e, v in vals.items() if v}
-            lo = min(vals.values())
-            cells = [(f'**{extras.ms(vals[e])}**' if vals[e] <= lo * (1 + TIE) else extras.ms(vals[e])) if e in vals else 'n/a' for e in es]
-            body.append(f'| {q} | ' + ' | '.join(cells) + ' |')
-        return head + body
+        lat = {(e, q): v[0] for e in es for q in qs if (v := bench_charts.lat(st, D, tier, e, q))}
+        best = {q: min(lat[e, q] for e in es if (e, q) in lat) for q in qs}
+        name = {bench_charts.SHORT[e] + ('†' if e == 'duckdb' else ''): e for e in es}
+        cell = lambda n, q: (f'**{extras.ms(lat[name[n], q])}**' if lat[name[n], q] <= best[q] * (1 + TIE) else extras.ms(lat[name[n], q])) if (name[n], q) in lat else 'n/a'
+        return mdtable.tables(list(name), [('', [(q, q) for q in qs])], cell, max_cols=7)
 
     qs = list(S.queries)
-    out = [f'Median of the warm runs in milliseconds on 1,000,000 orders, the fastest of a row and anything within 5% of it in bold; pg_sift is `sift_col` or `sift_table` (the table itself in column format). '
+    out = [f'Median of the warm runs in milliseconds on 1,000,000 orders, the fastest of a question and anything within 5% of it in bold; pg_sift is `sift_col` or `sift_table` (the table itself in column format). '
            '† pg_duckdb is its own run: the better of its heap and Parquet modes, a different PostgreSQL build and a `psql` client, so its sub-millisecond cells differ from the others (conditions above).', '']
-    out += table(S, D1, t1, qs, '1M')
+    out += table(S, D1, t1, qs)
     if SS and SS.tier_of(10_000_000, 3):
         t10 = SS.tier_of(10_000_000, 3)
-        out += ['', 'The same questions on 10,000,000 orders (warm medians, ms):', ''] + table(SS, D10, t10, qs, '10M')
+        out += ['', 'The same questions on 10,000,000 orders (warm medians, ms):', ''] + table(SS, D10, t10, qs)
     return out
 
 
 def render(results, readme_path):
-    for name, fn in (('compare', compare_block), ('compare-sources', sources_block), ('compare-search', search_block), ('compare-ports', ports_block), ('numbers', numbers_block)):
+    for name, fn in (('compare', compare_block), ('compare-sources', sources_block), ('compare-search', search_block), ('compare-ports', ports_block), ('numbers', numbers_block), ('write-cost', write_cost_block)):
         readme.replace_block(readme_path, name, fn(results))
     benchmarks = os.path.join(os.path.dirname(readme_path), 'docs', 'BENCHMARKS.md')
     if os.path.exists(benchmarks) and '<!-- bench:generic:begin' in open(benchmarks).read():

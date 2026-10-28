@@ -8,6 +8,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import charts  # noqa: E402
+import mdtable  # noqa: E402
 from store_render import best_bold, best_high, md_table as table, ms, rate  # noqa: E402
 
 LANES = ['pg', 'sift', 'sift_maint', 'sift_table']
@@ -55,16 +56,16 @@ def cell(v, f):
     return m if len(v) == 1 else f'{m} [{f(min(v))}-{f(max(v))}]'
 
 
-def line(S, size, key, f, best, label):
-    """the cells of a row; in bold the lanes whose median is inside the range of the runs of the best lane (a tie), the best median alone where there is a single run"""
+def line(S, size, key, f, best):
+    """the cells of a column, one for each lane; in bold the lanes whose median is inside the range of the runs of the best lane (a tie), the best median alone where there is a single run"""
     vs = [S.vals(size, e, *key) for e in S.lanes]
     meds = [statistics.median(v) if v else None for v in vs]
     cells = [cell(v, f) for v in vs]
     top = [m for m in meds if m is not None]
     if not top or not any(len(v) > 1 for v in vs):
-        return [f'{size:,}', label] + best(meds, cells)
+        return best(meds, cells)
     win = vs[meds.index(max(top) if best is best_high else min(top))]
-    return [f'{size:,}', label] + [f'**{c}**' if m is not None and min(win) <= m <= max(win) else c for m, c in zip(meds, cells)]
+    return [f'**{c}**' if m is not None and min(win) <= m <= max(win) else c for m, c in zip(meds, cells)]
 
 
 def header(S):
@@ -82,32 +83,38 @@ def header(S):
 
 
 def tables(S, detail):
-    head = lambda first: first + [NAMES[e] for e in S.lanes]
-    out = ['**Bulk changes** (rows per second, higher is better)', '']
-    out += md_table(head(['orders', 'change']), [line(S, s, ('-', v, 'phase_rows_s'), lambda x: f'{x:,.0f}', best_high, label) for s in S.sizes for v, label in CHANGES]) + ['']
-    out += ['**The read around a churn** (the monthly revenue query, and the next query after a single-row change; p50 ms, lower is better)', '']
+    """a table for each question, a row for each lane and a column for each measure (steps/mdtable.py)"""
+    lanes = [NAMES[e] for e in S.lanes]
+    count = lambda x: f'{x:,.0f}'  # noqa: E731
+    out = []
+
+    def emit(groups):   # [(caption, [(header, the cell of each lane)])]
+        cells = {(g, h): c for g, (_, cs) in enumerate(groups) for h, c in cs}
+        out.extend(mdtable.tables(lanes, [(cap, [((g, h), h) for h, _ in cs]) for g, (cap, cs) in enumerate(groups)], lambda r, k: cells[k][lanes.index(r)]) + [''])
+
+    emit([(f'**Bulk changes**, {s:,} orders (rows per second, higher is better)', [(v, line(S, s, ('-', v, 'phase_rows_s'), count, best_high)) for v, _ in CHANGES]) for s in S.sizes])
     qs = [('revenue-per-month', 'revenue per month')] + ([('average-shipped-order', 'average shipped order')] if detail else [])
-    rows = [line(S, s, (q, v, 'latency_ms'), ms, best_bold, f'{label}: {name}') for s in S.sizes for q, label in qs for v, name in STATES]
-    rows += [line(S, s, ('-', 'commit', 'visible_ms'), ms, best_bold, 'a single-row change seen by the next query') for s in S.sizes]
-    out += md_table(head(['orders', 'state']), rows) + ['']
-    out += ['**VACUUM, WAL and space**', '']
-    body = []
+    emit([(f'**The read around a churn**, {s:,} orders (the monthly revenue query' + (' and the average shipped order' if detail else '') + ', and the next query after a single-row change; p50 ms, lower is better)',
+           [(f'{label}: {name}' if detail else name, line(S, s, (q, v, 'latency_ms'), ms, best_bold)) for q, label in qs for v, name in STATES]
+           + [('a single-row change seen by the next query', line(S, s, ('-', 'commit', 'visible_ms'), ms, best_bold))]) for s in S.sizes])
+    vac = []
     for s in S.sizes if detail else S.sizes[-1:]:   # the README states the largest size, the part of docs/BENCHMARKS.md every size
-        body.append(line(S, s, ('-', 'maintenance', 'maintain_s'), lambda x: f'{x:.1f}', best_bold, 'VACUUM (ANALYZE), seconds'))
         wal = lambda e: [S.med(s, e, '-', v, 'wal_mib') for v, _ in CHANGES] + [S.med(s, e, '-', 'maintenance', 'wal_mib')]
-        body.append([f'{s:,}', 'WAL MiB: the three changes / VACUUM'] + [(f'{sum(w[:3]):,.0f} / {w[3]:,.0f}' if None not in w else 'n/a') for w in map(wal, S.lanes)])
-        body.append([f'{s:,}', 'size MiB: fresh, after the changes, after VACUUM'] + [' / '.join(f'{x:,.0f}' if x is not None else 'n/a' for x in (S.med(s, e, '-', v, 'size_mib') for v in ('before', 'after churn', 'after maintenance'))) for e in S.lanes])
-    out += md_table(head(['orders', '']), body) + ['']
+        size = lambda e: [S.med(s, e, '-', v, 'size_mib') for v in ('before', 'after churn', 'after maintenance')]
+        vac.append((f'**VACUUM, WAL and space**, {s:,} orders (WAL MiB: the three changes / the VACUUM; size MiB: fresh / after the changes / after VACUUM)', [
+            ('VACUUM (ANALYZE), seconds', line(S, s, ('-', 'maintenance', 'maintain_s'), lambda x: f'{x:.1f}', best_bold)),
+            ('WAL MiB', [f'{sum(w[:3]):,.0f} / {w[3]:,.0f}' if None not in w else 'n/a' for w in map(wal, S.lanes)]),
+            ('size MiB', [' / '.join(f'{x:,.0f}' if x is not None else 'n/a' for x in size(e)) for e in S.lanes])]))
+    emit(vac)
     cs = S.churn_size()
     if cs:
-        out += [f'**Steady churn and inserts only** ({cs:,} orders, 4 clients, {max(r["churn_seconds"] for r in S.meta["runs"].values())} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement)', '']
-        body = [line(S, cs, ('churn', 'steady', 'tps'), lambda x: f'{x:,.0f}', best_high, 'churn: transactions/s'),
-                line(S, cs, ('churn', 'steady', 'p99_ms'), ms, best_bold, 'churn: p99 ms'),
-                line(S, cs, ('churn', 'steady', 'read_p50_ms'), ms, best_bold, 'churn: the monthly revenue read meanwhile, p50 ms'),
-                line(S, cs, ('churn', 'steady', 'wal_bytes_per_tx'), lambda x: f'{x:,.0f}', best_bold, 'churn: WAL bytes per transaction'),
-                line(S, cs, ('append', 'steady', 'rows_s'), lambda x: f'{x:,.0f}', best_high, 'inserts: rows/s'),
-                line(S, cs, ('append', 'steady', 'wal_bytes_per_tx'), lambda x: f'{x / 1000:,.0f}', best_bold, 'inserts: WAL bytes per row')]
-        out += md_table(head(['orders', '']), body) + ['']
+        emit([(f'**Steady churn and inserts only** ({cs:,} orders, 4 clients, {max(r["churn_seconds"] for r in S.meta["runs"].values())} s each; churn: 40% update, 30% delete, 30% insert of one row; inserts: 1,000 rows a statement)', [
+            ('churn: transactions/s', line(S, cs, ('churn', 'steady', 'tps'), count, best_high)),
+            ('churn: p99 ms', line(S, cs, ('churn', 'steady', 'p99_ms'), ms, best_bold)),
+            ('churn: monthly revenue read p50 ms', line(S, cs, ('churn', 'steady', 'read_p50_ms'), ms, best_bold)),
+            ('churn: WAL bytes per transaction', line(S, cs, ('churn', 'steady', 'wal_bytes_per_tx'), count, best_bold)),
+            ('inserts: rows/s', line(S, cs, ('append', 'steady', 'rows_s'), count, best_high)),
+            ('inserts: WAL bytes per row', line(S, cs, ('append', 'steady', 'wal_bytes_per_tx'), lambda x: f'{x / 1000:,.0f}', best_bold))])])
     return out
 
 
