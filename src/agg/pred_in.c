@@ -5,6 +5,7 @@
 
 #include "col/kern.h"
 #include "core/cmp.h"
+#include "core/i64set.h"
 #include "core/limits.h"
 #include "agg/pred_in_int.h"
 
@@ -37,46 +38,6 @@ dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
 	MemoryContextSwitchTo(old);
 	s->lut[p->id] = lut;
 	return lut;
-}
-
-static inline uint64
-in_hash64(uint64 x)
-{
-	x *= UINT64CONST(0x9E3779B97F4A7C15);
-	return x ^ (x >> 32);
-}
-
-/* the values of a 64-bit IN list in an open-addressing table of at most half full slots */
-static void
-in_hash_build(PredState *st, const int64 *vals, int nv)
-{
-	uint64		cap = 16;
-
-	while (cap < (uint64) nv * 2)
-		cap <<= 1;
-	st->in_hmask = cap - 1;
-	st->in_htab = palloc(cap * sizeof(int64));
-	st->in_hused = palloc0(cap);
-	for (int i = 0; i < nv; i++)
-	{
-		uint64		h = in_hash64((uint64) vals[i]) & st->in_hmask;
-
-		while (st->in_hused[h] && st->in_htab[h] != vals[i])
-			h = (h + 1) & st->in_hmask;
-		st->in_hused[h] = 1;
-		st->in_htab[h] = vals[i];
-	}
-}
-
-static bool
-in_hash_has(const PredState *st, int64 x)
-{
-	uint64		h = in_hash64((uint64) x) & st->in_hmask;
-
-	for (; st->in_hused[h]; h = (h + 1) & st->in_hmask)
-		if (st->in_htab[h] == x)
-			return true;
-	return false;
 }
 
 #define MAX_BITS_RANGE	(1 << 28)	/* values a bit table covers (32 MB) */
@@ -162,7 +123,7 @@ in_build(PredState *st, const int64 *vals, int nv, int64 lo, int64 hi)
 	}
 	if (kind == IN_HASH)
 	{
-		in_hash_build(st, vals, nv);
+		sift_i64set_build(&st->in_hset, vals, nv);
 		return;
 	}
 	st->in_nlut = (uint32) span;
@@ -202,9 +163,9 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 		const int64 *x = (const int64 *) v->data + start;
 
 		clear_words(out, n);
-		if (st->in_htab)
+		if (st->in_hset.slot)
 			for (int i = 0; i < n; i++)
-				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+				out[i >> 6] |= (uint64) sift_i64set_has(&st->in_hset, x[i]) << (i & 63);
 		else if (st->in_bits)
 			for (int i = 0; i < n; i++)
 				out[i >> 6] |= (uint64) in_bit_has(st, x[i]) << (i & 63);
@@ -219,7 +180,7 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 		if (v->ovf && ex->lay->leaf[p->leaf].typid == NUMERICOID)
 			set_rows(v->ovf + start / 64, n, st->in_hasnan, out);
 	}
-	else if (st->in_htab || st->in_bits)
+	else if (st->in_hset.slot || st->in_bits)
 	{
 		const int32 *x = (const int32 *) v->data + start;
 
@@ -229,7 +190,7 @@ eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *ou
 				out[i >> 6] |= (uint64) in_bit_has(st, x[i]) << (i & 63);
 		else
 			for (int i = 0; i < n; i++)
-				out[i >> 6] |= (uint64) in_hash_has(st, x[i]) << (i & 63);
+				out[i >> 6] |= (uint64) sift_i64set_has(&st->in_hset, x[i]) << (i & 63);
 	}
 	else
 		sift_aggk->lut_i32(out, (const int32 *) v->data + start, n, (int32) st->in_lo, st->in_nlut, st->in_lut);

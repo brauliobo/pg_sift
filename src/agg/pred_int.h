@@ -5,6 +5,7 @@
 #define SIFT_AGG_PRED_INT_H
 
 #include "agg/agg_fwd_int.h"
+#include "core/i64set.h"
 #include "agg/leaf_int.h"
 #include "agg/tup_int.h"
 
@@ -27,9 +28,7 @@ typedef struct PredState
 	uint32		in_nvals;
 	uint64	   *in_bits;		/* ... or, when the range is too wide for a byte table, a bit for each value of [in_lo, in_lo + in_nbits) ... */
 	uint64		in_nbits;
-	int64	   *in_htab;		/* ... or, when the values are too far apart for that, a hash table of them, in_hmask + 1 slots, in_hused marks the full ones */
-	uint8	   *in_hused;
-	uint64		in_hmask;
+	SiftI64Set	in_hset;		/* ... or, when the values are too far apart for that, a hash table of them (.slot is NULL otherwise) */
 	ExprState  *expr;			/* SAP_LUT */
 	Param	   *param;
 	bool		null_result;	/* SAP_LUT: the expression for a NULL input */

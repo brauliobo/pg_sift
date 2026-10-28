@@ -23,12 +23,12 @@ set_values(const PredState *st, int *n)
 	int64	   *vals = palloc(st->in_nv * sizeof(int64));
 
 	*n = 0;
-	if (st->in_htab)
+	if (st->in_hset.slot)
 	{
-		/* check-memory: allow in_hmask is the capacity of a hash table minus one (pred_in.c) */
-		for (uint64 h = 0; h <= st->in_hmask; h++)
-			if (st->in_hused[h])
-				vals[(*n)++] = st->in_htab[h];
+		/* check-memory: allow in_hset.mask is the capacity of a hash table minus one (core/i64set.h) */
+		for (uint64 h = 0; h <= st->in_hset.mask; h++)
+			if (st->in_hset.slot[h] != st->in_hset.empty)
+				vals[(*n)++] = st->in_hset.slot[h];
 		qsort(vals, *n, sizeof(int64), sift_cmp_i64);
 	}
 	else
@@ -381,7 +381,7 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 		int			n = 0;
 
 		/* the NaN rows of a numeric leaf are the executor's */
-		if ((p->op && st->in_hasnull) || st->in_htab || st->in_hasnan)
+		if ((p->op && st->in_hasnull) || st->in_hset.slot || st->in_hasnan)
 			return false;
 		if (st->in_vals == NULL || st->in_nvals == 0 || st->in_nvals > FILTER_MAX_SET)
 			return false;

@@ -57,6 +57,8 @@ INSERT INTO sh_q (tbl, w) VALUES
  ('sh', 'id <> ALL (ARRAY(SELECT g * 13 FROM generate_series(1, 500) g))'),
  ('sh', 'b = ANY (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808]::bigint[])'),
  ('sh', 'b <> ALL (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808]::bigint[])'),
+ ('sh', 'b = ANY (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808, 9223372036854775807]::bigint[])'),
+ ('sh', 'b <> ALL (ARRAY(SELECT g * 100000000003 FROM generate_series(1, 300) g) || ARRAY[-9223372036854775808, 9223372036854775807]::bigint[])'),
  ('sh', 'd = ANY (ARRAY(SELECT date ''2020-01-01'' + g * 3 FROM generate_series(1, 100) g))'),
  ('sh', 'ts = ANY (ARRAY(SELECT timestamp ''2024-01-01'' + g * 5 * interval ''1 minute'' FROM generate_series(1, 400) g))'),
  ('sh', 'k = ANY (ARRAY(SELECT g FROM generate_series(1, 2999) g))'),
