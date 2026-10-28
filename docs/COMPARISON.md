@@ -90,6 +90,37 @@ Feature facts for search and analytics: pg_sift against the PostgreSQL options a
 - **A11, A12.** pg_sift needs no `shared_preload_libraries` entry for `sift_col`; only publishing a `sift_table` under `wal_level = logical` does. TimescaleDB needs `shared_preload_libraries = 'timescaledb'`. Citus installs with `shared_preload_libraries = 'citus'` in its README; since 13.2 columnar is a separate `citus_columnar` extension and whether it alone needs the preload is unverified.
 - **A14.** TimescaleDB: all columnstore functions are Community edition (source-available, bars selling it as a service). Citus: single open-source edition since 11.0.
 
+## Write cost: `sift_col` against GIN on array columns
+
+A table of text and integer array columns with a Zipf-like spread of elements (heap about 350 bytes a row, `fillfactor` 90, primary key on `id`), once with three GIN indexes (`categories`, `amenities` over `text[]`, `tag_ids` over `int[]`; `fastupdate` on, the default, and `fastupdate = off`) and once with one `sift_col` index over `id`, a text column, an integer column and the same three arrays. The columns are one index for pg_sift and three for GIN: the table is a sensible one for each. Single statements on one backend (2,000 statements; a `COPY` of 20,000 rows), PostgreSQL 18.6 with a hot standby replaying the WAL, x86-64, `fsync = off`, measured on 2026-10-27 with the batched append of the write buffer (CHANGELOG). Backend instructions come from `perf stat` on the backend, WAL bytes from the LSN range, replay instructions from the standby's startup process; `synchronous_commit` was off. Every figure is the cost over the same table with only its primary key, per row; the data, with the 100,000 and 300,000 row runs, is in results/gin-write.tsv. Not a speed claim: the instructions are one backend's work, not a throughput.
+
+| per row, 1,000,000 rows | GIN x3, `fastupdate` on | GIN x3, `fastupdate = off` | one `sift_col` |
+|---|---|---|---|
+| `INSERT`, one row a statement: instructions / WAL bytes / standby replay | +40.4k / +622 / +15.5k | +315.6k / +10,129 / +95.9k | **+9.7k / +257 / +3.7k** |
+| `INSERT`, 100 rows a statement | +29.4k / +666 / +15.6k | +305.4k / +4,406 / +97.6k | **+5.8k / +245 / +1.0k** |
+| `COPY` | +29.2k / +670 / +16.0k | +316.2k / +4,277 / +103.2k | **+4.9k / +277 / +1.2k** |
+| `UPDATE` of an array column | +404.7k / +15,019 / +40.3k | +645.2k / +18,279 / +215.8k | **+34.5k / +5,520 / +11.7k** |
+| `UPDATE` of a column only the `sift_col` covers (`stars`) | **+17.8k / -14 / +0.0k** | **+19.6k / +19 / +0.7k** | +32.5k / +2,923 / +8.9k |
+| `DELETE` | +11.0k / -1 / +0.0k | +11.0k / -1 / +0.0k | **+7.9k / -1 / +0.0k** |
+| `VACUUM` after the writes, per row written by the cells above (8,000) | +358.7k / +3,896 / +25.8k | +255.5k / +1,476 / +7.6k | **+51.8k / -748 / +5.8k** |
+| `CREATE INDEX` (all the indexes of the variant) | 5.6k instructions | 5.6k instructions | **15.3k instructions** |
+| size after the writes and `VACUUM` (the index alone, MB) | 54.8 | 47.4 | 50.3 |
+
+Reading it:
+
+- **Inserts and `COPY`:** a `sift_col` row costs a sixth to a quarter of GIN's instructions with `fastupdate` and a thirtieth to a sixtieth of them without it, about 40% of the WAL of GIN with `fastupdate` (a fifteenth to a fortieth of it without), and a quarter (one row a statement) to a thirteenth (`COPY`) of the standby's replay work. GIN with `fastupdate` defers part of its cost: the pending list is merged into the index at `VACUUM`, which then costs +358.7k instructions a row against +51.8k for the `sift_col`.
+- **Updates of an array column:** the new row version is indexed again by both. The `sift_col` is about a twelfth of GIN's instructions and a third of its WAL.
+- **Where GIN wins:**
+  - An `UPDATE` of a column that GIN does not index but the `sift_col` covers is a HOT update for GIN: no index entry, no WAL for an index (+17.8k instructions, -14 bytes). The same update inserts a new row into the `sift_col` (+32.5k instructions, +2,923 bytes of WAL, +8.9k on the standby): leave a column that changes constantly and that no query filters or groups on out of the index.
+    Reading such a column from the heap instead of storing it, so that its updates stay HOT, was evaluated and rejected: a heap fetch costs about 1.6k instructions a row, and one saved update (at most 44.7k instructions) pays for about 28 fetched rows. `count(*), sum(amount)` over 300,000 rows, stored against read from the heap:
+    - 2% of the rows: 0.38 million instructions against 9.5 million;
+    - 20% of the rows: 0.41 million against 93.7 million;
+    - all the rows: 0.34 million against 467.7 million (the plain heap scan takes 305 million).
+  - Building the index: three GINs take 5.6k instructions a row, the `sift_col` 15.3k, because every column is encoded and every unit gets its zone maps and pre-aggregates.
+  - Size: GIN with `fastupdate = off` is the smallest (47.4 MB against 50.3 MB), and in this table the three GINs with `fastupdate` are 54.8 MB.
+  - GIN is the index for containment and overlap (`@>`, `&&`) on the array columns, and the `sift_col` is made for aggregates and top-N over them: this section compares what writes cost, not the queries each index serves.
+- **Conditions:** the insert and `COPY` figures are the same at 100,000, 300,000 and 1,000,000 rows (within 10%); the WAL of an `UPDATE` of an array column and the `VACUUM` figures grow with the table for all three variants (the GIN `UPDATE` WAL is 3,439, 7,412 and 15,019 bytes a row at the three sizes). One data set (arrays of a Zipf-like spread) and one hardware: other element counts and spreads move the array rows. The GINs and the `sift_col` do different jobs: a workload that needs GIN's queries on the array columns keeps the GINs and can add a `sift_col` over the other columns.
+
 ## Where pg_sift is weaker
 
 - **Search:** one key per index (concatenate columns; no multicolumn, unique or `INCLUDE`); English stemming only, no stopword list, no n-gram, ICU or CJK tokenizer; analyzer fixed per index; field weights need the `fields` option and apply to the sections of one key (no BM25F); `sift.score()` not usable in `WHERE`; a role under row-level security gets no ranked scan; x86-64 only tested; prefix ranking agrees less with a BM25-over-n-grams oracle than pg_search's.
