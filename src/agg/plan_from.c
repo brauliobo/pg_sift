@@ -328,6 +328,8 @@ func_kind_of(RangeTblFunction *f)
 			return FK_EACH;
 		case F_JSONB_EACH_TEXT:
 			return FK_EACH_TEXT;
+		case F_UNNEST_ANYARRAY:
+			return FK_UNNEST;
 		default:
 			return FK_NONE;
 	}

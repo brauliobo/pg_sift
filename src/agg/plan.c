@@ -224,8 +224,8 @@ joined_in_order(PlannerInfo *root, int scanned, List *joined)
 	return list_concat(direct, rest);
 }
 
-bool
-agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
+static bool
+agg_base_once(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 {
 	Query	   *parse = root->parse;
 	IndexOptInfo *ii;
@@ -286,7 +286,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 			}
 		}
 		else if (e->rtekind == RTE_FUNCTION && e->lateral && c->func_rti == 0 && !e->funcordinality && list_length(e->functions) == 1 &&
-				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE)
+				 func_kind_of(linitial_node(RangeTblFunction, e->functions)) != FK_NONE &&
+				 !(fs->plain_unnest && func_kind_of(linitial_node(RangeTblFunction, e->functions)) == FK_UNNEST))
 		{
 			c->func_rti = rti;
 			c->func = linitial_node(RangeTblFunction, e->functions);
@@ -348,7 +349,8 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 	build_attexprs(c);
 	if (c->func_rti)
 	{
-		int			leaf = group_leaf_of(c, linitial(((FuncExpr *) c->func->funcexpr)->args), func_leaf_kind(c->func_kind));
+		Node	   *arg = linitial(((FuncExpr *) c->func->funcexpr)->args);
+		int			leaf = c->func_kind == FK_UNNEST ? array_group(c, arg) : group_leaf_of(c, arg, func_leaf_kind(c->func_kind));
 
 		if (leaf < 0)
 			return agg_refuse(UNNEST_LEAF);
@@ -361,6 +363,24 @@ agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		}
 	}
 	return true;
+}
+
+/* agg_base_once, and an unnest(array) the index holds no list of read as the function PostgreSQL runs over the rows the scan hands it */
+bool
+agg_base(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
+{
+	AggCtx		saved = *c;
+	FromScan	fs0 = *fs;
+
+	if (agg_base_once(c, root, input_rel, fs))
+		return true;
+	if (c->func_kind != FK_UNNEST || fs0.plain_unnest)
+		return false;
+	*c = saved;
+	*fs = fs0;
+	fs->plain_unnest = true;
+	agg_refuse_retry();
+	return agg_base_once(c, root, input_rel, fs);
 }
 
 /*

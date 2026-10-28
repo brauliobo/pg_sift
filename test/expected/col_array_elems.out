@@ -107,6 +107,21 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('int contained', $q$SELECT count(*) AS c FROM %1$I WHERE ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4]$q$),
 		('int not contained', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4])$q$),
 		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[1]$q$),
+		('unnest group', $q$SELECT e, count(*) AS c FROM %1$I, unnest(tags) e GROUP BY e$q$),
+		('unnest total', $q$SELECT count(*) AS c, count(e) AS n, min(e) AS lo, max(e) AS hi FROM %1$I, unnest(tags) e$q$),
+		('unnest distinct', $q$SELECT e, count(DISTINCT id) AS c FROM %1$I, unnest(tags) e GROUP BY e$q$),
+		('unnest like', $q$SELECT count(*) AS c FROM %1$I, unnest(tags) e WHERE e LIKE 't1%%'$q$),
+		('unnest null', $q$SELECT count(*) AS c FROM %1$I, unnest(tags) e WHERE e IS NULL$q$),
+		('unnest filtered', $q$SELECT e, count(*) AS c, sum(id) AS s FROM %1$I, unnest(tags) e WHERE id %% 7 = 1 GROUP BY e$q$),
+		('unnest contains', $q$SELECT e, count(*) AS c FROM %1$I, unnest(tags) e WHERE tags @> ARRAY['u1'] GROUP BY e$q$),
+		('unnest top', $q$SELECT e, count(*) AS c FROM %1$I, unnest(tags) e GROUP BY e ORDER BY 2 DESC, 1 LIMIT 5$q$),
+		('unnest lateral', $q$SELECT e, count(*) AS c FROM %1$I p CROSS JOIN LATERAL unnest(p.tags) e GROUP BY e$q$),
+		('unnest left', $q$SELECT e, count(*) AS c FROM %1$I p LEFT JOIN LATERAL unnest(p.tags) e ON true GROUP BY e$q$),
+		('unnest ordinality', $q$SELECT e, count(*) AS c FROM %1$I, unnest(tags) WITH ORDINALITY u(e, n) WHERE n = 1 GROUP BY e$q$),
+		('unnest int', $q$SELECT e, count(*) AS c FROM %1$I, unnest(ids) e GROUP BY e$q$),
+		('unnest int sum', $q$SELECT count(*) AS c, sum(e) AS s, min(e) AS lo, max(e) AS hi, count(e) AS n FROM %1$I, unnest(ids) e WHERE e > 1000$q$),
+		('unnest int dist', $q$SELECT e %% 7 AS k, count(DISTINCT id) AS c FROM %1$I, unnest(ids) e GROUP BY 1$q$),
+		('unnest two', $q$SELECT e, count(*) AS c FROM %1$I, unnest(tags) e, unnest(ids) f GROUP BY e$q$),
 		('keys', $q$SELECT id %% 5 AS k, (tags @> ARRAY['t3']) AS t, count(*) AS c FROM %1$I WHERE tags IS NULL AND id %% 17 = 3 GROUP BY 1, 2$q$),
 		('count', $q$SELECT count(tags) AS c, count(DISTINCT tags) AS d FROM %1$I$q$)) s(name, q) $$;
 -- the index keeps no image of the arrays: a statement that needs the whole array reads the table, the others the elements
@@ -162,6 +177,21 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built int contained     | scan same
  built int not contained | plain same
  built int null element  | scan same
+ built unnest group      | scan same
+ built unnest total      | scan same
+ built unnest distinct   | scan same
+ built unnest like       | scan same
+ built unnest null       | scan same
+ built unnest filtered   | scan same
+ built unnest contains   | scan same
+ built unnest top        | scan same
+ built unnest lateral    | scan same
+ built unnest left       | plain same
+ built unnest ordinality | plain same
+ built unnest int        | scan same
+ built unnest int sum    | scan same
+ built unnest int dist   | scan same
+ built unnest two        | plain same
  built keys              | plain same
  built count             | plain same
  built rare              | scan same
@@ -197,9 +227,24 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built int contained     | scan same
  built int not contained | plain same
  built int null element  | scan same
+ built unnest group      | scan same
+ built unnest total      | scan same
+ built unnest distinct   | scan same
+ built unnest like       | scan same
+ built unnest null       | scan same
+ built unnest filtered   | scan same
+ built unnest contains   | scan same
+ built unnest top        | scan same
+ built unnest lateral    | scan same
+ built unnest left       | scan same
+ built unnest ordinality | plain same
+ built unnest int        | scan same
+ built unnest int sum    | scan same
+ built unnest int dist   | scan same
+ built unnest two        | plain same
  built keys              | scan same
  built count             | scan same
-(70 rows)
+(100 rows)
 
 -- the same on arrays that cannot be NULL, where a NOT may be pushed
 CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
@@ -242,9 +287,24 @@ SELECT * FROM shapes('not null', 'an');
  not null int contained     | scan same
  not null int not contained | scan same
  not null int null element  | scan same
+ not null unnest group      | scan same
+ not null unnest total      | scan same
+ not null unnest distinct   | scan same
+ not null unnest like       | scan same
+ not null unnest null       | scan same
+ not null unnest filtered   | scan same
+ not null unnest contains   | scan same
+ not null unnest top        | scan same
+ not null unnest lateral    | scan same
+ not null unnest left       | plain same
+ not null unnest ordinality | plain same
+ not null unnest int        | scan same
+ not null unnest int sum    | scan same
+ not null unnest int dist   | scan same
+ not null unnest two        | plain same
  not null keys              | plain same
  not null count             | plain same
-(35 rows)
+(50 rows)
 
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
@@ -285,6 +345,21 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
  insert int contained     | scan same
  insert int not contained | plain same
  insert int null element  | scan same
+ insert unnest group      | scan same
+ insert unnest total      | scan same
+ insert unnest distinct   | scan same
+ insert unnest like       | scan same
+ insert unnest null       | scan same
+ insert unnest filtered   | scan same
+ insert unnest contains   | scan same
+ insert unnest top        | scan same
+ insert unnest lateral    | scan same
+ insert unnest left       | plain same
+ insert unnest ordinality | plain same
+ insert unnest int        | scan same
+ insert unnest int sum    | scan same
+ insert unnest int dist   | scan same
+ insert unnest two        | plain same
  insert keys              | plain same
  insert count             | plain same
  insert rare              | scan same
@@ -320,9 +395,24 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
  insert int contained     | scan same
  insert int not contained | plain same
  insert int null element  | scan same
+ insert unnest group      | scan same
+ insert unnest total      | scan same
+ insert unnest distinct   | scan same
+ insert unnest like       | scan same
+ insert unnest null       | scan same
+ insert unnest filtered   | scan same
+ insert unnest contains   | scan same
+ insert unnest top        | scan same
+ insert unnest lateral    | scan same
+ insert unnest left       | scan same
+ insert unnest ordinality | plain same
+ insert unnest int        | scan same
+ insert unnest int sum    | scan same
+ insert unnest int dist   | scan same
+ insert unnest two        | plain same
  insert keys              | scan same
  insert count             | scan same
-(70 rows)
+(100 rows)
 
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
@@ -362,6 +452,21 @@ SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'a
  update int contained     | scan same
  update int not contained | plain same
  update int null element  | scan same
+ update unnest group      | scan same
+ update unnest total      | scan same
+ update unnest distinct   | scan same
+ update unnest like       | scan same
+ update unnest null       | scan same
+ update unnest filtered   | scan same
+ update unnest contains   | scan same
+ update unnest top        | scan same
+ update unnest lateral    | scan same
+ update unnest left       | plain same
+ update unnest ordinality | plain same
+ update unnest int        | scan same
+ update unnest int sum    | scan same
+ update unnest int dist   | scan same
+ update unnest two        | plain same
  update keys              | plain same
  update count             | plain same
  update rare              | scan same
@@ -397,9 +502,24 @@ SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'a
  update int contained     | scan same
  update int not contained | plain same
  update int null element  | scan same
+ update unnest group      | scan same
+ update unnest total      | scan same
+ update unnest distinct   | scan same
+ update unnest like       | scan same
+ update unnest null       | scan same
+ update unnest filtered   | scan same
+ update unnest contains   | scan same
+ update unnest top        | scan same
+ update unnest lateral    | scan same
+ update unnest left       | scan same
+ update unnest ordinality | plain same
+ update unnest int        | scan same
+ update unnest int sum    | scan same
+ update unnest int dist   | scan same
+ update unnest two        | plain same
  update keys              | scan same
  update count             | scan same
-(70 rows)
+(100 rows)
 
 -- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
 UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
@@ -448,6 +568,21 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders int contained     | scan same
  orders int not contained | plain same
  orders int null element  | scan same
+ orders unnest group      | scan same
+ orders unnest total      | scan same
+ orders unnest distinct   | scan same
+ orders unnest like       | scan same
+ orders unnest null       | scan same
+ orders unnest filtered   | scan same
+ orders unnest contains   | scan same
+ orders unnest top        | scan same
+ orders unnest lateral    | scan same
+ orders unnest left       | plain same
+ orders unnest ordinality | plain same
+ orders unnest int        | scan same
+ orders unnest int sum    | scan same
+ orders unnest int dist   | scan same
+ orders unnest two        | plain same
  orders keys              | plain same
  orders count             | plain same
  orders rare              | scan same
@@ -483,9 +618,24 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders int contained     | scan same
  orders int not contained | plain same
  orders int null element  | scan same
+ orders unnest group      | scan same
+ orders unnest total      | scan same
+ orders unnest distinct   | scan same
+ orders unnest like       | scan same
+ orders unnest null       | scan same
+ orders unnest filtered   | scan same
+ orders unnest contains   | scan same
+ orders unnest top        | scan same
+ orders unnest lateral    | scan same
+ orders unnest left       | scan same
+ orders unnest ordinality | plain same
+ orders unnest int        | scan same
+ orders unnest int sum    | scan same
+ orders unnest int dist   | scan same
+ orders unnest two        | plain same
  orders keys              | scan same
  orders count             | scan same
-(70 rows)
+(100 rows)
 
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
@@ -525,6 +675,21 @@ SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'a
  delete int contained     | scan same
  delete int not contained | plain same
  delete int null element  | scan same
+ delete unnest group      | scan same
+ delete unnest total      | scan same
+ delete unnest distinct   | scan same
+ delete unnest like       | scan same
+ delete unnest null       | scan same
+ delete unnest filtered   | scan same
+ delete unnest contains   | scan same
+ delete unnest top        | scan same
+ delete unnest lateral    | scan same
+ delete unnest left       | plain same
+ delete unnest ordinality | plain same
+ delete unnest int        | scan same
+ delete unnest int sum    | scan same
+ delete unnest int dist   | scan same
+ delete unnest two        | plain same
  delete keys              | plain same
  delete count             | plain same
  delete rare              | scan same
@@ -560,9 +725,24 @@ SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'a
  delete int contained     | scan same
  delete int not contained | plain same
  delete int null element  | scan same
+ delete unnest group      | scan same
+ delete unnest total      | scan same
+ delete unnest distinct   | scan same
+ delete unnest like       | scan same
+ delete unnest null       | scan same
+ delete unnest filtered   | scan same
+ delete unnest contains   | scan same
+ delete unnest top        | scan same
+ delete unnest lateral    | scan same
+ delete unnest left       | scan same
+ delete unnest ordinality | plain same
+ delete unnest int        | scan same
+ delete unnest int sum    | scan same
+ delete unnest int dist   | scan same
+ delete unnest two        | plain same
  delete keys              | scan same
  delete count             | scan same
-(70 rows)
+(100 rows)
 
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
  col_verify | col_verify 
@@ -608,6 +788,21 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum int contained     | scan same
  vacuum int not contained | plain same
  vacuum int null element  | scan same
+ vacuum unnest group      | scan same
+ vacuum unnest total      | scan same
+ vacuum unnest distinct   | scan same
+ vacuum unnest like       | scan same
+ vacuum unnest null       | scan same
+ vacuum unnest filtered   | scan same
+ vacuum unnest contains   | scan same
+ vacuum unnest top        | scan same
+ vacuum unnest lateral    | scan same
+ vacuum unnest left       | plain same
+ vacuum unnest ordinality | plain same
+ vacuum unnest int        | scan same
+ vacuum unnest int sum    | scan same
+ vacuum unnest int dist   | scan same
+ vacuum unnest two        | plain same
  vacuum keys              | plain same
  vacuum count             | plain same
  vacuum rare              | scan same
@@ -643,9 +838,24 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum int contained     | scan same
  vacuum int not contained | plain same
  vacuum int null element  | scan same
+ vacuum unnest group      | scan same
+ vacuum unnest total      | scan same
+ vacuum unnest distinct   | scan same
+ vacuum unnest like       | scan same
+ vacuum unnest null       | scan same
+ vacuum unnest filtered   | scan same
+ vacuum unnest contains   | scan same
+ vacuum unnest top        | scan same
+ vacuum unnest lateral    | scan same
+ vacuum unnest left       | scan same
+ vacuum unnest ordinality | plain same
+ vacuum unnest int        | scan same
+ vacuum unnest int sum    | scan same
+ vacuum unnest int dist   | scan same
+ vacuum unnest two        | plain same
  vacuum keys              | scan same
  vacuum count             | scan same
-(70 rows)
+(100 rows)
 
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
  merged | merged 
@@ -689,6 +899,21 @@ SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad'
  merge int contained     | scan same
  merge int not contained | plain same
  merge int null element  | scan same
+ merge unnest group      | scan same
+ merge unnest total      | scan same
+ merge unnest distinct   | scan same
+ merge unnest like       | scan same
+ merge unnest null       | scan same
+ merge unnest filtered   | scan same
+ merge unnest contains   | scan same
+ merge unnest top        | scan same
+ merge unnest lateral    | scan same
+ merge unnest left       | plain same
+ merge unnest ordinality | plain same
+ merge unnest int        | scan same
+ merge unnest int sum    | scan same
+ merge unnest int dist   | scan same
+ merge unnest two        | plain same
  merge keys              | plain same
  merge count             | plain same
  merge rare              | scan same
@@ -724,9 +949,24 @@ SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad'
  merge int contained     | scan same
  merge int not contained | plain same
  merge int null element  | scan same
+ merge unnest group      | scan same
+ merge unnest total      | scan same
+ merge unnest distinct   | scan same
+ merge unnest like       | scan same
+ merge unnest null       | scan same
+ merge unnest filtered   | scan same
+ merge unnest contains   | scan same
+ merge unnest top        | scan same
+ merge unnest lateral    | scan same
+ merge unnest left       | scan same
+ merge unnest ordinality | plain same
+ merge unnest int        | scan same
+ merge unnest int sum    | scan same
+ merge unnest int dist   | scan same
+ merge unnest two        | plain same
  merge keys              | scan same
  merge count             | scan same
-(70 rows)
+(100 rows)
 
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
 INSERT INTO ad SELECT * FROM gen(40001, 44000);
@@ -772,6 +1012,21 @@ SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'a
  merge2 int contained     | scan same
  merge2 int not contained | plain same
  merge2 int null element  | scan same
+ merge2 unnest group      | scan same
+ merge2 unnest total      | scan same
+ merge2 unnest distinct   | scan same
+ merge2 unnest like       | scan same
+ merge2 unnest null       | scan same
+ merge2 unnest filtered   | scan same
+ merge2 unnest contains   | scan same
+ merge2 unnest top        | scan same
+ merge2 unnest lateral    | scan same
+ merge2 unnest left       | plain same
+ merge2 unnest ordinality | plain same
+ merge2 unnest int        | scan same
+ merge2 unnest int sum    | scan same
+ merge2 unnest int dist   | scan same
+ merge2 unnest two        | plain same
  merge2 keys              | plain same
  merge2 count             | plain same
  merge2 rare              | scan same
@@ -807,9 +1062,24 @@ SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'a
  merge2 int contained     | scan same
  merge2 int not contained | plain same
  merge2 int null element  | scan same
+ merge2 unnest group      | scan same
+ merge2 unnest total      | scan same
+ merge2 unnest distinct   | scan same
+ merge2 unnest like       | scan same
+ merge2 unnest null       | scan same
+ merge2 unnest filtered   | scan same
+ merge2 unnest contains   | scan same
+ merge2 unnest top        | scan same
+ merge2 unnest lateral    | scan same
+ merge2 unnest left       | scan same
+ merge2 unnest ordinality | plain same
+ merge2 unnest int        | scan same
+ merge2 unnest int sum    | scan same
+ merge2 unnest int dist   | scan same
+ merge2 unnest two        | plain same
  merge2 keys              | scan same
  merge2 count             | scan same
-(70 rows)
+(100 rows)
 
 SELECT sift.col_verify('ae_col', true);
  col_verify 
@@ -855,6 +1125,21 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex int contained     | scan same
  reindex int not contained | plain same
  reindex int null element  | scan same
+ reindex unnest group      | scan same
+ reindex unnest total      | scan same
+ reindex unnest distinct   | scan same
+ reindex unnest like       | scan same
+ reindex unnest null       | scan same
+ reindex unnest filtered   | scan same
+ reindex unnest contains   | scan same
+ reindex unnest top        | scan same
+ reindex unnest lateral    | scan same
+ reindex unnest left       | plain same
+ reindex unnest ordinality | plain same
+ reindex unnest int        | scan same
+ reindex unnest int sum    | scan same
+ reindex unnest int dist   | scan same
+ reindex unnest two        | plain same
  reindex keys              | plain same
  reindex count             | plain same
  reindex rare              | scan same
@@ -890,9 +1175,24 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex int contained     | scan same
  reindex int not contained | plain same
  reindex int null element  | scan same
+ reindex unnest group      | scan same
+ reindex unnest total      | scan same
+ reindex unnest distinct   | scan same
+ reindex unnest like       | scan same
+ reindex unnest null       | scan same
+ reindex unnest filtered   | scan same
+ reindex unnest contains   | scan same
+ reindex unnest top        | scan same
+ reindex unnest lateral    | scan same
+ reindex unnest left       | scan same
+ reindex unnest ordinality | plain same
+ reindex unnest int        | scan same
+ reindex unnest int sum    | scan same
+ reindex unnest int dist   | scan same
+ reindex unnest two        | plain same
  reindex keys              | scan same
  reindex count             | scan same
-(70 rows)
+(100 rows)
 
 -- a value no row owns is answered by the directory: no unit is read and no heap row vetted
 CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$

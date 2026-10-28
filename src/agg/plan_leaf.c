@@ -570,6 +570,8 @@ func_var_leaf(AggCtx *c, Var *v)
 			return -1;
 		case FK_ELEMENTS_TEXT:		/* the element of an array of strings is the one unnamed child of the array */
 			return v->varattno == 1 && v->vartype == TEXTOID ? child_leaf(c, c->group, "", TEXTOID) : -1;
+		case FK_UNNEST:
+			return v->varattno == 1 ? child_leaf(c, c->group, "", v->vartype) : -1;
 		default:
 			return -1;
 	}

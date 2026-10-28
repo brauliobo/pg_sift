@@ -238,7 +238,7 @@ compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
 /* ---- native arrays whose elements the index holds as a list (reloption paths names the column): @>, && and = ANY ---- */
 
 /* the list leaf of the array column an expression is (-1: none) */
-static int
+int
 array_group(AggCtx *c, Node *e)
 {
 	int			att = attr_of_expr(c, strip_relabel(e));

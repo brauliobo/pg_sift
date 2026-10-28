@@ -228,7 +228,7 @@ def gen_preagg(r, ctx):
 
 
 def render_preagg(p):
-    return grouped(p, f"{p['table']} e"), p['ordered'] and bool(p['keys'])
+    return grouped(p, p.get('frm', f"{p['table']} e")), p['ordered'] and bool(p['keys'])
 
 
 def gen_keys(r, ctx):
@@ -1263,7 +1263,19 @@ def gen_arrlen(r, ctx):
         where_[:2] = [f'({where_[0]} OR {where_[1]})']
     ks = list(dict.fromkeys(k.format(e='e') for k in r.sample(AR_KEYS, r.choice([0, 0, 1, 1, 2]))))
     ag = list(dict.fromkeys(a.format(e='e') for a in r.sample(AR_AGGS, r.randrange(1, 5))))
-    return dict(table='arf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    p = dict(table='arf', keys=ks, aggs=ag, where=where_, having=[], ordered=True)
+    if r.random() < 0.3:
+        # the elements of an array unnested: grouped by the element, counted, filtered by it
+        c = r.choice(['ta', 'tb', 'ia'])
+        txt = c != 'ia'
+        p['frm'] = f'arf e, unnest(e.{c}) u'
+        p['keys'] = r.choice([['u'], ['u'], [], ['e.kind'], ['u', 'e.kind'], ['u' if txt else 'u % 7']])
+        p['aggs'] = list(dict.fromkeys(r.sample(['count(*)', 'count(u)', 'count(DISTINCT e.id)', 'min(u)', 'max(u)', 'sum(e.org)'] + ([] if txt else ['sum(u)', 'avg(u)']), r.randrange(1, 4))))
+        if r.random() < 0.5:
+            p['where'].append(f"u LIKE 't{r.randrange(4)}%'" if txt else f'u {r.choice(["<", ">", "=", "<>"])} {r.randrange(1000)}')
+        if r.random() < 0.15:
+            p['where'].append('u IS NULL')
+    return p
 
 
 # ---------- exceptions: IS NULL on a stamp that is set in a few rows of a unit, answered as the unit net of them (float sums within the tolerance of the others) ----------

@@ -19,7 +19,8 @@ typedef enum FuncKind
 	FK_ELEMENTS,				/* jsonb_array_elements(array) */
 	FK_ELEMENTS_TEXT,			/* jsonb_array_elements_text(array of strings): one text column, the element */
 	FK_EACH,					/* jsonb_each(object) */
-	FK_EACH_TEXT				/* jsonb_each_text(object) */
+	FK_EACH_TEXT,				/* jsonb_each_text(object) */
+	FK_UNNEST					/* unnest(array) of a native array column whose elements the index holds as a list: one column, the element */
 } FuncKind;
 
 /* a table joined by equality to leaves (SiftAggJoin) and the combos that evaluate expressions of leaves and its columns (SiftAggCombo) */
@@ -267,6 +268,7 @@ typedef struct FromScan
 	List	   *lefts;			/* LeftJoin */
 	bool		ok;
 	bool		flip;			/* the scanned table is the right side of a LEFT JOIN (its other side is preserved) */
+	bool		plain_unnest;	/* an unnest(array) is a function the scan does not unnest (its array has no list in the index) */
 	bool		flippable;		/* a LEFT or FULL JOIN of two tables was met: the scan may be the other one */
 	int			skip;			/* the tables of the FROM list passed over before the scanned one: they are joined to it (inner joins only) */
 	int			ntables;		/* the tables the FROM list has */
@@ -418,6 +420,7 @@ extern bool compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai);
 
 extern void scan_from(Node *n, FromScan *f);
 extern FuncKind func_kind_of(RangeTblFunction *f);
+extern int	array_group(AggCtx *c, Node *e);
 extern SiftSrcLeafKind func_leaf_kind(FuncKind k);
 extern int group_leaf_below(AggCtx *c, Node *arg, List *keys, SiftSrcLeafKind kind);
 extern int group_leaf_of(AggCtx *c, Node *arg, SiftSrcLeafKind kind);
