@@ -125,7 +125,7 @@ selftest() {
 	rm "$d"/*aarch64* "$d"/*arm64* 2>/dev/null; touch "$d/$(pkg_glob deb "${PGS%% *}" x86_64 | sed 's/\*/3.0.0/')"
 	verify "$d" 2>/dev/null && { echo "FAIL: verify accepts a set without the packages of aarch64"; bad=1; }
 	# the matrix lists exactly the packages verify requires, one job each
-	n=$(matrix | grep -o '"pg"' | wc -l)
+	n=$(( $(matrix | grep -o '"pg"' | wc -l) ))
 	[[ $n == $(( $(combos | wc -l) * $(wc -w <<<"$ARCHES") )) ]] || { echo "FAIL: the matrix has $n jobs, not the packages of PGS, FAMILIES and ARCHES"; bad=1; }
 	for pg in $PGS; do
 		[[ " $AMZN_PGS " == *" $pg "* ]] || ! matrix | grep -q "\"pg\":$pg,\"family\":\"amzn\"" || { echo "FAIL: the matrix has an amzn job for $pg, a major the distribution lacks"; bad=1; }
