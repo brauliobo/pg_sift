@@ -24,6 +24,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/relfilenumbermap.h"
+#include "utils/syscache.h"
 
 #include "col/am.h"
 #include "col/wbuf.h"
@@ -414,9 +415,18 @@ pend_clear(PendIndex *p)
 	pend_used--;
 }
 
+/* Does an index (this one is a sift_col index, or none) have the file of the slot? */
+static Oid
+pend_file_index(const PendIndex *p)
+{
+	return RelidByRelfilenumber(p->tablespace, p->loc.relNumber);
+}
+
 /*
  * The index that has the file of a slot that holds rows now (its OID: the same as when they were buffered unless the files were swapped); false
- * when none is left. A slot whose file no index has (dropped, or rebuilt, in the transaction) is dropped here: the rows are in the heap.
+ * when none is left. A slot whose file no index has is the one of an index that was dropped (the rows are in a heap that is gone with it, or is not
+ * indexed), or whose file was replaced: a rebuild (build.c) discarded the slot, so what is left is a copy of the pages, which holds none of the
+ * rows (ALTER INDEX SET TABLESPACE), and the slot goes with the OID it was buffered under.
  */
 bool
 sift_cwbuf_pending(Oid *index)
@@ -424,20 +434,33 @@ sift_cwbuf_pending(Oid *index)
 	for (int i = 0; i < PEND_SLOTS; i++)
 		if (OidIsValid(pend[i].index))
 		{
-			*index = RelidByRelfilenumber(pend[i].tablespace, pend[i].loc.relNumber);
+			*index = pend_file_index(&pend[i]);
 			if (OidIsValid(*index))
 				return true;
+			if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(pend[i].index)))
+			{
+				*index = pend[i].index;
+				return true;
+			}
 			pend_clear(&pend[i]);
 		}
 	return false;
 }
 
+/* The slot of the file of the index, else the one buffered under its OID whose file no index has now (the pages were copied to another file): it follows the index */
 static PendIndex *
 pend_find(Relation index)
 {
 	for (int i = 0; i < PEND_SLOTS; i++)
 		if (OidIsValid(pend[i].index) && RelFileLocatorEquals(pend[i].loc, index->rd_locator))
 			return &pend[i];
+	for (int i = 0; i < PEND_SLOTS; i++)
+		if (pend[i].index == RelationGetRelid(index) && !OidIsValid(pend_file_index(&pend[i])))
+		{
+			pend[i].tablespace = index->rd_rel->reltablespace;
+			pend[i].loc = index->rd_locator;
+			return &pend[i];
+		}
 	return NULL;
 }
 

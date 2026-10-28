@@ -1,0 +1,122 @@
+-- The rows a statement or a transaction buffers for a sift_col index (the first goes in at once, the others wait in the backend until pre-commit) reach it
+-- in a temporary table too, and when something in the same transaction rebuilds, empties, drops or moves the index: it holds the rows its heap has. A
+-- rebuild reads the heap, which holds the buffered rows; a move of the file (ALTER INDEX SET TABLESPACE) copies the pages, which do not.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+SET allow_in_place_tablespaces = on;
+CREATE TABLESPACE wbuf_slots_ts LOCATION '';
+
+CREATE TABLE s (id int, k int) WITH (autovacuum_enabled = false);
+CREATE INDEX s_col ON s USING sift_col (id, k);
+
+-- the index holds every row of the heap: counts and sums by the index and by the heap, and the index verifies
+CREATE FUNCTION chk(label text, tbl text DEFAULT 's', idx text DEFAULT 's_col') RETURNS TABLE (step text, heap_rows bigint, index_rows bigint, same_sum boolean, verify text) LANGUAGE plpgsql AS $$
+DECLARE h bigint; i bigint; hs bigint; is_ bigint; v text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('enable_indexscan', 'off', true); PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE format('SELECT count(*), sum(k) FROM %s', tbl) INTO h, hs;
+	PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true);
+	EXECUTE format('SELECT count(*), sum(k) FROM %s', tbl) INTO i, is_;
+	BEGIN
+		PERFORM sift.col_verify(idx::regclass, true);
+		v := 'ok';
+	EXCEPTION WHEN OTHERS THEN v := left(SQLERRM, 60);
+	END;
+	RETURN QUERY SELECT label, h, i, hs IS NOT DISTINCT FROM is_, v;
+END $$;
+
+-- a temporary table's index: its rows are buffered the same way
+CREATE TEMP TABLE t (id int, k int);
+CREATE INDEX t_col ON t USING sift_col (id, k);
+INSERT INTO t SELECT g, g % 7 FROM generate_series(1, 300) g;
+INSERT INTO t SELECT 300 + g, g % 7 FROM generate_series(1, 300) g;
+SELECT * FROM chk('temporary table', 't', 't_col');
+BEGIN;
+INSERT INTO t SELECT 600 + g, g % 7 FROM generate_series(1, 300) g;
+INSERT INTO t SELECT 900 + g, g % 7 FROM generate_series(1, 300) g;
+COMMIT;
+SELECT * FROM chk('temporary table in a transaction', 't', 't_col');
+DROP TABLE t;
+
+-- a rebuild in the transaction, before and after more rows
+BEGIN;
+INSERT INTO s SELECT g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 100 + g, g % 7 FROM generate_series(1, 100) g;
+REINDEX INDEX s_col;
+INSERT INTO s SELECT 200 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 300 + g, g % 7 FROM generate_series(1, 100) g;
+COMMIT;
+SELECT * FROM chk('reindex');
+
+-- the table emptied
+BEGIN;
+INSERT INTO s SELECT 1000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 1100 + g, g % 7 FROM generate_series(1, 100) g;
+TRUNCATE s;
+INSERT INTO s SELECT g, g % 7 FROM generate_series(1, 50) g;
+INSERT INTO s SELECT 50 + g, g % 7 FROM generate_series(1, 50) g;
+COMMIT;
+SELECT * FROM chk('truncate');
+
+-- a rewrite of the table rebuilds its indexes
+BEGIN;
+INSERT INTO s SELECT 1000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 1100 + g, g % 7 FROM generate_series(1, 100) g;
+ALTER TABLE s ALTER COLUMN k TYPE bigint;
+INSERT INTO s SELECT 2000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 2100 + g, g % 7 FROM generate_series(1, 100) g;
+COMMIT;
+SELECT * FROM chk('rewrite');
+
+-- the file of the index moved: a copy of its pages, with none of the buffered rows
+BEGIN;
+INSERT INTO s SELECT 3000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 3100 + g, g % 7 FROM generate_series(1, 100) g;
+ALTER INDEX s_col SET TABLESPACE wbuf_slots_ts;
+INSERT INTO s SELECT 3200 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 3300 + g, g % 7 FROM generate_series(1, 100) g;
+COMMIT;
+SELECT * FROM chk('set tablespace');
+SELECT t.spcname FROM pg_class c JOIN pg_tablespace t ON t.oid = c.reltablespace WHERE c.relname = 's_col';
+-- whatever the step left, the next one starts from an index that holds its heap
+REINDEX INDEX s_col;
+
+-- a savepoint that rolls back takes what it buffered with it, and a REINDEX in it keeps the rows of the heap that remain
+BEGIN;
+INSERT INTO s SELECT 4000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 4100 + g, g % 7 FROM generate_series(1, 100) g;
+SAVEPOINT a;
+INSERT INTO s SELECT 4200 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 4300 + g, g % 7 FROM generate_series(1, 100) g;
+REINDEX INDEX s_col;
+ROLLBACK TO a;
+INSERT INTO s SELECT 4400 + g, g % 7 FROM generate_series(1, 100) g;
+COMMIT;
+SELECT * FROM chk('savepoint rollback of a reindex');
+
+-- the index dropped and made again in the transaction
+BEGIN;
+INSERT INTO s SELECT 5000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 5100 + g, g % 7 FROM generate_series(1, 100) g;
+DROP INDEX s_col;
+CREATE INDEX s_col ON s USING sift_col (id, k);
+INSERT INTO s SELECT 5200 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 5300 + g, g % 7 FROM generate_series(1, 100) g;
+COMMIT;
+SELECT * FROM chk('drop and create');
+
+-- the index dropped and the transaction ends
+BEGIN;
+INSERT INTO s SELECT 6000 + g, g % 7 FROM generate_series(1, 100) g;
+INSERT INTO s SELECT 6100 + g, g % 7 FROM generate_series(1, 100) g;
+DROP INDEX s_col;
+COMMIT;
+SELECT count(*) AS heap_rows FROM s;
+
+DROP TABLE s;
+DROP FUNCTION chk(text, text, text);
+DROP TABLESPACE wbuf_slots_ts;
+DROP EXTENSION pg_sift;
