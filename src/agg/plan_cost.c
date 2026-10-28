@@ -146,7 +146,7 @@
 #define AGG_VET_ROW			1.2		/* a row of such a page tested against the snapshot (4 ns measured at 185 rows to a page) */
 #define AGG_WIDE_ROW		3.0		/* a row of a wide leaf: its lanes decoded, the hash probe for its entry in the unit's dictionary */
 #define AGG_WIDE_ENTRY		60.0	/* a new entry of it (a numeric built from a 128-bit lane, its probe in the table of ids and its transition: 130 ns with a thousand values, 370 ns with a hundred thousand), per distinct value */
-#define AGG_WIDE_NUM		65.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale, no numeric is built (70 ns a row measured, 100,000 distinct values in 1,000,000 rows; priced so that a parallel plan of PostgreSQL, which the leader-only sum does not match, is kept) */
+#define AGG_WIDE_NUM		16.0	/* ... of a numeric image that only sums and averages read (SiftAggAgg.wsum): its digits become an integer and a scale once for each distinct value of a unit, and no numeric is built (a row 33 ns when the values repeat, 132 ns when each is new: 100 ns an entry, 500,000 rows) */
 #define AGG_WIDE_IMAGE		180.0	/* ... of a numeric stored as an image (unconstrained, or past 38 digits): its digits are read and the numeric built from them, 0.45 us measured at a hundred thousand values */
 #define AGG_WIDE_COPY		5.0		/* ... when its readers only copy the entry (array_agg, string_agg, count of the column, a group key): 0 to 100 ns an entry measured over numeric images, 128-bit numerics, uuid, interval and bytea, 1,000,000 rows in 4 groups (a list of 550,000 two-decimal values 54 ms more than one of 1,000 values) */
 #define AGG_WIDE_KEYSUM		25.0	/* ... and a sum or average of the column is added in the same scan (42 ns an entry more than the key alone) */
@@ -408,7 +408,7 @@ combo_numeric_slots(const SiftAggCombo *cb)
 }
 
 /* the combo is only the argument of sums and averages that add the entries of their dictionary leaf (SiftAggAgg.wsum): no tuple is evaluated by it */
-static bool
+bool
 combo_wsum_only(const SiftAggSpec *s, int ci)
 {
 	const SiftAggCombo *cb = &s->combo[ci];
@@ -1675,7 +1675,7 @@ zone_kept(AggCtx *c, SiftAggSpec *s, int *nkeyfilters, double *key_share)
 }
 
 /* does a predicate test the leaf? `values`: its values, not only its null flags, and the leaves of a combo slot */
-static bool
+bool
 pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
 {
 	if (p == NULL)
@@ -2063,7 +2063,7 @@ leaf_copy_only(const SiftAggSpec *s, int leaf, bool *sums, bool *keyed)
 }
 
 /* is every reader of the leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum)? */
-static bool
+bool
 leaf_wsum_only(const SiftAggSpec *s, int leaf)
 {
 	bool		sums = false,
@@ -2073,8 +2073,15 @@ leaf_wsum_only(const SiftAggSpec *s, int leaf)
 	{
 		const SiftAggAgg *a = &s->agg[ai];
 
-		sums |= a->wsum == leaf + 1;
-		other |= a->leaf == leaf || (a->filter != NULL && pred_uses_leaf(s, a->filter, leaf, false));
+		if (a->wsum == leaf + 1)
+			sums = true;
+		else
+			other |= a->leaf == leaf || bms_is_member(leaf, a->reads);
+		if (a->kind == SAA_GEN)
+			for (int j = 0; j < a->gen->nargs; j++)
+				for (int l = 0; l < a->gen->arg[j].nleaves; l++)
+					other |= a->gen->arg[j].leaf[l] == leaf;
+		other |= a->filter != NULL && pred_uses_leaf(s, a->filter, leaf, false);
 	}
 	for (int i = 0; i < s->npred; i++)
 		other |= pred_uses_leaf(s, s->pred[i], leaf, false);

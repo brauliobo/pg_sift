@@ -1164,6 +1164,17 @@ part_set_raw(void *impl, int leaf)
 }
 
 static void
+part_set_numsum(void *impl, int leaf)
+{
+	PartSource *ps = impl;
+
+	open_rest(ps);
+	for (int i = 0; i < ps->n; i++)
+		if (ps->src[i])
+			sift_colsrc_set_numsum(ps->src[i], leaf);
+}
+
+static void
 part_set_recheck(void *impl, int leaf, int mode, const char *key, Oid cast)
 {
 	PartSource *ps = impl;
@@ -1382,6 +1393,7 @@ static const SiftSrcProvider part_provider = {
 	.filter_types = part_filter_types,
 	.tolerate_ovf = part_tolerate_ovf,
 	.set_raw = part_set_raw,
+	.set_numsum = part_set_numsum,
 	.set_recheck = part_set_recheck,
 	.overflow_raise = part_overflow_raise,
 	.recheck_rows = part_recheck_rows,

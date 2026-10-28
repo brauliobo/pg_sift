@@ -186,4 +186,5 @@ contain_range	are answered by a `sift_col` index from integer leaves	orders	(id)
 contain_inet	`ip <<= net` 1.4 ms	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_inet_gist	ms	faster33	no
 calendar_step_filter	is evaluated once for each day, hour or minute the rows fall in	orders	default	\(per hour\)	native,pg_duckdb	-	ms	faster33	no
 text_rest_sparse	tests its other conditions on the rows that test left	orders	(id)	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+numeric_sum_records	made from the lanes of each row	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 contain_rows	returns the rows of a containment of a range (`@>`	orders	(id)	Index Scan using ranges_rows_col|Bitmap Index Scan on ranges_rows_col	native	gist:search_path = contain_rows_gist	ms	faster33	no

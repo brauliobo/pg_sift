@@ -702,6 +702,17 @@ type_init(AggExec *ex)
 		}
 }
 
+/* A numeric leaf that only sums and averages read is given to the executor as one integer and scale for each row, where the source can (SiftSrcDict.numrec) */
+void
+numsum_init(AggExec *ex)
+{
+	const SiftAggSpec *s = ex->spec;
+
+	for (int ai = 0; ai < s->naggs; ai++)
+		if (s->agg[ai].wsum > 0 && leaf_wsum_only(s, s->agg[ai].wsum - 1))
+			sift_colsrc_set_numsum(ex->src, s->agg[ai].wsum - 1);
+}
+
 /*
  * The conjuncts on wide leaves (SAP_WIDE) are the source's: their operands are evaluated once, as Datums of the leaf's type (an IN list as the
  * elements of its array, a NULL operand as isnull), and the source returns the rows that pass test k of wide_filters.

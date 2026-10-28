@@ -329,6 +329,7 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
+	src->numsum = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
 	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
 	src->ugen = 1;
@@ -872,6 +873,7 @@ static const SiftSrcProvider col_provider = {
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,
 	.set_raw = col_set_raw,
+	.set_numsum = col_set_numsum,
 	.set_recheck = col_set_recheck,
 	.overflow_raise = col_overflow_raise,
 	.recheck_rows = col_recheck_rows,

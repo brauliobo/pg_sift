@@ -178,6 +178,8 @@ typedef struct SiftSrcDict
 	const char *(*get) (const void *gctx, uint32 code, uint32 *len, char *buf);
 	void		(*full) (const void *gctx, struct SiftSrcDict *self);
 	const void *gctx;
+	bool		numrec;			/* the entries are DNum records (agg/combo_int.h), one for each row, not numerics: a leaf only sums read (SiftSrcProvider.set_numsum) */
+	void		(*rec) (const void *gctx, uint32 row);	/* numrec: makes the record of a row whose scale is still WNUM_UNSET */
 } SiftSrcDict;
 
 /* The string of entry c: from the arrays, or read in the segment when the dictionary has none */
@@ -732,6 +734,12 @@ typedef struct SiftSrcProvider
 	 */
 	void		(*set_raw) (void *impl, int leaf);
 	/*
+	 * Optional. set_numsum, called before `begin`, says that the executor only adds the values of a numeric leaf (a sum or average that needs no numeric): the
+	 * source may give its dictionary as one DNum record for each row (SiftSrcDict.numrec) instead of the datums of its distinct values. A source that does not
+	 * keeps the dictionary; the executor tells by the flag of each read.
+	 */
+	void		(*set_numsum) (void *impl, int leaf);
+	/*
 	 * Optional, both or neither: the rows of a unit that hold, in a leaf the query reads, a value the
 	 * leaf cannot store are read again from the heap as the query's SQL reads them. set_recheck, called before `begin`, says how the query reads
 	 * the leaf (a SiftSrcRecheck); the rows of a unit with such a value leave it (`live` does not have them) and the source returns them as the
@@ -1105,6 +1113,9 @@ extern void sift_colsrc_tolerate_ovf(SiftSrcSource *src, int leaf);
 /* Can the source of this access method read an image leaf as the codes of its stored dictionary (SiftSrcProvider.set_raw)? */
 extern bool sift_colsrc_can_raw(Oid relam, bool index);
 extern void sift_colsrc_set_raw(SiftSrcSource *src, int leaf);
+
+/* Tell the source (if it can) that a numeric leaf is only summed (SiftSrcProvider.set_numsum) */
+extern void sift_colsrc_set_numsum(SiftSrcSource *src, int leaf);
 
 /* Does the source of this access method tell a JSON null from a missing key per value of a leaf (SiftSrcProvider.read_jnull)? */
 extern bool sift_colsrc_can_jnull(Oid relam, bool index);

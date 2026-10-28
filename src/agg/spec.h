@@ -664,6 +664,11 @@ extern bool sift_aggspec_null_zone(const SiftAggPred *p, const SiftSrcLayout *la
 extern bool sift_aggspec_tid_range(const SiftAggSpec *s, uint64 *lo, uint64 *hi);
 extern bool sift_aggspec_plain(const SiftAggSpec *s);
 
+/* agg/plan_cost.c: does a predicate test the leaf; is every reader of a numeric leaf a sum or average that adds its dictionary entries (SiftAggAgg.wsum) */
+extern bool pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values);
+extern bool combo_wsum_only(const SiftAggSpec *s, int ci);
+extern bool leaf_wsum_only(const SiftAggSpec *s, int leaf);
+
 /* How the pre-aggregates answer a scan: the histogram of dim of the cube (-1: the sums of the leaves), or the rollup of the list leaf list */
 typedef struct SiftAggPaShape
 {

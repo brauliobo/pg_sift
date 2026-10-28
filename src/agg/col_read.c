@@ -42,6 +42,23 @@ col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
 	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
 }
 
+/* the dictionary of the wide leaf's rows (n of them) that a read returns: the entries of its distinct values, or one record for each row when the executor only sums the leaf */
+static void
+wide_dict(ColSource *src, int leaf, SiftAggWide *w, const SiftColVec *v, uint32 n)
+{
+	const SiftColDef *def = sift_col_def(src->cs, leaf);
+
+	w->cxt = src->cxt;
+	if (src->numsum[leaf] && def->type == SIFT_COLT_NUMERIC)
+	{
+		sift_aggwide_nums(w, def, v, n);
+		src->dict[leaf] = (SiftSrcDict) {.id = (const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), .n = w->nd, .bytes = (const char *) w->recs, .gctx = w, .numrec = true, .rec = sift_aggwide_rec};
+		return;
+	}
+	sift_aggwide_build(w, def, v, n);
+	src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
+}
+
 /*
  * A wide leaf of the unit as a dictionary (agg/wide.h), made from its lanes by the first read of the leaf in the unit (the rows the executor
  * sees: those of a unit restricted to a match set are the kept ones) and shared by the reads after it, so that the executor's maps of the
@@ -59,10 +76,8 @@ wide_unit(ColSource *src, int leaf)
 
 		for (int k = 0; k < sift_col_def_value_lanes(def); k++)
 			sift_aggsel_read(&src->sel, &src->unit, leaf + k, &v[k]);
-		w->cxt = src->cxt;
-		sift_aggwide_build(w, def, v, v[0].n);
+		wide_dict(src, leaf, w, v, v[0].n);
 		src->wgen[leaf] = src->ugen;
-		src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
 	}
 	return w;
 }
@@ -158,10 +173,8 @@ wide_scatter(ColSource *src, int leaf, const SiftColSel *sel, const uint32 *idx,
 	codes = b->data;
 	for (int k = 0; k < sift_col_def_value_lanes(def); k++)
 		sift_col_read(&src->unit, leaf + k, sel, &v[k]);
-	w->cxt = src->cxt;
-	sift_aggwide_build(w, def, v, sel->count);
+	wide_dict(src, leaf, w, v, sel->count);
 	src->wgen[leaf] = 0;
-	src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
 	memset(codes, 0, (nrow + SIFT_AGG_PAD) * sizeof(uint32));
 	if (w->has_null)
 		memset(b->isnull, 0, nrow);

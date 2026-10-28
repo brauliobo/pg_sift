@@ -238,11 +238,23 @@ mapped_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 void
 numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m)
 {
-	const sift_i128 *p10 = pow10_tab();
+	const sift_i128 *p10;
 	sift_i128	w = acc->w[g],
 				v = m->m;
 	int			sc = (int) acc->i[g];
 
+	/* the usual row: the sum is an integer at the row's scale and the row's integer fits */
+	if (!acc->nf[g] && m->ok && acc->n[g] > 0 && m->scale == sc)
+	{
+		sift_i128	t;
+
+		if (!__builtin_add_overflow(w, v, &t))
+		{
+			acc->w[g] = t;
+			return;
+		}
+	}
+	p10 = pow10_tab();
 	if (!acc->nf[g] && m->ok)
 	{
 		bool		bad = false;
@@ -330,12 +342,12 @@ direct_add(AggExec *ex, int ai, uint32 g, uint32 id)
 	MemoryContextSwitchTo(old);
 }
 
-#define WNUM_UNSET	INT16_MIN
 
 /*
  * sum and avg of a numeric leaf read as a dictionary (wide): a row adds the integer and scale of its entry, decoded once per dictionary the first time a
  * row reads it, where the combo made a datum of every entry and PostgreSQL's numeric_add added it. The entries that are not a finite number of 38 digits
- * (NaN, infinities) go to numeric_add with the entry itself.
+ * (NaN, infinities) go to numeric_add with the entry itself. A dictionary of records (SiftSrcDict.numrec) has the integer and scale of each row, and the
+ * address of the numeric when it has none.
  */
 static void
 wide_sum_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
@@ -346,11 +358,12 @@ wide_sum_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	const SiftSrcDict *d = v->dict;
 	const uint32 *idx,
 			   *codes = v->data;
-	DictSlot   *ds = dict_slot(ex, d);
+	const DNum *recs = d->numrec ? (const DNum *) d->bytes : NULL;
+	DictSlot   *ds = recs ? NULL : dict_slot(ex, d);
 	MemoryContext old;
 
 	gather_idx(ex, a->wsum - 1, nsel, &idx);
-	if (ds->num == NULL)
+	if (ds && ds->num == NULL)
 	{
 		ds->num = MemoryContextAlloc(ex->cxt, (size_t) d->n * sizeof(DNum));
 		for (uint32 i = 0; i < d->n; i++)
@@ -360,18 +373,31 @@ wide_sum_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	for (int j = 0; j < nsel; j++)
 	{
 		uint32		c;
-		DNum	   *e;
+		const DNum *e;
 		Datum		x = (Datum) 0;
 		uint32		g = ex->gid[j];
 
 		if (ok && !sift_colsrc_bit(ok, j))
 			continue;
 		c = codes[idx[j]];
-		e = &ds->num[c];
-		if (unlikely(e->scale == WNUM_UNSET))
-			numeric_decode(PointerGetDatum(d->bytes + d->off[c]), e);
-		if (!e->ok)
-			x = datumCopy(PointerGetDatum(d->bytes + d->off[c]), false, -1);
+		if (recs)
+		{
+			e = &recs[c];
+			if (unlikely(e->scale == WNUM_UNSET))
+				d->rec(d->gctx, c);
+			if (!e->ok)
+				x = PointerGetDatum((void *) (uintptr_t) e->m);
+		}
+		else
+		{
+			DNum	   *ne = &ds->num[c];
+
+			if (unlikely(ne->scale == WNUM_UNSET))
+				numeric_decode(PointerGetDatum(d->bytes + d->off[c]), ne);
+			if (!ne->ok)
+				x = datumCopy(PointerGetDatum(d->bytes + d->off[c]), false, -1);
+			e = ne;
+		}
 		numeric_sum_add(acc, g, x, e);
 		acc->n[g]++;
 	}

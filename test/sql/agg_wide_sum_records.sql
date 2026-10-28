@@ -1,0 +1,87 @@
+-- A sum or average of a numeric leaf that is a dictionary of images (no precision, or past 38 digits) or of 128-bit lanes (past 18 digits), which nothing else reads, adds one
+-- integer and scale for each row, read from the lanes, where it built the numeric of every distinct value. The result (value and display scale) is that of the normal plan for NULLs,
+-- NaN, infinities, negatives, zeros of every scale, values of one number spelled with several scales, more than 16 decimals, values of 38 digits and of more, sums that leave the
+-- 128-bit integer, a FILTER, groups, a filter on another column, and for the leaf read by anything else too (the dictionary).
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE ws (id int, g int, f int, u numeric, w numeric(30,10), x numeric(50,5), y numeric) WITH (autovacuum_enabled = false);
+INSERT INTO ws
+SELECT i, i % 7, i % 5, round(((i::bigint * 2654435761) % 100000007) / 100.0, 2) - 400000, round(((i::bigint * 2654435761) % 100000007) / 100000.0, 10) - 400,
+       round(((i::bigint * 40503) % 100000007)::numeric * 123456789012345678, 5), (i % 13) * 1.5
+FROM generate_series(1, 150000) i;
+INSERT INTO ws VALUES
+	(200001, 0, 0, NULL, NULL, NULL, NULL), (200002, 0, 0, 0, 0, 0, 0), (200003, 0, 0, 0.00, 0.0000000000, 0.00000, 0.000000), (200004, 0, 0, 1.5, 1.5, 1.5, 1.5), (200005, 0, 0, 1.50, 1.50, 1.50, 1.50),
+	(200006, 0, 0, 1.500, 1.500, 1.500, 1.500), (200007, 1, 0, -1.5, -1.5, -1.5, -1.5), (200008, 1, 0, 1.12345678901234567890123, 1.1234567890, 1.12345, 1.12345678901234567890123),
+	(200009, 1, 0, 12345678901234567890123456789012345678, 12345678901234567890.1234567890, 12345678901234567890123456789012345678901.12345, 123456789012345678901234567890123456),
+	(200010, 1, 0, -99999999999999999999999999999999999999, -99999999999999999999.9999999999, -99999999999999999999999999999999999999999.99999, -99999999999999999999999999999999999999),
+	(200011, 2, 0, 1e40, 1e19, 1e40, 1e40), (200012, 2, 0, 1e-30, 1e-10, 1e-5, 1e-30), (200013, 2, 0, 'NaN', 'NaN', 'NaN', 'NaN'), (200014, 3, 1, 'Infinity', NULL, NULL, 'Infinity'),
+	(200015, 3, 1, '-Infinity', NULL, NULL, '-Infinity'), (200016, 3, 1, 170141183460469231731687303715884105727, 99999999999999999999.9999999999, 99999999999999999999999999999999999999999.99999, 99999999999999999999999999999999999999),
+	(200017, 3, 1, 170141183460469231731687303715884105727, 99999999999999999999.9999999999, 99999999999999999999999999999999999999999.99999, 99999999999999999999999999999999999999),
+	(200018, 4, 1, 100000000000000000000000000000000000000, 1, 1, 100000000000000000000000000000000000000), (200019, 4, 1, 100000000000000000000000000000000000000, -1, -1, 100000000000000000000000000000000000000);
+CREATE INDEX ws_col ON ws USING sift_col (id, g, f, u, w, x, y);
+VACUUM (FREEZE, ANALYZE) ws;
+-- groups and a filter that leave no NaN, no infinity and nothing past 38 digits: the integer path alone
+CREATE TABLE wp AS SELECT i AS id, i % 11 AS g, (i % 17) - 8 AS f, round(((i::bigint * 7919) % 99991) / 3.0, 2) - 5000 AS u, round(((i::bigint * 7919) % 99991) / 3.0, 12) AS y, NULLIF(i % 9, 0) * 0.25 AS z FROM generate_series(1, 90000) i;
+CREATE INDEX wp_col ON wp USING sift_col (id, g, f, u, y, z);
+VACUUM (FREEZE, ANALYZE) wp;
+
+CREATE FUNCTION rows_of(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION uses_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; s bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		s := s OR l LIKE '%Custom Scan (SiftAgg)%';
+	END LOOP;
+	RETURN s;
+END $$;
+
+CREATE TABLE ws_q (q text);
+INSERT INTO ws_q SELECT format(q, c) FROM (VALUES
+	('SELECT sum(%1$s), avg(%1$s) FROM ws'), ('SELECT sum(%1$s) FROM ws WHERE id <= 150000'), ('SELECT avg(%1$s) FROM ws WHERE id <= 150000'),
+	('SELECT g, sum(%1$s), count(*) FROM ws GROUP BY g'), ('SELECT g, f, sum(%1$s), avg(%1$s) FROM ws GROUP BY g, f'),
+	('SELECT sum(%1$s) FILTER (WHERE f = 1), sum(%1$s) FILTER (WHERE g = 0) FROM ws'), ('SELECT sum(%1$s) FROM ws WHERE g IN (0, 2)'),
+	('SELECT sum(%1$s) FROM ws WHERE id > 100000'), ('SELECT sum(%1$s), min(%1$s), max(%1$s) FROM ws WHERE id <= 150000'), ('SELECT sum(%1$s), count(DISTINCT %1$s) FROM ws WHERE id <= 5000'),
+	('SELECT %1$s, sum(%1$s) FROM ws WHERE id <= 3000 GROUP BY %1$s'), ('SELECT sum(%1$s) FROM ws WHERE %1$s IS NOT NULL AND id <= 150000'),
+	('SELECT sum(%1$s) FROM ws WHERE id = 200016 OR id = 200017'), ('SELECT sum(%1$s) FROM ws WHERE id IN (200018, 200019)'), ('SELECT sum(%1$s) FROM ws WHERE id IN (200002, 200003, 200004, 200005, 200006)'),
+	('SELECT sum(%1$s) FROM ws WHERE id IN (200004, 200005, 200006, 200012)'), ('SELECT sum(%1$s) FROM ws WHERE id = 200001'), ('SELECT sum(%1$s) FROM ws WHERE id = 200007 OR id = 200004')
+	) q(q), (VALUES ('u'), ('w'), ('x'), ('y')) c(c);
+INSERT INTO ws_q SELECT format(q, c) FROM (VALUES
+	('SELECT sum(%1$s), avg(%1$s) FROM wp'), ('SELECT g, sum(%1$s) FROM wp GROUP BY g'), ('SELECT sum(%1$s) FROM wp WHERE f > 3'), ('SELECT g, sum(%1$s), avg(%1$s) FROM wp WHERE f < 0 GROUP BY g'),
+	('SELECT sum(%1$s) FILTER (WHERE f = 2) FROM wp'), ('SELECT f, sum(%1$s) FROM wp WHERE id BETWEEN 1000 AND 50000 GROUP BY f')) q(q), (VALUES ('u'), ('y'), ('z')) c(c);
+
+-- a table of partitions and a sift_table, whose sources give the dictionary or the records
+CREATE TABLE wq (id int, g int, u numeric) PARTITION BY RANGE (id);
+CREATE TABLE wq1 PARTITION OF wq FOR VALUES FROM (0) TO (30000);
+CREATE TABLE wq2 PARTITION OF wq FOR VALUES FROM (30000) TO (1000000);
+INSERT INTO wq SELECT id, g, u FROM ws WHERE id <= 60000 OR id > 200000;
+CREATE INDEX wq_col ON wq USING sift_col (id, g, u);
+CREATE TABLE wt (id int, g int, u numeric) USING sift_table;
+INSERT INTO wt SELECT id, g, u FROM ws WHERE id <= 60000 OR id > 200000;
+INSERT INTO ws_q SELECT format(q, t) FROM (VALUES ('SELECT sum(u), avg(u) FROM %1$s'), ('SELECT g, sum(u) FROM %1$s GROUP BY g'), ('SELECT sum(u) FROM %1$s WHERE id BETWEEN 20000 AND 40000')) q(q), (VALUES ('wq'), ('wt')) t(t);
+
+-- every statement, in both plans; "scan" counts those the forced scan answers
+SELECT count(*) AS statements, count(*) FILTER (WHERE rows_of(q, true) = rows_of(q, false)) AS same, count(*) FILTER (WHERE uses_scan(q)) > count(*) / 2 AS mostly_scanned FROM ws_q;
+SELECT q FROM ws_q WHERE rows_of(q, true) <> rows_of(q, false);
+
+SET sift.agg_force = on;
+SELECT sum(u), sum(w), sum(x), sum(y) FROM ws WHERE id <= 150000;
+SELECT sum(u), sum(w), sum(x), sum(y) FROM ws WHERE id IN (200004, 200005, 200006);
+SELECT sum(u), sum(w), sum(x), sum(y) FROM ws WHERE id IN (200016, 200017);
+SELECT sum(u), avg(y) FROM ws WHERE id IN (200013, 200004);
+RESET sift.agg_force;
+
+DROP FUNCTION rows_of(text, bool);
+DROP FUNCTION uses_scan(text);
+DROP TABLE ws_q, wt, wq, wp, ws;
+DROP EXTENSION pg_sift;

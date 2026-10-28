@@ -52,6 +52,8 @@ typedef struct DNum
 	bool		ok;
 } DNum;
 
+#define WNUM_UNSET	INT16_MIN		/* DNum.scale before the entry is decoded */
+
 extern void numeric_decode(Datum d, DNum *out);
 extern void numeric_sum_add(AggAcc *acc, uint32 g, Datum x, const DNum *m);
 

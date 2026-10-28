@@ -303,13 +303,11 @@ sift_col_numimg_to_text(const uint8 *img, uint32 len, int32 dscale, char *buf, u
 	return n;
 }
 
-int
-sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, uint8 *dig, uint32 cap, uint32 *nd)
+/* the sign mask, the number of digit pairs and the exponent of an image: 0 when it is not one, 1 for zero, 2 for a number */
+static int
+numimg_head(const uint8 *img, uint32 len, uint8 *inv, uint32 *np, int32 *exp10)
 {
-	uint8		inv;
-	uint32		end = len,
-				np;
-	unsigned	last;
+	uint32		end = len;
 
 	if (len == 0)
 		return 0;
@@ -317,16 +315,29 @@ sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, ui
 		return len == 1 ? 1 : 0;
 	if ((img[0] != SIFT_NIMG_NEG && img[0] != SIFT_NIMG_POS) || len < 5)
 		return 0;
-	inv = img[0] == SIFT_NIMG_NEG ? 0xFF : 0;
-	if (inv && img[len - 1] != 0xFF)
+	*inv = img[0] == SIFT_NIMG_NEG ? 0xFF : 0;
+	if (*inv && img[len - 1] != 0xFF)
 		return 0;
-	end -= inv != 0;
-	if (end < 5 || 2 * (end - 4) > cap)
+	end -= *inv != 0;
+	if (end < 5)
 		return 0;
-	*exp10 = (int32) ((uint32) (img[1] ^ inv) << 16 | (uint32) (img[2] ^ inv) << 8 | (uint32) (img[3] ^ inv)) - EXP_BIAS;
+	*exp10 = (int32) ((uint32) (img[1] ^ *inv) << 16 | (uint32) (img[2] ^ *inv) << 8 | (uint32) (img[3] ^ *inv)) - EXP_BIAS;
 	if (*exp10 > SIFT_NIMG_EXP_MAX || *exp10 < SIFT_NIMG_EXP_MIN)
 		return 0;
-	np = end - 4;
+	*np = end - 4;
+	return 2;
+}
+
+int
+sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, uint8 *dig, uint32 cap, uint32 *nd)
+{
+	uint8		inv = 0;
+	uint32		np = 0;
+	int			kind = numimg_head(img, len, &inv, &np, exp10);
+	unsigned	last;
+
+	if (kind != 2 || 2 * np > cap)
+		return kind == 1;
 	for (uint32 k = 0; k < np; k++)
 	{
 		unsigned	pair = (unsigned) (img[4 + k] ^ inv) - 1;
@@ -341,5 +352,47 @@ sift_col_numimg_digits(const uint8 *img, uint32 len, bool *neg, int32 *exp10, ui
 		return 0;				/* not canonical: the first digit or the last pair is zero */
 	*neg = inv != 0;
 	*nd = 2 * np - (last == 0);
+	return 2;
+}
+
+int
+sift_col_numimg_int(const uint8 *img, uint32 len, bool *neg, int32 *exp10, sift_wu128 *digits, uint32 *nd)
+{
+	uint8		inv = 0;
+	uint32		np = 0;
+	int			kind = numimg_head(img, len, &inv, &np, exp10);
+	uint64		lo = 0;
+	sift_wu128	v;
+	unsigned	first,
+				last;
+
+	if (kind != 2 || np > 19)
+		return kind == 1;
+	for (uint32 k = 0; k < Min(np, 9); k++)
+	{
+		unsigned	pair = (unsigned) (img[4 + k] ^ inv) - 1;
+
+		if (pair > 99)
+			return 0;
+		lo = lo * 100 + pair;
+	}
+	v = lo;
+	for (uint32 k = 9; k < np; k++)
+	{
+		unsigned	pair = (unsigned) (img[4 + k] ^ inv) - 1;
+
+		if (pair > 99)
+			return 0;
+		v = v * 100 + pair;
+	}
+	first = (unsigned) (img[4] ^ inv) - 1;
+	last = (unsigned) (img[3 + np] ^ inv) - 1;
+	if (first < 10 || (last == 0))
+		return 0;				/* not canonical: the first digit or the last pair is zero */
+	*neg = inv != 0;
+	*nd = 2 * np - (last % 10 == 0);
+	if (last % 10 == 0)
+		v /= 10;
+	*digits = v;
 	return 2;
 }

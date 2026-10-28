@@ -260,6 +260,13 @@ sift_colsrc_set_raw(SiftSrcSource *src, int leaf)
 }
 
 void
+sift_colsrc_set_numsum(SiftSrcSource *src, int leaf)
+{
+	if (src->prov->set_numsum)
+		src->prov->set_numsum(src->impl, leaf);
+}
+
+void
 sift_colsrc_tids(SiftSrcSource *src, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {
 	src->prov->tids(src->impl, unit, rows, n, tids);

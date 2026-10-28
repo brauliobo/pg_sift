@@ -76,6 +76,7 @@ typedef struct ColSource
 	SiftSrcLeafBuf *buf;			/* per leaf */
 	bool	   *tol;			/* per leaf: its values the index cannot hold are read as NULL (tolerate_ovf) */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
+	bool	   *numsum;			/* per leaf: a numeric leaf only summed, read as one record for each row (set_numsum) */
 	Relation	heap;
 	Relation	index;
 	Snapshot	snapshot;
@@ -115,6 +116,7 @@ extern uint64 col_set_filters(void *impl, const SiftSrcFilter *f, int nf);
 extern bool col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void col_tolerate_ovf(void *impl, int leaf);
 extern void col_set_raw(void *impl, int leaf);
+extern void col_set_numsum(void *impl, int leaf);
 
 /* a leaf read through the per-unit dictionary of datums (agg/wide.h) */
 static inline bool

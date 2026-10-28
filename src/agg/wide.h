@@ -31,10 +31,25 @@ typedef struct SiftAggWide
 	uint32	   *slot;
 	uint64	   *key;			/* 3 words per entry */
 	char	   *txt;			/* room for the text of any image */
+	struct DNum *recs;			/* sift_aggwide_nums: [n], made by sift_aggwide_rec when a row first asks */
+	uint32		rcap;
+	const SiftColDef *def;		/* ... from these lanes */
+	SiftColVec	lanes[SIFT_COL_MAX_LANES];
+	struct NumMemo *memo;		/* ... and what it made of the entries of an image dictionary, nmemo (a power of 2) slots */
+	uint32		nmemo;
+	MemoryContext acx;			/* the numerics of the records that are not an integer and a scale, reset by each build */
 } SiftAggWide;
 
 /* The entries of the rows of `lanes` (the lane vectors of def, as sift_col_read_lanes gives them), in the order of their first row */
 extern void sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n);
+
+/*
+ * The numeric leaf of the lanes of def as one DNum (agg/combo_int.h) for each row, for a leaf that is only summed: w->codes[i] = i, w->recs[i] the integer and
+ * scale of row i, made from the lanes when the row first asks (scale WNUM_UNSET before), or, when it has none (a NaN, an infinity, more than 38 digits), ok false and
+ * the numeric's address in m. No entry is hashed, no numeric built, and a row nothing reads costs nothing. The lanes stay those of the unit until the next build.
+ */
+extern void sift_aggwide_nums(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n);
+extern void sift_aggwide_rec(const void *w, uint32 row);
 
 /* The Datum of an entry of the dictionary of a leaf of a type sift_aggwide_type says: the entry is the datum */
 extern Datum sift_aggwide_datum(Oid typid, const char *bytes, uint32 len);

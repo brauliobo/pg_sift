@@ -433,6 +433,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Top-N from the zones of the units | works | works |  |
 | Cache of the top-N walk | works | missing | the walk is made again by every statement |
 | Top-N on raw uuid and bytea keys | works | works | a uuid column is a dictionary of its values; the top-N of uuid and bytea reads the stored codes |
+| Sum and average of a numeric image read from the lanes of each row | works | missing | the sum adds an integer and a scale made from the lanes of a row, with no dictionary of numerics; a table reads the dictionary |
 | Stored dictionary order (`dict_lookup`) | works | works | written for a dictionary of 1,024 strings or more under `sift.table_dict_lookup` (off by default); the top-N of the table reads its byte order |
 | jsonb paths as leaves | works | works | `paths` on an index, `sift.table_set_paths` on a table |
 | Shapes that read the heap row again (`set_recheck`) | works | missing | a table keeps the normal plan for them |
