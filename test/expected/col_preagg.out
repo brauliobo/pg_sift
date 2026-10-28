@@ -98,8 +98,9 @@ CREATE FUNCTION pa_battery(idx regclass) RETURNS TABLE(what text, checked bool, 
 	UNION ALL SELECT 'hist d/f4', c, b, NULL::bigint FROM pa_hist(idx, 'pa', 'd', 'd::text', 'f4', true) h(c, b, st)
 	UNION ALL SELECT 'hist b', c, b, NULL::bigint FROM pa_hist(idx, 'pa', 'b', $x$CASE WHEN b THEN 't' WHEN NOT b THEN 'f' END$x$, NULL, false) h(c, b, st)
 $$;
+-- key_cut is off on these indexes: the checks below compare the pre-aggregates with the rows of the units of a block range (col_key_cut_auto is about the cut).
 -- The default: dictionary, integer, date and bool dimensions; the high-cardinality text leaf and the timestamp have no histogram
-CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (dead_rewrite_pct = 10, compression = 'auto');
+CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (dead_rewrite_pct = 10, compression = 'auto', key_cut = 'off');
 SELECT sift.col_verify('pa_col');
  col_verify 
 ------------
@@ -309,7 +310,7 @@ SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col')
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 -- an explicit cube: exactly these dimensions and measures, integer measures included, no byte budget
-CREATE INDEX pa_cube ON pa USING sift_col (i2, i4, i8, n, f8, d, b, s, di) WITH (preagg = 'cube(s: i2, i4, i8, n; di: i8, f8; d; b: n)');
+CREATE INDEX pa_cube ON pa USING sift_col (i2, i4, i8, n, f8, d, b, s, di) WITH (preagg = 'cube(s: i2, i4, i8, n; di: i8, f8; d; b: n)', key_cut = 'off');
 SELECT sift.col_verify('pa_cube');
  col_verify 
 ------------
@@ -359,7 +360,7 @@ SELECT count(*) > 0 AS d_hist FROM sift.col_unit_hist('pa_cube', 'd');
 (1 row)
 
 -- off: the exact sums stay (40 bytes per integer leaf and unit), no histogram anywhere
-CREATE INDEX pa_off ON pa USING sift_col (i2, i4, s, di) WITH (preagg = 'off');
+CREATE INDEX pa_off ON pa USING sift_col (i2, i4, s, di) WITH (preagg = 'off', key_cut = 'off');
 SELECT sift.col_verify('pa_off');
  col_verify 
 ------------
@@ -378,12 +379,65 @@ SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM (SELECT 'i4' AS what
  i4   | t       |   0 | f
 (1 row)
 
+-- a key-cut index: unit sb is the sequence number of the cut, not a heap superblock, so the rows of a unit are the rows of its id range (id is the key and unique)
+CREATE FUNCTION pa_key_units(idx regclass, leaf text, typ text, withsum bool) RETURNS TABLE(exact_units bigint, bad bigint) LANGUAGE plpgsql AS $f$
+BEGIN
+	RETURN QUERY EXECUTE format($q$
+		WITH u AS (SELECT segment, sb, rows, exact, nvals, nnull, min, max, sum FROM sift.col_unit_agg(%1$L, %2$L) WHERE segment IS NOT NULL),
+		     k AS (SELECT segment, sb, min::bigint AS lo, max::bigint AS hi FROM sift.col_unit_agg(%1$L, 'id') WHERE segment IS NOT NULL)
+		SELECT count(*) FILTER (WHERE u.exact),
+		       count(*) FILTER (WHERE u.exact AND NOT (u.rows = h.n AND u.nvals = h.n AND u.nnull = h.n - h.nn
+		             AND u.min::%3$s IS NOT DISTINCT FROM h.mn AND u.max::%3$s IS NOT DISTINCT FROM h.mx
+		             AND (NOT %4$L OR u.sum IS NOT DISTINCT FROM h.s)))
+		FROM u JOIN k USING (segment, sb)
+		CROSS JOIN LATERAL (SELECT count(*) AS n, count(%2$I) AS nn, min(%2$I) AS mn, max(%2$I) AS mx, %5$s AS s
+		                    FROM pa WHERE id BETWEEN k.lo AND k.hi) h
+	$q$, idx, leaf, typ, withsum, CASE WHEN withsum THEN format('sum(%I)::numeric', leaf) ELSE 'NULL::numeric' END);
+END $f$;
+CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id', key_cut_rows = 3000);
+SELECT sift.col_merge('pa_cut', true);
+ col_merge 
+-----------
+         1
+(1 row)
+
+SELECT 'built' AS step, leaf, (r).exact_units > 0 AS exact, (r).bad
+FROM (VALUES ('i2', 'int2', true), ('i4', 'int4', true), ('n', 'numeric', true), ('d', 'date', false)) v(leaf, typ, withsum),
+     LATERAL (SELECT pa_key_units('pa_cut', leaf, typ, withsum) AS r) x;
+ step  | leaf | exact | bad 
+-------+------+-------+-----
+ built | i2   | t     |   0
+ built | i4   | t     |   0
+ built | n    | t     |   0
+ built | d    | t     |   0
+(4 rows)
+
+DELETE FROM pa WHERE id % 13 = 0;
+UPDATE pa SET i4 = i4 / 2 WHERE id % 11 = 0;
+VACUUM pa;
+SELECT sift.col_merge('pa_cut', true);
+ col_merge 
+-----------
+         1
+(1 row)
+
+SELECT 'merged' AS step, leaf, (r).exact_units > 0 AS exact, (r).bad
+FROM (VALUES ('i2', 'int2', true), ('i4', 'int4', true), ('n', 'numeric', true), ('d', 'date', false)) v(leaf, typ, withsum),
+     LATERAL (SELECT pa_key_units('pa_cut', leaf, typ, withsum) AS r) x;
+  step  | leaf | exact | bad 
+--------+------+-------+-----
+ merged | i2   | t     |   0
+ merged | i4   | t     |   0
+ merged | n    | t     |   0
+ merged | d    | t     |   0
+(4 rows)
+
 -- options
 ALTER INDEX pa_off SET (preagg = 'default');
 SELECT reloptions FROM pg_class WHERE relname = 'pa_off';
-    reloptions    
-------------------
- {preagg=default}
+          reloptions          
+------------------------------
+ {key_cut=off,preagg=default}
 (1 row)
 
 CREATE INDEX pa_bad1 ON pa USING sift_col (i2, s) WITH (preagg = 'cube(nosuch)');
@@ -399,5 +453,5 @@ ERROR:  invalid preagg option "cube(i2: ": a measure name is missing
 SELECT * FROM sift.col_unit_agg('pa_col', 'nosuch');
 ERROR:  index "pa_col" has no leaf "nosuch"
 DROP TABLE pa, pz;
-DROP FUNCTION pa_battery(regclass), pa_hist(regclass, regclass, text, text, text, bool), pa_leaf(regclass, regclass, text, text, bool, bool), pa_sb(tid);
+DROP FUNCTION pa_battery(regclass), pa_hist(regclass, regclass, text, text, text, bool), pa_leaf(regclass, regclass, text, text, bool, bool), pa_sb(tid), pa_key_units(regclass, text, text, bool);
 DROP EXTENSION pg_sift;
