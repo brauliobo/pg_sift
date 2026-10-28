@@ -1260,19 +1260,13 @@ batch_flush_all(void)
 {
 	Oid			oid;
 
-	while (OidIsValid(oid = sift_cwbuf_pending()))
+	while (sift_cwbuf_pending(&oid))
 	{
-		Relation	index = try_relation_open(oid, RowExclusiveLock);
+		Relation	index = relation_open(oid, RowExclusiveLock);
 
-		/* dropped in this transaction */
-		if (index == NULL)
-			sift_cwbuf_discard(oid);
-		else
-		{
-			if (sift_cwbuf_flush(index))
-				sift_col_maint_after_seal(index);
-			relation_close(index, NoLock);
-		}
+		if (sift_cwbuf_flush(index))
+			sift_col_maint_after_seal(index);
+		relation_close(index, NoLock);
 	}
 }
 

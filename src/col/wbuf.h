@@ -47,12 +47,12 @@ extern bool sift_cwbuf_append(Relation index, SiftCWbufHint *hint, const SiftCol
 /*
  * A row of a transaction that already wrote one is buffered in the backend (false: the index has no slot, append it) and reaches the lane with
  * the rest of its run, as one WAL record a page: sift_cwbuf_flush writes the rows of the index (true: one crossed write_buffer_limit, as for
- * append), sift_cwbuf_pending names an index that has some, sift_cwbuf_discard drops those of an index (all when InvalidOid): the transaction
+ * append), sift_cwbuf_pending names the index that has the file of a slot that holds some (a swap of files moves rows to the other index), sift_cwbuf_discard drops those of an index (all when InvalidOid): the transaction
  * aborted, or the index was rebuilt from the heap that holds them. Every reader of this file flushes first.
  */
 extern bool sift_cwbuf_pend(Relation index, SiftCWbufHint *hint, const SiftColSchema *schema, const SiftColRow *row, bool *crossed);
 extern bool sift_cwbuf_flush(Relation index);
-extern Oid sift_cwbuf_pending(void);
+extern bool sift_cwbuf_pending(Oid *index);
 extern void sift_cwbuf_discard(Oid index);
 
 /*

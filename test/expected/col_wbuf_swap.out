@@ -1,0 +1,109 @@
+-- The rows a transaction buffers for a sift_col index belong to the storage of the index when they were buffered, not to the index of that name at
+-- commit: a tool that swaps the storage of two tables and their indexes in the transaction (pg_repack puts the rebuilt copy under the name of the original
+-- table that way) must find them in the index that now has that storage. The swap here is the one of pg_repack: the relfilenodes of the heaps and of the
+-- indexes exchanged in the catalog.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE orig (id int, k int, v numeric(10,2)) WITH (autovacuum_enabled = false);
+CREATE TABLE copy (id int, k int, v numeric(10,2)) WITH (autovacuum_enabled = false);
+INSERT INTO orig SELECT g, g % 7, g % 97 FROM generate_series(1, 50) g;
+CREATE INDEX orig_col ON orig USING sift_col (id, k, v);
+CREATE INDEX copy_col ON copy USING sift_col (id, k, v);
+-- exchanges the storage of two relations of the same kind (the update of pg_class is the swap; the relcache entries follow at the next command)
+CREATE FUNCTION swap_storage(a regclass, b regclass) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE fa oid; fb oid;
+BEGIN
+	SELECT relfilenode INTO fa FROM pg_class WHERE oid = a;
+	SELECT relfilenode INTO fb FROM pg_class WHERE oid = b;
+	UPDATE pg_class SET relfilenode = fb WHERE oid = a;
+	UPDATE pg_class SET relfilenode = fa WHERE oid = b;
+END $$;
+-- the copy is loaded in the transaction (the first row goes in at once, the others are buffered), then takes the place of the original
+SET allow_system_table_mods = on;
+BEGIN;
+INSERT INTO copy SELECT g, g % 7, g % 97 FROM generate_series(1, 300) g;
+INSERT INTO copy SELECT 1000 + g, g % 7, g % 97 FROM generate_series(1, 200) g;
+SELECT swap_storage('copy', 'orig');
+ swap_storage 
+--------------
+ 
+(1 row)
+
+SELECT swap_storage('copy_col', 'orig_col');
+ swap_storage 
+--------------
+ 
+(1 row)
+
+COMMIT;
+RESET allow_system_table_mods;
+-- orig is the loaded table now (500 rows), with the index of the rows it holds; copy has the 50 old rows
+SELECT count(*) AS orig_rows FROM orig;
+ orig_rows 
+-----------
+       500
+(1 row)
+
+SELECT count(*) AS copy_rows FROM copy;
+ copy_rows 
+-----------
+        50
+(1 row)
+
+SELECT sift.col_verify('orig_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT sift.col_verify('copy_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SET sift.enable_agg = on;
+SELECT k, count(*), sum(v) FROM orig GROUP BY k ORDER BY k;
+ k | count |   sum   
+---+-------+---------
+ 0 |    70 | 3246.00
+ 1 |    72 | 3318.00
+ 2 |    72 | 3390.00
+ 3 |    72 | 3462.00
+ 4 |    72 | 3437.00
+ 5 |    71 | 3308.00
+ 6 |    71 | 3185.00
+(7 rows)
+
+SET sift.enable_agg = off;
+SELECT k, count(*), sum(v) FROM orig GROUP BY k ORDER BY k;
+ k | count |   sum   
+---+-------+---------
+ 0 |    70 | 3246.00
+ 1 |    72 | 3318.00
+ 2 |    72 | 3390.00
+ 3 |    72 | 3462.00
+ 4 |    72 | 3437.00
+ 5 |    71 | 3308.00
+ 6 |    71 | 3185.00
+(7 rows)
+
+SET sift.enable_agg = on;
+SELECT count(*), sum(v) FROM copy;
+ count |   sum   
+-------+---------
+    50 | 1275.00
+(1 row)
+
+SET sift.enable_agg = off;
+SELECT count(*), sum(v) FROM copy;
+ count |   sum   
+-------+---------
+    50 | 1275.00
+(1 row)
+
+DROP TABLE orig, copy;
+DROP FUNCTION swap_storage(regclass, regclass);
+DROP EXTENSION pg_sift;

@@ -23,6 +23,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/relfilenumbermap.h"
 
 #include "col/am.h"
 #include "col/wbuf.h"
@@ -382,6 +383,10 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
  * pre-commit and pre-prepare, and when the next savepoint starts: a savepoint that rolls back drops what it buffered), and before this backend reads
  * the index (every reader below starts with flush_for_read): no other backend can see them before then, the heap rows are not visible to it.
  * Their overflow leaves are flagged when they are buffered, as for a row that goes in at once, so a plan made after the statement knows them.
+ *
+ * A slot belongs to the storage of the index (its file), not to the name: a tool that swaps the files of two tables and of their indexes in the
+ * transaction (pg_repack, when the copy takes the place of the table) leaves the rows of a heap with the index that now has the file they were
+ * meant for, and the OID they were buffered under has the other one. The OID is kept for a rebuild of that index, which drops them.
  */
 #define PEND_SLOTS		8
 #define PEND_HEAD		(sizeof(ItemPointerData) + sizeof(uint32))
@@ -389,6 +394,8 @@ sift_cwbuf_append(Relation index, SiftCWbufHint *h, const SiftColSchema *schema,
 typedef struct PendIndex
 {
 	Oid			index;			/* InvalidOid: free */
+	Oid			tablespace;		/* pg_class.reltablespace of the index, with loc the key of its file when the rows were buffered */
+	RelFileLocator loc;
 	uint32		ovf;
 	uint32		jnull;
 	StringInfoData buf;			/* per row: tid, payload length, payload */
@@ -398,24 +405,6 @@ static PendIndex pend[PEND_SLOTS];
 static int	pend_used;
 static StringInfoData pend_enc;
 
-Oid
-sift_cwbuf_pending(void)
-{
-	for (int i = 0; i < PEND_SLOTS; i++)
-		if (OidIsValid(pend[i].index))
-			return pend[i].index;
-	return InvalidOid;
-}
-
-static PendIndex *
-pend_find(Oid index)
-{
-	for (int i = 0; i < PEND_SLOTS; i++)
-		if (pend[i].index == index)
-			return &pend[i];
-	return NULL;
-}
-
 static void
 pend_clear(PendIndex *p)
 {
@@ -423,6 +412,33 @@ pend_clear(PendIndex *p)
 	p->ovf = p->jnull = 0;
 	resetStringInfo(&p->buf);
 	pend_used--;
+}
+
+/*
+ * The index that has the file of a slot that holds rows now (its OID: the same as when they were buffered unless the files were swapped); false
+ * when none is left. A slot whose file no index has (dropped, or rebuilt, in the transaction) is dropped here: the rows are in the heap.
+ */
+bool
+sift_cwbuf_pending(Oid *index)
+{
+	for (int i = 0; i < PEND_SLOTS; i++)
+		if (OidIsValid(pend[i].index))
+		{
+			*index = RelidByRelfilenumber(pend[i].tablespace, pend[i].loc.relNumber);
+			if (OidIsValid(*index))
+				return true;
+			pend_clear(&pend[i]);
+		}
+	return false;
+}
+
+static PendIndex *
+pend_find(Relation index)
+{
+	for (int i = 0; i < PEND_SLOTS; i++)
+		if (OidIsValid(pend[i].index) && RelFileLocatorEquals(pend[i].loc, index->rd_locator))
+			return &pend[i];
+	return NULL;
 }
 
 void
@@ -543,7 +559,7 @@ pend_flush(Relation index, PendIndex *p)
 bool
 sift_cwbuf_flush(Relation index)
 {
-	PendIndex  *p = pend_find(RelationGetRelid(index));
+	PendIndex  *p = pend_find(index);
 
 	return p != NULL && pend_flush(index, p);
 }
@@ -591,13 +607,15 @@ sift_cwbuf_pend(Relation index, SiftCWbufHint *h, const SiftColSchema *schema, c
 		}
 		return false;
 	}
-	if ((p = pend_find(RelationGetRelid(index))) == NULL)
+	if ((p = pend_find(index)) == NULL)
 	{
 		if (pend_used == PEND_SLOTS)
 			return false;
 		for (p = pend; OidIsValid(p->index); p++)
 			;
 		p->index = RelationGetRelid(index);
+		p->tablespace = index->rd_rel->reltablespace;
+		p->loc = index->rd_locator;
 		pend_used++;
 	}
 	if (h->gen == 0)
