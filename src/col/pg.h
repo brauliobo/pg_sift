@@ -139,13 +139,16 @@ typedef struct SiftColOptions
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */
 	int			superunit;		/* units per superunit summary of the segments written from now on (column format minor 8); 0: none, else 2 to 256 */
-	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment (maintenance only, not part of the format) */
+	int			dead_rewrite_pct;	/* percent of dead rows above which maintenance rewrites a lone segment, 0: by the bytes of a row (maintenance only, not part of the format) */
 	bool		vacuum_truncate;	/* VACUUM gives the free blocks at the end of the file back (maintenance only, not part of the format) */
 	bool		cluster_advice;	/* sift.cluster_advice() may recommend an order for the table (advice only, not part of the format) */
 } SiftColOptions;
 
-/* A unit with a dead row answers from its rows, not from its pre-aggregates: a lone segment is rewritten once a tenth of its rows is dead */
-#define SIFT_COL_DEAD_PCT	10
+/* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of its dead rows cost more than the rewrite (dead_pct in col/maint.c) */
+#define SIFT_COL_DEAD_AUTO	0
+/* Instructions a scan pays for each dead row of a unit, and the scans expected between two VACUUMs */
+#define SIFT_COL_DEAD_SCAN_INSTR	430
+#define SIFT_COL_DEAD_SCANS	120
 
 extern const SiftColOptions *sift_col_options(Relation index);
 extern const char *sift_col_options_paths(Relation index);	/* "" when none; the shredder parses it */

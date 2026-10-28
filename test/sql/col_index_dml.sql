@@ -45,7 +45,7 @@ CREATE TABLE orders (id serial PRIMARY KEY, tenant_id int, status text, qty bigi
 INSERT INTO orders (tenant_id, status, qty, express)
 SELECT (i * 7919) % 1000 - 500, (ARRAY['new', 'paid', 'shipped'])[1 + i % 3], (i::bigint * 104729) % 100000, i % 2 = 0 FROM generate_series(1, 15000) i;
 UPDATE orders SET status = NULL WHERE id % 17 = 0;
-CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (write_buffer_limit = 64);
+CREATE INDEX o_col ON orders USING sift_col (tenant_id, status, qty, express) WITH (write_buffer_limit = 64, dead_rewrite_pct = 10);
 SELECT 'build', stage('o_col');
 SELECT kinds();
 

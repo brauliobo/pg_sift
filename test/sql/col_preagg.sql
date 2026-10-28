@@ -100,7 +100,7 @@ CREATE FUNCTION pa_battery(idx regclass) RETURNS TABLE(what text, checked bool, 
 $$;
 
 -- The default: dictionary, integer, date and bool dimensions; the high-cardinality text leaf and the timestamp have no histogram
-CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (compression = 'auto');
+CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (dead_rewrite_pct = 10, compression = 'auto');
 SELECT sift.col_verify('pa_col');
 SELECT what, checked, bad, sumsq_null > 0 AS sumsq_ovf FROM pa_battery('pa_col');
 SELECT (SELECT count(DISTINCT sb) FROM sift.col_unit_hist('pa_col', 'u')) < (SELECT count(*) FROM sift.col_unit_agg('pa_col', 'u')) AS u_capped,

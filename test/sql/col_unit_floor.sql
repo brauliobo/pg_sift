@@ -14,7 +14,7 @@ SET sift.test_col_floor_sbs = 4;
 
 CREATE TABLE fl (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false);
 INSERT INTO fl SELECT g, g % 7, g % 1000, repeat('x', 1000) FROM generate_series(1, 40000) g;
-CREATE INDEX fl_col ON fl USING sift_col (id, grp, amount) WITH (write_buffer_limit = 64);
+CREATE INDEX fl_col ON fl USING sift_col (id, grp, amount) WITH (write_buffer_limit = 64, dead_rewrite_pct = 10);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) fl;
 
 -- whether the three ways to answer (pre-aggregates, scan, heap) agree, for a group by and for a range of ctid (units cut by TID range hold rows of any block)

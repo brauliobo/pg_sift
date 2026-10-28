@@ -9,7 +9,7 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 CREATE TABLE zc (id int, k int, j int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO zc SELECT i, (i * 7919) % 15361, i % 7, repeat('x', 600) FROM generate_series(1, 15360) i;
-CREATE INDEX zc_idx ON zc USING sift_col (id, k, j) WITH (write_buffer_limit = 512);
+CREATE INDEX zc_idx ON zc USING sift_col (id, k, j) WITH (write_buffer_limit = 512, dead_rewrite_pct = 10);
 VACUUM (FREEZE, ANALYZE) zc;
 
 CREATE FUNCTION skipped(q text) RETURNS text LANGUAGE plpgsql AS $$

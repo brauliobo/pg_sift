@@ -9,10 +9,10 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- 600 customers in a random heap order, 100,000 rows
 CREATE TABLE kc (id int, cust int, d date, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO kc SELECT i, (i * 7919) % 600, date '2026-01-01' + (i * 31) % 300, i % 100, repeat('x', 100) FROM generate_series(1, 100000) i;
-CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (dead_rewrite_pct = 10, key_cut = 'cust, d');
 CREATE TABLE kp (LIKE kc);
 INSERT INTO kp SELECT * FROM kc;
-CREATE INDEX kp_idx ON kp USING sift_col (id, cust, d, amount);
+CREATE INDEX kp_idx ON kp USING sift_col (id, cust, d, amount) WITH (dead_rewrite_pct = 10);
 VACUUM (FREEZE, ANALYZE) kc;
 VACUUM (FREEZE, ANALYZE) kp;
 SELECT sift.col_verify('kc_idx', true);
@@ -227,7 +227,7 @@ SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable'
 -- a build that passes its memory writes a sorted segment for each run of rows, and a merge streams the runs into one segment: the rows stay those of the normal plan
 DROP INDEX kc_idx;
 SET sift.test_col_segment_kb = 64;
-CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (key_cut = 'cust, d');
+CREATE INDEX kc_idx ON kc USING sift_col (id, cust, d, amount) WITH (dead_rewrite_pct = 10, key_cut = 'cust, d');
 RESET sift.test_col_segment_kb;
 SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
  runs | format 
@@ -280,7 +280,7 @@ SELECT sift.col_verify('kc_idx', true);
 -- an index that gets the option later has segments cut by superblock: a merge loads and sorts them, and the rows written since are in key-cut segments
 CREATE TABLE kl (LIKE kc);
 INSERT INTO kl SELECT * FROM kc WHERE id <= 60000;
-CREATE INDEX kl_idx ON kl USING sift_col (id, cust, d, amount);
+CREATE INDEX kl_idx ON kl USING sift_col (id, cust, d, amount) WITH (dead_rewrite_pct = 10);
 ALTER INDEX kl_idx SET (key_cut = 'cust, d');
 INSERT INTO kl SELECT * FROM kc WHERE id > 60000;
 SELECT sift.col_promote('kl_idx');

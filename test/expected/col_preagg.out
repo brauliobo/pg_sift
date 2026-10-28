@@ -99,7 +99,7 @@ CREATE FUNCTION pa_battery(idx regclass) RETURNS TABLE(what text, checked bool, 
 	UNION ALL SELECT 'hist b', c, b, NULL::bigint FROM pa_hist(idx, 'pa', 'b', $x$CASE WHEN b THEN 't' WHEN NOT b THEN 'f' END$x$, NULL, false) h(c, b, st)
 $$;
 -- The default: dictionary, integer, date and bool dimensions; the high-cardinality text leaf and the timestamp have no histogram
-CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (compression = 'auto');
+CREATE INDEX pa_col ON pa USING sift_col (i2, i4, i8, n, f4, f8, d, ts, b, s, u, di) WITH (dead_rewrite_pct = 10, compression = 'auto');
 SELECT sift.col_verify('pa_col');
  col_verify 
 ------------

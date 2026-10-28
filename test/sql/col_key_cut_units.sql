@@ -12,8 +12,8 @@ CREATE TABLE nk (LIKE nu);
 INSERT INTO nk SELECT * FROM nu;
 VACUUM (FREEZE, ANALYZE) nu;
 VACUUM (FREEZE, ANALYZE) nk;
-CREATE INDEX nu_idx ON nu USING sift_col (id, cust, amt, q);
-CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust');
+CREATE INDEX nu_idx ON nu USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10);
+CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (dead_rewrite_pct = 10, key_cut = 'cust');
 SELECT sift.col_verify('nk_idx', true);
 
 -- no more than twice the units of the page cut

@@ -188,16 +188,16 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 #### sift_col(dead_rewrite_pct)
 
-`sift_col` · default · since 2.0 · default 10
+`sift_col` · default · since 2.0 · default 0
 
-- **What it does:** a lone segment is rewritten above this percent of dead rows, so that its units answer from pre-aggregates again
+- **What it does:** a lone segment is rewritten above this percent of dead rows, so that its units answer from pre-aggregates again; 0 takes the percent from the bytes of its rows
 - **Gain:** GROUP BY after three rounds of 30% updates and VACUUM: 0.82 ms (never rewritten) to 0.16 ms (10) (100,000 rows)
-- **Impact:** index size: 4.05 MB (never rewritten) to 2.15 MB (10) (-46.8%, 100,000 rows after three rounds); build, merge and writes: VACUUM of the third round 61 ms (never rewritten), 56 ms (10): within noise (100,000 rows); other: a rewrite writes the whole segment; 100 never rewrites
-- **When:** VACUUM rewrites a lone segment of a sift_col index above this percent of dead rows; the tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units. The BM25 index keeps 50.
-- **Default:** 10 — 10, not 50 as the BM25 index: a unit with a dead row is scanned, not answered from its pre-aggregates. 10 gave GROUP BY 0.16 ms against 0.82 never rewritten, index -46.8%, VACUUM 56 against 61 ms (100,000 rows).
-- **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; RESET returns to 10; no REINDEX. sift.col_auto_merge can still rewrite the index.
-- **Upgrade from 3.5:** unchanged
-- **Advice:** Leave at 10: a segment above that share of dead rows is rewritten so its units answer from pre-aggregates again. Raise it to rewrite less (WAL); 100 never rewrites. ALTER INDEX, no REINDEX.
+- **Impact:** index size: 4.05 MB (never rewritten) to 2.15 MB (10) (-46.8%, 100,000 rows after three rounds); build, merge and writes: VACUUM of the third round 61 ms (never rewritten), 56 ms (10): within noise (100,000 rows); other: a rewrite writes the whole segment and re-encodes every live row (5,800 instructions a row at 3.7 bytes, 42,460 at 68); 100 never rewrites
+- **When:** VACUUM rewrites a lone segment of a sift_col index above this percent of dead rows (0: the percent at which 120 scans of the dead rows cost the rewrite, 10% at 3.7 bytes a row, 45% at 68); the tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units, which answer from their pre-aggregates net of the dead rows. The BM25 index keeps 50.
+- **Default:** 0 — 0, by cost: a rewrite re-encodes 3,700 + 570 * bytes instructions a live row, a scan pays 430 a dead row, so 120 scans between two VACUUMs break even at 10% for 3.7 bytes a row and 45% for 68. 300,000 rows, 13% dead: VACUUM 1,256 against 1,255 Minstr at 3.7 bytes a row (unchanged), 9,582 against 276 at 68 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite.
+- **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; a percent from 1 fixes it; RESET returns to 0; no REINDEX. sift.col_auto_merge can still rewrite the index.
+- **Upgrade from 3.5:** the default is 0 (by the cost of the rows) instead of 10: a segment of narrow rows is rewritten at the same 10% dead rows, a wide one later (up to 45% at 68 bytes a row); no REINDEX, no format change; ALTER INDEX .. SET (dead_rewrite_pct = 10) keeps the old rule
+- **Advice:** Leave at 0: a segment is rewritten above 10% dead rows when its rows are narrow, above 45% when they are 68 bytes, so its units answer from pre-aggregates again. Set a percent to rewrite earlier or later (WAL); 100 never rewrites. ALTER INDEX, no REINDEX.
 
 #### sift_col(vacuum_truncate)
 
@@ -2218,10 +2218,11 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-No default changed since 3.5; new: `sift_col(array_lengths)`.
+Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift_col(array_lengths)`.
 
 | Option | 3.5 | 3.6 | Column format | What a 3.5 user gets after the update |
 |---|---|---|---|---|
+| `sift_col(dead_rewrite_pct)` | 10 | 0 |  | the default is 0 (by the cost of the rows) instead of 10: a segment of narrow rows is rewritten at the same 10% dead rows, a wide one later (up to 45% at 68 bytes a row); no REINDEX, no format change; ALTER INDEX .. SET (dead_rewrite_pct = 10) keeps the old rule |
 | `sift_col(array_lengths)` | new | auto |  | An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout"). |
 | `sift_col(key_table)` | true | true | minor 22 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift_col(count_columns)` | '' | '' | minor 24 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |

@@ -409,8 +409,8 @@ sift_col_init(void)
 					  "Write buffer size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
-					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (100 never)",
-					  SIFT_COL_DEAD_PCT, 1, 100, ShareUpdateExclusiveLock);
+					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (0 by the cost of the rewrite against the scans, 100 never)",
+					  SIFT_COL_DEAD_AUTO, 0, 100, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "vacuum_truncate",
 					   "VACUUM gives the free blocks at the end of the index file back to the operating system",
 					   true, ShareUpdateExclusiveLock);
@@ -546,7 +546,7 @@ sift_col_test_reloptions(const relopt_parse_elt **tab, int *n)
 const SiftColOptions *
 sift_col_options(Relation index)
 {
-	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_PCT, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .cube_minmax = true, .key_table = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
+	static const SiftColOptions defaults = {.write_buffer_limit = SIFT_DEFAULT_WRITE_BUFFER_LIMIT, .dead_rewrite_pct = SIFT_COL_DEAD_AUTO, .rollup_on_demand = true, .vacuum_truncate = true, .cluster_advice = true, .dict_lookup = SIFT_COL_DICT_AUTO, .cube_minmax = true, .key_table = true, .superunit = SIFT_SUPER_DEFAULT_FAN};
 
 	return index->rd_options ? (const SiftColOptions *) index->rd_options : &defaults;
 }

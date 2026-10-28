@@ -24,7 +24,7 @@ SELECT g, (hashint4(g) & 2147483647) % 500,
        (hashint4(g + 6) & 2147483647) % 100, (hashint4(g + 7) & 2147483647) % 4,
        CASE WHEN g % 17 = 0 THEN NULL WHEN g % 211 = 0 THEN 'NaN'::numeric ELSE ((hashint4(g + 8) & 2147483647) % 100000) / 100.0 END, repeat('x', 1500)
 FROM generate_series(1, 15000) g;
-CREATE INDEX lz_i ON lz USING sift_col (id, k, kn, ki, kb, ts, d, v, g, nn) WITH (write_buffer_limit = 4096, order_columns = 'k, kn, ki, kb, ts, d, v, g', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX lz_i ON lz USING sift_col (id, k, kn, ki, kb, ts, d, v, g, nn) WITH (write_buffer_limit = 4096, dead_rewrite_pct = 10, order_columns = 'k, kn, ki, kb, ts, d, v, g', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 SELECT sift.col_verify('lz_i', true);
  col_verify 
 ------------
