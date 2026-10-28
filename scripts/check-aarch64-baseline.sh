@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A pg_sift.so built for AArch64 must run on any ARMv8-A CPU (Graviton 2/3/4, Ampere, Azure/GCP Arm, Raspberry Pi, Apple silicon VMs):
+# A pg_sift library built for AArch64 must run on any ARMv8-A CPU (Graviton 2/3/4, Ampere, Azure/GCP Arm, Raspberry Pi, Apple silicon VMs):
 # the code uses NEON (Advanced SIMD) and nothing newer. Disassembles each file and fails on an instruction of an optional or later extension:
 # LSE atomics, CRC32, dot product, FP16 arithmetic, SVE/SME, non-hint pointer authentication, and the crypto, RCpc, complex-number,
 # BF16/I8MM, FlagM, MTE and rounding extensions. The libgcc outline-atomics helpers (__aarch64_*) hold LSE instructions behind a runtime
@@ -7,7 +7,8 @@
 # The source has no compile-time __ARM_FEATURE_* test and no runtime detection beyond NEON, so a hit means the toolchain targeted a newer
 # architecture (-march/-mcpu, a distribution default); the flags come from pg_config's CFLAGS.
 #
-#   scripts/check-aarch64-baseline.sh [pg_sift.so ...]    needs an objdump that decodes AArch64 (GNU objdump of an arm64 host, or llvm-objdump)
+#   scripts/check-aarch64-baseline.sh [LIBRARY ...]    default: pg_sift$DLSUFFIX of the current directory (an ELF file, so .so)
+# Needs an objdump that decodes AArch64 (GNU objdump of an arm64 host, or llvm-objdump).
 set -euo pipefail
 export LC_ALL=C
 
@@ -16,7 +17,8 @@ for t in "${OBJDUMP:-}" objdump llvm-objdump; do
 	[[ -n $t ]] && command -v "$t" >/dev/null && [[ $("$t" -i 2>/dev/null) == *aarch64* || $("$t" --version 2>&1) == *LLVM* ]] && { objdump=$t; break; }
 done
 [[ -n $objdump ]] || { echo "check-aarch64-baseline: no objdump that decodes AArch64 (install llvm or binutils-multiarch, or set OBJDUMP)" >&2; exit 1; }
-(($#)) || set -- pg_sift.so
+DLSUFFIX=.so # an AArch64 ELF library: Linux
+(($#)) || set -- "pg_sift$DLSUFFIX"
 
 re_lse='^((ld|st)(add|clr|eor|set|smax|smin|umax|umin)p?(a|l|al)?[bh]?|swpp?(a|l|al)?[bh]?|casp?(a|l|al)?[bh]?|ldlar[bh]?|stllr[bh]?|sqrdml[as]h)$'
 re_isa='^(crc32c?[bhwx]|[su]dot|usdot|sudot|[su]smmla|usmmla|ummla|bfdot|bfmmla|bfmlal[bt]|bfcvtn2?|bfcvt|fmlal2?|fmlsl2?|fcadd|fcmla|fjcvtzs|frint(32|64)[xz]|rmif|setf(8|16)|cfinv|axflag|xaflag|sb|ldapr[bh]?|ldapur(s?[bhw])?|stlur[bhw]?)$'
