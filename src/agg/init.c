@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
+#include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "executor/nodeSubplan.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -245,6 +247,34 @@ init_states(AggExec *ex)
 	ex->ks = MemoryContextAllocZero(ex->cxt, Max(s->nkeys, 1) * sizeof(KeyState));
 }
 
+/* `$0 = 'literal'` of a text, either side: for a deterministic collation the strings that pass are those of the same bytes */
+static bool
+text_eq_literal(Node *e, const char **s, int *len)
+{
+	OpExpr	   *o = (OpExpr *) e;
+	Node	   *a,
+			   *b;
+	text	   *t;
+
+	if (!IsA(e, OpExpr) || o->opfuncid != F_TEXTEQ || list_length(o->args) != 2 || !OidIsValid(o->inputcollid) || !get_collation_isdeterministic(o->inputcollid))
+		return false;
+	a = linitial(o->args);
+	b = lsecond(o->args);
+	if (IsA(b, Param))
+	{
+		Node	   *x = a;
+
+		a = b;
+		b = x;
+	}
+	if (!IsA(a, Param) || !IsA(b, Const) || ((Const *) b)->constisnull)
+		return false;
+	t = DatumGetTextPP(((Const *) b)->constvalue);
+	*s = VARDATA_ANY(t);
+	*len = VARSIZE_ANY_EXHDR(t);
+	return true;
+}
+
 static void
 register_pred(AggExec *ex, SiftAggPred *p)
 {
@@ -259,6 +289,8 @@ register_pred(AggExec *ex, SiftAggPred *p)
 
 		st->expr = init_expr(ex, p->expr);
 		st->param = find_param(p->expr);
+		if (!text_eq_literal(p->expr, &st->eq_s, &st->eq_len))
+			st->eq_s = NULL;
 		rt_init(&st->rt, 1);
 		if (ex->lay->leaf[p->leaf].vtype == SCV_I32)
 			st->null_result = eval_bool(ex, st->expr, (Datum) 0, true);

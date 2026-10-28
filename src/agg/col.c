@@ -152,6 +152,7 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 	l->parent = def->parent;
 	l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(desc, def);
 	l->arrhead = sift_col_def_arrlen_head(def);
+	l->noimage = l->arrhead && (def->flags & SIFT_COLD_NOIMAGE);
 	l->arrlen = sift_col_def_arrlen_lane(def) ? def->lane : 0;
 	l->wide = leaf_wide(def);
 	l->shape = sift_col_def_shape(def);

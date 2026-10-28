@@ -11,7 +11,7 @@ NOTICE:  sift_col index aa_col keeps the lengths of the arrays uniq, rep, mid, i
 DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
 HINT:  ALTER INDEX aa_col SET (array_lengths = 'off'), then REINDEX, drops them.
 NOTICE:  sift_col index aa_col keeps the elements of the arrays uniq, ids, mid
-DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
+DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays of uniq, ids are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table. The arrays of mid repeat, so the index keeps them as well (a '+' in paths).
 HINT:  ALTER INDEX aa_col SET (paths = ''), then REINDEX, leaves the elements out.
 SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'aa_col';
                             options                            

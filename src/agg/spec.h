@@ -90,6 +90,8 @@ typedef struct SiftAggNum
 #define SNULL_JSON		2
 #define SNULL_MISSING	3
 
+#define SIFT_AGG_SEQ_ELEMS	8	/* the elements of a list a test in order names (SAP_ANY_ELEM, op 2) */
+
 typedef enum SiftAggPredKind
 {
 	SAP_TRUE,
@@ -101,7 +103,7 @@ typedef enum SiftAggPredKind
 	SAP_NULL,					/* leaf IS [NOT] NULL; the ops SNULL_JSON and SNULL_MISSING tell a JSON null from a missing key among the NULL slots (element leaves) */
 	SAP_LUT,					/* boolean expression of one leaf, evaluated by the executor on every distinct value */
 	SAP_COMBO,					/* boolean slot (op) of a combo (leaf), see SiftAggCombo */
-	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does */
+	SAP_ANY_ELEM,				/* row level: some element of the array leaf `leaf` passes child[0] (element level); op 1: none does; op 2: the list is as long as the children and the element at position k passes child[k] */
 	SAP_NCMP,					/* numeric expression op operand: the program's values against the operand scaled to the program's scale */
 	SAP_GATE,					/* boolean expression without columns (stable functions, parameters), evaluated once per scan: true for every row or for none */
 	SAP_TYPE,					/* jsonb_typeof(leaf's path) in the types op (SIFT_SRC_JT_* bits); a conjunct of the query only: the source keeps the rows (sift_colsrc_filter_types), the executor does not evaluate it */
@@ -120,7 +122,7 @@ typedef struct SiftAggPred
 	int			id;				/* preorder number, the index of the node's executor state */
 	int			leaf;			/* SAP_CMP, SAP_IN, SAP_NULL, SAP_LUT, SAP_TYPE, SAP_WIDE; SAP_ANY_ELEM: the array leaf; SAP_ELEM_ROW: the element leaf */
 	int			leaf2;			/* SAP_ELEM_ROW: the leaf of the row, -1 otherwise */
-	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
+	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT, 2 = in order; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
 	Node	   *cal;			/* SAP_LUT of an equality of a periodic calendar step (extract(hour FROM ts) = 14, to_char(ts, 'MM') = '03'): List (f(placeholder), operand), whose ranges the source tests first (init_filter.c); SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */

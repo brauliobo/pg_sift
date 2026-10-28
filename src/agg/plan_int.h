@@ -427,6 +427,7 @@ extern int	vleaf_source(AggCtx *c, int j);
 extern SiftSrcRecheck spec_recheck(AggCtx *c, const SiftAggSpec *s, int m);
 
 extern SiftAggPred *compile_existential(AggCtx *c, Node *n, Node **target);
+extern List *array_eq_conjuncts(AggCtx *c, Node *e, bool *complete);
 extern SiftAggPred *compile_exists_post(AggCtx *c, SubPlan *sp);
 extern bool scoped_child(AggCtx *c, Query *sub, Index offset, JoinCtx *jc, List **args);
 extern bool target_not_null(AggCtx *c, Node *target);

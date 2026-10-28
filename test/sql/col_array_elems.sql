@@ -69,6 +69,15 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('length', $q$SELECT count(*) AS c FROM %1$I WHERE cardinality(tags) = 2 OR tags IS NULL$q$),
 		('whole array', $q$SELECT tags, count(*) AS c FROM %1$I GROUP BY 1$q$),
 		('equal', $q$SELECT count(*) AS c FROM %1$I WHERE tags = ARRAY['t7', 'u1', 'w7']$q$),
+		('equal two', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['t7', 'u1']$q$),
+		('equal swapped', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['u1', 't7']$q$),
+		('equal repeated', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['u1', 'u1']$q$),
+		('equal 2-D', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY[['t7'], ['u1']]$q$),
+		('equal bounds', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = '[0:1]={t7,u1}'$q$),
+		('not equal', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (tags = ARRAY['t7', 'u1'])$q$),
+		('equal group', $q$SELECT id %% 3 AS g, count(*) AS c FROM %1$I WHERE tags = ARRAY['t7', 'u1'] GROUP BY 1$q$),
+		('int equal', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids = ARRAY[7, 1001]$q$),
+		('int equal swapped', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids = ARRAY[1001, 7]$q$),
 		('int contains', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[7]$q$),
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
@@ -93,6 +102,18 @@ SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'a
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'ad');
+-- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
+UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
+UPDATE ae SET tags = ARRAY['u1', 't7'], ids = ARRAY[1001, 7] WHERE id % 67 = 0;
+UPDATE ae SET tags = ARRAY['u1', 'u1'] WHERE id % 71 = 0;
+UPDATE ae SET tags = ARRAY[['t7'], ['u1']] WHERE id % 73 = 0;
+UPDATE ae SET tags = '[0:1]={t7,u1}' WHERE id % 79 = 0;
+UPDATE ad SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
+UPDATE ad SET tags = ARRAY['u1', 't7'], ids = ARRAY[1001, 7] WHERE id % 67 = 0;
+UPDATE ad SET tags = ARRAY['u1', 'u1'] WHERE id % 71 = 0;
+UPDATE ad SET tags = ARRAY[['t7'], ['u1']] WHERE id % 73 = 0;
+UPDATE ad SET tags = '[0:1]={t7,u1}' WHERE id % 79 = 0;
+SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'ad');
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
 SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'ad');

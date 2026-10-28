@@ -517,7 +517,8 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 					v[1].v.i = ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
 					v[2].v.i = ARR_NDIM(a) > 0 && v[1].v.i > 0 ? ARR_DIMS(a)[0] : 0;
 					v[2].isnull = v[2].v.i == 0;	/* array_length of an empty array is NULL */
-					v->isnull |= (def->flags & SIFT_COLD_NOIMAGE) != 0;
+					/* an array of other dimensions or bounds than one from 1 keeps its image: the lists cannot tell it from the one that is */
+					v->isnull |= (def->flags & SIFT_COLD_NOIMAGE) != 0 && (ARR_NDIM(a) == 0 || (ARR_NDIM(a) == 1 && ARR_LBOUND(a)[0] == 1));
 				}
 			}
 			if (sift_col_def_shape(def))

@@ -24,7 +24,9 @@ lut_entry(AggExec *ex, const SiftSrcDict *d, PredState *st, uint64 *lut, uint64 
 	if (known[c >> 6] >> (c & 63) & 1)
 		return;
 	known[c >> 6] |= UINT64CONST(1) << (c & 63);
-	if (c == d->n)
+	if (st->eq_s)
+		lut_put(lut, c, c < d->n && d->off[c + 1] - d->off[c] == (uint32) st->eq_len && memcmp(d->bytes + d->off[c], st->eq_s, st->eq_len) == 0);
+	else if (c == d->n)
 		lut_put(lut, c, eval_bool(ex, st->expr, (Datum) 0, true));
 	else
 	{

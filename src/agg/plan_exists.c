@@ -68,6 +68,35 @@ any_elem(AggCtx *c, int grp, ElemBuild build, void *arg)
 	return p;
 }
 
+/* the list of array leaf grp, read in order, is the n literals (op 2): child[k] is the test of the element at position k */
+SiftAggPred *
+any_elem_seq(AggCtx *c, int grp, ElemBuild build, const Lit *lit, int n)
+{
+	SiftAggPred *p = new_pred(c, SAP_ANY_ELEM);
+	int			n0 = c->npred;
+	AggCtx		saved = scope_enter(c, grp);
+	StringInfoData desc;
+
+	p->child = palloc(n * sizeof(SiftAggPred *));
+	initStringInfo(&desc);
+	for (int k = 0; k < n; k++)
+	{
+		if ((p->child[k] = build(c, grp, (void *) &lit[k])) == NULL)
+		{
+			scope_leave(c, &saved, grp);
+			return NULL;
+		}
+		appendStringInfo(&desc, "%s%s", k ? ", " : "", p->child[k]->desc);
+	}
+	scope_leave(c, &saved, grp);
+	p->leaf = grp;
+	p->nchild = n;
+	p->op = 2;
+	c->elem_work += (c->npred - n0) * elems_of(c, grp);
+	p->desc = psprintf("%s[] = (%s)", leaf_name(c, grp), desc.data);
+	return p;
+}
+
 static int
 child_named(AggCtx *c, int group, const char *name, bool astext)
 {

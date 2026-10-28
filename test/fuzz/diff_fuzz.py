@@ -1207,7 +1207,7 @@ def ar_elem_pred(r, e, k):
     """The element tests of the arrays that the index lists (ta, tb: text, ia: int4), with and without the image: contains, overlap, contained by, ANY, equality, negations."""
     t = lambda: f"'t{r.randrange(32)}'"
     ts = lambda n: ', '.join(t() for _ in range(n))
-    form = r.randrange(16)
+    form = r.randrange(19)
     if form == 0:
         return f"{e}.ta @> ARRAY[{ts(r.choice([1, 1, 2, 3]))}]"
     if form == 1:
@@ -1238,6 +1238,12 @@ def ar_elem_pred(r, e, k):
         return f"({e}.ta @> ARRAY[{t()}] AND cardinality({e}.ta) {r.choice(['=', '>', '<'])} {r.randrange(1, 8)})"
     if form == 14:
         return f"NOT ({e}.ta && ARRAY[{ts(2)}])"
+    if form == 15:
+        return f"{e}.ia = ARRAY[{k}]"
+    if form == 16:
+        return f"{e}.ia = ARRAY[{k}, {k + r.choice([0, 3])}]"
+    if form == 17:
+        return f"NOT ({e}.ia = ARRAY[{k}, {k + 1}, {k}])"
     return f"{e}.tb IS NOT NULL AND 'u{k % 4}' = ANY({e}.tb)"
 
 

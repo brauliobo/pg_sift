@@ -34,6 +34,7 @@ struct Lit
 extern SiftAggPred *any_elem_outside(AggCtx *c, int grp, const Lit *lit, int n);
 extern SiftAggPred *any_elem_in(AggCtx *c, int grp, const Lit *lit, int n);
 extern SiftAggPred *any_elem(AggCtx *c, int grp, ElemBuild build, void *arg);
+extern SiftAggPred *any_elem_seq(AggCtx *c, int grp, ElemBuild build, const Lit *lit, int n);
 extern SiftAggPred *lit_test(AggCtx *c, int grp, const char *name, int op, const Lit *lit, bool neg);
 extern SiftAggPred *leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit);
 extern bool lit_is_plain_text(const Lit *lit);

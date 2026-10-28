@@ -33,6 +33,8 @@ typedef struct PredState
 	ExprState  *expr;			/* SAP_LUT, SAP_STEP */
 	Param	   *param;
 	bool		null_result;	/* SAP_LUT, SAP_STEP: the expression for a NULL input */
+	const char *eq_s;			/* SAP_LUT: the expression is `$0 = 'literal'` of a text with a deterministic collation: an entry is true when its bytes are eq_s (eq_len of them) */
+	int			eq_len;
 	int			elem;			/* 1 + the index of the element test of an EXISTS over a list that the source may answer exactly (str_init), else 0 */
 	SiftSrcStrTest *str;		/* a row level text test of the query, which the source runs on the encoded form (str_init) */
 	RangeTab	rt;				/* SAP_LUT on an integer leaf, SAP_STEP: result bytes */

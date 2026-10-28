@@ -91,6 +91,15 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('length', $q$SELECT count(*) AS c FROM %1$I WHERE cardinality(tags) = 2 OR tags IS NULL$q$),
 		('whole array', $q$SELECT tags, count(*) AS c FROM %1$I GROUP BY 1$q$),
 		('equal', $q$SELECT count(*) AS c FROM %1$I WHERE tags = ARRAY['t7', 'u1', 'w7']$q$),
+		('equal two', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['t7', 'u1']$q$),
+		('equal swapped', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['u1', 't7']$q$),
+		('equal repeated', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY['u1', 'u1']$q$),
+		('equal 2-D', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = ARRAY[['t7'], ['u1']]$q$),
+		('equal bounds', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags = '[0:1]={t7,u1}'$q$),
+		('not equal', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (tags = ARRAY['t7', 'u1'])$q$),
+		('equal group', $q$SELECT id %% 3 AS g, count(*) AS c FROM %1$I WHERE tags = ARRAY['t7', 'u1'] GROUP BY 1$q$),
+		('int equal', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids = ARRAY[7, 1001]$q$),
+		('int equal swapped', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids = ARRAY[1001, 7]$q$),
 		('int contains', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[7]$q$),
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
@@ -116,57 +125,75 @@ SELECT leaf, path, type FROM sift.col_leaves('ae_col') ORDER BY leaf;
 (11 rows)
 
 SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad');
-         shape          |   result   
-------------------------+------------
- built rare             | scan same
- built common           | scan same
- built two              | scan same
- built absent           | scan same
- built overlap          | scan same
- built any              | scan same
- built not any          | plain same
- built contained        | scan same
- built not two          | plain same
- built not overlap      | plain same
- built not contained    | plain same
- built null element     | scan same
- built group            | plain same
- built empty            | plain same
- built length           | scan same
- built whole array      | plain same
- built equal            | plain same
- built int contains     | scan same
- built int two          | scan same
- built int overlap      | scan same
- built int any          | scan same
- built int null element | scan same
- built keys             | plain same
- built count            | plain same
- built rare             | scan same
- built common           | scan same
- built two              | scan same
- built absent           | scan same
- built overlap          | scan same
- built any              | scan same
- built not any          | scan same
- built contained        | scan same
- built not two          | plain same
- built not overlap      | plain same
- built not contained    | plain same
- built null element     | scan same
- built group            | scan same
- built empty            | scan same
- built length           | scan same
- built whole array      | scan same
- built equal            | scan same
- built int contains     | scan same
- built int two          | scan same
- built int overlap      | scan same
- built int any          | scan same
- built int null element | scan same
- built keys             | scan same
- built count            | scan same
-(48 rows)
+          shape          |   result   
+-------------------------+------------
+ built rare              | scan same
+ built common            | scan same
+ built two               | scan same
+ built absent            | scan same
+ built overlap           | scan same
+ built any               | scan same
+ built not any           | plain same
+ built contained         | scan same
+ built not two           | plain same
+ built not overlap       | plain same
+ built not contained     | plain same
+ built null element      | scan same
+ built group             | plain same
+ built empty             | scan same
+ built length            | scan same
+ built whole array       | plain same
+ built equal             | scan same
+ built equal two         | scan same
+ built equal swapped     | scan same
+ built equal repeated    | scan same
+ built equal 2-D         | plain same
+ built equal bounds      | plain same
+ built not equal         | plain same
+ built equal group       | scan same
+ built int equal         | scan same
+ built int equal swapped | scan same
+ built int contains      | scan same
+ built int two           | scan same
+ built int overlap       | scan same
+ built int any           | scan same
+ built int null element  | scan same
+ built keys              | plain same
+ built count             | plain same
+ built rare              | scan same
+ built common            | scan same
+ built two               | scan same
+ built absent            | scan same
+ built overlap           | scan same
+ built any               | scan same
+ built not any           | scan same
+ built contained         | scan same
+ built not two           | plain same
+ built not overlap       | plain same
+ built not contained     | plain same
+ built null element      | scan same
+ built group             | scan same
+ built empty             | scan same
+ built length            | scan same
+ built whole array       | scan same
+ built equal             | scan same
+ built equal two         | scan same
+ built equal swapped     | scan same
+ built equal repeated    | scan same
+ built equal 2-D         | scan same
+ built equal bounds      | scan same
+ built not equal         | scan same
+ built equal group       | scan same
+ built int equal         | scan same
+ built int equal swapped | scan same
+ built int contains      | scan same
+ built int two           | scan same
+ built int overlap       | scan same
+ built int any           | scan same
+ built int null element  | scan same
+ built keys              | scan same
+ built count             | scan same
+(66 rows)
 
 -- the same on arrays that cannot be NULL, where a NOT may be pushed
 CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
@@ -174,199 +201,344 @@ INSERT INTO an SELECT * FROM gen(1, 30000) WHERE tags IS NOT NULL AND ids IS NOT
 CREATE INDEX an_col ON an USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
 VACUUM (FREEZE, ANALYZE) an;
 SELECT * FROM shapes('not null', 'an');
-           shape           |   result   
----------------------------+------------
- not null rare             | scan same
- not null common           | scan same
- not null two              | scan same
- not null absent           | scan same
- not null overlap          | scan same
- not null any              | scan same
- not null not any          | plain same
- not null contained        | scan same
- not null not two          | scan same
- not null not overlap      | scan same
- not null not contained    | scan same
- not null null element     | scan same
- not null group            | plain same
- not null empty            | plain same
- not null length           | scan same
- not null whole array      | plain same
- not null equal            | plain same
- not null int contains     | scan same
- not null int two          | scan same
- not null int overlap      | scan same
- not null int any          | scan same
- not null int null element | scan same
- not null keys             | plain same
- not null count            | plain same
-(24 rows)
+           shape            |   result   
+----------------------------+------------
+ not null rare              | scan same
+ not null common            | scan same
+ not null two               | scan same
+ not null absent            | scan same
+ not null overlap           | scan same
+ not null any               | scan same
+ not null not any           | plain same
+ not null contained         | scan same
+ not null not two           | scan same
+ not null not overlap       | scan same
+ not null not contained     | scan same
+ not null null element      | scan same
+ not null group             | plain same
+ not null empty             | scan same
+ not null length            | scan same
+ not null whole array       | plain same
+ not null equal             | scan same
+ not null equal two         | scan same
+ not null equal swapped     | scan same
+ not null equal repeated    | scan same
+ not null equal 2-D         | plain same
+ not null equal bounds      | plain same
+ not null not equal         | plain same
+ not null equal group       | scan same
+ not null int equal         | scan same
+ not null int equal swapped | scan same
+ not null int contains      | scan same
+ not null int two           | scan same
+ not null int overlap       | scan same
+ not null int any           | scan same
+ not null int null element  | scan same
+ not null keys              | plain same
+ not null count             | plain same
+(33 rows)
 
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
 INSERT INTO ad SELECT * FROM gen(30001, 34000);
 SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'ad');
-          shape          |   result   
--------------------------+------------
- insert rare             | scan same
- insert common           | scan same
- insert two              | scan same
- insert absent           | scan same
- insert overlap          | scan same
- insert any              | scan same
- insert not any          | plain same
- insert contained        | scan same
- insert not two          | plain same
- insert not overlap      | plain same
- insert not contained    | plain same
- insert null element     | scan same
- insert group            | plain same
- insert empty            | plain same
- insert length           | scan same
- insert whole array      | plain same
- insert equal            | plain same
- insert int contains     | scan same
- insert int two          | scan same
- insert int overlap      | scan same
- insert int any          | scan same
- insert int null element | scan same
- insert keys             | plain same
- insert count            | plain same
- insert rare             | scan same
- insert common           | scan same
- insert two              | scan same
- insert absent           | scan same
- insert overlap          | scan same
- insert any              | scan same
- insert not any          | scan same
- insert contained        | scan same
- insert not two          | plain same
- insert not overlap      | plain same
- insert not contained    | plain same
- insert null element     | scan same
- insert group            | scan same
- insert empty            | scan same
- insert length           | scan same
- insert whole array      | scan same
- insert equal            | scan same
- insert int contains     | scan same
- insert int two          | scan same
- insert int overlap      | scan same
- insert int any          | scan same
- insert int null element | scan same
- insert keys             | scan same
- insert count            | scan same
-(48 rows)
+          shape           |   result   
+--------------------------+------------
+ insert rare              | scan same
+ insert common            | scan same
+ insert two               | scan same
+ insert absent            | scan same
+ insert overlap           | scan same
+ insert any               | scan same
+ insert not any           | plain same
+ insert contained         | scan same
+ insert not two           | plain same
+ insert not overlap       | plain same
+ insert not contained     | plain same
+ insert null element      | scan same
+ insert group             | plain same
+ insert empty             | scan same
+ insert length            | scan same
+ insert whole array       | plain same
+ insert equal             | scan same
+ insert equal two         | scan same
+ insert equal swapped     | scan same
+ insert equal repeated    | scan same
+ insert equal 2-D         | plain same
+ insert equal bounds      | plain same
+ insert not equal         | plain same
+ insert equal group       | scan same
+ insert int equal         | scan same
+ insert int equal swapped | scan same
+ insert int contains      | scan same
+ insert int two           | scan same
+ insert int overlap       | scan same
+ insert int any           | scan same
+ insert int null element  | scan same
+ insert keys              | plain same
+ insert count             | plain same
+ insert rare              | scan same
+ insert common            | scan same
+ insert two               | scan same
+ insert absent            | scan same
+ insert overlap           | scan same
+ insert any               | scan same
+ insert not any           | scan same
+ insert contained         | scan same
+ insert not two           | plain same
+ insert not overlap       | plain same
+ insert not contained     | plain same
+ insert null element      | scan same
+ insert group             | scan same
+ insert empty             | scan same
+ insert length            | scan same
+ insert whole array       | scan same
+ insert equal             | scan same
+ insert equal two         | scan same
+ insert equal swapped     | scan same
+ insert equal repeated    | scan same
+ insert equal 2-D         | scan same
+ insert equal bounds      | scan same
+ insert not equal         | scan same
+ insert equal group       | scan same
+ insert int equal         | scan same
+ insert int equal swapped | scan same
+ insert int contains      | scan same
+ insert int two           | scan same
+ insert int overlap       | scan same
+ insert int any           | scan same
+ insert int null element  | scan same
+ insert keys              | scan same
+ insert count             | scan same
+(66 rows)
 
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
 SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'ad');
-          shape          |   result   
--------------------------+------------
- update rare             | scan same
- update common           | scan same
- update two              | scan same
- update absent           | scan same
- update overlap          | scan same
- update any              | scan same
- update not any          | plain same
- update contained        | scan same
- update not two          | plain same
- update not overlap      | plain same
- update not contained    | plain same
- update null element     | scan same
- update group            | plain same
- update empty            | plain same
- update length           | scan same
- update whole array      | plain same
- update equal            | plain same
- update int contains     | scan same
- update int two          | scan same
- update int overlap      | scan same
- update int any          | scan same
- update int null element | scan same
- update keys             | plain same
- update count            | plain same
- update rare             | scan same
- update common           | scan same
- update two              | scan same
- update absent           | scan same
- update overlap          | scan same
- update any              | scan same
- update not any          | scan same
- update contained        | scan same
- update not two          | plain same
- update not overlap      | plain same
- update not contained    | plain same
- update null element     | scan same
- update group            | scan same
- update empty            | scan same
- update length           | scan same
- update whole array      | scan same
- update equal            | scan same
- update int contains     | scan same
- update int two          | scan same
- update int overlap      | scan same
- update int any          | scan same
- update int null element | scan same
- update keys             | scan same
- update count            | scan same
-(48 rows)
+          shape           |   result   
+--------------------------+------------
+ update rare              | scan same
+ update common            | scan same
+ update two               | scan same
+ update absent            | scan same
+ update overlap           | scan same
+ update any               | scan same
+ update not any           | plain same
+ update contained         | scan same
+ update not two           | plain same
+ update not overlap       | plain same
+ update not contained     | plain same
+ update null element      | scan same
+ update group             | plain same
+ update empty             | scan same
+ update length            | scan same
+ update whole array       | plain same
+ update equal             | scan same
+ update equal two         | scan same
+ update equal swapped     | scan same
+ update equal repeated    | scan same
+ update equal 2-D         | plain same
+ update equal bounds      | plain same
+ update not equal         | plain same
+ update equal group       | scan same
+ update int equal         | scan same
+ update int equal swapped | scan same
+ update int contains      | scan same
+ update int two           | scan same
+ update int overlap       | scan same
+ update int any           | scan same
+ update int null element  | scan same
+ update keys              | plain same
+ update count             | plain same
+ update rare              | scan same
+ update common            | scan same
+ update two               | scan same
+ update absent            | scan same
+ update overlap           | scan same
+ update any               | scan same
+ update not any           | scan same
+ update contained         | scan same
+ update not two           | plain same
+ update not overlap       | plain same
+ update not contained     | plain same
+ update null element      | scan same
+ update group             | scan same
+ update empty             | scan same
+ update length            | scan same
+ update whole array       | scan same
+ update equal             | scan same
+ update equal two         | scan same
+ update equal swapped     | scan same
+ update equal repeated    | scan same
+ update equal 2-D         | scan same
+ update equal bounds      | scan same
+ update not equal         | scan same
+ update equal group       | scan same
+ update int equal         | scan same
+ update int equal swapped | scan same
+ update int contains      | scan same
+ update int two           | scan same
+ update int overlap       | scan same
+ update int any           | scan same
+ update int null element  | scan same
+ update keys              | scan same
+ update count             | scan same
+(66 rows)
+
+-- arrays of two elements in both orders, repeated, of two dimensions and from another bound: the list of a row holds the same elements in all of them
+UPDATE ae SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
+UPDATE ae SET tags = ARRAY['u1', 't7'], ids = ARRAY[1001, 7] WHERE id % 67 = 0;
+UPDATE ae SET tags = ARRAY['u1', 'u1'] WHERE id % 71 = 0;
+UPDATE ae SET tags = ARRAY[['t7'], ['u1']] WHERE id % 73 = 0;
+UPDATE ae SET tags = '[0:1]={t7,u1}' WHERE id % 79 = 0;
+UPDATE ad SET tags = ARRAY['t7', 'u1'], ids = ARRAY[7, 1001] WHERE id % 61 = 0;
+UPDATE ad SET tags = ARRAY['u1', 't7'], ids = ARRAY[1001, 7] WHERE id % 67 = 0;
+UPDATE ad SET tags = ARRAY['u1', 'u1'] WHERE id % 71 = 0;
+UPDATE ad SET tags = ARRAY[['t7'], ['u1']] WHERE id % 73 = 0;
+UPDATE ad SET tags = '[0:1]={t7,u1}' WHERE id % 79 = 0;
+SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'ad');
+          shape           |   result   
+--------------------------+------------
+ orders rare              | scan same
+ orders common            | scan same
+ orders two               | scan same
+ orders absent            | scan same
+ orders overlap           | scan same
+ orders any               | scan same
+ orders not any           | plain same
+ orders contained         | scan same
+ orders not two           | plain same
+ orders not overlap       | plain same
+ orders not contained     | plain same
+ orders null element      | scan same
+ orders group             | plain same
+ orders empty             | scan same
+ orders length            | scan same
+ orders whole array       | plain same
+ orders equal             | scan same
+ orders equal two         | scan same
+ orders equal swapped     | scan same
+ orders equal repeated    | scan same
+ orders equal 2-D         | plain same
+ orders equal bounds      | plain same
+ orders not equal         | plain same
+ orders equal group       | scan same
+ orders int equal         | scan same
+ orders int equal swapped | scan same
+ orders int contains      | scan same
+ orders int two           | scan same
+ orders int overlap       | scan same
+ orders int any           | scan same
+ orders int null element  | scan same
+ orders keys              | plain same
+ orders count             | plain same
+ orders rare              | scan same
+ orders common            | scan same
+ orders two               | scan same
+ orders absent            | scan same
+ orders overlap           | scan same
+ orders any               | scan same
+ orders not any           | scan same
+ orders contained         | scan same
+ orders not two           | plain same
+ orders not overlap       | plain same
+ orders not contained     | plain same
+ orders null element      | scan same
+ orders group             | scan same
+ orders empty             | scan same
+ orders length            | scan same
+ orders whole array       | scan same
+ orders equal             | scan same
+ orders equal two         | scan same
+ orders equal swapped     | scan same
+ orders equal repeated    | scan same
+ orders equal 2-D         | scan same
+ orders equal bounds      | scan same
+ orders not equal         | scan same
+ orders equal group       | scan same
+ orders int equal         | scan same
+ orders int equal swapped | scan same
+ orders int contains      | scan same
+ orders int two           | scan same
+ orders int overlap       | scan same
+ orders int any           | scan same
+ orders int null element  | scan same
+ orders keys              | scan same
+ orders count             | scan same
+(66 rows)
 
 DELETE FROM ae WHERE id % 7 = 0;
 DELETE FROM ad WHERE id % 7 = 0;
 SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'ad');
-          shape          |   result   
--------------------------+------------
- delete rare             | scan same
- delete common           | scan same
- delete two              | scan same
- delete absent           | scan same
- delete overlap          | scan same
- delete any              | scan same
- delete not any          | plain same
- delete contained        | scan same
- delete not two          | plain same
- delete not overlap      | plain same
- delete not contained    | plain same
- delete null element     | scan same
- delete group            | plain same
- delete empty            | plain same
- delete length           | scan same
- delete whole array      | plain same
- delete equal            | plain same
- delete int contains     | scan same
- delete int two          | scan same
- delete int overlap      | scan same
- delete int any          | scan same
- delete int null element | scan same
- delete keys             | plain same
- delete count            | plain same
- delete rare             | scan same
- delete common           | scan same
- delete two              | scan same
- delete absent           | scan same
- delete overlap          | scan same
- delete any              | scan same
- delete not any          | scan same
- delete contained        | scan same
- delete not two          | plain same
- delete not overlap      | plain same
- delete not contained    | plain same
- delete null element     | scan same
- delete group            | scan same
- delete empty            | scan same
- delete length           | scan same
- delete whole array      | scan same
- delete equal            | scan same
- delete int contains     | scan same
- delete int two          | scan same
- delete int overlap      | scan same
- delete int any          | scan same
- delete int null element | scan same
- delete keys             | scan same
- delete count            | scan same
-(48 rows)
+          shape           |   result   
+--------------------------+------------
+ delete rare              | scan same
+ delete common            | scan same
+ delete two               | scan same
+ delete absent            | scan same
+ delete overlap           | scan same
+ delete any               | scan same
+ delete not any           | plain same
+ delete contained         | scan same
+ delete not two           | plain same
+ delete not overlap       | plain same
+ delete not contained     | plain same
+ delete null element      | scan same
+ delete group             | plain same
+ delete empty             | scan same
+ delete length            | scan same
+ delete whole array       | plain same
+ delete equal             | scan same
+ delete equal two         | scan same
+ delete equal swapped     | scan same
+ delete equal repeated    | scan same
+ delete equal 2-D         | plain same
+ delete equal bounds      | plain same
+ delete not equal         | plain same
+ delete equal group       | scan same
+ delete int equal         | scan same
+ delete int equal swapped | scan same
+ delete int contains      | scan same
+ delete int two           | scan same
+ delete int overlap       | scan same
+ delete int any           | scan same
+ delete int null element  | scan same
+ delete keys              | plain same
+ delete count             | plain same
+ delete rare              | scan same
+ delete common            | scan same
+ delete two               | scan same
+ delete absent            | scan same
+ delete overlap           | scan same
+ delete any               | scan same
+ delete not any           | scan same
+ delete contained         | scan same
+ delete not two           | plain same
+ delete not overlap       | plain same
+ delete not contained     | plain same
+ delete null element      | scan same
+ delete group             | scan same
+ delete empty             | scan same
+ delete length            | scan same
+ delete whole array       | scan same
+ delete equal             | scan same
+ delete equal two         | scan same
+ delete equal swapped     | scan same
+ delete equal repeated    | scan same
+ delete equal 2-D         | scan same
+ delete equal bounds      | scan same
+ delete not equal         | scan same
+ delete equal group       | scan same
+ delete int equal         | scan same
+ delete int equal swapped | scan same
+ delete int contains      | scan same
+ delete int two           | scan same
+ delete int overlap       | scan same
+ delete int any           | scan same
+ delete int null element  | scan same
+ delete keys              | scan same
+ delete count             | scan same
+(66 rows)
 
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
  col_verify | col_verify 
@@ -377,57 +549,75 @@ SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
 VACUUM ae;
 VACUUM ad;
 SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'ad');
-          shape          |   result   
--------------------------+------------
- vacuum rare             | scan same
- vacuum common           | scan same
- vacuum two              | scan same
- vacuum absent           | scan same
- vacuum overlap          | scan same
- vacuum any              | scan same
- vacuum not any          | plain same
- vacuum contained        | scan same
- vacuum not two          | plain same
- vacuum not overlap      | plain same
- vacuum not contained    | plain same
- vacuum null element     | scan same
- vacuum group            | plain same
- vacuum empty            | plain same
- vacuum length           | scan same
- vacuum whole array      | plain same
- vacuum equal            | plain same
- vacuum int contains     | scan same
- vacuum int two          | scan same
- vacuum int overlap      | scan same
- vacuum int any          | scan same
- vacuum int null element | scan same
- vacuum keys             | plain same
- vacuum count            | plain same
- vacuum rare             | scan same
- vacuum common           | scan same
- vacuum two              | scan same
- vacuum absent           | scan same
- vacuum overlap          | scan same
- vacuum any              | scan same
- vacuum not any          | scan same
- vacuum contained        | scan same
- vacuum not two          | plain same
- vacuum not overlap      | plain same
- vacuum not contained    | plain same
- vacuum null element     | scan same
- vacuum group            | scan same
- vacuum empty            | scan same
- vacuum length           | scan same
- vacuum whole array      | scan same
- vacuum equal            | scan same
- vacuum int contains     | scan same
- vacuum int two          | scan same
- vacuum int overlap      | scan same
- vacuum int any          | scan same
- vacuum int null element | scan same
- vacuum keys             | scan same
- vacuum count            | scan same
-(48 rows)
+          shape           |   result   
+--------------------------+------------
+ vacuum rare              | scan same
+ vacuum common            | scan same
+ vacuum two               | scan same
+ vacuum absent            | scan same
+ vacuum overlap           | scan same
+ vacuum any               | scan same
+ vacuum not any           | plain same
+ vacuum contained         | scan same
+ vacuum not two           | plain same
+ vacuum not overlap       | plain same
+ vacuum not contained     | plain same
+ vacuum null element      | scan same
+ vacuum group             | plain same
+ vacuum empty             | scan same
+ vacuum length            | scan same
+ vacuum whole array       | plain same
+ vacuum equal             | scan same
+ vacuum equal two         | scan same
+ vacuum equal swapped     | scan same
+ vacuum equal repeated    | scan same
+ vacuum equal 2-D         | plain same
+ vacuum equal bounds      | plain same
+ vacuum not equal         | plain same
+ vacuum equal group       | scan same
+ vacuum int equal         | scan same
+ vacuum int equal swapped | scan same
+ vacuum int contains      | scan same
+ vacuum int two           | scan same
+ vacuum int overlap       | scan same
+ vacuum int any           | scan same
+ vacuum int null element  | scan same
+ vacuum keys              | plain same
+ vacuum count             | plain same
+ vacuum rare              | scan same
+ vacuum common            | scan same
+ vacuum two               | scan same
+ vacuum absent            | scan same
+ vacuum overlap           | scan same
+ vacuum any               | scan same
+ vacuum not any           | scan same
+ vacuum contained         | scan same
+ vacuum not two           | plain same
+ vacuum not overlap       | plain same
+ vacuum not contained     | plain same
+ vacuum null element      | scan same
+ vacuum group             | scan same
+ vacuum empty             | scan same
+ vacuum length            | scan same
+ vacuum whole array       | scan same
+ vacuum equal             | scan same
+ vacuum equal two         | scan same
+ vacuum equal swapped     | scan same
+ vacuum equal repeated    | scan same
+ vacuum equal 2-D         | scan same
+ vacuum equal bounds      | scan same
+ vacuum not equal         | scan same
+ vacuum equal group       | scan same
+ vacuum int equal         | scan same
+ vacuum int equal swapped | scan same
+ vacuum int contains      | scan same
+ vacuum int two           | scan same
+ vacuum int overlap       | scan same
+ vacuum int any           | scan same
+ vacuum int null element  | scan same
+ vacuum keys              | scan same
+ vacuum count             | scan same
+(66 rows)
 
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
  merged | merged 
@@ -436,57 +626,75 @@ SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', tr
 (1 row)
 
 SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad');
-         shape          |   result   
-------------------------+------------
- merge rare             | scan same
- merge common           | scan same
- merge two              | scan same
- merge absent           | scan same
- merge overlap          | scan same
- merge any              | scan same
- merge not any          | plain same
- merge contained        | scan same
- merge not two          | plain same
- merge not overlap      | plain same
- merge not contained    | plain same
- merge null element     | scan same
- merge group            | plain same
- merge empty            | plain same
- merge length           | scan same
- merge whole array      | plain same
- merge equal            | plain same
- merge int contains     | scan same
- merge int two          | scan same
- merge int overlap      | scan same
- merge int any          | scan same
- merge int null element | scan same
- merge keys             | plain same
- merge count            | plain same
- merge rare             | scan same
- merge common           | scan same
- merge two              | scan same
- merge absent           | scan same
- merge overlap          | scan same
- merge any              | scan same
- merge not any          | scan same
- merge contained        | scan same
- merge not two          | plain same
- merge not overlap      | plain same
- merge not contained    | plain same
- merge null element     | scan same
- merge group            | scan same
- merge empty            | scan same
- merge length           | scan same
- merge whole array      | scan same
- merge equal            | scan same
- merge int contains     | scan same
- merge int two          | scan same
- merge int overlap      | scan same
- merge int any          | scan same
- merge int null element | scan same
- merge keys             | scan same
- merge count            | scan same
-(48 rows)
+          shape          |   result   
+-------------------------+------------
+ merge rare              | scan same
+ merge common            | scan same
+ merge two               | scan same
+ merge absent            | scan same
+ merge overlap           | scan same
+ merge any               | scan same
+ merge not any           | plain same
+ merge contained         | scan same
+ merge not two           | plain same
+ merge not overlap       | plain same
+ merge not contained     | plain same
+ merge null element      | scan same
+ merge group             | plain same
+ merge empty             | scan same
+ merge length            | scan same
+ merge whole array       | plain same
+ merge equal             | scan same
+ merge equal two         | scan same
+ merge equal swapped     | scan same
+ merge equal repeated    | scan same
+ merge equal 2-D         | plain same
+ merge equal bounds      | plain same
+ merge not equal         | plain same
+ merge equal group       | scan same
+ merge int equal         | scan same
+ merge int equal swapped | scan same
+ merge int contains      | scan same
+ merge int two           | scan same
+ merge int overlap       | scan same
+ merge int any           | scan same
+ merge int null element  | scan same
+ merge keys              | plain same
+ merge count             | plain same
+ merge rare              | scan same
+ merge common            | scan same
+ merge two               | scan same
+ merge absent            | scan same
+ merge overlap           | scan same
+ merge any               | scan same
+ merge not any           | scan same
+ merge contained         | scan same
+ merge not two           | plain same
+ merge not overlap       | plain same
+ merge not contained     | plain same
+ merge null element      | scan same
+ merge group             | scan same
+ merge empty             | scan same
+ merge length            | scan same
+ merge whole array       | scan same
+ merge equal             | scan same
+ merge equal two         | scan same
+ merge equal swapped     | scan same
+ merge equal repeated    | scan same
+ merge equal 2-D         | scan same
+ merge equal bounds      | scan same
+ merge not equal         | scan same
+ merge equal group       | scan same
+ merge int equal         | scan same
+ merge int equal swapped | scan same
+ merge int contains      | scan same
+ merge int two           | scan same
+ merge int overlap       | scan same
+ merge int any           | scan same
+ merge int null element  | scan same
+ merge keys              | scan same
+ merge count             | scan same
+(66 rows)
 
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
 INSERT INTO ad SELECT * FROM gen(40001, 44000);
@@ -497,57 +705,75 @@ SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', tr
 (1 row)
 
 SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'ad');
-          shape          |   result   
--------------------------+------------
- merge2 rare             | scan same
- merge2 common           | scan same
- merge2 two              | scan same
- merge2 absent           | scan same
- merge2 overlap          | scan same
- merge2 any              | scan same
- merge2 not any          | plain same
- merge2 contained        | scan same
- merge2 not two          | plain same
- merge2 not overlap      | plain same
- merge2 not contained    | plain same
- merge2 null element     | scan same
- merge2 group            | plain same
- merge2 empty            | plain same
- merge2 length           | scan same
- merge2 whole array      | plain same
- merge2 equal            | plain same
- merge2 int contains     | scan same
- merge2 int two          | scan same
- merge2 int overlap      | scan same
- merge2 int any          | scan same
- merge2 int null element | scan same
- merge2 keys             | plain same
- merge2 count            | plain same
- merge2 rare             | scan same
- merge2 common           | scan same
- merge2 two              | scan same
- merge2 absent           | scan same
- merge2 overlap          | scan same
- merge2 any              | scan same
- merge2 not any          | scan same
- merge2 contained        | scan same
- merge2 not two          | plain same
- merge2 not overlap      | plain same
- merge2 not contained    | plain same
- merge2 null element     | scan same
- merge2 group            | scan same
- merge2 empty            | scan same
- merge2 length           | scan same
- merge2 whole array      | scan same
- merge2 equal            | scan same
- merge2 int contains     | scan same
- merge2 int two          | scan same
- merge2 int overlap      | scan same
- merge2 int any          | scan same
- merge2 int null element | scan same
- merge2 keys             | scan same
- merge2 count            | scan same
-(48 rows)
+          shape           |   result   
+--------------------------+------------
+ merge2 rare              | scan same
+ merge2 common            | scan same
+ merge2 two               | scan same
+ merge2 absent            | scan same
+ merge2 overlap           | scan same
+ merge2 any               | scan same
+ merge2 not any           | plain same
+ merge2 contained         | scan same
+ merge2 not two           | plain same
+ merge2 not overlap       | plain same
+ merge2 not contained     | plain same
+ merge2 null element      | scan same
+ merge2 group             | plain same
+ merge2 empty             | scan same
+ merge2 length            | scan same
+ merge2 whole array       | plain same
+ merge2 equal             | scan same
+ merge2 equal two         | scan same
+ merge2 equal swapped     | scan same
+ merge2 equal repeated    | scan same
+ merge2 equal 2-D         | plain same
+ merge2 equal bounds      | plain same
+ merge2 not equal         | plain same
+ merge2 equal group       | scan same
+ merge2 int equal         | scan same
+ merge2 int equal swapped | scan same
+ merge2 int contains      | scan same
+ merge2 int two           | scan same
+ merge2 int overlap       | scan same
+ merge2 int any           | scan same
+ merge2 int null element  | scan same
+ merge2 keys              | plain same
+ merge2 count             | plain same
+ merge2 rare              | scan same
+ merge2 common            | scan same
+ merge2 two               | scan same
+ merge2 absent            | scan same
+ merge2 overlap           | scan same
+ merge2 any               | scan same
+ merge2 not any           | scan same
+ merge2 contained         | scan same
+ merge2 not two           | plain same
+ merge2 not overlap       | plain same
+ merge2 not contained     | plain same
+ merge2 null element      | scan same
+ merge2 group             | scan same
+ merge2 empty             | scan same
+ merge2 length            | scan same
+ merge2 whole array       | scan same
+ merge2 equal             | scan same
+ merge2 equal two         | scan same
+ merge2 equal swapped     | scan same
+ merge2 equal repeated    | scan same
+ merge2 equal 2-D         | scan same
+ merge2 equal bounds      | scan same
+ merge2 not equal         | scan same
+ merge2 equal group       | scan same
+ merge2 int equal         | scan same
+ merge2 int equal swapped | scan same
+ merge2 int contains      | scan same
+ merge2 int two           | scan same
+ merge2 int overlap       | scan same
+ merge2 int any           | scan same
+ merge2 int null element  | scan same
+ merge2 keys              | scan same
+ merge2 count             | scan same
+(66 rows)
 
 SELECT sift.col_verify('ae_col', true);
  col_verify 
@@ -558,57 +784,75 @@ SELECT sift.col_verify('ae_col', true);
 REINDEX INDEX ae_col;
 REINDEX INDEX ad_col;
 SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 'ad');
-          shape           |   result   
---------------------------+------------
- reindex rare             | scan same
- reindex common           | scan same
- reindex two              | scan same
- reindex absent           | scan same
- reindex overlap          | scan same
- reindex any              | scan same
- reindex not any          | plain same
- reindex contained        | scan same
- reindex not two          | plain same
- reindex not overlap      | plain same
- reindex not contained    | plain same
- reindex null element     | scan same
- reindex group            | plain same
- reindex empty            | plain same
- reindex length           | scan same
- reindex whole array      | plain same
- reindex equal            | plain same
- reindex int contains     | scan same
- reindex int two          | scan same
- reindex int overlap      | scan same
- reindex int any          | scan same
- reindex int null element | scan same
- reindex keys             | plain same
- reindex count            | plain same
- reindex rare             | scan same
- reindex common           | scan same
- reindex two              | scan same
- reindex absent           | scan same
- reindex overlap          | scan same
- reindex any              | scan same
- reindex not any          | scan same
- reindex contained        | scan same
- reindex not two          | plain same
- reindex not overlap      | plain same
- reindex not contained    | plain same
- reindex null element     | scan same
- reindex group            | scan same
- reindex empty            | scan same
- reindex length           | scan same
- reindex whole array      | scan same
- reindex equal            | scan same
- reindex int contains     | scan same
- reindex int two          | scan same
- reindex int overlap      | scan same
- reindex int any          | scan same
- reindex int null element | scan same
- reindex keys             | scan same
- reindex count            | scan same
-(48 rows)
+           shape           |   result   
+---------------------------+------------
+ reindex rare              | scan same
+ reindex common            | scan same
+ reindex two               | scan same
+ reindex absent            | scan same
+ reindex overlap           | scan same
+ reindex any               | scan same
+ reindex not any           | plain same
+ reindex contained         | scan same
+ reindex not two           | plain same
+ reindex not overlap       | plain same
+ reindex not contained     | plain same
+ reindex null element      | scan same
+ reindex group             | plain same
+ reindex empty             | scan same
+ reindex length            | scan same
+ reindex whole array       | plain same
+ reindex equal             | scan same
+ reindex equal two         | scan same
+ reindex equal swapped     | scan same
+ reindex equal repeated    | scan same
+ reindex equal 2-D         | plain same
+ reindex equal bounds      | plain same
+ reindex not equal         | plain same
+ reindex equal group       | scan same
+ reindex int equal         | scan same
+ reindex int equal swapped | scan same
+ reindex int contains      | scan same
+ reindex int two           | scan same
+ reindex int overlap       | scan same
+ reindex int any           | scan same
+ reindex int null element  | scan same
+ reindex keys              | plain same
+ reindex count             | plain same
+ reindex rare              | scan same
+ reindex common            | scan same
+ reindex two               | scan same
+ reindex absent            | scan same
+ reindex overlap           | scan same
+ reindex any               | scan same
+ reindex not any           | scan same
+ reindex contained         | scan same
+ reindex not two           | plain same
+ reindex not overlap       | plain same
+ reindex not contained     | plain same
+ reindex null element      | scan same
+ reindex group             | scan same
+ reindex empty             | scan same
+ reindex length            | scan same
+ reindex whole array       | scan same
+ reindex equal             | scan same
+ reindex equal two         | scan same
+ reindex equal swapped     | scan same
+ reindex equal repeated    | scan same
+ reindex equal 2-D         | scan same
+ reindex equal bounds      | scan same
+ reindex not equal         | scan same
+ reindex equal group       | scan same
+ reindex int equal         | scan same
+ reindex int equal swapped | scan same
+ reindex int contains      | scan same
+ reindex int two           | scan same
+ reindex int overlap       | scan same
+ reindex int any           | scan same
+ reindex int null element  | scan same
+ reindex keys              | scan same
+ reindex count             | scan same
+(66 rows)
 
 -- a value no row owns is answered by the directory: no unit is read and no heap row vetted
 CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$

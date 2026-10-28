@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_collation.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
@@ -373,6 +374,165 @@ array_contained(AggCtx *c, int grp, Const *arr, Oid collid)
 	return both;
 }
 
+/* ---- col = const on an array column: the rows with its cardinality and elements, then the elements in order ---- */
+
+/* x = const (either side) of an array_eq operator: the column's expression and the constant */
+static bool
+array_eq_args(OpExpr *op, Node **x, Const **k)
+{
+	Node	   *l,
+			   *r;
+
+	if (op->opfuncid != F_ARRAY_EQ || list_length(op->args) != 2)
+		return false;
+	l = strip_relabel(linitial(op->args));
+	r = strip_relabel(lsecond(op->args));
+	if (IsA(r, Const) && !IsA(l, Const))
+	{
+		*x = l;
+		*k = (Const *) r;
+	}
+	else if (IsA(l, Const) && !IsA(r, Const))
+	{
+		*x = r;
+		*k = (Const *) l;
+	}
+	else
+		return false;
+	return !(*k)->constisnull;
+}
+
+/* cardinality(x) = n: the lane after the image of an array that keeps its lengths; *lane is its leaf */
+static SiftAggPred *
+array_card_eq(AggCtx *c, Node *x, int n, int *lane)
+{
+	Node	   *call = (Node *) makeFuncExpr(F_CARDINALITY, INT4OID, list_make1(x), InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
+	Lit			lit = {'n'};
+
+	if ((*lane = match_leaf(c, call)) < 0)
+		return NULL;
+	lit.num = DatumGetNumeric(DirectFunctionCall1(int4_numeric, Int32GetDatum(n)));
+	return leaf_lit_cmp(c, *lane, SCMP_EQ, &lit);
+}
+
+/* the elements of the constant of x = const as literals, in order: NULL when the lists cannot decide it (a NULL element, another dimension or bound than one from 1, more than max elements) */
+static Lit *
+array_eq_lits(Const *k, Oid collid, int max, int *n)
+{
+	ArrayType  *a = DatumGetArrayTypeP(k->constvalue);
+	Oid			elem = ARR_ELEMTYPE(a);
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *vals;
+	bool	   *nulls;
+	Lit		   *lits;
+
+	if (ARR_NDIM(a) > 1 || (ARR_NDIM(a) == 1 && ARR_LBOUND(a)[0] != 1) || !sift_shred_array_elem_ok(elem))
+		return NULL;
+	get_typlenbyvalalign(elem, &len, &byval, &align);
+	deconstruct_array(a, elem, len, byval, align, &vals, &nulls, n);
+	if (*n > max)
+		return NULL;
+	lits = palloc(Max(*n, 1) * sizeof(Lit));
+	for (int i = 0; i < *n; i++)
+		if (nulls[i] || !elem_lit(elem, collid, vals[i], &lits[i]))
+			return NULL;
+	return lits;
+}
+
+#define ARRAY_EQ_ELEMS	4		/* the elements of the constant the point directory narrows the rows by: the rows own all of them */
+
+/* the first ARRAY_EQ_ELEMS different elements of lits as tests of the list leaf grp, appended to *conj */
+static void
+array_eq_elems(AggCtx *c, int grp, const Lit *lits, int n, List **conj)
+{
+	int			done = 0;
+
+	for (int i = 0; i < n && done < ARRAY_EQ_ELEMS; i++)
+	{
+		bool		seen = false;
+		SiftAggPred *e;
+
+		for (int j = 0; j < i && !seen; j++)
+			seen = lits[j].kind == lits[i].kind && (lits[i].kind == 's' ? lits[j].len == lits[i].len && memcmp(lits[j].s, lits[i].s, lits[i].len) == 0 :
+													DatumGetBool(DirectFunctionCall2(numeric_eq, NumericGetDatum(lits[j].num), NumericGetDatum(lits[i].num))));
+		if (!seen && (e = any_elem(c, grp, build_elem_lit, (void *) &lits[i])) != NULL)
+		{
+			*conj = lappend(*conj, e);
+			done++;
+		}
+	}
+}
+
+static SiftAggPred *
+and_of(AggCtx *c, List *conj)
+{
+	SiftAggPred *p;
+	int			i = 0;
+
+	if (list_length(conj) == 1)
+		return linitial(conj);
+	p = new_junction(c, SAP_AND, list_length(conj));
+	foreach_ptr(SiftAggPred, e, conj)
+		p->child[i++] = e;
+	junction_done(p);
+	return p;
+}
+
+/*
+ * The conjuncts that x = const (an array column, a constant) comes to: the rows it keeps have the cardinality and the elements of the constant, which
+ * narrow the rows before anything else is read (the point directory of the lists lists the rows that own the elements). *complete: they decide it, for
+ * an index that keeps the elements of its arrays and no image: a one-dimensional array from 1 has no head there, any other keeps it, so the rows
+ * of a head that is NULL are the arrays the lists tell, and their elements are read in order. The rows of a NULL array have no cardinality and
+ * no test passes them. Otherwise the caller adds the test of the image after them. NIL: none.
+ */
+List *
+array_eq_conjuncts(AggCtx *c, Node *e, bool *complete)
+{
+	OpExpr	   *op = (OpExpr *) e;
+	Node	   *x;
+	Const	   *k;
+	ArrayType  *a;
+	List	   *conj = NIL;
+	SiftAggPred *card;
+	int			lane,
+				n = 0,
+				grp;
+	Lit		   *lits;
+
+	*complete = false;
+	if (!IsA(e, OpExpr) || !array_eq_args(op, &x, &k))
+		return NIL;
+	a = DatumGetArrayTypeP(k->constvalue);
+	if ((card = array_card_eq(c, x, ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a)), &lane)) == NULL)
+		return NIL;
+	conj = list_make1(card);
+	lits = array_eq_lits(k, op->inputcollid, INT_MAX, &n);
+	grp = lits != NULL ? array_group(c, x) : -1;
+	if (grp >= 0 && get_element_type(exprType(x)) != ARR_ELEMTYPE(a))
+		grp = -1;
+	if (grp >= 0)
+		array_eq_elems(c, grp, lits, n, &conj);
+	if (leaf_of(c, lane - 1)->noimage && lits != NULL && n <= SIFT_AGG_SEQ_ELEMS && (n == 0 || grp >= 0))
+	{
+		SiftAggPred *head,
+				   *seq;
+
+		if (n > 0)
+		{
+			head = make_leaf_pred(c, SAP_NULL, lane - 1);
+			head->desc = psprintf("%s IS NULL", leaf_name(c, lane - 1));
+			if ((seq = any_elem_seq(c, grp, build_elem_lit, lits, n)) == NULL)
+				return NIL;
+			conj = lcons(card, lcons(head, list_delete_first(conj)));
+			conj = lappend(conj, seq);
+		}
+		*complete = true;
+	}
+	return conj;
+}
+
 /*
  * col @> const, const <@ col, col && const and const = ANY (col) on an array column: some element passes the equality of the list leaf.
  * The result is NULL for a NULL array, as WHERE treats it (*target, for the negation); = ANY is also NULL for a NULL element, so its target is
@@ -404,6 +564,15 @@ compile_array_test(AggCtx *c, Node *n, Node **target)
 			return NULL;
 		*target = n;
 		return any_elem(c, grp, build_elem_lit, &lit);
+	}
+	if (IsA(n, OpExpr) && ((OpExpr *) n)->opfuncid == F_ARRAY_EQ)
+	{
+		bool		complete;
+		List	   *conj = array_eq_conjuncts(c, n, &complete);
+
+		if (!complete)
+			return NULL;
+		return and_of(c, conj);
 	}
 	fid = func_of(n);
 	if (fid != F_ARRAYCONTAINS && fid != F_ARRAYCONTAINED && fid != F_ARRAYOVERLAP)

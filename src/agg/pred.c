@@ -639,6 +639,38 @@ any_elem_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
 	}
 }
 
+/* SAP_ANY_ELEM in order (op 2): the rows whose list has as many elements as p has children, the element at position k passing child[k] */
+static void
+elem_seq_rows(AggExec *ex, SiftAggPred *p, uint64 *out)
+{
+	const uint32 *offs = elem_offs(ex, p->leaf);
+	int			nrow = ex->unit.nrow;
+	uint32		m = offs[nrow];
+	uint64	   *eb[SIFT_AGG_SEQ_ELEMS];
+	uint64		t[VECW + PADW];
+
+	clear_words(out, nrow);
+	for (int k = 0; k < p->nchild; k++)
+	{
+		eb[k] = MemoryContextAllocZero(ex->ucxt, ((m + 63) / 64 + PADW + 1) * sizeof(uint64));
+		for (uint32 s = 0; s < m; s += VEC)
+		{
+			int			n = Min(VEC, m - s);
+
+			eval_pred(ex, p->child[k], 1, s, n, t);
+			memcpy(eb[k] + s / 64, t, ((n + 63) / 64) * sizeof(uint64));
+		}
+	}
+	for (int r = 0; r < nrow; r++)
+	{
+		bool		same = offs[r + 1] - offs[r] == (uint32) p->nchild;
+
+		for (int k = 0; same && k < p->nchild; k++)
+			same = (eb[k][(offs[r] + k) >> 6] >> ((offs[r] + k) & 63)) & 1;
+		out[r >> 6] |= (uint64) same << (r & 63);
+	}
+}
+
 /* the row's list raises when SQL reads it (the source recorded the error): the test raises it where it reaches the row, as the sub-plan does */
 static void
 raise_poison(AggExec *ex, const SiftAggPred *p, uint32 r)
@@ -746,7 +778,7 @@ row_bitmap(AggExec *ex, SiftAggPred *p)
 
 		st->rowmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
 		if (p->kind == SAP_ANY_ELEM)
-			any_elem_rows(ex, p, st->rowmask);
+			(p->op == 2 ? elem_seq_rows : any_elem_rows) (ex, p, st->rowmask);
 		else
 			for (int s = 0; s < nrow; s += VEC)
 				eval_pred(ex, p, 0, s, Min(VEC, nrow - s), st->rowmask + s / 64);

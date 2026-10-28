@@ -547,7 +547,7 @@ sift_col_auto_paths(Relation heap, Relation index)
 			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", arrs.data);
 			appendStringInfoString(&detail, "An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array.");
 			if (only.len > 0)
-				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
+				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array reads the rows that own its elements and their order, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
 			if (both.len > 0)
 				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
 			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s", name, only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),

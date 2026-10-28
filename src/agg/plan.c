@@ -474,6 +474,8 @@ where_refused(AggCtx *c, Node *q)
 	return agg_refuse(WHERE);
 }
 
+#define ARRAY_EQ_CONJ	8		/* the conjuncts an array equality comes to at most (array_eq_conjuncts) */
+
 /* the WHERE of the scan: bitmap predicates, and the conjuncts over the joined rows */
 bool
 agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
@@ -487,22 +489,31 @@ agg_quals(AggCtx *c, SiftAggSpec *s, FromScan *fs)
 	if (!setup_joins(c, &quals, &joined, &scan_quals, &scan_post))
 		return agg_refuse(JOIN_CONDITION);
 	quals = list_concat(quals, scan_quals);
-	s->pred = palloc(Max(list_length(quals), 1) * sizeof(SiftAggPred *));
+	s->pred = palloc(Max(list_length(quals), 1) * ARRAY_EQ_CONJ * sizeof(SiftAggPred *));
 	s->post = palloc(Max(list_length(quals) + list_length(joined) + list_length(scan_post), 1) * sizeof(SiftAggPred *));
 	initStringInfo(&txt);
 	foreach_ptr(Node, q, quals)
 	{
 		Node	   *e = normalize_expr(c, q);
-		SiftAggPred *p = compile_typeof(c, e);
+		bool		complete;
+		List	   *pre = array_eq_conjuncts(c, e, &complete);
+		SiftAggPred *p = NULL;
 
-		if (p == NULL)
+		if (!complete && (p = compile_typeof(c, e)) == NULL)
 			p = compile_wide(c, e);
-		if (p == NULL)
+		if (!complete && p == NULL)
 			p = compile_tid(c, e);
-		if (p == NULL)
+		if (!complete && p == NULL)
 			p = compile_pred(c, e);
-		if (p == NULL || unsupported_clause(c, q))
+		if ((!complete && p == NULL) || unsupported_clause(c, q))
 			return where_refused(c, q);
+		foreach_ptr(SiftAggPred, f, pre)
+		{
+			s->pred[s->npred++] = f;
+			appendStringInfo(&txt, "%s%s", txt.len ? " AND " : "", f->desc);
+		}
+		if (p == NULL)
+			continue;
 		if (p->level > 1)
 			s->post[s->npost++] = p;
 		else

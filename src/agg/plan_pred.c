@@ -640,20 +640,24 @@ compile_junction(AggCtx *c, SiftAggPredKind kind, List *args)
 	return p;
 }
 
-/* the negation of an existential test of a document that is not NULL: an element test and a NULL test flip, an AND of them is the OR of their negations (and the reverse) */
-static void
+/* the negation of an existential test of a document that is not NULL: an element test and a NULL test flip, an AND of them is the OR of their negations (and the reverse); false: a test of the cardinality or of the elements in order has none */
+static bool
 negate_existential(SiftAggPred *p)
 {
 	if (p->kind == SAP_AND || p->kind == SAP_OR)
 	{
 		p->kind = p->kind == SAP_AND ? SAP_OR : SAP_AND;
 		for (int i = 0; i < p->nchild; i++)
-			negate_existential(p->child[i]);
+			if (!negate_existential(p->child[i]))
+				return false;
 	}
+	else if (p->kind == SAP_CMP || (p->kind == SAP_ANY_ELEM && p->op == 2))
+		return false;
 	else if (p->kind == SAP_ANY_ELEM || p->kind == SAP_NULL)
 		p->op ^= 1;
 	else
 		p->op = 1;
+	return true;
 }
 
 static SiftAggPred *
@@ -669,7 +673,8 @@ compile_bool(AggCtx *c, BoolExpr *b)
 		return compile_lut(c, (Node *) b);
 	if (target && !target_not_null(c, target))
 		return NULL;
-	negate_existential(p);
+	if (!negate_existential(p))
+		return compile_lut(c, (Node *) b);
 	p->desc = psprintf("NOT %s", p->desc);
 	return p;
 }
