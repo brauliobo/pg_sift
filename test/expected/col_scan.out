@@ -82,13 +82,15 @@ BEGIN
 	idx := '';
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF line ~ 'sc_col' THEN idx := idx || 'col'; END IF;
+		IF line ~ '^ *(->  )?Index (Only )?Scan using sc_col' THEN idx := idx || 'tuple'; END IF;
 		IF line ~ 'sc_b_' THEN idx := idx || 'btree'; END IF;
 		IF line ~ 'Seq Scan' THEN idx := idx || 'seq'; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(r, ''|'' ORDER BY r)) FROM (SELECT row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO n, md5;
 END $$;
--- the four ways agree; col_idx: the column index was read in the col mode (a bitmap scan); tup_idx: in the tup mode (an index scan or an index-only scan);
--- btree_idx: a btree was read in the btree mode
+-- the four ways agree; col_idx: the column index was read in the col mode (a bitmap scan); tup_idx: in the tup mode by an index scan or an index-only scan (not by
+-- the bitmap scan that bitmap-scan-off leaves as a disabled node: it wins the plan of an OR when its cost is more than 1% under the disabled sequential scan,
+-- and the sample of ANALYZE and the size of the index move that cost across the line); btree_idx: a btree was read in the btree mode
 CREATE FUNCTION sc_check(q text, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) LANGUAGE plpgsql AS $$
 DECLARE c record; t record; h record; b record;
 BEGIN
@@ -99,7 +101,7 @@ BEGIN
 	rows := h.n;
 	agree := c.n = h.n AND t.n = h.n AND h.n = b.n AND c.md5 IS NOT DISTINCT FROM h.md5 AND t.md5 IS NOT DISTINCT FROM h.md5 AND h.md5 IS NOT DISTINCT FROM b.md5;
 	col_idx := c.idx ~ 'col';
-	tup_idx := t.idx ~ 'col';
+	tup_idx := t.idx ~ 'tuple';
 	btree_idx := b.idx ~ 'btree';
 END $$;
 -- does the plan of a query read the column index (the EXPLAIN text differs between versions: a disabled node is only named from 18 on)
@@ -263,7 +265,7 @@ CREATE FUNCTION sc_all(OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx b
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_all();
  queries | agree | on_col | on_tup | on_btree 
 ---------+-------+--------+--------+----------
-     142 |   142 |    135 |    134 |      134
+     142 |   142 |    135 |    132 |      134
 (1 row)
 
 SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
@@ -313,7 +315,7 @@ SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
   42 |    4 | t     | t       | t       | t
   43 |   85 | t     | t       | t       | t
   44 | 1558 | t     | t       | f       | t
-  45 |  117 | t     | t       | t       | t
+  45 |  117 | t     | t       | f       | t
   46 | 1500 | t     | t       | t       | t
   47 | 1500 | t     | t       | t       | t
   48 |    7 | t     | f       | f       | f
@@ -380,7 +382,7 @@ SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
  109 | 1482 | t     | t       | t       | t
  110 |   94 | t     | t       | t       | t
  111 |    7 | t     | t       | t       | t
- 112 |  775 | t     | t       | t       | t
+ 112 |  775 | t     | t       | f       | t
  113 |  750 | t     | t       | t       | t
  114 | 2069 | t     | t       | t       | t
  115 |  794 | t     | t       | t       | t
@@ -530,7 +532,7 @@ SELECT buffers > 0 AS rows_in_the_buffer FROM sift.col_index_info('sc_col'::regc
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    135
+     142 |   142 |    135 |    132
 (1 row)
 
 SELECT n, rows, agree FROM sc_all() WHERE NOT agree;
@@ -584,7 +586,7 @@ VACUUM sc_b;
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    135
+     142 |   142 |    135 |    132
 (1 row)
 
 SELECT sc_dml($$UPDATE %T SET v = (v * 3) % 500 WHERE id % 7 = 0$$);
@@ -618,7 +620,7 @@ SELECT sift.col_merge('sc_col'::regclass) >= 0 AS merged;
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    135
+     142 |   142 |    135 |    132
 (1 row)
 
 -- an update that leaves the indexed columns alone (HOT where the page has room), and one that changes them in the same page

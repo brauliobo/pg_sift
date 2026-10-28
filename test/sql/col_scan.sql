@@ -84,14 +84,16 @@ BEGIN
 	idx := '';
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF line ~ 'sc_col' THEN idx := idx || 'col'; END IF;
+		IF line ~ '^ *(->  )?Index (Only )?Scan using sc_col' THEN idx := idx || 'tuple'; END IF;
 		IF line ~ 'sc_b_' THEN idx := idx || 'btree'; END IF;
 		IF line ~ 'Seq Scan' THEN idx := idx || 'seq'; END IF;
 	END LOOP;
 	EXECUTE 'SELECT count(*), md5(string_agg(r, ''|'' ORDER BY r)) FROM (SELECT row_to_json(x)::text AS r FROM (' || q || ') x) y' INTO n, md5;
 END $$;
 
--- the four ways agree; col_idx: the column index was read in the col mode (a bitmap scan); tup_idx: in the tup mode (an index scan or an index-only scan);
--- btree_idx: a btree was read in the btree mode
+-- the four ways agree; col_idx: the column index was read in the col mode (a bitmap scan); tup_idx: in the tup mode by an index scan or an index-only scan (not by
+-- the bitmap scan that bitmap-scan-off leaves as a disabled node: it wins the plan of an OR when its cost is more than 1% under the disabled sequential scan,
+-- and the sample of ANALYZE and the size of the index move that cost across the line); btree_idx: a btree was read in the btree mode
 CREATE FUNCTION sc_check(q text, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) LANGUAGE plpgsql AS $$
 DECLARE c record; t record; h record; b record;
 BEGIN
@@ -102,7 +104,7 @@ BEGIN
 	rows := h.n;
 	agree := c.n = h.n AND t.n = h.n AND h.n = b.n AND c.md5 IS NOT DISTINCT FROM h.md5 AND t.md5 IS NOT DISTINCT FROM h.md5 AND h.md5 IS NOT DISTINCT FROM b.md5;
 	col_idx := c.idx ~ 'col';
-	tup_idx := t.idx ~ 'col';
+	tup_idx := t.idx ~ 'tuple';
 	btree_idx := b.idx ~ 'btree';
 END $$;
 
