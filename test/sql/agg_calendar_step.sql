@@ -1,0 +1,93 @@
+-- A calendar expression of a timestamp leaf that is not a range (extract(dow|hour|minute|month|doy ..) = constant, several of them in an OR or an AND) is evaluated once for each day, hour or
+-- minute that the data holds (the step of the finest calendar function in it, "per day" in EXPLAIN) and not once for each distinct timestamp. The rows are those of the normal plan in the zones whose clocks jump,
+-- for operands that no row has, infinite timestamps, NULL, and a mix of steps; a text format has no step and keeps its expression evaluated for each value.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE st (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO st
+SELECT i, t AT TIME ZONE 'UTC', t
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '47 minutes' AS t FROM generate_series(1, 60000) g) s;
+INSERT INTO st VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
+	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
+CREATE INDEX st_col ON st USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) st;
+-- the same with infinite timestamps: there is no number of a step for them, the expression is tested for each value
+CREATE TABLE si AS SELECT * FROM st WHERE id <= 2000;
+INSERT INTO si VALUES (200001, 'infinity', 'infinity'), (200002, '-infinity', '-infinity');
+CREATE INDEX si_col ON si USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) si;
+
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
+	EXECUTE q INTO n;
+	RETURN n;
+END $$;
+-- does the scan evaluate the filter for each step?
+CREATE FUNCTION stepped(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; s bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		s := s OR l ~ '\(per (day|hour|minute)\)';
+	END LOOP;
+	RETURN s;
+END $$;
+
+CREATE TABLE st_case (f text);
+INSERT INTO st_case VALUES
+	('extract(dow FROM %1$s) = 0'), ('extract(dow FROM %1$s) = 3'), ('extract(dow FROM %1$s) = 7'), ('extract(dow FROM %1$s) = 0.5'), ('extract(dow FROM %1$s) IN (0, 6)'), ('date_part(''dow'', %1$s) = 6'),
+	('extract(isodow FROM %1$s) = 1'), ('extract(month FROM %1$s) = 2'), ('extract(month FROM %1$s) = 13'), ('extract(doy FROM %1$s) = 60'), ('extract(day FROM %1$s) = 31'),
+	('extract(hour FROM %1$s) = 1'), ('extract(hour FROM %1$s) = 2'), ('extract(hour FROM %1$s) = 24'), ('extract(hour FROM %1$s) BETWEEN 8 AND 17'),
+	('extract(minute FROM %1$s) = 30'), ('extract(minute FROM %1$s) > 55 AND extract(hour FROM %1$s) <> 3'),
+	('extract(hour FROM %1$s) = 5 OR extract(dow FROM %1$s) IN (0, 6)'), ('extract(dow FROM %1$s) = 3 AND extract(hour FROM %1$s) < 6'),
+	('extract(dow FROM %1$s) = 5 AND extract(minute FROM %1$s) = 15'),
+	('extract(dow FROM %1$s) = 2 AND extract(hour FROM %1$s) = 12'),
+	('extract(dow FROM %1$s) IS NULL'), ('extract(dow FROM %1$s) IS NOT NULL AND extract(hour FROM %1$s) = 0'),
+	('to_char(%1$s, ''D'') = ''4'''), ('to_char(%1$s, ''HH24'') = ''01''');
+
+-- every case in every zone, on both column types, against the normal plan; "stepped" counts the statements evaluated for each step
+CREATE TABLE st_result (zone text, statements int, same int, stepped int);
+DO $$
+DECLARE
+	z text; c record; col text; t text; q text; n int; s int; sp int;
+BEGIN
+	FOREACH z IN ARRAY ARRAY['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Asia/Kolkata', 'Pacific/Apia', 'America/Sao_Paulo', 'Europe/London'] LOOP
+		n := 0; s := 0; sp := 0;
+		EXECUTE format('SET LOCAL TimeZone = %L', z);
+		FOREACH t IN ARRAY ARRAY['st', 'si'] LOOP
+			FOREACH col IN ARRAY ARRAY['tz', 'ts'] LOOP
+				FOR c IN SELECT * FROM st_case LOOP
+					q := format('SELECT count(*) FROM %s WHERE ' || replace(c.f, '%1$s', col), t);
+					n := n + 1;
+					IF count_of(q, true) = count_of(q, false) THEN s := s + 1; END IF;
+					IF stepped(q) THEN sp := sp + 1; END IF;
+				END LOOP;
+			END LOOP;
+		END LOOP;
+		INSERT INTO st_result VALUES (z, n, s, sp);
+	END LOOP;
+END $$;
+SELECT zone, statements, same, stepped > statements / 2 AS mostly_stepped FROM st_result ORDER BY zone;
+
+-- the groups and the sums of the rows that pass, not only their number
+SET TimeZone = 'Australia/Lord_Howe';
+SELECT extract(dow FROM tz)::int AS dow, count(*), sum(id) FROM st WHERE extract(hour FROM tz) IN (1, 2, 23) GROUP BY 1 ORDER BY 1;
+SET sift.enable_agg = off;
+SELECT extract(dow FROM tz)::int AS dow, count(*), sum(id) FROM st WHERE extract(hour FROM tz) IN (1, 2, 23) GROUP BY 1 ORDER BY 1;
+RESET sift.enable_agg;
+
+SET sift.enable_agg = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE extract(dow FROM ts) = 3;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE extract(hour FROM tz) = 5 OR extract(minute FROM tz) = 7;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE to_char(tz, 'D') = '4';
+
+RESET sift.enable_agg;
+DROP FUNCTION count_of(text, bool);
+DROP FUNCTION stepped(text);
+DROP TABLE st_result, st_case, si, st;
+DROP EXTENSION pg_sift;

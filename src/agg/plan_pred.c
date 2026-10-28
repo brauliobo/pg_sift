@@ -576,8 +576,22 @@ compile_lut(AggCtx *c, Node *n)
 
 	if (exprType(n) != BOOLOID)
 		return NULL;
-	if (!single_leaf(c, n, &leaf, &ptype, &ptypmod, &pcoll) || !lut_expr_ok(c, leaf, n))
+	if (!single_leaf(c, n, &leaf, &ptype, &ptypmod, &pcoll))
 		return compile_combo_pred(c, n);
+	if (!lut_expr_ok(c, leaf, n))
+	{
+		int			zoned,
+					secs = bucket_pred_secs(c, leaf, n, &zoned);
+
+		if (secs <= 0)
+			return compile_combo_pred(c, n);
+		p = make_leaf_pred(c, SAP_STEP, leaf);
+		p->step = secs;
+		p->zoned = zoned;
+		p->expr = substitute_leaf(c, n, ptype, ptypmod, pcoll);
+		p->desc = psprintf("%s: %s%s", leaf_name(c, leaf), expr_text(c, n), bucket_text(secs));
+		return p;
+	}
 	p = make_leaf_pred(c, SAP_LUT, leaf);
 	p->expr = substitute_leaf(c, n, ptype, ptypmod, pcoll);
 	p->desc = psprintf("%s: %s", leaf_name(c, leaf), expr_text(c, n));

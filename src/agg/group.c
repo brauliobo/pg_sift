@@ -659,6 +659,25 @@ bucket_numbers(const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, co
 	return lo >= PG_INT32_MIN && hi <= PG_INT32_MAX && hi - lo < MAX_RANGE;
 }
 
+/* bucket_numbers of a step of the UTC clock: a second, a minute, an hour or a day */
+static bool
+bucket_numbers_utc(int64 us, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, int32 *mn, int32 *mx)
+{
+	switch (us)
+	{
+		case USECS_PER_SEC:
+			return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC, 0, mn, mx);
+		case USECS_PER_SEC * 60:
+			return bucket_numbers(v, idx, nsel, out, USECS_PER_SEC * 60, 0, mn, mx);
+		case USECS_PER_HOUR:
+			return bucket_numbers(v, idx, nsel, out, USECS_PER_HOUR, 0, mn, mx);
+		case USECS_PER_DAY:
+			return bucket_numbers(v, idx, nsel, out, USECS_PER_DAY, 0, mn, mx);
+	}
+	SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) us);
+	return false;
+}
+
 /* the zone's pieces cover the selected rows that are not an infinity or NULL (false: there are none) */
 static bool
 zone_rows(ZoneOff *z, const SiftSrcVec *v, const uint32 *idx, int nsel)
@@ -687,13 +706,11 @@ zone_rows(ZoneOff *z, const SiftSrcVec *v, const uint32 *idx, int nsel)
  * False as bucket_numbers: an infinity or a range a table cannot hold is among the rows.
  */
 static bool
-bucket_numbers_zoned(KeyState *k, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, int32 *mn, int32 *mx)
+bucket_numbers_zoned(ZoneOff *z, int64 us, const SiftSrcVec *v, const uint32 *idx, int nsel, uint32 *out, int32 *mn, int32 *mx)
 {
-	ZoneOff    *z = k->zone;
 	const int64 *data = v->data;
 	int64		lo = PG_INT64_MAX,
 				hi = PG_INT64_MIN,
-				us = k->bucket,
 				shift;
 	int64		blo = PG_INT64_MAX,
 				bhi = PG_INT64_MIN;
@@ -756,6 +773,18 @@ bucket_numbers_zoned(KeyState *k, const SiftSrcVec *v, const uint32 *idx, int ns
 	*mn = (int32) blo;
 	*mx = (int32) bhi;
 	return blo >= PG_INT32_MIN && bhi <= PG_INT32_MAX && bhi - blo < MAX_RANGE;
+}
+
+/* the bucket numbers of the n rows of v from `start` (iota: 0 .. n - 1), on the zone's clock or on UTC's, for the condition of a step (agg/pred_in.c); false as bucket_numbers */
+bool
+step_numbers(const SiftSrcVec *v, int start, int n, const uint32 *iota, ZoneOff *z, int64 us, uint32 *out, int32 *mn, int32 *mx)
+{
+	SiftSrcVec	w = *v;
+
+	w.data = (const int64 *) v->data + start;
+	if (v->isnull)
+		w.isnull = v->isnull + start;
+	return z ? bucket_numbers_zoned(z, us, &w, iota, n, out, mn, mx) : bucket_numbers_utc(us, &w, iota, n, out, mn, mx);
 }
 
 /* the key ids of the selected rows by the hash table of bucket numbers: infinities and wide ranges */
@@ -837,28 +866,11 @@ bucket_ids(AggExec *ex, int ki, const SiftSrcVec *v, const uint32 *idx, int nsel
 	if (k->zcut)
 		table = false;
 	else if (k->zone)
-		table = bucket_numbers_zoned(k, v, idx, nsel, vals_out, &mn, &mx);
+		table = bucket_numbers_zoned(k->zone, k->bucket, v, idx, nsel, vals_out, &mn, &mx);
+	else if (k->bucket == 1)	/* each value is a step of its own (init.c): the hash table of values */
+		table = false;
 	else
-		switch (k->bucket)
-		{
-			case USECS_PER_SEC:
-				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC, 0, &mn, &mx);
-				break;
-			case USECS_PER_SEC * 60:
-				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_SEC * 60, 0, &mn, &mx);
-				break;
-			case USECS_PER_HOUR:
-				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_HOUR, 0, &mn, &mx);
-				break;
-			case USECS_PER_DAY:
-				table = bucket_numbers(v, idx, nsel, vals_out, USECS_PER_DAY, 0, &mn, &mx);
-				break;
-			case 1:				/* each value is a step of its own (init.c): the hash table of values */
-				table = false;
-				break;
-			default:
-				SIFT_INVARIANT(false, "sift: unexpected bucket of %lld microseconds", (long long) k->bucket);
-		}
+		table = bucket_numbers_utc(k->bucket, v, idx, nsel, vals_out, &mn, &mx);
 	if (!table || rt_span(&k->rt, mn, mx) > MAX_RANGE)
 	{
 		bucket_hash_ids(ex, k, v, idx, nsel, vals_out);

@@ -110,6 +110,7 @@ typedef enum SiftAggPredKind
 	SAP_ELEM_ROW,				/* element level, inside SAP_ANY_ELEM: the element leaf `leaf` op the row leaf `leaf2` of the element's row (SiftCmpOp); NULL on either side is not true */
 	SAP_TID,					/* ctid op constant tid (op: SiftCmpOp but SCMP_NE) at the top level of the WHERE: the scan reads the superblocks of the range, the executor tests the rows of the edge ones (sift_aggspec_tid_range) */
 	SAP_ELEM_EXISTS,			/* after the joins: some element of the array leaf `leaf2` of the tuple's row passes child[0] (element level conjuncts of the leaves, if any) and boolean slot `op` of the scoped combo `leaf`, which reads the element's leaves, the row's and the tuple's lookup outputs */
+	SAP_STEP,					/* boolean expression of one timestamp leaf that changes only on a boundary of a second, minute, hour or day (`step` seconds, on the session zone's clock with `zoned`): the executor evaluates it once for each such step of the data, not for each distinct timestamp */
 	SAP_MATCHED					/* the tuple has a row of the join of combo `leaf` (a conjunct over the joined rows, of the arms of a fused pass that have an inner join where the pass has a left one) */
 } SiftAggPredKind;
 
@@ -124,6 +125,8 @@ typedef struct SiftAggPred
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
 	Node	   *cal;			/* SAP_LUT of an equality of a periodic calendar step (extract(hour FROM ts) = 14, to_char(ts, 'MM') = '03'): List (f(placeholder), operand), whose ranges the source tests first (init_filter.c); SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
 	int			calmode;
+	int			step;			/* SAP_STEP: the seconds one evaluation covers (1, 60, 3600, 86400) */
+	int			zoned;			/* SAP_STEP: the steps are those of the session zone's clock (SIFT_ZONE_STEP), not of UTC */
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
 	bool		late;			/* SAP_COMBO whose expression may raise an error, and the AND/OR above one: evaluated only on the rows that reach it (after the snapshot check for a conjunct of the query) */

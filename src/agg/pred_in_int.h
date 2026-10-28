@@ -17,6 +17,7 @@ void set_rows(const uint64 *rows, int n, bool res, uint64 *out);
 /* pred_in.c */
 void eval_in(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out);
 void eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out);
+void eval_step(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out);
 
 #pragma GCC visibility pop
 

@@ -99,6 +99,8 @@ put_pred(Pack *p, const SiftAggPred *pr)
 	put_node(p, pr->expr);
 	put_node(p, pr->cal);
 	put_int(p, pr->calmode);
+	put_int(p, pr->step);
+	put_int(p, pr->zoned);
 	put_num(p, &pr->num);
 	put_str(p, pr->desc);
 	put_int(p, pr->nchild);
@@ -518,6 +520,8 @@ get_pred(Unpack *u)
 	pr->expr = get_node(u);
 	pr->cal = get_node(u);
 	pr->calmode = get_int(u);
+	pr->step = get_int(u);
+	pr->zoned = get_int(u);
 	get_num(u, &pr->num);
 	pr->desc = get_str(u);
 	pr->nchild = get_int(u);

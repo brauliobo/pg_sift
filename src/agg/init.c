@@ -239,6 +239,18 @@ register_pred(AggExec *ex, SiftAggPred *p)
 			st->null_result = eval_bool(ex, st->expr, (Datum) 0, true);
 		MemoryContextSwitchTo(old);
 	}
+	if (p->kind == SAP_STEP)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+		st->expr = init_expr(ex, p->expr);
+		st->param = find_param(p->expr);
+		rt_init(&st->rt, 1);
+		st->null_result = eval_bool(ex, st->expr, (Datum) 0, true);
+		st->step_us = sift_aggexpr_utc_shadowed(p->expr) ? 1 : (int64) p->step * USECS_PER_SEC;
+		st->step_zone = p->zoned ? zone_open(ex->cxt, session_timezone) : NULL;
+		MemoryContextSwitchTo(old);
+	}
 	for (int i = 0; i < p->nchild; i++)
 		register_pred(ex, p->child[i]);
 }

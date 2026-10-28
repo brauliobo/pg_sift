@@ -85,6 +85,7 @@ uint32 ident_wide_id(AggExec *ex, KeyState *k, int64 v);
 void ident_go_wide(AggExec *ex, KeyState *k);
 void key_range_fill(void *arg, int32 v, void *entry);
 bool key_cover(AggExec *ex, int ki, bool any, int32 mn, int32 mx, int nsel);
+bool step_numbers(const SiftSrcVec *v, int start, int n, const uint32 *iota, ZoneOff *z, int64 us, uint32 *out, int32 *mn, int32 *mx);
 void compute_kids(AggExec *ex, int nsel, uint32 *kid);
 void compute_gids(AggExec *ex, int nsel);
 void compute_set_gids(AggExec *ex, int nsel, const uint32 *kid);

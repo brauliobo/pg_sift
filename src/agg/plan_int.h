@@ -354,6 +354,7 @@ typedef struct BucketUnit
 } BucketUnit;
 extern const BucketUnit *bucket_unit(Node *e, bool session);
 extern int bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned);
+extern int bucket_pred_secs(AggCtx *c, int leaf, Node *expr, int *zoned);
 extern int leaf_digits(Oid typid, int32 typmod);
 extern bool nx_addsub(SiftAggNum *o, SiftAggNxOp op, int *scale, int *dig, int s2, int d2);
 extern bool nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig);

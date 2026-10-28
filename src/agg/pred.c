@@ -830,6 +830,9 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_LUT:
 			eval_lut(ex, p, st, start, n, out);
 			break;
+		case SAP_STEP:
+			eval_step(ex, p, st, start, n, out);
+			break;
 		case SAP_COMBO:
 			eval_combo(ex, p, qlevel, start, n, out);
 			break;
@@ -851,6 +854,6 @@ eval_pred(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *out
 		case SAP_ELEM_EXISTS:
 			SIFT_INVARIANT(false, "sift: the types and the wide values of a leaf are tested by the source, an element existence test by the joined tuples");
 	}
-	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT))
+	if (p->pass_poison && (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_LUT || p->kind == SAP_STEP))
 		or_poison(ex, p, start, n, out);
 }

@@ -8,6 +8,7 @@
 #include "core/i64set.h"
 #include "agg/leaf_int.h"
 #include "agg/tup_int.h"
+#include "agg/zoneoff.h"
 
 typedef struct PredState
 {
@@ -29,12 +30,15 @@ typedef struct PredState
 	uint64	   *in_bits;		/* ... or, when the range is too wide for a byte table, a bit for each value of [in_lo, in_lo + in_nbits) ... */
 	uint64		in_nbits;
 	SiftI64Set	in_hset;		/* ... or, when the values are too far apart for that, a hash table of them (.slot is NULL otherwise) */
-	ExprState  *expr;			/* SAP_LUT */
+	ExprState  *expr;			/* SAP_LUT, SAP_STEP */
 	Param	   *param;
-	bool		null_result;	/* SAP_LUT: the expression for a NULL input */
+	bool		null_result;	/* SAP_LUT, SAP_STEP: the expression for a NULL input */
 	int			elem;			/* 1 + the index of the element test of an EXISTS over a list that the source may answer exactly (str_init), else 0 */
 	SiftSrcStrTest *str;		/* a row level text test of the query, which the source runs on the encoded form (str_init) */
-	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
+	RangeTab	rt;				/* SAP_LUT on an integer leaf, SAP_STEP: result bytes */
+	ZoneOff    *step_zone;		/* SAP_STEP: the zone of the steps (NULL for UTC) */
+	int64		step_us;		/* SAP_STEP: microseconds of a step (1: each value on its own) */
+	uint32	   *step_iota;		/* SAP_STEP: 0 .. SIFT_AGG_VEC - 1, the rows of a stretch */
 	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */
 	bool		rowmask_ok;
 	int			nop;			/* numeric operand: the comparison of the scaled integers equivalent to the query's (SiftCmpOp) ... */

@@ -1108,6 +1108,57 @@ bucket_key_secs(AggCtx *c, int leaf, Node *expr, int *zoned)
 	return bucket_step(c, expr, false);
 }
 
+typedef struct StepCtx
+{
+	AggCtx	   *c;
+	int			leaf;
+	int			secs;
+	int			zoned;
+	bool		ok;
+} StepCtx;
+
+/* every read of the leaf is inside a calendar expression of one clock (bucket_key_secs), and the coarsest of their steps is the one the condition changes on */
+static bool
+step_walker(Node *n, StepCtx *x)
+{
+	int			z,
+				secs;
+
+	if (n == NULL || !x->ok)
+		return false;
+	if ((IsA(n, FuncExpr) || IsA(n, RelabelType)) && (secs = bucket_key_secs(x->c, x->leaf, n, &z)) > 0)
+	{
+		if (z == SIFT_ZONE_CUT || (x->secs && x->zoned != z))
+			x->ok = false;
+		else
+		{
+			x->secs = Max(x->secs, secs);
+			x->zoned = z;
+		}
+		return false;
+	}
+	if (match_leaf(x->c, n) >= 0)
+	{
+		x->ok = false;
+		return false;
+	}
+	return expression_tree_walker(n, step_walker, x);
+}
+
+/* the seconds a boolean expression of the timestamp leaf is evaluated once for, 0 when it reads the leaf other than through calendar calls (a key's rule, for each call of the condition) */
+int
+bucket_pred_secs(AggCtx *c, int leaf, Node *expr, int *zoned)
+{
+	StepCtx		x = {c, leaf, 0, 0, true};
+
+	*zoned = 0;
+	if (contain_volatile_functions(expr) || raising_walker(expr, NULL))
+		return 0;
+	(void) step_walker(expr, &x);
+	*zoned = x.zoned;
+	return x.ok ? x.secs : 0;
+}
+
 /* digits an integer or numeric(p, s) column may hold: from the type modifier of its reference, else what the storage holds */
 int
 leaf_digits(Oid typid, int32 typmod)

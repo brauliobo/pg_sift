@@ -483,7 +483,7 @@ runs_plan(Node *n, void *lut)
 static bool
 pred_runs_plan(const SiftAggPred *p)
 {
-	if (p->expr && runs_plan(p->expr, (void *) (p->kind == SAP_LUT ? p : NULL)))
+	if (p->expr && runs_plan(p->expr, (void *) (p->kind == SAP_LUT || p->kind == SAP_STEP ? p : NULL)))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
 		if (pred_runs_plan(p->child[i]))

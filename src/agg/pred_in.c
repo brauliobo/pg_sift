@@ -263,6 +263,21 @@ lut_rows(AggExec *ex, PredState *st, const int32 *vals, int n, uint64 *out)
 			out[i >> 6] |= UINT64CONST(1) << (i & 63);
 }
 
+/* a null row read whatever its slot holds: its result is the expression's for a NULL input */
+static void
+lut_nulls(AggExec *ex, PredState *st, const SiftSrcVec *v, int start, int n, uint64 *out)
+{
+	int			nw = (n + 63) / 64;
+
+	if (v->isnull)
+	{
+		sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
+		sift_colk->bits_andnot(out, ex->tmpm2, nw);
+		if (st->null_result)
+			sift_colk->bits_or(out, ex->tmpm2, nw);
+	}
+}
+
 void
 eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
 {
@@ -314,12 +329,77 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 		}
 		else
 			clear_words(out, n);
-		if (v->isnull)
-		{
-			sift_colk_nonzero(v->isnull + start, n, ex->tmpm2);
-			sift_colk->bits_andnot(out, ex->tmpm2, nw);
-			if (st->null_result)
-				sift_colk->bits_or(out, ex->tmpm2, nw);
-		}
+		lut_nulls(ex, st, v, start, n, out);
 	}
+}
+
+static void
+pred_step_fill(void *arg, int32 b, void *entry)
+{
+	LutFill    *f = arg;
+	PredState  *st = &f->ex->ps[f->p->id];
+	int64		us = st->step_zone ? zone_instant(st->step_zone, b, st->step_us) : (int64) b * st->step_us;
+
+	*(uint8 *) entry = eval_bool(f->ex, st->expr, Int64GetDatum(us), false);
+}
+
+/* the rows of a stretch tested each on its own, for the infinities and the spans of steps a table cannot hold; the expression runs once for each run of equal values */
+static void
+step_rows(AggExec *ex, PredState *st, const SiftSrcVec *v, int start, int n, uint64 *out)
+{
+	const int64 *x = (const int64 *) v->data + start;
+	int64		last = 0;
+	bool		have = false,
+				res = false;
+
+	clear_words(out, n);
+	for (int i = 0; i < n; i++)
+	{
+		if (v->isnull && v->isnull[start + i])
+			continue;
+		if (!have || x[i] != last)
+		{
+			res = eval_bool(ex, st->expr, Int64GetDatum(x[i]), false);
+			last = x[i];
+			have = true;
+		}
+		if (res)
+			out[i >> 6] |= UINT64CONST(1) << (i & 63);
+	}
+}
+
+/* SAP_STEP: the rows' steps (bucket numbers) are looked up in a table that the expression fills, once for each step of the data */
+void
+eval_step(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *out)
+{
+	const SiftSrcVec *v = get_vec(ex, p->leaf);
+	LutFill		f = {ex, p};
+	int32		mn,
+				mx;
+
+	if (st->step_us <= 1)
+	{
+		step_rows(ex, st, v, start, n, out);
+		return;
+	}
+	if (st->step_iota == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+		st->step_iota = palloc(SIFT_AGG_VEC * sizeof(uint32));
+		for (int i = 0; i < SIFT_AGG_VEC; i++)
+			st->step_iota[i] = i;
+		MemoryContextSwitchTo(old);
+	}
+	if (step_numbers(v, start, n, st->step_iota, st->step_zone, st->step_us, ex->tmpu32, &mn, &mx) && rt_span(&st->rt, mn, mx) <= MAX_RANGE)
+	{
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+
+		rt_cover(&st->rt, mn, mx, pred_step_fill, &f);
+		MemoryContextSwitchTo(old);
+		sift_aggk->lut_i32(out, (const int32 *) ex->tmpu32, n, st->rt.lo, (uint32) ((int64) st->rt.hi - st->rt.lo + 1), (uint8 *) st->rt.tab);
+		lut_nulls(ex, st, v, start, n, out);
+	}
+	else
+		step_rows(ex, st, v, start, n, out);
 }
