@@ -55,8 +55,9 @@
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 #define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
+#define AUTOCUT_TIME_GROWTH_PCT 25	/* ... for a cut by a date, timestamp or lane: a range there reads at least AUTOCUT_RATIO times the units its rows fill, a gain far past what 25% of growth costs */
 #define AUTOCUT_SECOND_SLACK 1		/* percent the prediction may exceed the cut by the key alone for the date to be its second key: the sample does not see the runs and addresses a date order shrinks */
-#define AUTOCUT_QUICK_SLACK	12		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points over the sample's) */
+#define AUTOCUT_QUICK_SLACK	12		/* points over AUTOCUT_TIME_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points over the sample's) */
 
 typedef struct Cell
 {
@@ -703,11 +704,11 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	{
 		for (int i = first_open; i < nfire; i++)
 			if (!blocked[i] && tr[fire[i]].time &&
-				100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
+				100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_TIME_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
 			{
 				blocked[i] = true;
 				if (i == 0)
-					v->reason = "a range of the leaf reads many units, but the index would grow by more than 3%";
+					v->reason = "a range of the leaf reads many units, but the index would grow by more than 25%";
 			}
 		for (first_open = 0; first_open < nfire && blocked[first_open];)
 			first_open++;
@@ -721,7 +722,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	{
 		int			pick = fire[i],
 					sec;
-		double		growth;
+		double		growth,
+					limit;
 
 		if (blocked[i])
 			continue;
@@ -743,13 +745,14 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				}
 			}
 		growth = 100.0 * (kc_row - def_row) / def_row;
-		if (tr[pick].time && growth > AUTOCUT_GROWTH_PCT)
+		limit = tr[pick].time ? AUTOCUT_TIME_GROWTH_PCT : AUTOCUT_GROWTH_PCT;
+		if (tr[pick].time && growth > limit)
 		{
 			if (v->res == SIFT_AUTOCUT_NONE && i == first_open)
-				v->reason = "a range of the leaf reads many units, but the index would grow by more than 3%";
+				v->reason = "a range of the leaf reads many units, but the index would grow by more than 25%";
 			continue;
 		}
-		if (growth <= AUTOCUT_GROWTH_PCT || v->res == SIFT_AUTOCUT_NONE)
+		if (growth <= limit || v->res == SIFT_AUTOCUT_NONE)
 		{
 			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
 			v->reads = reads[i];
@@ -760,11 +763,11 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			if (sec >= 0)
 				strlcpy(v->second, cut_name(index, sc, tr[sec].c), sizeof(v->second));
 			v->reason = NULL;
-			v->res = growth <= AUTOCUT_GROWTH_PCT ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
+			v->res = growth <= limit ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
 		}
 	}
 	if (v->res == SIFT_AUTOCUT_CUT)
-		v->reason = v->range ? "a range of the leaf reads many units and the index does not grow" : "an equality on the key reads many units and the index does not grow";
+		v->reason = v->range ? "a range of the leaf reads many units and the index grows by at most 25%" : "an equality on the key reads many units and the index does not grow";
 	else if (v->res == SIFT_AUTOCUT_ADVISED)
 		v->reason = v->range ? "a range of the leaf reads many units, but the index would grow by more than 3%" : "an equality on the key reads many units, but the index would grow by more than 3%";
 done:

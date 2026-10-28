@@ -222,12 +222,30 @@ UNION ALL SELECT 'both', leaf, decision, reason FROM sift.key_cut_decision('kt_b
 UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt_narrow');
    idx   | leaf | decision |                                      reason                                       
 ---------+------+----------+-----------------------------------------------------------------------------------
- auto    | ts   | cut      | a range of the leaf reads many units and the index does not grow
+ auto    | ts   | cut      | a range of the leaf reads many units and the index grows by at most 25%
  arrival | tarr | none     | an equality on the key reads few units, or not many times those its rows fill
  both    | ts   | none     | the leaf "tarr" follows the order of the table, and the cut would widen its zones
- narrow  | ts   | cut      | a range of the leaf reads many units and the index does not grow
+ narrow  | ts   | cut      | a range of the leaf reads many units and the index grows by at most 25%
 (4 rows)
 
+-- a date of 1,826 values on narrow rows: the cut lists the addresses of every row, so the index grows by more than 3%, and a range reads 100 times the units its rows fill: the cut is chosen up to 25%
+CREATE TABLE kd (id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 400000) i;
+VACUUM (FREEZE, ANALYZE) kd;
+CREATE INDEX kd_i ON kd USING sift_col (d);
+SELECT kopt('kd_i'), growth_pct > 3 AND growth_pct <= 25 AS grows_up_to_25, decision FROM sift.key_cut_decision('kd_i');
+      kopt       | grows_up_to_25 | decision 
+-----------------+----------------+----------
+ key_cut=auto: d | t              | cut
+(1 row)
+
+DROP TABLE kd;
 CREATE INDEX kt_off ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (key_cut = 'off');
 SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
 UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kt_off'::regclass);

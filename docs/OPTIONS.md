@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 110 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 111 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1212,6 +1212,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them.
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: r#1' and the NOTICE names it; key_cut = 'off', or a list of your own, is never changed. sift.key_cut_decision says what a REINDEX would decide. A range column in the order of the table, or another leaf that follows it (a sequential id) or whose zones skip units (a date that drifts over the table), blocks the cut: the units stay by superblock.
 
+#### auto(key-cut-date-growth)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** When key_cut is chosen by default for a date or timestamp column (or a lane), the cut is taken while the sample predicts the index no more than 25% larger, not 3%: the rows of a day sit in few units whatever the order of the heap, so a window of dates, an equality on a date and a group by day read the units of their range
+- **Gain:** 3,000,000 rows in the order of a scraper (1,000 groups, each over 5 years, rows of 190 bytes), sift_col (d), warm instructions of one statement, without the cut and with it (b-tree): count(*) of a day 28.57 M and 0.81 M (0.94 M), of a week 28.64 M and 0.81 M (5.68 M), of a month 28.71 M and 0.87 M (24.7 M), of a year 28.35 M and 1.35 M (289 M); group by day 94.2 M and 7.0 M (1,889 M), a year by day 44.4 M and 2.9 M (378 M); an equality count 21.97 M and 0.68 M (0.92 M); buffers of a week count 2,360 and 80 (34); 1,000,000 rows week count 9.80 M and 0.47 M; 500,000 rows (49 units, under the 64 the rule needs) is not cut: 5.1 M
+- **Formula:** S 35.00x saving 27830k instructions, G 4.0%, W 135.0%, R 1: B 72.9 against C 28.3, automatic
+- **Impact:** index size: -8.3% serial and +4% parallel measured (3,000,000 rows, one date column); the sample predicts +14.8%; an index of several columns grows less; build, merge and writes: CREATE INDEX serial 0.455 to 1.07 s (+135%, 3,000,000 rows); inserts, promotion and merge as for any key_cut; other: The cut lists the TIDs of its rows, but the date sorts and encodes in fewer bytes: the index measures 8.3% smaller serial and 4% larger parallel at 3,000,000 rows (5.15 to 4.73 MB and 4.87 to 5.37 MB; the sample predicted +14.8%); CREATE INDEX serial 0.45 to 1.07 s for the sample and the sort
+- **When:** A CREATE INDEX or REINDEX on a table of 64 units or more whose date, timestamp or lane is scattered over the units (a range of it reads 8 times the units its rows fill and at least 64 units), whose other leaves are scattered too, when the sample predicts the index no more than 25% larger. Not with key_cut = 'off' or a list, order_columns or point_tid_columns.
+- **Default:** automatic — B = R*log2(S)/log2(1.05) = 1*log2(35)/log2(1.05) = 73 against C = G/3 + W/5 = 1.3 + 27 = 28: automatic; G is under the 25% ceiling and the saving is 27.8 M instructions a query.
+- **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
+- **Upgrade from 3.5:** An index built before has the units by superblock; a REINDEX decides the cut.
+- **Advice:** Leave on. The choice is written as key_cut = 'auto: d' and the NOTICE names it; key_cut = 'off' keeps the units by superblock. sift.key_cut_decision(index) says what a REINDEX would decide. A date that follows the table, another leaf that follows it, order_columns or point_tid_columns keep the cut off.
+
 #### auto(top-n-per-group)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -2192,6 +2206,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `auto(col-append-batch)` | automatic | automatic |  | A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX. |
 | `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
 | `auto(key-cut-range-lane)` | automatic | automatic |  | An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them. |
+| `auto(key-cut-date-growth)` | automatic | automatic |  | An index built before has the units by superblock; a REINDEX decides the cut. |
 | `auto(json-build-object)` | automatic | automatic |  | Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
