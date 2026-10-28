@@ -168,7 +168,8 @@ make_lanes(Form_pg_attribute att, SiftColDef *defs, int lanes)
 		d->kind = SIFT_COLK_SCALAR;
 		d->type = defs[0].type;
 		d->scale = defs[0].scale;
-		d->flags = defs[0].flags & SIFT_COLD_SHAPE;
+		if (k > 0)
+			d->flags = defs[0].flags & SIFT_COLD_SHAPE;	/* the head keeps its own flags (a char(n) without a length is lossy) */
 		d->lanes = k == 0 && lanes > 1 ? lanes : 0;
 		d->lane = k;
 		d->path = k == 0 ? "" : psprintf("%s#%d", NameStr(att->attname), k);
