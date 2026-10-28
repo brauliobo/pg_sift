@@ -841,7 +841,7 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		if (opc == BPCHAROID && att->atttypmod < 0)
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_bpchar_ops needs char(n)"),
 							errhint("Use the default operator class for a column of type bpchar.")));
-		if (opc == NUMERICOID && (sift_col_att_leaves(att, def, false) != 1 || def[0].store != SIFT_COLS_INT))
+		if (opc == NUMERICOID && (sift_col_att_leaves(att, def, 0) != 1 || def[0].store != SIFT_COLS_INT))
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("operator class sift.col_numeric_ops needs numeric(p, s) with p up to 18"),
 							errhint("Use the default operator class for a numeric column of another precision.")));
 	}

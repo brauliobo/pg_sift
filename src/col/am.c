@@ -22,6 +22,7 @@
 #include "nodes/plannodes.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
+#include "utils/varlena.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/hsearch.h"
@@ -677,11 +678,19 @@ build_rel(Relation index, MemoryContext mcxt)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
 		bool		isjson = att->atttypid == JSONBOID;
-		int			k = isjson ? (r->shred ? sift_col_shred_nleaves(r->shred, a) : 0) : 0;
+		int			kshred = r->shred ? sift_col_shred_nleaves(r->shred, a) : 0,
+					k0 = 0,
+					k;
 		SiftColDef	lanes[SIFT_COL_MAX_LANES];
 
 		if (!isjson)
-			k = sift_col_att_leaves(att, lanes, sift_col_options(index)->array_lengths == SIFT_COL_ARRLEN_ON);
+		{
+			k0 = sift_col_att_leaves(att, lanes, sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON ? 0 :
+									 kshred > 0 ? SIFT_COL_ARR_NOIMAGE : SIFT_COL_ARR_LANES);
+			if (kshred > 0)
+				sift_col_shred_set_base(r->shred, a, k0);
+		}
+		k = k0 + kshred;
 		if (isjson && k == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -700,8 +709,8 @@ build_rel(Relation index, MemoryContext mcxt)
 		{
 			SiftColDef *d = &defs[n + i];
 
-			if (isjson)
-				sift_col_shred_leaf(r->shred, a, i, d);
+			if (i >= k0)
+				sift_col_shred_leaf(r->shred, a, i - k0, d);
 			else
 				*d = lanes[i];
 			d->id = n + i;

@@ -90,6 +90,7 @@ typedef enum SiftColStore
 #define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (col/wide.h) is the same limit for a scaled 128-bit integer of two lanes */
 
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
+#define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */
 #define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
@@ -216,6 +217,8 @@ sift_col_def_lane_tested(const SiftColDef *d)
  * array_length(x, 1) (lane 2), each NULL where PostgreSQL's function is. A range or inet has the lanes of sift_col_def_shape, flagged SIFT_COLD_SHAPE.
  */
 #define SIFT_COL_ARRLEN_LANES	3
+#define SIFT_COL_ARR_LANES		1		/* sift_col_att_leaves: an array keeps its lengths ... */
+#define SIFT_COL_ARR_NOIMAGE	2		/* ... and not its image (SIFT_COLD_NOIMAGE) */
 
 static inline bool
 sift_col_def_arrlen_head(const SiftColDef *d)
@@ -715,6 +718,8 @@ extern uint64 sift_col_point_exact(const SiftColUnit *unit);
  * check the condition again. A unit without such rows (a write buffer, a segment without a directory) is filtered by every predicate, *used false.
  */
 extern void sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel);
+/* the predicates (bit i: preds[i] of the begin) the rows of the unit's point directory answer exactly (SIFT_COLO_POINT_ROWS) */
+extern uint64 sift_col_point_exact(const SiftColUnit *unit);
 extern bool sift_col_filter_points(const SiftColUnit *unit, const SiftColPred *preds, int npreds, SiftColSel *sel, bool *used);
 
 /*

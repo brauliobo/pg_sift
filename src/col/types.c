@@ -189,7 +189,7 @@ sift_col_is_array_type(Oid typid)
 }
 
 int
-sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen)
+sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 {
 	Oid			typid = att->atttypid;
 	SiftColStore store = SIFT_COLS_INT;
@@ -236,7 +236,13 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen)
 			if (defs[0].type == SIFT_COLT_UUID || defs[0].type == SIFT_COLT_BYTEA || sift_col_def_is_image(&defs[0]))
 			{
 				defs[0].store = SIFT_COLS_STR;
-				return make_lanes(att, defs, arrlen && sift_col_is_array_type(typid) ? SIFT_COL_ARRLEN_LANES : 1);
+				if (arr != 0 && sift_col_is_array_type(typid))
+				{
+					if (arr == SIFT_COL_ARR_NOIMAGE)
+						defs[0].flags = SIFT_COLD_LOSSY | SIFT_COLD_NOIMAGE;
+					return make_lanes(att, defs, SIFT_COL_ARRLEN_LANES);
+				}
+				return make_lanes(att, defs, 1);
 			}
 	}
 	ereport(ERROR,
@@ -511,6 +517,7 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 					v[1].v.i = ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
 					v[2].v.i = ARR_NDIM(a) > 0 && v[1].v.i > 0 ? ARR_DIMS(a)[0] : 0;
 					v[2].isnull = v[2].v.i == 0;	/* array_length of an empty array is NULL */
+					v->isnull |= (def->flags & SIFT_COLD_NOIMAGE) != 0;
 				}
 			}
 			if (sift_col_def_shape(def))

@@ -3,7 +3,11 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_collation.h"
+#include "nodes/nodeFuncs.h"
+#include "utils/array.h"
 #include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 
 #include "agg/plan_exists_int.h"
 
@@ -202,6 +206,15 @@ compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
 	if ((grp = group_leaf_of(c, target, SCL_ARRAY)) < 0)
 		return NULL;
 	n = list_length(keys);
+	if (n > 1 && fid == F_JSONB_EXISTS_ANY)
+	{
+		Lit		   *lits = palloc(n * sizeof(Lit));
+
+		for (int i = 0; i < n; i++)
+			lits[i] = (Lit) {'s', strVal(list_nth(keys, i)), strlen(strVal(list_nth(keys, i)))};
+		if ((p = any_elem_in(c, grp, lits, n)) != NULL)
+			return p;
+	}
 	p = n > 1 ? new_junction(c, fid == F_JSONB_EXISTS_ALL ? SAP_AND : SAP_OR, n) : NULL;
 	for (int i = 0; i < n; i++)
 	{
@@ -219,4 +232,208 @@ compile_has_keys(AggCtx *c, Oid fid, Node *target, Node *keys_arg)
 	if (n > 1)
 		junction_done(p);
 	return p;
+}
+
+/* ---- native arrays whose elements the index holds as a list (reloption paths names the column): @>, && and = ANY ---- */
+
+/* the list leaf of the array column an expression is (-1: none) */
+static int
+array_group(AggCtx *c, Node *e)
+{
+	int			att = attr_of_expr(c, strip_relabel(e));
+
+	for (int i = 0; att > 0 && i < c->lay->nleaves; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_ARRAY && !l->lossy)
+			return i;
+	}
+	return -1;
+}
+
+/* a constant of the array's element type as the literal its element leaf is compared with; false: not proven (a NULL, a collation that is not bytewise) */
+static bool
+elem_lit(Oid elem, Oid collid, Datum d, Lit *lit)
+{
+	if (elem == TEXTOID || elem == VARCHAROID)
+	{
+		if (OidIsValid(collid) && !get_collation_isdeterministic(collid))
+			return false;
+		d = PointerGetDatum(pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d)));
+		lit->kind = 's';
+		lit->s = VARDATA_ANY(DatumGetPointer(d));
+		lit->len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+		return true;
+	}
+	lit->kind = 'n';
+	lit->num = DatumGetNumeric(DirectFunctionCall1(elem == INT2OID ? int2_numeric : elem == INT4OID ? int4_numeric : int8_numeric, d));
+	return true;
+}
+
+/* the equality of an element type the list leaf holds */
+static bool
+array_eq_proc(Oid proc)
+{
+	return proc == F_TEXTEQ || proc == F_INT2EQ || proc == F_INT4EQ || proc == F_INT8EQ;
+}
+
+/* the test of the elements of a constant array against the list leaf: for all of them (@>) or for one (&&, = ANY) */
+static SiftAggPred *
+array_elems(AggCtx *c, int grp, Const *arr, Oid collid, bool all)
+{
+	ArrayType  *a;
+	Oid			elem;
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *vals;
+	bool	   *nulls;
+	int			n;
+	SiftAggPred *p = NULL;
+
+	if (arr->constisnull)
+		return NULL;
+	a = DatumGetArrayTypeP(arr->constvalue);
+	elem = ARR_ELEMTYPE(a);
+	get_typlenbyvalalign(elem, &len, &byval, &align);
+	deconstruct_array(a, elem, len, byval, align, &vals, &nulls, &n);
+	if (n == 0)
+		return NULL;
+	if (!all && n > 1 && (elem == TEXTOID || elem == VARCHAROID))
+	{
+		Lit		   *lits = palloc(n * sizeof(Lit));
+
+		for (int i = 0; i < n; i++)
+			if (nulls[i] || !elem_lit(elem, collid, vals[i], &lits[i]))
+				return NULL;
+		return any_elem_in(c, grp, lits, n);
+	}
+	if (n > 1)
+		p = new_junction(c, all ? SAP_AND : SAP_OR, n);
+	for (int i = 0; i < n; i++)
+	{
+		Lit			lit = {0};
+		SiftAggPred *e;
+
+		if (nulls[i] || !elem_lit(elem, collid, vals[i], &lit) || (e = any_elem(c, grp, build_elem_lit, &lit)) == NULL)
+			return NULL;
+		if (p)
+			p->child[i] = e;
+		else
+			p = e;
+	}
+	if (n > 1)
+		junction_done(p);
+	return p;
+}
+
+/* col <@ const of text elements: the array is not NULL and none of its elements is NULL or outside the set (an empty array is contained by any set) */
+static SiftAggPred *
+array_contained(AggCtx *c, int grp, Const *arr, Oid collid)
+{
+	ArrayType  *a;
+	Oid			elem;
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *vals;
+	bool	   *nulls;
+	int			n,
+				m = 0;
+	Lit		   *lits;
+	SiftAggPred *out,
+			   *both,
+			   *present;
+
+	if (arr->constisnull)
+		return NULL;
+	a = DatumGetArrayTypeP(arr->constvalue);
+	elem = ARR_ELEMTYPE(a);
+	if (elem != TEXTOID && elem != VARCHAROID)
+		return NULL;
+	get_typlenbyvalalign(elem, &len, &byval, &align);
+	deconstruct_array(a, elem, len, byval, align, &vals, &nulls, &n);
+	lits = palloc(Max(n, 1) * sizeof(Lit));
+	/* a NULL in the set equals no element: it is left out */
+	for (int i = 0; i < n; i++)
+		if (!nulls[i] && !elem_lit(elem, collid, vals[i], &lits[m++]))
+			return NULL;
+	if (m == 0 || (out = any_elem_outside(c, grp, lits, m)) == NULL)
+		return NULL;
+	out->op = 1;
+	out->desc = psprintf("NOT %s", out->desc);
+	present = make_leaf_pred(c, SAP_NULL, grp);
+	present->op = 1;
+	present->desc = psprintf("%s IS NOT NULL", leaf_name(c, grp));
+	both = new_junction(c, SAP_AND, 2);
+	both->child[0] = present;
+	both->child[1] = out;
+	junction_done(both);
+	return both;
+}
+
+/*
+ * col @> const, const <@ col, col && const and const = ANY (col) on an array column: some element passes the equality of the list leaf.
+ * The result is NULL for a NULL array, as WHERE treats it (*target, for the negation); = ANY is also NULL for a NULL element, so its target is
+ * the expression itself, never proven not NULL.
+ */
+SiftAggPred *
+compile_array_test(AggCtx *c, Node *n, Node **target)
+{
+	Node	   *arr,
+			   *other;
+	Oid			fid,
+				collid;
+	bool		all,
+				contained;
+	int			grp;
+
+	if (IsA(n, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr *) n;
+		Node	   *x = strip_relabel(linitial(sa->args));
+		Lit			lit = {0};
+		Oid			xt = exprType(x);
+
+		if (!sa->useOr || list_length(sa->args) != 2 || !IsA(x, Const) || ((Const *) x)->constisnull ||
+			!array_eq_proc(get_opcode(sa->opno)) ||
+			(grp = array_group(c, lsecond(sa->args))) < 0 || !sift_shred_array_elem_ok(get_element_type(exprType(lsecond(sa->args)))) ||
+			get_element_type(exprType(lsecond(sa->args))) != (xt == VARCHAROID ? VARCHAROID : xt) ||
+			!elem_lit(xt, sa->inputcollid, ((Const *) x)->constvalue, &lit))
+			return NULL;
+		*target = n;
+		return any_elem(c, grp, build_elem_lit, &lit);
+	}
+	fid = func_of(n);
+	if (fid != F_ARRAYCONTAINS && fid != F_ARRAYCONTAINED && fid != F_ARRAYOVERLAP)
+		return NULL;
+	arr = strip_relabel(linitial(func_args(n)));
+	other = strip_relabel(lsecond(func_args(n)));
+	if (fid == F_ARRAYOVERLAP && IsA(arr, Const))
+	{
+		Node	   *t = arr;
+
+		arr = other;
+		other = t;
+	}
+	/* const <@ col is col @> const; col <@ const is the one that needs every element in the set */
+	contained = fid == F_ARRAYCONTAINED && !IsA(arr, Const);
+	if (fid == F_ARRAYCONTAINED && !contained)
+	{
+		Node	   *t = arr;
+
+		arr = other;
+		other = t;
+	}
+	all = fid != F_ARRAYOVERLAP;
+	collid = IsA(n, OpExpr) ? ((OpExpr *) n)->inputcollid : ((FuncExpr *) n)->inputcollid;
+	if (!IsA(other, Const) || (grp = array_group(c, arr)) < 0 || !sift_shred_array_elem_ok(get_element_type(exprType(arr))) ||
+		get_element_type(exprType(arr)) != get_element_type(((Const *) other)->consttype))
+		return NULL;
+	*target = arr;
+	if (contained)
+		return array_contained(c, grp, (Const *) other, collid);
+	*target = arr;
+	return array_elems(c, grp, (Const *) other, collid, all);
 }

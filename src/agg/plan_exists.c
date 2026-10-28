@@ -139,6 +139,71 @@ leaf_lit_cmp(AggCtx *c, int leaf, int op, const Lit *lit)
 	return p;
 }
 
+static SiftAggPred *or_of(AggCtx *c, SiftAggPred *a, SiftAggPred *b);
+static SiftAggPred *null_pred(AggCtx *c, int leaf, int op);
+
+/*
+ * the element of a list of strings is one of the literals (outside: none of them, or NULL): one test of the dictionary, as an IN list is. The elements
+ * of the list that pass are what a row owns for @>, && and ?|, and what it must not own for <@
+ */
+static SiftAggPred *
+build_elem_in(AggCtx *c, int grp, void *arg)
+{
+	const LitSet *set = arg;
+	int			leaf = child_named(c, grp, "", false);
+	Datum	   *d;
+	ScalarArrayOpExpr *sa;
+	SiftAggPred *p;
+	StringInfoData desc;
+
+	if (leaf < 0 || leaf_of(c, leaf)->typid != TEXTOID || !lut_leaf_ok(c, leaf))
+		return NULL;
+	d = palloc(set->n * sizeof(Datum));
+	initStringInfo(&desc);
+	for (int i = 0; i < set->n; i++)
+	{
+		d[i] = PointerGetDatum(cstring_to_text_with_len(set->lit[i].s, set->lit[i].len));
+		appendStringInfo(&desc, "%s%s", i ? ", " : "", quote_literal_cstr(pnstrdup(set->lit[i].s, set->lit[i].len)));
+	}
+	sa = makeNode(ScalarArrayOpExpr);
+	sa->opno = get_opfamily_member(TEXT_BTREE_FAM_OID, TEXTOID, TEXTOID, BTEqualStrategyNumber);
+	sa->opfuncid = F_TEXTEQ;
+	sa->useOr = !set->outside;
+	if (set->outside)
+	{
+		sa->opno = get_negator(sa->opno);
+		sa->opfuncid = F_TEXTNE;
+	}
+	sa->inputcollid = C_COLLATION_OID;
+	sa->location = -1;
+	sa->args = list_make2(exec_param(0, TEXTOID, -1, C_COLLATION_OID),
+						  makeConst(TEXTARRAYOID, -1, C_COLLATION_OID, -1, PointerGetDatum(construct_array(d, set->n, TEXTOID, -1, false, TYPALIGN_INT)), false, false));
+	p = make_leaf_pred(c, SAP_LUT, leaf);
+	p->expr = (Node *) sa;
+	p->desc = psprintf("%s %s (%s)", leaf_name(c, leaf), set->outside ? "NOT IN" : "IN", desc.data);
+	if (set->outside)
+		return or_of(c, p, null_pred(c, leaf, 0));
+	return p;
+}
+
+/* some element of the list is one of the text literals */
+SiftAggPred *
+any_elem_in(AggCtx *c, int grp, const Lit *lit, int n)
+{
+	LitSet		set = {lit, n, false};
+
+	return any_elem(c, grp, build_elem_in, &set);
+}
+
+/* some element of the list is none of the text literals, or NULL */
+SiftAggPred *
+any_elem_outside(AggCtx *c, int grp, const Lit *lit, int n)
+{
+	LitSet		set = {lit, n, true};
+
+	return any_elem(c, grp, build_elem_in, &set);
+}
+
 /* element leaf (JSON member `name`) op lit */
 static SiftAggPred *
 lit_cmp(AggCtx *c, int grp, const char *name, int op, const Lit *lit)
@@ -607,10 +672,14 @@ SiftAggPred *
 compile_existential(AggCtx *c, Node *n, Node **target)
 {
 	Oid			fid;
+	SiftAggPred *p;
 
 	*target = NULL;
 	if (IsA(n, SubPlan))
 		return compile_exists(c, (SubPlan *) n);
+	if ((p = compile_array_test(c, n, target)) != NULL)
+		return p;
+	*target = NULL;
 	fid = func_of(n);
 	if (fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR)
 	{

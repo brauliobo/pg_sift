@@ -4,6 +4,7 @@
 #ifndef SIFT_SHRED_PG_H
 #define SIFT_SHRED_PG_H
 
+#include "utils/array.h"
 #include "utils/jsonb.h"
 
 #include "col/shred.h"
@@ -11,6 +12,10 @@
 /* One jsonb as the next value of the shredder (a container, or the scalar of a raw scalar jsonb): for a caller that sends the
  * events around it itself, e.g. the object {attname: value} of the attributes of a tuple */
 extern void sift_shred_container(SiftShred *sh, JsonbContainer *c);
+
+/* A native array of an element type sift_shred_array_elem_ok as the next value, a list */
+extern void sift_shred_array(SiftShred *sh, ArrayType *arr);
+extern bool sift_shred_array_elem_ok(Oid elem);
 
 /* A whole document: sift_shred_begin, the value, sift_shred_finish */
 extern void sift_shred_jsonb(SiftShred *sh, Jsonb *jb);

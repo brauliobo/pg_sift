@@ -1199,12 +1199,50 @@ def ar_pred(r, e):
     if form == 11:
         return f'({r.choice(["cardinality({e}.{c})", "array_length({e}.{c}, 1)"]).format(e=e, c=c)} > {k} OR {e}.org = {r.randrange(12)})'
     if form == 12:
-        return r.choice([f"{e}.ta @> ARRAY['t{k}']", f'{e}.ia && ARRAY[{k}, {k + 1}]', f"{e}.tb IS NOT NULL AND 'u{k % 4}' = ANY({e}.tb)"])
+        return ar_elem_pred(r, e, k)
     return f'{e}.org {r.choice(["=", "<", ">"])} {r.randrange(12)}'
 
 
-AR_KEYS = ['{e}.org', '{e}.kind', 'cardinality({e}.ia)', 'cardinality({e}.ta)', 'array_length({e}.ma, 1)', 'array_length({e}.ta, 1)', '({e}.tb IS NULL)', '(cardinality({e}.na) > 2)']
-AR_AGGS = ['count(*)', 'count({e}.ia)', 'count(cardinality({e}.ta))', 'sum(cardinality({e}.ia))', 'sum(cardinality({e}.ma))', 'avg(array_length({e}.ta, 1))', 'min(cardinality({e}.tb))',
+def ar_elem_pred(r, e, k):
+    """The element tests of the arrays that the index lists (ta, tb: text, ia: int4), with and without the image: contains, overlap, contained by, ANY, equality, negations."""
+    t = lambda: f"'t{r.randrange(32)}'"
+    ts = lambda n: ', '.join(t() for _ in range(n))
+    form = r.randrange(16)
+    if form == 0:
+        return f"{e}.ta @> ARRAY[{ts(r.choice([1, 1, 2, 3]))}]"
+    if form == 1:
+        return f"{e}.ta && ARRAY[{ts(r.choice([1, 2, 4, 9]))}]"
+    if form == 2:
+        return f"{e}.ta <@ ARRAY[{ts(r.choice([3, 9, 20]))}]"
+    if form == 3:
+        return f"{t()} = ANY({e}.ta)"
+    if form == 4:
+        return f"NOT ({t()} = ANY({e}.ta))"
+    if form == 5:
+        return f"{e}.tb @> ARRAY['u{k % 4}']"
+    if form == 6:
+        return f"{e}.tb && ARRAY['u{k % 4}', 'u0']"
+    if form == 7:
+        return f"{e}.tb = ARRAY['u{k % 4}', NULL, 'u0']"
+    if form == 8:
+        return f"{e}.ta = ARRAY[{ts(r.choice([1, 2, 3]))}]"
+    if form == 9:
+        return f"{e}.ia @> ARRAY[{k}, {k + 3}]"
+    if form == 10:
+        return f"{e}.ia && ARRAY[{k}, {k + 1}, {k * 2}]"
+    if form == 11:
+        return f"{k} = ANY({e}.ia)"
+    if form == 12:
+        return f"({e}.ta @> ARRAY[{t()}] OR {e}.ia @> ARRAY[{k}])"
+    if form == 13:
+        return f"({e}.ta @> ARRAY[{t()}] AND cardinality({e}.ta) {r.choice(['=', '>', '<'])} {r.randrange(1, 8)})"
+    if form == 14:
+        return f"NOT ({e}.ta && ARRAY[{ts(2)}])"
+    return f"{e}.tb IS NOT NULL AND 'u{k % 4}' = ANY({e}.tb)"
+
+
+AR_KEYS = ["({e}.ta @> ARRAY['t3'])", '({e}.ia && ARRAY[1, 2])', '{e}.org', '{e}.kind', 'cardinality({e}.ia)', 'cardinality({e}.ta)', 'array_length({e}.ma, 1)', 'array_length({e}.ta, 1)', '({e}.tb IS NULL)', '(cardinality({e}.na) > 2)']
+AR_AGGS = ['count(*)', "sum(cardinality(e.ta)) FILTER (WHERE e.ta @> ARRAY['t7'])", 'count(*) FILTER (WHERE e.ia && ARRAY[3, 4])', "count(DISTINCT e.org) FILTER (WHERE e.tb @> ARRAY['u1'])", 'count({e}.ia)', 'count(cardinality({e}.ta))', 'sum(cardinality({e}.ia))', 'sum(cardinality({e}.ma))', 'avg(array_length({e}.ta, 1))', 'min(cardinality({e}.tb))',
            'max(array_length({e}.ma, 1))', 'max(cardinality({e}.na))', 'count(DISTINCT cardinality({e}.ta))', 'count(DISTINCT {e}.org)', 'sum({e}.amount)',
            'count(DISTINCT {e}.id) FILTER (WHERE {e}.ia IS NOT NULL AND cardinality({e}.ia) > 0)', 'count(*) FILTER (WHERE cardinality({e}.ta) = 0)',
            'count(*) FILTER (WHERE {e}.tb IS NULL)', 'sum({e}.amount) FILTER (WHERE array_length({e}.ma, 1) > 1)']
@@ -1771,7 +1809,7 @@ def dml_arrlen(r, ctx):
     """Arrays set to every shape (NULL, empty, longer, two dimensions), deleted, inserted, then the write buffer promoted, merged or the index rebuilt: lanes written by the buffer, the merge and the build."""
     m = r.choice([13, 40, 97, 211])
     ids = f'id % {m} = {r.randrange(m)}'
-    e = r.randrange(13)
+    e = r.randrange(15)
     if e == 0:
         return f'UPDATE arf SET ia = NULL, ta = NULL WHERE {ids}'
     if e == 1:
@@ -1792,6 +1830,11 @@ def dml_arrlen(r, ctx):
         return f'INSERT INTO arf SELECT * FROM fz.gen_arf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
     if e == 9:
         return r.choice(['VACUUM arf', 'VACUUM (FREEZE) arf'])
+    if e == 13:
+        return f"UPDATE arf SET ta = ARRAY['t{r.randrange(32)}', 't{r.randrange(32)}', 't3'], tb = ARRAY['u1', NULL, 'u1'] WHERE {ids}"
+    if e == 14:
+        k = r.randrange(20)
+        return f"UPDATE arf SET ia = ARRAY[{k}, {k}, {k + 1}], ta = ARRAY[['t1', 't2'], ['t{r.randrange(32)}', 't4']] WHERE {ids}"
     return r.choice(["SELECT sift.col_promote('arf_col')", "SELECT sift.col_merge('arf_col', true)", 'REINDEX INDEX arf_col'])
 
 
@@ -2114,6 +2157,7 @@ def main():
                 q = res.get(qid)
                 if q is None or 'ref' not in q:
                     total['timeout'] += 1
+                    print(f'TIMEOUT {qid} {fam} seed {seed} in reference: {sql}')
                     continue
                 if q['ref'][0] == 'CRASH':
                     continue
@@ -2128,6 +2172,7 @@ def main():
                         pushed[fam][0] += q[n][1] == '1'
                     elif n not in q:
                         total['timeout'] += 1
+                        print(f'TIMEOUT {qid} {fam} seed {seed} in {n} (settings {dict(vs)[n]}): {sql}')
                 bad = diverged(q)
                 if bad:
                     total['DIFF'] += 1

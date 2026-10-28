@@ -132,7 +132,7 @@ extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
  */
 /* An array type proper (not int2vector, oidvector, a range or a domain): only its image has lengths */
 extern bool sift_col_is_array_type(Oid typid);
-extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen);
+extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr);
 /* The values of one datum for the leaf def and the leaves after it (its lanes): v[0 .. max(def->lanes, 1)); strings are palloc'd or point into the datum */
 extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v);
 

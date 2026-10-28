@@ -9,6 +9,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "utils/jsonb.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -37,6 +38,8 @@ typedef struct ShredAttr
 	int			attno;
 	int			n;
 	ShredLeaf  *leaf;
+	bool		array;			/* a native array of a type sift_shred_array_elem_ok: its elements are a list of the spec */
+	int			base;			/* leaves of the attribute before the first of the spec (the images of an array) */
 } ShredAttr;
 
 struct SiftColShredAdapter
@@ -178,11 +181,17 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 	a->natts = natts;
 	a->attr = palloc0((a->natts + 1) * sizeof(ShredAttr));
 	for (int i = 1; i <= a->natts; i++)
-		if (TupleDescAttr(desc, i - 1)->atttypid == JSONBOID)
+	{
+		Oid			typid = TupleDescAttr(desc, i - 1)->atttypid;
+		bool		array = sift_shred_array_elem_ok(get_element_type(typid));
+
+		if (typid == JSONBOID || array)
 		{
 			a->attr[i].name = pstrdup(NameStr(TupleDescAttr(desc, i - 1)->attname));
 			a->attr[i].attno = i;
+			a->attr[i].array = array;
 		}
+	}
 	a->spec = sift_shred_spec_parse(paths);
 	spec = a->spec;
 	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
@@ -219,6 +228,21 @@ void
 sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *def)
 {
 	*def = a->attr[attno].leaf[i].def;
+	if (def->parent >= 0)
+		def->parent += a->attr[attno].base;
+}
+
+bool
+sift_col_shred_is_array(const SiftColShredAdapter *a, int attno)
+{
+	return a->attr[attno].array;
+}
+
+/* The leaves of an array attribute that come before the spec's: the spec's parents and rows move up by them */
+void
+sift_col_shred_set_base(SiftColShredAdapter *a, int attno, int base)
+{
+	a->attr[attno].base = base;
 }
 
 static void
@@ -319,7 +343,11 @@ shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, 
 		if (a->attr[i].n == 0 || isnull[i - 1])
 			continue;
 		k = sift_shred_key(sh, a->attr[i].name, strlen(a->attr[i].name));
-		if (k != SIFT_SHRED_SKIP)
+		if (k == SIFT_SHRED_SKIP)
+			continue;
+		if (a->attr[i].array)
+			sift_shred_array(sh, DatumGetArrayTypeP(values[i - 1]));
+		else
 			sift_shred_container_rc(sh, &DatumGetJsonbP(values[i - 1])->root, rc);
 		if (k == SIFT_SHRED_STOP)
 			break;
@@ -360,9 +388,9 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 			const ShredLeaf *lf = &at->leaf[l];
 
 			if (lf->kind == LEAF_ROOT_COL)
-				set_value(&row->val[first[i] + l], &sh->doc, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
+				set_value(&row->val[first[i] + at->base + l], &sh->doc, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
 			else if (lf->kind == LEAF_GROUP)
-				fill_group(a, at, l, row, first[i], mcxt);
+				fill_group(a, at, l, row, first[i] + at->base, mcxt);
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -384,7 +412,7 @@ sift_col_shred_recheck_create(MemoryContext mcxt, const SiftColShredAdapter *a)
 void
 sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, uint8 mode)
 {
-	const ShredLeaf *l = &a->attr[attno].leaf[i];
+	const ShredLeaf *l = &a->attr[attno].leaf[i - a->attr[attno].base];
 
 	if (l->kind == LEAF_GROUP)
 		rc->grp[l->group] = mode;
@@ -395,5 +423,5 @@ sift_col_shred_recheck_set(SiftShredRecheck *rc, const SiftColShredAdapter *a, i
 void
 sift_col_shred_recheck_member(SiftShredRecheck *rc, const SiftColShredAdapter *a, int attno, int i, const char *key, Oid cast)
 {
-	sift_shred_recheck_member(rc, a->attr[attno].leaf[i].col, key, cast);
+	sift_shred_recheck_member(rc, a->attr[attno].leaf[i - a->attr[attno].base].col, key, cast);
 }

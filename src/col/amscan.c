@@ -555,6 +555,16 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 		/* a NaN is stored as a NULL with the overflow flag, and a row with an overflow flag is a candidate of every test of the leaf: the heap scan decides */
 		if (k->defs[leaf].type == SIFT_COLT_NUMERIC)
 			k->recheck = true;
+		/* an array without its image: its null bitmap is the cardinality's, and a comparison with an array is the heap's to decide for every array there is */
+		if (k->defs[leaf].flags & SIFT_COLD_NOIMAGE)
+		{
+			p->col = leaf + 1;
+			if (!(key->sk_flags & (SK_SEARCHNULL | SK_SEARCHNOTNULL)))
+			{
+				key_any(p, k);
+				continue;
+			}
+		}
 		if (key->sk_flags & SK_SEARCHNULL)
 			p->op = SIFT_COLOP_ISNULL;
 		else if (key->sk_flags & SK_SEARCHNOTNULL)

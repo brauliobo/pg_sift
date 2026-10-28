@@ -1,0 +1,396 @@
+-- the elements of an array column (docs/COL-SHRED.md): an index with a path name[] text keeps the elements of a text[] column as the list of a jsonb array, with a
+-- point directory that lists the rows that own a value. Every query runs with and without the pushdown and the rows must be the same; the shapes with 'scan'
+-- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET client_min_messages = warning;
+CREATE FUNCTION gen(a int, b int) RETURNS TABLE(id int, tags text[], ids int[]) LANGUAGE sql AS $$
+	SELECT i, CASE WHEN i % 13 = 0 THEN NULL WHEN i % 17 = 0 THEN '{}' WHEN i % 19 = 0 THEN ARRAY['t1', NULL, 'u1', 't1']
+	               ELSE ARRAY['t' || i % 500, 'u' || i % 3, 'w' || i % 1000] END,
+	       CASE WHEN i % 11 = 0 THEN NULL WHEN i % 23 = 0 THEN '{}' WHEN i % 29 = 0 THEN ARRAY[1, NULL, 7] ELSE ARRAY[i % 400, i % 5 + 1000, i % 7 + 2000] END
+	FROM generate_series(a, b) i $$;
+CREATE TABLE ae (id int, tags text[], ids int[]) WITH (autovacuum_enabled = false);
+INSERT INTO ae SELECT * FROM gen(1, 30000);
+CREATE INDEX ae_col ON ae USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
+VACUUM (FREEZE, ANALYZE) ae;
+SELECT sift.col_verify('ae_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
+BEGIN
+	SET sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP IF l ~ 'Custom Scan \(SiftAgg\)' THEN pushed := true; END IF; END LOOP;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_on := SQLERRM; END;
+	SET sift.enable_agg = off;
+	SET enable_sort = off;
+	BEGIN
+		EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	EXCEPTION WHEN OTHERS THEN e_off := SQLERRM; END;
+	RESET sift.enable_agg;
+	RESET enable_sort;
+	IF e_on IS NOT NULL OR e_off IS NOT NULL THEN
+		DROP TABLE IF EXISTS r_on, r_off;
+		RETURN CASE WHEN e_on IS NOT DISTINCT FROM e_off THEN 'error: ' || e_on ELSE 'DIFF on=' || coalesce(e_on, 'ok') || ' off=' || coalesce(e_off, 'ok') END;
+	END IF;
+	SELECT count(*) INTO a FROM ((SELECT d::text FROM r_on d EXCEPT ALL SELECT d::text FROM r_off d)
+								  UNION ALL (SELECT d::text FROM r_off d EXCEPT ALL SELECT d::text FROM r_on d)) x;
+	DROP TABLE r_on, r_off;
+	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
+END $$;
+CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) LANGUAGE sql AS $$
+	SELECT tag || ' ' || s.name, chk(format(s.q, t)) FROM (VALUES
+		('rare', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags @> ARRAY['t7']$q$),
+		('common', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags @> ARRAY['u1']$q$),
+		('two', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags @> ARRAY['t7', 'u1']$q$),
+		('absent', $q$SELECT count(*) AS c FROM %1$I WHERE tags @> ARRAY['zz']$q$),
+		('overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags && ARRAY['t7', 'w999', 'zz']$q$),
+		('any', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE 'w5' = ANY (tags)$q$),
+		('not any', $q$SELECT count(*) AS c FROM %1$I WHERE NOT ('u2' = ANY (tags))$q$),
+		('contained', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE tags <@ ARRAY['t1', 'u1', 't7', 'w7']$q$),
+		('not two', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (tags @> ARRAY['t7', 'u1'])$q$),
+		('not overlap', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (tags && ARRAY['t7', 'u1'])$q$),
+		('not contained', $q$SELECT count(*) AS c FROM %1$I WHERE NOT (tags <@ ARRAY['t1', 'u1', 't7', 'w7'])$q$),
+		('null element', $q$SELECT count(*) AS c FROM %1$I WHERE tags @> ARRAY['t1'] AND id %% 19 = 0$q$),
+		('group', $q$SELECT tags[2] AS u, count(*) AS c FROM %1$I WHERE tags @> ARRAY['t7'] GROUP BY 1$q$),
+		('empty', $q$SELECT count(*) AS c FROM %1$I WHERE tags = '{}'$q$),
+		('length', $q$SELECT count(*) AS c FROM %1$I WHERE cardinality(tags) = 2 OR tags IS NULL$q$),
+		('whole array', $q$SELECT tags, count(*) AS c FROM %1$I GROUP BY 1$q$),
+		('equal', $q$SELECT count(*) AS c FROM %1$I WHERE tags = ARRAY['t7', 'u1', 'w7']$q$),
+		('int contains', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[7]$q$),
+		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
+		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
+		('int any', $q$SELECT count(*) AS c FROM %1$I WHERE 2004 = ANY (ids)$q$),
+		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[1]$q$),
+		('count', $q$SELECT count(tags) AS c, count(DISTINCT tags) AS d FROM %1$I$q$)) s(name, q) $$;
+-- the index keeps no image of the arrays: a statement that needs the whole array reads the table, the others the elements
+SELECT leaf, path, type FROM sift.col_leaves('ae_col') ORDER BY leaf;
+ leaf |  path  |       type       
+------+--------+------------------
+    0 | id     | integer
+    1 | tags   | text[]
+    2 | tags#1 | integer (lane 1)
+    3 | tags#2 | integer (lane 2)
+    4 | tags[] | bigint
+    5 | tags[] | text
+    6 | ids    | integer[]
+    7 | ids#1  | integer (lane 1)
+    8 | ids#2  | integer (lane 2)
+    9 | ids[]  | bigint
+   10 | ids[]  | integer
+(11 rows)
+
+SELECT * FROM shapes('built', 'ae');
+         shape          |   result   
+------------------------+------------
+ built rare             | scan same
+ built common           | scan same
+ built two              | scan same
+ built absent           | scan same
+ built overlap          | scan same
+ built any              | scan same
+ built not any          | plain same
+ built contained        | scan same
+ built not two          | plain same
+ built not overlap      | plain same
+ built not contained    | plain same
+ built null element     | scan same
+ built group            | plain same
+ built empty            | plain same
+ built length           | scan same
+ built whole array      | plain same
+ built equal            | plain same
+ built int contains     | scan same
+ built int two          | scan same
+ built int overlap      | scan same
+ built int any          | scan same
+ built int null element | scan same
+ built count            | plain same
+(23 rows)
+
+-- the same on arrays that cannot be NULL, where a NOT may be pushed
+CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO an SELECT * FROM gen(1, 30000) WHERE tags IS NOT NULL AND ids IS NOT NULL;
+CREATE INDEX an_col ON an USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
+VACUUM (FREEZE, ANALYZE) an;
+SELECT * FROM shapes('not null', 'an');
+           shape           |   result   
+---------------------------+------------
+ not null rare             | scan same
+ not null common           | scan same
+ not null two              | scan same
+ not null absent           | scan same
+ not null overlap          | scan same
+ not null any              | scan same
+ not null not any          | plain same
+ not null contained        | scan same
+ not null not two          | scan same
+ not null not overlap      | scan same
+ not null not contained    | scan same
+ not null null element     | scan same
+ not null group            | plain same
+ not null empty            | plain same
+ not null length           | scan same
+ not null whole array      | plain same
+ not null equal            | plain same
+ not null int contains     | scan same
+ not null int two          | scan same
+ not null int overlap      | scan same
+ not null int any          | scan same
+ not null int null element | scan same
+ not null count            | plain same
+(23 rows)
+
+DROP TABLE an;
+INSERT INTO ae SELECT * FROM gen(30001, 34000);
+SELECT * FROM shapes('insert', 'ae');
+          shape          |   result   
+-------------------------+------------
+ insert rare             | scan same
+ insert common           | scan same
+ insert two              | scan same
+ insert absent           | scan same
+ insert overlap          | scan same
+ insert any              | scan same
+ insert not any          | plain same
+ insert contained        | scan same
+ insert not two          | plain same
+ insert not overlap      | plain same
+ insert not contained    | plain same
+ insert null element     | scan same
+ insert group            | plain same
+ insert empty            | plain same
+ insert length           | scan same
+ insert whole array      | plain same
+ insert equal            | plain same
+ insert int contains     | scan same
+ insert int two          | scan same
+ insert int overlap      | scan same
+ insert int any          | scan same
+ insert int null element | scan same
+ insert count            | plain same
+(23 rows)
+
+UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
+SELECT * FROM shapes('update', 'ae');
+          shape          |   result   
+-------------------------+------------
+ update rare             | scan same
+ update common           | scan same
+ update two              | scan same
+ update absent           | scan same
+ update overlap          | scan same
+ update any              | scan same
+ update not any          | plain same
+ update contained        | scan same
+ update not two          | plain same
+ update not overlap      | plain same
+ update not contained    | plain same
+ update null element     | scan same
+ update group            | plain same
+ update empty            | plain same
+ update length           | scan same
+ update whole array      | plain same
+ update equal            | plain same
+ update int contains     | scan same
+ update int two          | scan same
+ update int overlap      | scan same
+ update int any          | scan same
+ update int null element | scan same
+ update count            | plain same
+(23 rows)
+
+DELETE FROM ae WHERE id % 7 = 0;
+SELECT * FROM shapes('delete', 'ae');
+          shape          |   result   
+-------------------------+------------
+ delete rare             | scan same
+ delete common           | scan same
+ delete two              | scan same
+ delete absent           | scan same
+ delete overlap          | scan same
+ delete any              | scan same
+ delete not any          | plain same
+ delete contained        | scan same
+ delete not two          | plain same
+ delete not overlap      | plain same
+ delete not contained    | plain same
+ delete null element     | scan same
+ delete group            | plain same
+ delete empty            | plain same
+ delete length           | scan same
+ delete whole array      | plain same
+ delete equal            | plain same
+ delete int contains     | scan same
+ delete int two          | scan same
+ delete int overlap      | scan same
+ delete int any          | scan same
+ delete int null element | scan same
+ delete count            | plain same
+(23 rows)
+
+SELECT sift.col_verify('ae_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+VACUUM ae;
+SELECT * FROM shapes('vacuum', 'ae');
+          shape          |   result   
+-------------------------+------------
+ vacuum rare             | scan same
+ vacuum common           | scan same
+ vacuum two              | scan same
+ vacuum absent           | scan same
+ vacuum overlap          | scan same
+ vacuum any              | scan same
+ vacuum not any          | plain same
+ vacuum contained        | scan same
+ vacuum not two          | plain same
+ vacuum not overlap      | plain same
+ vacuum not contained    | plain same
+ vacuum null element     | scan same
+ vacuum group            | plain same
+ vacuum empty            | plain same
+ vacuum length           | scan same
+ vacuum whole array      | plain same
+ vacuum equal            | plain same
+ vacuum int contains     | scan same
+ vacuum int two          | scan same
+ vacuum int overlap      | scan same
+ vacuum int any          | scan same
+ vacuum int null element | scan same
+ vacuum count            | plain same
+(23 rows)
+
+SELECT sift.col_merge('ae_col', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT * FROM shapes('merge', 'ae');
+         shape          |   result   
+------------------------+------------
+ merge rare             | scan same
+ merge common           | scan same
+ merge two              | scan same
+ merge absent           | scan same
+ merge overlap          | scan same
+ merge any              | scan same
+ merge not any          | plain same
+ merge contained        | scan same
+ merge not two          | plain same
+ merge not overlap      | plain same
+ merge not contained    | plain same
+ merge null element     | scan same
+ merge group            | plain same
+ merge empty            | plain same
+ merge length           | scan same
+ merge whole array      | plain same
+ merge equal            | plain same
+ merge int contains     | scan same
+ merge int two          | scan same
+ merge int overlap      | scan same
+ merge int any          | scan same
+ merge int null element | scan same
+ merge count            | plain same
+(23 rows)
+
+INSERT INTO ae SELECT * FROM gen(40001, 44000);
+SELECT sift.col_merge('ae_col', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT * FROM shapes('merge2', 'ae');
+          shape          |   result   
+-------------------------+------------
+ merge2 rare             | scan same
+ merge2 common           | scan same
+ merge2 two              | scan same
+ merge2 absent           | scan same
+ merge2 overlap          | scan same
+ merge2 any              | scan same
+ merge2 not any          | plain same
+ merge2 contained        | scan same
+ merge2 not two          | plain same
+ merge2 not overlap      | plain same
+ merge2 not contained    | plain same
+ merge2 null element     | scan same
+ merge2 group            | plain same
+ merge2 empty            | plain same
+ merge2 length           | scan same
+ merge2 whole array      | plain same
+ merge2 equal            | plain same
+ merge2 int contains     | scan same
+ merge2 int two          | scan same
+ merge2 int overlap      | scan same
+ merge2 int any          | scan same
+ merge2 int null element | scan same
+ merge2 count            | plain same
+(23 rows)
+
+SELECT sift.col_verify('ae_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+REINDEX INDEX ae_col;
+SELECT * FROM shapes('reindex', 'ae');
+          shape           |   result   
+--------------------------+------------
+ reindex rare             | scan same
+ reindex common           | scan same
+ reindex two              | scan same
+ reindex absent           | scan same
+ reindex overlap          | scan same
+ reindex any              | scan same
+ reindex not any          | plain same
+ reindex contained        | scan same
+ reindex not two          | plain same
+ reindex not overlap      | plain same
+ reindex not contained    | plain same
+ reindex null element     | scan same
+ reindex group            | plain same
+ reindex empty            | plain same
+ reindex length           | scan same
+ reindex whole array      | plain same
+ reindex equal            | plain same
+ reindex int contains     | scan same
+ reindex int two          | scan same
+ reindex int overlap      | scan same
+ reindex int any          | scan same
+ reindex int null element | scan same
+ reindex count            | plain same
+(23 rows)
+
+-- a value no row owns is answered by the directory: no unit is read and no heap row vetted
+CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ '^ *(Units|Rows Scanned|Rows Vetted By Heap):' THEN RETURN NEXT trim(l); END IF;
+	END LOOP;
+END $$;
+SELECT * FROM reads($q$SELECT count(*) FROM ae WHERE tags @> ARRAY['zz']$q$);
+         reads          
+------------------------
+ Units: 0
+ Rows Scanned: 0
+ Rows Vetted By Heap: 0
+(3 rows)
+
+DROP TABLE ae;
+DROP FUNCTION gen(int, int), chk(text), shapes(text, text), reads(text);
+DROP EXTENSION pg_sift;

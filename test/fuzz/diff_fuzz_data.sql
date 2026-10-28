@@ -221,6 +221,9 @@ CREATE FUNCTION fz.gen_arf(lo bigint, hi bigint, salt int) RETURNS SETOF arf LAN
 	            WHEN fz.h(i, 207 + salt) % 100 < 22 THEN ARRAY[NULL, NULL]::int[]
 	            ELSE ARRAY(SELECT fz.h(i, 208 + k + salt) % 20 FROM generate_series(1, 1 + fz.h(i, 209 + salt) % 6) k) END,
 	       CASE WHEN i / 256 % 4 = 2 THEN NULL WHEN i / 256 % 4 = 3 AND fz.h(i, 210 + salt) % 3 > 0 THEN '{}'::text[] WHEN fz.h(i, 211 + salt) % 100 < 9 THEN NULL
+	            WHEN fz.h(i, 226 + salt) % 100 < 3 THEN ARRAY[['t1', 't2'], ['t' || fz.h(i, 227 + salt) % 30, 't4']]
+	            WHEN fz.h(i, 228 + salt) % 100 < 3 THEN '[0:1]={t5,t6}'::text[]
+	            WHEN fz.h(i, 229 + salt) % 100 < 3 THEN ARRAY['t1', NULL, 't' || fz.h(i, 230 + salt) % 30]
 	            ELSE ARRAY(SELECT 't' || fz.h(i, 212 + k + salt) % 30 FROM generate_series(1, 1 + fz.h(i, 213 + salt) % 9) k) END,
 	       CASE WHEN fz.h(i, 214 + salt) % 100 < 30 THEN NULL WHEN fz.h(i, 215 + salt) % 100 < 50 THEN '{}'::text[] ELSE ARRAY['u' || fz.h(i, 216 + salt) % 4, NULL, 'u0'] END,
 	       CASE WHEN fz.h(i, 217 + salt) % 100 < 10 THEN NULL ELSE ARRAY[(fz.h(i, 218 + salt) % 3)::numeric, 1.50, (fz.h(i, 219 + salt) % 5) / 4.0] END,
@@ -229,7 +232,8 @@ CREATE FUNCTION fz.gen_arf(lo bigint, hi bigint, salt int) RETURNS SETOF arf LAN
 	       repeat('x', 300)
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO arf SELECT * FROM fz.gen_arf(1, @ROWS@, 0);
-CREATE INDEX arf_col ON arf USING sift_col (id, org, kind, amount, ia, ta, tb, na, ma);
+-- the elements of ta, tb and ia are listed (paths) (they keep no image of their own)
+CREATE INDEX arf_col ON arf USING sift_col (id, org, kind, amount, ia, ta, tb, na, ma) WITH (paths = 'ta[] text, tb[] text, ia[] int4');
 
 -- tables joined on one column of events of each kind of leaf (dictionary code, int8, float8 with NaN, int, date), NULL keys and repeated keys included
 CREATE TABLE ok_kind (k text, tag text, w int) WITH (autovacuum_enabled = false);

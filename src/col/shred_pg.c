@@ -5,7 +5,11 @@
  */
 #include "core/host.h"
 
+#include "catalog/pg_type.h"
 #include "fmgr.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/fmgrprotos.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
@@ -194,4 +198,51 @@ sift_shred_jsonb(SiftShred *sh, Jsonb *jb)
 	sift_shred_begin(sh);
 	sift_shred_container(sh, &jb->root);
 	sift_shred_finish(sh);
+}
+
+/* A native array as the value of a list: its elements flattened in storage order (a multidimensional array is one list, as unnest reads it) */
+void
+sift_shred_array(SiftShred *sh, ArrayType *arr)
+{
+	Oid			elem = ARR_ELEMTYPE(arr);
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *vals;
+	bool	   *nulls;
+	int			n;
+
+	get_typlenbyvalalign(elem, &len, &byval, &align);
+	deconstruct_array(arr, elem, len, byval, align, &vals, &nulls, &n);
+	if (!sift_shred_enter(sh, true))
+		return;
+	for (int i = 0; i < n; i++)
+	{
+		if (nulls[i])
+			sift_shred_null(sh);
+		else if (elem == INT2OID || elem == INT4OID || elem == INT8OID)
+		{
+			char		buf[24];
+			int64		v = elem == INT2OID ? DatumGetInt16(vals[i]) : elem == INT4OID ? DatumGetInt32(vals[i]) : DatumGetInt64(vals[i]);
+			int			l = pg_lltoa(v, buf);
+
+			sift_shred_number(sh, buf, l);
+		}
+		else
+		{
+			text	   *t = DatumGetTextPP(vals[i]);
+
+			sift_shred_string(sh, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+		}
+		if (sift_shred_full(sh))
+			break;
+	}
+	sift_shred_leave(sh);
+}
+
+/* the element types of a native array a path may name (the planner tests them with literals of the same type) */
+bool
+sift_shred_array_elem_ok(Oid elem)
+{
+	return elem == TEXTOID || elem == VARCHAROID || elem == INT2OID || elem == INT4OID || elem == INT8OID;
 }
