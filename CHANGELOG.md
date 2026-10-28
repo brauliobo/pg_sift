@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.5.2 - 2026-10-28
 
 - Fixed: pg_sift: an aggregate scan that read several wide leaves (numeric beyond 64 bits, interval, money) for the selected rows of its units, with a text or other dictionary key beside them, gave rows to the wrong groups or crashed the backend (signal 11): the eight slots of the executor's per-dictionary maps were handed out round robin, so a dictionary made for the read of a wide leaf (one for every unit) took the slot of a key map still in use; the least recently used slot goes now (test `agg_dict_slots`).
 - Fixed: pg_sift: a lookup table loaded from the leaves of a `sift_col` index crashed the backend (signal 11) when it had a text column of 1,024 or more distinct strings in a segment, whose dictionary the segment keeps in blocks and the backend has not loaded: the load read the strings through the arrays of the whole dictionary, which such a dictionary does not have yet. `SELECT county, sum(x) FROM facts, addresses WHERE facts.k = addresses.k GROUP BY county` killed the server on the first statement of a connection with 1,100 counties. The string of an entry is now read with the call every other reader of a dictionary uses, and the test of a text condition of the table loads the dictionary first; the rows are those of the normal plan (`agg_lookup_lazy_dict`).
