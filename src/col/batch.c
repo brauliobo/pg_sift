@@ -144,7 +144,8 @@ vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
 static void
 vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag)
 {
-	vals_reserve(mcxt, v, 1);
+	if (v->n == v->cap)
+		vals_reserve(mcxt, v, 1);
 	v->key[v->n] = isnull ? 0 : key;
 	if (isnull)
 		bitmap_set(mcxt, &v->nulls, v->cap, v->n);
@@ -224,7 +225,8 @@ static void
 batch_row_begin(SiftColBatch *b, SiftKey key)
 {
 	batch_check_key(b, key, b->nrows == 0, b->nrows ? b->keys[b->nrows - 1] : 0);
-	batch_reserve_rows(b, 1);
+	if (b->nrows == b->rowcap)
+		batch_reserve_rows(b, 1);
 	b->keys[b->nrows] = key;
 }
 
