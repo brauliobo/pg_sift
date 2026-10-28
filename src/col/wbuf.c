@@ -1188,7 +1188,9 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	MemoryContextDelete(tmp);
 	cap = lf->nover + 16;
 	out = MemoryContextAlloc(mcxt, cap * sizeof(ItemPointerData));
-	memcpy(out, lf->over, lf->nover * sizeof(ItemPointerData));
+	/* over is NULL until a row overflows: memcpy takes no NULL source, not even for zero bytes */
+	if (lf->nover > 0)
+		memcpy(out, lf->over, lf->nover * sizeof(ItemPointerData));
 	m = lf->nover;
 	for (int j = 0; j < pred->nvals; j++)
 	{
