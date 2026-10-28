@@ -136,6 +136,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # the python3 of macOS is 3.9: the scripts and generators lint runs must work on it
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.9'
       - run: scripts/lint.sh
       - name: actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7 && ./actionlint
@@ -354,7 +358,7 @@ jobs:
         run: SERIES=${{ matrix.series }} scripts/package-mariadb.sh all HEAD dist-mariadb
 
   # Homebrew on macOS arm64, the one place that is not Linux: the formula of this checkout builds and passes its own test on PostgreSQL 17 and 18, and the
-  # test harness runs on brew's bash 5 (a few regression tests; the stages that need GNU tools or /proc stay on Linux) while `make check` under the stock
+  # test harness runs on brew's bash 5 (a few regression tests and the TAP tests that failed on the BSD tools; the stages that need GNU tools or /proc stay on Linux) while `make check` under the stock
   # /bin/bash 3.2 must stop with a message instead of exiting 0. It runs where scripts/areas.tsv says (gh:macos: the build, the harness and Formula/ are
   # `.`, so a core or harness change, the nightly run and a dispatch), never on a pull request that touches only sources or docs. Hosted macOS minutes are
   # free for a public repository (10x the Linux rate for a private one), hence the time limit.
@@ -369,7 +373,10 @@ jobs:
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       HOMEBREW_NO_ANALYTICS: 1
     steps:
+      # the whole history and the tags: the tests that build an older release (git archive of v3.2.x) skip without them
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install bash 5 and PostgreSQL 17 and 18
         run: brew install bash postgresql@17 postgresql@18 lz4 zstd
@@ -394,10 +401,17 @@ jobs:
           echo "$out"
           grep -q 'needs bash 4+' <<<"$out"
 
-      - name: make check (regression tests) under brew bash 5
+      # the BSD tools and the clang of macOS: the portability reports of `make check` were these (paste, stat, wc, seq, the module suffix)
+      - name: lint
+        run: |
+          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
+          scripts/lint.sh
+
+      # the formula above leaves its pg_sift in the server's directories, as a user's install does: the upgrade tests must use their own
+      - name: make check (regression tests, the tests that tripped on macOS) under brew bash 5
         env:
           SIFT_CI_TMP: ${{ runner.temp }}/sift-ci
-          SIFT_CI_JOBS: '^installcheck-(facets|filter_pushdown)$'
+          SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_rollup_ondemand|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
           SIFT_CI_NO_HARNESS: 1
         run: |
           PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@18)/bin:$PATH"; export PATH
