@@ -1200,8 +1200,14 @@ nx_const(Const *k, SiftAggNum *o, int *scale, int *dig)
 	sift_i128	v,
 				m;
 
-	if (k->constisnull || k->consttype != NUMERICOID ||
-		!sift_parse_decimal(DatumGetCString(DirectFunctionCall1(numeric_out, k->constvalue)), &v, scale))
+	if (k->constisnull)
+		return false;
+	if (k->consttype == INT2OID || k->consttype == INT4OID)
+	{
+		v = k->consttype == INT2OID ? DatumGetInt16(k->constvalue) : DatumGetInt32(k->constvalue);
+		*scale = 0;
+	}
+	else if (k->consttype != NUMERICOID || !sift_parse_decimal(DatumGetCString(DirectFunctionCall1(numeric_out, k->constvalue)), &v, scale))
 		return false;
 	for (*dig = 1, m = v < 0 ? -v : v; m >= 10; m /= 10)
 		(*dig)++;
@@ -1233,7 +1239,7 @@ nx_rescale(SiftAggNum *o, SiftAggNxOp op, int n, int *scale, int *dig)
 }
 
 /*
- * The program of a numeric expression: leaves, numeric constants, + - * and unary minus, abs, round / trunc / floor / ceil with a constant
+ * The program of a numeric expression: leaves, numeric constants, + - * of int2 and int4 whose digits keep the result inside the type, + - * and unary minus, abs, round / trunc / floor / ceil with a constant
  * number of digits, the casts of integers to numeric and of numeric to an integer (the digits it needs fit the integer: no overflow
  * error to reproduce). Anything else (division, other functions, parameters inside the arithmetic, a result of more than
  * SIFT_NUM_MAX_DIGITS digits) is false: its scale or its errors are not known here.
@@ -1269,6 +1275,28 @@ nx_walk(AggCtx *c, Node *n, SiftAggNum *o, int *scale, int *dig)
 			*scale += s2;
 			*dig += d2;
 			return *dig <= SIFT_NUM_MAX_DIGITS && nx_put(o, SNX_MUL, -1, 0, 0, 0);
+		/* + - * of int2 and int4: PostgreSQL raises when the result leaves the type, so the digits must prove it cannot (4 for int2, 9 for int4) */
+		case F_INT2PL:
+		case F_INT2MI:
+		case F_INT2MUL:
+		case F_INT4PL:
+		case F_INT4MI:
+		case F_INT4MUL:
+		case F_INT24PL:
+		case F_INT24MI:
+		case F_INT24MUL:
+		case F_INT42PL:
+		case F_INT42MI:
+		case F_INT42MUL:
+			maxd = (fid == F_INT2PL || fid == F_INT2MI || fid == F_INT2MUL) ? 4 : 9;
+			if (!nx_walk(c, linitial(args), o, scale, dig) || !nx_walk(c, lsecond(args), o, &s2, &d2) || *scale != 0 || s2 != 0)
+				return false;
+			if (fid == F_INT2MUL || fid == F_INT4MUL || fid == F_INT24MUL || fid == F_INT42MUL)
+			{
+				*dig += d2;
+				return *dig <= maxd && nx_put(o, SNX_MUL, -1, 0, 0, 0);
+			}
+			return nx_addsub(o, (fid == F_INT2PL || fid == F_INT4PL || fid == F_INT24PL || fid == F_INT42PL) ? SNX_ADD : SNX_SUB, scale, dig, s2, d2) && *dig <= maxd;
 		case F_NUMERIC_UMINUS:
 		case F_ABS_NUMERIC:
 		case F_NUMERIC_ABS:

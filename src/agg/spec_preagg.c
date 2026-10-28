@@ -79,7 +79,8 @@ sift_aggnum_linear(const SiftAggNum *n, sift_i128 *mul, sift_i128 *add)
 	*add = 0;
 	if (n->n == 1)
 		return num_leaf(n);
-	if (n->n != 4 || s[3].op != SNX_INTCAST || s[3].b != 1)
+	/* leaf op constant, checked against int8 (int8 columns), or alone when the digits already prove the result fits its type (int2 and int4 expressions, scale 0) */
+	if (!(n->n == 4 && s[3].op == SNX_INTCAST && s[3].b == 1) && !(n->n == 3 && n->scale == 0))
 		return -1;
 	if (s[0].op == SNX_CONST && s[1].op == SNX_LEAF)
 	{

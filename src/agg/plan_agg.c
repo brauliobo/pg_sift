@@ -495,16 +495,17 @@ compile_int8_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 }
 
 /*
- * sum(int4) and avg(int4) of one + - * of a smallint column with an integer constant (sum(ResolutionWidth + 1)): the integer operation cannot raise for
- * any smallint (compile_int8_arith), so the sum is the exact 128-bit one of the program, and the stored sums of a unit answer it as mul * sum + add * count.
- * The sum is a bigint (agg_datum converts it: the int8 sum of int4_sum raises "bigint out of range" for a sum outside it).
+ * sum and avg of an int2 or int4 expression that is not a column (smallint + 1, a * 3). A smallint column with an integer constant is the program of an
+ * int8 column (compile_int8_arith: the integer operation cannot raise for any smallint, and the stored sums of a unit answer it as mul * sum + add * count);
+ * any other + - * of int2 and int4 is the exact program of a decimal whose digits prove that no row leaves the type (nx_walk), so the errors of the arithmetic
+ * are not reproduced. The sum is a bigint (agg_datum converts it: the int8 sum of int4_sum raises "bigint out of range" for a sum outside it).
  */
 static bool
-compile_int4_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
+compile_int_agg(AggCtx *c, Aggref *a, Node *arg, SiftAggAgg *out)
 {
-	if (match_leaf(c, arg) >= 0 || !compile_int8_arith(c, arg, &out->num))
+	if (match_leaf(c, arg) >= 0 || (!compile_int8_arith(c, arg, &out->num) && !compile_nx(c, arg, 9, &out->num)))
 		return false;
-	out->kind = a->aggfnoid == F_SUM_INT4 ? SAA_SUM_NUM : SAA_AVG_NUM;
+	out->kind = a->aggfnoid == F_SUM_INT2 || a->aggfnoid == F_SUM_INT4 ? SAA_SUM_NUM : SAA_AVG_NUM;
 	out->argtype = NUMERICOID;
 	out->desc = psprintf("%s(%s)", get_func_name(a->aggfnoid), expr_text(c, arg));
 	return true;
@@ -681,7 +682,7 @@ compile_native_agg(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 		return compile_float_agg(c, a, arg, out, ai);
 	if ((fid == F_SUM_INT8 || fid == F_AVG_INT8) && a->aggdistinct == NIL && compile_int8_agg(c, a, arg, out))
 		return true;
-	if ((fid == F_SUM_INT4 || fid == F_AVG_INT4) && a->aggdistinct == NIL && compile_int4_agg(c, a, arg, out))
+	if ((fid == F_SUM_INT2 || fid == F_SUM_INT4 || fid == F_AVG_INT2 || fid == F_AVG_INT4) && a->aggdistinct == NIL && compile_int_agg(c, a, arg, out))
 		return true;
 	return compile_leaf_agg(c, a, arg, out, ai);
 }

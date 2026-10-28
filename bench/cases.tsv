@@ -190,6 +190,7 @@ contain_range	are answered by a `sift_col` index from integer leaves	orders	(id)
 contain_inet	`ip <<= net` 1.4 ms	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_inet_gist	ms	faster33	no
 calendar_step_filter	is evaluated once for each day, hour or minute the rows fall in	orders	default	\(per hour\)	native,pg_duckdb	-	ms	faster33	no
 text_rest_sparse	tests its other conditions on the rows that test left	orders	(id)	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+sum_int_expr	the exact sum of the expression	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
 distinct_pairs_sort	are sorted as int8 datums	orders	(id)	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 calendar_periodic	the rows of a unit that the prefilter of an equality of a periodic calendar step keeps	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 numeric_sum_records	made from the lanes of each row	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
