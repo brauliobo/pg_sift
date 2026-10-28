@@ -552,7 +552,10 @@ agg_datum(AggExec *ex, int ai, uint32 g, bool *isnull)
 			return Float8GetDatum(acc->d[g] / (double) acc->n[g]);
 		case SAA_SUM_NUM:
 			*isnull = acc->n[g] == 0;
-			return *isnull ? (Datum) 0 : agg_sum_datum(acc, g, a->num.scale);
+			if (*isnull)
+				return (Datum) 0;
+			/* the sum of an int4 expression is a bigint, as int4_sum gives it */
+			return a->restype == INT8OID ? DirectFunctionCall1(numeric_int8, agg_sum_datum(acc, g, a->num.scale)) : agg_sum_datum(acc, g, a->num.scale);
 		case SAA_AVG_NUM:
 			*isnull = acc->n[g] == 0;
 			if (*isnull)

@@ -1347,26 +1347,51 @@ int8_arith_op(Oid fid)
 		case F_INT82PL:
 		case F_INT48PL:
 		case F_INT28PL:
+		case F_INT24PL:
+		case F_INT42PL:
 			return SNX_ADD;
 		case F_INT8MI:
 		case F_INT84MI:
 		case F_INT82MI:
 		case F_INT48MI:
 		case F_INT28MI:
+		case F_INT24MI:
+		case F_INT42MI:
 			return SNX_SUB;
 		case F_INT8MUL:
 		case F_INT84MUL:
 		case F_INT82MUL:
 		case F_INT48MUL:
 		case F_INT28MUL:
+		case F_INT24MUL:
+		case F_INT42MUL:
 			return SNX_MUL;
 		default:
 			return -1;
 	}
 }
 
+/* does int2 OP k stay in int4 for every smallint (so the integer operators of PostgreSQL never raise)? */
+static bool
+int2_arith_safe(Oid fid, int64 k)
+{
+	switch (fid)
+	{
+		case F_INT24PL:
+		case F_INT42PL:
+		case F_INT24MI:
+		case F_INT42MI:
+			return k >= -(PG_INT32_MAX - 32768) && k <= PG_INT32_MAX - 32768;
+		case F_INT24MUL:
+		case F_INT42MUL:
+			return k >= -65535 && k <= 65535;
+		default:
+			return false;
+	}
+}
+
 /*
- * `leaf OP constant` or `constant OP leaf` of an int8 column, OP being + - *: the program ends in a cast to int8 that raises "bigint out of range" for
+ * `leaf OP constant` or `constant OP leaf` of an int8 column (or a smallint one and an integer constant), OP being + - *: the program ends in a cast to int8 that raises "bigint out of range" for
  * a result outside it, as int8pl and its kin do. The rows the cast looks at are the aggregate's (eval_nx).
  */
 bool
@@ -1394,12 +1419,23 @@ compile_int8_arith(AggCtx *c, Node *e, SiftAggNum *o)
 		else if ((leaf = match_leaf(c, a)) < 0)
 			return false;
 	}
-	if (k < 0 || leaf < 0 || leaf_of(c, leaf)->kind != SCL_SCALAR || leaf_of(c, leaf)->vtype != SCV_I64 || leaf_of(c, leaf)->typid != INT8OID ||
-		leaf_of(c, leaf)->wide)
+	if (k < 0 || leaf < 0 || leaf_of(c, leaf)->kind != SCL_SCALAR || leaf_of(c, leaf)->wide)
 		return false;
 	{
 		Const	   *kc = (Const *) strip_relabel(list_nth(args, k));
 		int64		v = kc->consttype == INT8OID ? DatumGetInt64(kc->constvalue) : kc->consttype == INT4OID ? DatumGetInt32(kc->constvalue) : DatumGetInt16(kc->constvalue);
+
+		/*
+		 * A smallint column and an integer constant (int24pl, int42mi ..) give an integer, which raises past int4: a result that cannot leave it is
+		 * the program of an int8 column without the check. A constant of up to 2^31 - 2^15 - 1 added or subtracted, or 65,535 multiplied, keeps every int2 in range.
+		 */
+		if (leaf_of(c, leaf)->vtype == SCV_I32 && leaf_of(c, leaf)->typid == INT2OID)
+		{
+			if (kc->consttype != INT4OID || !int2_arith_safe(func_of(e1), v))
+				return false;
+		}
+		else if (leaf_of(c, leaf)->vtype != SCV_I64 || leaf_of(c, leaf)->typid != INT8OID)
+			return false;
 
 		o->n = 0;
 		o->scale = 0;
