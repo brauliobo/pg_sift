@@ -10,7 +10,7 @@ Summary:        CTID-bitmap full-text search index with BM25 ranking for Postgre
 License:        PostgreSQL
 URL:            https://github.com/brauliobo/pg_sift
 Source0:        pg_sift-%{version}.tar.gz
-ExclusiveArch:  x86_64
+ExclusiveArch:  x86_64 aarch64
 BuildRequires:  gcc, make, redhat-rpm-config, postgresql%{pgmajor}-devel, lz4-devel, libzstd-devel, libicu-devel
 Requires:       postgresql%{pgmajor}-server, lz4-libs, libzstd
 

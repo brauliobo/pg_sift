@@ -13,9 +13,9 @@ make USE_PGXS=1 && sudo make USE_PGXS=1 install     # PG_CONFIG=/path/to/pg_conf
 - Arch Linux: AUR `pg_sift` (recipe in [packaging/](../packaging/)).
 - Docker, Docker Compose, CloudNativePG: [CONTAINERS.md](CONTAINERS.md) (the image recipes are in [packaging/docker/](../packaging/docker/)); a five-minute tour: [QUICKSTART.md](QUICKSTART.md). Supported versions: [SUPPORT.md](SUPPORT.md).
 - Debian 13, Ubuntu 24.04 with PGDG `postgresql-N` (N is 17, 18 or 19, the major of your server): download the `.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest)
-  and `sudo apt install ./postgresql-N-pg-sift_3.5.2-1_amd64.deb`.
+  and `sudo apt install ./postgresql-N-pg-sift_3.5.2-1_amd64.deb` (`_arm64.deb` on arm64).
 - RHEL, Rocky, Alma 9 or 10 with PGDG `postgresqlN-server`:
-  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.5.2/pg_sift_N-3.5.2-1.el9.x86_64.rpm`.
+  `sudo dnf install https://github.com/brauliobo/pg_sift/releases/download/v3.5.2/pg_sift_N-3.5.2-1.el9.x86_64.rpm` (`aarch64` in the name on arm64).
 
 Then, as a superuser: `CREATE EXTENSION pg_sift;` (after installing a newer version: `ALTER EXTENSION pg_sift UPDATE`). `shared_preload_libraries` is not needed for the `sift` index, the `sift_col` index or the `sift_table` access method; only publishing a `sift_table` under `wal_level = logical` needs it ([Replication](#replication)).
 

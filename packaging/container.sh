@@ -22,7 +22,7 @@ pgdg_repo() {
 		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -c "$PG" >/dev/null
 	else
 		local major=${VERSION_ID%%.*}
-		dnf -y -q install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$major-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
+		dnf -y -q install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$major-$(uname -m)/pgdg-redhat-repo-latest.noarch.rpm"
 		# only the repo of the version built: a broken signature of another major's metadata must not fail the build; a major not
 		# released yet (19 today) has only its testing repo, which is enabled then
 		local keep=pgdg$PG
@@ -52,7 +52,7 @@ build_rpm() {
 	dnf -y -q --enablerepo=crb install rpm-build gcc make redhat-rpm-config postgresql$PG-devel lz4-devel libzstd-devel libicu-devel
 	nice rpmbuild -bb /pkg/pg_sift.spec --define "pgmajor $PG" --define "pkg_version $VER" --define "_sourcedir /src" \
 		--define "_topdir /tmp/rpmbuild" --define "_smp_mflags -j$JOBS" >/dev/null
-	cp /tmp/rpmbuild/RPMS/x86_64/*.rpm /out
+	cp /tmp/rpmbuild/RPMS/*/*.rpm /out
 }
 
 build() {
