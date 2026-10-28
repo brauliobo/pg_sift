@@ -29,7 +29,9 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
+#include "datatype/timestamp.h"
 #include "utils/array.h"
+#include "utils/date.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
@@ -374,6 +376,65 @@ key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v)
 	}
 }
 
+static bool
+xtime_pair(Oid coltype, Oid argtype)
+{
+	return coltype != argtype && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID) &&
+		(argtype == DATEOID || argtype == TIMESTAMPOID || argtype == TIMESTAMPTZOID);
+}
+
+/*
+ * The constant of a key whose type is another of date, timestamp and timestamptz than the column's, as a bound of the column itself. PostgreSQL compares a date
+ * as its midnight (in the session's zone against a timestamptz), so a date column against a timestamp t is the days below t: d < t is d < ceil(t), d <= t is
+ * d <= floor(t), d > t is d > floor(t), d >= t is d >= ceil(t), and d = t holds for a t that is a midnight only. A timestamp column against a date is the date's
+ * midnight. 0: the key is not of that kind (key_value reads it), 1: *strat and *v are the bound, 2: not exact here (an out-of-range date), 3: no row can satisfy it.
+ */
+static int
+xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v)
+{
+	if (!xtime_pair(coltype, argtype))
+		return 0;
+	if (coltype == DATEOID)
+	{
+		int64		t = DatumGetInt64(d);
+		int64		day;
+		bool		exact = true;
+
+		if (TIMESTAMP_NOT_FINITE(t))
+			day = t == PG_INT64_MIN ? DATEVAL_NOBEGIN : DATEVAL_NOEND;
+		else if (argtype == TIMESTAMPOID)
+		{
+			day = t / USECS_PER_DAY - (t % USECS_PER_DAY < 0);
+			exact = t == day * USECS_PER_DAY;
+		}
+		else
+		{
+			day = DatumGetDateADT(DirectFunctionCall1(timestamptz_date, d));
+			if (!IS_VALID_DATE(day - 1) || !IS_VALID_DATE(day + 1))
+				return 2;
+			exact = DatumGetTimestampTz(DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day))) == t;
+		}
+		if (*strat == BTEqualStrategyNumber && !exact)
+			return 3;
+		*v = day + (!exact && (*strat == BTLessStrategyNumber || *strat == BTGreaterEqualStrategyNumber));
+		return 1;
+	}
+	else
+	{
+		DateADT		x = DatumGetDateADT(d);
+
+		if (DATE_NOT_FINITE(x))
+			*v = x == DATEVAL_NOBEGIN ? PG_INT64_MIN : PG_INT64_MAX;
+		else if (!IS_VALID_DATE(x - 1) || !IS_VALID_DATE(x + 1))
+			return 2;
+		else if (coltype == TIMESTAMPOID)
+			*v = (int64) x * USECS_PER_DAY;
+		else
+			*v = DatumGetTimestampTz(DirectFunctionCall1(date_timestamptz, d));
+		return 1;
+	}
+}
+
 /* A key the leaf cannot test exactly (a NaN, a numeric out of the range of the leaf): IS NOT NULL keeps every row it could match and the heap scan decides */
 static void
 key_any(SiftColPred *p, ColKeys *k)
@@ -638,6 +699,12 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 			bool		nan = false;
 			SiftColValue *vals;
 
+			/* a list of another temporal type than the column's: the heap tests it */
+			if (xtime_pair(att->atttypid, elemtype))
+			{
+				key_any(p, k);
+				continue;
+			}
 			get_typlenbyvalalign(elemtype, &len, &byval, &align);
 			deconstruct_array(arr, elemtype, len, byval, align, &el, &nl, &n);
 			vals = palloc(Max(n, 1) * sizeof(SiftColValue));
@@ -681,7 +748,26 @@ scan_preds(IndexScanDesc scan, ColKeys *k, SiftColPred *preds)
 		else
 		{
 			SiftColValue *v = palloc(sizeof(SiftColValue));
+			int			strat = key->sk_strategy;
+			int64		bound;
+			int			x = xtime_bound(att->atttypid, argtype, key->sk_argument, &strat, &bound);
 
+			if (x == 3)
+				return false;
+			if (x == 2)
+			{
+				key_any(p, k);
+				continue;
+			}
+			if (x == 1)
+			{
+				*v = (SiftColValue) {.tag = SIFT_COLTAG_UNKNOWN};
+				v->v.i = bound;
+				p->op = strategy_op(strat);
+				p->nvals = 1;
+				p->vals = v;
+				continue;
+			}
 			key_value(argtype, att->atttypmod, key->sk_argument, v);
 			if (key_is_float(argtype) && isnan(v->v.f))
 			{
@@ -1092,6 +1178,23 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 	if (!IsA(right, Const) || ((Const *) right)->constisnull)
 		return false;
 	c = (Const *) right;
+	if (xtime_pair(exprType((Node *) linitial(IsA(clause, OpExpr) ? ((OpExpr *) clause)->args : ((ScalarArrayOpExpr *) clause)->args)),
+				   IsA(clause, OpExpr) ? c->consttype : get_element_type(c->consttype)))
+	{
+		int64		v;
+		int			x;
+
+		if (!IsA(clause, OpExpr))
+			return false;
+		x = xtime_bound(exprType((Node *) linitial(((OpExpr *) clause)->args)), c->consttype, c->constvalue, &strat, &v);
+		if (x != 1)
+			return false;
+		if (strat == BTLessStrategyNumber || strat == BTLessEqualStrategyNumber || strat == BTEqualStrategyNumber)
+			*hi = strat == BTLessStrategyNumber && v > PG_INT64_MIN ? v - 1 : v;
+		if (strat == BTGreaterStrategyNumber || strat == BTGreaterEqualStrategyNumber || strat == BTEqualStrategyNumber)
+			*lo = strat == BTGreaterStrategyNumber && v < PG_INT64_MAX ? v + 1 : v;
+		return true;
+	}
 	if (IsA(clause, OpExpr))
 	{
 		int64		v;
