@@ -45,7 +45,7 @@ typedef struct SiftCDict
 	char	   *bytes;
 	Size		nbytes;
 	Size		bytescap;
-	uint32	   *slots;			/* open addressing table of code + 1; built by intern, and by find once the dictionary has been asked a few times */
+	uint64	   *slots;			/* open addressing table: the hash of the string above its code + 1; built by intern, and by find once the dictionary has been asked a few times */
 	uint32		nslots;
 	uint32		finds;			/* linear finds so far, before the table is worth building */
 	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
