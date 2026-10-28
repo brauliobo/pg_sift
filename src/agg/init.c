@@ -37,6 +37,29 @@ find_param(Node *expr)
 }
 
 /*
+ * The hash of an IN list with a parameter (hash_param_saop) is built from the array of its first evaluation and keeps pointing into it: a packed or expanded
+ * array (a PL/pgSQL variable) is flattened into the memory the evaluation resets, so the parameter is the constant of the statement, copied where the expression lives.
+ */
+static Node *
+hashed_array_const(ScalarArrayOpExpr *sa, AggExec *ex)
+{
+	Param	   *p = lsecond(sa->args);
+	bool		isnull;
+	Datum		d;
+
+	if (!OidIsValid(sa->hashfuncid) || !IsA(p, Param) || p->paramkind != PARAM_EXTERN)
+		return (Node *) sa;
+	d = ExecEvalExprSwitchContext(ExecInitExpr((Expr *) p, EXPR_PARENT(ex)), ex->lutcx, &isnull);
+	if (isnull)
+		sa->hashfuncid = sa->negfuncid = InvalidOid;
+	else
+		d = PointerGetDatum(PG_DETOAST_DATUM_COPY(d));
+	ResetExprContext(ex->lutcx);
+	sa->args = list_make2(linitial(sa->args), makeConst(p->paramtype, p->paramtypmod, p->paramcollid, -1, isnull ? (Datum) 0 : d, isnull, false));
+	return (Node *) sa;
+}
+
+/*
  * The output of an ARRAY sub-select (an InitPlan of the query, its Param offset by SIFT_AGG_INIT_PARAM) is the constant of the expression: the sub-select
  * runs now, the first time the lookup table needs it as in the normal plan, and the lookup table's own parameters are not the executor's. A
  * parameter an enclosing query level sets (level_param) is the constant it has now.
@@ -52,6 +75,8 @@ init_param_mutator(Node *n, AggExec *ex)
 
 	if (n == NULL)
 		return NULL;
+	if (IsA(n, ScalarArrayOpExpr))
+		return hashed_array_const((ScalarArrayOpExpr *) expression_tree_mutator(n, init_param_mutator, ex), ex);
 	if (!IsA(n, Param) || p->paramkind != PARAM_EXEC || (p->paramid < SIFT_AGG_INIT_PARAM && !level_param(n)))
 		return expression_tree_mutator(n, init_param_mutator, ex);
 	prm = &estate->es_param_exec_vals[p->paramid - (level_param(n) ? 0 : SIFT_AGG_INIT_PARAM)];
