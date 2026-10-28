@@ -23,6 +23,8 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
+#include "catalog/index.h"
+#include "executor/spi.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
@@ -546,9 +548,11 @@ sift_col_auto_paths(Relation heap, Relation index)
  * timestamp) and the sorted run it extends (2.2 and 3.5), so it is built where it pays only, from the statistics of the table: a column of GORD_AUTO_DISTINCT or
  * more distinct values (fewer are answered by a key list, a point directory or the units) whose correlation with the heap order is under GORD_AUTO_CORR (a
  * column in heap order has narrow zones), on a table of GORD_AUTO_ROWS or more rows (below it a scan of the units is within 100k instructions), not a column
- * that cuts the units, and no more than GORD_AUTO_GROWTH_PCT% of the index: the bytes of the index a row are estimated from the statistics of its columns (the
- * bits of their distinct values, the strings of a dictionary, at most their width), so a narrow index of a few small columns gets none. At most GORD_AUTO_MAX
- * columns, the least correlated first. A table with no statistics decides nothing; ANALYZE and a REINDEX do. A REINDEX decides again.
+ * that cuts the units, and an array of no more than GORD_AUTO_GROWTH_PCT% of the index: the bytes of the
+ * index a row are estimated from the statistics of its columns (the bits of their distinct values, the values of a dictionary (strings, uuids), at most their width), so a narrow index
+ * of a few small columns gets none. At most GORD_AUTO_MAX columns: the dates and timestamps first (a range and an ORDER BY .. LIMIT of a time column is the common
+ * use of an order), then the integers, each the least correlated first. A table of GORD_AUTO_ROWS rows or more with no statistics is analyzed first (ANALYZE, once, with a
+ * NOTICE), because the choice reads them. A REINDEX decides again.
  */
 #define GORD_AUTO_ROWS		100000
 #define GORD_AUTO_DISTINCT	1000
@@ -599,9 +603,53 @@ est_index_bytes(Relation heap, Relation index)
 			bytes += att->attlen > 0 ? att->attlen : 32;
 			continue;
 		}
-		bytes += Min(width, log2(Max(d, 2)) / 8 + (att->attlen > 0 ? 0 : width * d / Max(heap->rd_rel->reltuples, 1)));
+		bytes += Min(width, log2(Max(d, 2)) / 8 + (att->attbyval ? 0 : width * d / Max(heap->rd_rel->reltuples, 1)));
 	}
 	return bytes;
+}
+
+/* The table has a row estimate of at least GORD_AUTO_ROWS and no statistics of the first column of the index: the choice would decide nothing, so the table is analyzed, as ANALYZE does (the NOTICE of the arrays it chooses says so). A REINDEX cannot: ANALYZE opens the index it rebuilds */
+static void
+analyze_if_unknown(Relation heap, Relation index)
+{
+	BlockNumber pages;
+	double		tuples,
+				allvis;
+	AttrNumber	hatt = index->rd_index->indkey.values[0];
+	StringInfoData cmd;
+
+	if (hatt == 0 || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
+		return;
+	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvis);
+	if (tuples < GORD_AUTO_ROWS)
+		return;
+	initStringInfo(&cmd);
+	appendStringInfo(&cmd, "ANALYZE %s.%s", quote_identifier(get_namespace_name(RelationGetNamespace(heap))), quote_identifier(RelationGetRelationName(heap)));
+	if (SPI_connect() != SPI_OK_CONNECT)
+		return;
+	(void) SPI_execute(cmd.data, false, 0);
+	SPI_finish();
+	CommandCounterIncrement();
+}
+
+typedef struct GordCand
+{
+	int			leaf;
+	bool		time;			/* a date or a timestamp: a range or an ORDER BY .. LIMIT is what it is read by */
+	double		corr;
+} GordCand;
+
+static int
+gord_cand_cmp(const void *a, const void *b)
+{
+	const GordCand *x = a,
+			   *y = b;
+
+	if (x->time != y->time)
+		return x->time ? -1 : 1;
+	if (x->corr != y->corr)
+		return x->corr < y->corr ? -1 : 1;
+	return x->leaf - y->leaf;
 }
 
 void
@@ -610,20 +658,24 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	const char *opt = sift_col_options_order_array_columns(index);
 	const SiftColRel *rel;
 	bool		autolist;
-	int			pick[GORD_AUTO_MAX];
-	double		corr[GORD_AUTO_MAX];
-	int			npick = 0;
-	double		room,
-				added = 0;
+	GordCand   *cand;
+	int			ncand = 0,
+				npick = 0,
+				pick[GORD_AUTO_MAX];
+	double		room;
 	StringInfoData v;
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt != NULL && !autolist)
 		return;
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || sift_col_options_order_array_group(index)[0] != '\0' || heap->rd_rel->reltuples < GORD_AUTO_ROWS)
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || sift_col_options_order_array_group(index)[0] != '\0')
+		return;
+	analyze_if_unknown(heap, index);
+	if (heap->rd_rel->reltuples < GORD_AUTO_ROWS)
 		return;
 	room = est_index_bytes(heap, index) * GORD_AUTO_GROWTH_PCT / 100;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
+	cand = palloc(rel->schema->ncols * sizeof(GordCand));
 	for (int c = 0; c < rel->schema->ncols; c++)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
@@ -641,37 +693,17 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			continue;
 		if (!col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR)
 			continue;
-		/* the least correlated first, in the order of the schema among equals */
-		{
-			int			at = npick;
-
-			while (at > 0 && corr[at - 1] > cr)
-				at--;
-			if (at >= GORD_AUTO_MAX)
-				continue;
-			for (int j = Min(npick, GORD_AUTO_MAX - 1); j > at; j--)
-			{
-				pick[j] = pick[j - 1];
-				corr[j] = corr[j - 1];
-			}
-			pick[at] = c;
-			corr[at] = cr;
-			npick = Min(npick + 1, GORD_AUTO_MAX);
-		}
+		cand[ncand++] = (GordCand) {c, d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ, cr};
 	}
-	/* as many as fit the room, in that order; the sorted run of a column not in order_columns comes with it */
-	for (int i = 0; i < npick; i++)
+	qsort(cand, ncand, sizeof(GordCand), gord_cand_cmp);
+	/* each array is a structure of its own: it must fit the room, and a column that does not leaves it to the next; the sorted run of a column not in order_columns comes with it */
+	for (int i = 0; i < ncand && npick < GORD_AUTO_MAX; i++)
 	{
-		const SiftColDef *d = &rel->schema->cols[pick[i]];
+		const SiftColDef *d = &rel->schema->cols[cand[i].leaf];
 		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
-		double		cost = (narrow ? 4.4 : 5.6) + (rel->pagg.run[pick[i]] ? 0 : (narrow ? 2.2 : 3.5));
 
-		if (added + cost > room)
-		{
-			npick = i;
-			break;
-		}
-		added += cost;
+		if ((narrow ? 4.4 : 5.6) + (rel->pagg.run[cand[i].leaf] ? 0 : (narrow ? 2.2 : 3.5)) <= room)
+			pick[npick++] = cand[i].leaf;
 	}
 	if (npick == 0)
 	{

@@ -68,11 +68,11 @@ SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY
 SELECT sift.col_merge('events_col'::regclass, true) >= 0 AS merged;
 SELECT * FROM stream_case('SELECT k, count(DISTINCT x) AS d FROM events GROUP BY k');
 
--- a table without statistics expects few groups, and has many: the table of the groups outgrows hash memory, which a sweep does not spill, so
+-- a table without statistics (an index that chooses nothing does not analyze it) expects few groups, and has many: the table of the groups outgrows hash memory, which a sweep does not spill, so
 -- the sweep is given up and the scan starts over in its plain order
 CREATE TABLE many (id int, g int, x int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO many SELECT i, i % 30000, i * 10, repeat('p', 100) FROM generate_series(1, 90000) i;
-CREATE INDEX many_col ON many USING sift_col (id, g, x);
+CREATE INDEX many_col ON many USING sift_col (id, g, x) WITH (order_array_columns = off);
 SELECT * FROM stream_case('SELECT g, count(DISTINCT x) AS d FROM many GROUP BY g');
 
 DROP TABLE got, plain, want, events, many;

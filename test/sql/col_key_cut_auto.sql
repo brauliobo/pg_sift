@@ -117,10 +117,10 @@ SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 100
 UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kt_off'::regclass);
 SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS time_cut;
 SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
-UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass, 'kt_both'::regclass);
 SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS by_superblock;
 SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02';
-UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass, 'kt_both'::regclass);
 SELECT sift.col_verify('kt_auto', true);
 DROP TABLE kt;
 DROP TABLE ka, kg, ku;

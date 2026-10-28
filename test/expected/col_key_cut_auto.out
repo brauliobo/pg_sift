@@ -243,7 +243,7 @@ SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '202
    164 | 3259552 | 614
 (1 row)
 
-UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+UPDATE pg_index SET indisvalid = (indexrelid = 'kt_off'::regclass) WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass, 'kt_both'::regclass);
 SELECT kunits($$SELECT count(*), sum(a1) FROM kt WHERE ts >= '2024-06-01' AND ts < '2024-06-02'$$) AS by_superblock;
        by_superblock       
 ---------------------------
@@ -256,7 +256,7 @@ SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '202
    164 | 3259552 | 614
 (1 row)
 
-UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass);
+UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass, 'kt_both'::regclass);
 SELECT sift.col_verify('kt_auto', true);
  col_verify 
 ------------

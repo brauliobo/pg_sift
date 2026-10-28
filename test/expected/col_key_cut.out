@@ -21,7 +21,7 @@ SELECT sift.col_verify('kc_idx', true);
  
 (1 row)
 
--- the segment is column format minor 17 with units of about the rows of a superblock (the table was never analyzed); the index without the option is not
+-- the segment is column format minor 17 with units of about the rows of a superblock; the index without the option is not
 SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
    kind    | format | superblock_units 
 -----------+--------+------------------
@@ -61,11 +61,11 @@ END $$;
 SELECT * FROM kchk('built');
  after_step |       shape        |            result             
 ------------+--------------------+-------------------------------
- built      | one customer       | same Units: 1 Units Pruned: 8
- built      | customer and dates | same Units: 1 Units Pruned: 8
- built      | customer range     | same Units: 1 Units Pruned: 8
- built      | customer list      | same Units: 3 Units Pruned: 6
- built      | other column       | same Units: 8 Units Pruned: 1
+ built      | one customer       | same Units: 1 Units Pruned: 7
+ built      | customer and dates | same Units: 1 Units Pruned: 7
+ built      | customer range     | same Units: 1 Units Pruned: 7
+ built      | customer list      | same Units: 3 Units Pruned: 5
+ built      | other column       | same Units: 8 Units Pruned: 0
  built      | top-N by key       | same Units: 8 Units Pruned: 0
 (6 rows)
 
@@ -88,11 +88,11 @@ INSERT INTO kc SELECT 200000 + i, 42, date '2026-04-01', 7, 'y' FROM generate_se
 SELECT * FROM kchk('write buffer');
   after_step  |       shape        |            result             
 --------------+--------------------+-------------------------------
- write buffer | one customer       | same Units: 2 Units Pruned: 8
- write buffer | customer and dates | same Units: 2 Units Pruned: 8
- write buffer | customer range     | same Units: 2 Units Pruned: 8
- write buffer | customer list      | same Units: 4 Units Pruned: 6
- write buffer | other column       | same Units: 9 Units Pruned: 1
+ write buffer | one customer       | same Units: 2 Units Pruned: 7
+ write buffer | customer and dates | same Units: 2 Units Pruned: 7
+ write buffer | customer range     | same Units: 2 Units Pruned: 7
+ write buffer | customer list      | same Units: 4 Units Pruned: 5
+ write buffer | other column       | same Units: 9 Units Pruned: 0
  write buffer | top-N by key       | same Units: 9 Units Pruned: 0
 (6 rows)
 
@@ -105,11 +105,11 @@ SELECT sift.col_promote('kc_idx') > 0 AS promoted;
 SELECT * FROM kchk('promoted');
  after_step |       shape        |            result             
 ------------+--------------------+-------------------------------
- promoted   | one customer       | same Units: 2 Units Pruned: 8
- promoted   | customer and dates | same Units: 2 Units Pruned: 8
- promoted   | customer range     | same Units: 1 Units Pruned: 9
- promoted   | customer list      | same Units: 3 Units Pruned: 7
- promoted   | other column       | same Units: 8 Units Pruned: 2
+ promoted   | one customer       | same Units: 2 Units Pruned: 7
+ promoted   | customer and dates | same Units: 2 Units Pruned: 7
+ promoted   | customer range     | same Units: 1 Units Pruned: 8
+ promoted   | customer list      | same Units: 3 Units Pruned: 6
+ promoted   | other column       | same Units: 8 Units Pruned: 1
  promoted   | top-N by key       | same Units: 9 Units Pruned: 0
 (6 rows)
 
@@ -118,11 +118,11 @@ UPDATE kc SET amount = amount + 1, cust = 42 WHERE id % 1009 = 0;
 SELECT * FROM kchk('deleted and updated');
      after_step      |       shape        |             result             
 ---------------------+--------------------+--------------------------------
- deleted and updated | one customer       | same Units: 10 Units Pruned: 8
- deleted and updated | customer and dates | same Units: 10 Units Pruned: 8
- deleted and updated | customer range     | same Units: 9 Units Pruned: 9
- deleted and updated | customer list      | same Units: 11 Units Pruned: 7
- deleted and updated | other column       | same Units: 16 Units Pruned: 2
+ deleted and updated | one customer       | same Units: 10 Units Pruned: 7
+ deleted and updated | customer and dates | same Units: 10 Units Pruned: 7
+ deleted and updated | customer range     | same Units: 9 Units Pruned: 8
+ deleted and updated | customer list      | same Units: 11 Units Pruned: 6
+ deleted and updated | other column       | same Units: 16 Units Pruned: 1
  deleted and updated | top-N by key       | same Units: 17 Units Pruned: 0
 (6 rows)
 
