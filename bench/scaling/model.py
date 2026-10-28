@@ -1,4 +1,6 @@
 """Case model and the log-log fit of the focused scaling suite (bench/scaling/scaling.py)."""
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
 from typing import Callable

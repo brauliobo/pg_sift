@@ -89,13 +89,13 @@ focus_regex() {
 		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
 		/^#/ { next }
 		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
-	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|')
+	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|' -)
 	star+=($(sed -n 's/^H //p' <<<"$sel" | sort -u))
 	{ echo '^(coverage|isolation-emulated)$'
 	  [[ -z $names ]] || echo "^installcheck-($names)\$"
 	  (( ! ${#star[@]} )) || areas_fast_regex "${star[@]}"
 	  (( ! ${#rest[@]} )) || areas_regex "${rest[@]}"
-	} | paste -sd'|'
+	} | paste -sd'|' -
 }
 # focus_tokens BASE: FILE:FUNCTION of every hunk of the diff against BASE in src/; the function is the last line at column 0 that starts like a definition before the hunk
 focus_tokens() {
@@ -304,7 +304,7 @@ if [[ $MODE == --selftest ]]; then
 				union+=$part$'\n'
 			done <<<"$plan"
 			(( n == cs )) || { echo "FAIL: $n slices of $prefix in the full plan, want $cs"; bad=1; }
-			[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq -s ' ' 1 "$cs") " ]] || { echo "FAIL: the slices of $prefix are not 1..$cs:$ks"; bad=1; }
+			[[ $(tr ' ' '\n' <<<"$ks" | grep . | sort -n | tr '\n' ' ') == "$(seq 1 "$cs" | tr '\n' ' ')" ]] || { echo "FAIL: the slices of $prefix are not 1..$cs:$ks"; bad=1; }
 			if [[ -n $cd ]]; then
 				whole=$(cd "$REPO/test/col/fixtures" && printf '%s\n' *.sql)   # the directory, not coldiff.sh's own idea of it
 				[[ -z $(sort <<<"$union" | grep . | uniq -d) ]] || { echo "FAIL: a query is in two slices of $prefix: $(sort <<<"$union" | grep . | uniq -d | head -3 | tr '\n' ' ')"; bad=1; }
@@ -696,6 +696,8 @@ lane() {
 # not /dev/shm by choice: the run needs about a gigabyte and fsync is off, so RAM buys nothing
 # a Unix-domain socket path holds 103 bytes on macOS, where $TMPDIR is a long per-user directory: the clusters' sockets would not fit under it
 TMPBASE=${TMPDIR:-/tmp}; [[ $(uname -s) != Darwin ]] || TMPBASE=/tmp
+# macOS: initdb rejects LC_MESSAGES=C (below) next to an unset LANG, which a shell without a terminal (ssh, cron) has
+[[ $(uname -s) != Darwin ]] || export LANG=${LANG:-en_US.UTF-8}
 BASE=${SIFT_CI_TMP:-$TMPBASE/sift-ci-$$}
 LOG=$BASE/logs
 BASE_PORT=${SIFT_PORT:-56130}

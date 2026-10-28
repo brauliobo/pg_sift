@@ -20,7 +20,7 @@ LOG=$D/postgres.log
 # newfindings OFFSET: the log written since OFFSET, as a file the gate scans by name
 slice() { tail -c +"$(($1 + 1))" "$LOG" >"$D/slice.out"; }
 gate_fails() { slice "$1"; ! leak_scan "$D/slice.out" 2>"$D/gate.out" && grep -qE -e "$2" "$D/gate.out"; }
-logsize() { stat -c %s "$LOG"; }
+logsize() { wc -c <"$LOG" | tr -d ' '; }
 # the cluster checks of this node record their findings next to it
 cluster_fails() { local out; ! out=$(PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres SIFT_TMP=$D leak_cluster "$D/data" 2>&1) && grep -q "$1" <<<"$out"; }
 asan_fails() { ! leak_scan "$D"/asan.* 2>/dev/null; }
@@ -52,21 +52,25 @@ else
 	skip 1 "malloc leaks need the sanitizer build (SANITIZE=1)"
 fi
 
-# a backend whose memory keeps growing, next to an idle one: the soak's growth check tells them apart. The leak is about 300 KB a call: at
-# 50 calls a second the 3 s window after the warmup grows far past the 8 MB threshold, even when the host slows the loop several times.
-# The sleeps below do not hold the stderr of the test: prove reads it and would wait for them after the last test
-PGAPPNAME=leaker psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 <<<"SELECT sift._test_leak('malloc')\\watch 0.02" &
-leaker=$!
-PGAPPNAME=idler psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 < <(sleep 30 2>/dev/null) &
-idler=$!
-app_pids() { sql gate "SELECT pid FROM pg_stat_activity WHERE application_name IN ('leaker', 'idler') ORDER BY application_name"; }
-for _ in $(seq 100); do [[ $(app_pids | wc -l) == 2 ]] && break; sleep 0.1; done
-leak_watch_start "$D/memory.tsv" app_pids 0.25
-sleep 5
-LEAK_QUARANTINE_MB=0 leak_watch_stop "$D/memory.tsv" >"$D/growth.out"
-kill "$leaker" "$idler" 2>/dev/null
-check "the growth check fails the backend that leaks, not the idle one" bash -c \
-	'[[ $(grep -c GROWING "$1") == 1 ]] && [[ $(grep -c " ok$" "$1") == 1 ]]' _ "$D/growth.out"
+if [[ -d /proc/self ]]; then   # the memory of a process is read from /proc: not on macOS
+	# a backend whose memory keeps growing, next to an idle one: the soak's growth check tells them apart. The leak is about 300 KB a call: at
+	# 50 calls a second the 3 s window after the warmup grows far past the 8 MB threshold, even when the host slows the loop several times.
+	# The sleeps below do not hold the stderr of the test: prove reads it and would wait for them after the last test
+	PGAPPNAME=leaker psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 <<<"SELECT sift._test_leak('malloc')\\watch 0.02" &
+	leaker=$!
+	PGAPPNAME=idler psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 < <(sleep 30 2>/dev/null) &
+	idler=$!
+	app_pids() { sql gate "SELECT pid FROM pg_stat_activity WHERE application_name IN ('leaker', 'idler') ORDER BY application_name"; }
+	for _ in $(seq 100); do [[ $(app_pids | wc -l) == 2 ]] && break; sleep 0.1; done
+	leak_watch_start "$D/memory.tsv" app_pids 0.25
+	sleep 5
+	LEAK_QUARANTINE_MB=0 leak_watch_stop "$D/memory.tsv" >"$D/growth.out"
+	kill "$leaker" "$idler" 2>/dev/null
+	check "the growth check fails the backend that leaks, not the idle one" bash -c \
+		'[[ $(grep -c GROWING "$1") == 1 ]] && [[ $(grep -c " ok$" "$1") == 1 ]]' _ "$D/growth.out"
+else
+	skip 1 "no /proc: the growth check of the long-lived processes is Linux only"
+fi
 
 # a session that stays in a transaction is a leaked resource of the test that opened it
 ( echo "BEGIN; CREATE TABLE held (i int); SELECT 1;"; sleep 30 ) 2>/dev/null |

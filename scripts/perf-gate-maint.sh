@@ -280,7 +280,7 @@ mut_load() { # LABEL L: the groups insert and bulk, and the queries on what they
 	FRESH_OPTS="WITH (mutable_limit = $2)"
 	cat >"$BASE/and.sql" <<<"SELECT id FROM t WHERE body @@> 'w1 w5' ORDER BY sift.score(ctid) DESC LIMIT 10;"
 	cat >"$BASE/term.sql" <<<"SELECT id FROM t WHERE body @@> 'w3' ORDER BY sift.score(ctid) DESC LIMIT 10;"
-	off=$(stat -c %s "${TMP[$l]}/postgres.log")
+	off=$(wc -c <"${TMP[$l]}/postgres.log" | tr -d ' ')
 	g_insert "$l" | sed "s/^/${p}_/"
 	bench "$l" ${p}_insert1 1 "$BASE/insert.sql" "$SECS" | grep -v lat_ms
 	settle "$l"

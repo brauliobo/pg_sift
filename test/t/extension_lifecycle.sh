@@ -382,7 +382,7 @@ fi
 
 # same-major pg_upgrade of every database: index files are carried over. pg_upgrade checks libraries with
 # LOAD '$libdir/pg_sift', which ignores dynamic_library_path, so it needs sift installed in the server's pkglibdir.
-if [[ ! -f $(pg_config --pkglibdir)/pg_sift.so ]]; then
+if [[ ! -f $(pg_config --pkglibdir)/pg_sift$DLSUFFIX ]]; then
 	skip $((3 + $(wc -w <<<"$DBS"))) "pg_upgrade needs sift installed in $(pg_config --pkglibdir)"
 	finish
 fi

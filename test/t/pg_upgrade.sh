@@ -26,9 +26,9 @@ overlay() {
 	for f in "$lib"/*; do ln -s "$f" "$2$lib/"; done
 	for f in "$share"/*; do [[ $f == */extension ]] || ln -s "$f" "$2$share/"; done
 	for f in "$share"/extension/*; do ln -s "$f" "$2$share/extension/"; done
-	[[ -f $3$lib/pg_sift.so ]] || return 0   # PostgreSQL 17 has no staged root: sift is in the server's own directories
-	rm -f "$2$lib/pg_sift.so" "$2$share"/extension/pg_sift*
-	cp "$3$lib/pg_sift.so" "$2$lib/"
+	[[ -f $3$lib/pg_sift$DLSUFFIX ]] || return 0   # PostgreSQL 17 has no staged root: sift is in the server's own directories
+	rm -f "$2$lib/pg_sift$DLSUFFIX" "$2$share"/extension/pg_sift*
+	cp "$3$lib/pg_sift$DLSUFFIX" "$2$lib/"
 	cp "$3$share"/extension/pg_sift* "$2$share/extension/"
 }
 
@@ -37,7 +37,7 @@ build_old() {
 	local src=$TAPDIR/old-src
 	mkdir -p "$src"
 	if [[ -n $OLD_REF ]]; then git -C "$REPO" archive "$OLD_REF" | tar -x -C "$src"
-	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
+	else tar -C "$REPO" --exclude=.git --exclude='*.o' --exclude='*.d' --exclude='*.so' --exclude='*.dylib' --exclude='*.bc' --exclude=.build-flavor --exclude=bench/out -cf - . | tar -x -C "$src"; fi
 	{ nice make -C "$src" -j4 USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= && make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING= DESTDIR="$2" install; } \
 		>"$TAPDIR/old-build.log" 2>&1
 }
@@ -60,7 +60,7 @@ OLDCFG=${OLDBIN:+$OLDBIN/pg_config}
 OLDCFG=${OLDCFG:-$NEWCFG}
 OLD_MAJOR=$("$OLDCFG" --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 # a server image can carry a major pg_sift does not support (the Makefile's PG_MIN_MAJOR): the upgrade then runs within the major
-if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *:\?= *\([0-9]*\).*/\1/p' "$REPO/Makefile" | head -n 1))); then OLDCFG=$NEWCFG; OLD_MAJOR=$PG_MAJOR; fi
+if ((OLD_MAJOR < $(sed -n 's/^PG_MIN_MAJOR *= *\([0-9]*\).*/\1/p' "$REPO/Makefile" | head -n 1))); then OLDCFG=$NEWCFG; OLD_MAJOR=$PG_MAJOR; fi
 
 TS=$TAPDIR/tablespace
 OV=$TAPDIR/overlay
@@ -185,7 +185,7 @@ BEFORE=$(fingerprint old)
 check "the old cluster agrees with itself: the scans equal the normal plans" test "$(grep -c '^t$' <<<"$BEFORE")" == 3
 FILES_BEFORE=$(q old postgres "SELECT string_agg(relname || '=' || pg_relation_filepath(oid), ',' ORDER BY relname) FROM pg_class WHERE relname IN ('docs_ts_idx', 'facts_json', 'tbl_ts')")
 if [[ -n $TSC ]]; then
-	check "the tablespace holds an index of each access method and a table" test "$(grep -o 'pg_tblspc' <<<"$FILES_BEFORE" | wc -l)" == 3
+	check "the tablespace holds an index of each access method and a table" test "$(grep -o 'pg_tblspc' <<<"$FILES_BEFORE" | wc -l | tr -d ' ')" == 3
 else skip 1 "pg_upgrade to the same major cannot carry a tablespace"; fi
 "$OLDB/pg_ctl" -D "$(dir old)/data" -m fast -w stop >/dev/null 2>&1 || bail "the old cluster does not stop"
 

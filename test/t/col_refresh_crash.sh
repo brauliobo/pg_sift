@@ -30,7 +30,7 @@ plan_of() {
 	out=$(sql primary "${SETTINGS[@]}" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $Q")
 	for f in 'Units' 'Units From Pre-aggregates'; do
 		grep -E "^\s*$f: [0-9]+" <<<"$out" | grep -oE '[0-9]+$' || echo 0
-	done | paste -sd' '
+	done | paste -sd' ' -
 }
 SEGS="SELECT string_agg(gen || ':' || coalesce(rows, 0), ' ' ORDER BY gen) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'"
 ROWSUM="SELECT sum(rows) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'"

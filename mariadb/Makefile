@@ -20,7 +20,7 @@ CC      ?= gcc
 
 # -Dsift_count/-Dsift_topk: the codec's names are those of two UDFs
 CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -MMD -MP -Wall \
-          -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation -march=x86-64 -mtune=generic \
+          -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation $(SIFT_BASE_ISA) \
           -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) $(SIFT_INC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
           -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
           -Dsift_count=codec_count -Dsift_topk=codec_topk

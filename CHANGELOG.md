@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: test tools: `make check` on macOS arm64 failed in `pg_upgrade*`, `replica_mixed`, `leakcheck_gate`, the column crash and batch tests, `scaling_slope` and 5 checks of `scripts/lint.sh`. The scripts spelled `paste -sd` and `seq -s` the GNU way, read file sizes with `stat -c`, compared the padded output of `wc`, used a `sed` pattern with `\?`, `timeout` (missing before macOS 26), `-march=x86-64` in the MariaDB build and the module suffix `.so` (macOS: `.dylib`, so the upgrade tests ran the library the user had installed instead of the one under test); the benchmark generators and the scaling gate used Python 3.12 f-strings and `X | None` annotations that Python 3.9 of macOS rejects. The older releases that the tests build now see the lz4 and zstd directories of Homebrew. Only the test scripts change; the library is the same.
+
 ## 3.5.2 - 2026-10-28
 
 - Fixed: pg_sift: an aggregate scan that read several wide leaves (numeric beyond 64 bits, interval, money) for the selected rows of its units, with a text or other dictionary key beside them, gave rows to the wrong groups or crashed the backend (signal 11): the eight slots of the executor's per-dictionary maps were handed out round robin, so a dictionary made for the read of a wide leaf (one for every unit) took the slot of a key map still in use; the least recently used slot goes now (test `agg_dict_slots`).

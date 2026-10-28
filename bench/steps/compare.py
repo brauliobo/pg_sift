@@ -226,7 +226,8 @@ def sources(results):
     ]
     if duck_meta:
         d = duck_meta
-        lines.append(f'| pg_duckdb | {d.get("pg_duckdb", "?").split(",")[0]} (DuckDB {d.get("duckdb", "?").split(" ")[1] if " " in d.get("duckdb", "") else "?"}) | 1,000,000 and 10,000,000 orders, the same CSV as the others | its own run: {d.get("cpu", "?").replace(" 8-Core Processor", "")}; a different PostgreSQL build ({(re.search(r"(PostgreSQL [\d.]+)[^,]*with pg_duckdb", d.get("postgresql", "")) or [None, "?"])[1]}); `psql` client; the better of its heap and Parquet modes | warm: median of 3; cold: first run in a new session | {d.get("date", "?")} | [duckdb.tsv](bench/results/duckdb.tsv), [duckdb-10000000.tsv](bench/results/duckdb-10000000.tsv) |')
+        duck_pg = (re.search(r"(PostgreSQL [\d.]+)[^,]*with pg_duckdb", d.get("postgresql", "")) or [None, "?"])[1]
+        lines.append(f'| pg_duckdb | {d.get("pg_duckdb", "?").split(",")[0]} (DuckDB {d.get("duckdb", "?").split(" ")[1] if " " in d.get("duckdb", "") else "?"}) | 1,000,000 and 10,000,000 orders, the same CSV as the others | its own run: {d.get("cpu", "?").replace(" 8-Core Processor", "")}; a different PostgreSQL build ({duck_pg}); `psql` client; the better of its heap and Parquet modes | warm: median of 3; cold: first run in a new session | {d.get("date", "?")} | [duckdb.tsv](bench/results/duckdb.tsv), [duckdb-10000000.tsv](bench/results/duckdb-10000000.tsv) |')
     if an:
         lines.append(f'| PostgreSQL heap and flat tables, ClickHouse (the application shapes) | PostgreSQL {sv["pg"].split()[0]}, pg_sift {sv["sift_sift"]}; ClickHouse: a throwaway server, version not recorded in the results | {an.get("tier", "?")} orders of an analytics corpus | one backend, no parallel workers; ClickHouse one thread | warm: median of {an.get("runs", "?")} runs | {an.get("date", "?")[:10]} | [analytics.json](bench/results/analytics.json) |')
     return lines

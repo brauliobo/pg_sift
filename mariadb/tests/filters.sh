@@ -45,8 +45,8 @@ check "fresh rows: a deleted row is not returned though the filter holds it" "$(
 sync fl
 
 # facets against GROUP BY
-facets() { sql "CALL sift_facets('fl', '$1', '$2', $3)" | paste -sd';'; }
-group_by() { sql "SELECT $1 AS value, COUNT(*) AS n FROM fl WHERE $2 ${3:-} GROUP BY value ORDER BY n DESC, value" | paste -sd';'; }
+facets() { sql "CALL sift_facets('fl', '$1', '$2', $3)" | paste -sd';' -; }
+group_by() { sql "SELECT $1 AS value, COUNT(*) AS n FROM fl WHERE $2 ${3:-} GROUP BY value ORDER BY n DESC, value" | paste -sd';' -; }
 check "facets: by category" "$(group_by cat "body LIKE '%nine%'")" "$(facets nine t.cat NULL)"
 check "facets: by an expression" "$(group_by "likes DIV 10" "body LIKE '%nine%'")" "$(facets nine 't.likes DIV 10' NULL)"
 check "facets: with a filter" "$(group_by cat "body LIKE '%nine%'" "AND likes < 10")" "$(facets nine t.cat "'t.likes < 10'")"
