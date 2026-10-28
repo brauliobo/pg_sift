@@ -23,22 +23,22 @@ WHERE (k + t * 2 + c) % 4 <> 0;
 VACUUM (FREEZE, ANALYZE) maps;
 
 -- the second lookup is keyed by a text and an integer column of the first, the entity of some facts is missing or NULL
-\set q1 'SELECT coalesce(m.label, ''none'') AS label, count(*) AS n, sum(f.amount) AS total FROM facts f LEFT JOIN ents e ON e.id = f.ent_id LEFT JOIN maps m ON m.kind = e.kind AND m.tier = e.tier AND m.cat = f.cat GROUP BY 1'
+\set chain_label 'SELECT coalesce(m.label, ''none'') AS label, count(*) AS n, sum(f.amount) AS total FROM facts f LEFT JOIN ents e ON e.id = f.ent_id LEFT JOIN maps m ON m.kind = e.kind AND m.tier = e.tier AND m.cat = f.cat GROUP BY 1'
 -- an expression over columns of both lookups, a float among them
-\set q2 'SELECT coalesce(m.label, ''none'') || coalesce(e.kind, ''?'') || coalesce(e.tier::text, ''?'') AS ty, e.score * 2 AS s2, count(*) AS n FROM facts f LEFT JOIN ents e ON e.id = f.ent_id LEFT JOIN maps m ON m.kind = e.kind AND m.tier = e.tier AND m.cat = f.cat GROUP BY 1, 2'
+\set chain_expression 'SELECT coalesce(m.label, ''none'') || coalesce(e.kind, ''?'') || coalesce(e.tier::text, ''?'') AS ty, e.score * 2 AS s2, count(*) AS n FROM facts f LEFT JOIN ents e ON e.id = f.ent_id LEFT JOIN maps m ON m.kind = e.kind AND m.tier = e.tier AND m.cat = f.cat GROUP BY 1, 2'
 
-EXPLAIN (COSTS OFF) :q1;
-EXPLAIN (COSTS OFF) :q2;
-CREATE TEMP TABLE r1_on AS :q1;
-CREATE TEMP TABLE r2_on AS :q2;
+EXPLAIN (COSTS OFF) :chain_label;
+EXPLAIN (COSTS OFF) :chain_expression;
+CREATE TEMP TABLE r1_on AS :chain_label;
+CREATE TEMP TABLE r2_on AS :chain_expression;
 SET sift.enable_agg = off;
-CREATE TEMP TABLE r1_off AS :q1;
-CREATE TEMP TABLE r2_off AS :q2;
+CREATE TEMP TABLE r1_off AS :chain_label;
+CREATE TEMP TABLE r2_off AS :chain_expression;
 RESET sift.enable_agg;
 -- the caches start again before every chunk (the ids of the values go with the output rows they stand for)
 SET sift.test_limits = 'combo_entries=0';
-CREATE TEMP TABLE r1_trim AS :q1;
-CREATE TEMP TABLE r2_trim AS :q2;
+CREATE TEMP TABLE r1_trim AS :chain_label;
+CREATE TEMP TABLE r2_trim AS :chain_expression;
 RESET sift.test_limits;
 SELECT (SELECT count(*) FROM r1_on) AS labels, (SELECT count(*) FROM ((TABLE r1_on EXCEPT TABLE r1_off) UNION ALL (TABLE r1_off EXCEPT TABLE r1_on)) d) AS differences;
 SELECT (SELECT count(*) FROM r2_on) AS types, (SELECT count(*) FROM ((TABLE r2_on EXCEPT TABLE r2_off) UNION ALL (TABLE r2_off EXCEPT TABLE r2_on)) d) AS differences;

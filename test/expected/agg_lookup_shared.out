@@ -46,60 +46,60 @@ BEGIN
 	DROP TABLE r_on, r_gen, r_off;
 	RETURN NEXT;
 END $$;
-\set q1 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
-\set q2 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
+\set tier_label_lt10 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
+\set tier_lt5 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
 -- a text key
-\set q3 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.code = ''c'' || ev.dim_a_id GROUP BY 1'
+\set text_key_join 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.code = ''c'' || ev.dim_a_id GROUP BY 1'
 -- the first query loads the table and keeps it, the next ones read it; another condition is another table
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
         1000 |           0 |              0
 (1 row)
 
-SELECT cached(:'q2');
+SELECT cached(:'tier_lt5');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q2');
+SELECT cached(:'tier_lt5');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT cached(:'q3');
+SELECT cached(:'text_key_join');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q3');
+SELECT cached(:'text_key_join');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT * FROM same(:'q3');
+SELECT * FROM same(:'text_key_join');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
            4 |           0 |              0
@@ -107,38 +107,38 @@ SELECT * FROM same(:'q3');
 
 -- a write: the rows are loaded again from pages that are not all visible, and kept again once vacuumed
 INSERT INTO ents VALUES (7, 7, 3, 'new', 'cnew');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
         1001 |           0 |              0
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
 VACUUM ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
         1001 |           0 |              0
@@ -146,25 +146,25 @@ SELECT * FROM same(:'q1');
 
 UPDATE ents SET tier = 9, label = 'moved', code = 'cmoved' WHERE id = 8;
 VACUUM ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
         1001 |           0 |              0
 (1 row)
 
-SELECT cached(:'q3');
+SELECT cached(:'text_key_join');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT * FROM same(:'q3');
+SELECT * FROM same(:'text_key_join');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
            4 |           0 |              0
@@ -172,19 +172,19 @@ SELECT * FROM same(:'q3');
 
 DELETE FROM ents WHERE id < 100;
 VACUUM ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          961 |           0 |              0
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
@@ -193,33 +193,33 @@ SELECT cached(:'q1');
 -- rolled back, and a transaction that sees its own rows
 BEGIN;
 UPDATE ents SET label = 'rolled back' WHERE id = 500;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          961 |           0 |              0
 (1 row)
 
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          961 |           0 |              0
 (1 row)
 
 VACUUM ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
@@ -227,14 +227,14 @@ SELECT cached(:'q1');
 
 BEGIN;
 INSERT INTO ents VALUES (11, 5, 2, 'mine', 'cmine');
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          962 |           0 |              0
 (1 row)
 
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          961 |           0 |              0
@@ -242,26 +242,26 @@ SELECT * FROM same(:'q1');
 
 -- a rewritten table is another file
 VACUUM FULL ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
 VACUUM ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
          961 |           0 |              0
@@ -271,20 +271,20 @@ SELECT * FROM same(:'q1');
 CREATE ROLE lookshm_other;
 GRANT SELECT ON ev, ents TO lookshm_other;
 SET ROLE lookshm_other;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
 RESET ROLE;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
@@ -301,13 +301,13 @@ RESET ROLE;
 DROP ROLE lookshm_plain;
 -- off: nothing is read and nothing is kept
 SET sift.agg_lookup_shared_kb = 0;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
@@ -409,19 +409,19 @@ SELECT * FROM same(:'qb');
 -- the cache of the backend first, when it is on: the same rows
 SET sift.agg_lookup_shared_kb = 4096;
 RESET sift.agg_lookup_cache_kb;
-SELECT cached(:'q3');
+SELECT cached(:'text_key_join');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 0 cached tables
 (1 row)
 
-SELECT cached(:'q3');
+SELECT cached(:'text_key_join');
               cached              
 ----------------------------------
  1 SiftAgg nodes, 1 cached tables
 (1 row)
 
-SELECT * FROM same(:'q3');
+SELECT * FROM same(:'text_key_join');
  result_rows | vs_unshared | vs_normal_plan 
 -------------+-------------+----------------
            4 |           0 |              0
