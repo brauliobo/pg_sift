@@ -720,6 +720,7 @@ extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
 extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
 extern const char *sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
+extern bool sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);

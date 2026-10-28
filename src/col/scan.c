@@ -2104,6 +2104,8 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 	src->gpin_leaf = gleaf;
 	src->gpin_val = gval;
 	*grouped = gleaf;
+	for (int i = 0; i < src->nseg; i++)
+		src->seg[i].gexact = NULL;
 	if (!src->mem_loaded)
 		load_wbuf(src);
 	if (src->nmem > 0)

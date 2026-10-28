@@ -330,6 +330,53 @@ sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uin
 	return true;
 }
 
+/*
+ * Is the entry of the global order of stored segment i at heap block blk of a row that is live and visible to every snapshot, so that nothing needs the heap to
+ * confirm it (an OFFSET throws it away unread)? Its unit must have no dead row and its pages all-visible, read once for the unit in the order of col_super_take:
+ * the map, the directory, the liveness.
+ */
+bool
+sift_col_gorder_exact(SiftColSource *src, int i, BlockNumber blk)
+{
+	ColCursor  *c;
+	SiftColSegment *seg;
+	uint32		sb = blk / SIFT_SB_PAGES,
+				u;
+
+	if (i >= src->nseg || (src->flags & COLO_TABLE))
+		return false;
+	c = &src->seg[i];
+	seg = c->seg;
+	if (sift_cseg_keyed(&seg->entry))
+		return false;
+	/* the superblocks of a segment are mostly all of them in a row: the unit at the offset from the first is the one, else the gallop finds it */
+	u = seg->nsb > 0 ? sb - seg->sbdir[0].sb : 0;
+	if (u >= seg->nsb || seg->sbdir[u].sb != sb)
+		u = sift_cseg_find_unit(seg, sb);
+	if (u >= seg->nsb || seg->sbdir[u].sb != sb)
+		return false;
+	if (c->gexact == NULL)
+		c->gexact = MemoryContextAllocZero(src->mcxt, seg->nsb);
+	if (c->gexact[u] == 0)
+	{
+		uint64		pm[SIFT_PAGEMASK_WORDS],
+					av[SIFT_PAGEMASK_WORDS];
+		bool		ok = sift_cseg_unit_pagemask(seg, u, pm);
+
+		if (ok)
+		{
+			src->visibility.sb_mask(src->visibility.arg, sb, av);
+			for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+				ok &= (pm[w] & ~av[w]) == 0;
+			ok = ok && segments_current(src);
+			SIFT_COL_JITTER();
+			ok = ok && !sift_cseg_dirty(seg, u);
+		}
+		c->gexact[u] = ok ? 1 : 2;
+	}
+	return c->gexact[u] == 1;
+}
+
 int
 sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi)
 {

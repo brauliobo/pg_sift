@@ -153,6 +153,8 @@ order_array_range	the scan searches each segment's array for the first entry of 
 topn_run_range	starts at the first entry of the range, found by two binary searches of the run	orders	default	[1-9][0-9]* units read by sorted run	native	no_run:search_path = topn_run_range_plain	ms	faster33	no
 order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no
+topn_offset_exact	an OFFSET reads the sorted array of the key and does not confirm the entries before it in the heap	orders	default	Global Order: true	native	btree:search_path = topn_offset_btree	ms	faster33	no
+topn_offset_deep	an OFFSET past the 100,000 rows a top-N heap holds is walked in the array	orders	default	Global Order: true	native	btree:search_path = topn_offset_deep_btree	ms	faster33	no
 group_order_window	emits its groups in that order	orders	default	Group Order Keys	native	-	ms	faster33	no
 tpch_shipping_priority_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 tpch_returned_items_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no

@@ -371,6 +371,12 @@ sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 v
 	return src->prov->gorder_seek(src->impl, i, leaf, vs, ve, key, after, keep);
 }
 
+bool
+sift_colsrc_gorder_exact(SiftSrcSource *src, int i, BlockNumber blk)
+{
+	return src->prov->gorder_exact && src->prov->gorder_exact(src->impl, i, blk);
+}
+
 void
 sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {

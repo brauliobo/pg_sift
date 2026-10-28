@@ -1019,8 +1019,11 @@ topn_path(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, R
 	cp->methods = &agg_path_methods;
 	agg_cost(c, s, input_rel, &cp->path, Min(rows, Max(input_rel->rows, 1.0)));
 	extra = matches * c->topn_xcost;
-	extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
-		topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
+	if (c->topn_array && nworkers == 0)
+		extra += (1.0 + c->topn_cmpx) * cpu_operator_cost * rows;	/* the walk of the order array: a merge step for each entry, no heap of rows */
+	else
+		extra += c->topn_sorted ? topn_sort_cost(matches, list_length(root->parse->sortClause), c->topn_keybytes, c->topn_cmpx) :
+			topn_heap_cost(matches * c->topn_frac, rows, c->topn_cmpx);
 	cp->path.startup_cost += extra;
 	cp->path.total_cost += extra;
 	cp->custom_private = list_make3(agg_spec_keep(s), scan_tlist, c->level_params);
@@ -1224,6 +1227,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 			   *oleaf;
 	bool	   *desc,
 			   *nulls_first,
+				deep,
 				skip_offset = true;
 	Oid		   *sortop,
 			   *cmp,
@@ -1360,7 +1364,10 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	flags = (skip_offset ? TOPN_SKIP_OFFSET : 0) | (s->naggs > 0 ? TOPN_TOTALS : 0) | (topn_raw_key(c, leaf[0], xf[0].kind) ? TOPN_RAWKEY : 0) |
 		(nlead < nkey ? TOPN_TIES | slack << TOPN_SLACK_SHIFT : 0);
 	rows += slack;
-	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
+	/* the order array gives the rows without a heap of them: only the LIMIT is held, an OFFSET past the cap is walked entry by entry (sift_topn_gorder) */
+	deep = rows > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && skip_offset && nlead == 1 && count <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
+	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) &&
+		((rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0) || deep))
 	{
 		c->topn_sorted = false;
 		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
@@ -1377,7 +1384,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		s->topn = sift_topn_spec(nlead, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 		topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nlead, count + offset);
 		/* the lookup tables of the joins are loaded by the process that runs the scan: no workers; the totals of the workers are not merged */
-		nworkers = c->joins == NIL && c->level_params == NIL && s->naggs == 0 && !c->topn_xserial && nlead == nkey && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
+		nworkers = !deep && c->joins == NIL && c->level_params == NIL && s->naggs == 0 && !c->topn_xserial && nlead == nkey && input_rel->consider_parallel && output_rel->consider_parallel ? parallel_workers(c, s) : 0;
 		if (nworkers > 0)
 			topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, nworkers, nlead, count + offset);
 		if (rows <= TOPN_SORT_ROWS)

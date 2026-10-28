@@ -1,0 +1,101 @@
+-- ORDER BY key LIMIT n OFFSET m over the global order of the key: the first m entries are not given out, and an entry of a unit with no dead row whose
+-- pages are all-visible is not confirmed by the heap either. The rows are the heap's through VACUUM FREEZE, rows of the write buffer, deleted rows with and without a VACUUM,
+-- addresses a VACUUM freed and an insert took, updates, a promotion and a merge; the heap fetches say which entries were confirmed.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE TABLE ot (id int, a int2, b int, c int8, t timestamp, s text, pad text DEFAULT repeat('x', 200));
+ALTER TABLE ot ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO ot (id, a, b, c, t, s)
+SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 60 - 30 END, CASE WHEN i % 31 = 0 THEN NULL ELSE (i * 7919) % 500 END,
+	   CASE WHEN i % 37 = 0 THEN NULL ELSE ((i * 104729) % 100003)::int8 * 5000000 - 200000000000 END,
+	   CASE WHEN i % 43 = 0 THEN NULL ELSE TIMESTAMP '2000-01-01' + ((i * 7919) % 900000) * interval '1 second' END,
+	   CASE WHEN i % 47 = 0 THEN NULL ELSE 'k' || substr(md5((i % 2500)::text), 1, 1 + i % 9) END
+FROM generate_series(1, 12000) i;
+CREATE INDEX ot_i ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, b sift.col_int4_ops, c sift.col_int8_ops, t sift.col_timestamp_ops, s sift.col_text_ops)
+	WITH (order_columns = 'id, a, b, c, t', order_array_columns = 'id, a, b, c, t, s');
+VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ot;
+SET sift.test_topn_heads = off;
+
+-- the answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key; the second field is the heap fetches
+-- of the scan: 'skipped' when it fetched no more rows than it gave out (no entry before the OFFSET was confirmed), 'confirmed' when it fetched more than the LIMIT and half
+-- the OFFSET (dead entries are not counted), 'partly' between
+CREATE FUNCTION ot_chk(col text, dir text, nl text, lim int, off int, other text DEFAULT '') RETURNS text LANGUAGE plpgsql AS $$
+DECLARE q text; pl text; used bool := false; fetches int := -1; ka text; kb text; bad bigint;
+BEGIN
+	q := format('SELECT id, %1$s AS k FROM ot %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s OFFSET %6$s', col, dir, nl, lim, other, off);
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
+		used := used OR pl LIKE '%Global Order%';
+		IF pl LIKE '%heap fetches%' THEN fetches := substring(pl from '([0-9]+) heap fetches')::int; END IF;
+	END LOOP;
+	DROP TABLE IF EXISTS pg_temp.ot_ra;
+	EXECUTE 'CREATE TEMP TABLE ot_ra AS SELECT row_number() OVER () AS ord, * FROM (' || q || ') r';
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	SELECT string_agg(coalesce(k::text, 'N'), ',' ORDER BY ord) INTO ka FROM ot_ra;
+	EXECUTE format('SELECT string_agg(coalesce(k::text, ''N''), '','') FROM (SELECT %1$s AS k FROM ot %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s OFFSET %6$s) r', col, dir, nl, lim, other, off) INTO kb;
+	EXECUTE format('SELECT count(*) FROM ot_ra r WHERE NOT EXISTS (SELECT 1 FROM ot WHERE ot.id = r.id AND ot.%1$s IS NOT DISTINCT FROM r.k)', col) INTO bad;
+	RETURN CASE WHEN ka IS DISTINCT FROM kb OR bad > 0 OR (SELECT count(DISTINCT id) <> count(*) FROM ot_ra) THEN 'DIFFERS ' || col || ' ' || dir || ' ' || nl || ' ' || lim || ' ' || off || ' ' || other
+				WHEN NOT used THEN 'units'
+				WHEN fetches <= lim THEN 'skipped' WHEN fetches >= lim + off / 2 THEN 'confirmed' ELSE 'partly' END;
+END $$;
+
+CREATE FUNCTION ot_all(lim int, offs int[], other text DEFAULT '') RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT result, count(*) FROM (SELECT ot_chk(c, d, nl, lim, o, other) AS result FROM unnest(ARRAY['id', 'a', 'b', 'c', 't', 's']) c, unnest(ARRAY['ASC', 'DESC']) d,
+	unnest(ARRAY['FIRST', 'LAST']) nl, unnest(offs) o) r GROUP BY 1 ORDER BY 1 $$;
+
+-- every unit exact: the entries before the OFFSET are not fetched
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000, 11990]);
+-- an OFFSET past the cap of the top-N heap (lowered to 50 rows): the walk holds only the LIMIT, so the rows are the same; a LIMIT past the cap sorts as before
+SET sift.test_limits = 'topn_rows=50';
+SELECT * FROM ot_all(10, ARRAY[100, 3000, 11990, 13000]);
+SELECT * FROM ot_all(40, ARRAY[100, 3000]);
+SELECT * FROM ot_all(60, ARRAY[100, 3000]);
+RESET sift.test_limits;
+-- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) reads the heap
+SELECT result, count(*) FROM (
+	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
+	FROM (VALUES ('b', 'b > 100'), ('b', 'b <> 3 AND b < 6'), ('b', 'b <= 7 OR b >= 490 OR b = 250'), ('b', 'b BETWEEN 100 AND 120'), ('b', 'b IS NOT NULL'), ('b', 'b > 1000'),
+				 ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('id', 'id <= 6000 AND id <> 77'), ('b', 'b > 100 AND a > 0')) q(c, w),
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 25, 800]) o) r
+GROUP BY 1 ORDER BY 1;
+
+-- rows of the write buffer, deleted rows (the pages are not all-visible until a VACUUM) and updated rows
+INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, TIMESTAMP '2021-01-01' + i * interval '1 minute', 'z' || i % 77 FROM generate_series(1, 1500) i;
+DELETE FROM ot WHERE id % 11 = 0;
+UPDATE ot SET a = coalesce(a, 0) + 1, b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1, t = t + interval '1 day', s = 'u' || s WHERE id % 7 = 0;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+-- a VACUUM flags the dead rows of the units: those units are confirmed again
+VACUUM ot;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+-- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
+INSERT INTO ot (id, a, b, c, t) SELECT 20000 + i, -i % 50, i % 400, i, TIMESTAMP '1990-01-01' + i * interval '1 hour' FROM generate_series(1, 900) i;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+SET sift.test_limits = 'topn_rows=50';
+SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
+RESET sift.test_limits;
+-- frozen again after the merge: the entries before the OFFSET are not fetched (the merge dropped the dead rows)
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
+SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
+
+SET sift.test_limits = 'topn_rows=50';
+SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
+RESET sift.test_limits;
+
+-- a key_cut index (its units are cut by the key, not by superblock): every entry is confirmed by the heap, the rows are the same
+DROP INDEX ot_i;
+CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_columns = 't', order_array_columns = 't');
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
+SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
+
+DROP TABLE ot CASCADE;
+DROP FUNCTION ot_chk(text, text, text, int, int, text), ot_all(int, int[], text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

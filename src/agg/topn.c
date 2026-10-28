@@ -334,6 +334,7 @@ struct SiftTopN
 	bool	   *ovn;
 	int64	   *uv;				/* the values of the rows of lh */
 	bool	   *uvn;
+	int			gwant;			/* LIMIT + OFFSET (at most INT_MAX), whether or not a heap can hold them: the rows the walk of the order array gives (0: LIMIT NULL) */
 	int64		skip;			/* the first rows the Limit above throws away (OFFSET): given as rows of NULLs, not read from the heap */
 	int64		emitted;
 	TopEnt	   *heap;			/* the best rows so far, the worst at heap[0] */
@@ -420,7 +421,8 @@ eval_bound(Node *e, ExprContext *econtext, PlanState *parent, bool *isnull)
 }
 
 /*
- * LIMIT + OFFSET, whatever the values the plan was made for: false when no heap can hold them (no limit, past the cap, an overflow).
+ * LIMIT + OFFSET, whatever the values the plan was made for: false when no heap can hold them (no limit, past the cap, an overflow). *rows is the sum all the same
+ * (at most INT_MAX) when there is one: the walk of the order array holds no heap and ends at it.
  * A negative sum is a rows-wanted of zero: the Limit node above raises its error before it asks for a row. *offset: the OFFSET (0 for NULL).
  */
 static bool
@@ -431,13 +433,14 @@ bound_rows(Node *spec, ExprContext *econtext, PlanState *parent, int *rows, int6
 	int64		count = eval_bound(SPEC_COUNT(spec), econtext, parent, &isnull),
 				n;
 
+	*rows = 0;
 	*offset = SPEC_OFFSET(spec) ? eval_bound(SPEC_OFFSET(spec), econtext, parent, &offnull) : 0;
 	if (offnull)
 		*offset = 0;
-	if (isnull || pg_add_s64_overflow(count, *offset, &n) || n > sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS))
+	if (isnull || pg_add_s64_overflow(count, *offset, &n))
 		return false;
-	*rows = Max(n, 0);
-	return true;
+	*rows = (int) Min(Max(n, 0), PG_INT32_MAX);
+	return n <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS);
 }
 
 /* The rows ordered by the keys (in the direction of each, the NULLs where it says), then by the TID: the order of the heap */
@@ -670,7 +673,8 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		t->attno[c] = list_nth_int(l, i++);
 		t->oleaf[c] = list_nth_int(l, i++);
 	}
-	bounded = bound_rows(spec, econtext, parent, &t->limit, &offset);
+	bounded = bound_rows(spec, econtext, parent, &t->gwant, &offset);
+	t->limit = bounded ? t->gwant : 0;
 	/* a heap entry holds SIFT_TOPN_MAX_KEYS keys: more keys sort every row, as no bound does */
 	flags = list_nth_int(l, i++);
 	if ((flags & TOPN_SORT) || (t->nkey > sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && t->limit > 0))
@@ -3756,6 +3760,35 @@ gcond_test(const SiftTopGPred *p, TupleTableSlot *slot)
 	return p->kind == STG_AND;
 }
 
+/*
+ * Does an entry of the global order pass the condition, from its key alone: 1 or 0, or -1 when a column other than the key decides. The entries of a group
+ * block are all of the group gl that the top of the conjunction pins.
+ */
+static int
+gcond_entry(const SiftTopGPred *p, int gl, bool top, int64 key, bool isnull)
+{
+	int			r = p->kind == STG_AND ? 1 : 0;
+
+	if (p->kind == STG_NOTNULL)
+		return p->lead ? !isnull : -1;
+	if (p->kind == STG_CMP)
+	{
+		if (p->lead)
+			return !isnull && gcond_cmp(p->op, key, p->val);
+		return top && p->op == SCMP_EQ && p->leaf == gl ? 1 : -1;
+	}
+	for (int i = 0; i < p->nchild; i++)
+	{
+		int			c = gcond_entry(p->child[i], gl, top && p->kind == STG_AND, key, isnull);
+
+		if (c == (p->kind == STG_OR))
+			return c;
+		if (c < 0)
+			r = -1;
+	}
+	return r;
+}
+
 /* a row of a group of the first key: its address and the values of the keys, which the heap row gave */
 typedef struct GRow
 {
@@ -3963,9 +3996,10 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	bool		bounds = false;
 	int			gl;
 
-	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (!t->gok || t->nogord || t->all || (t->gtext && cond != NULL))
+	/* past the cap of the heap only a walk that throws the OFFSET away unread gives the rows */
+	if (!t->gok || t->nogord || (t->all && (t->skip == 0 || t->nkey > 1 || t->gwant == 0)) || (t->gtext && cond != NULL))
 		return false;
+	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
 	if (cond != NULL)
 	{
 		GBox		box = gcond_box(cond);
@@ -3977,7 +4011,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 		bounds = box.empty || box.has_lo || box.has_hi;
 		(void) gcond_pins(cond, &b);
 	}
-	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, t->gtext ? (uint32) t->key[0].collid : 0, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
+	t->go = sift_gord_open(src, t->key[0].leaf, t->all ? t->gwant : t->limit, t->key[0].desc, t->key[0].nulls_first, t->gtext ? (uint32) t->key[0].collid : 0, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
 	if (t->go == NULL)
 		return false;
 	gl = sift_gord_group(t->go);
@@ -3988,6 +4022,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 		return false;
 	}
 	t->gcond = cond;
+	t->limit = t->all ? t->gwant : t->limit;
 	if (t->nkey > 1 && !gord_prep(t))
 		t->go = NULL;
 	return t->go != NULL;
@@ -4003,9 +4038,12 @@ sift_topn_gordered(const SiftTopN *t)
 static bool
 skipped_row(SiftTopN *t, TupleTableSlot *slot)
 {
-	ExecClearTuple(slot);
-	memset(slot->tts_isnull, true, t->nout * sizeof(bool));
-	ExecStoreVirtualTuple(slot);
+	/* the rows the Limit throws away come first, and it does not touch them: the slot of the last one is the NULLs of the next */
+	if (TTS_EMPTY(slot))
+	{
+		memset(slot->tts_isnull, true, t->nout * sizeof(bool));
+		ExecStoreVirtualTuple(slot);
+	}
 	return true;
 }
 
@@ -4026,6 +4064,12 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 
 		if (t->nkey > 1)
 			tid = t->gq[t->gqpos++].tid;
+		/* an entry of an exact unit that the Limit throws away is not confirmed in the heap: its key is the array's */
+		else if (t->emitted < t->skip && sift_gord_exact(t->go, &tid) && (t->gcond == NULL || gcond_entry(t->gcond, sift_gord_group(t->go), true, key, isnull) == 1))
+		{
+			t->emitted++;
+			return skipped_row(t, slot);
+		}
 		if (!table_index_fetch_tuple(f->fetch, &tid, t->snap, f->slot, &call_again, &all_dead))
 			continue;
 		if (t->nkey == 1)

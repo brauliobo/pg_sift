@@ -683,6 +683,12 @@ col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bo
 	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after, keep);
 }
 
+static bool
+col_gorder_exact(void *impl, int i, BlockNumber blk)
+{
+	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, blk);
+}
+
 static void
 col_gorder_head(void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
@@ -871,6 +877,7 @@ static const SiftSrcProvider col_provider = {
 	.gorder_open = col_gorder_open,
 	.gorder_str = col_gorder_str,
 	.gorder_info = col_gorder_info,
+	.gorder_exact = col_gorder_exact,
 	.gorder_head = col_gorder_head,
 	.gorder_range = col_gorder_range,
 	.gorder_seek = col_gorder_seek,

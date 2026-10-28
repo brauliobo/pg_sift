@@ -32,6 +32,8 @@ extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool des
 extern const char *sift_gord_str(const SiftGOrd *g, uint32 *len);
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
+/* The entry sift_gord_next just gave is of a row that is live and visible to every snapshot: the heap need not confirm it (the first rows an OFFSET throws away) */
+extern bool sift_gord_exact(const SiftGOrd *g, const ItemPointerData *tid);
 extern void sift_gord_rewind(SiftGOrd *g);
 /* The leaf the arrays are grouped by, whose pinned value the scan reads the entries of; -1 when they are not grouped */
 extern int	sift_gord_group(const SiftGOrd *g);
