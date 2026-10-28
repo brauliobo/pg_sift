@@ -117,6 +117,13 @@
 #define AGG_MERGE_KEY		25.0	/* ... and, when the workers are priced, each key of it: 35 ns with one key over 30,000 groups and 85 ns with three over 100,000 per table measured (the CPU two workers add beyond their 3.35 ms start) */
 #define AGG_ORDERED_MERGE	1.5		/* a value kept for an ordered-set aggregate, as the leader merges the histograms of the workers (the distinct pairs, at most one per value) */
 #define AGG_DISTINCT_MERGE	7.0		/* a (group, value) pair of a count(DISTINCT), as the leader merges the sets of the workers into its own: one by one, as costly as the pair was to insert (2,000,000 rows of 1,000 groups, 0 to 8 workers: 820 to 890 ms) */
+#define AGG_HASH_ENTRY		64.0	/* the bytes of an entry of a hash aggregate besides its key: the bucket, the stored tuple's header, its allocation */
+#define AGG_HASH_CACHE		1048576.0	/* the hash table that stays in the cache of a core */
+#define AGG_HASH_MISS		4.4		/* the memory misses of a row into a table far past the cache, for an integer key: 1.9 at 720 kB, 4.2 at 7 MB, 4.6 at 36 MB (perf, 1,000,000 rows, 10,000 to 500,000 groups) */
+#define AGG_HASH_MISS_KEY	2.1		/* ... and what a key held apart from its entry adds (text: 3.7 at 810 kB, 6.3 at 8 MB, 6.8 at 40 MB), more for a wide one */
+#define AGG_HASH_MISS_NS	80.0	/* a miss, in ns */
+#define AGG_HASH_GROW_NS	20.0	/* the table doubling when it fills, for each doubling of the groups: 68 instructions a row */
+#define AGG_NORMAL_MS		150.0	/* a millisecond of the normal plan, in its cost units: its aggregates ran 23 (1,000,000 rows, 439,000 groups) to 100 units a ms */
 #define AGG_START_MS		750.0	/* a millisecond in this path's estimates, for starting workers: a scan of 4 to 13 ms (1,000,000 rows, 9 to 30,000 groups) took 0.6 to 1.0 ns an operator, 500 to 830 units a ms, and the workers add 3.35 ms and 6 to 16 ms of CPU for no wall: the 223 SiftAgg nodes over 1 ms of the 156-statement replay ran 0.002 (10th percentile), 0.0098 (median) and 0.055 ms (90th) a cost unit, and the workers take 3 ms and 0.35 ms each to start */
 #define AGG_CHILD_RUN		0.5		/* the share of PostgreSQL's cost of a LIMIT 1 child that a run takes: 0.6 to 2.4 us a distinct input on tables of 100 to 122,000 rows, 3 us in a mapping child, against 2.5 to 3.6 units of 2.9 us it was charged; not below 0.45, where the planner's latest-fact lookup is priced under its measured ratio */
 #define AGG_SHARE_ROW		1.0		/* a row of a lookup table written to the shared memory by the leader and mapped by each worker: a quarter of the cost of reading it */
@@ -3035,4 +3042,40 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 		p->rows = Min(p->rows, Max(s->est_rows, 1.0));
 	if (s->nworkers > 0 && !pricing_scratch && parallel_setup_cost > 0 && c->joins != NIL && k.agg_rows * AGG_WIDE_CAP < k.sel_rows * k.elems)
 		workers_ratio(c, s, input_rel, p, rows_out, k.rows_out * cpu_tuple_cost);
+}
+
+/*
+ * The time PostgreSQL leaves out of a hash aggregate whose table outgrows the cache of a core: it prices a row at one operator whatever the groups, and a row
+ * is a hash, a probe that misses (the bucket, the stored key), and the table doubling as it fills. In its units, for the rows the path hashes; 0 for a table
+ * a core's cache holds. A table that spills keeps the memory of a hash aggregate (cost_agg prices the pages it writes).
+ */
+double
+hash_agg_extra(const AggPath *a)
+{
+	double		groups = Max(a->numGroups, 1.0),
+				width = 0,
+				bytes,
+				misses;
+	PathTarget *pt = a->subpath->pathtarget;
+	bool		byval = true;
+	int			i = 0;
+
+	foreach_node(Expr, e, pt->exprs)
+	{
+		if (get_pathtarget_sortgroupref(pt, i++) != 0)
+		{
+			Oid			t = exprType((Node *) e);
+			int16		len;
+			bool		bv;
+
+			get_typlenbyval(t, &len, &bv);
+			byval &= bv;
+			width += get_typavgwidth(t, exprTypmod((Node *) e));
+		}
+	}
+	bytes = Min(groups * (width + AGG_HASH_ENTRY), (double) get_hash_memory_limit());
+	if (bytes <= AGG_HASH_CACHE)
+		return 0;
+	misses = (AGG_HASH_MISS + (byval ? 0 : AGG_HASH_MISS_KEY + 0.02 * width)) * bytes / (bytes + AGG_HASH_CACHE);
+	return a->subpath->rows * (misses * AGG_HASH_MISS_NS + AGG_HASH_GROW_NS * log2(groups)) * 1e-6 * AGG_NORMAL_MS;
 }

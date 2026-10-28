@@ -1355,6 +1355,22 @@ upper_paths_on(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel
 	agg_arm_end();
 }
 
+/* does the input read a table with a column source: a plan the scan competes with */
+static bool
+scans_column_source(PlannerInfo *root, RelOptInfo *rel)
+{
+	bool		found = false;
+	int			i = -1;
+
+	while ((i = bms_next_member(rel->relids, i)) >= 0)
+	{
+		RangeTblEntry *rte = planner_rt_fetch(i, root);
+
+		found |= rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid);
+	}
+	return found;
+}
+
 /* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
 sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -1367,6 +1383,10 @@ sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *inp
 	agg_stage_begin(&st, root);
 	agg_index_usable = 0;
 	agg_stage_normal = HUGE_VAL;
+	if ((stage == UPPERREL_GROUP_AGG || stage == UPPERREL_PARTIAL_GROUP_AGG) && scans_column_source(root, input_rel))
+		foreach_ptr(Path, p, output_rel->pathlist)
+			if (IsA(p, AggPath) && ((AggPath *) p)->aggstrategy == AGG_HASHED)
+				p->total_cost += hash_agg_extra((AggPath *) p);
 	foreach_ptr(Path, p, output_rel->pathlist)
 		if (!(IsA(p, CustomPath) && ((CustomPath *) p)->methods == &agg_path_methods))
 			agg_stage_normal = Min(agg_stage_normal, p->total_cost);
