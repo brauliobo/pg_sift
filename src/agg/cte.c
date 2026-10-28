@@ -1212,7 +1212,10 @@ sift_executor_start(QueryDesc *queryDesc, int eflags)
 	else
 		standard_ExecutorStart(queryDesc, eflags);
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+	{
 		sift_col_ioss_want(queryDesc);
+		sift_col_stmt_start(queryDesc);
+	}
 }
 
 void

@@ -12,7 +12,7 @@ step s1i: INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM g
 step s2r: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows_seen FROM iso_mk;
 rows_seen
 ---------
-    30000
+    30400
 (1 row)
 
 step s3m: SELECT sift.col_merge('iso_mk_idx', true) > 0 AS merged;
@@ -31,8 +31,8 @@ t
 
 step s2c: COMMIT;
 step s3p: SELECT reloptions::text AS after FROM pg_class WHERE relname = 'iso_mk_idx';
-after                         
-------------------------------
+after                       
+----------------------------
 {"key_columns=auto: set_id"}
 (1 row)
 

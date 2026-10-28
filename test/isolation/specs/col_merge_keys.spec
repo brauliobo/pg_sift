@@ -30,6 +30,8 @@ setup { VACUUM iso_mk; }
 setup
 {
 	SELECT sift.col_promote('iso_mk_idx');
+	-- the rows the merge sees besides the segments: the writer's own rows wait in its backend until it commits, so they are not among them
+	INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM generate_series(30001, 30400) g;
 	CREATE FUNCTION iso_mk_q(OUT agree bool) LANGUAGE plpgsql AS $$
 	DECLARE q text := 'SELECT set_id, count(DISTINCT id), count(*) FROM iso_mk WHERE set_id IN (5, 77, 410) GROUP BY 1'; x text; y text;
 	BEGIN

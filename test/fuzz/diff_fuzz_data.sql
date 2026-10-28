@@ -344,12 +344,52 @@ ALTER TABLE exf SET ACCESS METHOD sift_table;
 SELECT sift.table_set_paths('exf', 'metrics_a', 'metrics_a.* float8');
 SELECT sift.table_set_paths('exf', 'parts', 'parts[]{cat text, score float8}');
 VACUUM FULL exf;
+-- @end
+
 -- COPY of the rows a generator makes (a superuser: through a file of the data directory); a table without a unique index takes it as a group of columns
 CREATE FUNCTION fz.bulk_insert(tbl regclass, gen text, lo bigint, hi bigint, salt int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE f text := current_setting('data_directory') || '/fz_bulk.dat';
 BEGIN
 	EXECUTE format('COPY (SELECT * FROM fz.%I(%s, %s, %s)) TO %L', gen, lo, hi, salt, f);
 	EXECUTE format('COPY %s FROM %L', tbl, f);
+END $$;
+-- @heap
+-- A transaction that rolls back, read after each step by the plan of the session (the pushdown, or the heap with sift.enable_agg off): rows of one
+-- statement, one by one, COPY, a savepoint that rolls back, an ON CONFLICT insert half of whose rows exist, new row versions, deletes. The rows a backend
+-- has written in its own transaction must be in what it reads at once, whatever the way they got into the write buffer.
+CREATE FUNCTION fz.txn_mix(lo bigint, n int, salt int, ops text) RETURNS TABLE (step int, res text) LANGUAGE plpgsql AS $$
+DECLARE c text; nxt bigint := lo; r text[] := '{}'; s text;
+BEGIN
+	BEGIN
+		FOREACH c IN ARRAY string_to_array(ops, ',') LOOP
+			IF c = 'i' THEN
+				INSERT INTO events SELECT * FROM fz.gen_events(nxt, nxt + n - 1, salt);
+			ELSIF c = 'o' THEN
+				FOR j IN 0..n - 1 LOOP INSERT INTO events SELECT * FROM fz.gen_events(nxt + j, nxt + j, salt); END LOOP;
+			ELSIF c = 'c' THEN
+				PERFORM fz.bulk_insert('events', 'gen_events', nxt, nxt + n - 1, salt);
+			ELSIF c = 's' THEN
+				BEGIN
+					INSERT INTO events SELECT * FROM fz.gen_events(nxt, nxt + n - 1, salt);
+					RAISE EXCEPTION 'undo';
+				EXCEPTION WHEN raise_exception THEN NULL;
+				END;
+			ELSIF c = 'x' THEN
+				INSERT INTO events SELECT * FROM fz.gen_events(nxt - n / 2, nxt + n - 1, salt) ON CONFLICT (id) DO NOTHING;
+			ELSIF c = 'u' THEN
+				UPDATE events SET amount = coalesce(amount, 0) + 1, grp = (coalesce(grp, 0) + 1) % 12 WHERE id >= nxt - n AND id < nxt + n;
+			ELSIF c = 'd' THEN
+				DELETE FROM events WHERE id >= nxt - n AND id < nxt - n / 2;
+			END IF;
+			nxt := nxt + n;
+			SELECT string_agg(coalesce(g::text, 'n') || ':' || k || ':' || m, ',' ORDER BY g NULLS FIRST) INTO s
+			FROM (SELECT grp g, count(*) k, sum(amount) m FROM events GROUP BY grp) x;
+			r := r || (s || '/' || (SELECT count(*) || ':' || coalesce(max(id), -1) FROM events));
+		END LOOP;
+		RAISE EXCEPTION 'rolled back';
+	EXCEPTION WHEN raise_exception THEN NULL;
+	END;
+	RETURN QUERY SELECT g, r[g] FROM generate_series(1, coalesce(array_length(r, 1), 0)) g;
 END $$;
 -- @end
 

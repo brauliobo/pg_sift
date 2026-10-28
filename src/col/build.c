@@ -822,6 +822,8 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 	bool		chosen;
 	SiftAutoCut autocut;
 
+	/* the build reads the heap, which holds the rows this transaction has buffered for the index */
+	sift_cwbuf_discard(RelationGetRelid(index));
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));

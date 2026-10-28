@@ -169,7 +169,7 @@ SELECT sift.col_promote('o_col') >= 0 AS promoted;
 SELECT 'promote', stage('o_col'), kinds();
  ?column? |     stage     |        kinds         
 ----------+---------------+----------------------
- promote  | . . . . . . . | buffer:1 immutable:6
+ promote  | . . . . . . . | buffer:1 immutable:5
 (1 row)
 
 SELECT sift.col_verify('o_col', true);

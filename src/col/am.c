@@ -7,7 +7,9 @@
 #include "access/amapi.h"
 #include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/relation.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_index.h"
@@ -17,6 +19,7 @@
 #include "common/hashfn.h"
 #include "fmgr.h"
 #include "nodes/makefuncs.h"
+#include "nodes/plannodes.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -1224,6 +1227,82 @@ sift_col_make_row(SiftColRel *r, ItemPointer tid, const Datum *values, const boo
 	sift_col_make_row_rc(r, tid, values, isnull, row, mcxt, NULL);
 }
 
+/*
+ * The rows of a transaction after its first go to the write buffer in runs (wbuf.c, sift_cwbuf_pend). They are written before the commit record and before
+ * a savepoint starts, dropped when the transaction or the savepoint aborts: the heap rows of an aborted savepoint are dead at once and VACUUM may free their
+ * slots while the transaction goes on, so an index entry written for them later would point at whatever takes the slot. An ON CONFLICT statement kills
+ * the heap row of a conflict after the index entries went in, with no abort to drop them: its rows go in at once (batch_stmts).
+ */
+static bool batch_hooked;
+static bool batch_seen;
+static int	batch_stmts;
+
+static void
+batch_flush_all(void)
+{
+	Oid			oid;
+
+	while (OidIsValid(oid = sift_cwbuf_pending()))
+	{
+		Relation	index = try_relation_open(oid, RowExclusiveLock);
+
+		/* dropped in this transaction */
+		if (index == NULL)
+			sift_cwbuf_discard(oid);
+		else
+		{
+			if (sift_cwbuf_flush(index))
+				sift_col_maint_after_seal(index);
+			relation_close(index, NoLock);
+		}
+	}
+}
+
+static void
+batch_xact(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_PRE_COMMIT || event == XACT_EVENT_PRE_PREPARE)
+		batch_flush_all();
+	else if (event == XACT_EVENT_ABORT)
+		sift_cwbuf_discard(InvalidOid);
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
+		batch_seen = false;
+}
+
+static void
+batch_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_START_SUB)
+		batch_flush_all();
+	else if (event == SUBXACT_EVENT_ABORT_SUB)
+		sift_cwbuf_discard(InvalidOid);
+}
+
+static void
+batch_stmt_done(void *arg)
+{
+	batch_stmts--;
+}
+
+void
+sift_col_stmt_start(QueryDesc *queryDesc)
+{
+	PlannedStmt *ps = queryDesc->plannedstmt;
+	bool		speculative = IsA(ps->planTree, ModifyTable) && ((ModifyTable *) ps->planTree)->onConflictAction != ONCONFLICT_NONE;
+
+	foreach_ptr(Plan, sub, ps->subplans)
+		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;
+	if (speculative)
+	{
+		MemoryContextCallback *cb = MemoryContextAlloc(queryDesc->estate->es_query_cxt, sizeof(MemoryContextCallback));
+
+		cb->func = batch_stmt_done;
+		cb->arg = NULL;
+		MemoryContextRegisterResetCallback(queryDesc->estate->es_query_cxt, cb);
+		batch_stmts++;
+	}
+}
+
 bool
 sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap,
 				  IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
@@ -1236,7 +1315,16 @@ sift_col_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_
 	bool		crossed;
 
 	sift_col_make_row(r, heap_tid, values, isnull, &row, rowcxt);
-	crossed = sift_cwbuf_append(index, &hint, r->schema, &row);
+	if (!batch_hooked)
+	{
+		RegisterXactCallback(batch_xact, NULL);
+		RegisterSubXactCallback(batch_subxact, NULL);
+		batch_hooked = true;
+	}
+	/* the first row of a transaction goes in at once: a statement of one row pays nothing for the buffer */
+	if (!(batch_seen && batch_stmts == 0 && sift_cwbuf_pend(index, &hint, r->schema, &row, &crossed)))
+		crossed = sift_cwbuf_append(index, &hint, r->schema, &row);
+	batch_seen = true;
 	MemoryContextReset(rowcxt);
 	/* the append reads the catalog, which can reload the relcache entry and free r: keep the hint in the entry as it is now */
 	sift_col_rel(index)->hint = hint;

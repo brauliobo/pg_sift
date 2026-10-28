@@ -37,6 +37,7 @@ ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', 
 TABLE = False  # --table: the fact tables are sift_tables
 # families not run on a sift_table, with the reason
 TABLE_SKIP = {
+    'txnmix': 'the rows a transaction buffers before they reach the write buffer of a sift_col index',
     'point': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'pointagg': 'the heap-address directory (point_tid_columns) is an option of the sift_col index',
     'keycut': 'key_cut is an option of the sift_col index',
@@ -725,6 +726,37 @@ def render_topn(p):
 # ---------- trailing sort keys (TOPN_TIES): ORDER BY leaves, then columns the index does not hold, the Sort above the scan puts the ties in order ----------
 TR_LEAD = ['k', 'd', 't']
 TR_TAIL = ['w', 'x', 's', 'w % 7', 'w * 3 - k', 'length(s)', 'x * w']
+
+
+def gen_txnmix(r, ctx):
+    n = r.choice([3, 20, 120, 400])
+    lo = ctx['next_ev']; ctx['next_ev'] += 3 * n * 8
+    ops = [r.choice('iiocsxud') for _ in range(r.randrange(2, 8))]
+    return dict(lo=lo, n=n, salt=r.randrange(1, 9), ops=','.join(ops), keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_txnmix(p):
+    return f"SELECT step, res FROM fz.txn_mix({p['lo']}, {p['n']}, {p['salt']}, '{p['ops']}') ORDER BY step", True
+
+
+def dml_txn(r, ctx):
+    """Transactions that commit or roll back whole or in part: the rows of the write buffer a backend buffers before it writes them, a savepoint and an error among them."""
+    t, gen, counter = 'events', 'gen_events', 'next_ev'
+    n = r.choice([2, 30, 150])
+    lo = ctx[counter]; ctx[counter] += 4 * n
+    ins = lambda a, b: f"INSERT INTO {t} SELECT * FROM fz.{gen}({a}, {b}, {r.randrange(1, 9)})"
+    cp = lambda a, b: f"SELECT fz.bulk_insert('{t}', '{gen}', {a}, {b}, {r.randrange(1, 9)})"
+    return r.choice([
+        f"BEGIN; {ins(lo, lo + n - 1)}; {ins(lo + n, lo + 2 * n - 1)}; COMMIT",
+        f"BEGIN; {ins(lo, lo)}; {ins(lo + 1, lo + 1)}; {ins(lo + 2, lo + n)}; ROLLBACK",
+        f"BEGIN; {cp(lo, lo + n - 1)}; SELECT count(*) FROM {t}; {ins(lo + n, lo + 2 * n - 1)}; COMMIT",
+        f"BEGIN; {ins(lo, lo + n - 1)}; SAVEPOINT s; {ins(lo + n, lo + 2 * n - 1)}; ROLLBACK TO s; {ins(lo + 2 * n, lo + 3 * n - 1)}; COMMIT",
+        f"BEGIN; {ins(lo, lo + n - 1)}; SAVEPOINT s; {cp(lo + n, lo + 2 * n - 1)}; RELEASE s; SAVEPOINT s2; {ins(lo + 2 * n, lo + 3 * n - 1)}; ROLLBACK TO s2; COMMIT",
+        f"BEGIN; {ins(lo, lo + n - 1)}; {ins(lo, lo + 1)}; COMMIT",
+        f"{ins(lo, lo + n - 1)} ON CONFLICT (id) DO NOTHING; {ins(lo + n // 2, lo + n + n // 2)} ON CONFLICT (id) DO NOTHING",
+        f"BEGIN; {ins(lo, lo + n - 1)}; DELETE FROM {t} WHERE id >= {lo} AND id < {lo + n // 3}; UPDATE {t} SET amount = amount + 1 WHERE id >= {lo + n // 2}; COMMIT",
+        f"BEGIN; {ins(lo, lo + n - 1)}; SELECT sift.col_promote('events_col'); {ins(lo + n, lo + 2 * n - 1)}; COMMIT",
+    ])
 
 
 def gen_trail(r, ctx):
@@ -1451,7 +1483,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
-    'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
+    'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -1807,6 +1839,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rq2 = random.Random(seed * 94906249 + 29)
     ra = random.Random(seed * 122949829 + 31)
     rg = random.Random(seed * 32452843 + 13)
+    rb = random.Random(seed * 122949829 + 31)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -1828,6 +1861,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_keytable(rq, ctx) for _ in range(rq.randrange(dmls + 1))]
         if not TABLE and (not only or 'dictcount' in only):
             st += [dml_dictcount(rq2, ctx) for _ in range(rq2.randrange(dmls + 1))]
+        if not TABLE and (not only or 'txnmix' in only):
+            st += [dml_txn(rb, ctx) for _ in range(rb.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:

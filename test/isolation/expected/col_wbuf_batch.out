@@ -1,0 +1,113 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s1i s1sp s1ia s1rb s2v s1ib s1q s1c s2q s2x
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_wb SELECT 1000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1sp: SAVEPOINT a;
+step s1ia: INSERT INTO iso_wb SELECT 2000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1rb: ROLLBACK TO a;
+step s2v: VACUUM iso_wb;
+step s1ib: INSERT INTO iso_wb SELECT 3000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+320|791280|t    
+(1 row)
+
+step s1c: COMMIT;
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+320|791280|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wb_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wb_idx')) AS index_rows, (SELECT count(*) FROM iso_wb) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       320|      320
+(1 row)
+
+
+starting permutation: s1b s1i s1sp s1ia s1rb s2v s1ib s1a s2q s2x
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_wb SELECT 1000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1sp: SAVEPOINT a;
+step s1ia: INSERT INTO iso_wb SELECT 2000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1rb: ROLLBACK TO a;
+step s2v: VACUUM iso_wb;
+step s1ib: INSERT INTO iso_wb SELECT 3000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1a: ROLLBACK;
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n|total|agree
+---+-----+-----
+200|60300|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wb_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wb_idx')) AS index_rows, (SELECT count(*) FROM iso_wb) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       260|      200
+(1 row)
+
+
+starting permutation: s1b s1i s1oc s2v s1ib s1q s1c s2q s2x
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_wb SELECT 1000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1oc: INSERT INTO iso_wb SELECT 100 + g, g % 5, 'x' FROM generate_series(1, 150) g ON CONFLICT (id) DO NOTHING;
+step s2v: VACUUM iso_wb;
+step s1ib: INSERT INTO iso_wb SELECT 3000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+370|825105|t    
+(1 row)
+
+step s1c: COMMIT;
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+370|825105|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wb_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wb_idx')) AS index_rows, (SELECT count(*) FROM iso_wb) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       370|      370
+(1 row)
+
+
+starting permutation: s1b s1i s1q s2q s1ib s2q s1c s2q s2x
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_wb SELECT 1000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s1q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+260|245790|t    
+(1 row)
+
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n|total|agree
+---+-----+-----
+200|60300|t    
+(1 row)
+
+step s1ib: INSERT INTO iso_wb SELECT 3000 + g, g % 5, 'x' FROM generate_series(1, 60) g;
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n|total|agree
+---+-----+-----
+200|60300|t    
+(1 row)
+
+step s1c: COMMIT;
+step s2q: SELECT n, total, agree FROM iso_wb_q();
+  n| total|agree
+---+------+-----
+320|791280|t    
+(1 row)
+
+step s2x: SELECT sift.col_verify('iso_wb_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wb_idx')) AS index_rows, (SELECT count(*) FROM iso_wb) AS heap_rows;
+verified|index_rows|heap_rows
+--------+----------+---------
+t       |       320|      320
+(1 row)
+

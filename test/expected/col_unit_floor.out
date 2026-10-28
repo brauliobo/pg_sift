@@ -50,7 +50,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
  rows | units 
 ------+-------
- 2726 |     2
+ 2908 |     2
 (1 row)
 
 SELECT fl_same();
@@ -72,7 +72,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
  rows | units 
 ------+-------
- 2724 |    11
+ 2771 |    12
 (1 row)
 
 SELECT fl_same();
@@ -89,7 +89,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
  rows | units 
 ------+-------
- 2722 |    17
+ 2884 |    17
 (1 row)
 
 SET sift.test_col_floor_sbs = 4;
@@ -140,7 +140,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT n < 10 AS tier_merged, buffer_rows FROM fl_segs();
  tier_merged | buffer_rows 
 -------------+-------------
- t           |        2426
+ t           |        2288
 (1 row)
 
 SELECT (SELECT max(units) FROM sift.col_segments('fl_col') WHERE kind = 'immutable' AND rows < 20000) <= 4 AS overlays_in_few_units;

@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 106 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 107 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1144,6 +1144,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Default 100: a close call between an inline and a shared CTE must also hold at 10 and at 100 times the rows. 1 keeps the choice at the current size; values around the default change few plans.
 
+#### auto(col-append-batch)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** The rows a transaction inserts into the index after its first wait in the backend (up to a page of records for each index) and go to the write buffer as one WAL record for the run that fits the tail page, before the commit record; COPY and a statement of many rows write a record a page, not a record a row
+- **Gain:** COPY of 50,000 rows into a table with a 6-column index, 1,000,000 rows (PostgreSQL 18.6, x86-64): WAL 245 to 186 bytes a row (-24%), backend 23,022 to 20,571 instructions a row (-10.6%), standby replay 6,205 to 3,390 (-45%); a statement of 100 rows 293 to 234 bytes (-20%), backend -2.4%, replay -31%
+- **Impact:** index size: 0% (the same bytes in the write buffer); build, merge and writes: one row a transaction unchanged: 166,693 to 166,846 instructions (+0.1%), 353 bytes, 11,085 to 11,075 on the standby; the index adds 47 bytes a row of COPY WAL (106 before) over the table with only a primary key; other: No index size effect (the buffer holds the same bytes). The rows are written when the transaction commits, reads the index or starts a savepoint, so a statement that reads the index right after its inserts flushes first; the rows of a savepoint that rolls back are never written; an ON CONFLICT statement and a row of more than a page go in at once; a write buffer can pass write_buffer_limit by the rows of one page before it seals; at most 8 indexes of a transaction are buffered, the others go in at once; the first row of a transaction goes in at once, so one row a transaction is unchanged
+- **When:** Every transaction that inserts more than one row into a sift_col index (COPY, INSERT with many rows or SELECT, many statements in a transaction). Not a transaction of one row, an ON CONFLICT statement, or a row of more than a page.
+- **Default:** automatic — The WAL of the index is the largest cost of a bulk load on a server with a standby: the standby replays one record a page, not one a row (-45% of its replay instructions for COPY), with the rows of a transaction visible to its own reads and a savepoint that rolls back writing nothing; measured at 1,000,000 rows (the PR).
+- **Turn off:** n/a: no setting; the rows of a one-row transaction, an ON CONFLICT statement and a row of more than a page are written at once, the others wait for the commit, a read of the index or a savepoint.
+- **Upgrade from 3.5:** A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX.
+- **Advice:** Leave as is; there is nothing to set. Load with COPY or statements of many rows to write the fewest records; one row a transaction writes what it did.
+
 #### auto(lateral-decorrelation)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -2149,6 +2162,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `sift.agg_par_min_rows` | 80000 | 80000 |  | new in 3.5 |
 | `sift.table_dict_lookup` | on | on |  | After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4. |
 | `sift.table_key_table` | on | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
+| `auto(col-append-batch)` | automatic | automatic |  | A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX. |
 | `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |

@@ -213,6 +213,7 @@ extern int64 sift_col_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir);
 /* After ExecutorStart: the index-only scans of sift_col indexes in the plan form their tuples from the columns the plan reads */
 extern void sift_col_ioss_want(QueryDesc *queryDesc);
+extern void sift_col_stmt_start(QueryDesc *queryDesc);
 extern bool sift_col_amcanreturn(Relation index, int attno);
 extern void sift_col_amendscan(IndexScanDesc scan);
 extern void sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *indexStartupCost, Cost *indexTotalCost,
