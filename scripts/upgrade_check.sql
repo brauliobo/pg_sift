@@ -19,7 +19,7 @@ RETURNS TABLE (object text, kind text, detected text, status text, advice text)
 LANGUAGE plpgsql AS $fn$
 DECLARE
 	-- the first release that reads each column format minor (docs/FORMATS.md section 4), and the sift.col_format_minor that writes what a release reads
-	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6"}';
+	col_first CONSTANT jsonb := '{"3": "3.0", "4": "3.1", "5": "3.2", "6": "3.2", "7": "3.3", "8": "3.3", "9": "3.3", "10": "3.3", "11": "3.3", "12": "3.3", "13": "3.3", "14": "3.3", "15": "3.3", "16": "3.3", "17": "3.4", "18": "3.4", "19": "3.4", "20": "3.4", "21": "3.4", "22": "3.5", "23": "3.5", "24": "3.5", "25": "3.6", "26": "3.6", "27": "3.6", "28": "3.6", "29": "3.6", "30": "3.6", "31": "3.6"}';
 	col_setting CONSTANT jsonb := '{"3.0": 3, "3.1": 4, "3.2": 6, "3.3": 15}';
 	tgt text := regexp_replace(target, '^([0-9]+\.[0-9]+).*$', '\1');
 	ext text;
@@ -100,7 +100,7 @@ BEGIN
 				adv := format('ALTER INDEX %s SET (key_cut = ''off''), then REINDEX INDEX %s writes units by superblock, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 20 AND tgt = '3.3' THEN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
-			ELSIF hi = 30 THEN
+			ELSIF hi IN (30, 31) THEN
 				adv := format('ALTER INDEX %s SET (order_array_columns = ''off''), then REINDEX INDEX %s writes the sorted runs without the global order, which %s reads', r.rel, r.rel, tgt);
 			ELSIF hi = 26 THEN
 				adv := format('the range, inet and cidr columns of the index keep the lanes of their containment operators: drop the index before going back to %s', tgt);

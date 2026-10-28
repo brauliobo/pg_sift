@@ -35,8 +35,8 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 109 | on by default: automatic behaviour, or a knob whose default is the recommended value |
-| [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
+| [default](#default) | 110 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
 | [deprecated](#deprecated) | 2 | an older spelling that is still accepted |
@@ -428,6 +428,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Turn off:** SET (order_array_columns = 'off') then REINDEX (the build NOTICE names the columns and the MB); RESET returns to auto, decided again at the next REINDEX. New segments only; older ones keep their arrays until a merge or REINDEX, and the scan of the units answers meanwhile.
 - **Upgrade from 3.5:** The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 30, which 3.5 and older refuse (SET (order_array_columns = 'off') and REINDEX first).
 - **Advice:** Leave at auto: a column of 1,000 or more distinct values whose correlation with the heap order is under 0.99, on a table of 100,000 rows or more, gets the array when it is within 25% of the index (a date or timestamp column before an integer one, at most two columns). The choice is made at CREATE INDEX and REINDEX from the statistics the table has then, and a table of 100,000 rows or more that has none is analyzed first (a NOTICE says so; an ANALYZE afterwards changes nothing until the next REINDEX). Name the columns of order_columns for ORDER BY .. LIMIT on a smaller table or a column the rule leaves out; off removes it. REINDEX to apply.
+
+#### sift_col(order_array_group)
+
+`sift_col` · default · since 3.4 · default ''
+
+- **What it does:** WHERE group = x ORDER BY col LIMIT n (n from 1 to thousands, with a range or the page after a key), and min/max(col) WHERE group = x, read n entries of the group x in each segment and n rows of the heap, whatever the rows of the table: the shape a b-tree on (group, col) serves. By default the build adds this second order to each date and timestamp array, beside the plain one, which keeps answering the queries that do not pin the group; with a column named, every array is grouped and a query that does not pin the group reads the units
+- **Gain:** WHERE grp = x ORDER BY ts DESC LIMIT 10, 400 to 1,000 groups, random timestamps, 500,000 rows, instructions of one backend: 3.34M to 0.42M (a b-tree on (grp, ts) 0.27M); ts > x ORDER BY ts LIMIT 10 3.85M to 0.52M (b-tree 0.32M); max(ts) WHERE grp = x 3.27M to 0.61M (b-tree 0.35M); plain ORDER BY ts LIMIT 10 0.281M to 0.284M
+- **Formula:** S 7.90x saving 2900k instructions, G 13.0%, W 6.0%, R 1: B 42.4 against C 5.5, automatic
+- **Impact:** index size: +13.2% of the index (500,000 rows, 9 columns, one scattered timestamp array); +74% to +77% over the runs for a named column; build, merge and writes: CREATE INDEX +5.7% instructions (6.347G to 6.708G, 500,000 rows, single process); other: format minor 31; auto: 6.0 B a row for each date or timestamp array (the plain order stays): 500,000 rows, random timestamps, a 9-column index 25.2 to 28.5 MB (+13.2%). With a column named: 6.0 B a row for each array column over the runs (the group is a third part of each entry), a row with no group is not in the arrays
+- **When:** WHERE group = constant [AND range or page after a key on the column] ORDER BY column [, ids] LIMIT n, and min/max of the column with the group pinned, over an index with a second order, and a write buffer of at most 4,096 rows of the group (or 8 times n); any other shape reads the plain order or the units.
+- **Default:** '' — It is on: a group of 400 values costs +13.2% of the index and +5.7% of the build, and the group shapes go from 12x to 44x a b-tree (500,000 to 3,000,000 rows) to 1.5x to 2x; no table with fewer than 100 values in the column, or fewer than 64 rows apiece, gets one.
+- **Turn off:** order_array_group = 'off', then REINDEX: new segments have the plain order only; older ones keep theirs until a merge or REINDEX, and the plain order answers meanwhile.
+- **Upgrade from 3.5:** An index of 3.5 keeps its option as it was set; segments with the second order are minor 31, which 3.5 and older refuse (SET (order_array_group = 'off') or RESET (order_array_columns), then REINDEX, first).
+- **Advice:** Leave it on. The build picks the integer column of most values (at least 100 values and 64 rows apiece, scattered in the heap) when an array of a date or timestamp is built; set order_array_group = 'off' and REINDEX to drop the second order, or name a column to group every array.
 
 #### sift_col(superunit)
 
@@ -1580,21 +1594,6 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
 
-#### sift_col(order_array_group)
-
-`sift_col` · opt-in · since 3.4 · default ''
-
-- **What it does:** The arrays of order_array_columns are sorted by this column and then the key, so WHERE group = x ORDER BY col LIMIT n (n from 1 to thousands, with a range or the page after a key) reads n entries of the group x in each segment and n rows of the heap, whatever the rows of the table: the shape a b-tree on (group, col) serves. A query that does not pin the group reads the units
-- **Gain:** WHERE grp = x ORDER BY ts DESC LIMIT 10, 1024 groups, scattered timestamp, no b-tree, wall ms at 2,000 / 100,000 / 1,000,000 / 3,000,000 rows: units 0.27 / 0.46 / 1.6 / 3.7, ungrouped array 0.27 / 0.48 / 1.7 / 3.6, grouped array 0.22 / 0.25 / 0.32 / 0.22 (a b-tree on (grp, ts) 0.07 / 0.08 / 0.10 / 0.05)
-- **Formula:** S 22.00x saving 8006k instructions, G 74.0%, W 65.0%, R 1: B 63.4 against C 37.7, opt-in (fails: ceiling)
-- **Impact:** index size: +74% to +77% of the index over the runs for one array column (100,000 and 3,000,000 rows), +14% to +19% over an ungrouped array; build, merge and writes: CREATE INDEX +65% over the runs and +11% over an ungrouped array, insert of 20,000 rows with its promotion +18% over the runs (1,000,000 rows, one array column, wall); other: format minor 30; 6.0 B a row for each array column over the runs (the group is a third part of each entry): 1,000,000 rows, 4 columns, one array column: 7.7 MB with the runs, 12.0 MB with an ungrouped array, 13.7 MB grouped (a b-tree on (group, col) 31.6 MB); a row with no group is not in the arrays
-- **When:** WHERE group = constant [AND range or page after a key on the column] ORDER BY column [, ids] LIMIT n over an index with the option, and a write buffer of at most 4,096 rows of the group (or 8 times n); any other shape reads the units.
-- **Default:** '' — Opt-in: the groups of 20 values cost +2.4% of the index, those of 1,024 values +74% over the runs and CREATE INDEX +65%, and no statistic of the table says which grouping column its queries use; a table whose group queries are rare should keep the runs only.
-- **Why not the default:** the index grows over 25%, no statistic says which columns it pays on
-- **Turn off:** RESET (order_array_group): new segments get the ungrouped arrays; older ones keep theirs until a merge or REINDEX, and the scan of the units answers meanwhile.
-- **Upgrade from 3.5:** An index of 3.5 keeps its option as it was set; segments with the arrays are minor 30, which 3.5 and older refuse (RESET (order_array_group) and REINDEX first).
-- **Advice:** Turn it on (one column, not in order_array_columns) for a table where a frequent, latency-sensitive query pins a column and orders by another (the last events of a device, the newest rows of a tenant) and no b-tree serves it, and 6 bytes a row is affordable; leave it out when the queries order by the column without pinning the group, which the ungrouped array answers.
-
 #### sift_col(hll_columns)
 
 `sift_col` · opt-in · since 3.4 · default ''
@@ -2185,7 +2184,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `sift_col(key_table)` | true | true | minor 22 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `sift_col(count_columns)` | '' | '' | minor 24 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
 | `sift_col(order_array_columns)` | '' | '' | minor 30, unreadable by 3.5 | The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 30, which 3.5 and older refuse (SET (order_array_columns = 'off') and REINDEX first). |
-| `sift_col(order_array_group)` | '' | '' | minor 30, unreadable by 3.5 | An index of 3.5 keeps its option as it was set; segments with the arrays are minor 30, which 3.5 and older refuse (RESET (order_array_group) and REINDEX first). |
+| `sift_col(order_array_group)` | '' | '' | minor 31, unreadable by 3.5 | An index of 3.5 keeps its option as it was set; segments with the second order are minor 31, which 3.5 and older refuse (SET (order_array_group = 'off') or RESET (order_array_columns), then REINDEX, first). |
 | `sift.agg_verdict_cache` | on | on |  | new in 3.5 |
 | `sift.agg_par_min_rows` | 80000 | 80000 |  | new in 3.5 |
 | `sift.table_dict_lookup` | on | on |  | After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4. |
@@ -2220,6 +2219,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |
+| NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first | `src/col/build.c` | `order_array_columns`, `order_array_group` |
 | NOTICE | sift_col index "%s": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs | `src/col/build.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %s column%s | `src/col/build.c` | `order_array_columns` |
 | NOTICE | sift_col index "%s": the primary key "%s" of "%s" is not a column of the index | `src/col/build.c` |  |

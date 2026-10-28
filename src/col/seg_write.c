@@ -20,6 +20,14 @@
 static bool elem_point(const SiftColSegWriter *w, int c);
 
 /* The entries of the point directory of one leaf: the key and the row number (in the segment) of each row with a value; bad: some unit cannot be listed (an overflow value, inline strings, too many rows) */
+typedef struct OrdBlock
+{
+	uint32		nch;			/* chunks (0: none) */
+	uint32		nent;
+	uint32		nvals;
+	StringInfoData tab;
+} OrdBlock;
+
 typedef struct PointAcc
 {
 	int64	   *key;
@@ -39,10 +47,7 @@ typedef struct PointAcc
 	uint32		nn;
 	uint32		ncap;
 	uint32		gcap;
-	uint32		onch;			/* its block, once built (0: none) */
-	uint32		onent;
-	uint32		onvals;
-	StringInfoData otab;
+	OrdBlock	ob[2];			/* its blocks once built: the plain order, and (the group of the build's choice) the order sorted by group, which is the second slot of the leaf */
 	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
 	uint32		nkeys;
 	uint32		words;
@@ -131,6 +136,7 @@ struct SiftColSegWriter
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
+	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -380,6 +386,20 @@ elem_point(const SiftColSegWriter *w, int c)
 		s->cols[d->parent].kind == SIFT_COLK_GROUP && strstr(s->cols[d->parent].path, ".*") == NULL && strstr(d->path, "#key") == NULL;
 }
 
+/* The leaf c of the segment gets a global order block sorted by (group, key) as well (the group of order_array_group: the build's own choice groups a time column only, and keeps the plain order beside it in the second slot; a group of the user's groups every block and replaces the plain order) */
+static bool
+gorder_grouped(const SiftColSegWriter *w, int c)
+{
+	return w->pagg.gorder_group > 0 && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_time(&w->schema->cols[c])));
+}
+
+/* ... and the plain order too */
+static bool
+gorder_plain(const SiftColSegWriter *w)
+{
+	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto;
+}
+
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
 static void
 add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
@@ -392,7 +412,7 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 		const SiftCPaggCol *v = &cols[c];
 
 		bool		wt = a->tids || a->ord;		/* the entries carry heap addresses */
-		const SiftCPaggCol *gv = a->ord && w->pagg.gorder_group > 0 ? &cols[w->pagg.gorder_group - 1] : NULL;	/* the group of each row */
+		const SiftCPaggCol *gv = a->ord && gorder_grouped(w, c) ? &cols[w->pagg.gorder_group - 1] : NULL;	/* the group of each row */
 
 		if (!(a->want || a->ord) || a->bad)
 			continue;
@@ -850,6 +870,58 @@ put8(SiftColSegWriter *w, const void *data, Size len)
 	return off;
 }
 
+/* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
+static void
+build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped)
+{
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+	initStringInfo(&ob->tab);
+	MemoryContextSwitchTo(old);
+	if (grouped)
+	{
+		/* the arrays of the entries are the point directory's too, so the others are copied */
+		uint32		nv = 0,
+					nl = 0;
+		int64	   *key = palloc((a->n + 1) * sizeof(int64)),
+				   *grp = palloc((a->n + 1) * sizeof(int64)),
+				   *ngrp = palloc((a->nn + 1) * sizeof(int64));
+		uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
+				   *ntid = palloc((a->nn + 1) * sizeof(uint64));
+
+		for (uint32 i = 0; i < a->n; i++)
+			if (a->gok[i])
+			{
+				key[nv] = a->key[i];
+				tid[nv] = a->tid[i];
+				grp[nv++] = a->gk[i];
+			}
+		for (uint32 i = 0; i < a->nn; i++)
+			if (a->ngok[i])
+			{
+				ntid[nl] = a->ntid[i];
+				ngrp[nl++] = a->ngk[i];
+			}
+		ob->nent = nv + nl;
+		ob->nvals = nv;
+		if (ob->nent > 0)
+			sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, &ob->tab);
+		pfree(key);
+		pfree(grp);
+		pfree(ngrp);
+		pfree(tid);
+		pfree(ntid);
+	}
+	else
+	{
+		ob->nent = a->n + a->nn;
+		ob->nvals = a->n;
+		sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &ob->tab);
+	}
+	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
+	w->anyord = ob->nch > 0 || w->anyord;
+}
+
 /* The blocks of the point directories, built when the last unit is in */
 static void
 build_points(SiftColSegWriter *w)
@@ -860,52 +932,11 @@ build_points(SiftColSegWriter *w)
 
 		if (a->ord && !a->bad && a->n + a->nn > 0)
 		{
-			MemoryContext old = MemoryContextSwitchTo(w->mcxt);
-
-			initStringInfo(&a->otab);
-			MemoryContextSwitchTo(old);
-			if (w->pagg.gorder_group > 0)
-			{
-				/* the rows with no group are not in the block; the arrays of the entries are the point directory's too, so the others are copied */
-				uint32		nv = 0,
-							nl = 0;
-				int64	   *key = palloc((a->n + 1) * sizeof(int64)),
-						   *grp = palloc((a->n + 1) * sizeof(int64)),
-						   *ngrp = palloc((a->nn + 1) * sizeof(int64));
-				uint64	   *tid = palloc((a->n + 1) * sizeof(uint64)),
-						   *ntid = palloc((a->nn + 1) * sizeof(uint64));
-
-				for (uint32 i = 0; i < a->n; i++)
-					if (a->gok[i])
-					{
-						key[nv] = a->key[i];
-						tid[nv] = a->tid[i];
-						grp[nv++] = a->gk[i];
-					}
-				for (uint32 i = 0; i < a->nn; i++)
-					if (a->ngok[i])
-					{
-						ntid[nl] = a->ntid[i];
-						ngrp[nl++] = a->ngk[i];
-					}
-				a->onent = nv + nl;
-				a->onvals = nv;
-				if (a->onent > 0)
-					sift_cgord_build_grouped(key, tid, grp, nv, ntid, ngrp, nl, w->pagg.gorder_group - 1, &a->otab);
-				pfree(key);
-				pfree(grp);
-				pfree(ngrp);
-				pfree(tid);
-				pfree(ntid);
-			}
-			else
-			{
-				a->onent = a->n + a->nn;
-				a->onvals = a->n;
-				sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
-			}
-			a->onch = (a->onent + sift_cgord_rows() - 1) / sift_cgord_rows();
-			w->anyord = a->onch > 0 || w->anyord;
+			if (gorder_plain(w))
+				build_order(w, &a->ob[0], a, false);
+			if (gorder_grouped(w, c))
+				build_order(w, &a->ob[gorder_plain(w)], a, true);
+			w->anydual |= a->ob[1].nch > 0;
 		}
 		if (a->want && !a->bad && a->n > 0)
 		{
@@ -978,7 +1009,7 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	for (int c = 0; c < ncols; c++)
 	{
 		hdr[2] += w->pt[c].nslots > 0;
-		hdr[3] += w->pt[c].onch > 0;
+		hdr[3] += (w->pt[c].ob[0].nch > 0) + (w->pt[c].ob[1].nch > 0);
 	}
 	at = block + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
@@ -993,23 +1024,24 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 		sift_sw_write(w->sw, &at, sizeof(at));
 		at += a->tab.len;
 	}
-	for (int c = 0; c < ncols; c++)
+	/* the plain blocks by leaf, then the blocks sorted by group by leaf (the slot ncols + leaf of the reader) */
+	for (int k = 0; k < 2 * ncols; k++)
 	{
-		const PointAcc *a = &w->pt[c];
-		uint32		rec[6] = {c, a->onch, a->onent, a->onvals, (uint32) (a->otab.len / 8), SIFT_CPOINT_MODE_ORDER};
+		const OrdBlock *o = &w->pt[k % ncols].ob[k / ncols];
+		uint32		rec[6] = {k, o->nch, o->nent, o->nvals, (uint32) (o->tab.len / 8), SIFT_CPOINT_MODE_ORDER};
 
-		if (a->onch == 0)
+		if (o->nch == 0)
 			continue;
 		sift_sw_write(w->sw, rec, sizeof(rec));
 		sift_sw_write(w->sw, &at, sizeof(at));
-		at += a->otab.len;
+		at += o->tab.len;
 	}
 	for (int c = 0; c < ncols; c++)
 		if (w->pt[c].nslots > 0)
 			sift_sw_write(w->sw, w->pt[c].tab.data, w->pt[c].tab.len);
-	for (int c = 0; c < ncols; c++)
-		if (w->pt[c].onch > 0)
-			sift_sw_write(w->sw, w->pt[c].otab.data, w->pt[c].otab.len);
+	for (int k = 0; k < 2 * ncols; k++)
+		if (w->pt[k % ncols].ob[k / ncols].nch > 0)
+			sift_sw_write(w->sw, w->pt[k % ncols].ob[k / ncols].tab.data, w->pt[k % ncols].ob[k / ncols].tab.len);
 	foot[0] = block;
 	memcpy(&foot[1], ftail, sizeof(ftail));
 	sift_sw_write(w->sw, foot, sizeof(foot));
@@ -1585,6 +1617,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
+	if (w->anydual)
+		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
 	if (w->keyed)
 		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)

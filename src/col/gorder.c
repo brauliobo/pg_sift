@@ -47,6 +47,12 @@ sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 	}
 }
 
+bool
+sift_cgord_leaf_time(const SiftColDef *d)
+{
+	return d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ;
+}
+
 static void
 pad8(StringInfo out)
 {

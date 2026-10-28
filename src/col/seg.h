@@ -304,6 +304,7 @@ extern void sift_cseg_verify_points(SiftColSegment *seg);
  * the order of (key, heap address), then the rows without a value by address). _chunk: the entries [c * SIFT_CGORD_ROWS, + the count it returns) as keys and heap
  * addresses (SIFT_CGORD_CAP slots each; the keys of a NULL row are 0). _find: the place of the first value at or after key (past it when after), the number of values when none.
  */
+extern int	sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped);	/* the slot of the block of a leaf, sorted by group or plain, to pass as col to the others; -1: none */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
 extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
 extern void sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);	/* _head for the chunk that holds entry p, into buf */

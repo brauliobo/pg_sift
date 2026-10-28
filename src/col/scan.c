@@ -1938,10 +1938,48 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval)
 	return true;
 }
 
+/* The slot of the block of leaf col that segment i is read through: the one sorted by group when the scan pinned a group, else the plain one */
+static int
+gorder_slot(SiftColSource *src, int i, int col)
+{
+	return src->gpin_leaf >= 0 ? sift_cseg_gorder_slot(src->seg[i].seg, col, true) : col;
+}
+
+/* Every stored segment keeps the block of leaf col sorted by group (or plain), and for the first the one group leaf that a pin names; *gleaf and *gval are that leaf and its pinned value */
+static bool
+gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinleaf, const int64 *pinval, int *gleaf, int64 *gval)
+{
+	*gleaf = -1;
+	for (int i = 0; i < src->nseg; i++)
+	{
+		uint32		entries,
+					values;
+		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, col, grouped),
+					gc;
+
+		if (slot < 0 || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values))
+			return false;
+		gc = sift_cseg_gorder_group(src->seg[i].seg, slot);
+		if (gc >= 0)
+		{
+			int			k = 0;
+
+			while (k < npin && pinleaf[k] != gc)
+				k++;
+			if (k == npin || (*gleaf >= 0 && *gleaf != gc))
+				return false;
+			*gleaf = gc;
+			*gval = pinval[k];
+		}
+	}
+	return !grouped || (src->nseg > 0 && *gleaf >= 0);
+}
+
 /*
  * The sources of the global order of leaf col: one for each stored segment, then one for the write buffers when they hold rows. -1 when the order cannot
  * answer (a segment lacks it, the source reads a sift_table, a buffer holds an overflow value, a block grouped by a leaf that none of the npin pins (leaf pinleaf[i]
- * = pinval[i], conditions of the query) names). The rows of the group of a grouped block only are read: the sources are those of that group.
+ * = pinval[i], conditions of the query) names). A scan that pins the group of the blocks sorted by group reads the entries of that group only: the sources are those of that
+ * group; any other reads the plain blocks.
  */
 int
 sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
@@ -1952,27 +1990,8 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 
 	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
-	for (int i = 0; i < src->nseg; i++)
-	{
-		uint32		entries,
-					values;
-		int			gc;
-
-		if (!sift_cseg_gorder(src->seg[i].seg, col, &entries, &values))
-			return -1;
-		gc = sift_cseg_gorder_group(src->seg[i].seg, col);
-		if (gc >= 0)
-		{
-			int			k = 0;
-
-			while (k < npin && pinleaf[k] != gc)
-				k++;
-			if (k == npin || (gleaf >= 0 && gleaf != gc))
-				return -1;
-			gleaf = gc;
-			gval = pinval[k];
-		}
-	}
+	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, &gval)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, &gval))
+		return -1;
 	src->gpin_leaf = gleaf;
 	src->gpin_val = gval;
 	*grouped = gleaf;
@@ -1992,7 +2011,7 @@ bool
 sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values)
 {
 	if (i < src->nseg)
-		return sift_cseg_gorder(src->seg[i].seg, col, entries, values);
+		return sift_cseg_gorder(src->seg[i].seg, gorder_slot(src, i, col), entries, values);
 	*entries = src->gmem->n;
 	*values = src->gmem->nvals;
 	return true;
@@ -2002,7 +2021,7 @@ void
 sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
 	if (i < src->nseg)
-		sift_cseg_gorder_range(src->seg[i].seg, col, src->gpin_val, vs, ve, ns, ne);
+		sift_cseg_gorder_range(src->seg[i].seg, gorder_slot(src, i, col), src->gpin_val, vs, ve, ns, ne);
 	else
 	{
 		*vs = 0;
@@ -2019,7 +2038,7 @@ sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, i
 				hi = ve;
 
 	if (i < src->nseg)
-		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after, keep);
+		return sift_cseg_gorder_seek(src->seg[i].seg, gorder_slot(src, i, col), vs, ve, key, after, keep);
 	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
 	return lo;
 }
@@ -2031,7 +2050,7 @@ sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, str
 
 	if (i < src->nseg)
 	{
-		sift_cseg_gorder_fill(src->seg[i].seg, col, p, w, buf);
+		sift_cseg_gorder_fill(src->seg[i].seg, gorder_slot(src, i, col), p, w, buf);
 		return;
 	}
 	buf->at = p / SIFT_CGORD_ROWS * SIFT_CGORD_ROWS;

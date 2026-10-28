@@ -634,7 +634,9 @@ notice_order_array(Relation index)
 	const SiftColIndexMeta *d;
 	const char *opt = sift_col_options_order_array_columns(index);
 	StringInfoData names;
-	bool		autolist;
+	bool		autolist,
+				gauto;
+	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &gauto);
 	double		rows = 0,
 				bytes = 0;
 	int			n = 0;
@@ -642,6 +644,8 @@ notice_order_array(Relation index)
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt == NULL || (opt[0] == '\0' && !autolist))
 		return;
+	while (*glist == ' ')
+		glist++;
 	d = sift_col_index_defs(index);
 	ls = sift_col_leaf_stats(index);
 	initStringInfo(&names);
@@ -655,7 +659,12 @@ notice_order_array(Relation index)
 		}
 	if (n == 0)
 		return;
-	if (autolist)
+	if (autolist && gauto && glist[0] != '\0')
+		ereport(NOTICE,
+				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs, and order_array_group = 'auto' a second order of each date and timestamp column sorted by %s first", RelationGetRelationName(index), names.data, glist),
+				 errdetail("%.1f bytes a row for each array, %.1f MB together; the segments are column format minor 31, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first); the group is the integer column of most values that has 100 or more and at least 64 rows apiece.", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, ORDER BY column LIMIT n reads n entries, whatever the number of units, and WHERE %s = x ORDER BY column LIMIT n reads n entries of x. ALTER INDEX .. SET (order_array_group = 'off'), then REINDEX, drops the second order; (order_array_columns = 'off') drops both.", glist)));
+	else if (autolist)
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs", RelationGetRelationName(index), names.data),
 				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).", bytes / rows, bytes / (1024.0 * 1024.0)),

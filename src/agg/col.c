@@ -232,8 +232,8 @@ sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats
 			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
 		}
 		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
-		st->gord_cover[i] = ls[i].nvals > 0 ? Min(ls[i].gord_rows / ls[i].nvals, 1.0) : 0;
-		st->gord_group[i] = ls[i].gord_rows > 0 && ls[i].gord_grp_rows == ls[i].gord_rows ? ls[i].gord_gcol : -1;
+		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows) / ls[i].nvals, 1.0) : 0;
+		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
 		st->ndistinct[i] = nonnull;
 		if (def->store == SIFT_COLS_STR && !ls[i].inl)
 			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);

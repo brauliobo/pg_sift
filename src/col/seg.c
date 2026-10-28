@@ -389,12 +389,12 @@ points_read(SiftColSegment *seg)
 	if (foot[0] % 8 != 0 || foot[0] + sizeof(hdr) > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section start at %llu.", (unsigned long long) foot[0]);
 	seg_read(seg, s->off + foot[0], sizeof(hdr), hdr);
-	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] > (hdr[1] == SIFT_CPOINT_VERSION_ORD ? (uint32) seg->schema->ncols : 0) ||
+	if (hdr[0] != SIFT_CPOINT_MAGIC || hdr[1] != tail[1] || hdr[2] > (uint32) seg->schema->ncols || hdr[3] > (hdr[1] == SIFT_CPOINT_VERSION_ORD ? 2 * (uint32) seg->schema->ncols : 0) ||
 		foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN > s->len - sizeof(foot))
 		corrupt(seg, "The point directories of the DICT section have the header 0x%08x, version %u, %u leaves.", hdr[0], hdr[1], hdr[2]);
 	next = foot[0] + sizeof(hdr) + (uint64) (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN;
 	pv->pt = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(PointLeaf));
-	pv->go = MemoryContextAllocZero(seg->mcxt, seg->schema->ncols * sizeof(GOrdLeaf));
+	pv->go = MemoryContextAllocZero(seg->mcxt, 2 * seg->schema->ncols * sizeof(GOrdLeaf));
 	recs = palloc((hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN);
 	seg_read(seg, s->off + foot[0] + sizeof(hdr), (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
@@ -411,7 +411,7 @@ points_read(SiftColSegment *seg)
 			if (i == hdr[2])
 				prev = -1;
 			size = (uint64) rec[4] * 8;
-			if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] != SIFT_CPOINT_MODE_ORDER || rec[1] == 0 || rec[2] == 0 || rec[2] >= SIFT_CPOINT_SEG_ROWS ||
+			if (rec[0] >= 2 * (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] != SIFT_CPOINT_MODE_ORDER || rec[1] == 0 || rec[2] == 0 || rec[2] >= SIFT_CPOINT_SEG_ROWS ||
 				rec[3] > rec[2] || (rec[1] != (rec[2] + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS && rec[1] != (rec[2] + SIFT_CGORD_ROWS_FINE - 1) / SIFT_CGORD_ROWS_FINE) || size < SIFT_CGORD_HDR + (uint64) rec[1] * SIFT_CGORD_DIRENT ||
 				at != next || size > s->len - sizeof(foot) - next)
 				corrupt(seg, "The global order %u of the DICT section is malformed.", i - hdr[2]);
@@ -1794,16 +1794,19 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 		acc->head_units += (double) seg->nsb * with / Max(seen, 1);
 	}
 	{
-		const GOrdLeaf *g = gord_leaf(seg, col);
-
-		if (g != NULL)
+		for (int k = 0; k < 2; k++)
 		{
-			acc->gord_rows += g->hdr.entries;
-			acc->gord_bytes += g->bytes;
-			if (g->hdr.gcol >= 0)
+			const GOrdLeaf *g = gord_leaf(seg, col + k * seg->schema->ncols);
+
+			if (g != NULL)
 			{
-				acc->gord_grp_rows += g->hdr.entries;
-				acc->gord_gcol = g->hdr.gcol;
+				acc->gord_rows += g->hdr.entries;
+				acc->gord_bytes += g->bytes;
+				if (g->hdr.gcol >= 0)
+				{
+					acc->gord_grp_rows += g->hdr.entries;
+					acc->gord_gcol = g->hdr.gcol;
+				}
 			}
 		}
 	}
@@ -3841,6 +3844,18 @@ gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c)
 	return d;
 }
 
+/* The slot of the block of leaf col to read: the one sorted by group (the second slot, ncols + col; the first when it is grouped, as the user's order_array_group writes it) or the plain one; -1 when the segment has none */
+int
+sift_cseg_gorder_slot(SiftColSegment *seg, int col, bool grouped)
+{
+	const GOrdLeaf *g = grouped ? gord_leaf(seg, seg->schema->ncols + col) : NULL;
+
+	if (g != NULL)
+		return seg->schema->ncols + col;
+	g = gord_leaf(seg, col);
+	return g != NULL && (g->hdr.gcol >= 0) == grouped ? col : -1;
+}
+
 bool
 sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values)
 {
@@ -4236,7 +4251,7 @@ sift_cseg_verify_points(SiftColSegment *seg)
 			corrupt(seg, "The point directory of leaf %d lists %u keys, %llu rows and %llu words, its record %u, %u and %u.", c, keys, (unsigned long long) listed,
 					(unsigned long long) words, pl[c].nkeys, pl[c].count, pl[c].words);
 	}
-	for (int c = 0; c < seg->schema->ncols; c++)
+	for (int c = 0; c < 2 * seg->schema->ncols; c++)
 		verify_gorder(seg, c, total);
 }
 

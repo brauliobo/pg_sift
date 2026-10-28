@@ -198,7 +198,8 @@ sift_col_validate_order_columns(const char *value)
 void
 sift_col_validate_order_array_group(const char *value)
 {
-	const char *err = sift_crun_syntax(value);
+	bool		autolist;
+	const char *err = sift_crun_syntax(sift_cpagg_auto_list(value, &autolist));
 
 	if (err)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option \"%s\": %s", value, err)));
@@ -762,12 +763,13 @@ build_rel(Relation index, MemoryContext mcxt)
 		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
 										"not an integer, date or timestamp column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
-		if (sift_col_options_order_array_group(index)[0] != '\0')
+		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
+		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
 		{
 			bool		grp[SIFT_COL_MAX_COLS] = {false};
 			int			ng = 0;
 
-			if ((err = sift_cpagg_leaf_list(sift_col_options_order_array_group(index), r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
+			if ((err = sift_cpagg_leaf_list(glist, r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
 											"not an integer, date or timestamp column")) != NULL)
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_group option: %s", err)));
 			for (int i = 0; i < n; i++)

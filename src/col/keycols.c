@@ -581,6 +581,9 @@ sift_col_auto_paths(Relation heap, Relation index)
 #define GORD_AUTO_CORR		0.99
 #define GORD_AUTO_GROWTH_PCT 25
 #define GORD_AUTO_MAX		2
+#define GORD_GROUP_DISTINCT	100		/* the group of a time column's arrays: an integer of this many distinct values or more (an entity), at most one in GORD_GROUP_DEPTH rows of the table apiece (the 24 bytes of a group stay under a tenth of the 5 of an entry) */
+#define GORD_GROUP_DEPTH	64
+#define GORD_GROUP_BYTES	6.0		/* the second order of a timestamp: its 5.6 bytes a row and the groups (the structure's share of the room, as an array's) */
 
 /* the statistics of heap column hatt: distinct values, the correlation with the heap order (1 when unknown) and the average width; false without them */
 static bool
@@ -678,9 +681,15 @@ void
 sift_col_auto_gorder(Relation heap, Relation index)
 {
 	const char *opt = sift_col_options_order_array_columns(index);
+	const char *gopt = sift_col_options_order_array_group(index);
 	const SiftColRel *rel;
-	bool		autolist;
+	bool		autolist,
+				gauto,
+				timepick = false;
+	int			grp = -1;
+	double		gdist = 0;
 	GordCand   *cand;
+	bool	   *fit;
 	int			ncand = 0,
 				npick = 0,
 				pick[GORD_AUTO_MAX];
@@ -690,7 +699,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	(void) sift_cpagg_auto_list(opt, &autolist);
 	if (opt != NULL && !autolist)
 		return;
-	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || sift_col_options_order_array_group(index)[0] != '\0')
+	(void) sift_cpagg_auto_list(gopt, &gauto);
+	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE || (gopt[0] != '\0' && !gauto && strcmp(gopt, "off") != 0))
 		return;
 	analyze_if_unknown(heap, index);
 	if (heap->rd_rel->reltuples < GORD_AUTO_ROWS)
@@ -698,6 +708,7 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	room = est_index_bytes(heap, index) * GORD_AUTO_GROWTH_PCT / 100;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	cand = palloc(rel->schema->ncols * sizeof(GordCand));
+	fit = palloc(rel->schema->ncols * sizeof(bool));
 	for (int c = 0; c < rel->schema->ncols; c++)
 	{
 		const SiftColDef *d = &rel->schema->cols[c];
@@ -715,18 +726,51 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			continue;
 		if (!col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR)
 			continue;
-		cand[ncand++] = (GordCand) {c, d->type == SIFT_COLT_DATE || d->type == SIFT_COLT_TIMESTAMP || d->type == SIFT_COLT_TIMESTAMPTZ, cr};
+		cand[ncand++] = (GordCand) {c, sift_cgord_leaf_time(d), cr};
 	}
 	qsort(cand, ncand, sizeof(GordCand), gord_cand_cmp);
 	/* each array is a structure of its own: it must fit the room, and a column that does not leaves it to the next; the sorted run of a column not in order_columns comes with it */
-	for (int i = 0; i < ncand && npick < GORD_AUTO_MAX; i++)
+	for (int i = 0; i < ncand; i++)
 	{
 		const SiftColDef *d = &rel->schema->cols[cand[i].leaf];
 		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
 
-		if ((narrow ? 4.4 : 5.6) + (rel->pagg.run[cand[i].leaf] ? 0 : (narrow ? 2.2 : 3.5)) <= room)
-			pick[npick++] = cand[i].leaf;
+		fit[i] = (narrow ? 4.4 : 5.6) + (rel->pagg.run[cand[i].leaf] ? 0 : (narrow ? 2.2 : 3.5)) <= room;
+		timepick |= fit[i] && cand[i].time;
 	}
+	/* the arrays of a time column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then */
+	for (int c = 0; timepick && sift_col_format_minor >= SIFT_COL_FORMAT_PRESENCE && strcmp(gopt, "off") != 0 && GORD_GROUP_BYTES <= room && c < rel->schema->ncols; c++)
+	{
+		const SiftColDef *d = &rel->schema->cols[c];
+		AttrNumber	hatt = heap_attno(index, d);
+		double		ndistinct,
+					cr;
+		int32		width;
+		bool		cut = false;
+
+		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d) || sift_cgord_leaf_time(d))
+			continue;
+		for (int k = 0; k < rel->ncut; k++)
+			cut |= rel->cut[k] == c;
+		if (cut || !col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || heap->rd_rel->reltuples / ndistinct < GORD_GROUP_DEPTH)
+			continue;
+		if (ndistinct > gdist)
+		{
+			gdist = ndistinct;
+			grp = c;
+		}
+	}
+	for (int i = 0; i < ncand && npick < GORD_AUTO_MAX; i++)
+		if (fit[i] && cand[i].leaf != grp)
+			pick[npick++] = cand[i].leaf;
+	if (grp >= 0)
+	{
+		initStringInfo(&v);
+		appendStringInfo(&v, "auto: %s", leaf_name(index, &rel->schema->cols[grp]));
+		sift_col_set_option(index, "order_array_group", v.data);
+	}
+	else if (gauto)
+		sift_col_set_option(index, "order_array_group", "auto");
 	if (npick == 0)
 	{
 		if (opt != NULL)

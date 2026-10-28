@@ -929,8 +929,8 @@ topn_array_bounded(const SiftAggPred *p, int key)
 
 /*
  * Does the scan read the order array of the first key, not the units (sift_topn_gorder opens it for the shapes below and falls back to the units for any
- * other)? A key with an array in every segment, integer or time keys, and conditions the array answers: bounds on the key, or an equality of the
- * column an array grouped by one is grouped by (the unpinned group of a grouped array is refused).
+ * other)? A key with an array in every segment, integer or time keys, and conditions the array answers: bounds on the key on a plain array, or an equality of the
+ * column a grouped array is grouped by (the unpinned group of a grouped array is refused, the plain array of the leaf, if any, answers instead).
  */
 static bool
 topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey)
@@ -940,7 +940,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 				key_pinned = false,
 				group_pinned = false;
 
-	if (leaf[0] < 0 || c->stats.gord_cover[leaf[0]] < 0.9 || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
+	if (leaf[0] < 0 || (c->stats.gord_cover[leaf[0]] < 0.9 && gl < 0) || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
 		nkey > 4 || c->level_params != NIL)
 		return false;
 	for (int j = 0; j < nkey; j++)
@@ -961,7 +961,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 		bounded |= topn_array_bounded(p, leaf[0]);
 		group_pinned |= p->kind == SAP_CMP && p->leaf == gl && p->op == SCMP_EQ;
 	}
-	return gl >= 0 ? group_pinned : s->npred == 0 || bounded;
+	return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded));
 }
 
 /*

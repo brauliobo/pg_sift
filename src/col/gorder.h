@@ -87,6 +87,8 @@ extern uint32 sift_cgord_rows(void);
 
 /* Does the leaf get a block: a plain integer, date or timestamp attribute of the top level whose key is the integer itself (what the scan reads back as the value) */
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
+/* a date or a timestamp: the leaves whose order is read by a range or an ORDER BY .. LIMIT */
+extern bool sift_cgord_leaf_time(const SiftColDef *d);
 
 /* Parses the header of a block of len bytes; false when it is malformed (magic, counts, directory out of the block) */
 extern bool sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h);
