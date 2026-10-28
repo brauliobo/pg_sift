@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: a lookup table loaded from the leaves of a `sift_col` index crashed the backend (signal 11) when it had a text column of 1,024 or more distinct strings in a segment, whose dictionary the segment keeps in blocks and the backend has not loaded: the load read the strings through the arrays of the whole dictionary, which such a dictionary does not have yet. `SELECT county, sum(x) FROM facts, addresses WHERE facts.k = addresses.k GROUP BY county` killed the server on the first statement of a connection with 1,100 counties. The string of an entry is now read with the call every other reader of a dictionary uses, and the test of a text condition of the table loads the dictionary first; the rows are those of the normal plan (`agg_lookup_lazy_dict`).
+
 ## 3.5.1 - 2026-10-27
 
 - Fixed: pg_sift: a backend crashed (signal 11) when a parallel aggregate scan with a correlated lookup (`LEFT JOIN LATERAL (..) LIMIT 1`) was planned with workers and none could be launched because the pool of parallel workers was spent: the scan kept pointers into the parallel shared memory, PostgreSQL destroyed the parallel context and the leader read the unmapped segment (`memo_find`); the pointers are dropped before the context is destroyed (test `agg_par_no_workers`). Until the update: `max_parallel_workers_per_gather = 0` or a larger `max_worker_processes` and `max_parallel_workers`.
