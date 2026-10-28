@@ -70,31 +70,39 @@ bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i)
 }
 
 /* Appends one slot of a leaf: the key (0 for a NULL), whether it is NULL, whether it overflowed (then also NULL) and its tag: the JSON type of an overflow value (0: not known), else its kind (0: the leaf's own) */
+/* Room for extra more slots of a leaf */
+static void
+vals_reserve(MemoryContext mcxt, SiftCVals *v, uint32 extra)
+{
+	uint32		cap = v->cap;
+
+	if (v->n + extra <= cap)
+		return;
+	while (v->n + extra > cap)
+		cap = Max(64, cap * 2);
+	v->key = v->key ? repalloc(v->key, cap * sizeof(int64)) : MemoryContextAlloc(mcxt, cap * sizeof(int64));
+	if (v->nulls)
+	{
+		v->nulls = repalloc(v->nulls, words_of(cap) * sizeof(uint64));
+		memset(v->nulls + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
+	}
+	if (v->ovf)
+	{
+		v->ovf = repalloc(v->ovf, words_of(cap) * sizeof(uint64));
+		memset(v->ovf + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
+	}
+	if (v->otag)
+	{
+		v->otag = repalloc(v->otag, cap);
+		memset(v->otag + v->cap, 0, cap - v->cap);
+	}
+	v->cap = cap;
+}
+
 static void
 vals_put(MemoryContext mcxt, SiftCVals *v, int64 key, bool isnull, bool ovf, uint8 tag)
 {
-	if (v->n == v->cap)
-	{
-		uint32		cap = Max(64, v->cap * 2);
-
-		v->key = v->key ? repalloc(v->key, cap * sizeof(int64)) : MemoryContextAlloc(mcxt, cap * sizeof(int64));
-		if (v->nulls)
-		{
-			v->nulls = repalloc(v->nulls, words_of(cap) * sizeof(uint64));
-			memset(v->nulls + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
-		}
-		if (v->ovf)
-		{
-			v->ovf = repalloc(v->ovf, words_of(cap) * sizeof(uint64));
-			memset(v->ovf + words_of(v->cap), 0, (words_of(cap) - words_of(v->cap)) * sizeof(uint64));
-		}
-		if (v->otag)
-		{
-			v->otag = repalloc(v->otag, cap);
-			memset(v->otag + v->cap, 0, cap - v->cap);
-		}
-		v->cap = cap;
-	}
+	vals_reserve(mcxt, v, 1);
 	v->key[v->n] = isnull ? 0 : key;
 	if (isnull)
 		bitmap_set(mcxt, &v->nulls, v->cap, v->n);
@@ -139,28 +147,42 @@ vals_put_var(MemoryContext mcxt, SiftCVals *v, const char *s, uint32 len, bool i
 	v->voff[v->n] = start + len;
 }
 
-/* Validates the key against the batch and makes room for the row; the row is counted by batch_row_end */
+/* Validates the key of a row against the batch; prev is the key before it when there is one */
 static void
-batch_row_begin(SiftColBatch *b, SiftKey key)
+batch_check_key(const SiftColBatch *b, SiftKey key, bool first, SiftKey prev)
 {
 	SIFT_INVARIANT(b->keyed || sift_block_sb(sift_key_block(key)) == b->sb, "sift_col: row %u/%u is outside superblock %u", sift_key_block(key),
 				   (uint32) (key & 0xFFFF), b->sb);
 	SIFT_INVARIANT((key & 0xFFFF) >= 1 && (key & 0xFFFF) <= MaxHeapTuplesPerPage, "sift_col: row offset %u is not a heap offset",
 				   (uint32) (key & 0xFFFF));
-	SIFT_INVARIANT(b->unsorted || b->nrows == 0 || key > b->keys[b->nrows - 1], "sift_col: rows must be added in ascending TID order");
-	if (b->nrows == b->rowcap)
-	{
+	SIFT_INVARIANT(b->unsorted || first || key > prev, "sift_col: rows must be added in ascending TID order");
+}
+
+/* Room for extra more rows */
+static void
+batch_reserve_rows(SiftColBatch *b, uint32 extra)
+{
+	if (b->nrows + extra <= b->rowcap)
+		return;
+	while (b->nrows + extra > b->rowcap)
 		b->rowcap *= 2;
-		b->keys = repalloc(b->keys, b->rowcap * sizeof(SiftKey));
-		if (b->xmin)
-		{
-			b->xmin = repalloc(b->xmin, b->rowcap * sizeof(uint32));
-			b->cmin = repalloc(b->cmin, b->rowcap * sizeof(uint32));
-		}
-		for (int i = 0; i < b->schema->ncols; i++)
-			if (b->col[i].eoff)
-				b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+	b->keys = repalloc(b->keys, b->rowcap * sizeof(SiftKey));
+	if (b->xmin)
+	{
+		b->xmin = repalloc(b->xmin, b->rowcap * sizeof(uint32));
+		b->cmin = repalloc(b->cmin, b->rowcap * sizeof(uint32));
 	}
+	for (int i = 0; i < b->schema->ncols; i++)
+		if (b->col[i].eoff)
+			b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->rowcap + 1) * sizeof(uint32));
+}
+
+/* Validates the key against the batch and makes room for the row; the row is counted by batch_row_end */
+static void
+batch_row_begin(SiftColBatch *b, SiftKey key)
+{
+	batch_check_key(b, key, b->nrows == 0, b->nrows ? b->keys[b->nrows - 1] : 0);
+	batch_reserve_rows(b, 1);
 	b->keys[b->nrows] = key;
 }
 
@@ -465,15 +487,67 @@ sift_cbatch_add_from(SiftColBatch *dst, const SiftColBatch *src, uint32 r)
 	batch_copy_row(dst, src, r);
 }
 
+/* len rows of src from row r to dst, a leaf at a time: a schema of plain integer leaves (no group, no string) */
+static void
+batch_copy_run(SiftColBatch *dst, const SiftColBatch *src, uint32 r, uint32 len)
+{
+	const SiftColSchema *s = dst->schema;
+
+	batch_reserve_rows(dst, len);
+	for (uint32 k = 0; k < len; k++)
+		batch_check_key(dst, src->keys[r + k], dst->nrows + k == 0, k ? src->keys[r + k - 1] : dst->nrows ? dst->keys[dst->nrows - 1] : 0);
+	memcpy(dst->keys + dst->nrows, src->keys + r, len * sizeof(SiftKey));
+	for (int id = 0; id < s->ncols; id++)
+	{
+		const SiftCVals *sv = &src->col[id];
+		SiftCVals  *dv = &dst->col[id];
+
+		vals_reserve(dst->mcxt, dv, len);
+		memcpy(dv->key + dv->n, sv->key + r, len * sizeof(int64));
+		for (uint32 k = 0; k < len; k++)
+		{
+			bool		ovf = sift_col_bit_test(sv->ovf, r + k);
+
+			if (ovf || sift_col_bit_test(sv->nulls, r + k))
+				bitmap_set(dst->mcxt, &dv->nulls, dv->cap, dv->n + k);
+			if (ovf)
+				bitmap_set(dst->mcxt, &dv->ovf, dv->cap, dv->n + k);
+			if (sv->otag && sv->otag[r + k] != SIFT_COLTAG_UNKNOWN)
+			{
+				if (dv->otag == NULL)
+					dv->otag = MemoryContextAllocZero(dst->mcxt, dv->cap);
+				dv->otag[dv->n + k] = sv->otag[r + k];
+			}
+		}
+		dv->n += len;
+	}
+	for (uint32 k = 0; k < len; k++)
+	{
+		uint32		xmin = src->hasver ? src->xmin[r + k] : 0;
+
+		if (dst->hasver || xmin)
+			sift_cbatch_set_ver(dst, dst->nrows + k, xmin, src->hasver ? src->cmin[r + k] : 0);
+	}
+	dst->nrows += len;
+}
+
 void
 sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc)
 {
 	uint32	   *pos = palloc0(nsrc * sizeof(uint32));
+	bool		runs = true;
 
+	for (int id = 0; id < dst->schema->ncols; id++)
+	{
+		SiftColStore store = dst->schema->cols[id].store;
+
+		runs &= dst->schema->cols[id].parent < 0 && dst->schema->cols[id].kind != SIFT_COLK_GROUP && (store == SIFT_COLS_INT || store == SIFT_COLS_F4 || store == SIFT_COLS_F8);
+	}
 	for (;;)
 	{
 		int			first = -1;
-		SiftKey		min = 0;
+		SiftKey		min = 0,
+					next = PG_UINT64_MAX;
 
 		for (int i = 0; i < nsrc; i++)
 			if (pos[i] < src[i]->nrows && (first < 0 || src[i]->keys[pos[i]] < min))
@@ -483,6 +557,22 @@ sift_cbatch_merge(SiftColBatch *dst, SiftColBatch *const *src, int nsrc)
 			}
 		if (first < 0)
 			break;
+		if (runs)
+		{
+			uint32		len = 1;
+
+			for (int i = 0; i < nsrc; i++)
+				if (i != first && pos[i] < src[i]->nrows)
+					next = Min(next, src[i]->keys[pos[i]]);
+			while (pos[first] + len < src[first]->nrows && src[first]->keys[pos[first] + len] < next)
+				len++;
+			if (len > 1 && min < next)
+			{
+				batch_copy_run(dst, src[first], pos[first], len);
+				pos[first] += len;
+				continue;
+			}
+		}
 		batch_copy_row(dst, src[first], pos[first]);
 		for (int i = 0; i < nsrc; i++)
 			if (pos[i] < src[i]->nrows && src[i]->keys[pos[i]] == min)

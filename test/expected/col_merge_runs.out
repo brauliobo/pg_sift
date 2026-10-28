@@ -1,0 +1,91 @@
+-- A merge copies a run of rows of one segment at a time when the rows of the other segments come after it (src/col/batch.c): the integer, float and date leaves, NULLs, jsonb
+-- paths with overflow values and rows of an UPDATE that land among the old ones are all in the merged index as they were in the segments.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE mr (id int, a int, f float8, d date, n bigint, doc jsonb, pad text DEFAULT repeat('x', 200));
+ALTER TABLE mr ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE INDEX mr_ix ON mr USING sift_col (id, a, f, d, n, doc) WITH (paths = 'doc.k int4, doc.x float8');
+-- five batches, each after the other in the heap: the segments are runs; NULLs in every leaf, a string in an integer path (an overflow) and a number in a float path
+INSERT INTO mr SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 500 END, CASE WHEN i % 13 = 0 THEN NULL ELSE i / 7.0 END, CASE WHEN i % 17 = 0 THEN NULL ELSE DATE '2020-01-01' + i % 900 END,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE i::bigint * 1000003 END,
+       CASE WHEN i % 5 = 0 THEN jsonb_build_object('k', 'text' || i, 'x', i % 9) WHEN i % 7 = 0 THEN '{"k":null}' WHEN i % 3 = 0 THEN '{"y":1}' ELSE jsonb_build_object('k', i % 300, 'x', i / 3.0) END
+FROM generate_series(1, 60000) i;
+SELECT sift.col_promote('mr_ix') >= 0 AS p1;
+ p1 
+----
+ t
+(1 row)
+
+INSERT INTO mr SELECT i, i % 500, i / 7.0, DATE '2021-01-01' + i % 900, i, jsonb_build_object('k', i % 300) FROM generate_series(60001, 90000) i;
+SELECT sift.col_promote('mr_ix') >= 0 AS p2;
+ p2 
+----
+ t
+(1 row)
+
+-- new row versions land among the old rows of the first segments
+UPDATE mr SET a = a + 1, f = f * 2 WHERE id % 40 = 3 AND id < 50000;
+DELETE FROM mr WHERE id % 97 = 5;
+INSERT INTO mr SELECT i, i % 500, NULL, NULL, NULL, '{"k":1,"x":2}' FROM generate_series(90001, 100000) i;
+SELECT sift.col_promote('mr_ix') >= 0 AS p3;
+ p3 
+----
+ t
+(1 row)
+
+VACUUM mr;
+SELECT count(*) > 1 AS several_segments FROM sift.col_segments('mr_ix') WHERE kind = 'immutable';
+ several_segments 
+------------------
+ t
+(1 row)
+
+SELECT sift.col_verify('mr_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE FUNCTION mr_answers(on_off text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SET sift.enable_agg = %s', on_off);
+	SET seq_page_cost = 1000;
+	SELECT string_agg(x::text, ',' ORDER BY x::text) INTO r FROM (
+		SELECT 'a' k, a::text g, count(*)::text c, coalesce(sum(f)::int, 0)::text s FROM mr WHERE a BETWEEN 100 AND 120 GROUP BY a
+		UNION ALL SELECT 'd', ((d - DATE '2020-01-01') / 100)::text, count(*)::text, coalesce(sum(n) % 1000003, 0)::text FROM mr GROUP BY 2
+		UNION ALL SELECT 'k', coalesce((doc->>'k'), '-'), count(*)::text, coalesce(sum((doc->>'x')::float8)::int, 0)::text FROM mr WHERE (doc->>'k') IN ('1', '17', 'text5', 'text25') OR doc->'k' IS NULL GROUP BY 2) x;
+	RESET seq_page_cost;
+	RETURN r;
+END $$;
+SELECT mr_answers('on') AS before_merge \gset
+SELECT sift.col_merge('mr_ix', true) > 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT count(*) AS immutable_segments FROM sift.col_segments('mr_ix') WHERE kind = 'immutable';
+ immutable_segments 
+--------------------
+                  1
+(1 row)
+
+SELECT sift.col_verify('mr_ix', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT mr_answers('on') = :'before_merge' AS same_after_merge, mr_answers('on') = mr_answers('off') AS same_as_heap;
+ same_after_merge | same_as_heap 
+------------------+--------------
+ t                | t
+(1 row)
+
+DROP TABLE mr;
+DROP FUNCTION mr_answers(text);
+DROP EXTENSION pg_sift CASCADE;
