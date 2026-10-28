@@ -349,6 +349,7 @@ typedef struct SegPriv
 	ZoneArrays **zones;
 	uint8	   *unitbuf;
 	Size		unitcap;
+	bool		unit_kept;		/* unitbuf goes back to the backend's spare buffers when the segment's context ends (seg.c, unit_room) */
 	PaggHeader *pagg;			/* the sidecar's header, read on first use */
 	Size		pagg_end;		/* offset of the sidecar in the ZONES section */
 	const uint8 *lst;			/* the leaf statistics block (LstHeader first), NULL: the segment has none */

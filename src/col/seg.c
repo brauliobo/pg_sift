@@ -221,14 +221,58 @@ sift_cseg_find_unit(const SiftColSegment *seg, uint32 sb)
 	return lo;
 }
 
+/*
+ * The buffer of a unit record is the largest of a lookup after the cursors (a unit of 100,000 rows is 400 kB), and a block that size grows the heap and goes back to the kernel
+ * with its top when the statement ends (75 page faults for a lookup of 0.35 million instructions): the backend keeps the buffers of the segments it has closed, and the next
+ * statement opens its segments with them. Taken by the first unit a segment reads, given back when the segment's context ends.
+ */
+#define UNIT_KEEP		4
+#define UNIT_KEEP_BYTES	((Size) 4 << 20)
+static MemoryContext unit_spare_cx;
+static struct
+{
+	uint8	   *buf;
+	Size		cap;
+} unit_spare[UNIT_KEEP];
+static int	nunit_spare;
+
+static void
+unit_release(void *arg)
+{
+	SegPriv    *pv = arg;
+
+	if (nunit_spare < UNIT_KEEP && pv->unitcap <= UNIT_KEEP_BYTES)
+		unit_spare[nunit_spare++] = (typeof(unit_spare[0])) {pv->unitbuf, pv->unitcap};
+	else
+		pfree(pv->unitbuf);
+}
+
 /* The buffer of a unit record holds len bytes and the SIFT_COL_PAD bytes the kernels read past the packed payload of its last chunk */
 static void
 unit_room(SiftColSegment *seg, SegPriv *pv, uint32 len)
 {
+	if (len + SIFT_COL_PAD <= pv->unitcap)
+		return;
+	if (!pv->unit_kept)
+	{
+		MemoryContextCallback *cb;
+
+		if (unit_spare_cx == NULL)
+			unit_spare_cx = AllocSetContextCreate(TopMemoryContext, "sift cache unit buffers", ALLOCSET_DEFAULT_SIZES);
+		if (nunit_spare > 0 && pv->unitbuf == NULL)
+		{
+			pv->unitbuf = unit_spare[--nunit_spare].buf;
+			pv->unitcap = unit_spare[nunit_spare].cap;
+		}
+		cb = MemoryContextAlloc(seg->mcxt, sizeof(MemoryContextCallback));
+		*cb = (MemoryContextCallback) {unit_release, pv, NULL};
+		MemoryContextRegisterResetCallback(seg->mcxt, cb);
+		pv->unit_kept = true;
+	}
 	if (len + SIFT_COL_PAD > pv->unitcap)
 	{
 		pv->unitcap = Max(len + SIFT_COL_PAD, 2 * pv->unitcap);
-		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(seg->mcxt, pv->unitcap);
+		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(unit_spare_cx, pv->unitcap);
 	}
 }
 
