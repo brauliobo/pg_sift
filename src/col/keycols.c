@@ -42,6 +42,7 @@
 #include "col/preagg.h"
 #include "col/seg.h"
 #include "col/setsum.h"
+#include "col/shred_pg.h"
 
 static bool
 is_fk_column(Relation heap, AttrNumber attno)
@@ -495,6 +496,8 @@ sift_col_auto_keys_report(Relation index)
 	pfree(snap);
 }
 
+static void auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo added);
+
 /*
  * Before a build: an index with jsonb columns and no paths option (a jsonb column needs paths, so that was an error), or with paths = 'auto', has its paths
  * decided here, once, from a sample of the documents (sift.suggest_paths, col/suggest.c): the spec is written to the option as 'auto: spec', so that the schema
@@ -525,6 +528,24 @@ sift_col_auto_paths(Relation heap, Relation index)
 		if (one != NULL)
 			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", one);
 	}
+	if (opt[0] == '\0' || opt[4] == '\0')
+	{
+		StringInfoData arrs,
+					added;
+
+		initStringInfo(&arrs);
+		initStringInfo(&added);
+		auto_array_specs(heap, index, &arrs, &added);
+		if (arrs.len > 0)
+		{
+			const char *name = quote_identifier(RelationGetRelationName(index));
+
+			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", arrs.data);
+			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s, not the arrays", name, added.data),
+							 errdetail("An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays are nearly all different in a sample, so the index does not keep them whole: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table."),
+							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, keeps the arrays and leaves the elements out.", name)));
+		}
+	}
 	if (spec.len == 0)
 		return;
 	{
@@ -534,10 +555,11 @@ sift_col_auto_paths(Relation heap, Relation index)
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", spec.data);
 		sift_col_set_option(index, "paths", v.data);
-		ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
-						 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
-								   SIFT_COL_AUTO_PATHS_SAMPLE),
-						 errhint("Write paths = '...' to fix them by hand.")));
+		if (ncols + ngroups > 0)
+			ereport(NOTICE, (errmsg("sift_col index %s reads the jsonb paths %s", name, spec.data),
+							 errdetail("They are the keys that are a scalar of one type in most of a sample of %d documents, a map of more than 4 keys of one type as a wildcard, an array of objects as a group; a REINDEX keeps them, and ALTER INDEX ... SET (paths = 'auto') then REINDEX reads the documents again.",
+									   SIFT_COL_AUTO_PATHS_SAMPLE),
+							 errhint("Write paths = '...' to fix them by hand.")));
 	}
 }
 
@@ -854,6 +876,189 @@ cube_cands(Relation index, const SiftColSchema *schema, CubeCand *cand)
 		n++;
 	}
 	return n;
+}
+
+/*
+ * The elements of the array columns (paths = 'auto'): an array column of text or integers whose table has ARR_AUTO_ROWS rows or more and nearly every
+ * array different (over ARR_DISTINCT_PCT% of a sample) gets the list of its elements (the paths 'col[] type', docs/COL-SHRED.md) in place of its image, which
+ * cannot share anything there, when a sample says that this does not make the index more than ARR_AUTO_GROWTH_PCT% larger. Arrays that repeat keep the image,
+ * which a GROUP BY or equality over whole arrays reads.
+ */
+#define ARR_AUTO_ROWS		10000
+#define ARR_AUTO_GROWTH_PCT	25
+#define ARR_DISTINCT_PCT	50
+#define ARR_SAMPLE_ROWS		4096
+#define ARR_SAMPLE_ELEMS	200000
+#define ARR_SET_BITS		19
+#define ARR_DIR_BYTES		1.5
+
+typedef struct ArrSet
+{
+	uint64	   *slot;
+	uint64		n;
+} ArrSet;
+
+typedef struct ArrCand
+{
+	int			idx;			/* its place in the index */
+	AttrNumber	hatt;
+	Oid			elem;
+	uint64		rows;			/* arrays read (not NULL) */
+	uint64		elems;			/* elements read, NULL ones too */
+	uint64		bytes;			/* bytes of the arrays read */
+	ArrSet		arrs;			/* hashes of the distinct arrays and elements */
+	ArrSet		els;
+} ArrCand;
+
+/* adds the hash to the set; false when it was there or the set is full */
+static bool
+arr_set_add(ArrSet *s, uint64 h)
+{
+	uint64		mask = ((uint64) 1 << ARR_SET_BITS) - 1;
+
+	h |= 1;
+	if (s->n >= (mask >> 1))
+		return false;
+	for (uint64 p = (h >> 20) & mask;; p = (p + 1) & mask)
+	{
+		if (s->slot[p] == h)
+			return false;
+		if (s->slot[p] == 0)
+		{
+			s->slot[p] = h;
+			s->n++;
+			return true;
+		}
+	}
+}
+
+static void
+arr_stretch(Relation heap, BlockNumber start, BlockNumber len, ArrCand *cand, int n, uint32 quota, MemoryContext row_cx)
+{
+	TableScanDesc scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	uint32		got = 0;
+
+	heap_setscanlimits(scan, start, len);
+	while (got < quota && table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		MemoryContext old = MemoryContextSwitchTo(row_cx);
+
+		CHECK_FOR_INTERRUPTS();
+		got++;
+		for (int k = 0; k < n; k++)
+		{
+			ArrCand    *c = &cand[k];
+			bool		isnull;
+			Datum		d = slot_getattr(slot, c->hatt, &isnull);
+			ArrayType  *a;
+			int16		elen;
+			bool		byval;
+			char		align;
+			Datum	   *vals;
+			bool	   *nulls;
+			int			ne;
+
+			if (isnull)
+				continue;
+			a = DatumGetArrayTypeP(d);
+			c->rows++;
+			c->bytes += VARSIZE(a);
+			arr_set_add(&c->arrs, DatumGetUInt64(hash_any_extended((unsigned char *) a, VARSIZE(a), 0)));
+			get_typlenbyvalalign(c->elem, &elen, &byval, &align);
+			deconstruct_array(a, c->elem, elen, byval, align, &vals, &nulls, &ne);
+			for (int i = 0; i < ne && c->els.n < ARR_SAMPLE_ELEMS; i++)
+			{
+				c->elems++;
+				if (nulls[i])
+					continue;
+				if (byval)
+					arr_set_add(&c->els, (uint64) DatumGetInt64(vals[i]) * UINT64CONST(0x9E3779B97F4A7C15));
+				else
+				{
+					text	   *t = DatumGetTextPP(vals[i]);
+
+					arr_set_add(&c->els, DatumGetUInt64(hash_any_extended((unsigned char *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), 0)));
+				}
+			}
+		}
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(row_cx);
+	}
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+}
+
+/* the type name a path spec gives the elements */
+static const char *
+arr_elem_type(Oid elem)
+{
+	return elem == INT2OID ? "int2" : elem == INT4OID ? "int4" : elem == INT8OID ? "int8" : "text";
+}
+
+/*
+ * The arrays of the index that get their elements, from a sample of the table: appends 'col[] type' to spec and the names to added.
+ */
+static void
+auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo added)
+{
+	ArrCand		cand[SIFT_COL_MAX_COLS];
+	int			n = 0;
+	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
+	int			nst = (int) Min(CUBE_STRETCHES, (nblocks + CUBE_STRETCH_BLOCKS - 1) / CUBE_STRETCH_BLOCKS);
+	MemoryContext row_cx;
+	double		base;
+
+	if (sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON || heap->rd_rel->reltuples < ARR_AUTO_ROWS || nst == 0)
+		return;
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && n < SIFT_COL_MAX_COLS; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), i);
+		Oid			elem = sift_col_is_array_type(att->atttypid) ? get_element_type(att->atttypid) : InvalidOid;
+
+		if (!OidIsValid(elem) || !sift_shred_array_elem_ok(elem) || index->rd_index->indkey.values[i] == 0 ||
+			strcmp(quote_identifier(NameStr(att->attname)), NameStr(att->attname)) != 0)
+			continue;
+		cand[n] = (ArrCand) {.idx = i,.hatt = index->rd_index->indkey.values[i],.elem = elem};
+		cand[n].arrs.slot = palloc0(sizeof(uint64) << ARR_SET_BITS);
+		cand[n].els.slot = palloc0(sizeof(uint64) << ARR_SET_BITS);
+		n++;
+	}
+	if (n == 0)
+		return;
+	row_cx = AllocSetContextCreate(CurrentMemoryContext, "sift array sample row", ALLOCSET_DEFAULT_SIZES);
+	for (int st = 0; st < nst; st++)
+	{
+		BlockNumber start,
+					len;
+
+		cube_stretch_at(nblocks, nst, st, &start, &len);
+		arr_stretch(heap, start, len, cand, n, ARR_SAMPLE_ROWS / nst, row_cx);
+	}
+	MemoryContextDelete(row_cx);
+	base = est_index_bytes(heap, index);
+	for (int k = 0; k < n; k++)
+	{
+		const ArrCand *c = &cand[k];
+		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c->idx)->attname);
+		double		elem_row,
+					image_row;
+
+		/* arrays that repeat keep their image, which answers every test and is small */
+		if (c->rows < 100 || c->elems == 0 || c->arrs.n * 100 <= c->rows * ARR_DISTINCT_PCT)
+			continue;
+		elem_row = (double) c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + ARR_DIR_BYTES);
+		image_row = (double) c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
+		if ((elem_row - image_row) * heap->rd_rel->reltuples * 100 / Max(base, 1) > ARR_AUTO_GROWTH_PCT)
+			continue;
+		appendStringInfo(spec, "%s%s[] %s", spec->len ? ", " : "", name, arr_elem_type(c->elem));
+		appendStringInfo(added, "%s%s", added->len ? ", " : "", name);
+	}
+	for (int k = 0; k < n; k++)
+	{
+		pfree(cand[k].arrs.slot);
+		pfree(cand[k].els.slot);
+	}
 }
 
 /* the stretches read over heap, and what the candidates hold in them (fit, groups); the number of stretches, 0 for an empty table */

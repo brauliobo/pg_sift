@@ -1,0 +1,91 @@
+-- paths = auto for the array columns: a sample of the table says whether the arrays differ (their elements stand in place of the whole-array image) or repeat (the image stays)
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = notice;
+CREATE TABLE aa (id int, uniq text[], rep text[], ids int4[]) WITH (autovacuum_enabled = false);
+INSERT INTO aa SELECT i, ARRAY['a' || i, 'b' || i % 50, 'c' || i % 7], ARRAY['r' || i % 5, 's' || i % 3], ARRAY[i, i % 100]
+FROM generate_series(1, 12000) i;
+ANALYZE aa;
+CREATE INDEX aa_col ON aa USING sift_col (id, uniq, rep, ids);
+NOTICE:  sift_col index aa_col keeps the lengths of the arrays uniq, rep, ids
+DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
+HINT:  ALTER INDEX aa_col SET (array_lengths = 'off'), then REINDEX, drops them.
+NOTICE:  sift_col index aa_col keeps the elements of the arrays uniq, ids, not the arrays
+DETAIL:  An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays are nearly all different in a sample, so the index does not keep them whole: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table.
+HINT:  ALTER INDEX aa_col SET (paths = ''), then REINDEX, keeps the arrays and leaves the elements out.
+SELECT regexp_replace(reloptions::text, '(auto: )[^,}]*', '\1...') AS options FROM pg_class WHERE relname = 'aa_col';
+                     options                      
+--------------------------------------------------
+ {array_lengths=on,"paths=auto: ..., ids[] int4"}
+(1 row)
+
+SELECT leaf, path, type FROM sift.col_leaves('aa_col') ORDER BY leaf;
+ leaf |  path  |       type       
+------+--------+------------------
+    0 | id     | integer
+    1 | uniq   | text[]
+    2 | uniq#1 | integer (lane 1)
+    3 | uniq#2 | integer (lane 2)
+    4 | uniq[] | bigint
+    5 | uniq[] | text
+    6 | rep    | text[]
+    7 | rep#1  | integer (lane 1)
+    8 | rep#2  | integer (lane 2)
+    9 | ids    | integer[]
+   10 | ids#1  | integer (lane 1)
+   11 | ids#2  | integer (lane 2)
+   12 | ids[]  | bigint
+   13 | ids[]  | integer
+(14 rows)
+
+SELECT sift.col_verify('aa_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SELECT count(*) FROM aa WHERE uniq @> ARRAY['b7', 'c0'];
+ count 
+-------
+    35
+(1 row)
+
+SELECT count(*) FROM aa WHERE rep @> ARRAY['r2'];
+ count 
+-------
+  2400
+(1 row)
+
+SELECT count(*) FROM aa WHERE ids && ARRAY[5, 99999];
+ count 
+-------
+   120
+(1 row)
+
+SELECT rep, count(*) FROM aa GROUP BY 1 ORDER BY 1 LIMIT 3;
+   rep   | count 
+---------+-------
+ {r0,s0} |   800
+ {r0,s1} |   800
+ {r0,s2} |   800
+(3 rows)
+
+-- a table too small for a sample gets neither
+CREATE TABLE ab AS SELECT i AS id, ARRAY['a' || i] AS uniq FROM generate_series(1, 500) i;
+CREATE INDEX ab_col ON ab USING sift_col (id, uniq);
+NOTICE:  sift_col index ab_col keeps the lengths of the arrays uniq
+DETAIL:  cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read from two integer columns of each array, without the array: about a byte a row for each.
+HINT:  ALTER INDEX ab_col SET (array_lengths = 'off'), then REINDEX, drops them.
+SELECT leaf, path FROM sift.col_leaves('ab_col') ORDER BY leaf;
+ leaf |  path  
+------+--------
+    0 | id
+    1 | uniq
+    2 | uniq#1
+    3 | uniq#2
+(4 rows)
+
+DROP TABLE aa, ab;
+DROP EXTENSION pg_sift;
