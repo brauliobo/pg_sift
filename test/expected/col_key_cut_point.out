@@ -17,7 +17,7 @@ VACUUM (ANALYZE) kpt;
 SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
  format 
 --------
-     17
+     25
 (1 row)
 
 SELECT sift.col_verify('kpt_idx', true);
@@ -223,7 +223,7 @@ SELECT sift.col_verify('kpt_idx', true);
 SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
  format 
 --------
-     17
+     25
 (1 row)
 
 DROP FUNCTION kp_run(text, text, text), kp_check(text);

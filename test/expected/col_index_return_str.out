@@ -30,7 +30,7 @@ VACUUM (ANALYZE) rs;
 SELECT min(format) AS format FROM sift.col_segments('rs_i'::regclass) WHERE kind = 'immutable';
  format 
 --------
-     14
+     25
 (1 row)
 
 -- the rows of a query read from the heap and by an index-only scan of the column index: same rows, and the plan is the scan

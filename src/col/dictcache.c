@@ -268,6 +268,7 @@ typedef struct AskEnt
 {
 	DictKey		key;
 	uint32		asks;
+	uint64		spent;			/* instructions the checks of strings found by the hash of a dictionary in the stream cost (sift_cseg_dict_spend) */
 	bool		nokeep;			/* the parsed dictionary did not fit the cache: parsing it again for every query would cost more than all the searches of the stream */
 } AskEnt;
 
@@ -300,6 +301,7 @@ ask_ent(SiftColSegment *seg, int col)
 	if (!found)
 	{
 		e->asks = 0;
+		e->spent = 0;
 		e->nokeep = false;
 	}
 	return e;
@@ -309,6 +311,15 @@ uint32
 sift_cseg_dict_asked(SiftColSegment *seg, int col)
 {
 	return ++ask_ent(seg, col)->asks;
+}
+
+uint64
+sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add)
+{
+	AskEnt	   *e = ask_ent(seg, col);
+
+	e->spent += add;
+	return e->spent;
 }
 
 bool

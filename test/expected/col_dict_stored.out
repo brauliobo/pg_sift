@@ -68,7 +68,7 @@ SELECT sift.col_verify('ds_new', true);
 SELECT count(*) AS segments, min(format) AS format, sum(units) > 2 AS units FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
  segments | format | units 
 ----------+--------+-------
-        1 |     14 | t
+        1 |     25 | t
 (1 row)
 
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
@@ -247,7 +247,7 @@ SELECT (SELECT min(format) FROM sift.col_segments('dt_i') WHERE kind = 'immutabl
 	   (SELECT min(format) FROM sift.col_segments('dt1_i') WHERE kind = 'immutable') AS format_one_string;
  format | format_one_string 
 --------+-------------------
-     14 |                14
+     25 |                25
 (1 row)
 
 SELECT (SELECT count(*) FROM sift._test_col_tids('dt_i', '0:eq:one')) AS one,
@@ -345,7 +345,7 @@ SELECT format, count(*) AS segments FROM sift.col_segments('ds_new') WHERE kind 
  format | segments 
 --------+----------
      12 |        1
-     14 |        1
+     25 |        1
 (2 rows)
 
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
@@ -388,7 +388,7 @@ SELECT sift.col_merge('ds_new'::regclass, true) >= 0 AS merged;
 SELECT format, count(*) AS segments FROM sift.col_segments('ds_new') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
  format | segments 
 --------+----------
-     14 |        1
+     25 |        1
 (1 row)
 
 SELECT sift.col_verify('ds_new', true);
@@ -482,7 +482,7 @@ REINDEX INDEX ds_new;
 SELECT min(format) AS format FROM sift.col_segments('ds_new') WHERE kind = 'immutable';
  format 
 --------
-     14
+     25
 (1 row)
 
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;

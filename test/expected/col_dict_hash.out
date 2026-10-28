@@ -1,0 +1,159 @@
+-- A dictionary of a text or uuid leaf that is searched in place carries a hash of its strings to their codes: an equality
+-- finds its string with one read of the hash and one block of strings in each segment, and an absent string decompresses nothing. The answers are the heap's for
+-- strings in one segment, in several, in none, NULL, empty, short, long, an IN list, after a promotion, a merge, a VACUUM and a REINDEX; col_verify checks every slot.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+CREATE FUNCTION dh_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; ex bigint; mi bigint;
+BEGIN
+	SELECT count(*) INTO a FROM sift._test_col_tids(idx, preds);
+	EXECUTE format('SELECT count(*) FROM dh WHERE %s', heapwhere) INTO b;
+	EXECUTE format('SELECT count(*) FROM (SELECT tid FROM sift._test_col_tids(%L, %L) EXCEPT SELECT ctid FROM dh WHERE %s) z', idx, preds, heapwhere) INTO ex;
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM dh WHERE %s EXCEPT SELECT tid FROM sift._test_col_tids(%L, %L)) z', heapwhere, idx, preds) INTO mi;
+	RETURN CASE WHEN a = b AND ex = 0 AND mi = 0 THEN 'ok' ELSE format('MISMATCH index=%s heap=%s extra=%s missing=%s', a, b, ex, mi) END;
+END $$;
+CREATE TABLE dh (id int, s text, u uuid, f text);
+INSERT INTO dh
+SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 97 = 0 THEN '' WHEN i % 89 = 0 THEN repeat('long', 20 + i % 7) || i ELSE 'k' || md5(i::text) END,
+	   CASE WHEN i % 53 = 0 THEN NULL ELSE md5((i % 4000)::text)::uuid END, 'v' || (i % 1500)
+FROM generate_series(1, 6000) i;
+CREATE INDEX dh_idx ON dh USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, f sift.col_text_ops, id sift.col_int4_ops) WITH (point_columns = 's,u,f', dict_lookup = 'on', write_buffer_limit = 256);
+INSERT INTO dh SELECT i, 'k' || md5(i::text), md5((i % 4000)::text)::uuid, 'v' || (i % 1500) FROM generate_series(6001, 9000) i;
+SELECT sift.col_promote('dh_idx') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+INSERT INTO dh SELECT i, 'k' || md5(i::text), md5(i::text)::uuid, 'w' || i FROM generate_series(9001, 12000) i;
+SELECT sift.col_promote('dh_idx') > 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (ANALYZE) dh;
+SELECT count(*) > 1 AS segments, max(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+ segments | format 
+----------+--------
+ t        |     25
+(1 row)
+
+SELECT sift.col_verify('dh_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- (the md5 of 1 is c4ca4238a0b923820dcc509a6f75849b, of 17 is 70efdf2ec9b086079795c442636b55fb)
+CREATE TABLE dh_q (n serial, preds text, heapwhere text);
+INSERT INTO dh_q (preds, heapwhere)
+SELECT format('0:eq:k%s', md5(i::text)), format('s = %L', 'k' || md5(i::text)) FROM unnest(ARRAY[1, 17, 5999, 6001, 6500, 8999, 9001, 11999, 12001, 40000]) i
+UNION ALL SELECT format('1:eq:%s', md5(i::text)::uuid), format('u = %L', md5(i::text)::uuid) FROM unnest(ARRAY[1, 17, 3999, 4001, 9005, 11999, 50000]) i
+UNION ALL SELECT format('2:eq:%s', v), format('f = %L', v) FROM unnest(ARRAY['v0', 'v7', 'v1499', 'v1500', 'w9001', 'w11999', 'w12001']) v
+UNION ALL SELECT '0:eq:', 's = ''''' UNION ALL SELECT '0:eq:nothing', 's = ''nothing''' UNION ALL SELECT '0:eq:k', 's = ''k'''
+UNION ALL SELECT format('0:eq:%s', repeat('long', 20 + 178 % 7) || 178), format('s = %L', repeat('long', 20 + 178 % 7) || 178)
+UNION ALL SELECT format('0:eq:%s', repeat('long', 20 + 178 % 7) || 179), format('s = %L', repeat('long', 20 + 178 % 7) || 179)
+UNION ALL SELECT format('0:in:k%s|k%s|k%s|none|', md5('1'), md5('7000'), md5('12000')), format('s IN (%L, %L, %L, ''none'', '''')', 'k' || md5('1'), 'k' || md5('7000'), 'k' || md5('12000'))
+UNION ALL SELECT format('1:in:%s|%s|%s|%s', md5('1')::uuid, md5('2')::uuid, md5('9005')::uuid, md5('nope')::uuid), format('u IN (%L, %L, %L, %L)', md5('1')::uuid, md5('2')::uuid, md5('9005')::uuid, md5('nope')::uuid)
+UNION ALL SELECT format('0:eq:k%s;1:eq:%s', md5('17'), md5('17')::uuid), format('s = %L AND u = %L', 'k' || md5('17'), md5('17')::uuid)
+UNION ALL SELECT format('0:eq:k%s;1:eq:%s', md5('17'), md5('18')::uuid), format('s = %L AND u = %L', 'k' || md5('17'), md5('18')::uuid);
+CREATE FUNCTION dh_round(k int) RETURNS TABLE (rounds_ok bool) LANGUAGE sql AS
+$$ SELECT count(*) = k * (SELECT count(*) FROM dh_q) AND count(*) FILTER (WHERE r = 'ok') = count(*)
+   FROM (SELECT dh_cmp('dh_idx', preds, heapwhere) AS r FROM dh_q, generate_series(1, k)) z $$;
+SELECT count(*) AS shapes, count(*) FILTER (WHERE (SELECT count(*) FROM sift._test_col_tids('dh_idx', preds)) > 0) AS with_rows FROM dh_q;
+ shapes | with_rows 
+--------+-----------
+     33 |        23
+(1 row)
+
+-- 30 rounds in one backend: the first ones search the hash, the later ones the parsed dictionary
+SELECT dh_round(30);
+ dh_round 
+----------
+ t
+(1 row)
+
+-- written again: the write buffer, deletes and updates, a promotion, a merge, VACUUM, REINDEX
+INSERT INTO dh SELECT 20000 + i, 'k' || md5((i % 400)::text), md5((i % 300)::text)::uuid, 'w' || i FROM generate_series(1, 500) i;
+DELETE FROM dh WHERE id % 7 = 0 AND id < 12000;
+UPDATE dh SET s = 'k' || md5((id + 100000)::text) WHERE id % 11 = 0 AND id < 12000;
+INSERT INTO dh_q (preds, heapwhere) VALUES (format('0:eq:k%s', md5('100011')), format('s = %L', 'k' || md5('100011'))), (format('0:eq:k%s', md5('11')), format('s = %L', 'k' || md5('11'))),
+ (format('0:eq:k%s', md5('14')), format('s = %L', 'k' || md5('14')));
+SELECT dh_round(10);
+ dh_round 
+----------
+ t
+(1 row)
+
+SELECT sift.col_promote('dh_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT dh_round(10);
+ dh_round 
+----------
+ t
+(1 row)
+
+SELECT sift.col_merge('dh_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+VACUUM dh;
+SELECT dh_round(10);
+ dh_round 
+----------
+ t
+(1 row)
+
+SELECT sift.col_verify('dh_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+REINDEX INDEX dh_idx;
+SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+ format 
+--------
+     25
+(1 row)
+
+SELECT sift.col_verify('dh_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT dh_round(10);
+ dh_round 
+----------
+ t
+(1 row)
+
+-- segments of an older minor have no hash, and answer the same
+SET sift.col_format_minor = 14;
+REINDEX INDEX dh_idx;
+RESET sift.col_format_minor;
+SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
+ format 
+--------
+     14
+(1 row)
+
+SELECT dh_round(10);
+ dh_round 
+----------
+ t
+(1 row)
+
+DROP TABLE dh, dh_q;
+DROP FUNCTION dh_cmp(regclass, text, text);
+DROP FUNCTION dh_round(int);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

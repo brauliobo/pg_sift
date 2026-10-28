@@ -599,7 +599,7 @@ SELECT sift.col_verify('su_on', true);
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('su_on');
  minors 
 --------
- {14}
+ {25}
 (1 row)
 
 SELECT u AS u1 FROM su WHERE id = 5000 \gset

@@ -102,6 +102,9 @@ BEGIN
 				adv := format('ALTER INDEX %s RESET (hll_columns), then REINDEX INDEX %s writes units without sketches, which 3.3 reads', r.rel, r.rel);
 			ELSIF hi = 26 THEN
 				adv := format('the range, inet and cidr columns of the index keep the lanes of their containment operators: drop the index before going back to %s', tgt);
+			ELSIF hi = 25 THEN
+				adv := format('SET sift.col_format_minor = 14, then %s writes segments without the hash of the dictionaries (and without the sections of minors 15 to 24), which %s reads',
+							  CASE r.amname WHEN 'sift_table' THEN 'VACUUM FULL ' || r.rel || ' (ACCESS EXCLUSIVE lock)' ELSE 'REINDEX INDEX ' || r.rel END, tgt);
 			ELSIF hi = 24 THEN
 				adv := format('ALTER INDEX %s SET (count_columns = ''off'', key_columns = ''off'', key_table = off), then REINDEX INDEX %s writes segments without row counts, lists of runs and key tables, which %s reads', r.rel, r.rel, tgt);
 			ELSIF hi = 23 THEN

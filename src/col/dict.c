@@ -439,6 +439,35 @@ put_counts(const SiftCDict *d, StringInfo out)
  * The forms read in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a string
  * is one read of its block), and for DICT_LOOKUP the codes in byte order of the strings (the work of a bisection is a few block reads)
  */
+uint64
+sift_cdict_hash(const char *s, uint32 len)
+{
+	return hash_bytes_extended((const unsigned char *) s, (int) len, 0);
+}
+
+/* The hash of the strings to their codes, DICT_HASHED */
+static void
+put_hash(const SiftCDict *d, StringInfo out)
+{
+	uint32		ns = SIFT_CDICT_HASH_SLOTS(d->n),
+				cb = sift_cdict_hash_cb(d->n);
+	uint32	   *slot = palloc0((Size) ns * sizeof(uint32));
+
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		uint64		h = sift_cdict_hash(d->bytes + d->off[c], cdict_len(d, c));
+
+		for (uint32 i = sift_cdict_hash_pos(h, ns);; i = i + 1 == ns ? 0 : i + 1)
+			if (slot[i] == 0)
+			{
+				slot[i] = sift_cdict_hash_slot(h, cb, c);
+				break;
+			}
+	}
+	put_bytes(out, slot, (Size) ns * sizeof(uint32));
+	pfree(slot);
+}
+
 static void
 serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out)
 {
@@ -463,6 +492,8 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		z = palloc(zcap);
 	if (form == DICT_LOOKUP && d->rows != NULL)
 		form = DICT_LOOKUP_COUNT;
+	if (d->hashed && (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT))
+		form |= DICT_HASHED;
 	put_val(out, form);
 	put_val(out, d->n);
 	put_val(out, fixed);
@@ -502,13 +533,15 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
 	}
 	memcpy(out->data + tab, boff, (nblk + 1) * sizeof(uint32));
-	if (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT)
+	if ((form & ~DICT_HASHED) == DICT_LOOKUP || (form & ~DICT_HASHED) == DICT_LOOKUP_COUNT)
 	{
 		while ((out->len - start) % sizeof(uint32))
 			appendStringInfoChar(out, '\0');
 		put_bytes(out, d->sorted, (Size) d->n * sizeof(uint32));
-		if (form == DICT_LOOKUP_COUNT)
+		if ((form & ~DICT_HASHED) == DICT_LOOKUP_COUNT)
 			put_counts(d, out);
+		if (form & DICT_HASHED)
+			put_hash(d, out);
 	}
 	pfree(boff);
 	pfree(raw);
@@ -713,8 +746,10 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 	uint8	   *raw;
 	char	   *bytes;
 	SiftCDict  *d = NULL;
-	bool		ok = true;
+	bool		ok = true,
+				hashed = (form & DICT_HASHED) != 0;
 
+	form &= ~DICT_HASHED;
 	if (len < DICT_HEAD_LOOKUP)
 		return NULL;
 	memcpy(head, p, DICT_HEAD_LOOKUP);
@@ -745,6 +780,8 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 		memcpy(&last, p + total + (uint64) 8 * DICT_COUNT_NB(n) + sizeof(uint32), sizeof(last));
 		total += DICT_COUNT_HEAD(n) + last;
 	}
+	if (hashed)
+		total += (uint64) SIFT_CDICT_HASH_SLOTS(n) * sizeof(uint32);
 	if (boff[0] != 0 || blk0 + boff[nblk] > len || total > len)
 	{
 		pfree(boff);
@@ -847,7 +884,7 @@ sift_cdict_parse(MemoryContext mcxt, const void *data, Size len, Size *used)
 	if (len < DICT_HEAD)
 		return NULL;
 	memcpy(head, p, DICT_HEAD);
-	if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT || head[0] == DICT_BLOCKS)
+	if ((head[0] & ~DICT_HASHED) == DICT_LOOKUP || (head[0] & ~DICT_HASHED) == DICT_LOOKUP_COUNT || head[0] == DICT_BLOCKS)
 		return parse_blocks(mcxt, p, len, head[0], used);
 	p += DICT_HEAD;
 	len -= DICT_HEAD;

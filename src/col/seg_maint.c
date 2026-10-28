@@ -687,6 +687,12 @@ verify_dicts(SiftColSegment *seg)
 			continue;
 		if (sift_cseg_dict_counted(seg, c) && seg->entry.format < SIFT_COL_FORMAT_COUNT)
 			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings in a segment of column format 1.%d.", c, seg->entry.format);
+		if (sift_cseg_dict_hashed(seg, c))
+		{
+			if (seg->entry.format < SIFT_COL_FORMAT_HASH)
+				corrupt(seg, "The dictionary of leaf %d has a hash in a segment of column format 1.%d.", c, seg->entry.format);
+			sift_cseg_dict_verify_hash(seg, c, d);
+		}
 		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
 			corrupt(seg, "The dictionary of leaf %d is stored in blocks in a segment of column format 1.%d.", c, seg->entry.format);
 		if (!d->stored_order)

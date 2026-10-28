@@ -39,7 +39,7 @@ UNION ALL SELECT 'dc_col', array_agg(DISTINCT format) FROM sift._test_col_format
 --------+--------
  dc_col | {7}
  dm_col | {6}
- dw_col | {14}
+ dw_col | {25}
 (3 rows)
 
 SELECT sift.col_verify('dm_col', true), sift.col_verify('dw_col', true), sift.col_verify('dc_col', true);

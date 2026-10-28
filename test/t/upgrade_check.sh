@@ -123,10 +123,10 @@ check "to 3.4: the same index with the lists off is ok" test -z "$(row "$(uc --t
 q clean "ALTER INDEX facts_runs SET (key_columns = 'off', key_table = off)" "REINDEX INDEX facts_runs" >/dev/null
 check "to 3.4: the advice makes the index readable" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_runs)"
 q clean "DROP TABLE run_facts" >/dev/null
-# the row counts of a text dictionary (count_columns) are column format 24: 3.4 refuses it too
+# a text dictionary read in place has row counts (count_columns) and a hash of its strings: column format 25, which 3.5 refuses too
 q clean "CREATE INDEX facts_cnt ON key_facts USING sift_col (id, k, pad) WITH (cube_minmax = false, count_columns = 'pad')" >/dev/null
-check "an index with row counts is column format 24" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 24' <<<"$(uc clean)"
-check "to 3.4: an index with row counts is a blocker that says to turn count_columns off" grep -q -E "^blocker +facts_cnt .*ALTER INDEX facts_cnt SET \(count_columns = 'off', key_columns = 'off', key_table = off\), then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
+check "an index with row counts and a hash is column format 25" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 25' <<<"$(uc clean)"
+check "to 3.4: an index with a hash is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_cnt .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
 q clean "DROP INDEX facts_cnt" >/dev/null
 q clean "DROP TABLE key_facts" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list

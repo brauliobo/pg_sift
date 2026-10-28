@@ -139,6 +139,9 @@ extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
 extern void sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows);
 /* Whether the dictionary of the leaf holds the counts */
 extern bool sift_cseg_dict_counted(SiftColSegment *seg, int col);
+/* Whether the dictionary of leaf col has the hash of its strings (DICT_HASHED); the verify of the hash against the strings d of the leaf (sift.col_verify) */
+extern bool sift_cseg_dict_hashed(SiftColSegment *seg, int col);
+extern void sift_cseg_dict_verify_hash(SiftColSegment *seg, int col, SiftCDict *d);
 /* The rows whose string of the leaf passes op (EQ, LT, LE, GT, GE, PREFIX) against c, from the counts a dictionary of the option count_columns holds; false: none stored */
 extern bool sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, const SiftColValue *c, uint64 *rows);
 /*

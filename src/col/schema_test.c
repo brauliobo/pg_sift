@@ -116,7 +116,7 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 		}
 	}
 	/* the forms read in place, raw and with compressed blocks, with and without the order: the same dictionary back, and no damage that parses is out of range */
-	for (int z = 0; z < 4; z++)
+	for (int z = 0; z < 8; z++)
 	{
 		SiftCcPolicy zpol;
 		StringInfoData buf;
@@ -124,6 +124,7 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 		Size		used = 0;
 		uint32		form = z & 2 ? DICT_LOOKUP : DICT_BLOCKS;
 
+		d->hashed = (z & 4) != 0;
 		initStringInfo(&buf);
 		CHECK(t, sift_cc_policy_parse("zstd", &zpol) == NULL, "policy zstd");
 		sift_cdict_serialize(d, z & 1 ? &zpol : NULL, form, &buf);
@@ -155,6 +156,7 @@ check_dict_strs(TCtx *t, SiftCDict *d, char **str, const uint32 *len, uint32 n, 
 			pfree(bad);
 		}
 	}
+	d->hashed = false;
 }
 
 void

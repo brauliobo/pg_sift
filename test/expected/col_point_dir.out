@@ -184,7 +184,7 @@ SELECT sift.col_verify('pd_all', true);
 SELECT min(format) AS format FROM sift.col_segments('pd_all') WHERE kind = 'immutable';
  format 
 --------
-     14
+     25
 (1 row)
 
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
@@ -448,7 +448,7 @@ SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP
 -----------+--------+----------
  buffer    |        |        1
  immutable |     12 |        1
- immutable |     14 |        2
+ immutable |     25 |        2
 (3 rows)
 
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
@@ -517,7 +517,7 @@ SELECT kind, format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP
    kind    | format | segments 
 -----------+--------+----------
  buffer    |        |        1
- immutable |     14 |        1
+ immutable |     25 |        1
 (2 rows)
 
 SELECT sift.col_verify('pd_all', true);

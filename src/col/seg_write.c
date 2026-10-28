@@ -1542,6 +1542,11 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 				order_bytes += (Size) w->dict[c]->n * sizeof(uint32);
 				w->dform[c] = DICT_LOOKUP;
 				w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+				if (w->setting >= SIFT_COL_FORMAT_PRESENCE)
+				{
+					w->dict[c]->hashed = true;
+					w->format = Max(w->format, SIFT_COL_FORMAT_HASH);
+				}
 				if (w->cnt != NULL && w->pagg.count[c] && !w->cnt[c].bad && w->cnt[c].cap >= w->dict[c]->n)
 				{
 					w->dict[c]->rows = w->cnt[c].rows;

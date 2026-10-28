@@ -628,6 +628,52 @@ look_cache(DictLook *l)
 	}
 }
 
+#define HASH_WINDOW	32				/* slots read at a time */
+
+/*
+ * The code of a string by the hash of the dictionary (DICT_HASHED): the slots from its position are read a window at a time up to an empty one; those with its fingerprint name a
+ * code, whose string is read (a block) and compared. A string the dictionary lacks costs the read of a window and no block, almost always.
+ */
+static int64
+look_find_hash(DictLook *l, const char *s, uint32 len)
+{
+	uint64		h = sift_cdict_hash(s, len);
+	uint32		ns = SIFT_CDICT_HASH_SLOTS(l->n),
+				cb = sift_cdict_hash_cb(l->n),
+				fp = (uint32) h & (UINT32_MAX >> cb),
+				i = sift_cdict_hash_pos(h, ns),
+				win[HASH_WINDOW];
+
+	for (uint32 probed = 0; probed < ns;)
+	{
+		uint32		k = Min(HASH_WINDOW, ns - i);
+
+		seg_read(l->seg, l->hash_at + (uint64) i * sizeof(uint32), k * sizeof(uint32), win);
+		for (uint32 j = 0; j < k; j++, probed++)
+		{
+			uint32		code,
+						slen,
+						loads;
+			const char *str;
+
+			if (win[j] == 0)
+				return -1;
+			if (win[j] >> cb != fp)
+				continue;
+			code = (win[j] & (UINT32_MAX >> (32 - cb))) - 1;
+			if (code >= l->n)
+				corrupt(l->seg, "The hash of the dictionary of leaf %d names code %u of %u.", l->col, code, l->n);
+			loads = l->loads;
+			str = look_code_str(l, code, &slen, l->buf);
+			sift_cseg_dict_spent(l->seg, l->col, l->loads != loads ? DICT_ZSTD_COST : DICT_READ_COST);
+			if (slen == len && memcmp(str, s, len) == 0)
+				return code;
+		}
+		i = i + k == ns ? 0 : i + k;
+	}
+	return -1;
+}
+
 static int64
 look_find(const SiftCDictLook *look, const char *s, uint32 len)
 {
@@ -636,6 +682,8 @@ look_find(const SiftCDictLook *look, const char *s, uint32 len)
 	SiftColValue c = {.v.s = s,.len = len};
 	uint32		pos;
 
+	if (l->hash_at != 0)
+		return look_find_hash((DictLook *) l, s, len);
 	look_cache((DictLook *) l);
 	pos = sift_csorted_bound(&so, &c, false);
 
@@ -695,6 +743,7 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->blk_len = bc->head.blk_len;
 	l->perm_at = bc->head.perm_at;
 	l->cum_at = bc->head.cum_at;
+	l->hash_at = bc->head.hash_at;
 	l->blocked = true;
 	l->blkno = UINT32_MAX;
 	l->look = (SiftCDictLook) {look_find, look_match};
@@ -718,6 +767,7 @@ dict_look(SiftColSegment *seg, int col)
 	uint64		nblk;
 	uint32		blen;
 	SiftCBisect *bc;
+	bool		hashed;
 
 	if (pv->look_checked[col])
 		return pv->look[col];
@@ -729,6 +779,8 @@ dict_look(SiftColSegment *seg, int col)
 	if (len < DICT_HEAD)
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	seg_read(seg, off, DICT_HEAD, head);
+	hashed = (head[0] & DICT_HASHED) != 0;
+	head[0] &= ~DICT_HASHED;
 	if (head[0] != DICT_LOOKUP && head[0] != DICT_LOOKUP_COUNT && head[0] != DICT_BLOCKS && head[0] != DICT_PLAIN)
 		return NULL;
 	l = look_alloc(seg);
@@ -750,6 +802,7 @@ dict_look(SiftColSegment *seg, int col)
 		if (len < DICT_HEAD_LOOKUP)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, off, DICT_HEAD_LOOKUP, head);
+		head[0] &= ~DICT_HASHED;
 		l->fixed = head[2];
 		l->nbytes = head[3];
 		l->blocked = true;
@@ -778,13 +831,26 @@ dict_look(SiftColSegment *seg, int col)
 				if (l->cum_at + DICT_COUNT_HEAD(l->n) + last > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 			}
+			if (hashed)
+			{
+				l->hash_at = head[0] == DICT_LOOKUP_COUNT ? l->cum_at + DICT_COUNT_HEAD(l->n) + (uint64) 0 : l->perm_at + (uint64) l->n * sizeof(uint32);
+				if (head[0] == DICT_LOOKUP_COUNT)
+				{
+					uint32		last;
+
+					seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
+					l->hash_at += last;
+				}
+				if (l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32) > off + len)
+					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			}
 			l->look = (SiftCDictLook) {look_find, look_match};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
 			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
 			{
-				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at};
+				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at, l->hash_at};
 				bc->have_head = true;
 				l->bc = bc;
 				l->bc_tried = true;
@@ -804,6 +870,46 @@ sift_cseg_dict_counted(SiftColSegment *seg, int col)
 	DictLook   *l;
 
 	return seg->schema->cols[col].store == SIFT_COLS_STR && (l = dict_look(seg, col)) != NULL && l->cum_at != 0;
+}
+
+bool
+sift_cseg_dict_hashed(SiftColSegment *seg, int col)
+{
+	DictLook   *l;
+
+	return seg->schema->cols[col].store == SIFT_COLS_STR && (l = dict_look(seg, col)) != NULL && l->hash_at != 0;
+}
+
+/* Every string of the dictionary is reachable from its position in the hash, and the hash holds nothing else */
+void
+sift_cseg_dict_verify_hash(SiftColSegment *seg, int col, SiftCDict *d)
+{
+	DictLook   *l = dict_look(seg, col);
+	uint32		ns = SIFT_CDICT_HASH_SLOTS(d->n),
+				cb = sift_cdict_hash_cb(d->n),
+				used = 0;
+	uint32	   *slot = palloc(ns * sizeof(uint32));
+
+	if (l == NULL || l->hash_at == 0)
+		corrupt(seg, "The dictionary of leaf %d has no hash.", col);
+	seg_read(seg, l->hash_at, (Size) ns * sizeof(uint32), slot);
+	for (uint32 i = 0; i < ns; i++)
+		used += slot[i] != 0;
+	if (used != d->n)
+		corrupt(seg, "The hash of the dictionary of leaf %d holds %u strings, the dictionary %u.", col, used, d->n);
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		uint32		len;
+		const char *str = sift_cdict_str(d, c, &len);
+		uint64		h = sift_cdict_hash(str, len);
+		uint32		i = sift_cdict_hash_pos(h, ns);
+
+		while (slot[i] != 0 && slot[i] != sift_cdict_hash_slot(h, cb, c))
+			i = i + 1 == ns ? 0 : i + 1;
+		if (slot[i] == 0)
+			corrupt(seg, "The hash of the dictionary of leaf %d does not hold code %u.", col, c);
+	}
+	pfree(slot);
 }
 
 /* The values of one block of the row counts of a dictionary: the rows of the codes at the places of block b, DICT_BLOCK of them (the places past n are 0) */
@@ -960,7 +1066,8 @@ sift_cseg_dict_search(SiftColSegment *seg, int col)
 		return pv->dict[col];
 	l = dict_look(seg, col);
 	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost */
-	if (l && l->searchable && ((l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
+	if (l && l->searchable && ((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
+							   l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
 	return sift_cseg_dict(seg, col);
 }

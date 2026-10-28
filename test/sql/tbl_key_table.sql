@@ -8,6 +8,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '240s';
+-- the hash of the dictionaries (minor 25) is off, so that the minors are those of the key tables alone
+SET sift.table_dict_lookup = off;
 
 -- 160,000 rows in segments of 25,000 and about 3 units each (a long pad: a key table of two measures fits 3% of such a segment). grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with NULLs
 -- (a measure of the table); ts and d: time leaves (ts is a measure too); val: an int the table does not keep; mid_id: 3,000 values (a table of the counts fits, not their

@@ -55,6 +55,7 @@ typedef struct SiftCDict
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
+	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
 } SiftCDict;
 
 /* The two searches a test makes of a dictionary, for one that stays in the stream */
@@ -109,6 +110,7 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_LOOKUP		2
 #define DICT_BLOCKS		3
 #define DICT_LOOKUP_COUNT	4			/* form 2, then (4-aligned) the rows of the strings below each place in byte order, a block of DICT_BLOCK places at a time */
+#define DICT_HASHED		0x10		/* or'ed into form 2 or 4: after everything of the form, a hash of the strings to their codes */
 #define DICT_HEAD		(2 * sizeof(uint32))
 #define DICT_HEAD_LOOKUP	(4 * sizeof(uint32))
 #define DICT_BLOCK		64			/* strings in a block of the blocks forms: the unit of compression and of a read in place; 32 compress a dictionary of 20,000 titles 13% worse than the compact form, 64 as well */
@@ -128,6 +130,32 @@ extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
 /* The bytes of the row counts of a form 4 dictionary of n strings before the packed bytes (the records and cmin), and the number of blocks */
 #define DICT_COUNT_NB(n)		(((n) + DICT_BLOCK - 1) / DICT_BLOCK)
 #define DICT_COUNT_HEAD(n)		((uint64) 8 * (DICT_COUNT_NB(n) + 1) + ((uint64) DICT_COUNT_NB(n) + 3) / 4 * 4)
+/*
+ * The hash of a dictionary of DICT_HASHED: SIFT_CDICT_HASH_SLOTS(n) u32 slots, linear probing from the position of the 64-bit hash of the string (its high half scaled to the slots), a slot
+ * empty (0) or (fingerprint << cb) | (code + 1), cb the bits of n and the fingerprint the low bits of the hash that are left: an absent string meets an empty slot or a
+ * fingerprint that differs, so the search of a segment that lacks it reads one slot and no block; a string that matches is checked against its code's string (a block).
+ */
+#define SIFT_CDICT_HASH_SLOTS(n)	((n) + (n) / 4 + 8)
+extern uint64 sift_cdict_hash(const char *s, uint32 len);
+static inline uint32
+sift_cdict_hash_cb(uint32 n)
+{
+	uint32		b = 1;
+
+	while (((uint64) 1 << b) <= n)
+		b++;
+	return b;
+}
+static inline uint32
+sift_cdict_hash_pos(uint64 h, uint32 nslots)
+{
+	return (uint32) (((h >> 32) * nslots) >> 32);
+}
+static inline uint32
+sift_cdict_hash_slot(uint64 h, uint32 cb, uint32 code)
+{
+	return ((uint32) h & (UINT32_MAX >> cb)) << cb | (code + 1);
+}
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);

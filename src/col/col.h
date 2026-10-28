@@ -44,6 +44,7 @@
 #define SIFT_COL_FORMAT_KTAB	22		/* 3.5: the segment has the key table of some leaf: its distinct keys with the rows, sums, minima and maxima of each, over the whole segment; written under sift.col_format_minor 15 or more for the leaves the index keeps key lists for */
 #define SIFT_COL_FORMAT_RUNL	23		/* 3.5: the segment has a key list of some leaf in some unit stored as runs of consecutive keys, written where no bitmap or list of offsets fits the share of the unit; written only for an index whose key_columns keep key lists */
 #define SIFT_COL_FORMAT_COUNT	24		/* 3.5: the dictionary of a leaf of the option count_columns also holds the rows of each string by its place in byte order, so that a count of a prefix, a range or an equality of the leaf is read from the dictionary; written under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_HASH	25		/* 3.6: the dictionary of a leaf that is searched in place also holds a hash of its strings to their codes: an equality finds its string with one read and a block; written under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_CONTAIN	26		/* 3.6: the leaf list has the lanes of a range or a network column: the start and end of the set of a range, the first address and the family and mask of a network, as INT leaves after the image; written only for an index with the reloption contain_columns */
 #define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_CONTAIN	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
