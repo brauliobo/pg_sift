@@ -385,6 +385,8 @@ typedef struct MergeSrc
 	uint64		budget;
 	uint64		loaded;			/* the rows of the older segments loaded whole */
 	MemoryContext cx;
+	MergeIn   **heap;			/* the inputs with rows left, the one whose next row comes first at 0 */
+	int			nheap;
 } MergeSrc;
 
 static int
@@ -465,29 +467,60 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		m->chunk[prev].held = false;
 }
 
+/* Does the next row of input a come before that of b? Equal rows (one row of two inputs) go in the order of the inputs */
+static inline bool
+in_before(const MergeSrc *m, const MergeIn *a, const MergeIn *b)
+{
+	int			c = ref_cmp(&a->ord[a->pos], &b->ord[b->pos], (void *) m->ctx);
+
+	return c < 0 || (c == 0 && a < b);
+}
+
+static void
+heap_down(MergeSrc *m, int i)
+{
+	MergeIn    *x = m->heap[i];
+
+	for (int c; (c = 2 * i + 1) < m->nheap; i = c)
+	{
+		if (c + 1 < m->nheap && in_before(m, m->heap[c + 1], m->heap[c]))
+			c++;
+		if (!in_before(m, m->heap[c], x))
+			break;
+		m->heap[i] = m->heap[c];
+	}
+	m->heap[i] = x;
+}
+
 static bool
 merge_next(void *state, RowRef *r)
 {
 	MergeSrc   *m = state;
-	MergeIn    *best = NULL;
+	MergeIn    *best;
 
-	for (int i = 0; i < m->n; i++)
+	if (m->heap == NULL)
 	{
-		MergeIn    *in = &m->in[i];
-
-		if (in->done)
-			continue;
-		if (in->pos == in->n)
-			load_chunk(m, in);
-		if (in->done)
-			continue;
-		if (best == NULL || ref_cmp(&in->ord[in->pos], &best->ord[best->pos], (void *) m->ctx) < 0)
-			best = in;
+		m->heap = MemoryContextAlloc(m->cx, m->n * sizeof(MergeIn *));
+		for (int i = 0; i < m->n; i++)
+		{
+			load_chunk(m, &m->in[i]);
+			if (!m->in[i].done)
+				m->heap[m->nheap++] = &m->in[i];
+		}
+		for (int i = m->nheap / 2 - 1; i >= 0; i--)
+			heap_down(m, i);
 	}
-	if (best == NULL)
+	if (m->nheap == 0)
 		return false;
+	best = m->heap[0];
 	*r = best->ord[best->pos++];
 	m->chunk[r->chunk].pins++;
+	if (best->pos == best->n)
+		load_chunk(m, best);
+	if (best->done)
+		m->heap[0] = m->heap[--m->nheap];
+	if (m->nheap > 0)
+		heap_down(m, 0);
 	return true;
 }
 
