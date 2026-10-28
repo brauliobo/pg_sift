@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Fixed: pg_sift: an aggregate scan that read several wide leaves (numeric beyond 64 bits, interval, money) for the selected rows of its units, with a text or other dictionary key beside them, gave rows to the wrong groups or crashed the backend (signal 11): the eight slots of the executor's per-dictionary maps were handed out round robin, so a dictionary made for the read of a wide leaf (one for every unit) took the slot of a key map still in use; the least recently used slot goes now (test `agg_dict_slots`).
+
 ## 3.5.1 - 2026-10-27
 
 - Fixed: pg_sift: a backend crashed (signal 11) when a parallel aggregate scan with a correlated lookup (`LEFT JOIN LATERAL (..) LIMIT 1`) was planned with workers and none could be launched because the pool of parallel workers was spent: the scan kept pointers into the parallel shared memory, PostgreSQL destroyed the parallel context and the leader read the unmapped segment (`memo_find`); the pointers are dropped before the context is destroyed (test `agg_par_no_workers`). Until the update: `max_parallel_workers_per_gather = 0` or a larger `max_worker_processes` and `max_parallel_workers`.
