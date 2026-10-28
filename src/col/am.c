@@ -388,8 +388,8 @@ sift_col_init(void)
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_dict_shared",
-							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = not shared, 2 = every dictionary shared, 3 = the table cannot be had.",
-							NULL, &sift_test_col_dict_shared, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = not shared, 2 = every dictionary shared, 3 = the table cannot be had, 4 = a ring of 8 MB.",
+							NULL, &sift_test_col_dict_shared, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_verify_inval",
 							 "Testing: the heap check of sift.col_verify invalidates the index's relcache entry (what another session's VACUUM or ANALYZE does) at every tuple.",
 							 NULL, &sift_test_col_verify_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

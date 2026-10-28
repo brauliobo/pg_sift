@@ -87,6 +87,8 @@ cdict_ready(SiftCDict *d)
 	else
 		for (uint32 c = 0; c < d->n; c++)
 			cdict_put(d, (uint64) hash_bytes((const unsigned char *) d->bytes + d->off[c], (int) cdict_len(d, c)) << 32 | (c + 1));
+	if (d->built)
+		d->built(d, d->built_arg);
 }
 
 uint32
@@ -311,6 +313,8 @@ cdict_sort(SiftCDict *d)
 		d->sorted[i] = a[i].code;
 	pfree(a);
 	pfree(b);
+	if (d->built)
+		d->built(d, d->built_arg);
 }
 
 /* The first position of the sorted order whose string is not below c (after: not at or below it) */

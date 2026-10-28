@@ -16,6 +16,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/stats.h"
 #include "col/am.h"
 #include "col/dictshm.h"
 #include "core/limits.h"
@@ -365,20 +366,46 @@ dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, Sift
 	return d;
 }
 
+/* The hash table or the sorted order of a dictionary read in place has just been made: the backends that read it next find them in the ring (a record that has them already is left alone) */
+static void
+dict_built(SiftCDict *d, void *arg)
+{
+	sift_dictshm_write(arg, d);
+}
+
+/* d, read in place from a record that lacks its lookup structures, shares them when it makes them */
+static SiftCDict *
+dict_hook(SiftCDict *d, const DictKey *k)
+{
+	if (d != NULL && (d->slots == NULL || d->sorted == NULL))
+	{
+		d->built_arg = MemoryContextAlloc(d->mcxt, sizeof(*k));
+		memcpy(d->built_arg, k, sizeof(*k));
+		d->built = dict_built;
+	}
+	return d;
+}
+
+static SiftCDict *
+dict_shared(SiftCDict *d, const DictKey *k)
+{
+	if (d != NULL)
+		sift_stat_add(SIFT_STAT_DICT_SHARED_HITS, 1);
+	return dict_hook(d, k);
+}
+
 static MemoryContext
 dict_cx(SiftColSegment *seg)
 {
 	return AllocSetContextCreate(seg->mcxt, "sift cache segment dictionary", ALLOCSET_DEFAULT_SIZES);
 }
 
-/* The dictionary in the cache, else the one another backend parsed: a dictionary that is there was found worth its parse, and a copy costs less than a search of the stream */
+/* The dictionary in the cache, else the one another backend parsed, read in the shared memory it lies in: it was found worth its parse, and reading it costs a lookup */
 SiftCDict *
 sift_cseg_dict_peek(SiftColSegment *seg, int col)
 {
 	DictKey		k;
 	DictEnt    *e;
-	MemoryContext cx;
-	SiftCDict  *d;
 
 	dict_key(&k, seg, col, UINT32_MAX);
 	if (cache != NULL && (e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
@@ -387,17 +414,7 @@ sift_cseg_dict_peek(SiftColSegment *seg, int col)
 		dict_pin(e, seg->mcxt);
 		return e->obj;
 	}
-	if (!sift_dictshm_has(&k))
-		return NULL;
-	if (cache == NULL)
-		cache_init();
-	cx = dict_cx(seg);
-	if ((d = sift_dictshm_read(&k, cx)) == NULL)
-	{
-		MemoryContextDelete(cx);
-		return NULL;
-	}
-	return dict_keep(seg, col, &k, cx, d);
+	return dict_shared(sift_dictshm_read(&k, seg->mcxt), &k);
 }
 
 SiftCDict *
@@ -406,7 +423,8 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	DictKey		k;
 	DictEnt    *e;
 	MemoryContext cx;
-	SiftCDict  *d;
+	SiftCDict  *d,
+			   *shared;
 
 	dict_key(&k, seg, col, UINT32_MAX);
 	if (cache == NULL)
@@ -417,12 +435,16 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 		dict_pin(e, seg->mcxt);
 		return e->obj;
 	}
+	if ((d = sift_dictshm_read(&k, seg->mcxt)) != NULL)
+		return dict_shared(d, &k);
 	/* under the scan until it is kept: a dictionary that does not parse leaves nothing behind */
 	cx = dict_cx(seg);
-	if ((d = sift_dictshm_read(&k, cx)) == NULL)
+	d = load(seg, col, cx);
+	/* the copy in the ring is the one the backends read, this one included */
+	if (sift_dictshm_write(&k, d) && (shared = sift_dictshm_read(&k, seg->mcxt)) != NULL)
 	{
-		d = load(seg, col, cx);
-		sift_dictshm_write(&k, d);
+		MemoryContextDelete(cx);
+		return dict_hook(shared, &k);
 	}
 	return dict_keep(seg, col, &k, cx, d);
 }

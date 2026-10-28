@@ -197,6 +197,7 @@ numeric_sum_records	made from the lanes of each row	orders	default	Custom Scan \
 contain_rows	returns the rows of a containment of a range (`@>`	orders	(id)	Index Scan using ranges_rows_col|Bitmap Index Scan on ranges_rows_col	native	gist:search_path = contain_rows_gist	ms	faster33	no
 key_lookup_units	skips the morsels of units that the zones clear	orders	(id)	Custom Scan \(SiftAgg\)	native	u4008:search_path = key_lookup_u4008,u500:search_path = key_lookup_u500	ms	faster33	no
 dict_shared_first_statement	copied from shared memory	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+dict_shared_find	where it lies in the ring	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 key_cut_day_count	a day count 25.4 M to 0.7 M	orders	(id)	Custom Scan \(SiftAgg\)	native	btree:search_path = key_cut_day_count_bt	ms	faster33	no
 key_cut_week_count	a week 25.6 M to 0.9 M	orders	(id)	Custom Scan \(SiftAgg\)	native	btree:search_path = key_cut_week_count_bt	ms	faster33	no
 key_cut_group_day	a group by day 88.7 M to 3.8 M	orders	(id)	Custom Scan \(SiftAgg\)	native	btree:search_path = key_cut_group_day_bt	ms	faster33	no

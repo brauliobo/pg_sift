@@ -80,7 +80,7 @@ SELECT snap('first');
 SELECT * FROM shared();
  hits_found | misses_counted 
 ------------+----------------
- f          | t
+ t          | t
 (1 row)
 
 \c

@@ -56,6 +56,8 @@ typedef struct SiftCDict
 	uint32		tests;			/* linear value tests so far, before the sorted order is worth building */
 	uint64		orows;			/* rows of top-N scans compared with the strings so far (cdict_order) */
 	uint32	   *sorted;			/* the codes in byte order of their strings; built by match once the dictionary has been tested a few times */
+	void		(*built) (struct SiftCDict *d, void *arg);	/* a dictionary read in place: called when its hash table or sorted order has just been made, to share them (col/dictcache.c) */
+	void	   *built_arg;
 	bool		blocked;		/* parsed from the blocks of a segment of column format minor 14 (sift.col_verify checks the minor) */
 	bool		stored_order;	/* sorted came from the stored form that is searched in place (sift.col_verify checks it) */
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */

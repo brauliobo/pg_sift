@@ -26,6 +26,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/am.h"
+#include "col/dictshm.h"
 #include "agg/colsrc.h"
 #include "col/gorder.h"
 #include "col/pagg.h"
@@ -34,6 +35,7 @@
 #include "core/sql.h"
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_cache);
+PG_FUNCTION_INFO_V1(sift_test_col_dict_pinned);
 PG_FUNCTION_INFO_V1(sift_test_col_tids);
 PG_FUNCTION_INFO_V1(sift_test_col_gorder);
 PG_FUNCTION_INFO_V1(sift_test_col_read);
@@ -569,6 +571,21 @@ sift_test_col_dict_cache(PG_FUNCTION_ARGS)
 
 	if (PG_GETARG_BOOL(0))
 		memset(&sift_cdict_cache_stats, 0, sizeof(sift_cdict_cache_stats));
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* () The records of the shared dictionary ring that backends read in place, and the pins on them */
+Datum
+sift_test_col_dict_pinned(PG_FUNCTION_ARGS)
+{
+	int64		records,
+				pins;
+	Datum		v[2];
+	bool		nulls[2] = {false};
+
+	sift_dictshm_pinned(&records, &pins);
+	v[0] = Int64GetDatum(records);
+	v[1] = Int64GetDatum(pins);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
