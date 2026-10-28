@@ -781,6 +781,28 @@ extern int sift_aggspec_pred_leaf(const SiftAggPred *p, const SiftSrcLayout *lay
 extern bool sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out);
 
+/* Whether the collation lowers A-Z to a-z in a UTF-8 database: ILIKE and ~* of an ASCII part compare the ASCII letters in lower case then */
+extern bool sift_aggspec_ascii_fold(Oid collid);
+
+/*
+ * The literals (spec_lits.c) every string that matches a pattern test of the dictionary holds: up to SIFT_PAT_LITS of at least 3 bytes, longest first, each of
+ * them in lower case and to compare with the ASCII letters of the strings folded when fold[i] (ILIKE, ~*); neg: the test is the NOT of it, a string without one
+ * of them passes.
+ */
+#define SIFT_PAT_LITS	3
+typedef struct SiftPatLits
+{
+	int			n;
+	bool		neg;
+	bool		fold[SIFT_PAT_LITS];
+	const char *lit[SIFT_PAT_LITS];
+	uint32		len[SIFT_PAT_LITS];
+} SiftPatLits;
+
+/* The literals of the boolean expression of a lookup table over a dictionary (one pattern test of Param 0 and a constant, its NOT, or an AND of tests); false when there are none */
+extern bool sift_pattern_lits(Node *e, SiftPatLits *out);
+extern bool sift_pattern_lits_of(Oid funcid, Oid collid, const char *pat, uint32 len, SiftPatLits *out);
+
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 extern Datum sift_cal_bound(Node *cal, int mode, Datum operand);
 extern bool sift_cal_nan(Oid rtype, Datum d);

@@ -35,6 +35,99 @@ lut_entry(AggExec *ex, const SiftSrcDict *d, PredState *st, uint64 *lut, uint64 
 	}
 }
 
+/* The pass of a literal over a dictionary this size or smaller is not worth it: the test of its strings costs about as much */
+#define PREFILTER_MIN	1024
+#define PREFILTER_SAMPLE	256
+
+/* Whether the literal has an i or a k: U+0130 and U+212A may be their lower case, so the entries that hold them pass the fold of such a literal */
+static bool
+lit_ik(const char *lit, uint32 m)
+{
+	return memchr(lit, 'i', m) != NULL || memchr(lit, 'k', m) != NULL;
+}
+
+/* The entries of bytes/off[0..n) that hold the literal i of the pattern (those of its ASCII letters folded for an ILIKE or ~*, and for an i or a k those with U+0130 or U+212A) */
+static void
+lit_pass(uint64 *out, const SiftPatLits *pl, int i, const char *bytes, const uint32 *off, uint32 n)
+{
+	uint32		nw = (n + 63) / 64;
+
+	sift_colk->str_contains(out, bytes, off, n, pl->lit[i], pl->len[i], pl->fold[i]);
+	if (pl->fold[i] && lit_ik(pl->lit[i], pl->len[i]))
+	{
+		uint64	   *sp = palloc(2 * nw * sizeof(uint64));
+
+		sift_colk->str_contains(sp, bytes, off, n, "\xC4\xB0", 2, false);
+		sift_colk->str_contains(sp + nw, bytes, off, n, "\xE2\x84\xAA", 3, false);
+		sift_colk->bits_or(out, sp, nw);
+		sift_colk->bits_or(out, sp + nw, nw);
+		pfree(sp);
+	}
+}
+
+/*
+ * The entries of the dictionary that may pass a pattern test, as a bit for each: those that hold every literal the pattern requires (spec_lits.c), found by the substring
+ * kernel in a pass each, 0.06 to 0.09 microseconds an entry against 0.2 to 1.2 for the test of a regular expression. A literal that the first PREFILTER_SAMPLE entries
+ * hold in more than half is left out (its pass would not pay), the others run from the rarest, and stop when the survivors are under 1% of the entries. NULL when no
+ * literal is left and the test must run on every entry. The first entry always passes: a pattern the regex compiler refuses raises its error whatever the strings, as before.
+ */
+static uint64 *
+dict_candidates(const SiftPatLits *pl, const SiftSrcDict *d)
+{
+	uint32		nw = (d->n + 63) / 64,
+				ns = Min(d->n, PREFILTER_SAMPLE),
+				hits[SIFT_PAT_LITS];
+	int			order[SIFT_PAT_LITS],
+				k = 0;
+	uint64	   *cand = NULL,
+			   *tmp;
+
+	if (d->n < PREFILTER_MIN)
+		return NULL;
+	tmp = palloc(nw * sizeof(uint64));
+	for (int i = 0; i < pl->n; i++)
+	{
+		uint32		h = 0;
+
+		lit_pass(tmp, pl, i, d->bytes, d->off, ns);
+		for (uint32 w = 0; w < (ns + 63) / 64; w++)
+			h += pg_popcount64(tmp[w] & (ns - w * 64 >= 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (ns - w * 64)) - 1));
+		if (h * 2 > ns)
+			continue;
+		hits[i] = h;
+		order[k++] = i;
+		for (int j = k - 1; j > 0 && hits[order[j]] < hits[order[j - 1]]; j--)
+		{
+			int			t = order[j];
+
+			order[j] = order[j - 1];
+			order[j - 1] = t;
+		}
+	}
+	for (int j = 0; j < k; j++)
+	{
+		lit_pass(tmp, pl, order[j], d->bytes, d->off, d->n);
+		if (cand == NULL)
+		{
+			cand = tmp;
+			tmp = palloc(nw * sizeof(uint64));
+		}
+		else
+			sift_colk->bits_and(cand, tmp, nw);
+		if (sift_colk->bits_count(cand, nw) * 100 < d->n)
+			break;
+	}
+	pfree(tmp);
+	if (cand)
+		cand[0] |= 1;
+	return cand;
+}
+
+#ifdef SIFT_TESTING
+int64		sift_agg_prefilter_dicts;
+int64		sift_agg_prefilter_skipped;
+#endif
+
 /*
  * The table of the entries of the dictionary for predicate p, one bit each (then the bits of the entries tested, and a last word, set when all
  * are): the entries are tested for the codes of the rows [start, start + n) that still count when the leaves are read for them only (a segment
@@ -71,8 +164,47 @@ dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p, const u
 	}
 	else
 	{
+		uint64	   *cand = NULL;
+
+		if (!st->lits_read)
+		{
+			SiftPatLits pl;
+			MemoryContext keep = MemoryContextSwitchTo(ex->cxt);	/* the literals outlive the table */
+
+			st->lits = sift_pattern_lits(p->expr, &pl) ? palloc(sizeof(pl)) : NULL;
+			if (st->lits)
+				memcpy(st->lits, &pl, sizeof(pl));
+			st->lits_read = true;
+			MemoryContextSwitchTo(keep);
+		}
+		if (st->lits)
+		{
+			/* the evaluations below reset the per-tuple context: the mask is made in the one of the table */
+			MemoryContext lc = MemoryContextSwitchTo(ex->cxt);
+
+			cand = dict_candidates(st->lits, d);
+			MemoryContextSwitchTo(lc);
+		}
+#ifdef SIFT_TESTING
+		if (cand)
+		{
+			sift_agg_prefilter_dicts++;
+			sift_agg_prefilter_skipped += d->n - sift_colk->bits_count(cand, (d->n + 63) / 64);
+		}
+#endif
 		for (uint32 c = 0; c <= d->n; c++)
+		{
+			if (cand && c < d->n && !(cand[c >> 6] >> (c & 63) & 1))
+			{
+				/* a string without a literal the pattern requires does not match it */
+				known[c >> 6] |= UINT64CONST(1) << (c & 63);
+				lut_put(lut, c, st->lits->neg);
+				continue;
+			}
 			lut_entry(ex, d, st, lut, known, c);
+		}
+		if (cand)
+			pfree(cand);
 		lut[2 * nw] = 1;
 	}
 	MemoryContextSwitchTo(old);

@@ -32,6 +32,8 @@ typedef struct PredState
 	SiftI64Set	in_hset;		/* ... or, when the values are too far apart for that, a hash table of them (.slot is NULL otherwise) */
 	ExprState  *expr;			/* SAP_LUT, SAP_STEP */
 	Param	   *param;
+	SiftPatLits *lits;			/* SAP_LUT over a dictionary: the literals every string that passes holds, when the test is a pattern (spec_lits.c) */
+	bool		lits_read;
 	bool		null_result;	/* SAP_LUT, SAP_STEP: the expression for a NULL input */
 	const char *eq_s;			/* SAP_LUT: the expression is `$0 = 'literal'` of a text with a deterministic collation: an entry is true when its bytes are eq_s (eq_len of them) */
 	int			eq_len;

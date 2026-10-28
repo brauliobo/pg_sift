@@ -324,6 +324,20 @@ lower_of(Oid collid, const char *s, uint32 *len)
 	return pnstrdup(VARDATA_ANY(t), *len);
 }
 
+bool
+sift_aggspec_ascii_fold(Oid collid)
+{
+	static const char upper[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+				lowers[] = "abcdefghijklmnopqrstuvwxyz";
+	uint32		n = sizeof(upper) - 1;
+	char	   *az;
+
+	if (GetDatabaseEncoding() != PG_UTF8)
+		return false;
+	az = lower_of(collid, upper, &n);
+	return n == sizeof(lowers) - 1 && memcmp(az, lowers, n) == 0;
+}
+
 /*
  * ILIKE '%part%' is lower(value) LIKE lower(part), and for a part of ASCII bytes the strings are compared as bytes with their ASCII letters in lower case,
  * if the collation lowers A-Z to a-z (not tr_TR's I) in a UTF-8 database: the lower case of any other character is not ASCII, but for U+0130 and U+212A,
@@ -333,14 +347,10 @@ lower_of(Oid collid, const char *s, uint32 *len)
 static bool
 ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals, uint32 **lens, int *nvals)
 {
-	static const char upper[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-				lowers[] = "abcdefghijklmnopqrstuvwxyz";
-	uint32		n = sizeof(upper) - 1;
-	char	   *low = palloc(len),
-			   *az = lower_of(collid, upper, &n);
+	char	   *low = palloc(len);
 	bool		ik = false;
 
-	if (GetDatabaseEncoding() != PG_UTF8 || n != sizeof(lowers) - 1 || memcmp(az, lowers, n) != 0)
+	if (!sift_aggspec_ascii_fold(collid))
 		return false;
 	for (uint32 i = 0; i < len; i++)
 	{

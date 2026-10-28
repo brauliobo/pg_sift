@@ -334,6 +334,10 @@ CREATE FUNCTION sift._test_aggstub_memory(index regclass, sb_lo int4 DEFAULT 0, 
 										  OUT units int8, OUT peak_bytes int8, OUT max_rows int8)
 	RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_aggstub_memory' LANGUAGE C PARALLEL SAFE;
+CREATE FUNCTION sift._test_pattern_lits(op text, pattern text) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_pattern_lits' LANGUAGE C STRICT PARALLEL SAFE;
+CREATE FUNCTION sift._test_prefilter(reset bool, OUT dicts int8, OUT skipped int8) RETURNS record
+	AS 'MODULE_PATHNAME', 'sift_test_prefilter' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_aggstub_stats(index regclass, OUT leaf int4, OUT nrows float8, OUT nunits float8,
 										 OUT allvisible_frac float8, OUT ndistinct float8, OUT min float8, OUT max float8,
 										 OUT elems_per_row float8)

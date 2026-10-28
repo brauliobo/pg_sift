@@ -13,7 +13,11 @@
 #include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
 
+#include "utils/fmgroids.h"
+
 #include "agg/kern.h"
+#include "agg/pred_in_int.h"
+#include "agg/spec.h"
 #include "agg/stub.h"
 #include "core/sql.h"
 
@@ -26,6 +30,8 @@ PG_FUNCTION_INFO_V1(sift_test_aggstub_counters);
 PG_FUNCTION_INFO_V1(sift_test_aggstub_sb);
 PG_FUNCTION_INFO_V1(sift_test_aggstub_memory);
 PG_FUNCTION_INFO_V1(sift_test_aggstub_stats);
+PG_FUNCTION_INFO_V1(sift_test_pattern_lits);
+PG_FUNCTION_INFO_V1(sift_test_prefilter);
 
 typedef struct TestScan
 {
@@ -482,6 +488,49 @@ sift_test_aggstub_stats(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* (op text, pattern text) the literals the dictionary prefilter takes from the pattern test, '' for none: "a, b/i" (the second folded), "NOT " first when a string without one passes */
+Datum
+sift_test_pattern_lits(PG_FUNCTION_ARGS)
+{
+	static const struct
+	{
+		const char *name;
+		Oid			funcid;
+	}			ops[] = {{"like", F_TEXTLIKE}, {"nlike", F_TEXTNLIKE}, {"ilike", F_TEXTICLIKE}, {"nilike", F_TEXTICNLIKE},
+	{"~", F_TEXTREGEXEQ}, {"!~", F_TEXTREGEXNE}, {"~*", F_TEXTICREGEXEQ}, {"!~*", F_TEXTICREGEXNE}};
+	char	   *op = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	text	   *pat = PG_GETARG_TEXT_PP(1);
+	SiftPatLits pl;
+	StringInfoData buf;
+
+	for (int i = 0; i < lengthof(ops); i++)
+		if (strcmp(op, ops[i].name) == 0)
+		{
+			initStringInfo(&buf);
+			if (!sift_pattern_lits_of(ops[i].funcid, PG_GET_COLLATION(), VARDATA_ANY(pat), VARSIZE_ANY_EXHDR(pat), &pl))
+				PG_RETURN_TEXT_P(cstring_to_text(""));
+			if (pl.neg)
+				appendStringInfoString(&buf, "NOT ");
+			for (int j = 0; j < pl.n; j++)
+				appendStringInfo(&buf, "%s%.*s%s", j ? ", " : "", (int) pl.len[j], pl.lit[j], pl.fold[j] ? "/i" : "");
+			PG_RETURN_TEXT_P(cstring_to_text(buf.data));
+		}
+	ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("unknown pattern operator \"%s\"", op)));
+	PG_RETURN_NULL();
+}
+
+/* (reset bool) The dictionaries this backend ran a pattern test on the candidates of since the last reset, and the entries that were not tested */
+Datum
+sift_test_prefilter(PG_FUNCTION_ARGS)
+{
+	Datum		v[2] = {Int64GetDatum(sift_agg_prefilter_dicts), Int64GetDatum(sift_agg_prefilter_skipped)};
+	bool		nulls[2] = {false};
+
+	if (PG_GETARG_BOOL(0))
+		sift_agg_prefilter_dicts = sift_agg_prefilter_skipped = 0;
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
 #endif							/* SIFT_TESTING */
