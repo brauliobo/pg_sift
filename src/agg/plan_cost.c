@@ -3078,7 +3078,7 @@ hash_agg_extra(const AggPath *a)
 	bool		byval = true;
 	int			i = 0;
 
-	foreach_node(Expr, e, pt->exprs)
+	foreach_ptr(Expr, e, pt->exprs)
 	{
 		if (get_pathtarget_sortgroupref(pt, i++) != 0)
 		{
