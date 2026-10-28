@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 107 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 108 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1236,6 +1236,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Leave on; it changes no plan or row. Only statements with a CTE read once gain.
 
+#### auto(json-build-object)
+
+`sift_col`, `sift_table` · default · since 3.6 · default automatic
+
+- **What it does:** A statement that reads a table with a column index calls sift.json_build_object where it names json_build_object: the same text, with the type lookups of each argument made once for the call site, not for every argument of every row
+- **Gain:** Instructions -4.9% to -16.3% on five grouped statements over 300,000 rows with 10,000 to 60,000 groups and an object built above the scan (a grouped object of six arguments: 1,836 to 1,558 Minstr; a nested object over lag(): 2,130 to 1,766 Minstr)
+- **Impact:** index size: -; build, merge and writes: -; other: Nothing stored, no index, write or WAL effect. The plan shows sift.json_build_object where it showed json_build_object; the text is the same (test json_build_object compares both byte for byte).
+- **When:** A statement planned through the hook (sift.enable_agg on) that reads a table with a column index and calls json_build_object with at least one argument, for a role that may execute sift.json_build_object. jsonb_build_object and a call with no argument stay.
+- **Default:** automatic — The same bytes are written either way and the call site looks its types up once: nothing to choose.
+- **Turn off:** SET sift.enable_agg = off (the hook plans nothing). There is no setting for it alone.
+- **Upgrade from 3.5:** Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function.
+- **Advice:** Leave on; the text is the core function's. Only statements that build objects gain.
+
 #### auto(point-directory-aggregate)
 
 `sift_col` · default · since 3.4 · default automatic
@@ -2164,6 +2177,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `sift.table_key_table` | on | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(col-append-batch)` | automatic | automatic |  | A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX. |
 | `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
+| `auto(json-build-object)` | automatic | automatic |  | Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |

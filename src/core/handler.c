@@ -371,6 +371,7 @@ sift_catalog(void)
 	static const Oid text2[] = {TEXTOID, TEXTOID};
 	static const Oid text2oid[] = {TEXTOID, TEXTOID, OIDOID};
 	static const Oid tid1[] = {TIDOID};
+	static const Oid any1[] = {ANYOID};
 	Oid			nsp;
 
 	if (catalog_valid)
@@ -386,6 +387,7 @@ sift_catalog(void)
 		catalog.match_idx_func = sift_func(nsp, "match_idx", 3, text2oid);
 		catalog.score_func = sift_func(nsp, "score", 1, tid1);
 		catalog.max_score_func = sift_func(nsp, "max_score", 1, tid1);
+		catalog.json_build_object_func = sift_func(nsp, "json_build_object", 1, any1);
 	}
 	catalog_valid = true;
 	return &catalog;

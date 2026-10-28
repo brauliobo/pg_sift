@@ -8,17 +8,22 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_proc.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/nodeFuncs.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "lib/stringinfo.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/json.h"
 #include "utils/jsonfuncs.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
+#include "core/sift.h"
 #include "core/sql.h"
 
 typedef struct JbSlot
@@ -164,4 +169,27 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 	}
 	appendStringInfoChar(&out, '}');
 	PG_RETURN_TEXT_P(cstring_to_text_with_len(out.data, out.len));
+}
+
+static Node *
+swap_call(Node *n, void *context)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Query))
+		return (Node *) query_tree_mutator((Query *) n, swap_call, context, QTW_DONT_COPY_QUERY);
+	n = expression_tree_mutator(n, swap_call, context);
+	if (IsA(n, FuncExpr) && ((FuncExpr *) n)->funcid == F_JSON_BUILD_OBJECT_ANY)
+		((FuncExpr *) n)->funcid = *(Oid *) context;
+	return n;
+}
+
+/* the same text, so a query that builds an object per row does not ask the type cache for every argument of every row: the call sites of the query take sift's function */
+void
+sift_json_build_object_swap(Query *q)
+{
+	Oid			swap = sift_catalog()->json_build_object_func;
+
+	if (OidIsValid(swap) && object_aclcheck(ProcedureRelationId, swap, GetUserId(), ACL_EXECUTE) == ACLCHECK_OK)
+		query_tree_mutator(q, swap_call, &swap, QTW_DONT_COPY_QUERY);
 }

@@ -119,6 +119,12 @@ The normal plan stays when the sub-select is correlated or reads an outer-query 
 
 The normal plan stays for `<>`, `ctid` in an expression, in `GROUP BY` or compared with a column, an `OR`, `IN`/`= ANY`, a generic-plan parameter (a custom plan folds it), a partitioned table (TIDs are per partition) and top-N shapes (their probes read zones outside the range). PostgreSQL plans a tid range scan for a narrow range (`enable_tidscan = off` shows the scan). Fixtures `tr_*`, test `agg_tid_range`.
 
+## json_build_object above the scan
+
+A statement that reads a table with a `sift_col` index and builds a JSON object per output row (`json_build_object` in the select list of a window, a sub-select, a CTE or the top level) calls `sift.json_build_object` where it names the core function: the planner hook changes the call in the query tree it plans, so `EXPLAIN (VERBOSE)` shows `sift.json_build_object`. The text is the core function's (test `json_build_object` compares both byte for byte for every type of argument, key and error). What changes is that the category and the output function of each argument are looked up once for the call site, not for every argument of every row: `json_categorize_type` and the type cache were 5% to 13% of the instructions of five grouped statements over 300,000 rows that build 5 to 12 objects a row above 10,000 to 60,000 groups, and the statements run 4.9% to 16.3% fewer instructions (a grouped object of six arguments over 60,000 groups: 1,836 to 1,558 million; a nested object with `lag()` over a window: 2,130 to 1,766 million).
+
+A call with no argument, `jsonb_build_object`, a statement that reads no table with a column index, and a role that may not execute `sift.json_build_object` keep the core function. `sift.enable_agg = off` stops the change with the rest of the hook; there is no setting for it alone. Test `agg_json_swap`.
+
 ## Memory of the group table
 
 The planner prices a scan's group table (expected groups times bytes per group, about 185 for one key and five aggregates) against `hash_mem`; past it the scan is charged the spill, and the arm keeps the normal plan with slug `group_memory` when that makes it dearer.

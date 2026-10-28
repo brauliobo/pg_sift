@@ -7,6 +7,7 @@
 #define SIFT_SQL_H
 
 #include "fmgr.h"
+#include "nodes/parsenodes.h"
 
 /* bm25/analyze_sql.c: requires an index OID, with no default selection */
 struct SiftAnalyzerConfig;
@@ -44,6 +45,7 @@ extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) reco
 
 /* core/jsonbuild.c */
 extern PGDLLEXPORT Datum sift_json_build_object(PG_FUNCTION_ARGS);	/* (VARIADIC "any") json */
+extern void sift_json_build_object_swap(Query *q);	/* the calls of json_build_object in a query tree call sift.json_build_object */
 
 /* bm25/facet.c */
 extern PGDLLEXPORT Datum sift_facet_counts(PG_FUNCTION_ARGS);	/* SRF */

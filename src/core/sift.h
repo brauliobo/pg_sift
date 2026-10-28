@@ -187,6 +187,7 @@ typedef struct SiftCatalog
 	Oid			match_idx_func; /* sift.match_idx(text, text, oid) */
 	Oid			score_func;		/* sift.score(tid) */
 	Oid			max_score_func; /* sift.max_score(tid) */
+	Oid			json_build_object_func; /* sift.json_build_object(VARIADIC "any") */
 } SiftCatalog;
 
 extern const SiftCatalog *sift_catalog(void);

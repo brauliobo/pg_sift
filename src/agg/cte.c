@@ -34,6 +34,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg.h"
+#include "core/sql.h"
 #include "agg/colsrc.h"
 #include "agg/plan_int.h"
 #include "agg/refuse.h"
@@ -1089,8 +1090,12 @@ sift_planner(SIFT_PLANNER_PARAMS)
 	 * The statement that called us keeps its tree (CREATE TABLE AS plans one and copies it for the event triggers afterwards).
 	 */
 	parse = copyObject(parse);
-	if (sift_enable_agg && parse->commandType == CMD_SELECT && parse->rowMarks == NIL && reads_column_index(parse))
-		sift_agg_preinline(parse);
+	if (sift_enable_agg && parse->commandType == CMD_SELECT && reads_column_index(parse))
+	{
+		sift_json_build_object_swap(parse);
+		if (parse->rowMarks == NIL)
+			sift_agg_preinline(parse);
+	}
 	PG_TRY();
 	{
 		stmt = plan_flat(SIFT_PLANNER_ARGS(parse));
