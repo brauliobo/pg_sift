@@ -201,3 +201,4 @@ key_cut_group_day	a group by day 88.7 M to 3.8 M	orders	(id)	Custom Scan \(SiftA
 key_cut_range_small	`@>` on an `int4range` of 500,000 rows	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = key_cut_range_small_gist	ms	faster33	no
 long_text_unwrap_cheap	wrapped with LZ4 instead of zstd where the default formula says so	orders	default	Custom Scan \(SiftAgg\)	native	-	minstr	faster33	no
 int2_sum_const	`sum` and `avg` of a smallint column plus, minus or times an integer constant	orders	default	Pushed Aggregates: sum\(\(orders\.quantity \+ 1\)\).*[1-9][0-9]* from pre-aggregates	native	-	ms	faster33	no
+hits_regex_count	`LIKE '%suffix'`, `starts_with(col, 'abc')`	hits	-	Pushed Aggregates	native	-	ms	faster33	no

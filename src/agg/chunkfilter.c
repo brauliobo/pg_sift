@@ -42,6 +42,8 @@ str_op(SiftSrcStrOp op)
 			return SIFT_COLOP_NOTCONTAINS;
 		case SSTR_ICONTAINS:
 			return SIFT_COLOP_ICONTAINS;
+		case SSTR_SUFFIX:
+			return SIFT_COLOP_SUFFIX;
 	}
 	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
 	pg_unreachable();

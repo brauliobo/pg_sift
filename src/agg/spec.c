@@ -216,7 +216,7 @@ str_commute(SiftSrcStrOp op)
 	return op == SSTR_LT ? SSTR_GT : op == SSTR_LE ? SSTR_GE : op == SSTR_GT ? SSTR_LT : op == SSTR_GE ? SSTR_LE : op;
 }
 
-/* the comparison a text function is, or 0; the range operators and LIKE only compare bytes in the C collation or for a prefix */
+/* the comparison a text function is, or 0; the range operators only compare bytes in the C collation */
 static SiftSrcStrOp
 str_func_op(Oid funcid)
 {
@@ -234,18 +234,19 @@ str_func_op(Oid funcid)
 			return SSTR_GT;
 		case F_TEXT_GE:
 			return SSTR_GE;
-		case F_TEXTLIKE:
-			return SSTR_PREFIX;
-		case F_TEXTNLIKE:
-			return SSTR_NOTCONTAINS;
-		case F_TEXTICLIKE:
-			return SSTR_ICONTAINS;
 	}
 	return 0;
 }
 
+static bool
+str_pattern_func(Oid funcid)
+{
+	return funcid == F_TEXTLIKE || funcid == F_TEXTNLIKE || funcid == F_TEXTICLIKE || funcid == F_STARTS_WITH || funcid == F_TEXTREGEXEQ ||
+		funcid == F_TEXTREGEXNE || funcid == F_TEXTICREGEXEQ;
+}
+
 /*
- * LIKE 'abc%' is a prefix test and LIKE '%abc%' a substring test, both bytewise for every deterministic collation; a substring match of bytes is one of
+ * LIKE 'abc%' is a prefix test, '%abc%' a substring test and '%abc' a suffix test, all bytewise for every deterministic collation; a match of bytes is one of
  * characters in UTF-8 and the single byte encodings only (a trail byte of SJIS or GBK is also an ASCII one). On true the literal is in *s, *len.
  */
 static bool
@@ -254,14 +255,62 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
 	bool		head = *len > 0 && **s == '%',
 				tail = *len > 1 && (*s)[*len - 1] == '%';
 	const char *lit = *s + head;
-	uint32		n = *len - head - 1;
+	uint32		n = *len - head - tail;
 
-	if (!tail || n == 0 || memchr(lit, '%', n) || memchr(lit, '_', n) || memchr(lit, '\\', n) ||
+	if ((!head && !tail) || n == 0 || memchr(lit, '%', n) || memchr(lit, '_', n) || memchr(lit, '\\', n) ||
 		(head && GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1))
 		return false;
 	*s = lit;
 	*len = n;
-	*op = head ? SSTR_CONTAINS : SSTR_PREFIX;
+	*op = head ? (tail ? SSTR_CONTAINS : SSTR_SUFFIX) : SSTR_PREFIX;
+	return true;
+}
+
+/*
+ * A regular expression that is a literal, '^' and '$' at its ends, a punctuation mark after a backslash a character, is the test LIKE makes of it; the
+ * literal is unescaped in a new string. ~* of such is a substring test with the letters folded (the regex compares the cases of the pattern's letters
+ * only, in a collation that lowers A-Z to a-z).
+ */
+static bool
+regex_literal(const char **s, uint32 *len, bool icase, SiftSrcStrOp *op)
+{
+	const char *re = *s;
+	uint32		n = *len,
+				k = 0;
+	bool		head = n > 0 && re[0] == '^',
+				tail = false;
+	char	   *lit;
+
+	if (n - head > 0 && re[n - 1] == '$')
+	{
+		uint32		bs = 0;
+
+		for (uint32 i = n - 1; i > head && re[i - 1] == '\\'; i--)
+			bs++;
+		tail = bs % 2 == 0;
+	}
+	if (GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1)
+		return false;
+	lit = palloc(n);
+	for (uint32 i = head; i < n - tail; i++)
+	{
+		char		c = re[i];
+
+		if (c == '\\')
+		{
+			if (i + 1 >= n - tail || ((re[i + 1] >= '0' && re[i + 1] <= '9') || (re[i + 1] >= 'a' && re[i + 1] <= 'z') || (re[i + 1] >= 'A' && re[i + 1] <= 'Z')))
+				return false;
+			c = re[++i];
+		}
+		else if (strchr(".*+?()[]{}|^$", c) != NULL)
+			return false;
+		lit[k++] = c;
+	}
+	if (k == 0 || (icase && (head || tail)))
+		return false;
+	*s = lit;
+	*len = k;
+	*op = head ? (tail ? SSTR_EQ : SSTR_PREFIX) : tail ? SSTR_SUFFIX : SSTR_CONTAINS;
 	return true;
 }
 
@@ -278,11 +327,11 @@ lower_of(Oid collid, const char *s, uint32 *len)
 /*
  * ILIKE '%part%' is lower(value) LIKE lower(part), and for a part of ASCII bytes the strings are compared as bytes with their ASCII letters in lower case,
  * if the collation lowers A-Z to a-z (not tr_TR's I) in a UTF-8 database: the lower case of any other character is not ASCII, but for U+0130 and U+212A,
- * which a part with an i or a k meets as what lower() makes of them (*vals[1], *vals[2], when that is not themselves). On true vals/lens hold the
- * lower case part and perhaps those two.
+ * which a part with an i or a k meets as what lower() makes of them (*vals[1], *vals[2], when that is not themselves; subst false for ~*, which does not
+ * equate them). On true vals/lens hold the lower case part and perhaps those two.
  */
 static bool
-ilike_test(Oid collid, const char *s, uint32 len, const char ***vals, uint32 **lens, int *nvals)
+ilike_test(Oid collid, const char *s, uint32 len, bool subst, const char ***vals, uint32 **lens, int *nvals)
 {
 	static const char upper[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
 				lowers[] = "abcdefghijklmnopqrstuvwxyz";
@@ -305,7 +354,7 @@ ilike_test(Oid collid, const char *s, uint32 len, const char ***vals, uint32 **l
 	*lens = palloc(3 * sizeof(uint32));
 	(*vals)[0] = low;
 	(*lens)[0] = len;
-	if (ik)
+	if (ik && subst)
 	{
 		uint32		l1 = 2,
 					l2 = 3;
@@ -324,22 +373,66 @@ ilike_test(Oid collid, const char *s, uint32 len, const char ***vals, uint32 **l
 	return true;
 }
 
-/* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' or '%part%' */
+/*
+ * The test a pattern function is on its constant pattern: LIKE, NOT LIKE and ILIKE of a prefix, a part or a suffix, starts_with, and a regular expression that
+ * is a literal. On true *op, and *s, *len the literal (ICONTAINS: spelled by ilike_test, where *subst says whether U+0130 and U+212A count).
+ */
 static bool
-str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
+pattern_test(Oid funcid, const char **s, uint32 *len, SiftSrcStrOp *op, bool *subst)
+{
+	SiftSrcStrOp lop;
+
+	*subst = true;
+	switch (funcid)
+	{
+		case F_TEXTLIKE:
+			if (!like_test(s, len, &lop))
+				return false;
+			*op = lop;
+			return true;
+		case F_TEXTNLIKE:
+		case F_TEXTICLIKE:
+			if (!like_test(s, len, &lop) || lop != SSTR_CONTAINS)
+				return false;
+			*op = funcid == F_TEXTNLIKE ? SSTR_NOTCONTAINS : SSTR_ICONTAINS;
+			return true;
+		case F_STARTS_WITH:
+			*op = SSTR_PREFIX;
+			return *len > 0;
+		case F_TEXTREGEXEQ:
+			return regex_literal(s, len, false, op);
+		case F_TEXTREGEXNE:
+			if (!regex_literal(s, len, false, op) || *op != SSTR_CONTAINS)
+				return false;
+			*op = SSTR_NOTCONTAINS;
+			return true;
+		case F_TEXTICREGEXEQ:
+			if (!regex_literal(s, len, true, op))
+				return false;
+			*op = SSTR_ICONTAINS;
+			*subst = false;
+			return true;
+	}
+	return false;
+}
+
+/* a test of the leaf and a constant by a comparison or pattern function: leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%', '%part%' or '%suffix', ... */
+static bool
+str_call_test(Oid funcid, Oid collid, List *args, SiftSrcStrTest *out)
 {
 	Node	   *a,
 			   *b;
-	SiftSrcStrOp sop;
+	SiftSrcStrOp sop = 0;
 	const char *s;
 	uint32		len;
+	bool		pattern = str_pattern_func(funcid),
+				subst = true;
 
-	set_opfuncid(op);
-	if (list_length(op->args) != 2 || (sop = str_func_op(op->opfuncid)) == 0)
+	if (list_length(args) != 2 || (!pattern && (sop = str_func_op(funcid)) == 0))
 		return false;
-	a = strip_relabel(linitial(op->args));
-	b = strip_relabel(lsecond(op->args));
-	if (IsA(b, Param) && sop != SSTR_PREFIX && sop != SSTR_NOTCONTAINS && sop != SSTR_ICONTAINS)
+	a = strip_relabel(linitial(args));
+	b = strip_relabel(lsecond(args));
+	if (IsA(b, Param) && !pattern)
 	{
 		Node	   *t = a;
 
@@ -349,16 +442,9 @@ str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 	}
 	if (!IsA(a, Param) || !str_const(b, &s, &len))
 		return false;
-	if (sop == SSTR_PREFIX || sop == SSTR_NOTCONTAINS || sop == SSTR_ICONTAINS)
-	{
-		SiftSrcStrOp lop;
-
-		if (!like_test(&s, &len, &lop) || (sop != SSTR_PREFIX && lop != SSTR_CONTAINS))
-			return false;
-		if (sop == SSTR_PREFIX)
-			sop = lop;
-	}
-	if (sop >= SSTR_LT && sop <= SSTR_GE ? op->inputcollid != C_COLLATION_OID : !get_collation_isdeterministic(op->inputcollid))
+	if (pattern && !pattern_test(funcid, &s, &len, &sop, &subst))
+		return false;
+	if (sop >= SSTR_LT && sop <= SSTR_GE ? collid != C_COLLATION_OID : !get_collation_isdeterministic(collid))
 		return false;
 	out->op = sop;
 	if (sop == SSTR_ICONTAINS)
@@ -366,12 +452,81 @@ str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 		const char **vals;
 		uint32	   *lens;
 
-		if (!ilike_test(op->inputcollid, s, len, &vals, &lens, &out->nvals))
+		if (!ilike_test(collid, s, len, subst, &vals, &lens, &out->nvals))
 			return false;
 		out->vals = vals;
 		out->lens = lens;
 		return true;
 	}
+	out->nvals = 1;
+	out->vals = palloc(sizeof(char *));
+	out->lens = palloc(sizeof(uint32));
+	((const char **) out->vals)[0] = s;
+	((uint32 *) out->lens)[0] = len;
+	return true;
+}
+
+/* l <cmp> r for the int4 comparison function, or -1 when funcid is none */
+static int
+int4_holds(Oid funcid, int32 l, int32 r)
+{
+	switch (funcid)
+	{
+		case F_INT4EQ:
+			return l == r;
+		case F_INT4NE:
+			return l != r;
+		case F_INT4LT:
+			return l < r;
+		case F_INT4LE:
+			return l <= r;
+		case F_INT4GT:
+			return l > r;
+		case F_INT4GE:
+			return l >= r;
+	}
+	return -1;
+}
+
+/*
+ * strpos(leaf, part) (position(part IN leaf)) compared with an integer is a substring test when the comparison holds for every position of a part
+ * found (1, 2, ...) and not for 0, or the other way round: > 0, >= 1, <> 0 hold it, = 0, < 1, <= 0 do not hold it.
+ */
+static bool
+strpos_test(OpExpr *op, SiftSrcStrTest *out)
+{
+	Node	   *a = strip_relabel(linitial(op->args)),
+			   *b = strip_relabel(lsecond(op->args));
+	FuncExpr   *f;
+	const char *s;
+	uint32		len;
+	int32		c;
+	bool		flip = IsA(b, FuncExpr);
+	int			absent,
+				found;
+
+	if (flip)
+	{
+		Node	   *t = a;
+
+		a = b;
+		b = t;
+	}
+	set_opfuncid(op);
+	if (!IsA(a, FuncExpr) || !IsA(b, Const) || ((FuncExpr *) a)->funcid != F_STRPOS || ((Const *) b)->constisnull || ((Const *) b)->consttype != INT4OID ||
+		int4_holds(op->opfuncid, 0, 0) < 0)
+		return false;
+	f = (FuncExpr *) a;
+	c = DatumGetInt32(((Const *) b)->constvalue);
+	absent = flip ? int4_holds(op->opfuncid, c, 0) : int4_holds(op->opfuncid, 0, c);
+	found = flip ? int4_holds(op->opfuncid, c, 1) : int4_holds(op->opfuncid, 1, c);
+	for (int32 pos = 2; pos <= 4; pos *= 2)
+		if ((flip ? int4_holds(op->opfuncid, c, pos) : int4_holds(op->opfuncid, pos, c)) != found)
+			return false;
+	if (absent == found || list_length(f->args) != 2 || !IsA(strip_relabel(linitial(f->args)), Param) || !str_const(strip_relabel(lsecond(f->args)), &s, &len) ||
+		len == 0 || !get_collation_isdeterministic(f->inputcollid) || (GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1))
+		return false;
+	out->op = found ? SSTR_CONTAINS : SSTR_NOTCONTAINS;
 	out->nvals = 1;
 	out->vals = palloc(sizeof(char *));
 	out->lens = palloc(sizeof(uint32));
@@ -428,7 +583,16 @@ str_expr_test(const SiftAggPred *p, SiftSrcStrTest *out)
 {
 	Node	   *e = strip_relabel(p->expr);
 
-	return IsA(e, OpExpr) ? str_cmp_test((OpExpr *) e, out) : IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
+	if (IsA(e, OpExpr))
+	{
+		OpExpr	   *op = (OpExpr *) e;
+
+		set_opfuncid(op);
+		return int4_holds(op->opfuncid, 0, 0) >= 0 ? strpos_test(op, out) : str_call_test(op->opfuncid, op->inputcollid, op->args, out);
+	}
+	if (IsA(e, FuncExpr))
+		return str_call_test(((FuncExpr *) e)->funcid, ((FuncExpr *) e)->inputcollid, ((FuncExpr *) e)->args, out);
+	return IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
 }
 
 bool

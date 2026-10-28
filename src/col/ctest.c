@@ -729,7 +729,7 @@ istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
 			   *one;
 	int64		k;
 
-	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS || !istr_split(c, &pre, &prelen, &strs, &strslen))
+	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS || op == SIFT_COLOP_SUFFIX || !istr_split(c, &pre, &prelen, &strs, &strslen))
 		return NULL;
 	cc = sift_cc_open_rows(CurrentMemoryContext, pre, prelen, false, c->n);
 	cand = palloc0(nw * sizeof(uint64));

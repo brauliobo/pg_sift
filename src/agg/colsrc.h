@@ -284,6 +284,7 @@ typedef enum SiftSrcStrOp
 	SSTR_PREFIX,				/* values that start with vals[0] */
 	SSTR_CONTAINS,				/* values that hold vals[0] (not empty), bytewise */
 	SSTR_NOTCONTAINS,			/* non-NULL values that do not hold vals[0] */
+	SSTR_SUFFIX,				/* values that end with vals[0] */
 	SSTR_ICONTAINS				/* values whose lower() holds vals[0] (ASCII, lower case; nvals 3: and vals[1], vals[2] are lower() of U+0130 and U+212A) */
 } SiftSrcStrOp;
 

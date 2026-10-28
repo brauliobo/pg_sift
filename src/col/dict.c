@@ -179,6 +179,8 @@ sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c
 			return sift_cstr_cmp(s, len, c->v.s, c->len) > 0;
 		case SIFT_COLOP_GE:
 			return sift_cstr_cmp(s, len, c->v.s, c->len) >= 0;
+		case SIFT_COLOP_SUFFIX:
+			return len >= c->len && memcmp(s + len - c->len, c->v.s, c->len) == 0;
 		default:					/* PREFIX */
 			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
 	}
@@ -374,7 +376,8 @@ sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n,
 {
 	uint32		nw = (n + 63) / 64;
 	uint64	   *sp;
-	char	   *buf;
+	char	   *buf = NULL;
+	Size		cap = 0;
 
 	sift_colk->str_contains(out, bytes, off, n, c->v.s, c->len, op == SIFT_COLOP_ICONTAINS);
 	if (nvals < 3)
@@ -382,7 +385,6 @@ sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n,
 	sp = palloc(2 * nw * sizeof(uint64));
 	sift_colk->str_contains(sp, bytes, off, n, "\xC4\xB0", 2, false);
 	sift_colk->str_contains(sp + nw, bytes, off, n, "\xE2\x84\xAA", 3, false);
-	buf = NULL;
 	for (uint32 w = 0; w < nw; w++)
 		for (uint64 m = sp[w] | sp[nw + w]; m; m &= m - 1)
 		{
@@ -391,8 +393,11 @@ sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n,
 						k = 0;
 			const uint8 *p = (const uint8 *) bytes + off[s];
 
-			if (buf == NULL)
-				buf = palloc(Max(1, (Size) (off[n] - off[0])) * Max(c[1].len, c[2].len) + 1);
+			if (len * Max(c[1].len, c[2].len) + 1 > cap)
+			{
+				cap = len * Max(c[1].len, c[2].len) + 1;
+				buf = buf ? repalloc(buf, cap) : palloc(cap);
+			}
 			for (uint32 i = 0; i < len;)
 				if (i + 1 < len && p[i] == 0xC4 && p[i + 1] == 0xB0)
 				{
@@ -441,9 +446,9 @@ sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, int nvals, u
 		sift_cstrs_contains(lut, d->bytes, d->off, d->n, op, c, nvals);
 		return sift_colk->bits_count(lut, (d->n + 63) / 64);
 	}
-	if (d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
+	if (op != SIFT_COLOP_SUFFIX && d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
 		cdict_sort(d);
-	if (d->sorted == NULL)
+	if (d->sorted == NULL || op == SIFT_COLOP_SUFFIX)
 	{
 		for (uint32 k = 0; k < d->n; k++)
 			if (op == SIFT_COLOP_PREFIX ? cdict_len(d, k) >= c->len && memcmp(SIFT_COL_DICT_STR(d, k), c->v.s, c->len) == 0

@@ -450,9 +450,13 @@ typedef enum SiftColOp
 	SIFT_COLOP_PREFIX,			/* STR only: vals[0] is a prefix of the value (LIKE 'abc%' in the C collation) */
 	SIFT_COLOP_CONTAINS,		/* STR only: vals[0] (not empty) is a substring of the value, bytewise (LIKE '%abc%') */
 	SIFT_COLOP_NOTCONTAINS,		/* STR only: a non-NULL value that does not hold vals[0] (NOT LIKE '%abc%') */
+	SIFT_COLOP_SUFFIX,			/* STR only: vals[0] is a suffix of the value, bytewise (LIKE '%abc') */
 	SIFT_COLOP_ICONTAINS,		/* STR only: lower(value) holds vals[0], ASCII in lower case (ILIKE '%abc%'); with nvals 3, vals[1] and vals[2] are lower() of U+0130 and of U+212A, the two characters whose lower case is ASCII */
 	SIFT_COLOP_SHAPE			/* the head of a range or a network: vals[0].v.s is the SiftColWTest of a containment operator (col/shape.c), made by the access method scan */
 } SiftColOp;
+
+/* The STR tests that read every string of a dictionary, in code order, and not a run of its sorted order */
+#define SIFT_COLOP_SCANS(op) ((op) == SIFT_COLOP_CONTAINS || (op) == SIFT_COLOP_NOTCONTAINS || (op) == SIFT_COLOP_ICONTAINS || (op) == SIFT_COLOP_SUFFIX)
 
 /*
  * A predicate on one leaf; the constants are SiftColValues of the leaf's store (INT: v.i, F4/F8: v.f, STR: v.s/len). Several

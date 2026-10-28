@@ -804,7 +804,15 @@ look_contains(DictLook *l, SiftColOp op, const SiftColValue *c, int nvals, uint6
 			look_load_block(l, b);
 		for (uint32 i = 0; i <= cnt; i++)
 			off[i] = l->blkoff[i];
-		sift_cstrs_contains(lut + b, (const char *) l->blkraw, off, cnt, op, c, nvals);
+		if (op == SIFT_COLOP_SUFFIX)
+		{
+			lut[b] = 0;
+			for (uint32 i = 0; i < cnt; i++)
+				if (sift_cstr_matches(op, (const char *) l->blkraw + off[i], off[i + 1] - off[i], c))
+					lut[b] |= UINT64CONST(1) << i;
+		}
+		else
+			sift_cstrs_contains(lut + b, (const char *) l->blkraw, off, cnt, op, c, nvals);
 		count += pg_popcount64(lut[b]);
 	}
 	if (bits)
@@ -826,7 +834,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int n
 	uint32		from,
 				to;
 
-	if (op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS)
+	if (SIFT_COLOP_SCANS(op))
 		return look_contains((DictLook *) l, op, c, nvals, lut, &(uint32) {0});
 	look_cache((DictLook *) l);
 	sift_csorted_range(&so, op, c, &from, &to);
@@ -1231,7 +1239,7 @@ sift_cseg_dict_search(SiftColSegment *seg, int col, SiftColOp op)
 		return pv->dict[col];
 	l = dict_look(seg, col);
 	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost; a substring test of a blocked one reads its blocks (those the signatures leave) until then, and for good where the parse is lost */
-	if (l && (l->searchable || ((op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_NOTCONTAINS || op == SIFT_COLOP_ICONTAINS) && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
+	if (l && (l->searchable || (SIFT_COLOP_SCANS(op) && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
 		((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
 		  l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
