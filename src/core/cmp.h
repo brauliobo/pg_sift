@@ -164,6 +164,110 @@ NAME(T *a, size_t n) \
 	NAME##_rec(a, n, depth); \
 }
 
+
+/*
+ * defines the static function NAME(T *a, size_t n) that orders an array by the signed 64-bit KEY(x), then KEY2(x) (x: a pointer; 0 when there is one key) and, among
+ * equal keys, by TIE(x) (an unsigned integer): the order SIFT_DEFINE_SORT gives with the same fields, for an array whose TIE never goes down along it (entries added
+ * in the order of their rows). A least significant digit radix sort, stable, of the bytes each key differs in from its smallest value (a column of a few thousand
+ * values takes two passes of one load and one store an entry, where the comparison sort takes 20 steps of two fields). The other arrays, those under 512 entries
+ * and those that ALLOC (the bytes of a copy; NULL: none) does not give go to FALLBACK(a, n). Same result as the comparison sort whatever the path: two entries equal
+ * in all three fields are alike.
+ */
+#define SIFT_DEFINE_RADIX_SORT(NAME, T, KEY, KEY2, TIE, ALLOC, FREE, FALLBACK) \
+static void \
+NAME(T *a, size_t n) \
+{ \
+	size_t		cnt[16][256]; \
+	int64_t		mn[2], \
+				mx[2]; \
+	uint64_t	range[2]; \
+	int			pk[16], \
+				pd[16], \
+				npass = 0; \
+	T		   *tmp, \
+			   *src = a, \
+			   *dst; \
+\
+	if (n < 512) \
+	{ \
+		FALLBACK(a, n); \
+		return; \
+	} \
+	mn[0] = mx[0] = KEY(&a[0]); \
+	mn[1] = mx[1] = KEY2(&a[0]); \
+	for (size_t i = 1; i < n; i++) \
+	{ \
+		if (TIE(&a[i]) < TIE(&a[i - 1])) \
+		{ \
+			FALLBACK(a, n); \
+			return; \
+		} \
+		if (KEY(&a[i]) < mn[0]) \
+			mn[0] = KEY(&a[i]); \
+		if (KEY(&a[i]) > mx[0]) \
+			mx[0] = KEY(&a[i]); \
+		if (KEY2(&a[i]) < mn[1]) \
+			mn[1] = KEY2(&a[i]); \
+		if (KEY2(&a[i]) > mx[1]) \
+			mx[1] = KEY2(&a[i]); \
+	} \
+	range[0] = (uint64_t) mx[0] - (uint64_t) mn[0]; \
+	range[1] = (uint64_t) mx[1] - (uint64_t) mn[1]; \
+	if (range[0] == 0 && range[1] == 0) \
+		return; \
+	if ((tmp = (T *) ALLOC(n * sizeof(T))) == NULL) \
+	{ \
+		FALLBACK(a, n); \
+		return; \
+	} \
+	memset(cnt, 0, sizeof(cnt)); \
+	for (size_t i = 0; i < n; i++) \
+	{ \
+		uint64_t	u0 = (uint64_t) KEY(&a[i]) - (uint64_t) mn[0], \
+					u1 = (uint64_t) KEY2(&a[i]) - (uint64_t) mn[1]; \
+\
+		for (int d = 0; d < 8 && (range[1] >> (8 * d)) != 0; d++) \
+			cnt[d][(u1 >> (8 * d)) & 255]++; \
+		for (int d = 0; d < 8 && (range[0] >> (8 * d)) != 0; d++) \
+			cnt[8 + d][(u0 >> (8 * d)) & 255]++; \
+	} \
+	for (int c = 0; c < 16; c++) \
+	{ \
+		size_t		sum = 0; \
+\
+		if ((range[1 - c / 8] >> (8 * (c % 8))) == 0) \
+			continue; \
+		for (int b = 0; b < 256; b++) \
+		{ \
+			size_t		x = cnt[c][b]; \
+\
+			cnt[c][b] = sum; \
+			sum += x; \
+		} \
+		pk[npass] = c / 8; \
+		pd[npass++] = c % 8; \
+	} \
+	dst = tmp; \
+	for (int k = 0; k < npass; k++) \
+	{ \
+		size_t	   *pos = cnt[pk[k] * 8 + pd[k]]; \
+		T		   *t; \
+\
+		if (pk[k] == 0) \
+			for (size_t i = 0; i < n; i++) \
+				dst[pos[(((uint64_t) KEY2(&src[i]) - (uint64_t) mn[1]) >> (8 * pd[k])) & 255]++] = src[i]; \
+		else \
+			for (size_t i = 0; i < n; i++) \
+				dst[pos[(((uint64_t) KEY(&src[i]) - (uint64_t) mn[0]) >> (8 * pd[k])) & 255]++] = src[i]; \
+		t = src; \
+		src = dst; \
+		dst = t; \
+	} \
+	if (src != a) \
+		memcpy(a, src, n * sizeof(T)); \
+	FREE(tmp); \
+}
+
 /* sift_sort_i16, _i32, _i64, _u32 and _u64 (a, n): sort an array of that scalar ascending in line, where qsort(a, n, sizeof(T), sift_cmp_*) calls a function for each comparison; a is void * as qsort's is */
 #define SIFT_DEFINE_SORT_SCALAR(name, T) \
 SIFT_DEFINE_SORT(name##_typed, T, SIFT_SORT_LESS_SCALAR) \

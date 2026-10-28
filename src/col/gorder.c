@@ -26,7 +26,19 @@ ord_cmp(const OrdEnt *x, const OrdEnt *y)
 }
 
 #define ORD_SORT_LESS(x, y) (ord_cmp(x, y) < 0)
-SIFT_DEFINE_SORT(ord_sort, OrdEnt, ORD_SORT_LESS)
+SIFT_DEFINE_SORT(ord_sort_cmp, OrdEnt, ORD_SORT_LESS)
+
+/* a copy of the entries for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+ord_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+}
+
+#define ORD_GROUP(x) ((x)->group)
+#define ORD_KEY(x) ((x)->key)
+#define ORD_CODE(x) ((x)->code)
+SIFT_DEFINE_RADIX_SORT(ord_sort, OrdEnt, ORD_GROUP, ORD_KEY, ORD_CODE, ord_copy, pfree, ord_sort_cmp)
 
 bool
 sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d)

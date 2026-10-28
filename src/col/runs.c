@@ -29,7 +29,19 @@ ent_cmp(const RunEnt *x, const RunEnt *y)
 }
 
 #define ENT_SORT_LESS(x, y) (ent_cmp(x, y) < 0)
-SIFT_DEFINE_SORT(ent_sort, RunEnt, ENT_SORT_LESS)
+SIFT_DEFINE_SORT(ent_sort_cmp, RunEnt, ENT_SORT_LESS)
+
+/* a copy of the entries for the radix sort: none when it would pass the largest allocation (the comparison sort then) */
+static void *
+ent_copy(size_t bytes)
+{
+	return bytes <= MaxAllocSize ? palloc_extended(bytes, MCXT_ALLOC_NO_OOM) : NULL;
+}
+
+#define ENT_KEY(x) ((x)->key)
+#define ENT_NOKEY(x) 0
+#define ENT_TIE(x) ((x)->ord)
+SIFT_DEFINE_RADIX_SORT(ent_sort, RunEnt, ENT_KEY, ENT_NOKEY, ENT_TIE, ent_copy, pfree, ent_sort_cmp)
 
 static bool
 isset64(const uint64 *bits, uint32 i)

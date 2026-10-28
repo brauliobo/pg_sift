@@ -1,0 +1,25 @@
+-- The entries of a point directory are sorted by key and row, by a radix sort on the bytes the keys differ in (the comparison sort under 512 entries and when the
+-- rows do not arrive in order). Keys of every span give the same rows as the table, and col_verify checks the directory against the chunks.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE prx (id int, small bigint, neg bigint, wide bigint, same bigint, v int, pad text DEFAULT repeat('x', 300));
+ALTER TABLE prx ALTER COLUMN pad SET STORAGE PLAIN;
+-- small: 7,000 keys; neg: negative and positive 20-bit keys; wide: keys 2^40 apart; same: one key
+INSERT INTO prx (id, small, neg, wide, same, v)
+SELECT i, i % 7000, (i * 7919 % 1000003) - 500000, (i % 9000)::bigint << 40, 42, i % 7 FROM generate_series(1, 40000) i;
+CREATE INDEX prx_ix ON prx USING sift_col (id, small, neg, wide, same, v) WITH (key_columns = 'off', point_columns = 'small, neg, wide, same', rollup_dims = 'off');
+VACUUM (FREEZE, ANALYZE) prx;
+SELECT sift.col_verify('prx_ix', true);
+
+CREATE TABLE prx_ref AS SELECT * FROM prx;
+SELECT (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx WHERE small IN (3, 6999, 12)) = (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx_ref WHERE small IN (3, 6999, 12)) AS small_same,
+       (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx WHERE neg IN (-500000, 0, 499999, 17)) = (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx_ref WHERE neg IN (-500000, 0, 499999, 17)) AS neg_same,
+       (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx WHERE wide IN (0::bigint << 40, 8999::bigint << 40)) = (SELECT count(*) || '/' || coalesce(sum(v), 0) FROM prx_ref WHERE wide IN (0::bigint << 40, 8999::bigint << 40)) AS wide_same,
+       (SELECT count(*) FROM prx WHERE same = 42) = 40000 AS same_all;
+INSERT INTO prx (id, small, neg, wide, same, v) SELECT i, i % 7000, i, 5, 42, 1 FROM generate_series(40001, 48000) i;
+SELECT sift.col_merge('prx_ix', true) > 0 AS merged;
+SELECT sift.col_verify('prx_ix', true);
+DROP TABLE prx, prx_ref;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
