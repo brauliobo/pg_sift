@@ -176,3 +176,8 @@ topn_keyset_run	reads a unit from the first entry of the range without running t
 topn_desc_window	reads the superblocks of each window of the walk from the window's best end	orders	default	Top-N: created_at DESC	native	-	ms	faster33	no
 key_table_point	a key table per segment (column format minor 22, the reloption `key_table`	orders	default WITH (key_columns = 'segment_id')	Rows Scanned: 0	native,pg_duckdb	units:sift.agg_super = off	ms	faster33	yes
 null_count_zone	reads the null counts of the zones of the units	events	-	Units From Pre-aggregates: [1-9]	native	scan:sift.agg_preagg = off	ms	faster33	no
+calendar_day_filter	a comparison of a calendar step of a `timestamp` or `timestamptz` column with a constant	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+group_float_key	by a float key whose values have a short mantissa	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+rolling_window	compared with a stable operand	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
+image_equality	are tests of the source on the stored image	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
