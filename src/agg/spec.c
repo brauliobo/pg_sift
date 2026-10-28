@@ -10,7 +10,9 @@
 #include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/date.h"
 #include "nodes/value.h"
@@ -234,6 +236,10 @@ str_func_op(Oid funcid)
 			return SSTR_GE;
 		case F_TEXTLIKE:
 			return SSTR_PREFIX;
+		case F_TEXTNLIKE:
+			return SSTR_NOTCONTAINS;
+		case F_TEXTICLIKE:
+			return SSTR_ICONTAINS;
 	}
 	return 0;
 }
@@ -259,6 +265,65 @@ like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
 	return true;
 }
 
+/* lower() of the text s under the collation, as a palloc'ed string */
+static char *
+lower_of(Oid collid, const char *s, uint32 *len)
+{
+	text	   *t = DatumGetTextPP(DirectFunctionCall1Coll(lower, collid, PointerGetDatum(cstring_to_text_with_len(s, *len))));
+
+	*len = VARSIZE_ANY_EXHDR(t);
+	return pnstrdup(VARDATA_ANY(t), *len);
+}
+
+/*
+ * ILIKE '%part%' is lower(value) LIKE lower(part), and for a part of ASCII bytes the strings are compared as bytes with their ASCII letters in lower case,
+ * if the collation lowers A-Z to a-z (not tr_TR's I) in a UTF-8 database: the lower case of any other character is not ASCII, but for U+0130 and U+212A,
+ * which a part with an i or a k meets as what lower() makes of them (*vals[1], *vals[2], when that is not themselves). On true vals/lens hold the
+ * lower case part and perhaps those two.
+ */
+static bool
+ilike_test(Oid collid, const char *s, uint32 len, const char ***vals, uint32 **lens, int *nvals)
+{
+	static const char upper[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+				lowers[] = "abcdefghijklmnopqrstuvwxyz";
+	uint32		n = sizeof(upper) - 1;
+	char	   *low = palloc(len),
+			   *az = lower_of(collid, upper, &n);
+	bool		ik = false;
+
+	if (GetDatabaseEncoding() != PG_UTF8 || n != sizeof(lowers) - 1 || memcmp(az, lowers, n) != 0)
+		return false;
+	for (uint32 i = 0; i < len; i++)
+	{
+		if ((uint8) s[i] >= 0x80)
+			return false;
+		low[i] = (char) (s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 0x20 : s[i]);
+		ik |= low[i] == 'i' || low[i] == 'k';
+	}
+	*nvals = 1;
+	*vals = palloc(3 * sizeof(char *));
+	*lens = palloc(3 * sizeof(uint32));
+	(*vals)[0] = low;
+	(*lens)[0] = len;
+	if (ik)
+	{
+		uint32		l1 = 2,
+					l2 = 3;
+		char	   *i1 = lower_of(collid, "\xC4\xB0", &l1),
+				   *i2 = lower_of(collid, "\xE2\x84\xAA", &l2);
+
+		if (!(l1 == 2 && memcmp(i1, "\xC4\xB0", 2) == 0 && l2 == 3 && memcmp(i2, "\xE2\x84\xAA", 3) == 0))
+		{
+			(*vals)[1] = i1;
+			(*lens)[1] = l1;
+			(*vals)[2] = i2;
+			(*lens)[2] = l2;
+			*nvals = 3;
+		}
+	}
+	return true;
+}
+
 /* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' or '%part%' */
 static bool
 str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
@@ -274,7 +339,7 @@ str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 		return false;
 	a = strip_relabel(linitial(op->args));
 	b = strip_relabel(lsecond(op->args));
-	if (IsA(b, Param) && sop != SSTR_PREFIX)
+	if (IsA(b, Param) && sop != SSTR_PREFIX && sop != SSTR_NOTCONTAINS && sop != SSTR_ICONTAINS)
 	{
 		Node	   *t = a;
 
@@ -284,11 +349,29 @@ str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 	}
 	if (!IsA(a, Param) || !str_const(b, &s, &len))
 		return false;
-	if (sop == SSTR_PREFIX && !like_test(&s, &len, &sop))
-		return false;
+	if (sop == SSTR_PREFIX || sop == SSTR_NOTCONTAINS || sop == SSTR_ICONTAINS)
+	{
+		SiftSrcStrOp lop;
+
+		if (!like_test(&s, &len, &lop) || (sop != SSTR_PREFIX && lop != SSTR_CONTAINS))
+			return false;
+		if (sop == SSTR_PREFIX)
+			sop = lop;
+	}
 	if (sop >= SSTR_LT && sop <= SSTR_GE ? op->inputcollid != C_COLLATION_OID : !get_collation_isdeterministic(op->inputcollid))
 		return false;
 	out->op = sop;
+	if (sop == SSTR_ICONTAINS)
+	{
+		const char **vals;
+		uint32	   *lens;
+
+		if (!ilike_test(op->inputcollid, s, len, &vals, &lens, &out->nvals))
+			return false;
+		out->vals = vals;
+		out->lens = lens;
+		return true;
+	}
 	out->nvals = 1;
 	out->vals = palloc(sizeof(char *));
 	out->lens = palloc(sizeof(uint32));

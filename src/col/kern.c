@@ -192,7 +192,7 @@ expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
 }
 
 bool
-sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m)
+sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m, bool fold)
 {
 	const uint8 *last;
 
@@ -201,21 +201,24 @@ sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m)
 	last = s + (len - m);
 	for (const uint8 *p = s; p <= last; p++)
 	{
-		p = memchr(p, needle[0], last - p + 1);
-		if (p == NULL)
-			return false;
-		if (memcmp(p, needle, m) == 0)
+		if (!fold)
+		{
+			p = memchr(p, needle[0], last - p + 1);
+			if (p == NULL)
+				return false;
+		}
+		if (sift_colk_eq(p, needle, m, fold))
 			return true;
 	}
 	return false;
 }
 
 static void
-str_contains_scalar(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m)
+str_contains_scalar(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold)
 {
 	memset(out, 0, SIFT_COLK_WORDS(n) * sizeof(uint64));
 	for (uint32 s = 0; s < n; s++)
-		if (sift_colk_contains1((const uint8 *) bytes + off[s], off[s + 1] - off[s], (const uint8 *) needle, m))
+		if (sift_colk_contains1((const uint8 *) bytes + off[s], off[s + 1] - off[s], (const uint8 *) needle, m, fold))
 			out[s >> 6] |= UINT64CONST(1) << (s & 63);
 }
 

@@ -122,17 +122,33 @@ typedef struct SiftColKernels
 	/*
 	 * Text: bit s of out (SIFT_COLK_WORDS(n) words written, the bits past n zero) = string s holds the m >= 1 bytes of needle, for the n strings
 	 * bytes[off[s]] .. bytes[off[s + 1]) (off ascending, the bytes before off[0] and past off[n] are not read, nor is any padding). Bytewise: for
-	 * valid UTF-8 and a needle of valid UTF-8 that is the match of characters.
+	 * valid UTF-8 and a needle of valid UTF-8 that is the match of characters. fold: the ASCII letters of the strings are compared in lower case
+	 * (the needle is in lower case already), so that ILIKE of an ASCII needle is the same pass.
 	 */
-	void		(*str_contains) (uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m);
+	void		(*str_contains) (uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold);
 } SiftColKernels;
 
 /* The active table (follows sift.simd), and a level's table for tests; never NULL, falls back downwards */
 extern PGDLLIMPORT const SiftColKernels *sift_colk;
 extern const SiftColKernels *sift_col_kernels_for(SiftSimdLevel level);
 
+/* The 0x20 that turns an ASCII upper case letter of the text into the lower case letter needle byte c is (0 for any other byte of the needle) */
+#define SIFT_COLK_FOLD(c) ((uint8) ((c) - 'a') < 26 ? 0x20 : 0)
+
+/* Whether the m bytes at p are those of needle (fold: up to the case of ASCII letters) */
+static inline bool
+sift_colk_eq(const uint8 *p, const uint8 *needle, uint32 m, bool fold)
+{
+	if (!fold)
+		return memcmp(p, needle, m) == 0;
+	for (uint32 i = 0; i < m; i++)
+		if ((p[i] | SIFT_COLK_FOLD(needle[i])) != needle[i])
+			return false;
+	return true;
+}
+
 /* Whether the len bytes at s hold the m >= 1 bytes of needle: str_contains for one string (what the vector kernels finish with, and what a test of one value uses) */
-extern bool sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m);
+extern bool sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m, bool fold);
 
 /* Registers the rebind with the cpu module; _PG_init */
 extern void sift_col_kernels_init(void);

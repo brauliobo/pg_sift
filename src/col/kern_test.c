@@ -473,7 +473,8 @@ test_expand_parents(Test *t)
 
 /*
  * Strings of a few letters, so that near misses are common (and some bytes >= 0x80), behind a stretch of junk the kernel must not read, with the text
- * ending at the guard page; a needle cut from a string, from across two strings (never a match), or random. Checked against two plain loops.
+ * ending at the guard page; a needle cut from a string, from across two strings (never a match), or random; half of the cases fold the case of the
+ * letters (the needle in lower case, the text with upper case letters and bytes that differ from a letter by 0x20 only). Checked against two plain loops.
  */
 static void
 test_str_contains(Test *t)
@@ -485,6 +486,7 @@ test_str_contains(Test *t)
 				total = junk,
 				m,
 				at;
+	bool		fold = rnd(t, 2);
 	uint32	   *off = in_array(t, sizeof(uint32), n + 1);
 	uint64	   *out;
 	uint8	   *text,
@@ -498,7 +500,7 @@ test_str_contains(Test *t)
 	off[n] = total;
 	text = guarded(t, Max(total, 1));
 	for (uint32 i = 0; i < total; i++)
-		text[i] = rnd(t, 40) == 0 ? (uint8) (0x80 + rnd(t, 128)) : (uint8) ('a' + rnd(t, alpha));
+		text[i] = rnd(t, 40) == 0 ? (uint8) (0x80 + rnd(t, 128)) : (uint8) ((fold && rnd(t, 3) == 0 ? 'A' : 'a') + rnd(t, alpha));
 	m = 1 + (rnd(t, 3) ? rnd(t, 8) : rnd(t, 100));
 	needle = guarded(t, m);
 	at = n > 0 ? off[rnd(t, n)] : 0;
@@ -507,14 +509,22 @@ test_str_contains(Test *t)
 	else
 		for (uint32 i = 0; i < m; i++)
 			needle[i] = (uint8) ('a' + rnd(t, alpha));
+	for (uint32 i = 0; fold && i < m; i++)
+		needle[i] = needle[i] >= 'A' && needle[i] <= 'Z' ? needle[i] + 0x20 : needle[i];
 	out = out_array(t, sizeof(uint64), SIFT_COLK_WORDS(n));
-	t->k->str_contains(out, (const char *) text, off, n, (const char *) needle, m);
+	t->k->str_contains(out, (const char *) text, off, n, (const char *) needle, m, fold);
 	for (uint32 s = 0; s < n; s++)
 	{
 		bool		want = false;
 
 		for (uint32 p = off[s]; !want && p + m <= off[s + 1]; p++)
-			want = memcmp(text + p, needle, m) == 0;
+		{
+			uint32		i = 0;
+
+			while (i < m && (text[p + i] == needle[i] || (fold && needle[i] >= 'a' && needle[i] <= 'z' && text[p + i] == needle[i] - 0x20)))
+				i++;
+			want = i == m;
+		}
 		if (sift_col_bit_test(out, s) != want)
 			elog(ERROR, "sift_col_kern: string %u of %u (%u bytes) %s the %u bytes of the needle", s, n, off[s + 1] - off[s],
 				 want ? "does not hold" : "holds", m);

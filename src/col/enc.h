@@ -63,7 +63,7 @@ typedef struct SiftCDict
 typedef struct SiftCDictLook
 {
 	int64		(*find) (const struct SiftCDictLook *look, const char *s, uint32 len);
-	uint32		(*match) (const struct SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut);
+	uint32		(*match) (const struct SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut);
 } SiftCDictLook;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
@@ -74,7 +74,9 @@ extern int64 sift_cdict_find(SiftCDict *d, const char *s, uint32 len);
 /* Whether a string passes a LT, LE, GT, GE (byte order) or PREFIX predicate on the string c */
 extern bool sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c);
 /* Sets in lut the bit of every code whose string satisfies op (LT, LE, GT, GE in byte order, PREFIX) against c; returns how many */
-extern uint32 sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut);
+/* c: the nvals constants of the predicate (more than one only for ICONTAINS) */
+extern uint32 sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut);
+extern void sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n, SiftColOp op, const SiftColValue *c, int nvals);
 /* Bytewise order of strings */
 extern int	sift_cstr_cmp(const char *a, uint32 alen, const char *b, uint32 blen);
 /* The strings of a dictionary in byte order, by position: a search of them is the same whether they are in memory or in the stream */

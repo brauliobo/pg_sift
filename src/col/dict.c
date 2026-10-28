@@ -179,8 +179,6 @@ sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c
 			return sift_cstr_cmp(s, len, c->v.s, c->len) > 0;
 		case SIFT_COLOP_GE:
 			return sift_cstr_cmp(s, len, c->v.s, c->len) >= 0;
-		case SIFT_COLOP_CONTAINS:
-			return sift_colk_contains1((const uint8 *) s, len, (const uint8 *) c->v.s, c->len);
 		default:					/* PREFIX */
 			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
 	}
@@ -367,18 +365,80 @@ mem_str(const void *ctx, uint32 pos, uint32 *len)
 	return sift_cdict_str(d, d->sorted[pos], len);
 }
 
+/*
+ * The strings of bytes/off[0..n) that hold the needle c[0] (CONTAINS), or whose lower() does (ICONTAINS: the ASCII letters of the strings compared in lower case;
+ * the other characters have a lower case that is not ASCII, but for U+0130 and U+212A, which a test of nvals 3 spells as c[1] and c[2] before the compare).
+ */
+void
+sift_cstrs_contains(uint64 *out, const char *bytes, const uint32 *off, uint32 n, SiftColOp op, const SiftColValue *c, int nvals)
+{
+	uint32		nw = (n + 63) / 64;
+	uint64	   *sp;
+	char	   *buf;
+
+	sift_colk->str_contains(out, bytes, off, n, c->v.s, c->len, op == SIFT_COLOP_ICONTAINS);
+	if (nvals < 3)
+		return;
+	sp = palloc(2 * nw * sizeof(uint64));
+	sift_colk->str_contains(sp, bytes, off, n, "\xC4\xB0", 2, false);
+	sift_colk->str_contains(sp + nw, bytes, off, n, "\xE2\x84\xAA", 3, false);
+	buf = NULL;
+	for (uint32 w = 0; w < nw; w++)
+		for (uint64 m = sp[w] | sp[nw + w]; m; m &= m - 1)
+		{
+			uint32		s = w * 64 + pg_rightmost_one_pos64(m),
+						len = off[s + 1] - off[s],
+						k = 0;
+			const uint8 *p = (const uint8 *) bytes + off[s];
+
+			if (buf == NULL)
+				buf = palloc(Max(1, (Size) (off[n] - off[0])) * Max(c[1].len, c[2].len) + 1);
+			for (uint32 i = 0; i < len;)
+				if (i + 1 < len && p[i] == 0xC4 && p[i + 1] == 0xB0)
+				{
+					memcpy(buf + k, c[1].v.s, c[1].len);
+					k += c[1].len;
+					i += 2;
+				}
+				else if (i + 2 < len && p[i] == 0xE2 && p[i + 1] == 0x84 && p[i + 2] == 0xAA)
+				{
+					memcpy(buf + k, c[2].v.s, c[2].len);
+					k += c[2].len;
+					i += 3;
+				}
+				else
+					buf[k++] = p[i++];
+			if (sift_colk_contains1((const uint8 *) buf, k, (const uint8 *) c->v.s, c->len, true))
+				out[w] |= UINT64CONST(1) << (s & 63);
+			else
+				out[w] &= ~(UINT64CONST(1) << (s & 63));
+		}
+	if (buf)
+		pfree(buf);
+	pfree(sp);
+}
+
 uint32
-sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut)
+sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut)
 {
 	uint32		count = 0,
 				from,
 				to;
 
-	if (d->look)
-		return d->look->match(d->look, op, c, lut);
-	if (op == SIFT_COLOP_CONTAINS)
+	if (op == SIFT_COLOP_NOTCONTAINS)
 	{
-		sift_colk->str_contains(lut, d->bytes, d->off, d->n, c->v.s, c->len);
+		count = sift_cdict_match(d, SIFT_COLOP_CONTAINS, c, nvals, lut);
+		for (uint32 w = 0; w < (d->n + 63) / 64; w++)
+			lut[w] = ~lut[w];
+		if (d->n % 64)
+			lut[d->n / 64] &= (UINT64CONST(1) << (d->n % 64)) - 1;
+		return d->n - count;
+	}
+	if (d->look)
+		return d->look->match(d->look, op, c, nvals, lut);
+	if (op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS)
+	{
+		sift_cstrs_contains(lut, d->bytes, d->off, d->n, op, c, nvals);
 		return sift_colk->bits_count(lut, (d->n + 63) / 64);
 	}
 	if (d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)

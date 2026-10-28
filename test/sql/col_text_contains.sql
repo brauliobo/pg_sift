@@ -1,7 +1,7 @@
 -- LIKE '%part%' on a text leaf runs on the encoded strings, bytewise, in one pass over the bytes of a dictionary: the rows are the normal plan's for every
 -- way the strings are stored (a dictionary read in the stream and then parsed, strings inline in the unit, the write buffer, a sift_table), for needles at the
 -- edges (a string boundary inside the dictionary's bytes, the whole string, longer than any string, NUL-free multibyte text), and for the patterns that stay
--- with the executor (a wildcard or an escape inside the part, ILIKE, NOT LIKE, a suffix).
+-- with the executor (a wildcard or an escape inside the part, ILIKE, NOT LIKE of a prefix or a suffix, a suffix); NOT LIKE '%part%' is the complement of the same test (NULL rows stay out).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;

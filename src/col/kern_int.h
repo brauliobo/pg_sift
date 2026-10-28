@@ -32,7 +32,7 @@ extern void sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int6
 extern void sift_colk_f8_from_keys_neon(int64 *a, uint32 n);
 extern void sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep);
 extern void sift_colk_expand_parents_neon(const uint32 *end, uint32 np, uint32 *parent);
-extern void sift_colk_str_contains_neon(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m);
+extern void sift_colk_str_contains_neon(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold);
 #endif
 
 /* Fully unrolled loop of a constant trip count (a vector step per iteration), whichever compiler builds the file */

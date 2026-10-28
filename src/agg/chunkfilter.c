@@ -38,6 +38,10 @@ str_op(SiftSrcStrOp op)
 			return SIFT_COLOP_PREFIX;
 		case SSTR_CONTAINS:
 			return SIFT_COLOP_CONTAINS;
+		case SSTR_NOTCONTAINS:
+			return SIFT_COLOP_NOTCONTAINS;
+		case SSTR_ICONTAINS:
+			return SIFT_COLOP_ICONTAINS;
 	}
 	SIFT_INVARIANT(false, "sift: unknown text test %d", (int) op);
 	pg_unreachable();

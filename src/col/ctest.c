@@ -209,7 +209,7 @@ ctest_make_str(SiftCDict *dict, const SiftColPred *p, SiftCTest *t)
 			}
 			return;
 		default:
-			sift_cdict_match(dict, p->op, &p->vals[0], lut);
+			sift_cdict_match(dict, p->op, &p->vals[0], p->nvals, lut);
 			ctest_lut_finish(t, lut, dict->n);
 	}
 }
@@ -625,7 +625,7 @@ istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
 			   *one;
 	int64		k;
 
-	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || op == SIFT_COLOP_CONTAINS || !istr_split(c, &pre, &prelen, &strs, &strslen))
+	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS || !istr_split(c, &pre, &prelen, &strs, &strslen))
 		return NULL;
 	cc = sift_cc_open_rows(CurrentMemoryContext, pre, prelen, false, c->n);
 	cand = palloc0(nw * sizeof(uint64));
@@ -666,12 +666,12 @@ istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
 	return cand;
 }
 
-/* tmp = rows of a STRS or ISTR chunk whose string satisfies the predicate (NE and NOTIN: its opposite, EQ and IN), NULL slots may be set */
+/* tmp = rows of a STRS or ISTR chunk whose string satisfies the predicate (NE, NOTIN and NOTCONTAINS: its opposite, EQ, IN and CONTAINS), NULL slots may be set */
 static void
 chunk_strs(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 {
 	const SiftColPred *p = t->pred;
-	SiftColOp	op = p->op == SIFT_COLOP_NE ? SIFT_COLOP_EQ : p->op == SIFT_COLOP_NOTIN ? SIFT_COLOP_IN : p->op;
+	SiftColOp	op = p->op == SIFT_COLOP_NE ? SIFT_COLOP_EQ : p->op == SIFT_COLOP_NOTIN ? SIFT_COLOP_IN : p->op == SIFT_COLOP_NOTCONTAINS ? SIFT_COLOP_CONTAINS : p->op;
 	uint64	   *cand = c->enc == SIFT_COLENC_ISTR ? istr_candidates(c, op, p) : NULL;
 	uint32		nw = SIFT_COL_NWORDS(c->n),
 				cw = words_of(c->n),
@@ -685,8 +685,8 @@ chunk_strs(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	if (!any)
 		return;
 	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
-	if (op == SIFT_COLOP_CONTAINS)
-		sift_colk->str_contains(tmp, bytes, off, c->n, p->vals[0].v.s, p->vals[0].len);
+	if (op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS)
+		sift_cstrs_contains(tmp, bytes, off, c->n, op, p->vals, p->nvals);
 	else
 		for (uint32 w = 0; w < cw; w++)
 		{
@@ -794,7 +794,7 @@ sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 				cw = words_of(c->n);
 	uint64	   *tmp;
 	bool		negate = t->kind == SIFT_CT_NRANGE || t->kind == SIFT_CT_NSET ||
-	(t->kind == SIFT_CT_STRS && (t->pred->op == SIFT_COLOP_NE || t->pred->op == SIFT_COLOP_NOTIN));
+	(t->kind == SIFT_CT_STRS && (t->pred->op == SIFT_COLOP_NE || t->pred->op == SIFT_COLOP_NOTIN || t->pred->op == SIFT_COLOP_NOTCONTAINS));
 
 	switch (t->kind)
 	{

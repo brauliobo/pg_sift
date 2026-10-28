@@ -121,6 +121,9 @@ hits_region_users	hits_region_users	hits	-	Pushed Aggregates	native	-	ms	faster3
 hits_top_phrases	hits_top_phrases	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_like_count	hits_like_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_like_group	hits_like_group	hits	-	Pushed Aggregates	native	-	ms	faster33	no
+hits_like_not	`NOT LIKE '%part%'` on a `text` or `varchar` column	hits	-	Pushed Aggregates	native	-	ms	faster33	no
+hits_like_order	hits_like_order	hits	-	Top-N: event_time	native	-	ms	faster33	no
+hits_ilike_count	`ILIKE '%part%'` of an ASCII part	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_order_time	hits_order_time	hits	-	Incremental Sort.*Top-N: event_time	native	-	ms	faster33	no
 ts_range_by_day	ts_range_by_day	tseries	-	Pushed Aggregates	native	-	ms	faster33	no
 ts_hour_metric	ts_hour_metric	tseries	-	Pushed Aggregates	native	-	ms	faster33	no

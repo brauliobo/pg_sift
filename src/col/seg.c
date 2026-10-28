@@ -758,10 +758,10 @@ look_find(const SiftCDictLook *look, const char *s, uint32 len)
 #define SIG_CHUNK	(64 * 1024)
 
 static uint32
-look_contains(DictLook *l, const SiftColValue *c, uint64 *lut, uint32 *passed)
+look_contains(DictLook *l, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut, uint32 *passed)
 {
 	uint32		count = 0,
-				nbits = l->sig_at != 0 && c->len >= 3 ? c->len - 2 : 0,
+				nbits = l->sig_at != 0 && op == SIFT_COLOP_CONTAINS && c->len >= 3 ? c->len - 2 : 0,
 				sigbytes = l->sig_at != 0 ? (1u << l->sig_lg) / 8 : 0,
 				per = nbits > 0 ? Max(SIG_CHUNK / sigbytes, 1) : 1,
 				got = 0,
@@ -804,7 +804,7 @@ look_contains(DictLook *l, const SiftColValue *c, uint64 *lut, uint32 *passed)
 			look_load_block(l, b);
 		for (uint32 i = 0; i <= cnt; i++)
 			off[i] = l->blkoff[i];
-		sift_colk->str_contains(lut + b, (const char *) l->blkraw, off, cnt, c->v.s, c->len);
+		sift_cstrs_contains(lut + b, (const char *) l->blkraw, off, cnt, op, c, nvals);
 		count += pg_popcount64(lut[b]);
 	}
 	if (bits)
@@ -819,15 +819,15 @@ look_contains(DictLook *l, const SiftColValue *c, uint64 *lut, uint32 *passed)
 }
 
 static uint32
-look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut)
+look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut)
 {
 	const DictLook *l = (const DictLook *) look;
 	SiftCSorted so = {l->n, look_sorted_str, l};
 	uint32		from,
 				to;
 
-	if (op == SIFT_COLOP_CONTAINS)
-		return look_contains((DictLook *) l, c, lut, &(uint32) {0});
+	if (op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_ICONTAINS)
+		return look_contains((DictLook *) l, op, c, nvals, lut, &(uint32) {0});
 	look_cache((DictLook *) l);
 	sift_csorted_range(&so, op, c, &from, &to);
 	for (uint32 pos = from; pos < to;)
@@ -1231,7 +1231,7 @@ sift_cseg_dict_search(SiftColSegment *seg, int col, SiftColOp op)
 		return pv->dict[col];
 	l = dict_look(seg, col);
 	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost; a substring test of a blocked one reads its blocks (those the signatures leave) until then, and for good where the parse is lost */
-	if (l && (l->searchable || (op == SIFT_COLOP_CONTAINS && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
+	if (l && (l->searchable || ((op == SIFT_COLOP_CONTAINS || op == SIFT_COLOP_NOTCONTAINS || op == SIFT_COLOP_ICONTAINS) && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
 		((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
 		  l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
@@ -1271,7 +1271,7 @@ sift_cseg_dict_tsig(SiftColSegment *seg, int col, const char *needle, uint32 len
 	if (l == NULL || l->sig_at == 0)
 		return false;
 	lut = palloc0(SIFT_COL_NWORDS(l->n) * sizeof(uint64));
-	look_contains(l, &c, lut, passed);
+	look_contains(l, SIFT_COLOP_CONTAINS, &c, 1, lut, passed);
 	*total = (l->n + DICT_BLOCK - 1) / DICT_BLOCK;
 	pfree(lut);
 	return true;
