@@ -110,7 +110,7 @@ string_bytes(Set *s, const Col *c, u32 i0, u32 n, const SiftCcPolicy *pol)
 	for (u32 i = 0; i <= n; i++)
 		off[i] = c->off[i0 + i] - c->off[i0];
 	initStringInfo(&out);
-	sift_cc_encode_strs(&out, off, (const char *) c->d + c->off[i0], n, pol);
+	sift_cc_encode_strs(&out, off, (const char *) c->d + c->off[i0], n, pol, NULL);
 	s->strbytes += out.len;
 	pfree(out.data);
 	free(off);

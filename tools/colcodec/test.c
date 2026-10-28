@@ -516,7 +516,7 @@ test_strs(SiftRng *r, int scale)
 			off[i + 1] = tot += len;
 		}
 		initStringInfo(&s);
-		sift_cc_encode_strs(&s, off, bytes, n, &pol);
+		sift_cc_encode_strs(&s, off, bytes, n, &pol, NULL);
 		blob = xalloc(s.len);
 		memcpy(blob, s.data, s.len);
 		sift_cc_decode_strs(CurrentMemoryContext, blob, s.len, n, &o2, &b2);
@@ -703,7 +703,7 @@ test_fuzz(SiftRng *r, int scale)
 				off[i + 1] = off[i] + sift_rng_below(r, 8);
 				memset(bytes + off[i], 'a' + (i % 5), off[i + 1] - off[i]);
 			}
-			sift_cc_encode_strs(&s, off, bytes, n, &pol);
+			sift_cc_encode_strs(&s, off, bytes, n, &pol, NULL);
 		}
 		else
 		{

@@ -482,7 +482,7 @@ gen_codec(const char *dir)
 		}
 		sift_cc_policy_parse(seed_policies[k], &pol);
 		initStringInfo(&out);
-		sift_cc_encode_strs(&out, off, bytes, n, &pol);
+		sift_cc_encode_strs(&out, off, bytes, n, &pol, NULL);
 		snprintf(name, sizeof(name), "strs-%d", k);
 		emit(dir, name, 1, 0, out.data, out.len);
 		initStringInfo(&out);
