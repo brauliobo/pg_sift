@@ -17,6 +17,13 @@ INSERT INTO ae SELECT * FROM gen(1, 30000);
 CREATE INDEX ae_col ON ae USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
 VACUUM (FREEZE, ANALYZE) ae;
 SELECT sift.col_verify('ae_col', true);
+CREATE TABLE ad (LIKE ae) WITH (autovacuum_enabled = false);
+INSERT INTO ad SELECT * FROM gen(1, 30000);
+-- the plus keeps the image of tags beside its elements: equality and GROUP BY of whole arrays are answered, the element tests by the directory
+CREATE INDEX ad_col ON ad USING sift_col (id, tags, ids) WITH (paths = '+tags[] text, ids[] int4');
+VACUUM (FREEZE, ANALYZE) ad;
+SELECT sift.col_verify('ad_col', true);
+SELECT leaf, path, type FROM sift.col_leaves('ad_col') ORDER BY leaf;
 
 CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a bigint; l text; pushed boolean := false; e_on text; e_off text;
@@ -67,11 +74,12 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
 		('int any', $q$SELECT count(*) AS c FROM %1$I WHERE 2004 = ANY (ids)$q$),
 		('int null element', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[1]$q$),
+		('keys', $q$SELECT id %% 5 AS k, (tags @> ARRAY['t3']) AS t, count(*) AS c FROM %1$I WHERE tags IS NULL AND id %% 17 = 3 GROUP BY 1, 2$q$),
 		('count', $q$SELECT count(tags) AS c, count(DISTINCT tags) AS d FROM %1$I$q$)) s(name, q) $$;
 
 -- the index keeps no image of the arrays: a statement that needs the whole array reads the table, the others the elements
 SELECT leaf, path, type FROM sift.col_leaves('ae_col') ORDER BY leaf;
-SELECT * FROM shapes('built', 'ae');
+SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad');
 -- the same on arrays that cannot be NULL, where a NOT may be pushed
 CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO an SELECT * FROM gen(1, 30000) WHERE tags IS NOT NULL AND ids IS NOT NULL;
@@ -80,22 +88,28 @@ VACUUM (FREEZE, ANALYZE) an;
 SELECT * FROM shapes('not null', 'an');
 DROP TABLE an;
 INSERT INTO ae SELECT * FROM gen(30001, 34000);
-SELECT * FROM shapes('insert', 'ae');
+INSERT INTO ad SELECT * FROM gen(30001, 34000);
+SELECT * FROM shapes('insert', 'ae') UNION ALL SELECT * FROM shapes('insert', 'ad');
 UPDATE ae SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
-SELECT * FROM shapes('update', 'ae');
+UPDATE ad SET tags = ARRAY['t7', 't' || id % 500], ids = ARRAY[7, id % 400] WHERE id % 11 = 0;
+SELECT * FROM shapes('update', 'ae') UNION ALL SELECT * FROM shapes('update', 'ad');
 DELETE FROM ae WHERE id % 7 = 0;
-SELECT * FROM shapes('delete', 'ae');
-SELECT sift.col_verify('ae_col', true);
+DELETE FROM ad WHERE id % 7 = 0;
+SELECT * FROM shapes('delete', 'ae') UNION ALL SELECT * FROM shapes('delete', 'ad');
+SELECT sift.col_verify('ae_col', true), sift.col_verify('ad_col', true);
 VACUUM ae;
-SELECT * FROM shapes('vacuum', 'ae');
-SELECT sift.col_merge('ae_col', true) > 0 AS merged;
-SELECT * FROM shapes('merge', 'ae');
+VACUUM ad;
+SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'ad');
+SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
+SELECT * FROM shapes('merge', 'ae') UNION ALL SELECT * FROM shapes('merge', 'ad');
 INSERT INTO ae SELECT * FROM gen(40001, 44000);
-SELECT sift.col_merge('ae_col', true) > 0 AS merged;
-SELECT * FROM shapes('merge2', 'ae');
+INSERT INTO ad SELECT * FROM gen(40001, 44000);
+SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
+SELECT * FROM shapes('merge2', 'ae') UNION ALL SELECT * FROM shapes('merge2', 'ad');
 SELECT sift.col_verify('ae_col', true);
 REINDEX INDEX ae_col;
-SELECT * FROM shapes('reindex', 'ae');
+REINDEX INDEX ad_col;
+SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 'ad');
 
 -- a value no row owns is answered by the directory: no unit is read and no heap row vetted
 CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
@@ -106,6 +120,6 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM reads($q$SELECT count(*) FROM ae WHERE tags @> ARRAY['zz']$q$);
-DROP TABLE ae;
+DROP TABLE ae, ad;
 DROP FUNCTION gen(int, int), chk(text), shapes(text, text), reads(text);
 DROP EXTENSION pg_sift;

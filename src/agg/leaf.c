@@ -353,9 +353,16 @@ dict_slot(AggExec *ex, const SiftSrcDict *d)
 
 	for (int i = 0; i < NDICT_SLOTS; i++)
 		if (ex->dslot[i].id == d->id && d->id != NULL)
+		{
+			ex->dslot[i].tick = ++ex->dtick;
 			return &ex->dslot[i];
-	s = &ex->dslot[ex->dnext];
-	ex->dnext = (ex->dnext + 1) % NDICT_SLOTS;
+		}
+	/* the least recently used slot goes: the slots of the dictionaries a chunk is still using (their key maps) are the newest, and a dictionary made for a read (a wide leaf's) has an id of its own */
+	s = &ex->dslot[0];
+	for (int i = 1; i < NDICT_SLOTS; i++)
+		if (ex->dslot[i].tick < s->tick)
+			s = &ex->dslot[i];
+	s->tick = ++ex->dtick;
 	if (s->lut == NULL)
 	{
 		s->lut = MemoryContextAllocZero(ex->cxt, np * sizeof(uint64 *));

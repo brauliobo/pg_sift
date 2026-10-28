@@ -496,7 +496,7 @@ sift_col_auto_keys_report(Relation index)
 	pfree(snap);
 }
 
-static void auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo added);
+static void auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo only, StringInfo both);
 
 /*
  * Before a build: an index with jsonb columns and no paths option (a jsonb column needs paths, so that was an error), or with paths = 'auto', has its paths
@@ -531,19 +531,28 @@ sift_col_auto_paths(Relation heap, Relation index)
 	if (opt[0] == '\0' || opt[4] == '\0')
 	{
 		StringInfoData arrs,
-					added;
+					only,
+					both,
+					detail;
 
 		initStringInfo(&arrs);
-		initStringInfo(&added);
-		auto_array_specs(heap, index, &arrs, &added);
+		initStringInfo(&only);
+		initStringInfo(&both);
+		initStringInfo(&detail);
+		auto_array_specs(heap, index, &arrs, &only, &both);
 		if (arrs.len > 0)
 		{
 			const char *name = quote_identifier(RelationGetRelationName(index));
 
 			appendStringInfo(&spec, "%s%s", spec.len ? ", " : "", arrs.data);
-			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s, not the arrays", name, added.data),
-							 errdetail("An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array. The arrays are nearly all different in a sample, so the index does not keep them whole: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table."),
-							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, keeps the arrays and leaves the elements out.", name)));
+			appendStringInfoString(&detail, "An element test (@>, &&, <@, = ANY) of an array column of text or integers reads a directory of the rows that own each element, where it read every array.");
+			if (only.len > 0)
+				appendStringInfo(&detail, " The arrays of %s are nearly all different in a sample, so the index keeps their elements in place of the arrays: equality with an array, GROUP BY and DISTINCT of an array and the array itself read the table.", only.data);
+			if (both.len > 0)
+				appendStringInfo(&detail, " The arrays of %s repeat, so the index keeps them as well (a '+' in paths).", both.data);
+			ereport(NOTICE, (errmsg("sift_col index %s keeps the elements of the arrays %s", name, only.len > 0 && both.len > 0 ? psprintf("%s, %s", only.data, both.data) : only.len > 0 ? only.data : both.data),
+							 errdetail_internal("%s", detail.data),
+							 errhint("ALTER INDEX %s SET (paths = ''), then REINDEX, leaves the elements out.", name)));
 		}
 	}
 	if (spec.len == 0)
@@ -1041,10 +1050,42 @@ arr_elem_type(Oid elem)
 }
 
 /*
+ * An array column whose arrays repeat keeps its image (GROUP BY, DISTINCT and = read one code a row). An element test over the image decodes, hashes and
+ * interns each distinct array of the dictionary, ARR_IMAGE_INSTR instructions an array (311.6 M instructions for 196,999 distinct arrays of 1,000,000 rows, 8.0 M
+ * with the directory of the elements), where the elements cost about ARR_ELEM_ROW_INSTR a row. The elements are kept beside the image when the default formula
+ * says so: speedup S, benefit R log2(S) / log2(1.05) with R = 1 (a common class) against G / 3 + W / 5, W
+ * the build's write cost, taken as G (the same bytes are written), G at most ARR_AUTO_GROWTH_PCT% and the saving at least 100,000 instructions. The distinct arrays
+ * are the statistics' when the table has them (a sample of a few thousand rows sees few repeats), else the sample's.
+ */
+#define ARR_IMAGE_INSTR		1500
+#define ARR_ELEM_ROW_INSTR	5
+
+static bool
+arr_both_pays(Relation heap, const ArrCand *c, double growth)
+{
+	double		total = heap->rd_rel->reltuples,
+				ndistinct,
+				corr,
+				distinct = (double) c->arrs.n / c->rows * total,
+				saved,
+				base,
+				speedup;
+	int32		width;
+
+	if (col_stats(heap, c->hatt, &ndistinct, &corr, &width))
+		distinct = Max(distinct, ndistinct < 0 ? -ndistinct * total : ndistinct);
+	saved = distinct * ARR_IMAGE_INSTR;
+	base = total * ARR_ELEM_ROW_INSTR;
+	speedup = (base + saved) / base;
+	return growth <= ARR_AUTO_GROWTH_PCT && saved >= 100000 && speedup >= 1.05 &&
+		log2(speedup) / log2(1.05) >= growth / 3 + growth / 5;
+}
+
+/*
  * The arrays of the index that get their elements, from a sample of the table: appends 'col[] type' to spec and the names to added.
  */
 static void
-auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo added)
+auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo only, StringInfo both)
 {
 	ArrCand		cand[SIFT_COL_MAX_COLS];
 	int			n = 0;
@@ -1085,18 +1126,25 @@ auto_array_specs(Relation heap, Relation index, StringInfo spec, StringInfo adde
 	{
 		const ArrCand *c = &cand[k];
 		const char *name = NameStr(TupleDescAttr(RelationGetDescr(index), c->idx)->attname);
-		double		elem_row,
+		double		total = heap->rd_rel->reltuples,
+					elem_row,
 					image_row;
+		bool		alone = c->arrs.n * 100 > c->rows * ARR_DISTINCT_PCT;
 
-		/* arrays that repeat keep their image, which answers every test and is small */
-		if (c->rows < 100 || c->elems == 0 || c->arrs.n * 100 <= c->rows * ARR_DISTINCT_PCT)
+		if (c->rows < 100 || c->elems == 0)
 			continue;
 		elem_row = (double) c->elems / c->rows * (log2(Max(c->els.n, 2)) / 8 + ARR_DIR_BYTES);
 		image_row = (double) c->bytes / c->rows * Min(1.0, (double) c->arrs.n / c->rows);
-		if ((elem_row - image_row) * heap->rd_rel->reltuples * 100 / Max(base, 1) > ARR_AUTO_GROWTH_PCT)
+		if (alone)
+		{
+			/* nearly every array different: the image shares nothing and the elements, far smaller, stand in its place */
+			if ((elem_row - image_row) * 100 / Max(base, 1) > ARR_AUTO_GROWTH_PCT)
+				continue;
+		}
+		else if (!arr_both_pays(heap, c, elem_row * 100 / Max(base, 1)))
 			continue;
-		appendStringInfo(spec, "%s%s[] %s", spec->len ? ", " : "", name, arr_elem_type(c->elem));
-		appendStringInfo(added, "%s%s", added->len ? ", " : "", name);
+		appendStringInfo(spec, "%s%s%s[] %s", spec->len ? ", " : "", alone ? "" : "+", name, arr_elem_type(c->elem));
+		appendStringInfo(alone ? only : both, "%s%s", (alone ? only : both)->len ? ", " : "", name);
 	}
 	for (int k = 0; k < n; k++)
 	{

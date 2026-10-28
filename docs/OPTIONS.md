@@ -2257,7 +2257,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": an UPDATE of %s is not a HOT update, since the index covers %s | `src/col/build.c` |  |
 | NOTICE | sift_col index %s: an equality on "%s" reads %s of %sd units, and no other leaf of the index follows the order of the table | `src/col/cluster.c` |  |
 | NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
-| NOTICE | sift_col index %s keeps the elements of the arrays %s, not the arrays | `src/col/keycols.c` |  |
+| NOTICE | sift_col index %s keeps the elements of the arrays %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
 | NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols.c` |  |

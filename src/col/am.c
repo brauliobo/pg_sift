@@ -687,7 +687,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		if (!isjson)
 		{
 			k0 = sift_col_att_leaves(att, lanes, sift_col_options(index)->array_lengths != SIFT_COL_ARRLEN_ON ? 0 :
-									 kshred > 0 ? SIFT_COL_ARR_NOIMAGE : SIFT_COL_ARR_LANES);
+									 kshred > 0 && !sift_col_shred_keeps_image(r->shred, a) ? SIFT_COL_ARR_NOIMAGE : SIFT_COL_ARR_LANES);
 			if (kshred > 0)
 				sift_col_shred_set_base(r->shred, a, k0);
 		}

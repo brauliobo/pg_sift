@@ -110,7 +110,7 @@ typedef struct AggExec
 	PredState  *ps;
 	KeyState   *ks;
 	DictSlot	dslot[NDICT_SLOTS];
-	int			dnext;
+	uint64		dtick;
 	bool		started;
 	bool		param_scan;		/* conditions read parameters an enclosing query level sets (custom_exprs): a rescan starts the scan over (agg_rescan) */
 	bool		rescannable;	/* the parent may scan the node again (EXEC_FLAG_REWIND, BACKWARD or MARK): a spilled scan keeps the groups it returned */

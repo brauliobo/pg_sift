@@ -40,6 +40,7 @@ typedef struct ShredAttr
 	ShredLeaf  *leaf;
 	bool		array;			/* a native array of a type sift_shred_array_elem_ok: its elements are a list of the spec */
 	int			base;			/* leaves of the attribute before the first of the spec (the images of an array) */
+	bool		image;			/* its entry in the spec begins with '+': the whole-array image is kept beside the elements */
 } ShredAttr;
 
 struct SiftColShredAdapter
@@ -170,6 +171,42 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 		add_column(a, at, gd->cols[i], gid, LEAF_CHILD_COL, g);
 }
 
+/*
+ * The entry of an array column that begins with '+' ('+tags[] text, ids[] int4') keeps the image of the array beside its elements; the mark is the build's
+ * choice for a column whose arrays repeat (col/keycols.c) and is stored with the paths. Returns the spec without the marks and sets ShredAttr.image.
+ */
+static char *
+take_image_marks(const char *paths, ShredAttr *attr, int natts)
+{
+	char	   *out = palloc(strlen(paths) + 1);
+	int			n = 0,
+				depth = 0;
+	bool		start = true;
+
+	for (const char *p = paths; *p; p++)
+	{
+		if (*p == '{')
+			depth++;
+		else if (*p == '}')
+			depth--;
+		if (start && depth == 0 && *p == '+')
+		{
+			const char *name = p + 1 + strspn(p + 1, " ");
+			size_t		len = strcspn(name, "[ ");
+
+			for (int i = 1; i <= natts; i++)
+				if (attr[i].array && strlen(attr[i].name) == len && strncmp(attr[i].name, name, len) == 0)
+					attr[i].image = true;
+			continue;
+		}
+		if (*p != ' ')
+			start = (*p == ',' && depth == 0) || (start && *p == '+');
+		out[n++] = *p;
+	}
+	out[n] = '\0';
+	return out;
+}
+
 /* The adapter of a paths specification over the first natts attributes of desc (the jsonb ones are the columns it may name) */
 SiftColShredAdapter *
 sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const char *paths)
@@ -192,7 +229,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 			a->attr[i].array = array;
 		}
 	}
-	a->spec = sift_shred_spec_parse(paths);
+	a->spec = sift_shred_spec_parse(take_image_marks(paths, a->attr, a->natts));
 	spec = a->spec;
 	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
 	for (int i = 1; i <= a->natts; i++)
@@ -236,6 +273,13 @@ bool
 sift_col_shred_is_array(const SiftColShredAdapter *a, int attno)
 {
 	return a->attr[attno].array;
+}
+
+/* does the array attribute keep its image beside its elements */
+bool
+sift_col_shred_keeps_image(const SiftColShredAdapter *a, int attno)
+{
+	return a->attr[attno].image;
 }
 
 /* The leaves of an array attribute that come before the spec's: the spec's parents and rows move up by them */

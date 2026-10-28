@@ -232,8 +232,8 @@ CREATE FUNCTION fz.gen_arf(lo bigint, hi bigint, salt int) RETURNS SETOF arf LAN
 	       repeat('x', 300)
 	FROM generate_series(lo, hi) i $$;
 INSERT INTO arf SELECT * FROM fz.gen_arf(1, @ROWS@, 0);
--- the elements of ta, tb and ia are listed (paths) (they keep no image of their own)
-CREATE INDEX arf_col ON arf USING sift_col (id, org, kind, amount, ia, ta, tb, na, ma) WITH (paths = 'ta[] text, tb[] text, ia[] int4');
+-- the elements of ta, tb and ia are listed (paths) (ta and tb keep their images beside)
+CREATE INDEX arf_col ON arf USING sift_col (id, org, kind, amount, ia, ta, tb, na, ma) WITH (paths = '+ta[] text, +tb[] text, ia[] int4');
 
 -- tables joined on one column of events of each kind of leaf (dictionary code, int8, float8 with NaN, int, date), NULL keys and repeated keys included
 CREATE TABLE ok_kind (k text, tag text, w int) WITH (autovacuum_enabled = false);
