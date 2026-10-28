@@ -1661,9 +1661,9 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Size of the segments the rewrite writes, so it rewrites only the ones churn touched, one step each under the lock. An index under half of it is rewritten whole; a segment under half is an overlay.
 - **Default:** 0 — Opt-in (gain): same WAL as the whole-index rewrite (15.3 against 15.05 MB uniform) and an index over sift.vacuum_rewrite_limit is already partitioned; it pays for churn in one place (a hot tail) of a large index.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
-- **Turn off:** 0 (the default) rewrites the index whole, in partitions of the vacuum_rewrite_limit size above it: SET sift.col_auto_merge_partition_kb = 0 or RESET at server or database level. Segments already cut stay.
+- **Turn off:** 0 (the default) rewrites the index whole, in partitions of the vacuum_rewrite_limit size above it or of a third of maintenance_work_mem where that is less (at least 4 MB, at most 48 for an index): SET sift.col_auto_merge_partition_kb = 0 or RESET at server or database level, and a size above the index puts back the one segment. Segments already cut stay.
 - **Upgrade from 3.5:** unchanged
-- **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it). Set a size to keep the index as segments of that size and rewrite only the ones churn touched.
+- **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it, or of a third of maintenance_work_mem where that is less). Set a size to keep the index as segments of that size and rewrite only the ones churn touched.
 
 #### sift.gpu
 

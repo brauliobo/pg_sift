@@ -65,11 +65,15 @@ int			sift_col_auto_merge_max_workers = 0;
 int			sift_col_unit_floor = 2048;
 
 #define MAX_PARTS		64		/* segments one merge cuts its output into */
+#define PART_DIVISOR	48		/* the memory bound leaves a key-cut index (partitions of three quarters of the size) under MAX_PARTS of them */
+#define PART_MIN_KB		4096	/* a partition is never smaller, whatever maintenance_work_mem is */
 #define REWRITE_SLOT_KEY	0x53520000	/* with 0x51F7 in the advisory lock space: slot s of sift.col_auto_merge_max_workers is key + s */
 
 /*
- * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else sift.vacuum_rewrite_limit for an index over it, so that
- * the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it. 0: no partitions.
+ * The size of a partition in effect for the directory in hand: sift.col_auto_merge_partition_kb, else the smaller of sift.vacuum_rewrite_limit (for an index
+ * over it, so that the rewrite of a large index is a step for each partition, the lock let go between them, and not one step for all of it) and a third of
+ * maintenance_work_mem: the writer of a segment keeps the key and address of each row of a global order until its last unit is in, about 2.5 bytes of memory
+ * for each byte of segment. The memory bound gives way to the directory: an index never has more than PART_DIVISOR partitions. 0: no partitions.
  */
 static int	part_kb = 0;
 
@@ -77,12 +81,18 @@ static void
 use_partitions(const SiftDirSnapshot *snap)
 {
 	uint64		bytes = 0;
+	uint64		mem_kb;
 
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			bytes += snap->segs[i].bytes;
 	part_kb = sift_col_auto_merge_partition_kb > 0 ? sift_col_auto_merge_partition_kb :
 		bytes > ((uint64) sift_vacuum_rewrite_limit << 20) ? sift_vacuum_rewrite_limit * 1024 : 0;
+	if (sift_col_auto_merge_partition_kb > 0)
+		return;
+	mem_kb = Max((uint64) maintenance_work_mem / 3, Max(bytes / 1024 / PART_DIVISOR, PART_MIN_KB));
+	if (bytes / 1024 > mem_kb && (part_kb == 0 || mem_kb < (uint64) part_kb))
+		part_kb = (int) Min(mem_kb, (uint64) INT_MAX);
 }
 
 /*
