@@ -58,7 +58,7 @@ TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
 TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow agg_distinct_sort
 TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure col_range_count
-TESTING_REGRESS += col_ioss_columns
+TESTING_REGRESS += col_ioss_columns col_dict_shared
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)

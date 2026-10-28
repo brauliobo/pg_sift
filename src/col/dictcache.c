@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "col/dictshm.h"
 #include "core/limits.h"
 #include "col/seg_int.h"
 
@@ -31,16 +32,6 @@ SiftCDictCacheStats sift_cdict_cache_stats;
 #else
 #define CDICT_STAT(f)		((void) 0)
 #endif
-
-typedef struct DictKey
-{
-	RelFileLocator rel;
-	uint64		gen;
-	uint64		ndocs;			/* read from the segment: a damaged one must not share the entry of an intact one */
-	BlockNumber header_blk;
-	int32		col;
-	uint32		unit;			/* UINT32_MAX: the dictionary of the leaf, else the list lengths of that unit */
-} DictKey;
 
 typedef struct DictEnt
 {
@@ -349,20 +340,64 @@ sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent)
 	e->spent = Max(e->spent, spent);
 }
 
+/* Keeps d, made in cx (a child of the scan's context), under k as the cache has room for it, and pins it for the scan */
+static SiftCDict *
+dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, SiftCDict *d)
+{
+	DictEnt    *e;
+	Size		size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
+
+	CDICT_STAT(loads);
+	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	{
+		ask_ent(seg, col)->nokeep = true;
+		return d;
+	}
+	MemoryContextSetParent(cx, cache_cx);
+	e = hash_search(cache, k, HASH_ENTER, NULL);
+	e->cx = cx;
+	e->obj = d;
+	e->size = size;
+	e->pins = 0;
+	dlist_push_tail(&lru, &e->node);
+	cache_bytes += size;
+	dict_pin(e, seg->mcxt);
+	return d;
+}
+
+static MemoryContext
+dict_cx(SiftColSegment *seg)
+{
+	return AllocSetContextCreate(seg->mcxt, "sift cache segment dictionary", ALLOCSET_DEFAULT_SIZES);
+}
+
+/* The dictionary in the cache, else the one another backend parsed: a dictionary that is there was found worth its parse, and a copy costs less than a search of the stream */
 SiftCDict *
 sift_cseg_dict_peek(SiftColSegment *seg, int col)
 {
 	DictKey		k;
 	DictEnt    *e;
+	MemoryContext cx;
+	SiftCDict  *d;
 
-	if (cache == NULL)
-		return NULL;
 	dict_key(&k, seg, col, UINT32_MAX);
-	if ((e = hash_search(cache, &k, HASH_FIND, NULL)) == NULL)
+	if (cache != NULL && (e = hash_search(cache, &k, HASH_FIND, NULL)) != NULL)
+	{
+		CDICT_STAT(hits);
+		dict_pin(e, seg->mcxt);
+		return e->obj;
+	}
+	if (!sift_dictshm_has(&k))
 		return NULL;
-	CDICT_STAT(hits);
-	dict_pin(e, seg->mcxt);
-	return e->obj;
+	if (cache == NULL)
+		cache_init();
+	cx = dict_cx(seg);
+	if ((d = sift_dictshm_read(&k, cx)) == NULL)
+	{
+		MemoryContextDelete(cx);
+		return NULL;
+	}
+	return dict_keep(seg, col, &k, cx, d);
 }
 
 SiftCDict *
@@ -372,7 +407,6 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 	DictEnt    *e;
 	MemoryContext cx;
 	SiftCDict  *d;
-	Size		size;
 
 	dict_key(&k, seg, col, UINT32_MAX);
 	if (cache == NULL)
@@ -384,25 +418,13 @@ sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
 		return e->obj;
 	}
 	/* under the scan until it is kept: a dictionary that does not parse leaves nothing behind */
-	cx = AllocSetContextCreate(seg->mcxt, "sift cache segment dictionary", ALLOCSET_DEFAULT_SIZES);
-	d = load(seg, col, cx);
-	size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
-	CDICT_STAT(loads);
-	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	cx = dict_cx(seg);
+	if ((d = sift_dictshm_read(&k, cx)) == NULL)
 	{
-		ask_ent(seg, col)->nokeep = true;
-		return d;
+		d = load(seg, col, cx);
+		sift_dictshm_write(&k, d);
 	}
-	MemoryContextSetParent(cx, cache_cx);
-	e = hash_search(cache, &k, HASH_ENTER, NULL);
-	e->cx = cx;
-	e->obj = d;
-	e->size = size;
-	e->pins = 0;
-	dlist_push_tail(&lru, &e->node);
-	cache_bytes += size;
-	dict_pin(e, seg->mcxt);
-	return d;
+	return dict_keep(seg, col, &k, cx, d);
 }
 
 #define BISECT_UNIT		(UINT32_MAX - 2)

@@ -15,12 +15,23 @@
 #include "col/dsmreg.h"
 
 void *
+sift_dsm_join(const char *name, Size size, SiftDsmInit init)
+{
+	bool		found;
+
+#if PG_VERSION_NUM >= 190000
+	return GetNamedDSMSegment(name, size, init, &found, NULL);
+#else
+	return GetNamedDSMSegment(name, size, init, &found);
+#endif
+}
+
+void *
 sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, const char *what, const char *guc, bool test_fail)
 {
 	MemoryContext cx = CurrentMemoryContext;
 	ResourceOwner owner = CurrentResourceOwner;
 	void	   *volatile s = NULL;
-	bool		found;
 
 	/* a subtransaction cannot start where there is no transaction or a parallel operation; the next statement of the backend tries again */
 	if (!IsTransactionState() || IsInParallelMode())
@@ -31,11 +42,7 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 	{
 		if (test_fail)
 			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift: test: the table of %s fails", what)));
-#if PG_VERSION_NUM >= 190000
-		s = GetNamedDSMSegment(name, size, init, &found, NULL);
-#else
-		s = GetNamedDSMSegment(name, size, init, &found);
-#endif
+		s = sift_dsm_join(name, size, init);
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(cx);
 		CurrentResourceOwner = owner;
@@ -54,7 +61,8 @@ sift_dsm_attach(const char *name, Size size, SiftDsmInit init, bool *failed, con
 		s = NULL;
 		ereport(LOG,
 				(errmsg("sift: %s are not shared with other backends: %s", what, e->message),
-				 errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)));
+				 guc ? errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm), or set %s to 0.", guc)
+				 : errhint("Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).")));
 		FreeErrorData(e);
 	}
 	PG_END_TRY();

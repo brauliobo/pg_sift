@@ -1182,6 +1182,8 @@ engine_open(AggExec *ex, Snapshot snapshot, ParamListInfo params)
 {
 	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
 
+	ex->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
+	ex->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
 	ex->src = ex->spec->nparts > 0 ? sift_aggpart_open(ex->heap, ex->spec->nparts, ex->spec->partheap, ex->spec->partindex, snapshot, ex->cxt) :
 		sift_colsrc_open(ex->heap, ex->index, snapshot, ex->cxt);
 	if (ex->partoff)
@@ -1587,6 +1589,14 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 			ExplainPropertyInteger("Lookup Column Loads", NULL, c->lookup_cols, es);
 		if (es->timing)
 			ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
+	}
+	if (es->verbose)
+	{
+		int64		hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - c->dict_shared0[0],
+					misses = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES] - c->dict_shared0[1];
+
+		if (hits + misses > 0)
+			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
 	if (c->njfilter > 0)
 		ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);

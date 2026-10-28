@@ -1,0 +1,127 @@
+-- The parsed dictionaries of segments are shared between backends (col/dictshm.c): the first backend that parses a dictionary keeps it in shared memory, the
+-- next copies it. sift.test_col_dict_shared = 2 shares every dictionary, 1 shares none. Every shape must return the rows of the dictionaries parsed from the
+-- segment and of the stock plan, whichever backend parsed them, and a segment a merge or VACUUM rewrote (a new generation) must never be read from the bytes
+-- of the old one. \c is a new backend.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+CREATE TABLE ds (id int, k text, g text, w text, v int, ip inet) WITH (autovacuum_enabled = false);
+INSERT INTO ds
+SELECT i, 'key' || (i * 7919 % 9000), 'g' || (i % 13), CASE WHEN i % 11 = 0 THEN NULL ELSE repeat(chr(97 + i % 26), 1 + i % 40) || i % 997 END, i % 100, '198.18.0.0'::inet + (i * 7919 % 60000)
+FROM generate_series(1, 30000) i;
+CREATE INDEX ds_col ON ds USING sift_col (id, k, g, w, v, ip) WITH (rollup_dims = 'off');
+VACUUM (FREEZE, ANALYZE) ds;
+
+CREATE TABLE shapes (id int PRIMARY KEY, q text);
+INSERT INTO shapes VALUES
+	(1, 'SELECT count(*) FROM ds WHERE k = ''key123'''),
+	(2, 'SELECT count(*), sum(v) FROM ds WHERE k IN (''key1'', ''key22'', ''key333'', ''nokey'')'),
+	(3, 'SELECT count(*) FROM ds WHERE k > ''key2'' AND k <= ''key5'''),
+	(4, 'SELECT count(*) FROM ds WHERE k LIKE ''key12%'''),
+	(5, 'SELECT count(*) FROM ds WHERE w LIKE ''%a1%'''),
+	(6, 'SELECT g, count(*), sum(v) FROM ds GROUP BY g'),
+	(7, 'SELECT k, count(*) FROM ds GROUP BY k HAVING count(*) > 3'),
+	(8, 'SELECT min(k), max(k), min(w), max(w) FROM ds'),
+	(9, 'SELECT count(DISTINCT k), count(DISTINCT w) FROM ds'),
+	(10, 'SELECT w, count(*) FROM ds WHERE w IS NOT NULL AND v < 10 GROUP BY w'),
+	(11, 'SELECT count(*) FROM ds WHERE k = ''key1'' OR w = ''aaa0'' OR g = ''g7'''),
+	(12, 'SELECT g, min(k) FROM ds WHERE w LIKE ''b%'' GROUP BY g'),
+	(13, 'SELECT count(*), sum(v) FROM ds WHERE ip = ''198.18.3.77'' OR ip = ''198.19.0.9'''),
+	(14, 'SELECT count(*) FROM ds WHERE ip <<= ''198.18.4.0/24''::inet');
+
+-- md5 of the sorted rows of every shape, by label
+CREATE TABLE seen (label text, shape int, h text);
+CREATE FUNCTION snap(lbl text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE s record; h text;
+BEGIN
+	FOR s IN SELECT * FROM shapes ORDER BY id LOOP
+		EXECUTE format('SELECT md5(coalesce(string_agg(t::text, '','' ORDER BY t::text), '''')) FROM (%s) t', s.q) INTO h;
+		INSERT INTO seen VALUES (lbl, s.id, h);
+	END LOOP;
+END $$;
+CREATE FUNCTION shared() RETURNS TABLE (hits_found bool, misses_counted bool) LANGUAGE sql AS
+	$$ SELECT coalesce(max(value) FILTER (WHERE name = 'dict_shared_hits'), 0) > 0, coalesce(max(value) FILTER (WHERE name = 'dict_shared_misses'), 0) > 0 FROM sift.stats() $$;
+
+CREATE FUNCTION explain_has(q text, what text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%' || what || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- not shared: nothing is kept or found
+SET sift.test_col_dict_shared = 1;
+SELECT snap('off');
+SELECT * FROM shared();
+
+-- the first backend of the table keeps what it parses, the second copies it
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_col_dict_shared = 2;
+SELECT explain_has($$SELECT g, count(*) FROM ds WHERE w LIKE '%a1%' GROUP BY g$$, 'Shared Dictionaries: hits 0, misses') AS verbose_counts_misses;
+SELECT snap('first');
+SELECT * FROM shared();
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_col_dict_shared = 2;
+SELECT explain_has($$SELECT g, count(*) FROM ds WHERE w LIKE '%a1%' GROUP BY g$$, 'Shared Dictionaries: hits') AS verbose_counts_hits;
+SELECT snap('second');
+SELECT hits_found AS second_copies FROM shared();
+SELECT label, count(*) AS shapes FROM seen GROUP BY label ORDER BY min(ctid);
+SELECT shape, count(DISTINCT h) AS answers FROM seen GROUP BY shape HAVING count(DISTINCT h) > 1;
+
+-- a rewritten segment is another generation: new rows, a merge, a delete and a VACUUM
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_col_dict_shared = 2;
+INSERT INTO ds SELECT 30000 + i, 'key' || (i * 31 % 9500), 'g' || (i % 17), 'zz' || i % 1500, i % 100, '198.19.0.0'::inet + i FROM generate_series(1, 5000) i;
+SELECT sift.col_merge('ds_col', true) >= 0 AS merged;
+DELETE FROM ds WHERE id % 5 = 0;
+VACUUM ds;
+SET sift.enable_agg = off;
+SET sift.enable_col_scan = off;
+SELECT snap('stock');
+RESET sift.enable_agg;
+RESET sift.enable_col_scan;
+SELECT snap('merged_first');
+SELECT hits_found AS old_generation_copied, misses_counted AS new_generation_parsed FROM shared();
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_col_dict_shared = 2;
+SELECT snap('merged_second');
+SELECT hits_found AS merged_second_copies FROM shared();
+SELECT count(*) AS shapes_checked FROM (SELECT shape FROM seen WHERE label IN ('stock', 'merged_first', 'merged_second') GROUP BY shape HAVING count(DISTINCT h) = 1) a;
+
+-- parallel workers join the table the leader attached (a worker cannot make it): the same rows as the parallel scan with the sharing off
+\c
+SET sift.test_col_dict_shared = 2;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SELECT snap('par_first');
+SELECT value > 0 AS workers_launched FROM sift.stats() WHERE name = 'workers_launched';
+\c
+SET sift.test_col_dict_shared = 2;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SELECT snap('par_second');
+SELECT hits_found AS parallel_copies FROM shared();
+\c
+SET sift.test_col_dict_shared = 1;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SELECT snap('par_off');
+SELECT shape FROM seen WHERE label IN ('stock', 'par_first', 'par_second', 'par_off') GROUP BY shape HAVING count(DISTINCT h) > 1;
+
+-- the table that cannot be had: no error, the same rows
+\c
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_col_dict_shared = 3;
+SELECT snap('no_table');
+SELECT count(DISTINCT h) AS answers FROM seen WHERE shape = 1 AND label IN ('stock', 'no_table');
+SELECT shape FROM seen WHERE label IN ('stock', 'no_table') GROUP BY shape HAVING count(DISTINCT h) > 1;
+
+DROP FUNCTION snap(text), shared(), explain_has(text, text);
+DROP TABLE seen, shapes, ds;
+DROP EXTENSION pg_sift;

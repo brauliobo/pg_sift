@@ -70,6 +70,7 @@
 #include "agg/kern.h"
 #include "agg/part.h"
 #include "agg/spec.h"
+#include "col/dictshm.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
@@ -331,6 +332,7 @@ final_checks(AggExec *g, int64 ntuples)
 #define HITS_MAGIC	0x53414733
 #define SPINE_MAGIC	0x53414734
 #define KEY_SPINE	UINT64CONST(0x53494654A006)
+#define KEY_DICTSHM	UINT64CONST(0x53494654A007)	/* present when the leader has the table of shared dictionaries (col/dictshm.c): the workers join it */
 #define KEY_CHILD	UINT64CONST(0x53494654C000)	/* + the join: the statement whose plan is its correlated child */
 #define KEY_SUB	UINT64CONST(0x53494654E000)	/* the statement whose sub-plans the expressions of the spec start */
 #define KEY_FMAP	UINT64CONST(0x53494654F000)	/* + the combo: the table of a hybrid first-row lookup (agg/first.c) */
@@ -484,6 +486,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 	ParamListInfo wparams;
 	char	   *subtxt;
 
+	if (shm_toc_lookup(toc, KEY_DICTSHM, true) != NULL)
+		sift_dictshm_join();
 	shm_mq_set_sender(mq, MyProc);
 	ex->mqh = shm_mq_attach(mq, seg, NULL);
 	ex->spec = sift_aggspec_unpack((List *) stringToNode((char *) shm_toc_lookup(toc, KEY_SPEC, false)));
@@ -695,6 +699,7 @@ par_launch(AggExec *ex)
 	MapShared  *ml,
 			   *mlf;
 	Size		msize = 0;
+	bool		dictshm;
 	int			nmaps = 0,
 				ncorr = 0;
 	char	  **child_txt;
@@ -750,6 +755,7 @@ par_launch(AggExec *ex)
 	}
 	if (msize > SHARE_MAX)
 		return;
+	dictshm = sift_dictshm_prepare();
 	EnterParallelMode();
 	pcxt = CreateParallelContext("pg_sift", "sift_agg_worker_main", nw);
 	shm_toc_estimate_chunk(&pcxt->estimator, shared_size(ex->spec, ex->nvorder));
@@ -772,7 +778,9 @@ par_launch(AggExec *ex)
 		shm_toc_estimate_chunk(&pcxt->estimator, ((const SpineHdr *) ex->spine_buf)->len);
 	if (sub_txt)
 		shm_toc_estimate_chunk(&pcxt->estimator, strlen(sub_txt) + 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL));
+	if (dictshm)
+		shm_toc_estimate_chunk(&pcxt->estimator, 1);
+	shm_toc_estimate_keys(&pcxt->estimator, 5 + nmaps + (ex->spec->spine != NULL) + 2 * ncorr + (sub_txt != NULL) + dictshm);
 	InitializeParallelDSM(pcxt);
 	if (pcxt->seg == NULL)
 	{
@@ -780,6 +788,8 @@ par_launch(AggExec *ex)
 		ExitParallelMode();
 		return;
 	}
+	if (dictshm)
+		shm_toc_insert(pcxt->toc, KEY_DICTSHM, shm_toc_allocate(pcxt->toc, 1));
 	ps = shm_toc_allocate(pcxt->toc, shared_size(ex->spec, ex->nvorder));
 	shared_init(ps, ex);
 	shm_toc_insert(pcxt->toc, KEY_SHARED, ps);

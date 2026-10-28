@@ -119,7 +119,7 @@
 	  "the share of the units that hold a section is that of the units counted; an index of fewer units is counted whole", "-", 1) \
 	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
 	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
-	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry", "-", 1) \
+	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too", "-", 1) \
 	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write.c", 1024, "strings", \
 	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
 	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \

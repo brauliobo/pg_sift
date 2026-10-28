@@ -34,6 +34,7 @@
 #include "bm25/am.h"
 #include "agg/stats.h"
 #include "col/am.h"
+#include "col/dictshm.h"
 #include "col/leafshm.h"
 #include "col/build.h"
 #include "col/seg.h"
@@ -378,6 +379,9 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_scan_jitter_us",
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_dict_shared",
+							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = not shared, 2 = every dictionary shared, 3 = the table cannot be had.",
+							NULL, &sift_test_col_dict_shared, 0, 0, 3, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_verify_inval",
 							 "Testing: the heap check of sift.col_verify invalidates the index's relcache entry (what another session's VACUUM or ANALYZE does) at every tuple.",
 							 NULL, &sift_test_col_verify_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
