@@ -16,7 +16,8 @@ FROM generate_series(1, 120000) i;
 INSERT INTO ag VALUES (200000, 100000, 1, timestamp '2024-02-02', 'one');
 ANALYZE ag;
 
-CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad);
+-- no key_cut: the default formula (key_cut 'auto') now cuts this table by ts, which this test is not about (col_key_cut_auto and col_key_cut_narrow are)
+CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad) WITH (key_cut = 'off');
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 SELECT min(format) AS format FROM sift.col_segments('ag_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('ag_i');
