@@ -95,6 +95,21 @@ SELECT reloptions FROM pg_class WHERE relname = 'tn_off';
 SELECT tt_chk('SELECT s FROM tn ORDER BY s LIMIT 10') AS off_switch;
 DROP TABLE tn;
 
+-- under a locale the sort of the strings is a share of the build that falls as the index has more columns (W = 420% for 4 columns): a narrow index does not pay it, and the build says so once
+-- with the setting that turns it on; an index of 6 columns does (the NOTICE of the choice names B and C too)
+CREATE TABLE tc (id int, s text COLLATE "en-x-icu", q int, a int, b int, c int);
+INSERT INTO tc SELECT i, md5(i::text), i % 7, i % 11, i % 13, i % 17 FROM generate_series(1, 120000) i;
+ANALYZE tc;
+CREATE INDEX tc_narrow ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
+SELECT reloptions FROM pg_class WHERE relname = 'tc_narrow';
+DROP INDEX tc_narrow;
+CREATE INDEX tc_named ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (order_array_columns = 's');
+SELECT reloptions FROM pg_class WHERE relname = 'tc_named';
+DROP INDEX tc_named;
+CREATE INDEX tc_wide ON tc USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, q sift.col_int4_ops, a sift.col_int4_ops, b sift.col_int4_ops, c sift.col_int4_ops);
+SELECT reloptions FROM pg_class WHERE relname = 'tc_wide';
+DROP TABLE tc;
+
 DROP TABLE tt, tl CASCADE;
 DROP FUNCTION tt_chk(text), tt_all(), tt_str(int);
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

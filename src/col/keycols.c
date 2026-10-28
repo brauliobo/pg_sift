@@ -1013,6 +1013,23 @@ sift_col_auto_gorder(Relation heap, Relation index)
 								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
 			}
 		}
+	/* a text column the formula rejected, the cheapest of them: said once, with the setting that builds it anyway (a narrow index under a locale pays the sort of the strings in a large share of its build) */
+	{
+		int			rej = -1;
+
+		for (int i = 0; i < ncand; i++)
+			if (cand[i].text && !fit[i] && (rej < 0 || cand[i].cost < cand[rej].cost))
+				rej = i;
+		if (rej >= 0)
+		{
+			const char *name = leaf_name(index, &rel->schema->cols[cand[rej].leaf]);
+
+			ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' did not choose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[rej].benefit, cand[rej].cost),
+							 errdetail("ORDER BY %s LIMIT n would read n entries of each segment, where the units compare the strings of every row. The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX would do about %.0f%% more instructions (W)%s: the cost is G / 3 + W / 5 against the benefit log2(%.0f) / log2(1.05).",
+									   name, cand[rej].bytes, cand[rej].bytes / index_bytes * 100.0, cand[rej].write, cand[rej].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation, in a share of the build that falls as the index has more columns" : "", GORD_TEXT_SPEEDUP),
+							 errhint("CREATE INDEX .. WITH (order_array_columns = '%s'), or ALTER INDEX %s SET (order_array_columns = '%s') and REINDEX, if ORDER BY %s LIMIT n matters more than the build.", name, quote_identifier(RelationGetRelationName(index)), name, name)));
+		}
+	}
 	if (grp >= 0)
 	{
 		initStringInfo(&v);
