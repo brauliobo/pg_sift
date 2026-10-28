@@ -584,7 +584,7 @@ VACUUM sc_b;
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    133
+     142 |   142 |    135 |    134
 (1 row)
 
 SELECT sc_dml($$UPDATE %T SET v = (v * 3) % 500 WHERE id % 7 = 0$$);
@@ -618,7 +618,7 @@ SELECT sift.col_merge('sc_col'::regclass) >= 0 AS merged;
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    133
+     142 |   142 |    135 |    135
 (1 row)
 
 -- an update that leaves the indexed columns alone (HOT where the page has room), and one that changes them in the same page
