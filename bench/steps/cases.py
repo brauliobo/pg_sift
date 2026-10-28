@@ -7,7 +7,7 @@
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
-or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load). `run` builds
+or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- base: sift.col_format_minor = 14` a lane `base` over a second copy of the tables built under those settings (what an older default would have written), `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load). `run` builds
 each case's table in a schema of its own on the server named by PGHOST / PGPORT (steps/cases.sh starts it), asserts the plan of the sift lane from
 EXPLAIN (a case that falls back to the normal plan fails), then times the lanes interleaved in rounds and compares every answer with the native one:
 
@@ -69,7 +69,7 @@ class Case:
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
-        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh): ', m))
+        self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base): ', m))
         self.load = 'load' in self.sec
         self.baselines = [b for b in self.baselines.split(',') if b != '-']
         self.variants = [v.split(':', 1) for v in self.variants.split(',') if v != '-']
@@ -88,6 +88,10 @@ class Case:
 
     def schema(self):
         return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + (self.share or self.id)
+
+    def base_settings(self):
+        """`-- base: a = 1`: the settings the second copy of the tables is built under, the baseline lane `base` reads it"""
+        return self.opt.get('base')
 
     def table_index(self):
         m = re.match(r'default((?:\+\w+)*)(.*)$', self.index)
@@ -180,10 +184,11 @@ def build(case, rows):
            'CREATE TABLE orders AS SELECT o.*, (customer_id % 6313)::int AS segment_id, created_at::date AS order_date FROM public.orders_src o ORDER BY id',
            'ALTER TABLE orders ADD PRIMARY KEY (id)', 'CREATE INDEX orders_created ON orders (created_at)', 'CREATE INDEX orders_country_status ON orders (country, status)',
            'CREATE INDEX orders_col ON orders USING sift_col %s' % case.table_index()]
-    sql = ';\n'.join(d.format(case.schema()) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
-    if case.opt.get('vacuum', 'yes') == 'yes':
-        sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
-    psql(sql)
+    for schema, pre in [(case.schema(), '')] + ([(case.schema() + '_base', 'SET %s;\n' % case.opt['base'])] if case.base_settings() else []):
+        sql = pre + ';\n'.join(d.format(schema) for d in ddl) + ';\n' + case.sec.get('setup', '').replace('{cols}', INDEX_COLUMNS) + ';\n'
+        if case.opt.get('vacuum', 'yes') == 'yes':
+            sql += 'VACUUM (FREEZE, ANALYZE) orders;\n'
+        psql(sql)
     psql('CHECKPOINT')
     BUILT.add((case.schema(), rows))
 
@@ -218,10 +223,12 @@ def lane_sessions(case, engines, duck_port):
     lanes = {'sift': ['SET sift.enable_agg = on'], 'native': ['SET sift.enable_agg = off'] + (['SET sift.enable_col_scan = off'] if 'sift.enable_col_scan' in case.opt.get('set', '') else [])}
     for name, settings in case.variants:
         lanes[name] = ['SET %s' % s for s in settings.split(';')]
+    if case.base_settings():
+        lanes['base'] = ['SET sift.enable_agg = on']
     out = {}
     wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # a large work_mem is 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
-        setup = ['SET search_path = %s, public' % case.schema(), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets
+        setup = ['SET search_path = %s, public' % (case.schema() + '_base' if lane == 'base' else case.schema()), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets
         if case.opt.get('fresh') == 'yes' and not lane.startswith('warm'):   # a lane named warm... keeps its backend: the same statement as the second of a backend
             out[lane] = Fresh(setup)
             continue
@@ -514,7 +521,7 @@ def run_point(args, cases, rows, engines, results, failed):
         if c.share:
             left[c.schema()] -= 1
         if c.dataset not in DATASETS and (c.share is None and scaled or c.share and left[c.schema()] == 0):   # a copy of the table for each of the 30 cases at 20 million rows is not room the host has
-            psql('DROP SCHEMA IF EXISTS %s CASCADE' % c.schema())
+            psql('DROP SCHEMA IF EXISTS %s CASCADE; DROP SCHEMA IF EXISTS %s_base CASCADE' % (c.schema(), c.schema()))
             BUILT.discard((c.schema(), rows))
     print(('rows %s\n' % format(rows, ',') if scaled else '') + summarize(point, cases))
     results += [dict(r, case=r['case'] + tag) for r in point]
