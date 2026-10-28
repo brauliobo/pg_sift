@@ -550,7 +550,7 @@ look_load_block(DictLook *l, uint32 b)
 			corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
 		memcpy(l->blkraw, l->blkz + DICT_BLOCK_HEAD, rawlen);
 	}
-	else if (l->blkz[0] != SIFT_CC_ALG_ZSTD || !sift_colz_available(l->blkz[0]))
+	else if ((l->blkz[0] != SIFT_CC_ALG_ZSTD && l->blkz[0] != SIFT_CC_ALG_LZ4) || !sift_colz_available(l->blkz[0]))
 		corrupt(l->seg, "The dictionary of leaf %d is compressed with an algorithm this build lacks.", l->col);
 	else if (!sift_colz_decompress(l->blkz[0], l->blkz + DICT_BLOCK_HEAD, o[1] - o[0] - DICT_BLOCK_HEAD, l->blkraw, rawlen))
 		corrupt(l->seg, "The dictionary of leaf %d is malformed.", l->col);
@@ -577,7 +577,7 @@ look_load_block(DictLook *l, uint32 b)
 	l->blkno = b;
 	l->loads++;
 	if (l->bc != NULL)
-		l->bc->spent += l->blkz[0] == 0 ? DICT_READ_COST : DICT_ZSTD_COST;
+		l->bc->spent += l->blkz[0] == 0 ? DICT_READ_COST : l->blkz[0] == SIFT_CC_ALG_LZ4 ? DICT_LZ4_COST : DICT_ZSTD_COST;
 }
 
 /* The string of a code of a dictionary in the stream, into buf (SIFT_COL_DICT_MAX_ENTRY bytes) */

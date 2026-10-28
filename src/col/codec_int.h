@@ -168,6 +168,7 @@ extern void put32(StringInfo s, uint32 x);
 extern void pad8(StringInfo s);
 extern void check_policy(const SiftCcPolicy *pol);
 extern bool wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best);
+extern bool wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftCcScan *scan);
 extern int	enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRole role);
 
 /* The parser of a chunk (codec_parse.c) the blobs use */

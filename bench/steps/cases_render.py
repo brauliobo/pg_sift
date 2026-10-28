@@ -21,7 +21,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 MEASURES = ('PostgreSQL ms', 'pg_sift ms', 'speed-up', 'slope PostgreSQL', 'slope pg_sift')
 OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
-UNIT = {'ms': 'ms', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
+UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
 VARIANT = {'agg_forced': 'the aggregate scan forced whatever the plans cost (`sift.agg_force = on`)', 'scan': 'the units scanned (`sift.agg_preagg = off`)', 'runs_off': 'the sorted runs not read (`sift.topn_runs = off`)', 'zone_off': 'the zones of the keys after the first not used (`sift.topn_zone_keys = off`)',
            'forced': 'the top-N scan forced by turning the btree plans off (`enable_indexscan`, `enable_indexonlyscan`, `enable_bitmapscan`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
 

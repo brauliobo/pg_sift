@@ -211,7 +211,7 @@ Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-op
 
 ## Options
 
-161 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
+162 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
 <!-- sift-options:end -->
 
 ## Vulkan (experimental)
@@ -231,5 +231,5 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->624 regression tests (`test/sql`), 43 isolation specs, 99 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->625 regression tests (`test/sql`), 43 isolation specs, 99 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

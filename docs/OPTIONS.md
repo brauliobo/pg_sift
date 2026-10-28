@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 112 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 113 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1518,6 +1518,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index.
 - **Advice:** Leave on. The leaves that fit the cache are not signed. To opt out set sift.col_format_minor to 14 before building or rebuilding the index.
 
+#### auto(text-lz4)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** The strings of a text column stored inline (strings over 255 bytes, or more distinct text than the segment dictionary holds) are wrapped with LZ4 instead of zstd where the default formula says so: a substring, equality or GROUP BY on the column reads 1.1 to 3.4 times fewer instructions a row. The same for the segment dictionary of a column whose parsed dictionary does not fit dict_cache_kb (blocks of LZ4): ip = x on mixed IPv4 and IPv6 networks at 3,000,000 rows 1,181 -> 266 M instructions.
+- **Gain:** Substring of a sentence 2,371 -> 683 instructions a row (3,000,000 rows, heap scan 4,286); equality 2,305 -> 617; GROUP BY 10,381 -> 8,693; referer equality 623 -> 327
+- **Formula:** S 3.45x saving 5060000k instructions, G 19.3%, W 0.2%, R 1: B 25.4 against C 6.5, automatic
+- **Impact:** index size: +23.7% (554.2 against 448.2 MB, 3,000,000 rows, 6 columns); +54% (252.6 against 164.3 MB, sentences alone); +9.2% (309.9 against 283.8 MB, unique URLs and referers); build, merge and writes: Build 73,335 against 73,213 M instructions (+0.2%); 32,327 against 32,196 (+0.4%); other: Index +23.7% (6 columns, one of long prose), +54% (the sentences alone), +9.2% (unique URLs and referers); build within +0.4% of the instructions. Nothing for text that repeats (dictionary) or that LZ4 does not shrink (hex). Dictionary blocks: +12.7% to +18.9% (cut network index), +4.9% uncut. Format minor 29 for a segment with LZ4 blocks.
+- **When:** A text leaf with inline units whose strings compress to 0.3 to 0.6 of their bytes under zstd (prose, long text); not a leaf kept in the dictionary, not text that LZ4 cannot shrink (hex), not text that compresses so well that the extra bytes cost more than the unwrap saves.
+- **Default:** automatic — Weighted formula per chunk: B = log2(S) / log2(1.05) with S from 1.8 + the unwrap (zstd 45 instructions a compressed byte, LZ4 0.5 a byte + 5.5 a compressed byte), against C = G / 3 for the growth of the strings: sentences B 25.2 against C 18.0 take LZ4, titles B 9.6 against 32 keep what they have.
+- **Turn off:** compression = 'auto; col=zstd' (the NOTICE at CREATE INDEX says it), then REINDEX
+- **Upgrade from 3.5:** Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice.
+- **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX.
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2228,6 +2242,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 4096 kB |  | new in 3.5 |
 | `auto(dict-tsig)` | automatic | automatic | minor 29, unreadable by 3.5 | Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index. |
+| `auto(text-lz4)` | automatic | automatic |  | Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
@@ -2246,6 +2261,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index "%s": key_cut = '%s' was chosen: %s "%s" would read about %s of %s units, where %s hold its rows (predicted index size %s%%, benefit %s against cost %s) | `src/col/autocut.c` | `key_cut` |
 | NOTICE | sift_col index "%s": %s "%s" reads about %s of %s units, where %s hold its rows; key_cut = '%s' would cut that, and the index would grow by %s%% | `src/col/autocut.c` | `key_cut` |
 | NOTICE | sift_col: the strings of leaf %s (attribute %s%s%s) in superblock %s pass %sd bytes: the values after them are stored as overflow and read from the heap | `src/col/batch.c` |  |
+| NOTICE | sift_col index %s stores the long text of %s with lz4 | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": the keys of %s passed the %s keys the index keeps in %s of %s units (%s%%) | `src/col/build.c` |  |
 | NOTICE | sift_col index "%s": point_tid_columns lists the rows of the segment on a key-cut index | `src/col/build.c` | `point_tid_columns` |
 | NOTICE | sift_col index "%s": point_tid_columns lists the heap addresses of the rows | `src/col/build.c` | `point_tid_columns` |

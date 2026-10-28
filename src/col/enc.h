@@ -27,6 +27,7 @@ typedef struct SiftColSchema
  * Copies and validates the leaf list: ids 0..n-1 in order, a child's parent is an earlier GROUP leaf, groups are top level (parent -1),
  * 1 <= n <= SIFT_COL_MAX_COLS. ERRCODE_INVALID_PARAMETER_VALUE otherwise. Allocates in mcxt.
  */
+extern void (*sift_cenc_scan_hook) (int leaf, const SiftCcScan *scan);
 extern SiftColSchema *sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n);
 
 /* The SCHEMA section of a segment: magic 'COLS', ncols, hash, per leaf a fixed part and the path */
@@ -56,6 +57,8 @@ typedef struct SiftCDict
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
 	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
+	bool		scan;			/* writer only: the parsed dictionary does not fit the cache, every test that reads it unwraps the strings again (wrap_choose_scan) */
+	bool		lz4_blocks;		/* writer only: set by the serializer when a block of the blocks form took LZ4 (the segment is then of minor SIFT_COL_FORMAT_TSIG) */
 	bool		tsig;			/* writer only: a blocks form is followed by the trigram signature of each block (DICT_TSIG_MAGIC) */
 } SiftCDict;
 

@@ -240,6 +240,7 @@ extern bool sift_lst_sampled(const SiftColDef *def);
 #define DICT_PARSE_COST		400
 #define DICT_READ_COST		1600
 #define DICT_ZSTD_COST		24000
+#define DICT_LZ4_COST		6000
 #define BISECT_MIN			2048	/* the dictionaries of fewer strings are parsed after DICT_PARSE_AFTER tests: their bisection is short */
 #define BISECT_SLOTS_MAX	8192
 #define BISECT_STR			24	/* a string up to this long is kept in its slot */

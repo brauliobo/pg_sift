@@ -356,7 +356,7 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 
 		if (pol == NULL)
 			sift_cc_policy_default(&dp);
-		sift_cc_encode_strs(out, vals->voff, vals->vb, n, pol ? pol : &dp);
+		sift_cc_encode_strs(out, vals->voff, vals->vb, n, pol ? pol : &dp, NULL);
 	}
 	else if (enc == SIFT_COLENC_CC)
 		sift_cc_encode(out, store == SIFT_COLS_F4 ? SIFT_CC_F4 : store == SIFT_COLS_F8 ? SIFT_CC_F8 : SIFT_CC_INT, key, n, nulls, pol, NULL);
@@ -372,8 +372,11 @@ chunk_encode(StringInfo out, SiftColStore store, const SiftCVals *vals, const in
 }
 
 /* The chunk of an STR leaf stored inline: the strings of the rows (the batch's codes looked up in its dictionary bd), no codes of the segment */
+/* set by the host while it builds an index, to name the leaf whose strings the formula wrapped otherwise than the cold rule (col/build.c) */
+void		(*sift_cenc_scan_hook) (int leaf, const SiftCcScan *scan);
+
 static void
-chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const SiftCcPolicy *pol, bool tags, SiftCZone *z)
+chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const SiftCcPolicy *pol, bool tags, SiftCZone *z, SiftCcScan *scan)
 {
 	uint32		n = v->n;
 	uint32	   *off = palloc((Size) (n + 1) * sizeof(uint32));
@@ -427,7 +430,7 @@ chunk_encode_istr(StringInfo out, const SiftCVals *v, const SiftCDict *bd, const
 		pfree(pb.data);
 		pfree(pre);
 	}
-	sift_cc_encode_strs(out, off, bytes.data, n, pol ? pol : &dp);
+	sift_cc_encode_strs(out, off, bytes.data, n, pol ? pol : &dp, scan);
 	put_pad(out, 8);
 	pfree(off);
 	pfree(bytes.data);
@@ -628,7 +631,13 @@ sift_cunit_encode(const SiftColBatch *b, uint32 *const *dictmap, const bool *inl
 		put_pad(out, 8);
 		off = (uint32) (out->len - *start);
 		if (inline_str)
-			chunk_encode_istr(out, v, b->dict[col], pol ? &pol[col] : NULL, tags, &zone);
+		{
+			SiftCcScan	scan;
+
+			chunk_encode_istr(out, v, b->dict[col], pol ? &pol[col] : NULL, tags, &zone, &scan);
+			if (scan.alg >= 0 && sift_cenc_scan_hook)
+				sift_cenc_scan_hook(col, &scan);
+		}
 		else
 			chunk_encode(out, s->cols[col].store, v, key, pol ? &pol[col] : NULL, tags, &zone);
 		len = (uint32) (out->len - *start) - off;

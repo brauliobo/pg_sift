@@ -1048,23 +1048,31 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 }
 
 /*
- * Whether the dictionary of leaf c gets the trigram signatures (and so the blocks form, whatever the budget of the blocks). A dictionary that a backend keeps parsed is
- * searched with no block to inflate, so the signatures pay when it no longer fits the cache of parsed dictionaries (dict_cache_kb): its strings, parsed and scaled to the
- * rows of the index (the segments of an index are alike), pass the cache, or this segment's alone pass the half of it that a single dictionary may take. An index
- * that fits gets none. And it needs dict_tsig_min bytes of strings of 5 bytes or more in the segment
+ * Whether the dictionary of leaf c no longer fits the cache of parsed dictionaries (dict_cache_kb): its strings, parsed and scaled to the rows of the index (the
+ * segments of an index are alike), pass the cache, or this segment's alone pass the half of it that a single dictionary may take. A dictionary that fits is
+ * parsed once and kept; one that does not is read, and unwrapped, again by every test that needs it
+ */
+static bool
+dict_uncached(const SiftColSegWriter *w, int c)
+{
+	Size		cache = sift_cdict_cache_budget(),
+				parsed = sift_cdict_parsed_bytes(w->dict[c]->nbytes, w->dict[c]->n);
+	double		scale = Max((double) w->index_rows / (double) Max(sift_colw_rows(w), 1), 1.0);
+
+	return parsed > cache / 2 || (double) parsed * scale > (double) cache;
+}
+
+/*
+ * Whether the dictionary of leaf c gets the trigram signatures (and so the blocks form, whatever the budget of the blocks): when it no longer fits the cache, and
+ * it holds dict_tsig_min bytes of strings of 5 bytes or more in the segment. An index that fits gets none
  */
 static bool
 tsig_wanted(const SiftColSegWriter *w, int c)
 {
-	Size		cache = sift_cdict_cache_budget(),
-				parsed;
-	double		scale = Max((double) w->index_rows / (double) Max(sift_colw_rows(w), 1), 1.0);
-
 	if (w->setting < SIFT_COL_FORMAT_PRESENCE || w->dict[c]->nbytes < (Size) sift_limit(dict_tsig_min, CDICT_TSIG_MIN_KB) * 1024 ||
 		w->dict[c]->nbytes < (Size) 5 * w->dict[c]->n)
 		return false;
-	parsed = sift_cdict_parsed_bytes(w->dict[c]->nbytes, w->dict[c]->n);
-	return parsed > cache / 2 || (double) parsed * scale > (double) cache;
+	return dict_uncached(w, c);
 }
 
 static void
@@ -1092,6 +1100,9 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 	 * decide what is clear (they run high for the blocks: an estimate within the budget is), and the blocks are serialized next to the compact form
 	 * only for a dictionary in between
 	 */
+	for (int c = 0; c < ncols; c++)
+		if (w->dict[c] != NULL)
+			w->dict[c]->scan = w->setting >= SIFT_COL_FORMAT_PRESENCE && dict_uncached(w, c);
 	for (int c = 0; blocks && c < ncols; c++)
 	{
 		if (w->dict[c] == NULL || w->dict[c]->n < sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN))
@@ -1133,7 +1144,7 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 				{
 					budget -= Max(alt.len, whole.len) - whole.len;
 					appendBinaryStringInfo(&blob, alt.data, alt.len);
-					w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+					w->format = Max(w->format, w->dict[c]->lz4_blocks ? SIFT_COL_FORMAT_TSIG : SIFT_COL_FORMAT_DICTIDX);
 				}
 				else
 					appendBinaryStringInfo(&blob, whole.data, whole.len);
@@ -1150,6 +1161,8 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 			w->format = Max(w->format, SIFT_COL_FORMAT_TSIG);
 		pol = w->pol ? &w->pol[c] : NULL;
 		sift_cdict_serialize(w->dict[c], pol, form, &blob);
+		if (w->dict[c]->lz4_blocks)
+			w->format = Max(w->format, SIFT_COL_FORMAT_TSIG);
 	}
 	pfree(extra);
 	pfree(compact);

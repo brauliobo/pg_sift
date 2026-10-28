@@ -65,6 +65,27 @@ typedef enum SiftCcKind
 #define SIFT_CC_MIN_GAIN	0.03	/* an explicit lz4/zstd policy still needs this share of the stream saved */
 #define SIFT_CC_MIN_WRAP	128		/* streams below this many bytes are never wrapped */
 
+/*
+ * The strings of a leaf stored as text (ISTR chunks) are unwrapped by every test of the column, so their wrapper follows the default formula and not the
+ * cold rule: B = R log2(S) / log2(1.05) against C = G / 3, with S the instructions a substring test reads a byte of the strings with (the kernel plus the unwrap)
+ * and G the growth of the strings in percent (the stream alone, the most it can be of the index). The unwrap of zstd costs by compressed byte (Huffman and
+ * sequence decoding), that of LZ4 mostly by compressed byte too and a little by output byte (copies): measured on the strings of five text columns of a public
+ * web log and corpus, 3 to 16 instructions an output byte for zstd (40 to 53 a compressed byte) and 1.3 to 3.8 for LZ4
+ */
+#define SIFT_CC_IPB_KERNEL	1.8		/* instructions a byte of the strings costs a substring test with no wrapper */
+#define SIFT_CC_IPB_LZ4		0.5		/* ... and the unwrap of LZ4, by output byte */
+#define SIFT_CC_IPC_LZ4		5.5		/* ... and by compressed byte */
+#define SIFT_CC_IPC_ZSTD	45.0	/* the unwrap of zstd, by compressed byte */
+#define SIFT_CC_SCAN_R		1.0		/* relevance of the class: any test of a text column unwraps its strings */
+
+/* What the formula decided for the strings of a chunk (alg -1: the zstd of the cold rule stays) */
+typedef struct SiftCcScan
+{
+	int			alg;			/* SIFT_CC_ALG_LZ4 when it replaced the zstd of the cold rule */
+	double		speedup;		/* S: instructions of a test with the cold rule's wrapper over with this one */
+	double		growth;			/* G: percent more bytes than the cold rule's */
+} SiftCcScan;
+
 typedef enum SiftCcMode
 {
 	SIFT_CCM_AUTO = 0,			/* cascade + cost rule */
@@ -151,8 +172,10 @@ extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
 /* Slots of a u32 array that takes the writes of every kernel for n values: whole rows of 32 values plus the pad (SIFT_COL_PAD bytes) */
 #define SIFT_CC_CAP32(n)	((((uint64) (n) + 31) / 32) * 32 + SIFT_COL_PAD / 4)
 
-/* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule. */
-extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol);
+/* A list of n strings (the dictionary of a string leaf): lengths cascade + concatenated bytes, the bytes wrapped under the cold rule, or, when scan is not NULL (the strings of an inline text chunk), under the formula above. */
+/* Whether strings that the cold rule stores in zlen bytes of zstd are better stored in llen of LZ4 (rawlen bytes) by the formula above; *scan gets S and G */
+extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen, SiftCcScan *scan);
+extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan);
 /* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt */
 extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 **off, char **bytes);
 /* A bit vector of nbits: constant, raw words, or the positions of the minority bit as an integer cascade. */

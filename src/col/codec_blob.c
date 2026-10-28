@@ -24,7 +24,7 @@ enum
  * the bytes: u32 form (0 raw, else the algorithm id), u32 rawlen, u32 clen, data padded to 8.
  */
 void
-sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol)
+sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan)
 {
 	CcW			w = {pol, SIFT_CC_INT};
 	int64	   *lens = palloc(sizeof(int64) * (n + 1));
@@ -32,6 +32,7 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	uint32		total = n ? off[n] - off[0] : 0;
 	CcZTry		z;
 	const uint8 *src = (const uint8 *) bytes + (n ? off[0] : 0);
+	bool		wrapped;
 
 	check_policy(pol);
 	for (uint32 i = 0; i < n; i++)
@@ -43,7 +44,8 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	put32(out, (uint32) ln.len);
 	put32(out, total);
 	appendBinaryStringInfo(out, ln.data, ln.len);
-	if (wrap_choose(&w, src, total, CCR_COLD, &z))
+	wrapped = scan ? wrap_choose_scan(&w, src, total, &z, scan) : wrap_choose(&w, src, total, CCR_COLD, &z);
+	if (wrapped)
 	{
 		put32(out, (uint32) z.alg);
 		put32(out, (uint32) z.len);

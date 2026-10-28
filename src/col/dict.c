@@ -572,9 +572,13 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 				tab;
 	uint32	   *boff = palloc((nblk + 1) * sizeof(uint32));
 	uint8	   *raw = palloc(DICT_BLOCK_RAW_MAX),
-			   *z = NULL;
-	Size		zcap = sift_colz_bound(SIFT_CC_ALG_ZSTD, DICT_BLOCK_RAW_MAX);
+			   *z = NULL,
+			   *l = NULL;
+	Size		zcap = sift_colz_bound(SIFT_CC_ALG_ZSTD, DICT_BLOCK_RAW_MAX),
+				lcap = sift_colz_bound(SIFT_CC_ALG_LZ4, DICT_BLOCK_RAW_MAX);
 	bool		zip = pol != NULL && pol->mode != SIFT_CCM_NONE && sift_colz_available(SIFT_CC_ALG_ZSTD);
+	/* a dictionary the cache cannot hold is unwrapped by every test that reads it: its blocks take LZ4 where the default formula says so (codec.h) */
+	bool		fast = zip && d->scan && pol->mode == SIFT_CCM_AUTO && pol->alg == SIFT_CC_ALG_AUTO && sift_colz_available(SIFT_CC_ALG_LZ4);
 
 	for (uint32 c = 1; c < d->n && fixed != 0; c++)
 		if (cdict_len(d, c) != fixed)
@@ -583,6 +587,8 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		cdict_sort(d);
 	if (zip)
 		z = palloc(zcap);
+	if (fast)
+		l = palloc(lcap);
 	if (form == DICT_LOOKUP && d->rows != NULL)
 		form = DICT_LOOKUP_COUNT;
 	if (d->hashed && (form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT))
@@ -612,6 +618,21 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 			clen = (uint32) sift_colz_compress(SIFT_CC_ALG_ZSTD, 1, raw, rawlen, z, zcap);
 		hdr[2] = (uint8) rawlen;
 		hdr[3] = (uint8) (rawlen >> 8);
+		if (fast && clen > 0 && clen < rawlen)
+		{
+			SiftCcScan	scan;
+			Size		llen = sift_colz_compress(SIFT_CC_ALG_LZ4, 0, raw, rawlen, l, lcap);
+
+			if (sift_cc_scan_lz4(clen, llen, rawlen, &scan))
+			{
+				hdr[0] = SIFT_CC_ALG_LZ4;
+				put_bytes(out, hdr, sizeof(hdr));
+				put_bytes(out, l, llen);
+				d->lz4_blocks = true;
+				boff[b + 1] = out->len - tab - (nblk + 1) * sizeof(uint32);
+				continue;
+			}
+		}
 		if (clen > 0 && clen < rawlen)
 		{
 			hdr[0] = SIFT_CC_ALG_ZSTD;
@@ -765,7 +786,7 @@ sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_byt
 		StringInfoData e;
 
 		initStringInfo(&e);
-		sift_cc_encode_strs(&e, d->off, d->bytes, pn, pol);
+		sift_cc_encode_strs(&e, d->off, d->bytes, pn, pol, NULL);
 		compact = Min(compact, (Size) e.len);
 		pfree(e.data);
 	}
@@ -793,8 +814,10 @@ sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 blocks, Strin
 	z.data = NULL;
 	if (pol != NULL && pol->mode != SIFT_CCM_NONE && d->n <= SIFT_CC_MAXROWS && plain >= SIFT_CC_MIN_WRAP)
 	{
+		SiftCcScan	scan;
+
 		initStringInfo(&z);
-		sift_cc_encode_strs(&z, d->off, d->bytes, d->n, pol);
+		sift_cc_encode_strs(&z, d->off, d->bytes, d->n, pol, d->scan ? &scan : NULL);
 		if ((Size) z.len < plain)
 			form = DICT_STRS;
 	}
@@ -982,7 +1005,7 @@ parse_blocks(MemoryContext mcxt, const uint8 *p, Size len, uint32 form, Size *us
 			ok = clen == rawlen;
 		else
 		{
-			ok = h[0] == SIFT_CC_ALG_ZSTD && sift_colz_available(h[0]) && sift_colz_decompress(h[0], src, clen, raw, rawlen);
+			ok = (h[0] == SIFT_CC_ALG_ZSTD || h[0] == SIFT_CC_ALG_LZ4) && sift_colz_available(h[0]) && sift_colz_decompress(h[0], src, clen, raw, rawlen);
 			src = raw;
 		}
 		if (ok && fixed != 0)

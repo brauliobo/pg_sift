@@ -1,0 +1,156 @@
+-- The strings of a text leaf stored inline (a string over 255 bytes) are wrapped by the default formula: LZ4 where it reads 3 times fewer instructions for the
+-- bytes it adds (words of a skewed vocabulary, LZ4 1.5 times the zstd bytes), zstd where it adds too many (hex, which LZ4 cannot shrink); a NOTICE names the leaf and the off switch, and the rows are the normal plan's with each wrapper.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.agg_force = on;
+\ir test/agg_rows_helpers.sql
+\set ECHO none
+CREATE TABLE sw (id int, txt text, hx text) WITH (autovacuum_enabled = off);
+INSERT INTO sw SELECT i,
+	(SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ')
+	 FROM (SELECT floor(400 * power((get_byte(decode(md5(i || ':' || w), 'hex'), 0) * 256 + get_byte(decode(md5(i || ':' || w), 'hex'), 1)) / 65536.0, 2))::int AS k FROM generate_series(1, 60) w) x),
+	(SELECT string_agg(md5(i || '/' || w), '') FROM generate_series(1, 10) w)
+FROM generate_series(1, 6000) i;
+INSERT INTO sw VALUES (6001, '', ''), (6002, NULL, NULL), (6003, 'short', 'x');
+SET client_min_messages = notice;
+-- the text takes LZ4, the hex strings (LZ4 cannot shrink them) keep zstd
+CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops);
+NOTICE:  sift_col index sw_idx stores the long text of txt with lz4
+DETAIL:  Every test of the column unwraps its strings: against zstd a substring test reads 3.3 times fewer instructions and the strings take 55% more bytes, which the default formula accepts.
+HINT:  ALTER INDEX sw_idx SET (compression = 'auto; txt=zstd'), then REINDEX, keeps zstd.
+SET client_min_messages = warning;
+VACUUM sw;
+CREATE TABLE sw_pat (pat text);
+INSERT INTO sw_pat VALUES ('%the and%'), ('%ab%'), ('%war season%'), ('%zzzzzz%'), ('%' || substr(md5('77/3'), 3, 8) || '%'), ('%' || md5('5/2') || '%'), ('the %'), ('%album');
+CREATE FUNCTION sw_check(tag text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r record;
+	q text;
+	bad int := 0;
+	n int := 0;
+BEGIN
+	FOR r IN SELECT col, pat FROM sw_pat, (VALUES ('txt'), ('hx')) c(col) ORDER BY col, pat LOOP
+		FOREACH q IN ARRAY ARRAY[format('SELECT count(*), sum(id) FROM sw WHERE %I LIKE %L', r.col, r.pat), format('SELECT id FROM sw WHERE %I LIKE %L AND id %% 7 = 1', r.col, r.pat),
+			format('SELECT %I, count(*) FROM sw WHERE id %% 11 = 0 GROUP BY 1', r.col)] LOOP
+			n := n + 1;
+			IF agg_rows(q, true) IS DISTINCT FROM agg_rows(q, false) THEN
+				bad := bad + 1;
+				RAISE NOTICE '%: %', tag, q;
+			END IF;
+		END LOOP;
+	END LOOP;
+	RETURN tag || ': ' || n || ' statements, ' || bad || ' differ';
+END $$;
+SELECT sw_check('lz4');
+           sw_check           
+------------------------------
+ lz4: 48 statements, 0 differ
+(1 row)
+
+-- the off switch keeps zstd and says nothing; the explicit algorithm and none are the user's
+SET client_min_messages = notice;
+CREATE INDEX sw_zstd ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'auto; txt=zstd');
+CREATE INDEX sw_lz4 ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops) WITH (compression = 'lz4');
+SET client_min_messages = warning;
+SELECT pg_relation_size('sw_zstd') < pg_relation_size('sw_idx') AS zstd_smaller_than_formula_choice;
+ zstd_smaller_than_formula_choice 
+----------------------------------
+ t
+(1 row)
+
+DROP INDEX sw_idx;
+SELECT sw_check('zstd');
+           sw_check            
+-------------------------------
+ zstd: 48 statements, 0 differ
+(1 row)
+
+DROP INDEX sw_zstd;
+DROP INDEX sw_lz4;
+-- a write buffer, a promotion and a merge write the same wrappers
+CREATE INDEX sw_idx ON sw USING sift_col (id sift.col_int4_ops, txt sift.col_text_ops, hx sift.col_text_ops);
+INSERT INTO sw SELECT 10000 + id, txt, hx FROM sw WHERE id % 3 = 0;
+SELECT sw_check('write buffer');
+               sw_check                
+---------------------------------------
+ write buffer: 48 statements, 0 differ
+(1 row)
+
+SELECT sift.col_promote('sw_idx') >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+SELECT sw_check('promoted');
+             sw_check              
+-----------------------------------
+ promoted: 48 statements, 0 differ
+(1 row)
+
+SELECT sift.col_merge('sw_idx', true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT sw_check('merged');
+            sw_check             
+---------------------------------
+ merged: 48 statements, 0 differ
+(1 row)
+
+SELECT sift.col_verify('sw_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a segment dictionary the cache cannot hold (dict_cache_kb lowered) is read, and unwrapped, by every test: its blocks take LZ4 where the formula says so, and the segment is
+-- of the minor that refuses a 3.5 library
+SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1,dict_cache_kb=1', false) IS NOT NULL AS lowered;
+ lowered 
+---------
+ t
+(1 row)
+
+CREATE TABLE sw_dict (id int, w text) WITH (autovacuum_enabled = off);
+INSERT INTO sw_dict SELECT i, (SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ') FROM (SELECT floor(400 * power((hashint8extended(i * 7 + g, 0) & 65535) / 65536.0, 2))::int AS k FROM generate_series(1, 12) g) x) || ' ' || i FROM generate_series(1, 20000) i;
+CREATE INDEX sw_dict_idx ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops);
+VACUUM sw_dict;
+CREATE INDEX sw_dict_zstd ON sw_dict USING sift_col (id sift.col_int4_ops, w sift.col_text_ops) WITH (compression = 'auto; w=zstd');
+SELECT pg_relation_size('sw_dict_zstd') < pg_relation_size('sw_dict_idx') AS zstd_blocks_smaller;
+ zstd_blocks_smaller 
+---------------------
+ t
+(1 row)
+
+DROP INDEX sw_dict_zstd;
+SELECT format FROM sift._test_col_formats('sw_dict_idx'::regclass) ORDER BY gen;
+ format 
+--------
+     29
+(1 row)
+
+SELECT agg_rows(format('SELECT count(*), sum(id) FROM sw_dict WHERE w LIKE %L', p), true) IS NOT DISTINCT FROM agg_rows(format('SELECT count(*), sum(id) FROM sw_dict WHERE w LIKE %L', p), false) AS same
+FROM (VALUES ('%' || substr(md5('w3'), 1, 5) || '%'), ('%1999%'), ('%zzz%')) v(p);
+ same 
+------
+ t
+ t
+ t
+(3 rows)
+
+SELECT sift.col_verify('sw_dict_idx', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP TABLE sw_dict;
+DROP TABLE sw, sw_pat;
+DROP FUNCTION sw_check(text), agg_pushed(text), agg_rows(text, bool);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

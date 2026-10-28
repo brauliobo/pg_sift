@@ -34,6 +34,8 @@ extern void sift_colb_init_meta(Relation index);
  * maxsegs allows. shared: a participant of a parallel build, which writes through a SHARED target and takes the generations of its
  * segments from the metapage; the rows and heap blocks it did go to the progress of the leader.
  */
+/* while a participant of a build writes, a NOTICE names the leaf whose strings are wrapped by the formula, once for the participants that share seen (two words, zeroed) */
+extern void sift_colb_scan_notice(Relation index, pg_atomic_uint64 *seen);
 extern ColBuild *sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared);
 /* Scans the whole heap (serial build) or the superblock sb of nblocks heap blocks (parallel); both return the heap tuples scanned */
 extern double sift_colb_scan(ColBuild *b, Relation heap, IndexInfo *info);

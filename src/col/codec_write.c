@@ -250,9 +250,12 @@ alg_ns(int alg)
 	return alg == SIFT_CC_ALG_LZ4 ? SIFT_CC_NS_LZ4 : SIFT_CC_NS_ZSTD;
 }
 
-/* The best wrapper the policy accepts for the stream raw[0..rawlen) (best->buf palloc'd), or false */
-bool
-wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best)
+/*
+ * The best wrapper the policy accepts for the stream raw[0..rawlen) (best->buf palloc'd), or false. lz4, when not NULL, gets the LZ4 attempt that the rule did
+ * not keep (lz4->buf NULL when there is none)
+ */
+static bool
+wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best, CcZTry *lz4)
 {
 	int			algs[2],
 				nalg = 0;
@@ -261,6 +264,8 @@ wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *
 	const SiftCcPolicy *pol = w->pol;
 
 	best->buf = NULL;
+	if (lz4)
+		lz4->buf = NULL;
 	if (pol->mode == SIFT_CCM_NONE || rawlen < SIFT_CC_MIN_WRAP)
 		return false;
 	if (pol->mode == SIFT_CCM_LAYER)
@@ -312,11 +317,26 @@ wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *
 		cost = (double) CC_RUP8(clen) + CC_NHDR + rho * rawlen * alg_ns(alg);
 		if (clen == 0 || cost >= best->cost)
 		{
-			pfree(buf);
+			if (lz4 && alg == SIFT_CC_ALG_LZ4 && clen > 0)
+			{
+				lz4->buf = buf;
+				lz4->len = clen;
+				lz4->alg = alg;
+			}
+			else
+				pfree(buf);
 			continue;
 		}
 		if (best->buf)
-			pfree(best->buf);
+		{
+			if (lz4 && best->alg == SIFT_CC_ALG_LZ4)
+			{
+				*lz4 = *best;
+				best->buf = NULL;
+			}
+			else
+				pfree(best->buf);
+		}
 		best->buf = buf;
 		best->len = clen;
 		best->alg = alg;
@@ -324,6 +344,65 @@ wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *
 		found = true;
 	}
 	return found;
+}
+
+/* instructions a byte of the strings costs a substring test, stored with the algorithm in bytes compressed bytes of rawlen */
+static double
+scan_ipb(int alg, double bytes, double rawlen)
+{
+	return SIFT_CC_IPB_KERNEL + (alg == SIFT_CC_ALG_LZ4 ? SIFT_CC_IPB_LZ4 + SIFT_CC_IPC_LZ4 * bytes / rawlen :
+								 alg == SIFT_CC_ALG_ZSTD ? SIFT_CC_IPC_ZSTD * bytes / rawlen : 0.0);
+}
+
+/* B - C of the default formula for the strings stored as (alg, bytes) instead of (ref, ref_bytes) */
+static double
+scan_net(int ref, double ref_bytes, int alg, double bytes, double rawlen)
+{
+	return SIFT_CC_SCAN_R * log2(scan_ipb(ref, ref_bytes, rawlen) / scan_ipb(alg, bytes, rawlen)) / log2(1.05) - 100.0 * (bytes - ref_bytes) / ref_bytes / 3.0;
+}
+
+bool
+sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen, SiftCcScan *scan)
+{
+	if (zlen == 0 || llen == 0 || llen >= rawlen || scan_net(SIFT_CC_ALG_ZSTD, (double) zlen, SIFT_CC_ALG_LZ4, (double) llen, (double) rawlen) <= 0.0)
+		return false;
+	scan->alg = SIFT_CC_ALG_LZ4;
+	scan->speedup = scan_ipb(SIFT_CC_ALG_ZSTD, (double) zlen, (double) rawlen) / scan_ipb(SIFT_CC_ALG_LZ4, (double) llen, (double) rawlen);
+	scan->growth = 100.0 * ((double) llen - (double) zlen) / (double) zlen;
+	return true;
+}
+
+/*
+ * The wrapper of the strings of an inline text chunk, true when there is one (z): the cold rule's choice is the reference, and when that is
+ * zstd, LZ4 replaces it if the default formula says so, the most the growth can be of the index being the growth of the strings themselves (no wrapper is not
+ * tried: it doubles the pages of text that zstd halves, and a user who wants it says none). A policy that names an algorithm or none decides as it does for any
+ * stream. *scan tells that LZ4 replaced the reference.
+ */
+bool
+wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftCcScan *scan)
+{
+	CcZTry		lz4;
+	bool		found;
+
+	scan->alg = -1;
+	if (w->pol->mode != SIFT_CCM_AUTO || w->pol->alg != SIFT_CC_ALG_AUTO)
+		return wrap_choose(w, raw, rawlen, CCR_COLD, z);
+	found = wrap_choose_keep(w, raw, rawlen, CCR_COLD, z, &lz4);
+	if (found && z->alg == SIFT_CC_ALG_ZSTD && lz4.buf && sift_cc_scan_lz4(z->len, lz4.len, rawlen, scan))
+	{
+		pfree(z->buf);
+		*z = lz4;
+		return true;
+	}
+	if (lz4.buf)
+		pfree(lz4.buf);
+	return found;
+}
+
+bool
+wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best)
+{
+	return wrap_choose_keep(w, raw, rawlen, role, best, NULL);
 }
 
 static void

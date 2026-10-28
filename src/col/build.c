@@ -233,6 +233,7 @@ write_run(ColBuild *b, bool last)
 		in[i++] = lfirst(lc);
 	b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 	b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+	sift_colw_set_index_rows(b->w, b->total_rows);
 	sift_colw_set_preagg(b->w, &b->r->pagg);
 	b->aim = sift_colk_run_rows(b->index, in, n);
 	sift_colw_set_keyed(b->w, b->aim);
@@ -536,6 +537,35 @@ sift_colb_init_meta(Relation index)
 	sift_wt_finish(wt);
 }
 
+static Relation scan_index;
+static pg_atomic_uint64 *scan_seen;
+
+static void
+scan_note(int leaf, const SiftCcScan *scan)
+{
+	TupleDesc	desc = RelationGetDescr(scan_index);
+	uint64		bit = UINT64CONST(1) << (leaf % 64);
+	const char *name,
+			   *iname;
+
+	if (leaf >= 128 || leaf >= desc->natts || (pg_atomic_fetch_or_u64(&scan_seen[leaf / 64], bit) & bit))
+		return;
+	name = quote_identifier(NameStr(TupleDescAttr(desc, leaf)->attname));
+	iname = quote_identifier(RelationGetRelationName(scan_index));
+	ereport(NOTICE, (errmsg("sift_col index %s stores the long text of %s with lz4", iname, name),
+					 errdetail("Every test of the column unwraps its strings: against zstd a substring test reads %.1f times fewer instructions and the strings take %.0f%% more bytes, which the default formula accepts.",
+							   scan->speedup, scan->growth),
+					 errhint("ALTER INDEX %s SET (compression = 'auto; %s=zstd'), then REINDEX, keeps zstd.", iname, name)));
+}
+
+void
+sift_colb_scan_notice(Relation index, pg_atomic_uint64 *seen)
+{
+	scan_index = index;
+	scan_seen = seen;
+	sift_cenc_scan_hook = seen ? scan_note : NULL;
+}
+
 static IndexBuildResult *
 serial_build(Relation heap, Relation index, IndexInfo *info)
 {
@@ -545,20 +575,32 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	SiftWriteTarget *wt;
 	ColBuild   *b;
 	int			nsegs;
+	pg_atomic_uint64 seen[2];
 
 	if (key_cut)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
 	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false);
-	if (heap->rd_rel->reltuples > 0)
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
-	res->heap_tuples = sift_colb_scan(b, heap, info);
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
+	pg_atomic_init_u64(&seen[0], 0);
+	pg_atomic_init_u64(&seen[1], 0);
+	PG_TRY();
+	{
+		sift_colb_scan_notice(index, seen);
+		if (heap->rd_rel->reltuples > 0)
+			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) heap->rd_rel->reltuples);
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_SCAN);
+		res->heap_tuples = sift_colb_scan(b, heap, info);
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, SIFT_COL_PHASE_WRITE);
 #ifdef SIFT_TESTING
-	sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
+		sift_test_phase_wait(SIFT_COL_PHASE_WRITE);
 #endif
-	nsegs = sift_colb_end(b);
+		nsegs = sift_colb_end(b);
+	}
+	PG_FINALLY();
+	{
+		sift_colb_scan_notice(NULL, NULL);
+	}
+	PG_END_TRY();
 	res->index_tuples = sift_colb_rows(b);
 	if (!key_cut)
 		sift_store_init_meta_ex(wt, 0, 0, b->r->schema->hash, SIFT_COL_META_FLAG);

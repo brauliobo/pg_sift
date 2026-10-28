@@ -22,6 +22,7 @@ import argparse
 import datetime
 import os
 import re
+import signal
 import statistics
 import subprocess
 import sys
@@ -346,6 +347,28 @@ def why(session, sql):
     return '; '.join(out)[:300] or 'sift.explain_why names no reason'
 
 
+PERF = os.path.join(HERE, 'perf.sh')
+
+
+def minstr(session, sql, runs=3):
+    """user instructions (millions) of the backend of the session for one run of the statement, median of `runs` (steps/perf.sh, perf stat on the backend with no parallel workers: the count does
+    not depend on the load of the host); None when perf may not count them"""
+    session.run('SET max_parallel_workers_per_gather = 0')
+    pid = session.run('SELECT pg_backend_pid()')[1][0]
+    session.run(sql)
+    counts = []
+    for _ in range(runs):
+        p = subprocess.Popen(['bash', PERF, pid], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        time.sleep(0.3)
+        session.run(sql)
+        p.send_signal(signal.SIGTERM)
+        fields = p.communicate()[0].split()
+        if len(fields) != 3 or not fields[1].isdigit():
+            return None
+        counts.append(int(fields[1]) / 1e6)
+    return statistics.median(counts)
+
+
 def stats(ms):
     return dict(value='%.3f' % statistics.median(ms), min='%.3f' % min(ms), max='%.3f' % max(ms), n=len(ms))
 
@@ -471,7 +494,14 @@ def run_point(args, cases, rows, engines, results, failed):
                     failed.append('%s%s on %s: %s' % (c.id, tag, lane, errors[lane]))
                 point.append(dict(case=c.id, arm=lane, metric='ms', value='NA' if errors[lane].startswith('not supported') else 'error', note=errors[lane], load=load))
             else:
-                point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                if 'ms' in c.metrics:
+                    point.append(dict(case=c.id, arm=lane, metric='ms', note=notes[lane] + (' NOISY' if noisy else ''), load=load, **stats(times[lane])))
+                if 'minstr' in c.metrics and lane in ('sift', 'native') and not isinstance(lanes[lane], Fresh):
+                    mi = minstr(lanes[lane], expand(c.statement(lane), c))
+                    if mi is not None:
+                        point.append(dict(case=c.id, arm=lane, metric='minstr', value='%.1f' % mi, note=notes[lane], load=load))
+                    else:
+                        failed.append('%s%s on %s: perf cannot count instructions (perf_event_paranoid)' % (c.id, tag, lane))
                 if lane != 'pg_duckdb' and not c.load:
                     got, read, names, size = pages_read(lanes[lane], expand(c.statement(lane), c), texts.get(lane, ''))
                     if got is not None:

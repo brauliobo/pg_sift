@@ -40,6 +40,7 @@ typedef struct ColShared
 	pg_atomic_uint32 ready;		/* the metapage is written */
 	ConditionVariable readycv;
 	pg_atomic_uint32 next;		/* the next superblock nobody has claimed */
+	pg_atomic_uint64 scan_seen[2];	/* the leaves a NOTICE has named (sift_colb_scan_notice) */
 	slock_t		mutex;
 	double		reltuples;
 	double		indexed;
@@ -85,15 +86,24 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true);
 	double		reltuples = 0;
 
-	for (uint32 sb = slot; sb < sh->nsbs; sb = pg_atomic_fetch_add_u32(&sh->next, 1))
+	PG_TRY();
 	{
+		sift_colb_scan_notice(index, sh->scan_seen);
+		for (uint32 sb = slot; sb < sh->nsbs; sb = pg_atomic_fetch_add_u32(&sh->next, 1))
+		{
 #ifdef SIFT_TESTING
-		if (sift_test_col_fail_sb == sb + 1)
-			elog(ERROR, "sift test: the participant of superblock %u fails", sb);	/* check-errors: allow */
+			if (sift_test_col_fail_sb == sb + 1)
+				elog(ERROR, "sift test: the participant of superblock %u fails", sb);	/* check-errors: allow */
 #endif
-		reltuples += sift_colb_scan_sb(b, heap, info, snapshot, sb, sh->nblocks);
+			reltuples += sift_colb_scan_sb(b, heap, info, snapshot, sb, sh->nblocks);
+		}
+		part->nsegs = sift_colb_end(b);
 	}
-	part->nsegs = sift_colb_end(b);
+	PG_FINALLY();
+	{
+		sift_colb_scan_notice(NULL, NULL);
+	}
+	PG_END_TRY();
 	sift_wt_finish(wt);
 	add_counts(sh, reltuples, sift_colb_rows(b));
 	sift_colb_free(b);
@@ -129,6 +139,8 @@ init_shared(ColShared *sh, Relation heap, Relation index, IndexInfo *info, int n
 	sh->nsbs = ((uint64) sh->nblocks + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
 	pg_atomic_init_u32(&sh->ready, 0);
 	pg_atomic_init_u32(&sh->next, 0);
+	pg_atomic_init_u64(&sh->scan_seen[0], 0);
+	pg_atomic_init_u64(&sh->scan_seen[1], 0);
 	ConditionVariableInit(&sh->readycv);
 	SpinLockInit(&sh->mutex);
 }
