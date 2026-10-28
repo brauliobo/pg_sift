@@ -315,7 +315,7 @@ compile_periodic(AggCtx *c, Node *n, SiftAggPred *p)
 				hi;
 	const SiftSrcLeaf *lf;
 
-	if (!IsA(n, OpExpr) || (p->kind != SAP_LUT && p->kind != SAP_COMBO))
+	if (!IsA(n, OpExpr) || (p->kind != SAP_LUT && p->kind != SAP_COMBO && p->kind != SAP_STEP))
 		return;
 	op = (OpExpr *) n;
 	if (builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ || list_length(op->args) != 2 || (op->inputcollid != InvalidOid && !get_collation_isdeterministic(op->inputcollid)))

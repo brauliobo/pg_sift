@@ -71,6 +71,7 @@
 #include "agg/spec.h"
 #include "col/kern.h"
 #include "agg/colsrc.h"
+#include "agg/chunkfilter.h"
 #include "agg/search.h"
 #include "agg/topn.h"
 #include "core/visibility.h"
@@ -117,6 +118,18 @@ group_parent(AggExec *ex, int group)
 	return par;
 }
 
+/* the source narrowed the rows of the unit to the ranges of a prefilter that is exactly the conjunct (a periodic calendar step): the conjunct holds for all of them */
+static bool
+hint_answered(AggExec *ex, int i)
+{
+	SiftSrcZone z;
+
+	if (ex->pflt == NULL || ex->pflt[i].op != SSF_RANGES_HINT)
+		return false;
+	sift_colsrc_zone(ex->src, &ex->unit, ex->pflt[i].leaf, &z);
+	return sift_aggfilt_hint_narrows(&ex->pflt[i], &z);
+}
+
 /*
  * The conjuncts that evaluate an expression PostgreSQL may fail on (SiftAggPred.late) are applied to the items that passed every other
  * conjunct and the snapshot check, in the order of the query, each to the survivors of the ones before it: the normal plan never
@@ -129,7 +142,7 @@ apply_late(AggExec *ex, uint64 *mask, int total, int qlevel)
 	{
 		SiftAggPred *p = ex->spec->pred[i];
 
-		if (!p->late || p->level > qlevel)
+		if (!p->late || p->level > qlevel || hint_answered(ex, i))
 			continue;
 		for (int st = 0; st < total; st += VEC)
 		{
@@ -493,6 +506,8 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 		if (p->level != 0 || p->late || (ex->pushed && ex->pushed[i]) || (i < 64 && (strdone >> i & 1)))
 			continue;
 		if (ex->npoint_elem > 0 && elem_answered(ex, p, sift_colsrc_point_exact(ex->src, u)))
+			continue;
+		if (!cand && hint_answered(ex, i))
 			continue;
 		if (str && sift_colsrc_filter_str(ex->src, u, str, rmask))
 		{

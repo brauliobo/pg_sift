@@ -138,6 +138,46 @@ clear_nan_rows(const SiftColUnit *cu, const SiftColPred *p, SiftColSel *sel)
 /* a unit with more of the ranges of a prefilter than this is not narrowed by it: a search for each costs more than the test it saves */
 #define RANGES_UNIT_ARMS	32
 
+/* the arms [*first, *end) of a union of ranges that a zone [min, max] meets (the arms are ascending and apart) */
+static void
+zone_arms(const int64 *arm, int narms, int64 min, int64 max, int *first, int *end)
+{
+	int			lo = 0,
+				hi = narms;
+
+	while (lo < hi)
+	{
+		int			m = (lo + hi) / 2;
+
+		if (arm[2 * m + 1] < min)
+			lo = m + 1;
+		else
+			hi = m;
+	}
+	*first = lo;
+	for (hi = lo; hi < narms && arm[2 * hi] <= max; hi++)
+		;
+	*end = hi;
+}
+
+/* the prefilter of a hint does not narrow a unit whose zone is unknown (NULLs only, an overflow) or that meets too many arms */
+static bool
+hint_narrows(bool zoned, int first, int end)
+{
+	return zoned && end - first <= RANGES_UNIT_ARMS;
+}
+
+/* does filter_ranges narrow, with this zone of the unit, the rows of a hint filter to the rows of its ranges? Then the executor need not test them again */
+bool
+sift_aggfilt_hint_narrows(const SiftSrcFilter *f, const SiftSrcZone *z)
+{
+	int			first,
+				end;
+
+	zone_arms(f->set, f->nset / 2, z->min, z->max, &first, &end);
+	return hint_narrows(z->nnull < z->nvals && !z->inexact, first, end);
+}
+
 /*
  * A union of ranges on one leaf: each arm narrows a copy of sel the way a single range does (two bounds, the sorted run window), and sel becomes the rows
  * of any arm. An arm without a bound keeps the rows with a value.
@@ -146,38 +186,19 @@ static void
 filter_ranges(const SiftColUnit *cu, const SiftAggRanges *r, SiftColSel *sel)
 {
 	SiftColZone z;
-	int			lo = 0,
-				hi = r->narms,
-				first;
+	int			first = 0,
+				hi = r->narms;
+	bool		zoned;
 	uint64	   *from,
 			   *any;
 
 	/* the arms are ascending and apart: those of the unit's zone are a run of them */
 	sift_col_zone(cu, r->col, &z);
-	if (z.nnull < z.nvals && !z.has_ovf)
-	{
-		while (lo < hi)
-		{
-			int			m = (lo + hi) / 2;
-
-			if (r->arm[2 * m + 1] < z.min)
-				lo = m + 1;
-			else
-				hi = m;
-		}
-		first = lo;
-		for (hi = first; hi < r->narms && r->arm[2 * hi] <= z.max; hi++)
-			;
-		if (r->hint && hi - first > RANGES_UNIT_ARMS)
-			return;
-	}
-	else
-	{
-		if (r->hint)
-			return;
-		first = 0;
-		hi = r->narms;
-	}
+	zoned = z.nnull < z.nvals && !z.has_ovf;
+	if (zoned)
+		zone_arms(r->arm, r->narms, z.min, z.max, &first, &hi);
+	if (r->hint && !hint_narrows(zoned, first, hi))
+		return;
 	from = palloc(sel->nwords * sizeof(uint64));
 	any = palloc0(sel->nwords * sizeof(uint64));
 	memcpy(from, sel->bits, sel->nwords * sizeof(uint64));

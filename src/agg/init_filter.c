@@ -638,7 +638,7 @@ filter_init(AggExec *ex)
 		SiftAggPred *p = s->pred[i];
 
 		memset(&f[n], 0, sizeof(SiftSrcFilter));
-			if (p->cal != NULL && (p->kind == SAP_LUT || p->kind == SAP_COMBO))
+			if (p->cal != NULL && (p->kind == SAP_LUT || p->kind == SAP_COMBO || p->kind == SAP_STEP))
 		{
 			if (periodic_filter(ex, p, &f[n]))
 				at[n++] = i;
