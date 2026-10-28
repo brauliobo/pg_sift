@@ -463,14 +463,21 @@ missing_column_walker(Node *n, MissingCol *m)
 	return expression_tree_walker(n, missing_column_walker, m);
 }
 
-/* the refusal of a condition the scan cannot test: it names the column of the table that the index lacks, when that is why */
+static bool
+row_compare_walker(Node *n, void *ctx)
+{
+	return n != NULL && (IsA(n, RowCompareExpr) || expression_tree_walker(n, row_compare_walker, ctx));
+}
+
+/* the refusal of a condition the scan cannot test: it names the column of the table that the index lacks, when that is why (the tie column of a keyset comparison (a, id) > (x, y) says so) */
 static bool
 where_refused(AggCtx *c, Node *q)
 {
 	MissingCol	m = {c, InvalidAttrNumber};
 
 	if (sift_explain_refusals && missing_column_walker(q, &m) && m.att > 0)
-		return agg_refuse_f(WHERE, "the index does not hold the column \"%s\"", get_attname(planner_rt_fetch(c->relid, c->root)->relid, m.att, false));
+		return agg_refuse_f(WHERE, "the index does not hold the column \"%s\"%s", get_attname(planner_rt_fetch(c->relid, c->root)->relid, m.att, false),
+							row_compare_walker(q, NULL) ? ": the tie column of a keyset comparison (a, id) > (x, y) is served from the index only when it is in it" : "");
 	return agg_refuse(WHERE);
 }
 

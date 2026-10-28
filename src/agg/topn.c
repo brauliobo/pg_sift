@@ -3075,8 +3075,9 @@ sift_topn_wants_zones(const SiftTopN *t)
 
 /*
  * Can a row of a unit with this zone of the first sort column sort before the n-th best so far (or tie with it)? Nulls sort as the query
- * says, the rest between min and max. Rows tied on the first key may win on the others, so a bound equal to the n-th's is kept. The zone
- * counts the dead rows too: it only ever says "no" for a unit that has nothing better.
+ * says, the rest between min and max. Rows tied on the first key may win on the others, so a bound equal to the n-th's is kept; with one key
+ * a tie wins nothing (the query does not say which of the tied rows comes), so only a better bound is. The zone counts the dead rows too: it
+ * only ever says "no" for a unit that has nothing better.
  */
 bool
 sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *zone)
@@ -3095,7 +3096,7 @@ sift_topn_zone_viable(const SiftTopN *t, const SiftSrcZone *zone)
 		best = (Rank) {k->nulls_first ? 0 : 2, 0};
 	else
 		best = rank_of(k, false, k->desc ? z->max : z->min);
-	return !rank_after(best, bar);
+	return t->nkey == 1 ? rank_after(bar, best) : !rank_after(best, bar);
 }
 
 /* The zone of the unit of superblock sb, probed before the scan; it may be passed in any order */
@@ -3261,7 +3262,7 @@ bounds_viable(const SiftTopN *t, const Rank *bound)
 		if (c != 0)
 			return c < 0;
 	}
-	return true;
+	return t->nkey > 1;
 }
 
 /*

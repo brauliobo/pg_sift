@@ -91,14 +91,14 @@ DELETE FROM rh WHERE id IN (1, 2, 3, 20000);
 SELECT * FROM rh_summary();
  queries | same | from_heads | heads_above_limit 
 ---------+------+------------+-------------------
-      60 |   60 |         35 |                18
+      60 |   60 |         31 |                17
 (1 row)
 
 VACUUM rh;
 SELECT * FROM rh_summary();
  queries | same | from_heads | heads_above_limit 
 ---------+------+------------+-------------------
-      60 |   60 |         35 |                18
+      60 |   60 |         31 |                17
 (1 row)
 
 SELECT sift.col_verify('rh_idx', true);
@@ -112,7 +112,7 @@ INSERT INTO rh SELECT g, -100 - g % 5, NULL, timestamptz '2000-01-01' + g * inte
 SELECT * FROM rh_summary();
  queries | same | from_heads | heads_above_limit 
 ---------+------+------------+-------------------
-      60 |   60 |         18 |                 9
+      60 |   60 |         15 |                 8
 (1 row)
 
 SELECT sift.col_promote('rh_idx'::regclass) >= 0 AS promoted;
@@ -124,7 +124,7 @@ SELECT sift.col_promote('rh_idx'::regclass) >= 0 AS promoted;
 SELECT * FROM rh_summary();
  queries | same | from_heads | heads_above_limit 
 ---------+------+------------+-------------------
-      60 |   60 |         35 |                16
+      60 |   60 |         32 |                15
 (1 row)
 
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) rh;
@@ -138,7 +138,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) rh;
 SELECT * FROM rh_summary();
  queries | same | from_heads | heads_above_limit 
 ---------+------+------------+-------------------
-      60 |   60 |         35 |                16
+      60 |   60 |         32 |                15
 (1 row)
 
 SELECT array_agg(DISTINCT format) AS minors, sift.col_verify('rh_idx', true) FROM sift._test_col_formats('rh_idx');

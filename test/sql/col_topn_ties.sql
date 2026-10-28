@@ -1,0 +1,69 @@
+-- ORDER BY one column LIMIT n over a column with ties (NULLs under NULLS FIRST, the default of DESC; a few values): rows that tie with the n-th row do not
+-- improve a one-key result (the SQL order does not say which of them comes), so a unit whose best row only ties with it is not read. The keys of the rows are those
+-- of the normal plan, after the build, a write buffer, deletes, an OFFSET and a VACUUM; a two-key order still reads the tied units for the second key.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
+
+-- a page holds one row, so a superblock is 256 rows and 60 of them are the table
+CREATE TABLE tt (id int, k int, j int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO tt SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE i END, i % 7, repeat('x', 600) FROM generate_series(1, 15360) i;
+CREATE INDEX tt_idx ON tt USING sift_col (id, k, j) WITH (write_buffer_limit = 512);
+VACUUM (FREEZE, ANALYZE) tt;
+
+-- the units the top-N scan read (of the 60 superblocks), and 'same' when the keys of the rows are the normal plan's
+CREATE FUNCTION read_units(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; r int := -1;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Units: %' AND l NOT LIKE '%Pruned%' THEN r := trim(substr(trim(l), 8))::int; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE format('SELECT string_agg(coalesce(x::text, ''null''), '','') FROM (%s) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT string_agg(coalesce(x::text, ''null''), '','') FROM (%s) x', q) INTO b;
+	RETURN CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT ' || q ELSE 'same' END;
+END $$;
+
+CREATE TABLE tq (q text);
+INSERT INTO tq VALUES
+ ('SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10'),
+ ('SELECT k FROM tt ORDER BY k DESC LIMIT 10'),
+ ('SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10'),
+ ('SELECT k FROM tt ORDER BY k LIMIT 10'),
+ ('SELECT j FROM tt ORDER BY j LIMIT 10'),
+ ('SELECT j FROM tt ORDER BY j DESC LIMIT 10'),
+ ('SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40'),
+ ('SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300'),
+ ('SELECT j, id FROM tt ORDER BY j, id LIMIT 10'),
+ ('SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10');
+SET sift.enable_agg = on;
+SELECT q, read_units(q) AS units FROM tq ORDER BY q;
+SELECT q, chk(q) FROM tq ORDER BY q;
+
+-- rows in the write buffer, deleted rows, a vacuum
+INSERT INTO tt SELECT 20000 + i, CASE WHEN i % 2 = 0 THEN NULL ELSE -i END, 100 - i % 3, 'x' FROM generate_series(1, 200) i;
+SELECT q, chk(q) FROM tq ORDER BY q;
+DELETE FROM tt WHERE id % 5 = 0 AND id < 3000;
+SELECT q, chk(q) FROM tq ORDER BY q;
+VACUUM tt;
+SELECT q, chk(q) FROM tq ORDER BY q;
+SELECT q, read_units(q) AS units FROM tq ORDER BY q;
+
+-- a keyset page (k, id) > (x, y) is served from the index when the tie column id is in it; the refusal says so when it is not
+CREATE TABLE tk (id int, k int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO tk SELECT i, i % 1000, repeat('x', 100) FROM generate_series(1, 5000) i;
+CREATE INDEX tk_idx ON tk USING sift_col (k);
+ANALYZE tk;
+SELECT reason FROM sift.explain_why('SELECT * FROM tk WHERE (k, id) > (500, 10) ORDER BY k, id LIMIT 50') WHERE arm = 'topn';
+
+DROP TABLE tt, tq, tk;
+DROP FUNCTION read_units(text), chk(text);
+DROP EXTENSION pg_sift;

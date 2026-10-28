@@ -246,7 +246,7 @@ SELECT * FROM sr_range('sr', 'k', ARRAY['WHERE COL >= 250', 'WHERE COL > 40 AND 
 SELECT * FROM sr_range('sr', 'kn', ARRAY['WHERE COL > 10', 'WHERE COL <= 5', 'WHERE COL IS NOT NULL', 'WHERE COL IS NOT NULL AND COL < 3', 'WHERE COL IS NULL', 'WHERE COL = 39 OR COL IS NULL']);
  queries | same | read_runs | different 
 ---------+------+-----------+-----------
-      48 |   48 |        48 | 
+      48 |   48 |        44 | 
 (1 row)
 
 SELECT * FROM sr_range('sr', 't', ARRAY['WHERE COL >= timestamptz ''2024-01-08+00''', 'WHERE COL < timestamptz ''2024-01-03+00''', 'WHERE COL > timestamptz ''2100-01-01+00''',
@@ -484,7 +484,7 @@ SELECT * FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]) LIMIT 0;
 SELECT count(*) AS queries, count(*) FILTER (WHERE same) AS same, count(*) FILTER (WHERE runs > 0) AS read_runs FROM sr_check('sa', ARRAY['k', 't'], ARRAY[1, 300]);
  queries | same | read_runs 
 ---------+------+-----------
-      32 |   32 |        30
+      32 |   32 |        22
 (1 row)
 
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
