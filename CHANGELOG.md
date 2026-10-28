@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.5.3 - 2026-10-28
 
 - Improved: packaging: the release attaches an `.rpm` for Amazon Linux 2023 (`pg_sift_N-X.Y.Z-1.amzn2023.{x86_64,aarch64}.rpm`, N = 17 or 18), built and smoke-tested in `amazonlinux:2023` containers of both architectures (4 more packages, 16 in all): the distribution's PostgreSQL keeps its files in `/usr/lib64/pgsql` and `/usr/share/pgsql`, where the PGDG `el9` package puts them in `/usr/pgsql-N`, so that package installs there but `CREATE EXTENSION` does not find the extension. One spec (an `%if 0%{?amzn}` block), and `scripts/package.sh matrix` is now the source of the release matrix (`verify` requires the same packages).
 - Fixed: packaging: the `.deb` needed glibc 2.38 (`libc6 (>= 2.38)`: it was built on Debian 13) and so did not install on Debian 12 or Ubuntu 22.04 (`GLIBC_2.38 not found`); it is built on Ubuntu 22.04 (glibc 2.35, GCC 11) now and smoke-tested in fresh Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 containers, so one package serves all four.
