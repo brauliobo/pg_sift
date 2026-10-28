@@ -9,7 +9,7 @@
 D=$(dir gate)
 asan=
 [[ -z ${SIFT_PRELOAD:-} ]] || asan=1
-plan 12
+plan 13
 # the sanitizer reports of this node stay in its directory, away from the scans of the whole run
 [[ -z $asan ]] || export ASAN_OPTIONS=${ASAN_OPTIONS%log_path=*}log_path=$D/asan
 node_init gate 1
@@ -23,6 +23,7 @@ gate_fails() { slice "$1"; ! leak_scan "$D/slice.out" 2>"$D/gate.out" && grep -q
 logsize() { wc -c <"$LOG" | tr -d ' '; }
 # the cluster checks of this node record their findings next to it
 cluster_fails() { local out; ! out=$(PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres SIFT_TMP=$D leak_cluster "$D/data" 2>&1) && grep -q "$1" <<<"$out"; }
+cluster_clean() { local o; o=$(PGHOST=$D/sock PGPORT=$(port gate) PGUSER=postgres SIFT_TMP=$D leak_cluster "$D/data" 2>&1) || { diag "$o"; return 1; }; }
 asan_fails() { ! leak_scan "$D"/asan.* 2>/dev/null; }
 asan_only() { local f; for f in "$D"/asan.*; do grep -q sift_test_leak "$f" || return 1; done; }
 
@@ -79,6 +80,11 @@ holder=$!
 for _ in $(seq 100); do [[ $(sql gate "SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'") == 1 ]] && break; sleep 0.1; done
 check "the cluster check fails on a session left in a transaction" cluster_fails "idle in transaction"
 kill "$holder" 2>/dev/null
+
+# a session that has just disconnected is still dropping its temporary tables, and holds their locks until it is gone: not a leak (on a loaded host the
+# check ran before the backend had exited). 3,000 tables make the exit slow enough to be caught.
+sql gate "DO \$\$ BEGIN FOR i IN 1..3000 LOOP EXECUTE format('CREATE TEMP TABLE tmp_%s (i int)', i); END LOOP; END \$\$" >/dev/null
+check "the cluster check waits for a backend that is still exiting" cluster_clean
 
 # a backend that dies on a signal is a crash
 off=$(logsize)

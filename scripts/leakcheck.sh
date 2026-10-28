@@ -132,14 +132,18 @@ leak_baseline() { leak_procs "$1" >"$1/leakcheck.baseline"; }
 # leak_finding TEXT...: a finding of the cluster checks, kept in $SIFT_TMP for the scans of the whole run
 leak_finding() { echo "leaked server state: $*" | tee -a "${SIFT_TMP:-/tmp/sift-arch}/leakcheck.findings" >&2; }
 
+# an idle session that holds locks: a leak, unless it is a backend that has just disconnected and is still dropping its temporary tables
+LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l.mode, coalesce(l.relation::regclass::text, l.locktype))
+	FROM pg_stat_activity a JOIN pg_locks l USING (pid)
+	WHERE a.backend_type = 'client backend' AND a.pid <> pg_backend_pid() AND l.granted
+		AND l.locktype NOT IN ('virtualxid', 'transactionid') AND a.state = 'idle'"
+
 # leak_cluster DATA: run against the cluster in DATA before it stops (PGHOST/PGPORT/PGUSER select it)
 leak_cluster() {
 	local data=$1 bad=0 line pid start kb name now max=$(( ${LEAK_PROC_MB:-32} + $(leak_quarantine_mb) ))
-	while read -r line; do leak_finding "$line"; bad=1; done < <(leak_psql <<-'SQL' 2>&1 || echo "cannot query the cluster"
-		SELECT format('session %s %s holds %s on %s', a.pid, a.state, l.mode, coalesce(l.relation::regclass::text, l.locktype))
-		FROM pg_stat_activity a JOIN pg_locks l USING (pid)
-		WHERE a.backend_type = 'client backend' AND a.pid <> pg_backend_pid() AND l.granted
-			AND l.locktype NOT IN ('virtualxid', 'transactionid') AND a.state = 'idle';
+	for _ in $(seq 50); do [[ -n $(leak_psql -c "$LEAK_IDLE_LOCKS" 2>/dev/null) ]] || break; sleep 0.1; done   # a session that is only leaving is gone within a second
+	while read -r line; do leak_finding "$line"; bad=1; done < <(leak_psql <<-SQL 2>&1 || echo "cannot query the cluster"
+		$LEAK_IDLE_LOCKS;
 		SELECT format('session %s is %s since %s', pid, state, xact_start) FROM pg_stat_activity
 		WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() AND state LIKE 'idle in transaction%';
 		SELECT 'prepared transaction ' || gid FROM pg_prepared_xacts;
