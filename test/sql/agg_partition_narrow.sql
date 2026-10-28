@@ -1,0 +1,57 @@
+-- A scan over a partitioned table narrows a unit to the rows its filters keep, as the scan of one table does (the rows of a window of a few days, of an
+-- equality, of an empty range), also after deletes, updates and inserts. Every query gives the rows of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET sift.agg_force = on;
+SET random_page_cost = 10000;
+
+CREATE TABLE pn (id int, grp int, ts date, amount int, tags jsonb) PARTITION BY HASH (grp);
+CREATE TABLE pn_0 PARTITION OF pn FOR VALUES WITH (MODULUS 3, REMAINDER 0) WITH (autovacuum_enabled = false);
+CREATE TABLE pn_1 PARTITION OF pn FOR VALUES WITH (MODULUS 3, REMAINDER 1) WITH (autovacuum_enabled = false);
+CREATE TABLE pn_2 PARTITION OF pn FOR VALUES WITH (MODULUS 3, REMAINDER 2) WITH (autovacuum_enabled = false);
+INSERT INTO pn SELECT i, i % 40, date '2024-01-01' + (i * 7) % 1500, (i * 13) % 1000,
+                      jsonb_build_object('a', i % 9, 'b', (i * 3) % 11) FROM generate_series(1, 60000) i;
+CREATE INDEX pn_col ON pn USING sift_col (id, grp, ts, amount, tags) WITH (paths = 'tags.* int4');
+VACUUM (FREEZE, ANALYZE) pn;
+
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	SET LOCAL sift.enable_agg = on;
+	RETURN d = 0;
+END $$;
+-- the scan runs on the index
+CREATE FUNCTION scanned(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; s bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP s := s OR l LIKE '%SiftAgg%'; END LOOP;
+	RETURN s;
+END $$;
+
+CREATE TABLE pn_q (n serial, w text);
+INSERT INTO pn_q (w) VALUES
+	('ts >= date ''2026-01-20'''), ('ts >= date ''2026-01-20'' AND ts <= date ''2026-01-24'''), ('ts = date ''2025-05-05'''), ('ts >= date ''2030-01-01'''),
+	('ts < date ''2024-01-03'''), ('id = 4242'), ('id IN (5, 17, 59999)'), ('grp = 7 AND ts >= date ''2027-06-01'''), ('amount = 999 AND ts >= date ''2025-01-01'''),
+	('(ts >= date ''2024-01-02'' AND ts <= date ''2024-01-04'') OR (ts >= date ''2026-01-20'' AND ts <= date ''2026-01-22'')'), ('ts >= date ''2024-01-01'''), ('ts >= date ''2025-01-01'' AND amount < 3');
+
+SELECT n, w, scanned('SELECT grp, count(*), sum(amount) FROM pn WHERE ' || w || ' GROUP BY grp') AS scan,
+       same('SELECT grp, count(*), sum(amount) FROM pn WHERE ' || w || ' GROUP BY grp') AS plain,
+       same('SELECT t.key, count(*) FROM pn, jsonb_each(tags) t WHERE ' || w || ' GROUP BY t.key') AS elements,
+       same('SELECT count(*), sum(id) FROM pn WHERE ' || w) AS total FROM pn_q ORDER BY n;
+
+DELETE FROM pn WHERE id % 13 = 0;
+UPDATE pn SET ts = ts + 20 WHERE id % 11 = 0;
+INSERT INTO pn SELECT 100000 + i, i % 40, date '2026-01-21' + i % 5, i % 100, '{"a": 1}' FROM generate_series(1, 300) i;
+SELECT n, same('SELECT grp, count(*), sum(amount) FROM pn WHERE ' || w || ' GROUP BY grp') AS plain,
+       same('SELECT t.key, count(*) FROM pn, jsonb_each(tags) t WHERE ' || w || ' GROUP BY t.key') AS elements FROM pn_q ORDER BY n;
+
+DROP FUNCTION same(text), scanned(text);
+DROP TABLE pn_q, pn;
+DROP EXTENSION pg_sift;

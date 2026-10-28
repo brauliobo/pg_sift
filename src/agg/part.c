@@ -1123,6 +1123,18 @@ part_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	return sift_colsrc_filter(cur_of(impl), unit_of(impl), bits);
 }
 
+/* the rows a unit keeps after the filters, as the child reads them: the child narrows its own unit, the wrapper's follows */
+static bool
+part_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
+{
+	PartSource *ps = impl;
+
+	if (!sift_colsrc_can_narrow(cur_of(impl)) || !sift_colsrc_narrow(cur_of(impl), &ps->cunit, bits))
+		return false;
+	unit->nrow = ps->cunit.nrow;
+	return true;
+}
+
 static bool
 part_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
@@ -1364,6 +1376,7 @@ static const SiftSrcProvider part_provider = {
 	.read_into = part_read_into,
 	.overflow = part_overflow,
 	.set_filters = part_set_filters,
+	.narrow = part_narrow,
 	.filter = part_filter,
 	.read_sel = part_read_sel,
 	.filter_types = part_filter_types,
