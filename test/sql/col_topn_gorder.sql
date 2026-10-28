@@ -1,7 +1,7 @@
 -- ORDER BY column LIMIT n over the global order of the column: the scan merges the sorted arrays of the segments
 -- and of the write buffer and fetches n rows of the heap, which confirms each entry as a b-tree's entry is confirmed. The rows are the heap's, in the heap's order with the
 -- addresses of the rows as the tie-break, over NULLs, ties, DESC, NULLS FIRST and LAST, deleted and updated rows, rows of the write buffer, a promotion and a merge;
--- a segment without the array, an OFFSET, a second key or a filter on another column keep the scan that reads the units. Conditions of the query on the key bound the part of
+-- a segment without the array, a second key or a filter on another column keep the scan that reads the units. Conditions of the query on the key bound the part of
 -- the array that is read (a range, an equality, the hull of an OR), and the heap's rows are tested against them.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
@@ -26,10 +26,10 @@ ANALYZE gt;
 
 -- an answer is right when its keys are the heap's, in order, and every row it names is a distinct row of the table with that key (rows of a tie may come in any order);
 -- the plan says whether the scan read the global order
-CREATE FUNCTION gt_chk(col text, dir text, nl text, lim int, other text DEFAULT '') RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION gt_chk(col text, dir text, nl text, lim int, other text DEFAULT '', off int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE q text; pl text; used bool := false; ka text; kb text; bad bigint;
 BEGIN
-	q := format('SELECT id, %1$s AS k FROM gt %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s', col, dir, nl, lim, other);
+	q := format('SELECT id, %1$s AS k FROM gt %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s OFFSET %6$s', col, dir, nl, lim, other, off);
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
@@ -37,9 +37,9 @@ BEGIN
 	EXECUTE 'CREATE TEMP TABLE gt_ra AS SELECT row_number() OVER () AS ord, * FROM (' || q || ') r';
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
 	SELECT string_agg(coalesce(k::text, 'N'), ',' ORDER BY ord) INTO ka FROM gt_ra;
-	EXECUTE format('SELECT string_agg(coalesce(k::text, ''N''), '','') FROM (SELECT %1$s AS k FROM gt %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s) r', col, dir, nl, lim, other) INTO kb;
+	EXECUTE format('SELECT string_agg(coalesce(k::text, ''N''), '','') FROM (SELECT %1$s AS k FROM gt %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s OFFSET %6$s) r', col, dir, nl, lim, other, off) INTO kb;
 	EXECUTE format('SELECT count(*) FROM gt_ra r WHERE NOT EXISTS (SELECT 1 FROM gt WHERE gt.id = r.id AND gt.%1$s IS NOT DISTINCT FROM r.k)', col) INTO bad;
-	RETURN CASE WHEN ka IS DISTINCT FROM kb OR bad > 0 OR (SELECT count(DISTINCT id) <> count(*) FROM gt_ra) THEN 'DIFFERS ' || col || ' ' || dir || ' ' || nl || ' ' || lim
+	RETURN CASE WHEN ka IS DISTINCT FROM kb OR bad > 0 OR (SELECT count(DISTINCT id) <> count(*) FROM gt_ra) THEN 'DIFFERS ' || col || ' ' || dir || ' ' || nl || ' ' || lim || ' ' || off
 				ELSE (CASE WHEN used THEN 'global order' ELSE 'units' END) END;
 END $$;
 
@@ -51,6 +51,11 @@ SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 32]) GROUP BY 1 ORDER BY 1;
 SELECT result, count(*) FROM gt_all(ARRAY[33, 200, 2000]) GROUP BY 1 ORDER BY 1;
 SET sift.test_topn_heads = off;
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;
+
+-- an OFFSET is read from the array too: the rows before it are confirmed by the heap and not given out
+CREATE FUNCTION gt_off(offs int[]) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+$$ SELECT gt_chk(c, d, nl, 10, '', o), 1::bigint FROM unnest(ARRAY['id', 'b', 'c', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(offs) o $$;
+SELECT result, count(*) FROM gt_off(ARRAY[1, 7, 40, 3000]) GROUP BY 1 ORDER BY 1;
 
 -- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
 -- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
@@ -147,15 +152,15 @@ BEGIN
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
 END $$;
 SELECT result, count(*) FROM (
-	SELECT gt_ks(format('SELECT id, %1$s FROM gt %2$s ORDER BY %1$s %3$s, id %4$s LIMIT %5$s', c, w, d, d2, l)) AS result
+	SELECT gt_ks(format('SELECT id, %1$s FROM gt %2$s ORDER BY %1$s %3$s, id %4$s LIMIT %5$s OFFSET %6$s', c, w, d, d2, l, o)) AS result
 	FROM (VALUES ('b', ''), ('b', 'WHERE (b, id) > (250, 5000)'), ('b', 'WHERE b > 250 OR (b = 250 AND id > 5000)'), ('b', 'WHERE (b, id) <= (40, 20000)'), ('b', 'WHERE b = 77'),
 				 ('a', ''), ('a', 'WHERE (a, id) >= (-3, 900)'), ('d', ''), ('d', 'WHERE (d, id) > (DATE ''1990-03-01'', 4000)'),
 				 ('t', 'WHERE (t, id) > (TIMESTAMP ''2000-03-01'', 1)'), ('c', 'WHERE c > 0 AND id > 10000')) q(c, w),
-		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['ASC', 'DESC']) d2, unnest(ARRAY[1, 10, 50, 400]) l) r
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['ASC', 'DESC']) d2, unnest(ARRAY[1, 10, 50, 400]) l, unnest(ARRAY[0, 17]) o) r
 GROUP BY 1 ORDER BY 1;
 DROP FUNCTION gt_ks(text);
 
--- shapes that read the units: an OFFSET, a filter on another column
+-- a shape that reads the units: a filter on another column
 SELECT gt_chk('b', 'ASC', 'LAST', 50, 'WHERE a > 0');
 SET sift.test_topn_gorder = off;
 SELECT result, count(*) FROM gt_all(ARRAY[10, 200]) GROUP BY 1 ORDER BY 1;
@@ -178,5 +183,5 @@ CREATE INDEX gt_k ON gt USING sift_col (id sift.col_int4_ops, a sift.col_int2_op
 SELECT gt_chk('t', 'DESC', 'LAST', 1) AS keycut_1, gt_chk('t', 'DESC', 'LAST', 10) AS keycut_10, gt_chk('t', 'ASC', 'FIRST', 32) AS keycut_32, gt_chk('t', 'DESC', 'LAST', 500) AS keycut_500;
 
 DROP TABLE gt CASCADE;
-DROP FUNCTION gt_chk(text, text, text, int, text), gt_all(int[]), gt_mm(text), gt_mm_all();
+DROP FUNCTION gt_chk(text, text, text, int, text, int), gt_all(int[]), gt_off(int[]), gt_mm(text), gt_mm_all();
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

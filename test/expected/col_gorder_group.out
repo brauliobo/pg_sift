@@ -104,7 +104,7 @@ SELECT gg_plan(q) AS plan, q FROM unnest(ARRAY[
  array | SELECT id, k FROM gg WHERE g = 3 AND (k, id) > (100, 5) ORDER BY k, id LIMIT 10
  array | SELECT id, k FROM gg WHERE g = 3 AND (k < 20 OR k > 480) ORDER BY k LIMIT 10
  units | SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP '2000-01-02' ORDER BY k LIMIT 10
- units | SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5
+ array | SELECT id, k FROM gg WHERE g = 3 ORDER BY k DESC LIMIT 10 OFFSET 5
  units | SELECT id, k FROM gg WHERE g > 3 ORDER BY k DESC LIMIT 10
  units | SELECT id, k FROM gg ORDER BY k DESC LIMIT 10
  units | SELECT id, k FROM gg WHERE g <> 3 AND k > 10 ORDER BY k LIMIT 10

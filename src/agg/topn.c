@@ -3934,7 +3934,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	int			gl;
 
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (!t->gok || t->nogord || t->skip > 0 || t->all)
+	if (!t->gok || t->nogord || t->all)
 		return false;
 	if (cond != NULL)
 	{
@@ -3969,6 +3969,16 @@ sift_topn_gordered(const SiftTopN *t)
 	return t->go != NULL;
 }
 
+/* a row the Limit above throws away: NULLs, the heap row is not read */
+static bool
+skipped_row(SiftTopN *t, TupleTableSlot *slot)
+{
+	ExecClearTuple(slot);
+	memset(slot->tts_isnull, true, t->nout * sizeof(bool));
+	ExecStoreVirtualTuple(slot);
+	return true;
+}
+
 static bool
 gord_next(SiftTopN *t, TupleTableSlot *slot)
 {
@@ -3997,7 +4007,8 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 				continue;
 		}
 		t->fetched++;
-		t->emitted++;
+		if (t->emitted++ < t->skip)
+			return skipped_row(t, slot);
 		ExecClearTuple(slot);
 		for (int c = 0; c < t->nout; c++)
 			slot->tts_values[c] = slot_getattr(f->slot, f->attno[c], &slot->tts_isnull[c]);
@@ -4023,12 +4034,7 @@ sift_topn_next(SiftTopN *t, TupleTableSlot *slot)
 	if (!next_tid(t, &tid, &part))
 		return false;
 	if (t->emitted++ < t->skip)
-	{
-		ExecClearTuple(slot);
-		memset(slot->tts_isnull, true, t->nout * sizeof(bool));
-		ExecStoreVirtualTuple(slot);
-		return true;
-	}
+		return skipped_row(t, slot);
 	if (e != NULL && e->hasv)
 	{
 		/* the row came from a unit: its columns are the heap row's (an update that keeps the TID's chain keeps the columns of the index) */

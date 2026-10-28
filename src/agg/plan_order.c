@@ -929,18 +929,18 @@ topn_array_bounded(const SiftAggPred *p, int key)
 
 /*
  * Does the scan read the order array of the first key, not the units (sift_topn_gorder opens it for the shapes below and falls back to the units for any
- * other)? A key with an array in every segment, no OFFSET, integer or time keys, and conditions the array answers: bounds on the key, or an equality of the
+ * other)? A key with an array in every segment, integer or time keys, and conditions the array answers: bounds on the key, or an equality of the
  * column an array grouped by one is grouped by (the unpinned group of a grouped array is refused).
  */
 static bool
-topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, double offset)
+topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey)
 {
 	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
 	bool		bounded = false,
 				key_pinned = false,
 				group_pinned = false;
 
-	if (offset > 0 || leaf[0] < 0 || c->stats.gord_cover[leaf[0]] < 0.9 || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
+	if (leaf[0] < 0 || c->stats.gord_cover[leaf[0]] < 0.9 || c->search != NULL || c->nparts > 0 || s->naggs > 0 || !sift_aggspec_plain(s) ||
 		nkey > 4 || c->level_params != NIL)
 		return false;
 	for (int j = 0; j < nkey; j++)
@@ -1343,7 +1343,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
-		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, offset);
+		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead);
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
