@@ -61,12 +61,12 @@ SELECT extract(isodow FROM ts)::int AS weekday, kind, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: float_metric
--- expect: scan 0.23 0.92
+-- expect: scan 0.083 0.33
 SELECT kind, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3) AS mean, round(sum((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 2) AS total FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: float_sum_unrounded
--- expect: scan 0.23 0.92
+-- expect: scan 0.083 0.33
 SELECT kind, sum((doc -> 'metrics' ->> 'm_a')::float8) AS total, avg((doc -> 'metrics' ->> 'm_a')::float8) AS mean FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
@@ -346,7 +346,7 @@ SELECT DISTINCT parent_id, kind FROM events WHERE deleted_at IS NULL AND ts >= d
 SELECT d.tier, count(DISTINCT e.parent_id) AS parents, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: arms_union
--- expect: scan 0.25 1.00
+-- expect: scan 0.051 0.20
 SELECT 'catg_a' AS arm, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS mean, count(*) AS n FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01'
 UNION ALL
 SELECT 'catg_b', round(avg((doc -> 'metrics' ->> 'catg_b')::float8)::numeric, 3), count(*) FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' ORDER BY 1;
@@ -362,7 +362,7 @@ SELECT parent_id, avg(amount) FILTER (WHERE kind = 'cat_a') AS mean_a, avg(amoun
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: arms_per_parent_metrics
--- expect: scan 0.32 1.3
+-- expect: scan 0.092 0.37
 SELECT parent_id, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS catg_a, round(avg((doc -> 'metrics' ->> 'catg_b')::float8)::numeric, 3) AS catg_b, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
@@ -423,7 +423,7 @@ SELECT e.kind, count(*) AS n, sum(e.amount) AS total FROM events e JOIN dims d O
 WHERE d.settings ->> 'tier' = 'tier_c' AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
 -- name: scope_expression_filter
--- expect: either 4.0 16
+-- expect: either 1.9 7.8
 SELECT kind, count(*) AS n FROM events WHERE parent_id IN (SELECT d.id FROM dims d WHERE d.id % 3 = 1) AND deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2024-03-08' GROUP BY 1 ORDER BY 1;
 
 -- name: skew_heaviest_parents

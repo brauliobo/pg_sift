@@ -88,7 +88,7 @@
 #define AGG_ORDERED_ROW		6.0		/* a value kept for an ordered-set aggregate (histogram probe) */
 #define AGG_NUM_STEP		0.5		/* an int128 add, subtract, multiply on a value */
 #define AGG_NUM_DIV			8.0		/* round, trunc, floor, ceil: an int128 division */
-#define AGG_VLEAF_ELEM		9.0		/* an element of an object looked up by key (a metric of a free key object), per row and key */
+#define AGG_VLEAF_ELEM		0.6		/* an element of an object looked up by key (a metric of a free key object), per row and key: 1, 2 and 4 keys of an object of 12 elements took 4.7 ms, 7.3 ms and 12.5 ms more than the group alone over 1,000,000 rows (0.55 ns an element) */
 #define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
 #define AGG_JOIN_PROBE		58.0	/* a tuple's probe of a lookup table of 250,000 rows by its join key: the key's hash and the rows it finds, in the operators AGG_SCAN_SPEED scales (35 ns measured); it grows with the square root of the rows, as the table leaves the cache */
 #define AGG_ENTRY_ROW		70.0	/* a new entry of a combo of a join that reads values beyond its key (a CASE of a lookup column and a measure): the hash insert and the id of its value, 215 ns measured with 2.8 million entries (2,040 instructions with one expression, 5,450 with seven) */
@@ -1952,6 +1952,7 @@ typedef struct CostAcc
 	double		agg_rows;
 	double		scan_rows;
 	double		rows_out;
+	double		lift;			/* the factor the scan is charged for the rows of an unnest the normal plan expects (agg_cost): the workers it starts cost as much */
 } CostAcc;
 
 /*
@@ -2144,9 +2145,9 @@ array_image_width(AggCtx *c, int leaf)
 	return w > 0 ? w : AGG_ARR_WIDTH;
 }
 
-/* is a value of the leaf read by a key, an aggregate, a combo or a test (an image decoded), not only its null flags? */
+/* is a value of the leaf read by a key, an aggregate or a combo (an image decoded), not only its null flags or a test? */
 static bool
-leaf_values_read(const SiftAggSpec *s, int leaf)
+leaf_values_used(const SiftAggSpec *s, int leaf)
 {
 	for (int i = 0; i < s->nkeys; i++)
 		if (s->key[i].leaf == leaf && s->key[i].kind != SAK_COMBO)
@@ -2167,10 +2168,43 @@ leaf_values_read(const SiftAggSpec *s, int leaf)
 		for (int p = 0; p < s->combo[i].nleaves; p++)
 			if (s->combo[i].leaf[p] == leaf)
 				return true;
+	return false;
+}
+
+/* does a conjunct of the query test a value of the leaf (every row's value is read, whatever few pass)? */
+static bool
+leaf_tested(const SiftAggSpec *s, int leaf)
+{
 	for (int i = 0; i < s->npred; i++)
 		if (pred_uses_leaf(s, s->pred[i], leaf, true))
 			return true;
 	return false;
+}
+
+/* is a value of the leaf read by a key, an aggregate, a combo or a test (an image decoded), not only its null flags? */
+static bool
+leaf_values_read(const SiftAggSpec *s, int leaf)
+{
+	return leaf_values_used(s, leaf) || leaf_tested(s, leaf);
+}
+
+/* do only comparisons with constants read the leaf: the kernels test its lanes where they are, no value is decoded (0.3 ns a row measured for 3,000,000 rows of a date column) */
+static bool
+leaf_compared_only(const SiftAggSpec *s, int leaf)
+{
+	bool		tested = false;
+
+	/* a top-N orders by columns that no key or aggregate names */
+	if (s->topn || leaf_values_used(s, leaf))
+		return false;
+	for (int i = 0; i < s->npred; i++)
+		if (pred_uses_leaf(s, s->pred[i], leaf, true))
+		{
+			if (s->pred[i]->kind != SAP_CMP)
+				return false;
+			tested = true;
+		}
+	return tested;
 }
 
 /*
@@ -2184,10 +2218,7 @@ array_bytes_read(AggCtx *c, const SiftAggSpec *s, int leaf, double sparse)
 
 	if (bytes == 0 || !leaf_values_read(s, leaf))
 		return 0;
-	for (int i = 0; i < s->npred; i++)
-		if (pred_uses_leaf(s, s->pred[i], leaf, true))
-			return bytes;
-	return bytes * sparse;
+	return bytes * (leaf_tested(s, leaf) ? 1.0 : sparse);
 }
 
 /* the entries of it, in operators */
@@ -2196,11 +2227,12 @@ wide_entry_cost(AggCtx *c, const SiftAggSpec *s, int leaf, const CostAcc *k, dou
 {
 	bool		sums,
 				keyed;
-	double		array = AGG_ARR_BIG * Max(array_bytes_read(c, s, leaf, sparse) - AGG_ARR_KNEE, 0.0);
+	double		array = AGG_ARR_BIG * Max(array_bytes_read(c, s, leaf, sparse) - AGG_ARR_KNEE, 0.0),
+				frac = wide_entry_frac(c, leaf, k) * (leaf_tested(s, leaf) ? 1.0 : sparse);	/* a leaf no conjunct tests: the entries of the rows that pass, a unit that keeps few is read at those rows only */
 
 	if (leaf_copy_only(s, leaf, &sums, &keyed))
-		return wide_entry_frac(c, leaf, k) * ((sums ? (keyed ? AGG_WIDE_KEYSUM : AGG_WIDE_NUM) : AGG_WIDE_COPY) + array);
-	return wide_entry_frac(c, leaf, k) * ((numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY) + array);
+		return frac * ((sums ? (keyed ? AGG_WIDE_KEYSUM : AGG_WIDE_NUM) : AGG_WIDE_COPY) + array);
+	return frac * ((numeric_image(c, &c->lay->leaf[leaf]) ? (leaf_wsum_only(s, leaf) ? AGG_WIDE_NUM : AGG_WIDE_IMAGE) : AGG_WIDE_ENTRY) + array);
 }
 
 /* The nanoseconds a row costs the tests of the IN lists of the predicate p beyond a small table in the cache: a list of spread values is a hash or bit table */
@@ -2273,6 +2305,25 @@ key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, doub
 	return total;
 }
 
+/* the tests a row goes through: the bounds of a range on one leaf are one pass over its lanes (0.65 ms for 1,000,000 rows with one bound or two, 1.04 with a second column) */
+static int
+filter_tests(const SiftAggSpec *s)
+{
+	int			tests = 0;
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+		bool		bound = p->kind == SAP_CMP && p->op != SCMP_EQ && p->op != SCMP_NE,
+					seen = false;
+
+		for (int j = 0; bound && j < i; j++)
+			seen |= s->pred[j]->kind == SAP_CMP && s->pred[j]->leaf == p->leaf && s->pred[j]->op != SCMP_EQ && s->pred[j]->op != SCMP_NE;
+		tests += !seen;
+	}
+	return tests;
+}
+
 static void
 cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
@@ -2291,9 +2342,10 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	tested = point_narrows(c, s) ? sparse : 1.0;
 	k->sparse = sparse;
 	for (int i = 0; i < s->nleaves; i++)
-		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
-			(leaf_filtered(s, s->leaves[i]) ? tested : sparse);
-	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(s->npred + nkeyfilters, 1) * tested;
+		if (!leaf_compared_only(s, s->leaves[i]))
+			k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
+				(leaf_filtered(s, s->leaves[i]) ? tested : sparse);
+	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(filter_tests(s) + nkeyfilters, 1) * tested;
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->npred; i++)
 		k->scan_cost += k->rows * in_tests_ns(c, s->pred[i]) / (AGG_OP_NS * AGG_SCAN_SPEED) * tested;
@@ -2483,7 +2535,7 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 
 		relation_close(rel, NoLock);
 		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
-		*row_cost = cols ? AGG_LOAD_ROW_COLS + nnum * AGG_LOAD_NUMERIC : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+		*row_cost = cols ? AGG_LOAD_ROW_COLS * pow(Max(tuples / AGG_LOAD_BIG, 1.0), 0.4) + nnum * AGG_LOAD_NUMERIC : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	}
 	return tuples;
 }
@@ -2710,7 +2762,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
 			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
 	}
-	*startup += setup;
+	*startup += setup * k->lift;
 }
 
 /* the per-group arrays of one aggregate, as acc_alloc (agg/group.c) allocates them */
@@ -3044,8 +3096,8 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	 * filter on the elements (which cuts the expected rows) keeps its price. A qual with a bound parameter has no such estimate (a generic
 	 * plan guesses its selectivity; the values are known at execution): no charge.
 	 */
-	if (s->group >= 0 && !rel_has_param_qual(c->rel))
-		k.scan_cost *= Max(sqrt(input_rel->rows / (k.sel_rows * k.elems)), 1.0);
+	k.lift = s->group >= 0 && !rel_has_param_qual(c->rel) ? Max(sqrt(input_rel->rows / (k.sel_rows * k.elems)), 1.0) : 1.0;
+	k.scan_cost *= k.lift;
 	/* the calls of the generic aggregates are the elements the data has, whatever the normal plan expects of the unnest */
 	k.scan_cost += k.gen_cost * cpu_operator_cost;
 	/* rows on pages that are not all-visible are checked in the heap: the rows that reach the groups, not the rows the table's own filters keep (the lookup joins filter them first) */

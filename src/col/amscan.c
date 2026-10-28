@@ -59,7 +59,8 @@
 #define COL_SCAN_PROBE		4.0		/* one key looked up in a point directory: its slots are a page or two of a table the lookups of other keys do not share */
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
-#define COL_SCAN_ROW		0.002	/* the filter of one value of a column of a kept unit: 1 ns a value measured on a date column (3,000,000 values read in 2.9 ms), 2 with the units around it */
+#define COL_SCAN_ROW		0.0005	/* the filter of one value of a column of a kept unit by a comparison: 0.4 to 0.5 ns measured over 3,000,000 rows of a date, an integer, a text and a numeric column (the bounds of a range are one pass over the lanes) */
+#define COL_SCAN_ROW_VAR	0.009	/* ... of a column tested by anything but a comparison (a pattern: 2.8 ns a row measured for a text, the elements of an array one by one) */
 #define COL_SCAN_EMIT_IOS	0.003	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: a third of COL_SCAN_EMIT, so that it never costs more than the tuple scan of the same rows */
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 #define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
@@ -1507,9 +1508,28 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				kept_units,
 				idx_rows,
 				rescan,
+				row_cost,
 				scale = cpu_operator_cost / 0.0025;
-	int			ncols = list_length(path->indexclauses),
-				nprobes;
+	Bitmapset  *cols = NULL,
+			   *slow = NULL;
+	int			nprobes;
+
+	/* the bounds of a range on one column are one test of it; a column with a clause that is no comparison of the operator class (a pattern, an array operator) keeps the price of a value tested one by one */
+	foreach_node(IndexClause, ic, path->indexclauses)
+	{
+		cols = bms_add_member(cols, ic->indexcol);
+		foreach_node(RestrictInfo, ri, ic->indexquals)
+		{
+			int			strategy = IsA(ri->clause, OpExpr) ? get_op_opfamily_strategy(((OpExpr *) ri->clause)->opno, index->opfamily[ic->indexcol]) : 0;
+
+			if (strategy < BTLessStrategyNumber || strategy > BTGreaterStrategyNumber)
+				slow = bms_add_member(slow, ic->indexcol);
+		}
+	}
+	row_cost = bms_num_members(bms_difference(cols, slow)) * COL_SCAN_ROW;
+	foreach_node(IndexClause, ic, path->indexclauses)
+		if (bms_is_member(ic->indexcol, slow))
+			row_cost += COL_SCAN_ROW_VAR;
 
 	genericcostestimate(root, path, loop_count, &costs);
 	irel = index_open(index->indexoid, AccessShareLock);
@@ -1523,7 +1543,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	costs.indexStartupCost = scale * (COL_SCAN_FIXED - (nprobes > 0 ? tid : 0.0) * (COL_SCAN_FIXED - COL_SCAN_FIXED_TID) + (nprobes > 0 ? nprobes * COL_SCAN_PROBE + extra + kept_units * COL_SCAN_WORD : units * COL_SCAN_WALK));
 	costs.indexTotalCost = costs.indexStartupCost
 		+ kept_units * (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * COL_SCAN_UNIT + Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
-		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
+		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
 		+ index->pages * cpu_tuple_cost
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
 	rescan = rescan_floor(root, path);

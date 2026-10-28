@@ -263,7 +263,7 @@ CREATE FUNCTION sc_all(OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx b
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup, count(*) FILTER (WHERE btree_idx) AS on_btree FROM sc_all();
  queries | agree | on_col | on_tup | on_btree 
 ---------+-------+--------+--------+----------
-     142 |   142 |    135 |    133 |      134
+     142 |   142 |    135 |    134 |      134
 (1 row)
 
 SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
@@ -380,7 +380,7 @@ SELECT n, rows, agree, col_idx, tup_idx, btree_idx FROM sc_all();
  109 | 1482 | t     | t       | t       | t
  110 |   94 | t     | t       | t       | t
  111 |    7 | t     | t       | t       | t
- 112 |  775 | t     | t       | f       | t
+ 112 |  775 | t     | t       | t       | t
  113 |  750 | t     | t       | t       | t
  114 | 2069 | t     | t       | t       | t
  115 |  794 | t     | t       | t       | t
@@ -530,7 +530,7 @@ SELECT buffers > 0 AS rows_in_the_buffer FROM sift.col_index_info('sc_col'::regc
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    133
+     142 |   142 |    135 |    135
 (1 row)
 
 SELECT n, rows, agree FROM sc_all() WHERE NOT agree;
@@ -584,7 +584,7 @@ VACUUM sc_b;
 SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FILTER (WHERE col_idx) AS on_col, count(*) FILTER (WHERE tup_idx) AS on_tup FROM sc_all();
  queries | agree | on_col | on_tup 
 ---------+-------+--------+--------
-     142 |   142 |    135 |    134
+     142 |   142 |    135 |    135
 (1 row)
 
 SELECT sc_dml($$UPDATE %T SET v = (v * 3) % 500 WHERE id % 7 = 0$$);
