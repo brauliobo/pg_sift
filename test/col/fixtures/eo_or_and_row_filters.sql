@@ -1,5 +1,5 @@
 -- the comparison with the column among the other conjuncts and disjuncts of the element and of the row
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

@@ -1,5 +1,5 @@
 -- the WHERE of the outer query on inner aggregates is the HAVING of the arms: the per-order groups that fail it are not groups
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 WITH base AS (

@@ -1,5 +1,5 @@
 -- ORDER BY in the call under grouping sets, an expression of two columns as the key, a global aggregate and a group without rows
--- shape: S3
+-- shape: metrics-items-blend
 -- expect: agg
 -- key: -
 -- scenario: yes

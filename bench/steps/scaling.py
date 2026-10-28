@@ -25,14 +25,13 @@ import extras  # noqa: E402
 
 BENCH = os.path.dirname(HERE)
 LOCK = os.environ.get('PERF_LOCK', '/tmp/sift-perf.lock')
-QUESTIONS = ('01', '03', '04', '06')   # a lookup by id (pruned to one partition), revenue per month, the top categories, customers per month
+QUESTIONS = ('point-lookup', 'revenue-per-month', 'top-categories', 'customers-per-month')   # a lookup by id (pruned to one partition), revenue per month, the top categories, customers per month
 INDEX = "CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, quantity, created_at, (date_trunc('month', created_at)::date))"
 
 
 def sql_of(q, rows):
     """the PostgreSQL statement of question q: the `--@ pg` section of its file in bench/sql/store/queries (the lookup asks for the order 42% of the way down)"""
-    d = os.path.join(BENCH, 'sql', 'store', 'queries')
-    text = open(os.path.join(d, next(f for f in sorted(os.listdir(d)) if f.startswith(q + '_')))).read()
+    text = open(os.path.join(BENCH, 'sql', 'store', 'queries', q + '.sql')).read()
     return re.search(r'--@ pg\n(.*?)(?=\n--@|\Z)', text, re.S).group(1).strip().rstrip(';').replace('{point_id}', str(rows * 42 // 100))
 
 
@@ -59,7 +58,7 @@ def plan_of(db, gucs, stmt):
 def cells(case, workers, rows):
     """[(case, arm, gucs, statement)]: the two arms of every question at one setting"""
     par = f'set max_parallel_workers_per_gather = {workers}'
-    return [(case, f'q{q}_{sid}', [par, f'set sift.enable_agg = {"off" if sid == "pg" else "on"}'], sql_of(q, rows)) for q in QUESTIONS for sid in ('pg', 'sift')]
+    return [(case, f'{q}_{sid}', [par, f'set sift.enable_agg = {"off" if sid == "pg" else "on"}'], sql_of(q, rows)) for q in QUESTIONS for sid in ('pg', 'sift')]
 
 
 def time_cells(db, cs, reps, rows):

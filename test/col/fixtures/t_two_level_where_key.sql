@@ -1,5 +1,5 @@
 -- the WHERE of the outer query on group keys, in both arms (PostgreSQL pushes it into them): one of the keys is NULL in an arm
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 WITH base AS (

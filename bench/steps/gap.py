@@ -161,7 +161,7 @@ def cmd_profile(args):
                  perf=perf_profile(sql, args.perf_runs))
         out['queries'][q.id] = r
         e = r['explain']
-        log(f'{q.id} {q.name}: plan {e["planning_ms"]:.2f} ms, execute {e["execution_ms"]:.2f} ms ({r["explain_no_workers"]["execution_ms"]:.2f} without workers), '
+        log(f'{q.id}: plan {e["planning_ms"]:.2f} ms, execute {e["execution_ms"]:.2f} ms ({r["explain_no_workers"]["execution_ms"]:.2f} without workers), '
             f'{r["perf"]["instructions"] / 1e6:.1f} M instructions, hook: {r["planning_by_hook"]}')
     with open(args.o, 'w') as f:
         json.dump(out, f, indent=1)

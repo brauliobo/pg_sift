@@ -1,5 +1,5 @@
 -- numeric(p, s) sums, averages, minima and maxima: the scale of the result, the division of avg, NULL-only groups, negative values and sums past int64
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

@@ -126,10 +126,6 @@ def questions(S):
     return S.queries
 
 
-def slug(q):
-    return sc.question_slugs()[q]
-
-
 def engines_of(S, tier, D):
     es = [e for e in ORDER if e in S.engines(tier) or (e == 'duckdb' and D)]
     return es
@@ -178,7 +174,7 @@ def agg_latency(d, theme):
         if i % 2 == 0:
             c.rect(14, cy - rowh / 2, W - 28, rowh, c.t['neutral'], 4)
         vals = {e: lat(S, D, tier, e, q) for e in es}
-        c.text(22, cy - 2, f'Q{q} {slug(q)}', 14)
+        c.text(22, cy - 2, f'{q}', 14)
         best_mine = min((e for e in ('sift', 'sift_table') if vals.get(e)), key=lambda e: vals[e][0], default=None)
         if best_mine and vals.get('pg'):
             c.text(22, cy + 15, f'PostgreSQL {ms_text(vals["pg"][0])} ms, {SHORT[best_mine]} {ms_text(vals[best_mine][0])} ms', 11, fill=c.t['muted'])
@@ -188,7 +184,7 @@ def agg_latency(d, theme):
             v, mn, mx = vals[e]
             ey = cy + off[e]
             c.line(X(max(mn, lo)), ey, X(min(mx, hi)), ey, c.color(e), 2, opacity=0.55)
-            c.marker(X(v), ey, e, f'Q{q} {slug(q)}: {SYSTEMS[e][0]} {ms_text(v)} ms (fastest {ms_text(mn)}, slowest {ms_text(mx)})', r=4.5)
+            c.marker(X(v), ey, e, f'{q}: {SYSTEMS[e][0]} {ms_text(v)} ms (fastest {ms_text(mn)}, slowest {ms_text(mx)})', r=4.5)
         mine = {e: vals[e][0] for e in ('sift', 'sift_table') if vals.get(e)}
         others = {e: vals[e][0] for e in es if e not in ('sift', 'sift_table') and vals[e]}
         if mine and others:
@@ -227,9 +223,9 @@ def agg_speedup(d, theme):
                 else:
                     row.append(base[0] / v[0] if base and v else None)
             rows_.append(row)
-        strip_cells(c, x0, top, es, rows_, cw, rh, lambda ri, ci, r, v=variant: f'Q{qs[ri]} {slug(qs[ri])} ({v}): {SYSTEMS[es[ci]][0]} is {factor_text(r)} PostgreSQL')
+        strip_cells(c, x0, top, es, rows_, cw, rh, lambda ri, ci, r, v=variant: f'{qs[ri]} ({v}): {SYSTEMS[es[ci]][0]} is {factor_text(r)} PostgreSQL')
     for ri, q in enumerate(qs):
-        c.text(22, top + ri * rh + rh / 2 + 5, f'Q{q} {slug(q)}', 14)
+        c.text(22, top + ri * rh + rh / 2 + 5, f'{q}', 14)
     y = top + rh * len(qs) + 26
     for i, r in enumerate([0.01, 0.1, 0.5, 1, 2, 10, 100]):
         c.rect(20 + i * 56, y - 11, 54, 16, strip_color(c, r), 2)
@@ -358,7 +354,7 @@ def scale_questions(d, theme):
         lo, hi = 10 ** math.floor(math.log10(min(vals))), 10 ** math.ceil(math.log10(max(vals)))
         Y = lambda v: py + ph - (math.log10(v) - math.log10(lo)) / (math.log10(hi) - math.log10(lo)) * ph
         X = lambda n: px + (math.log10(n) - math.log10(sizes[0])) / (math.log10(sizes[-1]) - math.log10(sizes[0])) * pw
-        c.text(px - 40, py - 14, f'Q{q} {slug(q)}', 14, weight='bold')
+        c.text(px - 40, py - 14, f'{q}', 14, weight='bold')
         g = lo
         while g <= hi * 1.001:
             c.line(px, Y(g), px + pw, Y(g))
@@ -374,7 +370,7 @@ def scale_questions(d, theme):
             line = [(X(n), Y(v)) for n, v in p]
             c.polyline(line, c.color(e), 2)
             for (n, v), (x, yy) in zip(p, line):
-                c.marker(x, yy, e, f'Q{q} {slug(q)}: {SYSTEMS[e][0]} {ms_text(v)} ms at {rows_label(n)} orders', r=3.5)
+                c.marker(x, yy, e, f'{q}: {SYSTEMS[e][0]} {ms_text(v)} ms at {rows_label(n)} orders', r=3.5)
             sl = slope([n for n, _ in p], [v for _, v in p])
             ends.append((line[-1][1], e, sl))
         ends.sort()
@@ -526,7 +522,7 @@ def cases_ecdf(results, theme):
         c.marker(left + pw - 330, ly - 4, sid)
         c.text(left + pw - 316, ly, name, 13, weight='bold')
         c.text(left + pw - 316, ly + 18, f'median {factor_text(median)}, slower on {slower} ({100 * slower / len(vals):.0f}%)', 12, fill=c.t['muted'])
-    end = c.foot(top + ph + 68, ['Data: bench/results/cases.tsv (one backend, no parallel workers, PostgreSQL = the same table with sift.enable_agg = off) and bench/results/analytics.json (shapes G1-G8 at one filter and S1-S7 at three filter sizes, wall time of one backend). The two sets are different workloads.'])
+    end = c.foot(top + ph + 68, ['Data: bench/results/cases.tsv (one backend, no parallel workers, PostgreSQL = the same table with sift.enable_agg = off) and bench/results/analytics.json (the whole-table shapes at one filter and the set reports at three filter sizes, wall time of one backend). The two sets are different workloads.'])
     return c.render(end + 8, 'Distribution of the speed-up', 'Share of benchmark cases and of real query shapes at least as fast as x times PostgreSQL.')
 
 
@@ -562,7 +558,7 @@ def shapes_speedup(results, theme):
                 c.text(X(r), cy - 11, v.replace('K', ''), 10, 'middle', c.t['muted'])
         if len(pts) == 1 or close:
             c.text(max(xs) + 14, cy + 5, factor_text(statistics.median(r for _, r in pts)) + ('' if len(pts) == 1 else ' at 10, 400 and 4,000 tenants'), 12, fill=c.t['ink'], weight='bold')
-    end = c.foot(top + rowh * len(shapes) + 24, ['Data: bench/results/analytics.json; the number over a dot is the tenants in the filter (10, 400, 4,000). G1-G8 read the whole table. Orange triangles: pg_sift slower than the heap.'])
+    end = c.foot(top + rowh * len(shapes) + 24, ['Data: bench/results/analytics.json; the number over a dot is the tenants in the filter (10, 400, 4,000). The whole-table shapes read the whole table. Orange triangles: pg_sift slower than the heap.'])
     return c.render(end + 8, 'Speed-up on the real query shapes', 'Speed-up over the PostgreSQL heap for 8 whole-table shapes and 7 store-filtered shapes at three filter sizes.')
 
 
@@ -578,7 +574,7 @@ def shapes_latency(results, theme):
     sid = {'heap': 'pg', 'col': 'sift', 'flat': 'flat', 'ch': 'ch'}
     c = Wide(theme)
     c.head(f'Real query shapes on {meta.get("tier", "?")} orders: time per shape',
-           'Median wall milliseconds of one backend on a logarithmic axis, left is faster. G1-G8 read the whole table; S1-S7 are reports of a set of tenants, shown with the smallest (10) and the largest (4,000) filter. '
+           'Median wall milliseconds of one backend on a logarithmic axis, left is faster. The whole-table shapes read the whole table; the set reports are reports of a set of tenants, shown with the smallest (10) and the largest (4,000) filter. '
            'On the right pg_sift against the fastest other system.')
     y = c.legend(20, 96 + 18 * (c.sub_lines - 2), [sid[e] for e in es], {'pg': 'PostgreSQL (heap)', 'sift': 'pg_sift sift_col'})
     left, right, rowh = 150, 250, 27
@@ -607,7 +603,7 @@ def shapes_latency(results, theme):
         word = f'{factor_text(ratio)} faster than {name}' if ratio >= 1.05 else f'tie with {name}' if ratio > 0.95 else f'{factor_text(1 / ratio)} slower than {name}'
         c.text(W - 20, cy + 4, word, 12, 'end', c.t['ink'] if ratio >= 0.95 else c.t['down'], 'bold' if ratio < 0.95 else None)
     end = c.foot(top + rowh * len(cases) + 22, [f'Data: bench/results/analytics.json, {meta.get("date", "?")[:10]}, median of {meta.get("runs", "?")} runs, one backend with no parallel workers, ClickHouse on one thread; the filter of 400 tenants is in docs/perf/AGGREGATES.md. '
-                                                'Flat tables are the best conventional layout (denormalized copies) of the same data. S6 has no ClickHouse query.'])
+                                                'Flat tables are the best conventional layout (denormalized copies) of the same data. notes-path-exists has no ClickHouse query.'])
     return c.render(end + 8, 'Time per application shape', 'Median time of each application shape on PostgreSQL, pg_sift, PostgreSQL flat tables and ClickHouse.')
 
 

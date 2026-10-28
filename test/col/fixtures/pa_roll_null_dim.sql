@@ -1,5 +1,5 @@
 -- preagg: rollup: the elements with no value in a dim (IS NULL) and the NULL group of a dim
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

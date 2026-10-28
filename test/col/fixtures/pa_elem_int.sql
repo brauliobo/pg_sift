@@ -1,5 +1,5 @@
 -- preagg: the items' quantity as the key, a float measure and a test of the key
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

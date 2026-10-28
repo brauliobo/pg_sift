@@ -1,5 +1,5 @@
 -- the WHERE of the outer query over two arms: on a key that is NULL in one arm (and NULL in the data of the other), and on inner aggregates
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 WITH base AS (

@@ -1,5 +1,5 @@
 -- eight cell keys beyond the id, the limit: the outer aggregate runs in the scan
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

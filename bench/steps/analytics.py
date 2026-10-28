@@ -2,7 +2,7 @@
 """Measurement of the analytics queries (bench/sql/analytics/queries, or a ClickBench queries.sql): CPU time, instructions and the
 result of every query on the engines of the comparison. Called by steps/analytics.sh, which starts the server and loads the data.
 
-    python3 -I analytics.py run [--corpus orders|clickbench] [--engines heap,col,flat,ch] [--sets K10,K400,K4000] [--queries S1,G]
+    python3 -I analytics.py run [--corpus orders|clickbench] [--engines heap,col,flat,ch] [--sets K10,K400,K4000] [--queries metrics-summary,whole]
                                 [--runs 5] [--out DIR] ...
     python3 -I analytics.py report [DIR|analytics.json] [--markdown]
 
@@ -43,12 +43,12 @@ log, die = benchlib.logger('analytics', False)
 # --- the query corpus
 
 class Query:
-    def __init__(self, qid, title, sets, key, tol, sql):
-        self.id, self.title, self.sets, self.key, self.tol, self.sql = qid, title, sets, key, tol, sql
+    def __init__(self, qid, title, sets, key, tol, sql, order=0):
+        self.id, self.title, self.sets, self.key, self.tol, self.sql, self.order = qid, title, sets, key, tol, sql, order
 
 
 def parse_query(path):
-    """-- ID: title, -- sets: K10 K400 (or -), -- key: 1 2, -- tol: 1e-5, then `--@ pg|flat|ch` sections of SQL"""
+    """-- title, -- sets: K10 K400 (or -), -- order: N (the place in the tables), -- key: 1 2, -- tol: 1e-5, then `--@ pg|flat|ch` sections of SQL"""
     head, sections, cur = {}, {}, None
     for line in open(path).read().split('\n'):
         m = re.match(r'--@ (\w+)$', line)
@@ -57,7 +57,7 @@ def parse_query(path):
         elif cur is not None:
             cur.append(line)
         else:
-            m = re.match(r'-- (sets|key|tol): ?(.*)$', line)
+            m = re.match(r'-- (sets|key|tol|order): ?(.*)$', line)
             if m:
                 head[m.group(1)] = m.group(2).split()
             elif line.startswith('-- '):
@@ -65,15 +65,17 @@ def parse_query(path):
     qid = os.path.basename(path)[:-4]
     return Query(qid, ' '.join(head.get('title', [qid])), [] if head.get('sets') == ['-'] else head.get('sets', []),
                  [int(k) - 1 for k in head.get('key', [])], float(head['tol'][0]) if 'tol' in head else None,
-                 {k: '\n'.join(v).strip() for k, v in sections.items()})
+                 {k: '\n'.join(v).strip() for k, v in sections.items()}, int(head['order'][0]))
 
 
 def load_corpus(corpus, queries_file):
     if corpus == 'clickbench':
         lines = [l.strip() for l in open(queries_file) if l.strip()]
-        return [Query(f'Q{i}', lines[i - 1][:70], [], [], None, {'pg': lines[i - 1].rstrip(';')}) for i in range(1, len(lines) + 1)]
-    names = sorted(glob.glob(os.path.join(SQL, 'queries', '*.sql')), key=lambda p: (os.path.basename(p)[0] != 'S', os.path.basename(p)))
-    return [parse_query(p) for p in names]
+        slugs = [l.split('\t')[0] for l in open(os.path.join(SQL, 'clickbench.tsv')) if not l.startswith('#')]   # the slug of line N of queries.sql
+        if len(slugs) != len(lines):
+            die(f'{queries_file} has {len(lines)} queries, clickbench.tsv names {len(slugs)}')
+        return [Query(slugs[i], lines[i][:70], [], [], None, {'pg': lines[i].rstrip(';')}) for i in range(len(lines))]
+    return sorted((parse_query(p) for p in glob.glob(os.path.join(SQL, 'queries', '*.sql'))), key=lambda q: (not q.sets, q.order))
 
 
 def span(col):
@@ -242,7 +244,7 @@ class Rows:
 # --- the run
 
 def wanted(q, selection):
-    return not selection or any(q.id == s or (len(s) == 1 and q.id.startswith(s)) for s in selection)
+    return not selection or any(q.id == s or q.id.startswith(s + '-') for s in selection)   # an id, or the first word of several (whole)
 
 
 def engines_available(args, pg, queries, flat_ok):
@@ -482,7 +484,7 @@ def main():
     r.add_argument('--table', default='orders', help='the table the col index is looked for on (clickbench: hits)')
     r.add_argument('--engines', type=lambda s: s.split(','), default=['heap', 'col', 'flat', 'ch'])
     r.add_argument('--sets', type=lambda s: s.split(','), default=['K10', 'K400', 'K4000'])
-    r.add_argument('--queries', type=lambda s: s.split(','), default=[], help='ids or letters (S, G): default all')
+    r.add_argument('--queries', type=lambda s: s.split(','), default=[], help='ids or the first word of several (whole): default all')
     r.add_argument('--runs', type=int, default=5)
     r.add_argument('--timeout', type=int, default=300, help='seconds per statement')
     r.add_argument('--tol', type=float, default=1e-6, help='relative tolerance of numbers')

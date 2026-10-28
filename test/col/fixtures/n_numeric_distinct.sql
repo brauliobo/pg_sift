@@ -1,5 +1,5 @@
 -- count(DISTINCT) of numeric columns and expressions: equal by value at one scale, NULL left out, per group and over everything, with FILTER
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

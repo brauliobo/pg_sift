@@ -1,5 +1,5 @@
 -- NOT EXISTS: a NULL on either side is unknown, so the element does not match and an empty or absent array has no element at all
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

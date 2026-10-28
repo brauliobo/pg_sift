@@ -1,5 +1,5 @@
 -- LEFT JOIN LATERAL over the items ON true: an order with no item is one tuple with NULL item columns (it keeps its group), per order and per group of orders
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

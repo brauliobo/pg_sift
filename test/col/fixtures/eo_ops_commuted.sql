@@ -1,5 +1,5 @@
 -- the column of the row on the left of the comparison: the operator is the same one seen from the element
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

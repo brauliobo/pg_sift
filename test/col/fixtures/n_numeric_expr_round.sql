@@ -1,5 +1,5 @@
 -- round, trunc, floor and ceil of numeric expressions: scales above, at and below the value's, a negative one, half values away from zero, negative values, in aggregates
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 SELECT grp, sum(round(n2, 1)) AS r1, sum(round(n2)) AS r0, sum(round(n6, 3)) AS r3, sum(round(n2, 4)) AS r4, sum(round(n2, -1)) AS rm1, sum(trunc(n2, 1)) AS t1, sum(trunc(n6)) AS t0,

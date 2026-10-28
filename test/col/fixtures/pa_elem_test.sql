@@ -1,5 +1,5 @@
 -- preagg: a test of the items' kind and a zone comparison on the order: the cube groups that pass, the units whose zone lies inside
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

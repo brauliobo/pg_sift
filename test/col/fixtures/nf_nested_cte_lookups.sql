@@ -1,5 +1,5 @@
 -- a ranked aggregate whose derived table has its own WITH: the CTE is a lookup of the scan, the derived table reads nothing around it
--- shape: S5
+-- shape: store-top-categories
 -- expect: any
 -- key: -
 -- scenario: yes

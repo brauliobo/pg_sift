@@ -121,13 +121,14 @@ def read(name):
 
 class Query:
     def __init__(self, path):
-        self.id, self.name = os.path.basename(path)[:-4].split('_', 1)
+        self.id = os.path.basename(path)[:-4]
         text = read(os.path.join('queries', os.path.basename(path)))
         self.sec = sections(text)
         head = self.sec.pop('').split('\n')
         self.title = head[0][3:]
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.title)
         self.key = next(([int(k) - 1 for k in m[8:].split()] for m in head if m.startswith('-- key: ')), [])
+        self.order = next(int(m[10:]) for m in head if m.startswith('-- order: '))
 
     def statement(self, eid, n, cache=False):
         """the text sent to engine eid: SQL, or for Elasticsearch (method, path, body, rows spec, tolerance)"""
@@ -145,15 +146,14 @@ class Query:
 
 
 def load_queries(only=None):
-    names = sorted(f for f in os.listdir(os.path.join(SQL, 'queries')) if f.endswith('.sql'))
-    qs = [Query(os.path.join(SQL, 'queries', f)) for f in names]
-    return [q for q in qs if not only or q.id in only or q.name in only]
+    qs = sorted((Query(os.path.join(SQL, 'queries', f)) for f in os.listdir(os.path.join(SQL, 'queries')) if f.endswith('.sql')), key=lambda q: q.order)
+    return [q for q in qs if not only or q.id in only]
 
 
 CHUNK = 1000000
 
 
-LOAD_QUERIES = ['03', '05', '09']        # the reads timed before, during and after the churn
+LOAD_QUERIES = ['revenue-per-month', 'average-shipped-order', 'search-facets']        # the reads timed before, during and after the churn
 
 
-LOAD_QUERY = '03'
+LOAD_QUERY = 'revenue-per-month'

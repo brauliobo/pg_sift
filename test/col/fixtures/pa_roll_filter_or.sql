@@ -1,5 +1,5 @@
 -- preagg: rollup: filters on the dims: an OR of an equality and an IN, a not equal and a LIKE, grouped by a third dim
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

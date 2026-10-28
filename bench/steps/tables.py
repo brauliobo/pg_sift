@@ -11,7 +11,7 @@ engine ids. Writes to OUTDIR:
                 articles: class = and|or|phrase|mixed|count|filter|join|term|prefix|fuzzy|update, variant = -, metric = qps
                 (median over the interleaved rounds, min and max over the rounds); class update also has the metrics write_ops
                 (writer operations per second) and wal_mib (WAL written during the cell).
-                places: class = p1..p4|w1|a2|a2s|a3|x2, variant = top|boost|filter|count|scan, metric = p50_ms
+                places: class = prefix-1..prefix-4|whole-word|word-prefix-2|word-prefix-1|name-region-country|name-country, variant = top|boost|filter|count|scan, metric = p50_ms
                 or p95_ms (single client, median over the rounds).
                 both: class = variant = - and metric = index_mib | build_s | setup_s | heap_growth_mib (one
                 build per engine; build_s is CREATE INDEX, setup_s the work before it, heap_growth_mib the
@@ -22,7 +22,7 @@ engine ids. Writes to OUTDIR:
                 session (phases.txt, variant = the phase), session = the host and versions (machine.txt; variant = key=value words
                 joined by `;`: date, cpu, threads, pg, sift, elasticsearch).
                 cold-cache runs (tier full-cold): metric = cold_p50_ms | cold_max_ms of up to 12 queries per class
-                (articles: class = and|or|..., variant = -; places: class = p1.., variant = the workload).
+                (articles: class = and|or|..., variant = -; places: class = prefix-1.., variant = the workload).
                 A value of NA means the engine cannot run the class, error that its statement failed.
                 The uncertainty of a cell: n is the number of interleaved rounds, values their results (comma separated, round
                 order), stderr the standard error of the cell: the larger of the sample standard deviation of the rounds divided
@@ -268,7 +268,7 @@ def md_articles(rows, tier):
     return out
 
 
-PLACE_CLASSES = ['p1', 'p2', 'p3', 'p4', 'w1', 'a2', 'a2s', 'a3', 'x2']   # the order of the columns and rows, whatever the order the cells were measured and merged in
+PLACE_CLASSES = ['prefix-1', 'prefix-2', 'prefix-3', 'prefix-4', 'whole-word', 'word-prefix-2', 'word-prefix-1', 'name-region-country', 'name-country']   # the order of the columns and rows, whatever the order the cells were measured and merged in
 
 
 def place_classes(rows):

@@ -213,12 +213,12 @@ report() {
 bench_verdict() {
 	table -v scen="$1" <<-'SQL'
 		SELECT name AS query, CASE WHEN used THEN 'SiftAgg' ELSE 'plain' END AS plan, round(ref_ms::numeric, 1) AS off_ms, round(ms::numeric, 1) AS on_ms,
-			   round((ref_ms / nullif(ms, 0))::numeric, 1) AS speedup, coldiff.bench_target(name, expect, used, ref_ms, ms) AS target
+			   round((ref_ms / nullif(ms, 0))::numeric, 1) AS speedup, coldiff.bench_target(scenario, name, expect, used, ref_ms, ms) AS target
 		FROM coldiff.results WHERE scenario = :'scen' AND variant = 'on' ORDER BY name
 	SQL
 	local missed
 	missed=$(sql -v scen="$1" <<-'SQL'
-		SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND variant = 'on' AND coldiff.bench_target(name, expect, used, ref_ms, ms) ~ '^(MISSED|NOT|REGRESSION)'
+		SELECT count(*) FROM coldiff.results WHERE scenario = :'scen' AND variant = 'on' AND coldiff.bench_target(scenario, name, expect, used, ref_ms, ms) ~ '^(MISSED|NOT|REGRESSION)'
 	SQL
 	)
 	(( missed == 0 )) || { log "bench: $missed targets missed${STRICT:+ (strict: failing)}"; [[ -z $STRICT ]] || FAILED=1; }
@@ -457,7 +457,7 @@ selftest() {
 	sql -v n="$FIXROWS" -v seed="$SEED" -f "$REPO/test/col/fixture.sql" >/dev/null
 	fixture_indexes
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
-	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql | grep -E '/(s1_metrics_summary|s2_item_category_counts|s4_month_series|s5_store_topn|f_count_sum_minmax|f_group_source|f_scalar_paths|t_float8_nan_inf|t_sum_int4_wide|t_text_collation|n_empty_global)\.sql$')
+	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql | grep -E '/(metrics_summary|item_category_counts|month_series|store_topn|f_count_sum_minmax|f_group_source|f_scalar_paths|t_float8_nan_inf|t_sum_int4_wide|t_text_collation|n_empty_global)\.sql$')
 	for kind in none int float float-tiny text null rows dup order type cols; do
 		MUTATE=; [[ $kind == none ]] || MUTATE=$kind
 		want=FAIL; [[ $kind == none || $kind == float-tiny ]] && want=PASS

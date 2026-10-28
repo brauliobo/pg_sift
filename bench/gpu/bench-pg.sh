@@ -19,12 +19,12 @@ DB=sift_gpu_$N
 P="psql -X -q -At -v ON_ERROR_STOP=1 -d $DB"
 
 QUERIES=(
-	"q7|SELECT count(*) FROM orders WHERE amount > 100 AND created_at >= '2025-12-02'"
-	"q8|SELECT count(*) FROM orders WHERE quantity >= 4 AND amount < 50"
-	"q9|SELECT count(*), sum(amount), sum(quantity) FROM orders WHERE amount > 20 AND quantity >= 2"
-	"g1|SELECT country, count(*), sum(amount) FROM orders WHERE quantity >= 2 GROUP BY country"
-	"g2|SELECT category, count(*), sum(quantity) FROM orders WHERE amount > 100 GROUP BY category"
-	"g3|SELECT date_trunc('month', created_at)::date, sum(amount) FROM orders WHERE quantity >= 2 GROUP BY 1"
+	"count-amount-date|SELECT count(*) FROM orders WHERE amount > 100 AND created_at >= '2025-12-02'"
+	"count-quantity-amount|SELECT count(*) FROM orders WHERE quantity >= 4 AND amount < 50"
+	"count-sums-two-filters|SELECT count(*), sum(amount), sum(quantity) FROM orders WHERE amount > 20 AND quantity >= 2"
+	"group-country-sums|SELECT country, count(*), sum(amount) FROM orders WHERE quantity >= 2 GROUP BY country"
+	"group-category-sums|SELECT category, count(*), sum(quantity) FROM orders WHERE amount > 100 GROUP BY category"
+	"group-month-sum|SELECT date_trunc('month', created_at)::date, sum(amount) FROM orders WHERE quantity >= 2 GROUP BY 1"
 )
 
 if ! psql -X -At -d postgres -c "SELECT 1 FROM pg_database WHERE datname = '$DB'" | grep -q 1; then

@@ -3,7 +3,7 @@ import benchlib
 import json
 import os
 import re
-from store_charts import SEARCH, picture
+from store_charts import QUESTIONS, SEARCH, picture
 from store_lib import CHUNK, LANES, LOAD_QUERIES, LOAD_QUERY, MODES, PG_ENGINES, UPDATE_ENGINES, load_queries
 
 
@@ -41,7 +41,7 @@ class Results:
         for r in self.rows:
             if r['tier'] == tier and r['metric'] == 'latency_ms' and (r['class'] in SEARCH) == search:
                 out[r['class']] = None
-        return sorted(out)
+        return sorted(out, key=QUESTIONS.index)
 
 
 def ms(v):
@@ -311,12 +311,12 @@ def caveat_lines(R, tier, engines, labels, size_rows_shown=True, brief=False):
     if lo:
         out.append('**Where pg_sift is not the fastest, warm:** ' + '; '.join(f'{QUERY_LABELS[qid]}: {lb2} {ratio(v1, v2)} faster ({ms(v2)} ms against {ms(v1)} ms)' for qid, _, lb, v1, lb2, v2 in lo) + '.')
     if cold:
-        out.append('**Cold (the first run after the server\'s memory was emptied), not the fastest on** ' + ', '.join(f'Q{qid} ({lb2} {ratio(v1, v2)} faster)' for qid, _, lb, v1, lb2, v2 in cold) + '.')
+        out.append('**Cold (the first run after the server\'s memory was emptied), not the fastest on** ' + ', '.join(f'{qid} ({lb2} {ratio(v1, v2)} faster)' for qid, _, lb, v1, lb2, v2 in cold) + '.')
     cached = [(q, R.num(tier, 'es_cached', q, 'warm', 'latency_ms'), min(R.num(tier, e, q, 'warm', 'latency_ms') for e in ('sift', 'sift_table') if R.num(tier, e, q, 'warm', 'latency_ms'))) for q in R.queries(tier) if R.num(tier, 'es_cached', q, 'warm', 'latency_ms')]
     if cached:
-        behind = [f'Q{q} ({ratio(m, c)})' for q, c, m in cached if c < m * 0.95]
+        behind = [f'{q} ({ratio(m, c)})' for q, c, m in cached if c < m * 0.95]
         out.append('Elasticsearch runs with its shard request cache off (a repeated aggregation would otherwise be answered from memory); with it on' + (f' it is faster than pg_sift on {", ".join(behind)}.' if behind else ' it is not faster than pg_sift on any question.'))
-    rd = R.get(tier, 'es', '06', '-', 'rel_diff')
+    rd = R.get(tier, 'es', 'customers-per-month', '-', 'rel_diff')
     out.append('Every result is compared with PostgreSQL\'s before it is timed and the run stops on a difference; Elasticsearch counts distinct customers approximately (HyperLogLog++' + (f', off by at most {rd["value"]:.2%} here' if rd else '') + '), every other result matched exactly or within rounding.')
     if brief:
         return out

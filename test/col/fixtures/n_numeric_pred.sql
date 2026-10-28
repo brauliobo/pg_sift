@@ -1,6 +1,6 @@
 -- numeric predicates: every operator of a numeric(12, 2) column against constants with more digits than the scale (10.505, 0.005), fewer (7, 10.5),
 -- trailing zeros (0.10), negative, out of the column's range (1e30), NaN and the infinities, in the aggregate filters of one scan
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 SELECT grp,

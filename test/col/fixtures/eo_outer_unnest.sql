@@ -1,5 +1,5 @@
 -- the query unnests the array itself and tests an element of it against a column of the row: the elements of the sub-query and of the query are the same leaves
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

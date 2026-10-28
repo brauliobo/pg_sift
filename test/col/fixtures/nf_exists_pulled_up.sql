@@ -1,5 +1,5 @@
 -- an EXISTS over the parts through a sub-select PostgreSQL pulls up: the sub-plan keeps the dead entry of the sub-select before the function
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

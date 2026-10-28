@@ -1,5 +1,5 @@
 -- preagg: rollup: the keys of a map (metrics) as the group with count, sum, avg, min and max of the value
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

@@ -53,7 +53,7 @@ def store_losses(results):
                     r = S.lat(tier, e, q, 'warm')
                     theirs, mine = (r['value'] if r else None), compare.best_mine(S, tier, q)
                 if theirs and mine and theirs / mine <= 1 - TIE:
-                    out.append((mine / theirs, '%s at %s orders' % (compare.SLUG.get(q, q), format(size, ',')), LABEL[e], ms(mine), ms(theirs)))
+                    out.append((mine / theirs, '%s at %s orders' % (q, format(size, ',')), LABEL[e], ms(mine), ms(theirs)))
     return out
 
 

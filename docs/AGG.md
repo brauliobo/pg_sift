@@ -156,16 +156,16 @@ Shapes of an event analytics workload (an item table with jsonb metrics, a docum
 
 | Shape | Status | Off | On |
 | --- | --- | --- | --- |
-| g8 `EXISTS` over `jsonb_to_recordset(expr -> 'parts')` of an index expression (was a plan error, `invalid attnum`) | pushed | 1.64 s | 3 ms |
-| g8 nested jsonpath `$.parts[*] ? (@.category == "x" && @.sign == "y")` | pushed | 1.52 s | 3 ms |
-| g9 / g10 `x = ANY (ARRAY (SELECT ...))`, eight keys | pushed | 116 ms | 2 ms |
-| g5 per-item arms, `avg(n::float8)` over a text leaf, count of the items | fused | 2.83 s | 0.07 s |
-| g4 a second `count(DISTINCT)` over another column of the row | arms one by one |  | follow-up |
-| g7 fused arms for a selective scan (one entity) | not offered |  | follow-up |
-| g2 lookup keyed by a column of another joined table | pushed (regression and coverage verified) |  |  |
-| g1 `jsonb_exists` / `?` on an object | normal plan |  | follow-up |
-| g3 `(doc -> 'k')::int` | normal plan |  | follow-up |
-| g6 one string in a typed leaf flags its unit | pushed for `jsonb_to_recordset` columns, the flagged rows read again from the heap; other reads: normal plan, leaf named at `DEBUG1` |  | design note |
+| `exists-over-parts`: `EXISTS` over `jsonb_to_recordset(expr -> 'parts')` of an index expression (was a plan error, `invalid attnum`) | pushed | 1.64 s | 3 ms |
+| `exists-over-parts`: nested jsonpath `$.parts[*] ? (@.category == "x" && @.sign == "y")` | pushed | 1.52 s | 3 ms |
+| `key-limit-and-subselect`: `x = ANY (ARRAY (SELECT ...))`, eight keys | pushed | 116 ms | 2 ms |
+| `fused-arms-astext-leaf`: per-item arms, `avg(n::float8)` over a text leaf, count of the items | fused | 2.83 s | 0.07 s |
+| `two-distincts-in-fused-arms`: a second `count(DISTINCT)` over another column of the row | arms one by one |  | follow-up |
+| `selective-fused-arms`: fused arms for a selective scan (one entity) | not offered |  | follow-up |
+| `lookup-keyed-by-join`: lookup keyed by a column of another joined table | pushed (regression and coverage verified) |  |  |
+| `jsonb-exists`: `jsonb_exists` / `?` on an object | normal plan |  | follow-up |
+| `jsonb-int-cast`: `(doc -> 'k')::int` | normal plan |  | follow-up |
+| `dirty-unit-flag`: one string in a typed leaf flags its unit | pushed for `jsonb_to_recordset` columns, the flagged rows read again from the heap; other reads: normal plan, leaf named at `DEBUG1` |  | design note |
 
 What the pushed shapes do:
 
@@ -239,7 +239,7 @@ One query per file, as in `bench/sql/analytics/queries`: header lines, then the 
 
 | tag | meaning |
 |---|---|
-| `-- shape: S1` | the shape of the query (the name of an analytics file of the form `S1` or `G3` is its shape) |
+| `-- shape: metrics-summary` | the shape of the query (the name of an analytics file of the form `metrics-summary` or `whole-top-category-kind` is its shape) |
 | `-- expect: agg\ | plain\ | any` | the shape expectation (default `any`) |
 | `-- sets: K10 K400 K4000` | the query runs once per set of `analytics_sets` (`{stores}`, `{sources}`, `{span(col)}`, `{range(col)}` are expanded as `bench/steps/analytics.py` does); `-` or absent: once |
 | `-- key: 1 2` | sort both results by these columns first; `-` compares by position (the query has a total `ORDER BY`); absent: sort by every column |
@@ -258,8 +258,8 @@ The fixture corpus (about 180 files) covers:
 
 | area | fixtures and cases |
 |---|---|
-| lookup joins and arms | `j_*` (semi, anti, key expressions, ON filters); per-order arms with sets, gates and general HAVING `s2_per_order_*` / `t_two_level_*`; mapped aggregates `t_mapped_agg_*` |
-| report shapes | S1 summary of an object with dynamic keys by key, mapped key and period; S2 summary of an array of objects with per-order pre-aggregation, the three rollup levels as `UNION ALL` and as `GROUPING SETS`; S4 time series at day, week, month and quarter with a date spine; S5 per-store rows and top-N; S6 `jsonb_path_exists` on an array of objects; S7 same-element filter as `EXISTS`, `@>` and `jsonb_path_exists` |
+| lookup joins and arms | `j_*` (semi, anti, key expressions, ON filters); per-order arms with sets, gates and general HAVING `per_order_*` / `t_two_level_*`; mapped aggregates `t_mapped_agg_*` |
+| report shapes | `metrics-summary`: summary of an object with dynamic keys by key, mapped key and period; `item-summary-rollup`: summary of an array of objects with per-order pre-aggregation, the three rollup levels as `UNION ALL` and as `GROUPING SETS`; `time-series-granularities`: time series at day, week, month and quarter with a date spine; `store-top-categories`: per-store rows and top-N; `notes-path-exists`: `jsonb_path_exists` on an array of objects; `items-exists-same-element`: same-element filter as `EXISTS`, `@>` and `jsonb_path_exists` |
 | flat aggregates and quals | `IN`, `NOT IN`, `BETWEEN`, `LIKE`, `OR`, `NOT`, `CASE`, `IS [NOT] NULL`, `FILTER`, `HAVING`, grouping by expressions; NULL-heavy documents, empty sets; BM25 match with an aggregate; a prepared statement with a generic plan; `numeric(p, s)` columns (predicates against constants of every precision, NaN and infinities, keys, expressions, distinct counts) |
 | limits and their plain traps one past each | group keys up to 8, rollups and cubes of up to 7 columns (`k_keys_*`, `k_rollup_*`, `k_cube_*`; traps: 9 keys, 9 joined tables, 17 combos); lookup joins of up to 8 tables and 16 combos (`j_joins_*`, `j_combos_*`) |
 | generic aggregates | `g_*`: variance family, `DISTINCT` over one or several arguments and with a spill, `ORDER BY` in the call, ordered and hypothetical sets, variadic and stable-fraction forms, `array_agg`/`string_agg`, expression arguments, joined columns, rollups, user-defined aggregates, parallel combine; `x_bool_*`: `bool_and`, `bool_or`, `every` merged from two workers; traps: a volatile transition function, a float read into text with `-0` |
@@ -328,7 +328,7 @@ To add a shape, append three lines to `test/plan/shapes.sql`: `-- name: x`, `-- 
 
 Today (PostgreSQL 18, 30,000 rows): no chosen plan loses in either lane. Mis-ranked pairs:
 
-- no pair with a scan: the scan is never ranked the wrong way round by the margin. `c05_join_two_lookups` is the closest: PostgreSQL's own plan is priced 539 and the planner takes the scan at 583 (`sift.explain_why` shows it against the 934 it prices PostgreSQL's plan at with the scan on the table), and the scan takes 17.4 million instructions against 55.9. The scan forced with the other scans off is priced 645, because those settings change what the scan costs; it is not the plan the planner chooses.
-- stock lane, PostgreSQL's own estimates: `i01_count_all` index-only scan 861 against sequential 1,739 and 18.5 million instructions against 10.3; `j05_distinct_one_parent` bitmap 1,017 against index 1,699 and 4.8 against 2.2; `o05_deleted_rows` sequential 1,668 against index 3,069 and bitmap 1,805, and 20.6 million against 4.9 and 5.8.
+- no pair with a scan: the scan is never ranked the wrong way round by the margin. `join_two_lookups` is the closest: PostgreSQL's own plan is priced 539 and the planner takes the scan at 583 (`sift.explain_why` shows it against the 934 it prices PostgreSQL's plan at with the scan on the table), and the scan takes 17.4 million instructions against 55.9. The scan forced with the other scans off is priced 645, because those settings change what the scan costs; it is not the plan the planner chooses.
+- stock lane, PostgreSQL's own estimates: `count_all` index-only scan 861 against sequential 1,739 and 18.5 million instructions against 10.3; `distinct_one_parent` bitmap 1,017 against index 1,699 and 4.8 against 2.2; `deleted_rows` sequential 1,668 against index 3,069 and bitmap 1,805, and 20.6 million against 4.9 and 5.8.
 - tuned lane: 16 pairs of PostgreSQL's plans (index scan priced below sequential at `seq_page_cost` 100, the sequential scan takes 20 to 60% fewer instructions): the pages of the profile, which instructions do not count; none has a scan.
 

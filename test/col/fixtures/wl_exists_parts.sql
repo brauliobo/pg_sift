@@ -1,5 +1,5 @@
 -- a correlated EXISTS over the parts of a document that is an index expression (the error `invalid attnum for relation` of the planner, then the push down)
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

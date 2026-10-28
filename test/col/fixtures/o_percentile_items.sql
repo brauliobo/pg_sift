@@ -1,5 +1,5 @@
 -- ordered sets: percentile_cont and percentile_disc per category over the expanded items, ascending and descending, sharing one argument
--- shape: G7
+-- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -
 -- scenario: yes

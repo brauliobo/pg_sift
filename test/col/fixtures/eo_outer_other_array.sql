@@ -1,5 +1,5 @@
 -- the query unnests the notes and tests the items of the order against a column of the order: the owners of the items and of the notes are not the same map
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- sets: K4000
 -- key: -

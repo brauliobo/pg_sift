@@ -1,5 +1,5 @@
 -- the ranking form: per order the average of its items (an order with none keeps its row), then the average over the orders of a store
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

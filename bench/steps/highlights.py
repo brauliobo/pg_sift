@@ -23,13 +23,12 @@ import limits  # noqa: E402  (steps/limits.py: the limitations and trade-offs)
 import cases_render  # noqa: E402  (steps/cases_render.py: collect)
 import extras  # noqa: E402  (steps/extras.py: read)
 import readme  # noqa: E402  (steps/readme.py: the search tier)
-import store_charts  # noqa: E402  (steps/store_charts.py: Store, read_tsv, question_slugs)
+import store_charts  # noqa: E402  (steps/store_charts.py: Store, read_tsv)
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 URL = 'https://github.com/brauliobo/pg_sift/blob/main/'
 TIE = 0.05
 MINE = ('sift', 'sift_table')
-SLUG = store_charts.question_slugs()
 
 
 def x(v):
@@ -58,7 +57,7 @@ def verdict(pairs, label):
     if tie:
         out += f', a tie on {len(tie)}'
     if slower:
-        out += ', slower on ' + ', '.join(f'{SLUG[q]} ({x(r)})' for q, r in slower)
+        out += ', slower on ' + ', '.join(f'{q} ({x(r)})' for q, r in slower)
     return out
 
 
@@ -108,7 +107,7 @@ def behind(S, tier, variant):
         mine = best_mine(S, tier, q, variant)
         best = min(others, key=others.get)
         if mine and others[best] < mine * (1 - TIE):
-            out.append(f'{SLUG[q]} by {store_charts.SYSTEMS[best][0]}, {x(mine / others[best])} faster')
+            out.append(f'{q} by {store_charts.SYSTEMS[best][0]}, {x(mine / others[best])} faster')
     return out
 
 

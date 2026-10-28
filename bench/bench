@@ -76,8 +76,8 @@ Commands
              `--all` everything including the datasets and downloads
 
 analytics (steps/analytics.sh, steps/analytics.py): a deterministic orders corpus of the usual e-commerce ORM shape (1.2M orders, jsonb
-attributes, metrics, items and notes) on a throwaway cluster of its own (SIFT_TMP, SIFT_PORT), the queries S1-S7 (store sets K10, K400, K4000)
-and G1-G8 (whole table) as plain SQL, measured as the CPU time and instructions of one backend with the baseline plan against the sift_col
+attributes, metrics, items and notes) on a throwaway cluster of its own (SIFT_TMP, SIFT_PORT), the seven set reports (store sets K10, K400, K4000)
+and the eight whole-table scans (`whole-*`) as plain SQL, measured as the CPU time and instructions of one backend with the baseline plan against the sift_col
 plan (an index of the access method sift_col, --col-index; without one the baseline is measured alone), optionally against flat tables
 (--flat) and a throwaway ClickHouse (--clickhouse). `analytics run` writes analytics.json (bench/results layout) and prints the table;
 `analytics clickbench` runs the 43 queries of ClickBench on --rows rows of hits (10,000,000).
@@ -106,7 +106,7 @@ Options (not every option applies to every command)
                     (positions = off), elasticsearch, pg_search, pg_textsearch, rum, bm25). setup: which engines to
                     build. An engine whose extension is missing, or that has no workload for the dataset, is skipped with a message.
   --classes LIST    comma separated classes. articles: and or phrase mixed count filter join term prefix fuzzy update; places:
-                    p1 p2 p3 p4 w1 a2 a2s a3 x2 (default: the classes of the tier; a dataset with none of the names is not run)
+                    prefix-1 prefix-2 prefix-3 prefix-4 whole-word word-prefix-2 word-prefix-1 name-region-country name-country (default: the classes of the tier; a dataset with none of the names is not run)
   --workloads LIST  places workloads: top boost filter count scan (default: those of the tier)
   --rebuild         build every engine database again instead of taking it from the cache of built clusters ($BENCH_STORE/cache/lanes)
   --keep            keep the cache of built clusters after the session (written by every run, bounded by BENCH_CACHE_MAX); without it the
@@ -132,10 +132,10 @@ Options (not every option applies to every command)
   --docs            report: also write bench/results/<dataset>.tsv (the committed chart input), redraw docs/img and rewrite the generated
                     blocks of README.md and docs/BENCHMARKS.md; all: also measure the cold-cache tables, then report --docs
   --merge           report --docs: replace only the cells of the result directories in bench/results (engine, class, variant, metric); every
-                    other row of the tier stays: the way to add the classes of a later run (`run --classes p2,p4,a2s`) to a published tier
+                    other row of the tier stays: the way to add the classes of a later run (`run --classes prefix-2,prefix-4,word-prefix-1`) to a published tier
   --no-build        setup/all: use the engines already built under $BENCH_WORK (analytics: do not build sift from this checkout)
   analytics options  --scale S (orders = 1.2M x S), --orders N, --stores N (40000), --cluster store (heap clustered by store and
-                    date), --flat, --clickhouse, --runs N (5, after one warm-up), --sets K10,K400,K4000, --queries S1,G (ids or S / G),
+                    date), --flat, --clickhouse, --runs N (5, after one warm-up), --sets K10,K400,K4000, --queries metrics-summary,whole (ids, or the first word of several),
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
                     sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
                     to bench/results); SIFT_TMP, SIFT_PORT
@@ -198,7 +198,7 @@ Examples
   bench/bench readme                                  the README block from bench/results, without measuring
   bench/bench clean --all
   bench/bench analytics run --flat --clickhouse        the analytics corpus: baseline, flat tables and ClickHouse (+ sift_col when built)
-  bench/bench analytics run --queries S1,S2 --sets K400 --col-index @my_index.sql
+  bench/bench analytics run --queries metrics-summary,item-summary-rollup --sets K400 --col-index @my_index.sql
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
   bench/bench store all --docs                         the orders benchmark at 1M and 10M orders, then bench/results/store.json, README.md and docs/BENCHMARKS.md
   bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
@@ -310,7 +310,7 @@ parse() {
 }
 
 ARTICLE_CLASSES="and or phrase mixed count filter join term prefix fuzzy update"
-PLACE_CLASSES="p1 p2 p3 p4 w1 a2 a2s a3 x2"
+PLACE_CLASSES="prefix-1 prefix-2 prefix-3 prefix-4 whole-word word-prefix-2 word-prefix-1 name-region-country name-country"
 class_set() { # DATASET: the --classes that belong to the dataset
   local c set=$ARTICLE_CLASSES
   [[ $1 == places ]] && set=$PLACE_CLASSES
@@ -582,7 +582,7 @@ cmd_regress() { # [--run] [DIR|results.tsv ...]
     # the reduced matrix: sift against its reference on both datasets, the classes and workloads a change to the index or the scan
     # touches (--engines adds sift_nopos; --classes and --workloads widen it)
     [[ -n $engines ]] || engines="sift sift_ref"
-    [[ -n $classes ]] || classes="and or phrase count filter join p1 p3 w1 a3"
+    [[ -n $classes ]] || classes="and or phrase count filter join prefix-1 prefix-3 whole-word name-region-country"
     [[ -n $workloads ]] || workloads="top boost"
     [[ -n $rounds ]] || rounds=3-3   # three rounds, the most the harness runs by default: a 5% difference is told from the noise by the standard errors of the cells
     check_classes; preflight; ready; tier_env

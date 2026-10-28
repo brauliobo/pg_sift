@@ -1,5 +1,5 @@
 -- preagg: rollup: aggregates with FILTER on dims (the shares of a metric band) next to unfiltered ones, grouped by a dim
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

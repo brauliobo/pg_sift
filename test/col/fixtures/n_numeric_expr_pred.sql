@@ -1,5 +1,5 @@
 -- numeric predicates on expressions: arithmetic against constants (inexact ones too), a comparison of two columns, round/floor in a filter, NULL operands
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 SELECT grp, count(*) AS n,

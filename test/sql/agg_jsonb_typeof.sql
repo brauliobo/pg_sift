@@ -73,7 +73,7 @@ END $$;
 
 CREATE TABLE t_q (n serial, q text);
 INSERT INTO t_q (q) VALUES
-	-- a number among strings, booleans, objects, arrays, JSON nulls and missing keys: the sum of the numbers (j16)
+	-- a number among strings, booleans, objects, arrays, JSON nulls and missing keys: the sum of the numbers (mixed-numeric)
 	('SELECT count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'''),
 	('SELECT count(*), sum((attrs->>''m'')::float8), min((attrs->>''m'')::float8), max((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'''),
 	('SELECT grp, count(*), sum((attrs->>''m'')::float8) FROM t WHERE jsonb_typeof(attrs->''m'') = ''number'' GROUP BY grp'),

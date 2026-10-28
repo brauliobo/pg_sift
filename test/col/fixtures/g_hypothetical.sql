@@ -1,5 +1,5 @@
 -- hypothetical-set aggregates: the rows of a group go through the aggregate's own tuplesort (NULLs count), the hypothetical values are evaluated once
--- shape: G7
+-- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -
 -- scenario: yes

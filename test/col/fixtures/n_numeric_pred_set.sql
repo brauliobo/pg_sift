@@ -1,5 +1,5 @@
 -- numeric IN, NOT IN (NULL, repeated and inexact members, none representable), BETWEEN, IS NULL, AND/OR of numeric comparisons in a WHERE
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 SELECT grp, count(*) AS n,

@@ -1,5 +1,5 @@
 -- ordered sets over row columns: percentile_disc of integers and dates, percentile_cont of integers, with NULL groups
--- shape: G7
+-- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -
 -- scenario: yes

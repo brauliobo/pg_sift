@@ -1,0 +1,45 @@
+# The 43 ClickBench queries by slug (bench/bench analytics clickbench): the Nth row is line N of ClickBench's postgresql/queries.sql; the clickbench column is that N, for comparing with published results.
+# slug	clickbench	meaning
+count-all	1	count of the table
+count-adv-engine	2	count where an ads column is set
+sum-count-avg	3	sum, count and average of three columns
+avg-user-id	4	average of a bigint
+distinct-users	5	count distinct of the user
+distinct-phrases	6	count distinct of the search phrase
+date-range	7	min and max of the date
+adv-engine-groups	8	count per ads engine, descending
+top-regions-by-users	9	top regions by distinct users
+top-regions-stats	10	top regions by views with sum, avg and distinct users
+top-phone-models	11	top phone models by distinct users
+top-phones-models	12	top phones and models by distinct users
+top-phrases	13	top search phrases by count
+top-phrases-by-users	14	top search phrases by distinct users
+top-engine-phrases	15	top search engine and phrase pairs
+top-users	16	top users by count
+top-user-phrases	17	top user and phrase pairs
+user-phrases-no-order	18	user and phrase pairs, no order, limit 10
+user-phrases-by-minute	19	user, minute and phrase groups
+user-point-lookup	20	rows of one user
+url-like-count	21	count where the url contains a string
+phrase-url-like	22	phrase groups where the url contains a string
+title-url-like-phrases	23	phrase groups with title and url patterns
+url-like-newest-rows	24	all columns of url matches, first 10 by time
+phrases-by-time	25	search phrases, first 10 by time
+phrases-sorted	26	search phrases, first 10 by phrase
+phrases-by-time-and-text	27	search phrases, first 10 by time then phrase
+counters-long-urls	28	counters by average url length with HAVING
+referer-domains	29	referer domains by average length with HAVING
+wide-sum	30	sum of 90 expressions over one column
+engine-client-stats	31	engine and client ip stats where a phrase is set
+watch-client-stats-phrase	32	watch and client ip stats where a phrase is set
+watch-client-stats	33	watch and client ip stats, no filter
+top-urls	34	top urls by count
+top-urls-constant	35	top urls with a constant column
+client-ip-offsets	36	client ip and three offsets by count
+counter-urls-day-range	37	urls of one counter in a date range
+counter-titles	38	titles of one counter in a date range
+counter-links	39	link urls of one counter, with offset
+traffic-source-groups	40	traffic source groups with offset
+url-hash-dates	41	url hash and date groups with offset
+window-size-groups	42	window size groups with offset
+minute-buckets	43	minute buckets with offset

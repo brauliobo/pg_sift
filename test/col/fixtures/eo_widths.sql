@@ -1,5 +1,5 @@
 -- an int4 member against a bigint column, a bigint member against an int4 column and against a bigint column holding values beyond int4
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

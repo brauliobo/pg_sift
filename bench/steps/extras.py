@@ -181,10 +181,10 @@ def intro(meta, rows, what):
 # ---- rollup -----------------------------------------------------------------------------------------------------------------------------
 
 def rollup_section(meta, rows):
-    sizes = [k for k in ('100k', '1M', '10M') if get(rows, case='j02@' + k)]
+    sizes = [k for k in ('100k', '1M', '10M') if get(rows, case='group-elem@' + k)]
     q, idx = [], []
     for k in sizes:
-        for name in ('j02', 'j17'):
+        for name in ('group-elem', 'item-agg-having'):
             v = [num(rows, case='%s@%s' % (name, k), arm=a, note='rollup=default') for a in ('normal', 'scanned', 'rollup')]
             q.append([k, '`%s`' % name, ms(v[0]), ms(v[1]), ms(v[2]), times(v[1], v[0]), times(v[2], v[1])])
         d, o = (num(rows, case='index@' + k, arm=a, metric='bytes') for a in ('default', 'off'))
@@ -393,14 +393,6 @@ def fold(summary, lines):
 DUCK_ARMS = [('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_heap', 'pg_duckdb heap'), ('duckdb_parquet', 'pg_duckdb Parquet')]
 
 
-def question_label(case):
-    """the label of a question of bench/sql/store/queries (its `-- label:` line, else its title)"""
-    num, name = case.split(' ', 1)
-    with open(os.path.join(REPO, 'bench', 'sql', 'store', 'queries', '%s_%s.sql' % (num, name))) as f:
-        lines = f.read().split('\n')
-    return next((l[10:] for l in lines if l.startswith('-- label: ')), lines[0][3:])
-
-
 def duck_cell(rows, case, arm, metric, best):
     r = get(rows, case=case, arm=arm, metric=metric)
     if r is None:
@@ -416,7 +408,7 @@ def duck_table(rows, cases, metric):
     for c in cases:
         done = {a: x for a, _ in DUCK_ARMS if (x := num(rows, case=c, arm=a, metric=metric)) is not None}
         best = min(done, key=done.get) if done else None
-        body.append(['Q' + c.split(' ')[0]] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
+        body.append([c] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
     return table(['question (ms)'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---'])
 
 
@@ -428,20 +420,19 @@ def duck_summary(rows, cases, metric):
         v = {a: num(rows, case=c, arm=a, metric=metric) for a, _ in DUCK_ARMS}
         done = {a: x for a, x in v.items() if x is not None}
         duck = {a: x for a, x in done.items() if a.startswith('duckdb')}
-        q = 'Q' + c.split(' ')[0]
         if not done:
             continue
         best = min(done, key=done.get)
-        fastest.setdefault('pg_duckdb' if best.startswith('duckdb') else dict(DUCK_ARMS)[best], []).append(q)
+        fastest.setdefault('pg_duckdb' if best.startswith('duckdb') else dict(DUCK_ARMS)[best], []).append(c)
         if not duck:
-            unsupported.append(q)
+            unsupported.append(c)
             continue
         d = min(duck, key=duck.get)
         for ref, tally in (('pg', vs_pg), ('sift', vs_sift)):
             if v[ref] is not None:
-                tally['faster' if duck[d] < v[ref] else 'slower'].append(q)
+                tally['faster' if duck[d] < v[ref] else 'slower'].append(c)
                 if ref == 'pg' and v[ref] / duck[d] > best_gap[0]:
-                    best_gap = (v[ref] / duck[d], '%s, %s' % (q, dict(DUCK_ARMS)[d].replace('pg_duckdb ', '')))
+                    best_gap = (v[ref] / duck[d], '%s, %s' % (c, dict(DUCK_ARMS)[d].replace('pg_duckdb ', '')))
     names = lambda qs: ', '.join(qs) if qs else 'none'  # noqa: E731
     return ['- Fastest of the four: ' + '; '.join('%s on %d (%s)' % (a, len(q), names(q)) for a, q in sorted(fastest.items(), key=lambda x: -len(x[1]))) + '.',
             '- pg_duckdb (the better of heap and Parquet) against the PostgreSQL executor: faster on %d (%s)%s, slower on %d (%s).' % (

@@ -1,5 +1,5 @@
 -- generic ordered-set aggregates: the array form of the fractions, an interval, text and date arguments and mode(); a group's values go through one tuplesort, then PostgreSQL's own functions
--- shape: G7
+-- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -
 -- scenario: yes

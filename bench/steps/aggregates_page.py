@@ -14,6 +14,7 @@ A block whose results file does not exist says it is not measured yet and names 
 import argparse
 import json
 import os
+import re
 import statistics
 import sys
 
@@ -114,7 +115,6 @@ def map_lines(results):
 def rows_tables(results):
     """the winner of every question at every size, and how much each system grew from the smallest to the largest size"""
     S = store_charts.Store(os.path.join(results, 'store.json'), os.path.join(results, 'store-scaling.json'))
-    slug = store_charts.question_slugs()
     sizes = sorted({m['rows'] for m in S.tiers.values() if m.get('cpus') == 3})
     tiers = {n: S.tier_of(n, 3) for n in sizes}
     body = []
@@ -126,12 +126,12 @@ def rows_tables(results):
             win = min(v, key=v.get)
             mine = min(v.get('sift', 1e99), v.get('sift_table', 1e99))
             cells.append(f'**{store_charts.SHORT[win]}**' if win in ('sift', 'sift_table') else f'{store_charts.SHORT[win]} ({mine / v[win]:.1f}x ahead of pg_sift)')
-        body.append([f'Q{q} {slug[q]}'] + cells)
+        body.append([q] + cells)
     out = ['The fastest system per question (warm median, 3 CPUs); in bold when it is pg_sift, otherwise how many times faster than the better layout of pg_sift it is:', '']
     out += md(['question'] + [f'{n:,} orders' for n in sizes], body, ['---'] + ['---'] * len(sizes)) + ['']
     lo, hi = tiers[sizes[0]], tiers[sizes[-1]]
     engines = [e for e in S.engines(hi) if e in S.engines(lo)]
-    body = [[f'Q{q} {slug[q]}'] + [f'{S.lat(hi, e, q)["value"] / S.lat(lo, e, q)["value"]:.0f}x' if S.lat(hi, e, q) and S.lat(lo, e, q) else 'n/a' for e in engines] for q in S.queries]
+    body = [[q] + [f'{S.lat(hi, e, q)["value"] / S.lat(lo, e, q)["value"]:.0f}x' if S.lat(hi, e, q) and S.lat(lo, e, q) else 'n/a' for e in engines] for q in S.queries]
     out += [f'How much longer a question takes at {sizes[-1]:,} orders than at {sizes[0]:,} ({sizes[-1] // sizes[0]:,}x the rows); a system below {sizes[-1] // sizes[0]:,}x grows slower than the data:', '']
     out += md(['question'] + [LABEL[e] for e in engines], body) + ['']
     wins = {n: sum(1 for q in S.queries if (v := {e: S.lat(tiers[n], e, q)['value'] for e in S.engines(tiers[n]) if S.lat(tiers[n], e, q)}) and min(v, key=v.get) in ('sift', 'sift_table')) for n in sizes}
@@ -148,22 +148,21 @@ def dim_table(results, dim, label):
     meta, rows = store_charts.read_tsv(os.path.join(results, 'scaling.tsv'))
     rows = [r for r in rows if r['case'].startswith(dim + ' ') and r['metric'] == 'median_ms']
     xs = sorted({int(r['case'].split()[1]) for r in rows})
-    qs = sorted({r['arm'].split('_')[0] for r in rows})
-    slug = store_charts.question_slugs()
+    qs = sorted({r['arm'].split('_')[0] for r in rows}, key=store_charts.QUESTIONS.index)
     get = lambda x, arm: next((float(r['value']) for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == arm), None)
-    plain = lambda x, arm: arm.endswith('_sift') and arm != 'q01_sift' and next((r['note'] for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == arm), 'SiftAgg').split()[0] != 'SiftAgg'
+    plain = lambda x, arm: arm.endswith('_sift') and arm != 'point-lookup_sift' and next((r['note'] for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == arm), 'SiftAgg').split()[0] != 'SiftAgg'
     cell = lambda x, q, sid: ms(get(x, f'{q}_{sid}')) + (' †' if plain(x, f'{q}_{sid}') else '')
-    head = [label] + [f'Q{q[1:]} {slug[q[1:]]}: {s}' for q in qs for s in ('PostgreSQL', 'pg_sift')]
+    head = [label] + [f'{q}: {s}' for q in qs for s in ('PostgreSQL', 'pg_sift')]
     body = [[f'{x:,}'] + [cell(x, q, sid) for q in qs for sid in ('pg', 'sift')] for x in xs]
     bad = [f'{r["case"]} {r["arm"]}' for r in rows if 'DIFFERS' in r['note']]
-    agg = [q for q in qs if q != 'q01']
+    agg = [q for q in qs if q != 'point-lookup']
     behind = [x for x in xs if any(get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05 for q in agg)]
     ahead = [x for x in xs if x not in behind]
-    take = (f'**Takeaway:** pg_sift is faster than PostgreSQL on {", ".join("Q" + q[1:] for q in agg)} at {ahead[0]:,} to {ahead[-1]:,} {label}' if ahead else '**Takeaway:** pg_sift is not faster than PostgreSQL at any value here')
-    take += (f'; at {", ".join(f"{x:,}" for x in behind)} {label} it is slower on ' + ', '.join(f'Q{q[1:]} ({ms(get(x, f"{q}_sift"))} against {ms(get(x, f"{q}_pg"))} ms)' for x in behind[-1:] for q in agg if get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05) if behind else '') + '.'
+    take = (f'**Takeaway:** pg_sift is faster than PostgreSQL on {", ".join(agg)} at {ahead[0]:,} to {ahead[-1]:,} {label}' if ahead else '**Takeaway:** pg_sift is not faster than PostgreSQL at any value here')
+    take += (f'; at {", ".join(f"{x:,}" for x in behind)} {label} it is slower on ' + ', '.join(f'{q} ({ms(get(x, f"{q}_sift"))} against {ms(get(x, f"{q}_pg"))} ms)' for x in behind[-1:] for q in agg if get(x, f'{q}_sift') > get(x, f'{q}_pg') * 1.05) if behind else '') + '.'
     return [f'{int(meta["orders"]):,} orders of the orders benchmark ({meta.get("date", "?")}, {meta.get("cpu", "?")}, {meta.get("postgresql", "?")}, pg_sift {meta.get("sift", "?")}), one client, `psql \\timing` with planning, median of {rows[0]["n"]} runs in milliseconds.', ''] + md(head, body) + ['', take, '', '**Caveats**', '',
             ] + (['- † the planner kept the normal plan on the pg_sift arm (no `SiftAgg` node), so the cell is the same plan as PostgreSQL\'s.'] if any(plain(x, f'{q}_sift') for x in xs for q in qs) else []) + [
-            '- Q01 (a lookup by id) is pruned to one partition and uses the primary key in both arms.'] + ([f'- RESULT DIFFERS: {", ".join(bad)}.'] if bad else []) + [
+            '- point-lookup (a lookup by id) is pruned to one partition and uses the primary key in both arms.'] + ([f'- RESULT DIFFERS: {", ".join(bad)}.'] if bad else []) + [
             '- A scratch cluster on a shared host with 4 CPUs (`bench/bench scaling`), ' + ('2 parallel workers per query' if dim == 'partitions' else 'one plain table') + '; every pg_sift result was compared with the normal plan\'s.', '',
             'Raw results: [bench/results/scaling.tsv](../results/scaling.tsv); reproduce with `bench/bench scaling --docs`.', '']
 
@@ -214,6 +213,7 @@ def duckdb_scale_lines(results):
 
 # ---- shapes ----------------------------------------------------------------------------------------------------------------------------
 
+ANALYTICS_QUERIES = os.path.join(REPO, 'bench', 'sql', 'analytics', 'queries')
 SHAPES_CMD = 'bench/bench analytics run --engines heap,col,flat,ch --flat --clickhouse --docs'
 
 
@@ -226,7 +226,8 @@ def shape_cases(results):
     rows = {(r['engine'], r['class'], r['variant']): r['value'] for r in d['rows'] if r['metric'] == 'wall_ms'}
     if not any(k[0] == 'col' for k in rows):
         return None
-    cases = sorted({(k[1], k[2]) for k in rows}, key=lambda c: (c[0][0] != 'G', c[0], c[1]))
+    order = {f[:-4]: int(re.search(r'(?m)^-- order: (\d+)', open(os.path.join(ANALYTICS_QUERIES, f)).read()).group(1)) for f in os.listdir(ANALYTICS_QUERIES)}
+    cases = sorted({(k[1], k[2]) for k in rows}, key=lambda c: (c[1] != '-', order[c[0]], c[1]))   # the whole-table shapes first, each group in the order of its query files
     return d['meta'], [(q, v, {e: rows.get((e, q, v)) for e in ('heap', 'col', 'flat', 'ch')}) for q, v in cases]
 
 
@@ -236,9 +237,8 @@ def shapes_lines(results):
         return not_measured(SHAPES_CMD, 'bench/results/analytics.json with the sift_col arm')
     meta, cases = found
     desc = {}
-    qdir = os.path.join(REPO, 'bench', 'sql', 'analytics', 'queries')
-    for f in sorted(os.listdir(qdir)):
-        first = open(os.path.join(qdir, f)).readline()
+    for f in sorted(os.listdir(ANALYTICS_QUERIES)):
+        first = open(os.path.join(ANALYTICS_QUERIES, f)).readline()
         desc[f[:-4]] = first.split(':', 1)[1].strip() if ':' in first else first
     body, gains = [], []
     for q, v, t in cases:

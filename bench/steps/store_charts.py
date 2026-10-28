@@ -16,11 +16,12 @@ import os
 import re
 from xml.sax.saxutils import escape
 
+from store_lib import load_queries
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-QUERIES = os.path.join(os.path.dirname(HERE), 'sql', 'store', 'queries')
-
-SEARCH = ('08', '09', '10')   # the full-text questions of the store set: measured with the search benchmarks, not part of the aggregate set
+QUESTIONS = [q.id for q in load_queries()]   # the questions in the order of their `-- order:` lines
+SEARCH = ('search-count', 'search-facets', 'search-newest')   # the full-text questions of the store set: measured with the search benchmarks, not part of the aggregate set
 WIDTH = 880
 FONT = 'font-family="Helvetica, Arial, sans-serif"'
 
@@ -168,7 +169,7 @@ class Store:
             self.tiers.update(d['meta']['tiers'])
             for r in d['rows']:
                 self.rows[(r['tier'], r['engine'], r['class'], r['variant'], r['metric'])] = r
-        self.queries = sorted({k[2] for k in self.rows if k[4] == 'latency_ms' and k[2] not in ('-',) + SEARCH})
+        self.queries = sorted({k[2] for k in self.rows if k[4] == 'latency_ms' and k[2] not in ('-',) + SEARCH}, key=QUESTIONS.index)
 
     def get(self, tier, engine, cls='-', variant='-', metric=None):
         return self.rows.get((tier, engine, cls, variant, metric))
@@ -195,11 +196,6 @@ class Store:
 def picture(name, alt, prefix='docs/img/'):
     """a chart in its light and dark variant (the one of the reader's GitHub theme is shown); prefix: where the images are, seen from the page"""
     return f'<picture><source media="(prefers-color-scheme: dark)" srcset="{prefix}{name}-dark.svg"><img alt="{alt}" src="{prefix}{name}-light.svg"></picture>'
-
-
-def question_slugs():
-    """Q01 point lookup ...: the names of the query files"""
-    return {m.group(1): m.group(2).replace('_', ' ') for f in sorted(os.listdir(QUERIES)) if (m := re.match(r'(\d+)_(\w+)\.sql$', f))}
 
 
 def source_lines(S, tier, what, files='bench/results/store.json'):
@@ -236,7 +232,7 @@ def strip_cells(c, x, y, cols, rows_, cw, rh, title_fn):
 
 
 def cpus_chart(S, theme):
-    c, slug = Canvas(theme), question_slugs()
+    c = Canvas(theme)
     t1, t3 = S.tier_of(1_000_000, 1), S.tier_of(1_000_000, 3)
     engines = [e for e in S.engines(t3) if e in S.engines(t1)]
     qs = S.queries
@@ -248,17 +244,17 @@ def cpus_chart(S, theme):
     grid = []
     for q in qs:
         grid.append([(S.lat(t1, e, q)['value'] / S.lat(t3, e, q)['value']) if S.lat(t1, e, q) and S.lat(t3, e, q) else None for e in engines])
-        c.text(22, top + len(grid) * rh - rh / 2 + 4, f'Q{q} {slug[q]}', 12)
+        c.text(22, top + len(grid) * rh - rh / 2 + 4, q, 12)
     for ri, row in enumerate(grid):
         for ci, r in enumerate(row):
             if r is None:
                 continue
             fill = strip_color(c, r, 0.6)
             ink = '#1f2328' if luminance(fill) > 0.28 else '#ffffff'
-            c.rect(left + ci * cw + 1, top + ri * rh + 1, cw - 2, rh - 2, fill, 3, f'Q{qs[ri]} {slug[qs[ri]]}: {SYSTEMS[engines[ci]][0]} takes {1 / r:.2f}× the time with 3 CPUs that it takes with 1')
+            c.rect(left + ci * cw + 1, top + ri * rh + 1, cw - 2, rh - 2, fill, 3, f'{qs[ri]}: {SYSTEMS[engines[ci]][0]} takes {1 / r:.2f}× the time with 3 CPUs that it takes with 1')
             c.text(left + ci * cw + cw / 2, top + ri * rh + rh / 2 + 4, f'{r:.2f}×' if r < 0.95 else f'{r:.1f}×', 12, 'middle', ink, 'bold' if r < 0.95 else None)
     worst = min((r, ri, ci) for ri, row in enumerate(grid) for ci, r in enumerate(row) if r)
-    odd = f' {SYSTEMS[engines[worst[2]]][0]} Q{qs[worst[1]]} takes {1 / worst[0]:.0f}x as long at 3 CPUs: the planner chose a different plan.' if worst[0] < 0.5 else ''
+    odd = f' {SYSTEMS[engines[worst[2]]][0]} {qs[worst[1]]} takes {1 / worst[0]:.0f}x as long at 3 CPUs: the planner chose a different plan.' if worst[0] < 0.5 else ''
     end = c.foot(top + rh * len(qs) + 24, source_lines(S, t3, 'Questions that finish in about a millisecond have nothing left to split across CPUs.' + odd))
     return c.render(end + 6, 'Gain from 1 to 3 CPUs per question', 'Warm median at 1 CPU divided by the median at 3 CPUs, per question and system.')
 
@@ -387,8 +383,7 @@ def scaling_tsv_chart(theme, path, dim, title, sub):
     meta, rows = read_tsv(path)
     rows = [r for r in rows if r['case'].startswith(dim + ' ') and r['metric'] == 'median_ms']
     xs = sorted({int(r['case'].split()[1]) for r in rows}, key=int)
-    qs = sorted({r['arm'].split('_')[0] for r in rows})
-    names = {'q02': 'Q02 orders per country', 'q03': 'Q03 revenue per month', 'q04': 'Q04 top categories', 'q06': 'Q06 customers per month', 'q05': 'Q05 average shipped order', 'q01': 'Q01 point lookup'}
+    qs = sorted({r['arm'].split('_')[0] for r in rows}, key=QUESTIONS.index)
     c.head(title, sub)
     y = c.legend(20, 74, ['pg', 'sift'])
     panels = []
@@ -396,7 +391,7 @@ def scaling_tsv_chart(theme, path, dim, title, sub):
         data = {}
         for sid in ('pg', 'sift'):
             data[sid] = [next((float(r['value']) for r in rows if r['case'] == f'{dim} {x}' and r['arm'] == f'{q}_{sid}'), None) for x in xs]
-        panels.append((names.get(q, q), data))
+        panels.append((q, data))
     end = lines_panels(c, panels, [max(x, 1) for x in xs], y + 36, ncols=min(4, len(panels)), pw=190, xfmt=lambda v: f'{v:,}')
     end = c.foot(end - 22, [f'Data: bench/results/scaling.tsv, {meta.get("date", "?")}. Host: {meta.get("cpu", "?").split(" (")[0].replace(" 8-Core Processor", "")}, {meta.get("postgresql", "PostgreSQL")}, pg_sift {meta.get("sift", "?")}.',
                             meta.get('method', '')[:230]])

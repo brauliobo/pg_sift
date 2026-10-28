@@ -73,13 +73,14 @@ answer() {
 
 log "== ten questions, median of $runs runs"
 fail=0
-printf '| # | question | pushdown (ms) | sift.enable_agg=off (ms) | ratio | plan | same answer |\n|---|---|---:|---:|---:|---|---|\n'
-for f in "$SQL"/queries/*.sql; do
-	id=$(basename "$f" | cut -c1-2) label=$(sed -n 's/^-- label: //p' "$f"); stmt=$(statement "$f")
+printf '| question | label | pushdown (ms) | sift.enable_agg=off (ms) | ratio | plan | same answer |\n|---|---|---:|---:|---:|---|---|\n'
+mapfile -t files < <(grep -H '^-- order: ' "$SQL"/queries/*.sql | sort -t: -k3 -n | cut -d: -f1)
+for f in "${files[@]}"; do
+	id=$(basename "$f" .sql) label=$(sed -n 's/^-- label: //p' "$f"); stmt=$(statement "$f")
 	plan=$(printf 'SET sift.enable_agg = on;\nEXPLAIN (COSTS OFF) %s;\n' "$stmt" | q | grep -o -m1 'Custom Scan (SiftAgg)\|SiftScan\|SiftCount\|Index Scan\|Seq Scan\|Bitmap Heap Scan' | head -1 || true)
 	if [[ $(answer on "$stmt") == "$(answer off "$stmt")" ]]; then same=yes; else same=DIFFERENT; fail=1; fi
 	on=$(timed on "$stmt") off=$(timed off "$stmt")
-	printf '| %s | %s | %s | %s | %s | %s | %s |\n' "${id#0}" "${label:-$(sed -n '1s/^-- //p' "$f")}" "$on" "$off" "$(awk -v a="$on" -v b="$off" 'BEGIN {printf "%.1fx", b / a}')" "$plan" "$same"
+	printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$id" "${label:-$(sed -n '1s/^-- //p' "$f")}" "$on" "$off" "$(awk -v a="$on" -v b="$off" 'BEGIN {printf "%.1fx", b / a}')" "$plan" "$same"
 done
 
 log
