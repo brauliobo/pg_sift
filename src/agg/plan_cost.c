@@ -102,6 +102,8 @@
 #define AGG_UNNEST_FLOOR	100.0	/* the rows PostgreSQL expects of an unnesting function over one row (jsonb_array_elements, jsonb_each): the join of a lookup it has no statistics for is that many */
 #define AGG_SCAN_SPEED		0.2		/* the share of the operators above the scan really takes: the shapes it runs alone (no lookup tables) take 0.4 to 0.9 ns for an operator counted at 3 ns */
 #define AGG_UNIT_COST		200.0
+#define TOPN_RUN_UNIT		8000.0	/* operators to read the first rows of a unit through its sorted run: the seek of the range, a window of 32 keys, their addresses (about 25 us a unit measured: 1,000,000 rows in 50 units, 1.26 ms) */
+#define TOPN_RUN_ROW		12.0	/* ... and for each row wanted past the window */
 #define AGG_PREAGG_HLL		40000.0	/* a unit's stored sketch merged into the aggregate's: up to 16,384 registers unpacked and maxed (about 60 us for a dense one) */
 #define AGG_PREAGG_GROUP	25.0	/* a group of a unit's histogram folded into the table: its key id and the aggregates (about 80 ns) */
 #define AGG_START_COST		100000.0	/* opening the source, the lookup tables and the first units: 1 to 1.5 ms measured on a scan pruned to a few units the first time a backend runs it, 0.07 to 0.3 ms from the second; charged 0.25 ms, which a selective btree plan does not pay and which put the scan above the btree plan for a lookup of 500 to 700 rows (the scan runs it in 60 to 100 us, the btree plan in 200 to 370) */
@@ -1779,6 +1781,10 @@ preagg_share(AggCtx *c, SiftAggSpec *s)
 		miss = c->stats.roll_miss[shape.list];
 	else if (dim >= 0)
 		miss = minmax ? c->stats.mm_miss[dim] : c->stats.dim_miss[dim];
+	/* a unit whose zone straddles a bound of the query is scanned, not answered: the units are exact only where a range on a leaf holds them whole */
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf >= 0 && s->pred[i]->op != SCMP_NE)
+			miss = 1.0 - (1.0 - miss) * (1.0 - Min(c->stats.zone_span[s->pred[i]->leaf], 1.0));
 	return Min(Max(c->stats.exact_frac, 0.0), 1.0) * (1.0 - Min(Max(miss, 0.0), 1.0));
 }
 
@@ -2957,7 +2963,12 @@ agg_cost(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, double rows_
 	k.scan_cost = (k.scan_cost - k.load_cost) * AGG_SCAN_SPEED + k.load_cost;
 	/* a top-N reads a fraction of the units, but opens the match set whole */
 	if (s->topn)
-		k.scan_cost = (k.scan_cost - k.open_cost) * c->topn_frac + k.open_cost;
+	{
+		double		scan = (k.scan_cost - k.open_cost) * c->topn_frac + k.open_cost;
+
+		/* through the sorted runs, a unit costs a seek and the rows wanted, never more than its rows scanned */
+		k.scan_cost = c->topn_runs ? Min(scan, k.open_cost + Max(c->stats.nunits, 1.0) * c->topn_frac * (TOPN_RUN_UNIT + rows_out * TOPN_RUN_ROW)) : scan;
+	}
 	k.scan_cost *= cpu_operator_cost;
 	/*
 	 * The normal plan of an unnest expects the rows of the function (100 per call for jsonb_to_recordset, jsonb_array_elements,

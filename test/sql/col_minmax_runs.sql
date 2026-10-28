@@ -1,0 +1,53 @@
+-- min(k) and max(k) with a range on k, over an index with sorted runs and no global order: PostgreSQL plans them as the first row of ORDER BY k LIMIT 1, and the top-N scan
+-- that reads each unit through its sorted run is priced for what it reads (a seek of each unit), so it wins over the aggregate that reads every unit whose zone holds the bound
+-- (a key whose values are in no order of the heap holds the bound in every unit). The answers are the plain plan's, over NULLs, empty ranges, ties and both directions.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+SET sift.plan_scale = 1000;
+
+CREATE TABLE mr (id int, k int, kt timestamp, pad text) WITH (autovacuum_enabled = off);
+ALTER TABLE mr ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO mr
+SELECT g, CASE WHEN g % 53 = 0 THEN NULL ELSE (hashint4(g) & 2147483647) % 100000 END,
+       CASE WHEN g % 61 = 0 THEN NULL ELSE timestamp '2024-01-01' + ((hashint4(g + 1) & 2147483647) % 500000) * interval '1 second' END, repeat('x', 300)
+FROM generate_series(1, 60000) g;
+CREATE INDEX mr_idx ON mr USING sift_col (id, k, kt) WITH (order_columns = 'k, kt', order_array_columns = 'off');
+VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, ANALYZE) mr;
+
+CREATE FUNCTION mr_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; runs bool := false; agg bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL enable_seqscan = off;
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS off, ANALYZE, TIMING off, SUMMARY off) ' || q LOOP
+		runs := runs OR pl LIKE '%Units Read By Sorted Run%';
+		agg := agg OR pl LIKE '%Pushed Aggregates%';
+	END LOOP;
+	RETURN CASE WHEN runs THEN 'sorted runs' WHEN agg THEN 'aggregate' ELSE 'other' END;
+END $$;
+
+CREATE FUNCTION mr_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL enable_seqscan = off;
+	EXECUTE q INTO a;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	EXECUTE q INTO b;
+	RETURN CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERS ' || q || ' ' || coalesce(a, 'null') || ' vs ' || coalesce(b, 'null') ELSE mr_plan(q) END;
+END $$;
+
+SELECT result, count(*) FROM (
+	SELECT mr_same(format('SELECT %s(%s) FROM mr WHERE %s', f, c, w)) AS result
+	FROM unnest(ARRAY['min', 'max']) f,
+		 (VALUES ('k', 'k >= 30000'), ('k', 'k < 70000'), ('k', 'k BETWEEN 10 AND 200'), ('k', 'k > 100000'), ('k', 'k = 5'), ('k', 'k >= 99990 AND k <= 99999'),
+				 ('kt', 'kt >= timestamp ''2024-03-01'''), ('kt', 'kt <= timestamp ''2024-02-01'''), ('kt', 'kt > timestamp ''2030-01-01'''),
+				 ('kt', 'kt BETWEEN timestamp ''2024-01-02'' AND timestamp ''2024-01-03''')) q(c, w)
+) r GROUP BY 1 ORDER BY 1;
+
+-- a condition on another column tests the rows the walk takes and may need many of them: the aggregate keeps its price
+SELECT mr_same('SELECT min(k) FROM mr WHERE k >= 30000 AND id % 1000 = 7');
+
+DROP TABLE mr CASCADE;
+DROP FUNCTION mr_plan(text), mr_same(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

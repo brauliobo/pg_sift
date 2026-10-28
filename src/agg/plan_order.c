@@ -965,6 +965,21 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 }
 
 /*
+ * Does the scan read each unit through its sorted run (run_unit): the first key is a plain integer or time column that has runs in the units, and the only conditions are
+ * comparisons of that key, which bound the part of the run that is read. Any other condition tests the rows the walk takes and may need many of them.
+ */
+static bool
+topn_runs_ok(const AggCtx *c, const SiftAggSpec *s, const int *leaf, const SiftTopXform *xf)
+{
+	if (!sift_topn_runs || leaf[0] < 0 || xf[0].kind != TXK_NONE || c->stats.head_cover[leaf[0]] < 0.9 || c->search != NULL)
+		return false;
+	for (int i = 0; i < s->npred; i++)
+		if (s->pred[i]->leaf != leaf[0] || !(s->pred[i]->kind == SAP_CMP || (s->pred[i]->kind == SAP_NULL && s->pred[i]->op == 1)))
+			return false;
+	return true;
+}
+
+/*
  * Do the heads of the sorted runs answer the LIMIT for less than the order array? The head holds the best 32 keys at each end of a unit with the addresses of their rows, and a
  * key that follows the order of the heap (a zone walk reads about 8 units) reads a few of them where the array opens and decodes a chunk of each segment (ascending: 25 to
  * 30 thousand instructions more for 10 rows of 1,000,000 in 4 segments; descending, which cannot decode the end of a chunk without its start: 130 thousand). Past 32 rows
@@ -1269,6 +1284,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	c->topn_cmpx = c->topn_keybytes = c->topn_xcost = 0;
 	c->topn_xserial = false;
 	c->topn_array = false;
+	c->topn_runs = false;
 	exprs = NIL;
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
@@ -1348,6 +1364,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),
 						  leaf[0], input_rel->rows, (int64) rows);
+		c->topn_runs = !c->topn_array && topn_runs_ok(c, s, leaf, xf);
 		if (c->topn_array && topn_heads_win(c, s, leaf[0], rows))
 		{
 			c->topn_array = false;
@@ -1367,6 +1384,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 		return;
 	c->topn_sorted = true;
 	c->topn_array = false;
+	c->topn_runs = false;
 	c->topn_frac = 1.0;
 	s->topn = sift_topn_spec(nkey, leaf, desc, nulls_first, sortop, cmp, collid, xf, exprs, nout, attno, oleaf, flags | TOPN_SORT, copyObject(parse->limitCount), copyObject(parse->limitOffset));
 	topn_path(c, s, root, input_rel, output_rel, scan_tlist, rows, 0, nkey, count + offset);
