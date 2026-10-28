@@ -1504,6 +1504,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** new in 3.5
 - **Advice:** Leave at the default. 0 turns the sharing off (each backend then folds the statistics of an index once, as before); more room helps only a server with indexes of many integer leaves (a record is 33 kB for each).
 
+#### auto(dict-tsig)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** A substring test (LIKE '%part%') of 3 bytes or more on a text leaf whose dictionary no longer fits the cache of parsed dictionaries reads only the blocks of 64 strings whose trigram filter holds the part, and does not inflate the dictionary again for each query.
+- **Gain:** LIKE '%part%' over 3,000,000 URLs, a part in 42 rows 1,336 to 944 M instructions (S 1.42); a part in 3.5% of the rows 1,341 to 1,256 M; random hex, rare part 986 to 127 (S 7.8)
+- **Formula:** S 1.42x saving 392000k instructions, G 9.4%, W 3.9%, R 1: B 7.2 against C 3.9, automatic
+- **Impact:** index size: +0.33% (448,200,704 against 446,734,336 bytes, 3,000,000 rows, 6 columns); +9.4% (URL column alone, 79,740,928 against 72,884,224); +27% (random hex, 3,000,000 rows); build, merge and writes: Build 73,218 against 72,611 M instructions (+0.8%); URL alone 13,847 against 13,332 M (+3.9%); other: format minor 29; Index +0.33% (6 columns), +9.4% (the URL column alone) on real text; +27% on random hex strings. Build +0.8% and +3.9%. Only a dictionary over half of dict_cache_kb (or whose scaled size is over it) and 1 MiB of strings of 5 bytes or more is signed. A 3.5 library cannot read minor 29.
+- **When:** A text leaf with substring tests (LIKE '%part%', ILIKE, regular expressions with a literal of 3 bytes or more) whose segment dictionary is over half of dict_cache_kb, or whose dictionaries of the whole index together exceed it. Not for a leaf that fits (it is parsed once and kept), a part under 3 bytes or a part in most blocks.
+- **Default:** automatic — Weighted formula: B 3.6 (S 1.42, R 0.5) to 7.2 against C 0.3 (6 columns) to 3.9 (the URL column alone, the worst real case); the size of the dictionary against the cache is the signal that the filter is needed, and growth follows the entropy of the strings, so no selectivity test.
+- **Turn off:** SET sift.col_format_minor = 14 (leaves are written without the signature; the index stays readable by a 3.5 library)
+- **Upgrade from 3.5:** Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index.
+- **Advice:** Leave on. The leaves that fit the cache are not signed. To opt out set sift.col_format_minor to 14 before building or rebuilding the index.
+
 ### opt-in
 
 #### sift(analyzer)
@@ -2213,6 +2227,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
 | `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 4096 kB |  | new in 3.5 |
+| `auto(dict-tsig)` | automatic | automatic | minor 29, unreadable by 3.5 | Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index. |
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
