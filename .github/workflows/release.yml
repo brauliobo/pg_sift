@@ -2,7 +2,8 @@ name: release
 
 # A v* tag builds the release assets of that tag and attaches them with one SHA256SUMS to the GitHub release of the tag (created if it
 # does not exist yet):
-#   - the .deb and .rpm of pg_sift for each PostgreSQL major of PGS in scripts/package.sh (17, 18 and 19), smoke-tested in fresh containers
+#   - the .deb and .rpm of pg_sift for each PostgreSQL major of PGS in scripts/package.sh (17, 18 and 19) and each architecture of ARCHES there
+#     (x86_64 on ubuntu-24.04, aarch64 on the hosted ubuntu-24.04-arm runner), smoke-tested in fresh containers of the same architecture
 #     (scripts/package.sh); the publish job refuses a release that lacks one of them;
 #   - the SQLite extension tarball sift-sqlite-<version>-linux-x86_64.tar.gz (sift.so, LICENSE, NOTICE, README), built on Debian 12 and
 #     loaded into the system SQLite of Debian 12, Ubuntu 24.04 and AlmaLinux 10 (scripts/package-sqlite.sh). The version is the tag
@@ -54,6 +55,7 @@ jobs:
     outputs:
       packages: ${{ steps.what.outputs.packages }}
       majors: ${{ steps.what.outputs.majors }}
+      arches: ${{ steps.what.outputs.arches }}
       sqlite: ${{ steps.what.outputs.sqlite }}
       mariadb: ${{ steps.what.outputs.mariadb }}
     steps:
@@ -81,24 +83,26 @@ jobs:
           {
             echo "packages=$packages"
             echo "majors=$(scripts/package.sh majors)"
+            echo "arches=$(scripts/package.sh arches)"
             echo "sqlite=$sqlite"
             echo "mariadb=$mariadb"
           } >> "$GITHUB_OUTPUT"
           echo "packages=$packages sqlite=$sqlite mariadb=$mariadb"
         shell: bash {0}
 
-  # every major and both families in parallel: each builds its package and installs it in every image of its family
+  # every major, family and architecture in parallel: each builds its package and installs it in every image of its family
   packages:
-    name: packages (${{ matrix.family }} ${{ matrix.pg }})
+    name: packages (${{ matrix.family }} ${{ matrix.pg }} ${{ matrix.arch }})
     needs: changes
     if: needs.changes.outputs.packages == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         pg: ${{ fromJSON(needs.changes.outputs.majors) }}
         family: [deb, rpm]
+        arch: ${{ fromJSON(needs.changes.outputs.arches) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -109,7 +113,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: packages-${{ matrix.family }}-${{ matrix.pg }}
+          name: packages-${{ matrix.family }}-${{ matrix.pg }}-${{ matrix.arch }}
           path: dist/*.${{ matrix.family }}
           if-no-files-found: error
 

@@ -74,12 +74,12 @@ The last column is a month of random dates, which no unit can skip: the gain is 
 
 ### Install
 
-PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). Release packages (x86-64) cover PostgreSQL 17, 18 and 19: take the file of your server's major `N` (the `19` packages are built against PGDG's `19~rc1` until it ships 19.0).
+PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). Release packages (x86-64 and arm64) cover PostgreSQL 17, 18 and 19: take the file of your server's major `N` (the `19` packages are built against PGDG's `19~rc1` until it ships 19.0).
 
 | Where | How |
 |---|---|
-| Debian 13, Ubuntu 24.04 (PGDG `postgresql-N`) | download `postgresql-N-pg-sift_*_amd64.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest), then `sudo apt install ./postgresql-N-pg-sift_*_amd64.deb` |
-| RHEL, Rocky, Alma 9 and 10 (PGDG `postgresqlN-server`) | download `pg_sift_N-*.rpm` from the latest release, then `sudo dnf install ./pg_sift_N-*.rpm` |
+| Debian 13, Ubuntu 24.04 (PGDG `postgresql-N`) | download `postgresql-N-pg-sift_*_amd64.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest), then `sudo apt install ./postgresql-N-pg-sift_*_amd64.deb` (`_arm64.deb` on arm64) |
+| RHEL, Rocky, Alma 9 and 10 (PGDG `postgresqlN-server`) | download `pg_sift_N-*.rpm` from the latest release, then `sudo dnf install ./pg_sift_N-*.rpm` (`.x86_64.rpm` or `.aarch64.rpm`, the architecture of the server) |
 | Arch Linux | the AUR package `pg_sift` (recipe in [packaging/](packaging/)) |
 | Docker | `packaging/docker/build.sh 18` builds the image `pg_sift:pg18` on the official `postgres` image: [docs/QUICKSTART.md](docs/QUICKSTART.md), [docs/CONTAINERS.md](docs/CONTAINERS.md) (Docker Compose, CloudNativePG) |
 | macOS arm64 | the Homebrew formula below |

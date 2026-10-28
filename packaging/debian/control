@@ -7,7 +7,7 @@ Standards-Version: 4.7.0
 Homepage: https://github.com/brauliobo/pg_sift
 
 Package: postgresql-@PG@-pg-sift
-Architecture: amd64
+Architecture: any
 Depends: postgresql-@PG@, ${misc:Depends}, ${shlibs:Depends}
 Description: CTID-bitmap full-text search index with BM25 ranking for PostgreSQL
  pg_sift adds the sift index access method (CREATE INDEX ... USING sift)

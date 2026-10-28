@@ -18,20 +18,21 @@ What this directory and the repository root hold for each way of installing pg_s
 
 ## Packages for each PostgreSQL major
 
-A release attaches six packages (x86-64), one pair for each major the extension supports. The name carries the major `N`:
+A release attaches twelve packages, one pair for each major the extension supports and each architecture (x86-64 and arm64). The name carries the major `N`; the architecture is `amd64`/`arm64` in the `.deb` and `x86_64`/`aarch64` in the `.rpm`:
 
 | Family | File | Built and smoke-tested in | Needs |
 |---|---|---|---|
-| Debian, Ubuntu | `postgresql-N-pg-sift_X.Y.Z-1_amd64.deb` | built on Debian 13, installed in fresh Debian 13 and Ubuntu 24.04 containers | PGDG `postgresql-N` |
-| RHEL, Rocky, Alma | `pg_sift_N-X.Y.Z-1.el9.x86_64.rpm` | built on Rocky 9, installed in fresh Rocky 9, Alma 9 and Alma 10 containers | PGDG `postgresqlN-server` |
+| Debian, Ubuntu | `postgresql-N-pg-sift_X.Y.Z-1_{amd64,arm64}.deb` | built on Debian 13, installed in fresh Debian 13 and Ubuntu 24.04 containers | PGDG `postgresql-N` |
+| RHEL, Rocky, Alma | `pg_sift_N-X.Y.Z-1.el9.{x86_64,aarch64}.rpm` | built on Rocky 9, installed in fresh Rocky 9, Alma 9 and Alma 10 containers | PGDG `postgresqlN-server` |
 
 Pick the major of the server (`SHOW server_version`); a package of another major does not install. There is one Debian recipe (`debian/`, with `@PG@` where the major goes) and one `pg_sift.spec` (`%{pgmajor}`):
-`packaging/container.sh` substitutes the major, so a new major is one word in `PGS`, not a copy of the recipes.
+`packaging/container.sh` substitutes the major, so a new major is one word in `PGS`, not a copy of the recipes; the recipes name no architecture (`Architecture: any`, `ExclusiveArch: x86_64 aarch64`), so a new one is one word in `ARCHES` and a runner.
 
 | Parameter | Default | Effect |
 |---|---|---|
 | `PGS` (environment of `scripts/package.sh`) | `17 18 19` | the majors built, tested, verified and listed in the matrix of the `release` workflow (`scripts/package.sh majors`); a release publishes only when every package of every major and family is in the set (`scripts/package.sh verify DIR`) |
 | `FAMILIES` | `deb rpm` | the families built |
+| `ARCHES` | `x86_64 aarch64` | the architectures `verify` requires and the matrix lists (`scripts/package.sh arches`); a host builds its own, with the native images: the release runs `x86_64` on `ubuntu-24.04` and `aarch64` on the hosted `ubuntu-24.04-arm` runner |
 | `PG` (`scripts/package.sh build`) | none | the major of one build |
 | `BUILD_DEB`, `BUILD_RPM`, `TEST_DEB`, `TEST_RPM` | Debian 13, Rocky 9; the images above | the images that build and test |
 
