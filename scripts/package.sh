@@ -23,9 +23,10 @@ PGS=${PGS:-17 18 19}
 FAMILIES=${FAMILIES:-deb rpm}
 ARCHES=${ARCHES:-x86_64 aarch64}
 HOST_ARCH=$(uname -m); HOST_ARCH=${HOST_ARCH/arm64/aarch64}
-BUILD_DEB=${BUILD_DEB:-debian:trixie}
+# the oldest glibc of the test images (2.35 on Ubuntu 22.04): a library is only as portable as the machine that links it (dpkg-shlibdeps)
+BUILD_DEB=${BUILD_DEB:-ubuntu:22.04}
 BUILD_RPM=${BUILD_RPM:-rockylinux/rockylinux:9}
-TEST_DEB=${TEST_DEB:-debian:trixie ubuntu:24.04}
+TEST_DEB=${TEST_DEB:-debian:12 debian:trixie ubuntu:22.04 ubuntu:24.04}
 TEST_RPM=${TEST_RPM:-rockylinux/rockylinux:9 almalinux:9 almalinux:10}
 
 run() { # run IMAGE OUTDIR MODE [docker args...]: packaging/container.sh MODE in a throwaway container
