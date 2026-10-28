@@ -97,6 +97,13 @@ dec_integral(const Dec *d, uint64 *mag)
 				end;
 	long		scale;
 
+	if (d->ex == 0 && d->nfrac == 0 && d->nint <= 18)
+	{
+		*mag = 0;
+		for (int i = 0; i < d->nint; i++)
+			*mag = *mag * 10 + (d->ip[i] - '0');
+		return true;
+	}
 #define DIG(i)	((i) < d->nint ? d->ip[i] : d->fp[(i) - d->nint])
 	while (lead < total && DIG(lead) == '0')
 		lead++;
@@ -130,7 +137,7 @@ int_fits(SiftShredType t, bool neg, uint64 mag, int64 *out)
 /*
  * float4 / float8 of the decimal text: the correctly rounded value strtof / strtod give, which is what float4in / float8in return
  * (the backend keeps LC_NUMERIC at "C"). Like them, a result that is infinite or rounds to zero is out of range; denormals are not.
- * Integers that are exact in the type skip the library.
+ * Short decimals that are exact in the type skip the library.
  */
 static bool
 dec_float(const Dec *d, const char *text, int len, bool is4, double *out)
@@ -138,15 +145,19 @@ dec_float(const Dec *d, const char *text, int len, bool is4, double *out)
 	double		v;
 	char	   *end;
 
-	if (d->nfrac == 0 && d->ex == 0 && d->nint <= 15)
+	/* up to 15 digits are exact in a double and so are the powers of ten up to 10^22: one division is the correctly rounded value strtod gives (a float4 only for an integer) */
+	if (d->ex == 0 && d->nint + d->nfrac <= 15 && (!is4 || d->nfrac == 0))
 	{
+		static const double pow10[] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15};
 		uint64		m = 0;
 
 		for (int i = 0; i < d->nint; i++)
 			m = m * 10 + (d->ip[i] - '0');
+		for (int i = 0; i < d->nfrac; i++)
+			m = m * 10 + (d->fp[i] - '0');
 		if (!is4 || m <= (UINT64CONST(1) << 24))
 		{
-			*out = d->neg && m ? -(double) m : (double) m;
+			*out = m == 0 ? 0.0 : (d->neg ? -(double) m : (double) m) / pow10[d->nfrac];
 			return true;
 		}
 	}
@@ -458,7 +469,10 @@ sift_shred_key(SiftShred *sh, const char *key, int len)
 		f->keyid = intern_key(sh, key, len);
 		return SIFT_SHRED_TAKE;
 	}
-	m = find_member(f->node, key, len, NULL);
+	/* a jsonb object lists its keys in the order of the members, so the next member is the one to try first */
+	m = f->matched < (uint32) f->node->nmembers ? &f->node->members[f->matched] : NULL;
+	if (m == NULL || m->len != len || memcmp(m->key, key, len) != 0)
+		m = find_member(f->node, key, len, NULL);
 	if (!m)
 		return SIFT_SHRED_SKIP;
 	f->pending = m->node;
