@@ -38,6 +38,7 @@
 #define SIFT_CGORD_ROWS_FINE	512		/* from minor 30: a seek and a cursor decode half of the entries */
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
+#define SIFT_GORD_PIN_MAX	16		/* the values of a group a scan reads at once: the elements of an IN list, or the equalities of a conjunction (a scan with more reads the plain order or the units) */
 #define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan.c, prune_range_tids) */
 #define SIFT_CGORD_MEM_ROWS	4096		/* rows of the write buffers a scan sorts for the order, at least (sift_col_gorder_open) */
 #define SIFT_CGORD_CAP		(SIFT_CGORD_ROWS + 8)		/* slots of the arrays sift_cgord_decode fills */

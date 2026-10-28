@@ -5,6 +5,7 @@
 #define SIFT_COL_SCAN_INT_H
 
 #include "col/am.h"
+#include "col/gorder.h"
 #include "col/seg.h"
 #include "core/visibility.h"
 
@@ -221,8 +222,10 @@ struct SiftColSource
 	uint32		capptid;
 	int			pstream;		/* the first cursor that may still have addresses to hand over (SIFT_COLO_POINT_LAZY) */
 	int			gpin_leaf;		/* the leaf the global order blocks are grouped by and the group the scan pinned (sift_col_gorder_open), -1: none */
-	int64		gpin_val;
-	struct ColGOrdMem *gmem;	/* the rows of the write buffers sorted for the global order (sift_col_gorder_open), in mcxt */
+	int			gpin_n;			/* the values of the group the scan reads (an IN list reads each in turn), in gpin_vals */
+	int64		gpin_vals[SIFT_GORD_PIN_MAX];
+	int			gper;			/* the sources of one value: the stored segments, then the write buffers when they hold rows (value v of source i is i / gper) */
+	struct ColGOrdMem *gmem[SIFT_GORD_PIN_MAX];	/* the rows of the write buffers sorted for the global order, one for each value of the group (sift_col_gorder_open), in mcxt */
 	/* col_source zeroes the fields before these two only (a partitioned table's scan opens thousands of sources): a reader looks at the first ntests tests and the first dir.nsegs segments */
 	ColTest		tests[COL_TEST_CACHE];	/* in mcxt: a begin does not drop them, a segment stays open as long as the source */
 	SiftDirSnapshot dir;

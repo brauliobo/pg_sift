@@ -11,6 +11,7 @@
 #include "storage/itemptr.h"
 
 #include "agg/colsrc.h"
+#include "col/gorder.h"
 
 typedef struct SiftGOrd SiftGOrd;
 
@@ -22,8 +23,8 @@ typedef struct SiftGBound
 	int64		lo;
 	int64		hi;
 	int			npin;			/* conditions leaf = value of the query: a global order grouped by one of the leaves reads the entries of that group only, and cannot answer without it */
-	int			pinleaf[4];
-	int64		pinval[4];
+	int			pinleaf[SIFT_GORD_PIN_MAX];	/* the same leaf more than once: an IN list, the group of any of the values */
+	int64		pinval[SIFT_GORD_PIN_MAX];
 } SiftGBound;
 
 /* The merge for a scan that wants rows rows. NULL when the source has no global order of the leaf, or its write buffers hold too many rows to sort for so few (sift_colsrc_gorder_open) */

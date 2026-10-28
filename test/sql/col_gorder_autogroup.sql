@@ -42,7 +42,7 @@ SELECT w, result, count(*) FROM (
 					  'ts BETWEEN timestamp ''2024-03-01'' AND timestamp ''2024-03-02''']) w,
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
--- a group range or two groups cannot read the array of a group; the plain order has no bound on the key for them
+-- a group range cannot read the array of a group (the plain order has no bound on the key for it); two groups, OR or IN, are read one after the other
 SELECT ag_chk('SELECT id, ts FROM ag WHERE g > 390 ORDER BY ts, id LIMIT 10') AS group_range, ag_chk('SELECT id, ts FROM ag WHERE g = 3 OR g = 4 ORDER BY ts, id LIMIT 10') AS two_groups;
 
 -- the plain order still answers a range of the key from the addresses, with no unit read

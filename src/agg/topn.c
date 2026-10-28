@@ -3897,6 +3897,18 @@ gord_prep(SiftTopN *t)
  * the order of the key and the n-th one ends the scan. An entry is for the heap to confirm, as a b-tree's is: the row of the address may be dead, or another one
  * where the first was vacuumed, which holds another key.
  */
+/* an OR of equalities of the group leaf gl with constants (its IN list): a global order grouped by gl reads the entries of each of the groups */
+static bool
+gcond_group_in(const SiftTopGPred *p, int gl)
+{
+	if (p->kind != STG_OR || gl < 0)
+		return false;
+	for (int i = 0; i < p->nchild; i++)
+		if (p->child[i]->kind != STG_CMP || p->child[i]->op != SCMP_EQ || p->child[i]->lead || p->child[i]->leaf != gl)
+			return false;
+	return true;
+}
+
 /* the conditions on a column other than the first key that the array read does not narrow: those outside an equality of the group leaf gl at the top of the conjunction, with the first key not pinned */
 static int
 gcond_loose(const SiftTopGPred *p, int gl, bool top)
@@ -3907,6 +3919,8 @@ gcond_loose(const SiftTopGPred *p, int gl, bool top)
 		return p->lead || p->pinned ? 0 : 1;
 	if (p->kind == STG_CMP)
 		return p->lead || p->pinned || (top && p->op == SCMP_EQ && p->leaf == gl) ? 0 : 1;
+	if (top && gcond_group_in(p, gl))
+		return 0;
 	for (int i = 0; i < p->nchild; i++)
 		n += gcond_loose(p->child[i], gl, top && p->kind == STG_AND);
 	return n;
@@ -3970,7 +3984,7 @@ gcond_pins(const SiftTopGPred *p, SiftGBound *b)
 {
 	if (p->kind == STG_CMP)
 	{
-		if (!p->lead && p->op == SCMP_EQ && b->npin < 4)
+		if (!p->lead && p->op == SCMP_EQ && b->npin < SIFT_GORD_PIN_MAX)
 		{
 			b->pinleaf[b->npin] = p->leaf;
 			b->pinval[b->npin++] = p->val;
@@ -3979,8 +3993,22 @@ gcond_pins(const SiftTopGPred *p, SiftGBound *b)
 	}
 	if (p->kind == STG_AND)
 		for (int i = 0; i < p->nchild; i++)
-			if (p->child[i]->kind == STG_CMP)
+			if (p->child[i]->kind == STG_CMP || p->child[i]->kind == STG_OR)
 				gcond_pins(p->child[i], b);
+	/* the equalities of one leaf in an OR (an IN list) are its pins, as many as fit */
+	if (p->kind == STG_OR && p->nchild <= SIFT_GORD_PIN_MAX - b->npin)
+	{
+		int			leaf = p->child[0]->leaf;
+
+		for (int i = 0; i < p->nchild; i++)
+			if (p->child[i]->kind != STG_CMP || p->child[i]->op != SCMP_EQ || p->child[i]->lead || p->child[i]->leaf != leaf)
+				return b->npin;
+		for (int i = 0; i < p->nchild; i++)
+		{
+			b->pinleaf[b->npin] = leaf;
+			b->pinval[b->npin++] = p->child[i]->val;
+		}
+	}
 	return b->npin;
 }
 

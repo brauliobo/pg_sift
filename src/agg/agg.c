@@ -76,6 +76,7 @@
 #include "utils/wait_event.h"
 #include "utils/typcache.h"
 
+#include "col/gorder.h"
 #include "agg/agg.h"
 #include "agg/wide.h"
 #include "agg/back.h"
@@ -803,6 +804,51 @@ topn_gpred(AggExec *ex, const SiftAggPred *p, int keyleaf, bool pinned)
 		g->pinned = pinned;
 		g->leaf = p->leaf;
 		g->typid = ex->lay->leaf[p->leaf].typid;
+		return g;
+	}
+	/* leaf IN (constants) is an OR of equalities (as many as a global order grouped by the leaf reads at once); NOT IN and a NULL element are for the units */
+	if (p->kind == SAP_IN && p->op == 0 && p->level == 0 && !p->late && p->leaf < ex->nbase &&
+		(g->attno = sift_topn_leaf_attno(ex->lay, p->leaf)) > 0 && sift_topn_same_scale(p->argtype, ex->lay->leaf[p->leaf].typid))
+	{
+		bool		isnull;
+		MemoryContext old = MemoryContextSwitchTo(ex->cxt);
+		ExprState  *e = ExecInitExpr((Expr *) p->expr, EXPR_PARENT(ex));
+		Datum		d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+		ArrayType  *arr;
+		int16		elen;
+		bool		ebyval;
+		char		ealign;
+		Datum	   *elems;
+		bool	   *nulls;
+		int			n;
+
+		MemoryContextSwitchTo(old);
+		if (isnull)
+			return NULL;
+		arr = DatumGetArrayTypeP(d);
+		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elen, &ebyval, &ealign);
+		deconstruct_array(arr, ARR_ELEMTYPE(arr), elen, ebyval, ealign, &elems, &nulls, &n);
+		if (n == 0 || n > SIFT_GORD_PIN_MAX)
+			return NULL;
+		g->kind = STG_OR;
+		g->nchild = n;
+		g->child = palloc(n * sizeof(SiftTopGPred *));
+		for (int i = 0; i < n; i++)
+		{
+			SiftTopGPred *c = palloc0(sizeof(SiftTopGPred));
+
+			if (nulls[i])
+				return NULL;
+			c->kind = STG_CMP;
+			c->op = SCMP_EQ;
+			c->lead = p->leaf == keyleaf;
+			c->pinned = pinned;
+			c->leaf = p->leaf;
+			c->attno = g->attno;
+			c->typid = ex->lay->leaf[p->leaf].typid;
+			c->val = sift_aggspec_operand_int(p->argtype, elems[i]);
+			g->child[i] = c;
+		}
 		return g;
 	}
 	if (p->kind == SAP_CMP && p->level == 0 && !p->late && p->leaf < ex->nbase &&

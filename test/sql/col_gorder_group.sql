@@ -38,7 +38,8 @@ END $$;
 CREATE FUNCTION gg_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gg_chk(format('SELECT id, %1$s FROM gg WHERE %2$s ORDER BY %1$s %3$s %4$s, id LIMIT %5$s', c, w, d, nl, l)), 1::bigint
    FROM (VALUES ('k'), ('t')) q(c),
-		unnest(ARRAY['g = 3', 'g = 0', 'g = 8 AND id > 0', 'g = 100', 'g = 101', 'g = 500', 'g = 4 AND id > 6000', 'g = 2 AND id <= 3000']) w,
+		unnest(ARRAY['g = 3', 'g = 0', 'g = 8 AND id > 0', 'g = 100', 'g = 101', 'g = 500', 'g = 4 AND id > 6000', 'g = 2 AND id <= 3000',
+									 'g IN (3, 4, 5)', 'g IN (0, 8, 8, 3)', 'g IN (100, 101, 500)']) w,
 		unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 100, 2000]) l $$;
 SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 
@@ -48,7 +49,15 @@ SELECT result, count(*) FROM (
 	FROM unnest(ARRAY['k > 250', 'k <= 40', 'k BETWEEN 100 AND 120', 'k = 77', '(k, id) > (250, 5000)', 'k > 1000', 'k < 10 OR k > 490']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
 GROUP BY 1 ORDER BY 1;
 
--- no pin on the group, or a condition that leaves no bound on the key: the units
+-- a list of groups is read one group after the other and merged by the key; more values than the scan pins, a NULL in the list or another condition on the group read the units
+SELECT result, count(*) FROM (
+	SELECT gg_chk(format('SELECT id, k FROM gg WHERE %s ORDER BY k %s, id LIMIT %s', w, d, l)) AS result
+	FROM unnest(ARRAY['g IN (1, 2)', 'g IN (3, 3)', 'g = ANY (ARRAY[6, 7, 8])', 'g IN (2, 4, 6) AND k > 250', 'g IN (2, 4, 6) AND (k, id) > (250, 5000)', 'g IN (100, 101)',
+					  'g IN (500, 501)', 'g IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)', 'g IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)',
+					  'g IN (3, NULL)', 'g IN (3, 4) OR g = 5', 'g NOT IN (3, 4)']) w, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 10, 100]) l) r
+GROUP BY 1 ORDER BY 1;
+
+-- no pin on the group, or a condition that leaves no bound on the key: the units (two groups written as OR are the list)
 SELECT gg_chk('SELECT id, k FROM gg ORDER BY k, id LIMIT 10') AS no_group, gg_chk('SELECT id, k FROM gg WHERE g > 3 ORDER BY k, id LIMIT 10') AS group_range,
 	   gg_chk('SELECT id, k FROM gg WHERE g = 3 OR g = 4 ORDER BY k, id LIMIT 10') AS two_groups, gg_chk('SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k, id LIMIT 10') AS other_column;
 

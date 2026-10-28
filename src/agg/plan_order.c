@@ -907,6 +907,10 @@ topn_array_pred(AggCtx *c, const SiftAggPred *p, int key, int group, bool pinned
 	}
 	if (p->kind == SAP_NULL && p->op == 1 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0)
 		return p->leaf == key || pinned;
+	/* the IN list of the group (as many elements as one scan reads at once: sift_topn_gorder, SIFT_GORD_PIN_MAX), tested by the heap row as the equalities are */
+	if (p->kind == SAP_IN && p->op == 0 && p->level == 0 && !p->late && p->leaf < c->lay->nleaves && leaf_of(c, p->leaf)->parent < 0 &&
+		sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
+		return (top && p->leaf == group) || p->leaf == key || pinned;
 	if (p->kind != SAP_CMP || p->level != 0 || p->late || p->leaf >= c->lay->nleaves || leaf_of(c, p->leaf)->parent >= 0 ||
 		!sift_topn_same_scale(p->argtype, leaf_of(c, p->leaf)->typid))
 		return false;
@@ -963,7 +967,7 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 		if (!topn_array_pred(c, p, leaf[0], gl, key_pinned, true))
 			return false;
 		bounded |= topn_array_bounded(p, leaf[0]);
-		group_pinned |= p->kind == SAP_CMP && p->leaf == gl && p->op == SCMP_EQ;
+		group_pinned |= (p->kind == SAP_CMP && p->op == SCMP_EQ && p->leaf == gl) || (p->kind == SAP_IN && p->op == 0 && p->leaf == gl);
 	}
 	return (gl >= 0 && group_pinned) || (c->stats.gord_cover[leaf[0]] >= 0.9 && (s->npred == 0 || bounded));
 }
