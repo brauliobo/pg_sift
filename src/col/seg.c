@@ -1829,6 +1829,8 @@ sift_cseg_leaf_stats(SiftColSegment *seg, int col, SiftColLeafStats *acc)
 			{
 				acc->gord_rows += g->hdr.entries;
 				acc->gord_bytes += g->bytes;
+				if (g->hdr.strbytes != 0)
+					acc->gord_coll = acc->gord_coll != 0 && acc->gord_coll != g->hdr.collid ? UINT32_MAX : g->hdr.collid;
 				if (g->hdr.gcol >= 0)
 				{
 					acc->gord_grp_rows += g->hdr.entries;
@@ -3832,7 +3834,7 @@ gord_leaf(SiftColSegment *seg, int col)
 			corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, h.chunks - 1);
 		g->gat = (uint64) last.off + ALIGN8((uint64) last.klen) + ALIGN8((uint64) last.alen);
 	}
-	if (g->gat + (uint64) h.ngroups * SIFT_CGORD_GRPENT != g->bytes)
+	if (g->gat + (h.strbytes != 0 ? (uint64) h.strbytes : (uint64) h.ngroups * SIFT_CGORD_GRPENT) != g->bytes)
 		corrupt(seg, "The global order of leaf %d ends at %llu of %llu.", col, (unsigned long long) g->gat, (unsigned long long) g->bytes);
 	g->hdr = h;
 	g->dir = raw;
@@ -3869,6 +3871,67 @@ gord_dirent(SiftColSegment *seg, const GOrdLeaf *g, int col, uint32 c)
 	if (!sift_cgord_dirent(ent, &g->hdr, g->bytes, c, &d))
 		corrupt(seg, "The global order of leaf %d has a malformed directory entry %u.", col, c);
 	return d;
+}
+
+/* The collation of the strings of a text block (0: the leaf is not text, or the segment has no block) */
+uint32
+sift_cseg_gorder_collation(SiftColSegment *seg, int col)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+
+	return g == NULL ? 0 : g->hdr.collid;
+}
+
+/* The number of strings of a text block, read on first use; the start of its strings in the segment */
+static uint64
+gord_strs(SiftColSegment *seg, GOrdLeaf *g, int col)
+{
+	uint64		sec = g->at + g->bytes - g->hdr.strbytes;
+
+	if (g->sbno == 0 && g->nstr == 0)
+	{
+		uint8		head[16];
+		uint32		nblk;
+
+		seg_read(seg, sec, sizeof(head), head);
+		if (!sift_cgord_str_head(head, &g->hdr, &g->nstr, &nblk))
+			corrupt(seg, "The strings of the global order of leaf %d are malformed.", col);
+		g->sbno = UINT32_MAX;
+	}
+	return sec;
+}
+
+/* The string of rank r of a text block, valid until the next call for the leaf; *len its bytes */
+const char *
+sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
+{
+	GOrdLeaf   *g = gord_leaf(seg, col);
+	uint32		b = r / SIFT_CGORD_STR_BLK;
+	uint32		off[2];
+	uint64		sec;
+	char	   *str;
+
+	if (g == NULL || g->hdr.strbytes == 0)
+		corrupt(seg, "The global order of leaf %d has no strings.", col);
+	sec = gord_strs(seg, g, col);
+	if (r >= g->nstr)
+		corrupt(seg, "The global order of leaf %d has no string %u.", col, r);
+	if (g->sbno != b)
+	{
+		/* the offsets of the block and of the next, read where they are: a segment of 200,000 strings has 12,000 blocks */
+		seg_read(seg, sec + 16 + (uint64) b * sizeof(uint32), sizeof(off), off);
+		if (off[0] > off[1] || off[1] > g->hdr.strbytes || off[1] - off[0] > (uint32) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8))
+			corrupt(seg, "The strings of the global order of leaf %d have a malformed block %u.", col, b);
+		if (g->sblk == NULL)
+			g->sblk = MemoryContextAlloc(seg->mcxt, (Size) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8) + SIFT_CGORD_STR_MAX);
+		seg_read(seg, sec + off[0], off[1] - off[0], g->sblk);
+		g->sbno = b;
+		g->sblen = off[1] - off[0];
+	}
+	str = (char *) g->sblk + (Size) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8);
+	if (!sift_cgord_str_get(g->sblk, g->sblen, r % SIFT_CGORD_STR_BLK, str, len))
+		corrupt(seg, "The strings of the global order of leaf %d have a malformed block %u.", col, b);
+	return str;
 }
 
 /* The slot of the block of leaf col to read: the one sorted by group (the second slot, ncols + col; the first when it is grouped, as the user's order_array_group writes it) or the plain one; -1 when the segment has none */
@@ -4129,6 +4192,8 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 
 	if (g == NULL)
 		return;
+	if (g->hdr.strbytes != 0)
+		(void) gord_strs(seg, g, col);
 	gord_dir_read(seg, g);
 	if (g->hdr.gcol < 0 ? g->hdr.entries != total : g->hdr.entries > total)
 		corrupt(seg, "The global order of leaf %d holds %u entries for %u rows.", col, g->hdr.entries, total);
@@ -4189,7 +4254,21 @@ verify_gorder(SiftColSegment *seg, int col, uint32 total)
 				corrupt(seg, "The global order of leaf %d is out of order at entry %u.", col, p);
 			pk = key[p % g->hdr.crows];
 			pa = addr[p % g->hdr.crows];
+			if (!isnull && g->hdr.strbytes != 0 && (uint64) pk >= g->nstr)
+				corrupt(seg, "The global order of leaf %d has the rank %lld of %u strings at entry %u.", col, (long long) pk, g->nstr, p);
 			if (p % 4096 == 0)
+				CHECK_FOR_INTERRUPTS();
+		}
+	}
+	/* the strings of a text block: every one is there, and each is at most a dictionary entry long */
+	if (g->hdr.strbytes != 0)
+	{
+		uint32		len;
+
+		for (uint32 r = 0; r < g->nstr; r++)
+		{
+			(void) sift_cseg_gorder_str(seg, col, r, &len);
+			if (r % 4096 == 0)
 				CHECK_FOR_INTERRUPTS();
 		}
 	}

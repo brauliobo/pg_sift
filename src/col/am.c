@@ -270,6 +270,13 @@ static relopt_enum_elt_def dict_lookup_names[] = {
 	{(const char *) NULL}
 };
 
+/* the order of the strings of a text block: the collation of the column, as the b-tree of the column compares (varstr_cmp ends a tie by the bytes of a deterministic one) */
+static int
+gord_strcmp(const char *a, uint32 la, const char *b, uint32 lb, uint32 collid)
+{
+	return varstr_cmp(a, (int) la, b, (int) lb, (Oid) collid);
+}
+
 void
 sift_col_init(void)
 {
@@ -282,6 +289,7 @@ sift_col_init(void)
 							 "On by default: the planner chooses it by cost against the b-trees and the sequential scan; off keeps the aggregate scans of SiftAgg only, see docs/COL-SCAN.md.",
 							 &sift_enable_col_scan, true, PGC_USERSET, 0, NULL, NULL, NULL);
 	sift_col_scan_init();
+	sift_cgord_strcmp = gord_strcmp;
 	DefineCustomRealVariable("sift.plan_scale",
 							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
 							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",
@@ -764,9 +772,12 @@ build_rel(Relation index, MemoryContext mcxt)
 		r->pagg.super = sift_col_options(index)->superunit;
 		if ((err = sift_crun_spec_parse(sift_col_options_order_columns(index), r->schema, (const char *const *) names, r->pagg.run)) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_columns option: %s", err)));
-		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_ok,
-										"not an integer, date or timestamp column")) != NULL)
+		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
+										"not an integer, date, timestamp or text column")) != NULL)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: %s", err)));
+		for (int i = 0; i < n; i++)
+			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
+				r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
 		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
 		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
 		{
@@ -790,7 +801,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
 				;
-			else if (r->pagg.gorder[i] && !r->pagg.run[i])
+			else if (r->pagg.gorder[i] && !r->pagg.run[i] && !sift_cgord_leaf_text(&r->schema->cols[i]))
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
 								errhint("The global order extends the sorted run of a column: add it to order_columns.")));
 		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)

@@ -27,7 +27,9 @@ typedef struct SiftGBound
 } SiftGBound;
 
 /* The merge for a scan that wants rows rows. NULL when the source has no global order of the leaf, or its write buffers hold too many rows to sort for so few (sift_colsrc_gorder_open) */
-extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, const SiftGBound *bound, MemoryContext cxt);
+extern SiftGOrd *sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *bound, MemoryContext cxt);
+/* The string of the entry the last sift_gord_next gave, of a text key (collid not 0 at the open): the key is then a rank in its source, not comparable with another's */
+extern const char *sift_gord_str(const SiftGOrd *g, uint32 *len);
 /* The next entry: its key (isnull: the row has none) and heap address; false at the end. An entry that repeats the last one (a row in two sources) is skipped. */
 extern bool sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid);
 extern void sift_gord_rewind(SiftGOrd *g);

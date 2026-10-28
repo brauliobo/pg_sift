@@ -174,8 +174,6 @@ SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entri
 DROP INDEX go_x;
 CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id', order_array_columns = 'b');
 ERROR:  invalid order_array_columns option: column "b" is not in order_columns
-CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops) WITH (order_columns = 'id', order_array_columns = 'pad');
-ERROR:  invalid order_array_columns option: not an integer, date or timestamp column
 -- the setting 14 keeps the sorted runs and no array
 SET sift.col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id, b', order_array_columns = 'id, b');

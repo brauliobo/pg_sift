@@ -339,6 +339,10 @@ typedef struct GOrdLeaf
 	uint8	   *dir;			/* the header bytes, read on first use (NULL: not yet) */
 	uint64		gat;			/* a grouped block: where its groups start in the block */
 	uint8	   *ents;			/* the directory entries, read by the first seek (a cursor reads the one entry of its chunk) and checked entry by entry as they are used (verify checks them all) */
+	uint32		nstr;			/* a text block: the number of strings (read by the first one; 0 until then), the block of them in sblk (sbno, sblen bytes; UINT32_MAX: none) */
+	uint32		sbno;
+	uint32		sblen;
+	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
 } GOrdLeaf;
 
 typedef struct SegPriv

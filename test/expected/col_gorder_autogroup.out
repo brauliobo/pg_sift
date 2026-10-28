@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ag (id int, g int, v int, ts timestamp, pad text);
 ALTER TABLE ag ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ag SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE abs(hashint4(i)) % 400 END, abs(hashint4(i + 1)) % 5,
-	   CASE WHEN i % 89 = 0 THEN NULL WHEN i % 61 = 0 THEN timestamp '2024-03-01' ELSE timestamp '2024-01-01' + (abs(hashint4(i + 7)) % 20000000) * interval '1 second' END, md5(i::text)
+	   CASE WHEN i % 89 = 0 THEN NULL WHEN i % 61 = 0 THEN timestamp '2024-03-01' ELSE timestamp '2024-01-01' + (abs(hashint4(i + 7)) % 20000000) * interval '1 second' END, md5(i::text) || md5(i::text || 'x') || md5(i::text || 'y')
 FROM generate_series(1, 120000) i;
 -- a group of one row
 INSERT INTO ag VALUES (200000, 100000, 1, timestamp '2024-02-02', 'one');

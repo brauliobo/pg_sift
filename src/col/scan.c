@@ -1852,7 +1852,33 @@ typedef struct ColGOrdMem
 	uint32		nvals;
 	int64	   *key;
 	uint64	   *tid;
+	uint32		nstr;			/* a text key: the key of an entry is the rank of its string among the nstr distinct ones, which are str[rank] (len[rank] bytes, in the batches of the buffers) */
+	const char **str;
+	uint32	   *len;
 } ColGOrdMem;
+
+typedef struct GOrdText
+{
+	const char *s;
+	uint32		len;
+	uint64		tid;
+} GOrdText;
+
+static uint32 gord_text_coll;
+
+static int
+gord_text_cmp(const void *a, const void *b)
+{
+	const GOrdText *x = a,
+			   *y = b;
+	int			c = sift_cgord_strcmp != NULL ? sift_cgord_strcmp(x->s, x->len, y->s, y->len, gord_text_coll) : 0;
+
+	if (c == 0)
+		c = memcmp(x->s, y->s, Min(x->len, y->len));
+	if (c == 0)
+		c = SIFT_CMP3(x->len, y->len);
+	return c != 0 ? c : SIFT_CMP3(x->tid, y->tid);
+}
 
 typedef struct GOrdPair
 {
@@ -1869,9 +1895,83 @@ gord_pair_cmp(const void *a, const void *b)
 	return x->key != y->key ? SIFT_CMP3(x->key, y->key) : SIFT_CMP3(x->tid, y->tid);
 }
 
+/* The rows of the write buffers of a text leaf sorted like the entries of a text block: by string (the collation, then the bytes) and address, the key the rank of the string; false as gord_mem, or a string longer than a dictionary entry */
+static bool
+gord_mem_text(SiftColSource *src, int leaf, uint64 maxrows, uint32 collid)
+{
+	uint64		n = 0;
+	GOrdText   *pv;
+	uint64	   *pn;
+	uint32		nv = 0,
+				nn = 0,
+				nstr = 0;
+	ColGOrdMem *g;
+
+	for (int i = 0; i < src->nmem; i++)
+		n += src->mem[i].b->nrows;
+	if (n > maxrows)
+		return false;
+	pv = palloc((n + 1) * sizeof(GOrdText));
+	pn = palloc((n + 1) * sizeof(uint64));
+	for (int i = 0; i < src->nmem; i++)
+	{
+		const SiftColBatch *b = src->mem[i].b;
+		const SiftCVals *v = &b->col[leaf];
+
+		for (uint32 r = 0; r < b->nrows; r++)
+		{
+			if ((v->ovf && (v->ovf[r / 64] >> (r % 64) & 1)) || (b->keys[r] & 0xFFFF) >= SIFT_CPOINT_TID_MAXOFF)
+				return false;
+			if (v->nulls && (v->nulls[r / 64] >> (r % 64) & 1))
+				pn[nn++] = (uint64) b->keys[r];
+			else
+			{
+				uint32		len;
+				const char *str = sift_cdict_str(b->dict[leaf], (uint32) v->key[r], &len);
+
+				if (len > SIFT_COL_DICT_MAX_ENTRY)
+					return false;
+				pv[nv++] = (GOrdText) {str, len, (uint64) b->keys[r]};
+			}
+		}
+	}
+	gord_text_coll = collid;
+	qsort(pv, nv, sizeof(GOrdText), gord_text_cmp);
+	sift_sort_u64(pn, nn);
+	g = MemoryContextAllocZero(src->mcxt, sizeof(ColGOrdMem));
+	g->leaf = leaf;
+	g->gleaf = -1;
+	g->n = nv + nn;
+	g->nvals = nv;
+	g->key = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(int64));
+	g->tid = MemoryContextAlloc(src->mcxt, (Size) (g->n + 1) * sizeof(uint64));
+	g->str = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(char *));
+	g->len = MemoryContextAlloc(src->mcxt, ((Size) nv + 1) * sizeof(uint32));
+	for (uint32 i = 0; i < nv; i++)
+	{
+		if (i == 0 || pv[i].len != pv[i - 1].len || memcmp(pv[i].s, pv[i - 1].s, pv[i].len) != 0)
+		{
+			g->str[nstr] = pv[i].s;
+			g->len[nstr++] = pv[i].len;
+		}
+		g->key[i] = nstr - 1;
+		g->tid[i] = pv[i].tid;
+	}
+	g->nstr = nstr;
+	for (uint32 i = 0; i < nn; i++)
+	{
+		g->key[nv + i] = 0;
+		g->tid[nv + i] = pn[i];
+	}
+	src->gmem = g;
+	pfree(pv);
+	pfree(pn);
+	return true;
+}
+
 /* The rows of the write buffers sorted like a segment's entries; false when they are more than maxrows (sorting them whole costs more than reading them as units), or one holds an overflow value of the leaf or an address a block of the global order cannot name */
 static bool
-gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval)
+gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval, uint32 collid)
 {
 	ColGOrdMem *g = src->gmem;
 	uint64		n = 0;
@@ -1880,13 +1980,15 @@ gord_mem(SiftColSource *src, int leaf, uint64 maxrows, int gleaf, int64 gval)
 	uint32		nv = 0,
 				nn = 0;
 
-	if (g != NULL && g->leaf == leaf && g->gleaf == gleaf && (gleaf < 0 || g->gval == gval))
+	if (g != NULL && g->leaf == leaf && g->gleaf == gleaf && (gleaf < 0 || g->gval == gval) && (g->str != NULL) == (collid != 0))
 		return true;
 	for (int i = 0; i < src->nmem; i++)
 		n += src->mem[i].b->nrows;
 	/* the rows of one group are the ones sorted: a buffer of many rows is looked through for them, up to 64 times what an ungrouped scan sorts */
 	if (n > (gleaf < 0 ? maxrows : 64 * maxrows))
 		return false;
+	if (collid != 0)
+		return gord_mem_text(src, leaf, maxrows, collid);
 	pv = palloc((n + 1) * sizeof(GOrdPair));
 	pn = palloc((n + 1) * sizeof(GOrdPair));
 	for (int i = 0; i < src->nmem; i++)
@@ -1954,7 +2056,7 @@ gorder_slot(SiftColSource *src, int i, int col)
 
 /* Every stored segment keeps the block of leaf col sorted by group (or plain), and for the first the one group leaf that a pin names; *gleaf and *gval are that leaf and its pinned value */
 static bool
-gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinleaf, const int64 *pinval, int *gleaf, int64 *gval)
+gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinleaf, const int64 *pinval, int *gleaf, int64 *gval, uint32 collid)
 {
 	*gleaf = -1;
 	for (int i = 0; i < src->nseg; i++)
@@ -1964,7 +2066,7 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
 		int			slot = sift_cseg_gorder_slot(src->seg[i].seg, col, grouped),
 					gc;
 
-		if (slot < 0 || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values))
+		if (slot < 0 || !sift_cseg_gorder(src->seg[i].seg, slot, &entries, &values) || sift_cseg_gorder_collation(src->seg[i].seg, slot) != collid)
 			return false;
 		gc = sift_cseg_gorder_group(src->seg[i].seg, slot);
 		if (gc >= 0)
@@ -1989,7 +2091,7 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
  * group; any other reads the plain blocks.
  */
 int
-sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
+sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
 {
 	int			n = src->nseg;
 	int			gleaf = -1;
@@ -1997,7 +2099,7 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 
 	if ((src->flags & (COLO_TABLE | SIFT_COLO_NOWBUF)) || src->schema->cols[col].kind != SIFT_COLK_SCALAR)
 		return -1;
-	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, &gval)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, &gval))
+	if (!(npin > 0 && gorder_all(src, col, true, npin, pinleaf, pinval, &gleaf, &gval, collid)) && !gorder_all(src, col, false, npin, pinleaf, pinval, &gleaf, &gval, collid))
 		return -1;
 	src->gpin_leaf = gleaf;
 	src->gpin_val = gval;
@@ -2006,12 +2108,21 @@ sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int 
 		load_wbuf(src);
 	if (src->nmem > 0)
 	{
-		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows), gleaf, gval))
+		if (!gord_mem(src, col, Max(SIFT_CGORD_MEM_ROWS, 8 * (uint64) rows), gleaf, gval, collid))
 			return -1;
 		if (src->gmem->n > 0)
 			n++;
 	}
 	return n;
+}
+
+const char *
+sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len)
+{
+	if (i < src->nseg)
+		return sift_cseg_gorder_str(src->seg[i].seg, gorder_slot(src, i, col), (uint32) key, len);
+	*len = src->gmem->len[key];
+	return src->gmem->str[key];
 }
 
 bool

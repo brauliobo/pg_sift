@@ -400,6 +400,7 @@ struct SiftTopN
 	int			rleaf[TOP_RESID];	/* ... the leaves they read, and whether each is an int64 (else int32) vector */
 	bool		rwide[TOP_RESID];
 	bool		nogord;			/* TOPN_NOGORD: the plan counts on the heads of the sorted runs */
+	bool		gtext;			/* ... the one key is a text column, ranked in the arrays by its collation (key[0].collid) */
 	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
@@ -537,15 +538,23 @@ enum_ranks(TopKey *k, Oid typid)
 	ReleaseCatCacheList(list);
 }
 
-int
-sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
+/* the heap attribute of a leaf that is a plain column of the table, 0 when it is not */
+static int
+leaf_var_attno(const SiftSrcLayout *lay, int leaf)
 {
 	const SiftSrcLeaf *lf = &lay->leaf[leaf];
 	Node	   *e;
 
 	if (lf->path != NIL || lf->parent >= 0 || lf->wide || lf->attno < 1 || lf->attno > list_length(lay->attexprs))
 		return 0;
-	switch (lf->typid)
+	e = list_nth(lay->attexprs, lf->attno - 1);
+	return IsA(e, Var) && ((Var *) e)->varattno > 0 ? ((Var *) e)->varattno : 0;
+}
+
+int
+sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
+{
+	switch (lay->leaf[leaf].typid)
 	{
 		case INT2OID:
 		case INT4OID:
@@ -553,12 +562,10 @@ sift_topn_leaf_attno(const SiftSrcLayout *lay, int leaf)
 		case INT8OID:
 		case TIMESTAMPOID:
 		case TIMESTAMPTZOID:
-			break;
+			return leaf_var_attno(lay, leaf);
 		default:
 			return 0;
 	}
-	e = list_nth(lay->attexprs, lf->attno - 1);
-	return IsA(e, Var) && ((Var *) e)->varattno > 0 ? ((Var *) e)->varattno : 0;
 }
 
 /* the integers compare as the numbers they are, whatever the width; a date or a time as its own count */
@@ -578,9 +585,16 @@ order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 	{
 		const TopKey *k = &t->key[j];
 
-		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->blob || k->nenum || (t->gatt[j] = sift_topn_leaf_attno(lay, k->leaf)) == 0)
+		if (k->leaf < 0 || k->xk != TXK_NONE || k->x != NULL || k->nenum || (t->gatt[j] = k->blob ? leaf_var_attno(lay, k->leaf) : sift_topn_leaf_attno(lay, k->leaf)) == 0)
 			return false;
 		t->gtyp[j] = lay->leaf[k->leaf].typid;
+		if (k->blob)
+		{
+			/* the one key of a text column (text, varchar): its strings are ranked in the arrays under the collation of the query's order */
+			if (t->nkey != 1 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID))
+				return false;
+			t->gtext = true;
+		}
 	}
 	return true;
 }
@@ -3935,7 +3949,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 	int			gl;
 
 	/* the array costs the same as the heads of the runs for a few rows on a table of a few units, and does not grow with the units (a key-cut index has thousands) */
-	if (!t->gok || t->nogord || t->all)
+	if (!t->gok || t->nogord || t->all || (t->gtext && cond != NULL))
 		return false;
 	if (cond != NULL)
 	{
@@ -3948,7 +3962,7 @@ sift_topn_gorder(SiftTopN *t, SiftSrcSource *src, const SiftTopGPred *cond)
 		bounds = box.empty || box.has_lo || box.has_hi;
 		(void) gcond_pins(cond, &b);
 	}
-	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
+	t->go = sift_gord_open(src, t->key[0].leaf, t->limit, t->key[0].desc, t->key[0].nulls_first, t->gtext ? (uint32) t->key[0].collid : 0, cond != NULL ? &b : NULL, GetMemoryChunkContext(t));
 	if (t->go == NULL)
 		return false;
 	gl = sift_gord_group(t->go);
@@ -4002,7 +4016,19 @@ gord_next(SiftTopN *t, TupleTableSlot *slot)
 		if (t->nkey == 1)
 		{
 			d = slot_getattr(f->slot, t->gatt[0], &hnull);
-			if (hnull != isnull || (!hnull && heap_key(t->gtyp[0], d) != key))
+			if (hnull != isnull)
+				continue;
+			if (!hnull && t->gtext)
+			{
+				/* the entry's string is the heap row's: a row an UPDATE or a vacuumed address replaced holds another */
+				uint32		slen;
+				const char *str = sift_gord_str(t->go, &slen);
+				struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+
+				if (VARSIZE_ANY_EXHDR(v) != slen || memcmp(VARDATA_ANY(v), str, slen) != 0)
+					continue;
+			}
+			else if (!hnull && heap_key(t->gtyp[0], d) != key)
 				continue;
 			if (t->gcond != NULL && !gcond_test(t->gcond, f->slot))
 				continue;

@@ -51,7 +51,8 @@ struct SiftCGOrdBuf;
 #define SIFT_COL_FORMAT_TSIG	29		/* 3.6: the dictionary of a text leaf stored in blocks (DICT_BLOCKS, DICT_LOOKUP, DICT_LOOKUP_COUNT) also holds a trigram signature of each block, so that a substring test reads only the blocks that may hold the part; written under sift.col_format_minor 15 or more for a dictionary of CDICT_TSIG_MIN strings or more */
 #define SIFT_COL_FORMAT_FINEORD	30		/* 3.6: the global order of a leaf (minor 21) is in chunks of 512 entries, not 1024: a seek and a cursor decode half of the entries; written for every global order under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_GROUPORD 31		/* 3.6: the segment has, besides the global order of a date or timestamp leaf, a second block of it sorted by (group, key) in the slot ncols + leaf: WHERE group = x ORDER BY key LIMIT n reads the entries of x; written for the group the build chose (order_array_group 'auto: g') */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_GROUPORD	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_TEXTORD	32		/* 3.6: the global order of a text leaf: the keys are the ranks of the segment's strings under the leaf's collation, and the strings end the block (order_array_columns names the text column) */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_TEXTORD	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -383,6 +384,7 @@ typedef struct SiftColLeafStats
 	double		gord_bytes;		/* ... and their bytes */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
 	int			gord_gcol;
+	uint32		gord_coll;		/* the collation of the text blocks of the leaf (UINT32_MAX when they differ), 0: none is text */
 	uint32		dict_n;			/* STR: the largest segment dictionary (distinct values of a segment that has no inline unit) */
 	bool		has_range;		/* no unit's zone is missing a bound (an overflowed or empty one) */
 	bool		has_sum;
@@ -715,7 +717,8 @@ extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
  * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _head: the first w entries of
  * the chunk that holds entry p, from the entry *at, as keys and heap addresses, each SIFT_CGORD_CAP slots; the count returned.
  */
-extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
+extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
+extern const char *sift_col_gorder_str(SiftColSource *src, int i, int col, int64 key, uint32 *len);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
 extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);

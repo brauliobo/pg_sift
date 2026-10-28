@@ -29,7 +29,10 @@ typedef struct GCur
 	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
 	int64		k;
 	uint64		tid;
+	uint32		slen;			/* a text key: the string of k (str, slen bytes) */
+	int64		skey;			/* ... and the key str is the string of (-1: none yet) */
 	SiftCGOrdBuf *buf;			/* from the pool: the chunk of the entry in buf->key / buf->addr (a seek may have left it): the first buf->cm entries, the scan asks for more when it goes past them */
+	char		str[SIFT_CGORD_STR_MAX];	/* last: a cursor clears the fields before it */
 } GCur;
 
 /*
@@ -87,6 +90,9 @@ struct SiftGOrd
 	int			last_cls;
 	int64		last_key;
 	uint64		last_tid;
+	uint32		collid;			/* the keys are ranks of strings (a text key under this collation): entries compare by their strings, across sources */
+	uint32		last_len;
+	char		last_str[SIFT_CGORD_STR_MAX];
 	MemoryContextCallback release;
 };
 
@@ -164,6 +170,21 @@ cur_enter(SiftGOrd *g, GCur *c)
 	}
 }
 
+/* a text key: the string of the entry's rank, fetched when the rank changes */
+static pg_noinline void
+cur_str(SiftGOrd *g, GCur *c, int64 k)
+{
+	uint32		len;
+	const char *str;
+
+	if (c->skey == k)
+		return;
+	str = sift_colsrc_gorder_str(g->src, c->src, g->leaf, k, &len);
+	memcpy(c->str, str, len);
+	c->slen = len;
+	c->skey = k;
+}
+
 static void
 cur_next(SiftGOrd *g, GCur *c)
 {
@@ -186,6 +207,8 @@ cur_next(SiftGOrd *g, GCur *c)
 			c->cls = nulls ? (g->nulls_first ? 0 : 2) : 1;
 			c->k = nulls ? 0 : k;
 			c->tid = a;
+			if (unlikely(g->collid != 0) && !nulls)
+				cur_str(g, c, k);
 			return;
 		}
 		if (!nulls && g->desc && c->end > 0)
@@ -214,10 +237,10 @@ cur_start(SiftGOrd *g, GCur *c)
 }
 
 SiftGOrd *
-sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, const SiftGBound *b, MemoryContext cxt)
+sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_first, uint32 collid, const SiftGBound *b, MemoryContext cxt)
 {
 	int			grouped,
-				n = sift_colsrc_gorder_open(src, leaf, rows, b != NULL ? b->npin : 0, b != NULL ? b->pinleaf : NULL, b != NULL ? b->pinval : NULL, &grouped);
+				n = sift_colsrc_gorder_open(src, leaf, rows, b != NULL ? b->npin : 0, b != NULL ? b->pinleaf : NULL, b != NULL ? b->pinval : NULL, &grouped, collid);
 	SiftGOrd   *g;
 
 	if (n < 0)
@@ -228,6 +251,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	g->grouped = grouped;
 	g->desc = desc;
 	g->nulls_first = nulls_first;
+	g->collid = collid;
 	g->bounded = b != NULL && (b->has_lo || b->has_hi);
 	g->cur = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
 	g->release.func = gord_release;
@@ -239,8 +263,9 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		uint32		rvs,
 					rve;
 
-		memset(c, 0, sizeof(GCur));
+		memset(c, 0, offsetof(GCur, str));
 		c->src = i;
+		c->skey = -1;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
 		c->buf = gbuf_get();
@@ -265,15 +290,40 @@ sift_gord_rewind(SiftGOrd *g)
 	g->last_set = false;
 }
 
+/* the order of the strings of a text key: the collation of the query, then the bytes (what the b-tree of the column does) */
+static pg_noinline int
+str_cmp(const SiftGOrd *g, const char *a, uint32 la, const char *b, uint32 lb)
+{
+	int			c = sift_cgord_strcmp != NULL ? sift_cgord_strcmp(a, la, b, lb, g->collid) : 0;
+
+	if (c == 0)
+		c = memcmp(a, b, Min(la, lb));
+	return c != 0 ? c : SIFT_CMP3(la, lb);
+}
+
 /* < 0: a comes before b in the scan */
-static int
-cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b)
+static pg_attribute_always_inline int
+cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b, bool text)
 {
 	if (a->cls != b->cls)
 		return a->cls < b->cls ? -1 : 1;
-	if (a->k != b->k)
+	if (text && a->cls == 1)
+	{
+		int			c = str_cmp(g, a->str, a->slen, b->str, b->slen);
+
+		if (c != 0)
+			return (c < 0) != g->desc ? -1 : 1;
+	}
+	else if (a->k != b->k)
 		return (a->k < b->k) != g->desc ? -1 : 1;
 	return SIFT_CMP3(a->tid, b->tid);
+}
+
+const char *
+sift_gord_str(const SiftGOrd *g, uint32 *len)
+{
+	*len = g->last_len;
+	return g->last_str;
 }
 
 int
@@ -282,8 +332,9 @@ sift_gord_group(const SiftGOrd *g)
 	return g->grouped;
 }
 
-bool
-sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
+/* text is constant in each of the two copies below: the merge of integer keys carries no test of it */
+static pg_attribute_always_inline bool
+gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text)
 {
 	if (!g->started)
 	{
@@ -300,7 +351,7 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row
 		 * where the scan of every source costs one for each
 		 */
-		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner) >= 0))
+		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner, text) >= 0))
 		{
 			best = g->runner = NULL;
 			for (int i = 0; i < g->ncur; i++)
@@ -309,12 +360,12 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 
 				if (!c->have)
 					continue;
-				if (best == NULL || cand_cmp(g, c, best) < 0)
+				if (best == NULL || cand_cmp(g, c, best, text) < 0)
 				{
 					g->runner = best;
 					best = c;
 				}
-				else if (g->runner == NULL || cand_cmp(g, c, g->runner) < 0)
+				else if (g->runner == NULL || cand_cmp(g, c, g->runner, text) < 0)
 					g->runner = c;
 			}
 		}
@@ -324,7 +375,8 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		*isnull = best->cls != 1;
 		ItemPointerSet(tid, (BlockNumber) (best->tid >> 16), (OffsetNumber) (best->tid & 0xFFFF));
 		/* a source holds an entry once: only the entry of another source can repeat the last one */
-		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_key == best->k && g->last_tid == best->tid)
+		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_tid == best->tid &&
+			(text && best->cls == 1 ? g->last_len == best->slen && memcmp(g->last_str, best->str, best->slen) == 0 : g->last_key == best->k))
 		{
 			g->prev = best;
 			cur_next(g, best);
@@ -335,7 +387,18 @@ sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 		g->last_cls = best->cls;
 		g->last_key = best->k;
 		g->last_tid = best->tid;
+		if (text && best->cls == 1)
+		{
+			memcpy(g->last_str, best->str, best->slen);
+			g->last_len = best->slen;
+		}
 		cur_next(g, best);
 		return true;
 	}
+}
+
+bool
+sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
+{
+	return g->collid != 0 ? gord_next(g, key, isnull, tid, true) : gord_next(g, key, isnull, tid, false);
 }

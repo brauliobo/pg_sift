@@ -68,6 +68,8 @@ The last column is a month of random dates, which no unit can skip: the gain is 
 
 ### Limitations and trade-offs
 
+**Known gap: text ordered reads.** `ORDER BY txt LIMIT n` over a text column is served from the index in 0.3 to 0.9 M instructions (a b-tree 0.2 M) when the build chose the column (the default formula, strings up to 64 bytes: it adds the sort of the strings to `CREATE INDEX`, +62% under the `C` collation and +420% under a locale for 4 columns, and about 8 to 40 bytes a row) or `order_array_columns` names it (`'off'` drops it), under the collation of the column, with one key and no condition. Without the array it compares the strings of every row (403 M instructions at 500,000 rows, 2,429 M at 3,000,000), and `WHERE txt >= 'k' ORDER BY txt LIMIT n` and `LIKE 'abc%'` read the units in either case (849 M at 500,000 rows against 0.3 M for a b-tree).
+
 **Known gap: a `numeric` without precision.** `GROUP BY` two columns (16 groups) with `count`, `sum` and `avg` of a bare `numeric` column takes the scan and, since the sum runs in workers, beats PostgreSQL's plan at every size and worker count measured: 6.8 against 11.5 ms at 100,000 rows (2 workers); 23.3 against 43.4 ms at 1,000,000 (2 workers; 22.7 against 43.4 with 4) and 46.6 against 109.9 ms in one process (693 against 2,110 million instructions); 160 against 389 ms at 10,000,000 (2 workers; 112 against 248 with 4). With `numeric(10,2)` the same query takes 5.8 ms at 1,000,000 rows and 20.6 ms at 10,000,000 (2 workers), 4 to 19 times faster than with a bare `numeric`, so declare the precision of money-like columns. What remains: a bare `numeric` column of almost unique values (2,000,000 rows, 6 groups, `round(random() * 100000, 2)`) took the scan with the default 2 workers in 79.6 ms against 61.7 ms for PostgreSQL's plan (29% slower), because every unit holds its own dictionary of values there; the planner now prices the dictionaries that the workers inflate and keeps PostgreSQL's plan with 2, 4 and 8 workers (79, 62 and 62 ms), and still takes the scan without workers.
 
 ## Quick start
@@ -232,5 +234,5 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 
 ## Security and license
 
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->632 regression tests (`test/sql`), 43 isolation specs, 99 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
+Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)); the tree has <!-- gen:tests -->633 regression tests (`test/sql`), 43 isolation specs, 99 TAP tests (`test/t`), 962 column fixtures and 253 coverage rows<!-- /gen:tests -->. Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
 pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).

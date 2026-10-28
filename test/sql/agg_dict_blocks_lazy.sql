@@ -15,7 +15,7 @@ SELECT i, i % 50,
        'o' || md5((i % 7000)::text),
        i % 100
 FROM generate_series(1, 120000) i;
-CREATE INDEX lz_col ON lz USING sift_col (grp, word, other, amount);
+CREATE INDEX lz_col ON lz USING sift_col (grp, word, other, amount) WITH (order_array_columns = 'off');
 VACUUM (FREEZE, ANALYZE) lz;
 SELECT count(*) AS segments FROM sift.col_segments('lz_col') WHERE kind = 'immutable';
 

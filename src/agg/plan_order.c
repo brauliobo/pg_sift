@@ -933,7 +933,7 @@ topn_array_bounded(const SiftAggPred *p, int key)
  * column a grouped array is grouped by (the unpinned group of a grouped array is refused, the plain array of the leaf, if any, answers instead).
  */
 static bool
-topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey)
+topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf, int nkey, Oid collid)
 {
 	int			gl = leaf[0] >= 0 ? c->stats.gord_group[leaf[0]] : -1;
 	bool		bounded = false,
@@ -947,9 +947,13 @@ topn_array_ok(AggCtx *c, SiftAggSpec *s, const int *leaf, const SiftTopXform *xf
 	{
 		Oid			typ = leaf[j] >= 0 ? leaf_of(c, leaf[j])->typid : InvalidOid;
 
-		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID))
+		if (xf[j].kind != TXK_NONE || (typ != INT2OID && typ != INT4OID && typ != INT8OID && typ != DATEOID && typ != TIMESTAMPOID && typ != TIMESTAMPTZOID &&
+									   !(j == 0 && nkey == 1 && s->npred == 0 && (typ == TEXTOID || typ == VARCHAROID))))
 			return false;
 	}
+	/* the strings of a text array are ranked by the collation of the column: a query that sorts by another reads the units; any other key has no collation */
+	if (c->stats.gord_coll[leaf[0]] != (leaf_of(c, leaf[0])->typid == TEXTOID || leaf_of(c, leaf[0])->typid == VARCHAROID ? (uint32) collid : 0))
+		return false;
 	for (int i = 0; i < s->npred; i++)
 		key_pinned |= s->pred[i]->kind == SAP_CMP && s->pred[i]->leaf == leaf[0] && s->pred[i]->op == SCMP_EQ;
 	for (int i = 0; i < s->npred; i++)
@@ -1359,7 +1363,7 @@ topn_paths(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel)
 	if (nlead <= sift_limit(topn_keys, SIFT_TOPN_MAX_KEYS) && rows <= sift_limit(topn_rows, SIFT_TOPN_MAX_ROWS) && rows * c->topn_keybytes <= work_mem * 1024.0)
 	{
 		c->topn_sorted = false;
-		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead);
+		c->topn_array = topn_array_ok(c, s, leaf, xf, nlead, collid[0]);
 		/* totals read every unit: no zone leaves one out */
 		c->topn_frac = s->naggs > 0 ? 1.0 :
 			topn_fraction(c, topn_xform((Node *) get_sortgroupclause_expr(linitial_node(SortGroupClause, parse->sortClause), root->processed_tlist), &first, NULL),

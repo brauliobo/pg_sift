@@ -137,6 +137,7 @@ struct SiftColSegWriter
 	bool		anypoints;		/* some leaf has a point directory to write */
 	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
 	bool		anydual;		/* ... and some leaf a second one, sorted by group (minor 31) */
+	bool		anytextord;		/* ... and some leaf of text (minor 32) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -390,14 +391,14 @@ elem_point(const SiftColSegWriter *w, int c)
 static bool
 gorder_grouped(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group > 0 && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_time(&w->schema->cols[c])));
+	return w->pagg.gorder_group > 0 && !sift_cgord_leaf_text(&w->schema->cols[c]) && (!w->pagg.gorder_group_auto || (w->setting >= SIFT_COL_FORMAT_PRESENCE && sift_cgord_leaf_time(&w->schema->cols[c])));
 }
 
 /* ... and the plain order too */
 static bool
-gorder_plain(const SiftColSegWriter *w)
+gorder_plain(const SiftColSegWriter *w, int c)
 {
-	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto;
+	return w->pagg.gorder_group == 0 || w->pagg.gorder_group_auto || sift_cgord_leaf_text(&w->schema->cols[c]);
 }
 
 /* Adds the rows of the unit just encoded to the point directories of the leaves that ask for one (the keys of cols: the segment's codes of a dictionary leaf) */
@@ -416,6 +417,8 @@ add_points(SiftColSegWriter *w, const SiftColBatch *b, const SiftCPaggCol *cols)
 
 		if (!(a->want || a->ord) || a->bad)
 			continue;
+		if (a->ord && w->inl[c])
+			a->bad = true;
 		for (uint32 i = 0; v->ovf && i < SIFT_COL_NWORDS(v->n); i++)
 			if (v->ovf[i])
 				a->bad = true;
@@ -688,7 +691,7 @@ add_preagg(SiftColSegWriter *w, const SiftColBatch *b, Size unit_bytes)
 		const SiftColDef *def = &w->schema->cols[c];
 
 		cols[c] = (SiftCPaggCol) {v->key, v->nulls, v->ovf, v->n, def->store != SIFT_COLS_VAR && !w->inl[c]};
-		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->hll && w->hll[c].blobs.data) || (w->pt && w->pt[c].want)) && !w->inl[c])
+		if (def->store == SIFT_COLS_STR && (dim[c] || (w->set && w->set[c].blobs.data) || (w->hll && w->hll[c].blobs.data) || (w->pt && (w->pt[c].want || w->pt[c].ord))) && !w->inl[c])
 		{
 			tk[c] = palloc(Max(v->n, 1) * sizeof(int64));
 			for (uint32 i = 0; i < v->n; i++)
@@ -872,7 +875,7 @@ put8(SiftColSegWriter *w, const void *data, Size len)
 
 /* The block of the rows kept for the global order of a leaf, sorted by key or (grouped) by group and then key; the rows with no group are not in the second */
 static void
-build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped)
+build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped, int c)
 {
 	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
 
@@ -916,7 +919,13 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, const PointAcc *a, bool grouped)
 	{
 		ob->nent = a->n + a->nn;
 		ob->nvals = a->n;
-		sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &ob->tab);
+		if (sift_cgord_leaf_text(&w->schema->cols[c]))
+		{
+			w->anytextord = true;
+			sift_cgord_build_text(a->key, a->tid, a->n, a->ntid, a->nn, w->dict[c], w->pagg.gorder_coll[c], &ob->tab);
+		}
+		else
+			sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &ob->tab);
 	}
 	ob->nch = (ob->nent + sift_cgord_rows() - 1) / sift_cgord_rows();
 	w->anyord = ob->nch > 0 || w->anyord;
@@ -932,10 +941,10 @@ build_points(SiftColSegWriter *w)
 
 		if (a->ord && !a->bad && a->n + a->nn > 0)
 		{
-			if (gorder_plain(w))
-				build_order(w, &a->ob[0], a, false);
+			if (gorder_plain(w, c))
+				build_order(w, &a->ob[0], a, false, c);
 			if (gorder_grouped(w, c))
-				build_order(w, &a->ob[gorder_plain(w)], a, true);
+				build_order(w, &a->ob[gorder_plain(w, c)], a, true, c);
 			w->anydual |= a->ob[1].nch > 0;
 		}
 		if (a->want && !a->bad && a->n > 0)
@@ -1638,6 +1647,8 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
 	if (w->anydual)
 		w->format = Max(w->format, SIFT_COL_FORMAT_GROUPORD);
+	if (w->anytextord)
+		w->format = Max(w->format, SIFT_COL_FORMAT_TEXTORD);
 	if (w->keyed)
 		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)

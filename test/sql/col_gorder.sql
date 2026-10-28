@@ -77,7 +77,6 @@ CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_op
 SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entries FROM generate_series(0, 2) leaf;
 DROP INDEX go_x;
 CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_columns = 'id', order_array_columns = 'b');
-CREATE INDEX go_x ON go USING sift_col (id sift.col_int4_ops, pad sift.col_text_ops) WITH (order_columns = 'id', order_array_columns = 'pad');
 
 -- the setting 14 keeps the sorted runs and no array
 SET sift.col_format_minor = 14;

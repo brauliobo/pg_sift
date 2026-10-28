@@ -121,6 +121,7 @@ typedef struct SiftCPaggSpec
 	bool		run[SIFT_COL_MAX_COLS];	/* the leaves that get a sorted run in every unit (option order_columns, column format minor 13; col/runs.h) */
 	bool		hll[SIFT_COL_MAX_COLS];	/* the leaves that keep a HyperLogLog sketch of their values in every unit (option hll_columns, column format minor 20; col/hll.h) */
 	bool		gorder[SIFT_COL_MAX_COLS];	/* the leaves that get a global order block in the segment (column format minor 21; col/gorder.h) */
+	uint32		gorder_coll[SIFT_COL_MAX_COLS];	/* ... of a text leaf: the collation its strings are ranked by (the column's) */
 	bool		gorderauto;				/* order_array_columns is the choice of the build ('auto: a, b'): the leaves of it get their sorted run too */
 	int			gorder_group;	/* ... sorted by the leaf (this - 1) first (option order_array_group): the rows with no value of it are not in the block; 0: none */
 	bool		gorder_group_auto;	/* order_array_group is the choice of the build ('auto: g'): only the blocks of dates and timestamps are grouped, a range of another leaf keeps its plain order */

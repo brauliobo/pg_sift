@@ -341,10 +341,16 @@ sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, bool
 }
 
 int
-sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped)
+sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid)
 {
 	*grouped = -1;
-	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped) : -1;
+	return src->prov->gorder_open ? src->prov->gorder_open(src->impl, leaf, rows, npin, pinleaf, pinval, grouped, collid) : -1;
+}
+
+const char *
+sift_colsrc_gorder_str(SiftSrcSource *src, int i, int leaf, int64 key, uint32 *len)
+{
+	return src->prov->gorder_str(src->impl, i, leaf, key, len);
 }
 
 bool

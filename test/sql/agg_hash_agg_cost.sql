@@ -8,7 +8,7 @@ SET work_mem = '64MB';
 CREATE TABLE items (id int PRIMARY KEY, tag text NOT NULL, cat text NOT NULL, amount float8 NOT NULL);
 SELECT setseed(0.42);
 INSERT INTO items SELECT g, md5(g::text), 'c' || (g % 17), random() * 100 FROM generate_series(1, 200000) g;
-CREATE INDEX items_col ON items USING sift_col (id, tag, cat, amount);
+CREATE INDEX items_col ON items USING sift_col (id, tag, cat, amount) WITH (order_array_columns = 'off');
 VACUUM (FREEZE, ANALYZE) items;
 
 CREATE FUNCTION why(q text) RETURNS TABLE (used boolean, normal_priced_for_groups boolean) LANGUAGE sql AS

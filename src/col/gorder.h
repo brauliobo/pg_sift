@@ -13,6 +13,12 @@
  * group are not in it. After the chunks come the groups, 24 bytes each {i64 group, u32 first value entry, u32 value entries, u32 first NULL entry, u32 NULL entries} ascending by
  * group; header words 6 and 7 are their number and the group leaf + 1. The keys of a group ascend, so a scan that pins the group reads its entries only, as a b-tree
  * on (group, key) would; a scan that does not pin it cannot use the block.
+ *
+ * Version 3, a block of a text leaf: the key of an entry is the rank of its string among the distinct strings of the segment in the order of the leaf's collation (then
+ * the bytes), so equal keys are equal strings and a scan merges the segments by comparing their strings, not their keys. Header words 6 and 7 are the collation (an OID) and
+ * the bytes of the strings, which end the block: {u32 strings, u32 strings in a block, u32 blocks, u32 0}, u32 offset[blocks + 1] from the start of this section, then the
+ * blocks of SIFT_CGORD_STR_BLK strings in rank order, each string a front coded {varint bytes shared with the one before, varint bytes of its own, the bytes}. A string is
+ * at most SIFT_COL_DICT_MAX_ENTRY bytes (a leaf with a longer one, which a unit stores inline, gets no block).
  */
 #ifndef SIFT_COL_GORDER_H
 #define SIFT_COL_GORDER_H
@@ -24,6 +30,9 @@
 #define SIFT_CGORD_MAGIC	0x44474F43		/* "COGD" */
 #define SIFT_CGORD_VERSION	1
 #define SIFT_CGORD_VERSION_GROUP	2
+#define SIFT_CGORD_VERSION_TEXT	3
+#define SIFT_CGORD_STR_BLK	16
+#define SIFT_CGORD_STR_MAX	256		/* bytes of the buffer for a string of a text block (SIFT_COL_DICT_MAX_ENTRY + 1) */
 #define SIFT_CGORD_GRPENT	24
 #define SIFT_CGORD_ROWS		1024		/* the entries of a chunk written below column format minor 30, and the most a chunk holds (the slots of the arrays) */
 #define SIFT_CGORD_ROWS_FINE	512		/* from minor 30: a seek and a cursor decode half of the entries */
@@ -51,6 +60,8 @@ typedef struct SiftCGOrdHdr
 	uint32		crows;
 	uint32		ngroups;		/* version 2: the groups of the end of the block, and the leaf they are the values of; else 0 and -1 */
 	int			gcol;
+	uint32		collid;			/* version 3: the collation of the strings, and the bytes of them at the end of the block; else 0 */
+	uint32		strbytes;
 } SiftCGOrdHdr;
 
 typedef struct SiftCGOrdGrp
@@ -79,6 +90,18 @@ extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
 extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, StringInfo out);
 
+/*
+ * The block of a text leaf (version 3): key[i] is the segment code of the string of the entry in d, ranked here by cmp under collid (0: the bytes), which the caller
+ * says how to compare (the library of the host knows the collations); otherwise as sift_cgord_build.
+ */
+typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
+extern SiftCStrCmp sift_cgord_strcmp;
+extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, StringInfo out);
+/* The string of rank r of a text block: b is the front coded block of the strings that holds it (r / SIFT_CGORD_STR_BLK), len its bytes; out SIFT_CGORD_STR_MAX; false when malformed */
+extern bool sift_cgord_str_get(const uint8 *b, uint32 len, uint32 idx, char *out, uint32 *slen);
+/* The strings section of a block of len bytes whose header was parsed: its number of strings and blocks; false when it is malformed */
+extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
+
 #ifdef SIFT_TESTING
 extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
 #endif
@@ -87,6 +110,10 @@ extern uint32 sift_cgord_rows(void);
 
 /* Does the leaf get a block: a plain integer, date or timestamp attribute of the top level whose key is the integer itself (what the scan reads back as the value) */
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
+/* ... or a text one of the top level (version 3): the leaves order_array_columns names */
+extern bool sift_cgord_leaf_array_ok(const SiftColSchema *s, const SiftColDef *d);
+/* a text leaf: its block is version 3 */
+extern bool sift_cgord_leaf_text(const SiftColDef *d);
 /* a date or a timestamp: the leaves whose order is read by a range or an ORDER BY .. LIMIT */
 extern bool sift_cgord_leaf_time(const SiftColDef *d);
 

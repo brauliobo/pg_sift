@@ -624,6 +624,7 @@ stats_copy(SiftSrcStats *dst, const SiftSrcStats *src, int n)
 	memcpy(dst->head_cover, src->head_cover, d);
 	memcpy(dst->gord_cover, src->gord_cover, d);
 	memcpy(dst->gord_group, src->gord_group, n * sizeof(int));
+	memcpy(dst->gord_coll, src->gord_coll, n * sizeof(uint32));
 	memcpy(dst->elems_per_row, src->elems_per_row, d);
 	memcpy(dst->ovf_units, src->ovf_units, d);
 	memcpy(dst->ovf_frac, src->ovf_frac, d);

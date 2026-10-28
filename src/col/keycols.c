@@ -34,6 +34,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/varlena.h"
 
 #include "col/am.h"
 #include "col/gorder.h"
@@ -583,7 +584,8 @@ sift_col_auto_paths(Relation heap, Relation index)
  * that cuts the units, and an array of no more than GORD_AUTO_GROWTH_PCT% of the index: the bytes of the
  * index a row are estimated from the statistics of its columns (the bits of their distinct values, the values of a dictionary (strings, uuids), at most their width), so a narrow index
  * of a few small columns gets none. At most GORD_AUTO_MAX columns: the dates and timestamps first (a range and an ORDER BY .. LIMIT of a time column is the common
- * use of an order), then the integers, each the least correlated first. A table of GORD_AUTO_ROWS rows or more with no statistics is analyzed first (ANALYZE, once, with a
+ * use of an order), then the text columns (ORDER BY .. LIMIT of strings up to GORD_TEXT_WIDTH bytes, by the default formula like a time column), then the integers, each the
+ * least correlated first. A table of GORD_AUTO_ROWS rows or more with no statistics is analyzed first (ANALYZE, once, with a
  * NOTICE), because the choice reads them. A REINDEX decides again.
  */
 #define GORD_AUTO_ROWS		100000
@@ -593,6 +595,10 @@ sift_col_auto_paths(Relation heap, Relation index)
 #define GORD_AUTO_MAX		2
 #define GORD_TIME_SPEEDUP	25.0	/* S of the shape a time column's array is for: ts >= x ORDER BY ts LIMIT 10 on scattered values, 9.39 M to 0.38 M instructions at 500,000 rows (ORDER BY ts DESC LIMIT 10 10x, OFFSET 1000 11x) */
 #define GORD_TIME_WRITE_PCT	35.0	/* W: CREATE INDEX of a one-column timestamp index 1.031 G to 1.387 G instructions (500,000 rows) */
+#define GORD_TEXT_SPEEDUP	300.0	/* S of ORDER BY txt LIMIT 10 on a table at the 100,000-row floor: 82.8 M to 0.27 M instructions (3,000,000 rows 2,429 M to 0.86 M, so the floor is the least) */
+#define GORD_TEXT_WRITE_C	62.0	/* W: CREATE INDEX of (id, text, timestamp, int4) with the text array under the C collation 2.84 G to 4.62 G instructions (500,000 rows) */
+#define GORD_TEXT_WRITE_LOC	420.0	/* ... under a locale (pt_BR.UTF-8), 2.83 G to 14.73 G: the sort of the strings by strcoll. Both for 4 columns; the share of a wider index is smaller */
+#define GORD_TEXT_WIDTH		64		/* the array holds the strings again (8.8 bytes a row for 9-byte strings, 38 for 61, 100 for 101: the index grows 77%, 158%, 330%): a column of longer strings is left to order_array_columns by name */
 #define GORD_ROW_OVERHEAD	1.3		/* the bytes a row of an index beyond the bits of its distinct values (units, zones, presence): 3.73 measured against 2.4 estimated for one timestamp column */
 #define GORD_GROUP_DISTINCT	100		/* the group of a time column's arrays: an integer of this many distinct values or more (an entity), at most one in GORD_GROUP_DEPTH rows of the table apiece (the 24 bytes of a group stay under a tenth of the 5 of an entry) */
 #define GORD_GROUP_DEPTH	64
@@ -856,7 +862,12 @@ typedef struct GordCand
 {
 	int			leaf;
 	bool		time;			/* a date or a timestamp: a range or an ORDER BY .. LIMIT is what it is read by */
+	bool		text;			/* a text or varchar column: ORDER BY .. LIMIT is what it is read by */
 	double		corr;
+	double		bytes;			/* a text column: the bytes a row of its array, the share of the build it adds, and its collation */
+	double		write;
+	double		benefit;		/* B and C of the choice of a text column, said by the NOTICE */
+	double		cost;
 } GordCand;
 
 static int
@@ -867,6 +878,10 @@ gord_cand_cmp(const void *a, const void *b)
 
 	if (x->time != y->time)
 		return x->time ? -1 : 1;
+	if (x->text != y->text)
+		return x->text ? -1 : 1;
+	if (x->text)
+		return x->leaf - y->leaf;	/* the order of the index: the statistics of two columns of strings differ run to run */
 	if (x->corr != y->corr)
 		return x->corr < y->corr ? -1 : 1;
 	return x->leaf - y->leaf;
@@ -915,15 +930,24 @@ sift_col_auto_gorder(Relation heap, Relation index)
 		int32		width;
 		bool		cut = false;
 
-		if (d->parent >= 0 || hatt == 0 || !sift_cgord_leaf_ok(rel->schema, d))
+		bool		text = sift_cgord_leaf_text(d);
+
+		if (d->parent >= 0 || hatt == 0 || !(text || sift_cgord_leaf_ok(rel->schema, d)))
 			continue;
 		for (int k = 0; k < rel->ncut; k++)
 			cut |= rel->cut[k] == c;
 		if (cut && sift_col_key_cut(rel))
 			continue;
-		if (!col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR)
+		if (!col_stats(heap, hatt, &ndistinct, &cr, &width) || ndistinct < GORD_AUTO_DISTINCT || cr >= GORD_AUTO_CORR || (text && width > GORD_TEXT_WIDTH))
 			continue;
-		cand[ncand++] = (GordCand) {c, sift_cgord_leaf_time(d), cr};
+		cand[ncand] = (GordCand) {c, sift_cgord_leaf_time(d), text, cr, 0, 0, 0, 0};
+		if (text)
+		{
+			/* the keys and addresses (4.4 bytes) and the strings, which front coding shortens by a tenth; the build adds the sort of the strings, by strcoll under a locale */
+			cand[ncand].bytes = 4.4 + Min(width, 255) * Min(1.0, ndistinct / Max(heap->rd_rel->reltuples, 1)) * 0.9;
+			cand[ncand].write = (varstr_cmp("a", 1, "B", 1, TupleDescAttr(RelationGetDescr(index), d->attno - 1)->attcollation) < 0 ? GORD_TEXT_WRITE_LOC : GORD_TEXT_WRITE_C) * 4.0 / index->rd_index->indnatts;
+		}
+		ncand++;
 	}
 	qsort(cand, ncand, sizeof(GordCand), gord_cand_cmp);
 	/* each array is a structure of its own: it must fit the room, and a column that does not leaves it to the next; the sorted run of a column not in order_columns comes with it */
@@ -931,10 +955,20 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	{
 		const SiftColDef *d = &rel->schema->cols[cand[i].leaf];
 		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
-		double		bytes = narrow ? 4.4 : 5.6;
+		double		bytes = cand[i].text ? cand[i].bytes : narrow ? 4.4 : 5.6;
 
-		/* a date or timestamp: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling; the others fit the room */
-		fit[i] = cand[i].time ? log2(GORD_TIME_SPEEDUP) / log2(1.05) > bytes / index_bytes * 100.0 / 3.0 + GORD_TIME_WRITE_PCT / 5.0 : bytes <= room;
+		/* a date, timestamp or text column: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling; the others fit the room */
+		if (cand[i].text)
+		{
+			double		b = log2(GORD_TEXT_SPEEDUP) / log2(1.05),
+						cost = bytes / index_bytes * 100.0 / 3.0 + cand[i].write / 5.0;
+
+			fit[i] = b > cost;
+			cand[i].benefit = b;
+			cand[i].cost = cost;
+		}
+		else
+			fit[i] = cand[i].time ? log2(GORD_TIME_SPEEDUP) / log2(1.05) > bytes / index_bytes * 100.0 / 3.0 + GORD_TIME_WRITE_PCT / 5.0 : bytes <= room;
 		timepick |= fit[i] && cand[i].time;
 	}
 	/* the arrays of a time column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then */
@@ -964,7 +998,18 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	}
 	for (int i = 0; i < ncand && npick < GORD_AUTO_MAX; i++)
 		if (fit[i] && cand[i].leaf != grp)
+		{
 			pick[npick++] = cand[i].leaf;
+			if (cand[i].text)
+			{
+				const char *name = leaf_name(index, &rel->schema->cols[cand[i].leaf]);
+
+				ereport(NOTICE, (errmsg("sift_col index \"%s\": order_array_columns = 'auto' chose the text column \"%s\": benefit %.0f against cost %.0f", RelationGetRelationName(index), name, cand[i].benefit, cand[i].cost),
+								 errdetail("ORDER BY %s LIMIT n reads n entries of each segment, where the units compare the strings of every row (100,000 rows: 82.8 M to 0.27 M instructions). The array takes about %.0f bytes a row (%.0f%% of the index, G) and CREATE INDEX does about %.0f%% more instructions (W)%s: the benefit is log2(%.0f) / log2(1.05), the cost G / 3 + W / 5.",
+										   name, cand[i].bytes, cand[i].bytes / index_bytes * 100.0, cand[i].write, cand[i].write > GORD_TEXT_WRITE_C * 4.0 / index->rd_index->indnatts ? ", the sort of the strings under the collation" : "", GORD_TEXT_SPEEDUP),
+								 errhint("ALTER INDEX %s SET (order_array_columns = 'off'), then REINDEX, drops it; order_array_columns = '%s' keeps it by name.", quote_identifier(RelationGetRelationName(index)), name)));
+			}
+		}
 	if (grp >= 0)
 	{
 		initStringInfo(&v);

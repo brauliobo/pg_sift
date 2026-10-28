@@ -2,13 +2,14 @@
 -- scattered over the heap (correlation under 0.99) gets the global order, so that a range of it reads the entries between its bounds; a column in heap order, with few values, on
 -- a smaller table or a narrow index gets none; a table without statistics is analyzed first. A date or timestamp comes before the other columns, as a range or an
 -- ORDER BY .. LIMIT is what it is read by. 'off' and a list are the user's.
+-- The pad column has strings over 64 bytes: a text column of shorter strings is chosen too (col_gorder_text), and the array holds the strings again, so these tests keep it out.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE ga (id int, r int, g int, ts timestamp, pad text);
 ALTER TABLE ga ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO ga SELECT i, abs(hashint4(i)) % 5000000, i % 50, timestamp '2024-01-01' + i * interval '1 second', md5(i::text) FROM generate_series(1, 120000) i;
+INSERT INTO ga SELECT i, abs(hashint4(i)) % 5000000, i % 50, timestamp '2024-01-01' + i * interval '1 second', md5(i::text) || md5(i::text || 'x') FROM generate_series(1, 120000) i;
 
 -- no statistics yet: the build analyzes the table and chooses
 CREATE INDEX ga_nostats ON ga USING sift_col (id, r, g, ts, pad);
@@ -55,7 +56,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
 CREATE TABLE gt (id int, v int, ts timestamptz, pad text);
 ALTER TABLE gt ALTER COLUMN pad SET STORAGE PLAIN;
 SELECT setseed(0.5);
-INSERT INTO gt SELECT i, (random() * 100000000)::int, timestamptz '2024-01-01' + random() * interval '700 days', md5(i::text) FROM generate_series(1, 120000) i;
+INSERT INTO gt SELECT i, (random() * 100000000)::int, timestamptz '2024-01-01' + random() * interval '700 days', md5(i::text) || md5(i::text || 'x') FROM generate_series(1, 120000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id, v, ts, pad);
 SELECT reloptions FROM pg_class WHERE relname = 'gt_i';
 
