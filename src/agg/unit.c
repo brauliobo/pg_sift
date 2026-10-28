@@ -504,36 +504,72 @@ unit_rows(AggExec *ex, uint64 *rmask, int nrow)
 		topn_unit(ex, rmask, nrow);
 }
 
+#define ELEMS_RANGE_COST 16		/* a kept row set as a range costs about as much as this many elements looked up one by one */
+
+/* bits [lo, hi) of a bit vector set */
+static void
+set_bit_range(uint64 *bits, uint32 lo, uint32 hi)
+{
+	if (lo >= hi)
+		return;
+	if (lo >> 6 == (hi - 1) >> 6)
+	{
+		bits[lo >> 6] |= (~UINT64CONST(0) >> (64 - (hi - lo))) << (lo & 63);
+		return;
+	}
+	bits[lo >> 6] |= ~UINT64CONST(0) << (lo & 63);
+	for (lo = (lo >> 6) + 1; lo < hi >> 6; lo++)
+		bits[lo] = ~UINT64CONST(0);
+	if (hi & 63)
+		bits[hi >> 6] |= ~UINT64CONST(0) >> (64 - (hi & 63));
+}
+
+/* the elements of the rows of rmask as a bitmap over the elements */
+static pg_noinline void
+set_kept_ranges(AggExec *ex, const uint64 *rmask, int nrw, uint64 *em)
+{
+	memset(em, 0, ((ex->nelem + 63) / 64 + PADW) * sizeof(uint64));
+	for (int w = 0; w < nrw; w++)
+		for (uint64 b = rmask[w]; b; b &= b - 1)
+		{
+			int			r = w * 64 + pg_rightmost_one_pos64(b);
+
+			set_bit_range(em, ex->offs[r], ex->offs[r + 1]);
+		}
+}
+
 /* The elements of the kept rows that the conjuncts on the elements keep, as a bitmap over the elements of the unit */
 static uint64 *
 elems_kept(AggExec *ex, const uint64 *rmask, int nrow)
 {
 	SiftAggSpec *s = ex->spec;
 	int			nrw = (nrow + 63) / 64,
-				m = ex->nelem;
-	uint64		cm[VECW + PADW];
-	/* no row is out: so is no element, and the owners of the elements are not needed to tell */
-	bool		allrows = sift_colk->bits_count(rmask, nrw) == nrow;
+				m = ex->nelem,
+				kept = sift_colk->bits_count(rmask, nrw);
 	uint64	   *em = MemoryContextAlloc(ex->ucxt, ((m + 63) / 64 + PADW) * sizeof(uint64));
 
+	if (kept == nrow)
+		/* no row is out: so is no element, and the owners of the elements are not needed to tell */
+		fill_ones(em, m);
+	else if ((uint64) kept * ELEMS_RANGE_COST < m)
+		/* few kept rows: their ranges of elements are set one by one, instead of looking the row of every element up */
+		set_kept_ranges(ex, rmask, nrw, em);
+	else
+		for (int st = 0; st < m; st += VEC)
+			sift_aggk->gather_bits(em + st / 64, rmask, unit_parent(ex) + st, Min(VEC, m - st));
 	for (int st = 0; st < m; st += VEC)
 	{
 		int			n = Min(VEC, m - st),
 					nw = (n + 63) / 64;
 
-		if (allrows)
-			fill_ones(cm, n);
-		else
-			sift_aggk->gather_bits(cm, rmask, unit_parent(ex) + st, n);
 		for (int i = 0; i < s->npred; i++)
 			if (s->pred[i]->level == 1 && !s->pred[i]->late)
 			{
 				uint64		t[VECW + PADW];
 
 				eval_pred(ex, s->pred[i], 1, st, n, t);
-				sift_colk->bits_and(cm, t, nw);
+				sift_colk->bits_and(em + st / 64, t, nw);
 			}
-		memcpy(em + st / 64, cm, nw * sizeof(uint64));
 	}
 	return em;
 }
