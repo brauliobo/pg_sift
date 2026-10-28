@@ -42,89 +42,89 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
-\set q1 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
-\set q2 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
+\set tier_label_lt10 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
+\set tier_lt5 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
 
 -- the first query loads the table, the next ones use it; another condition is another table
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q2');
-SELECT cached(:'q2');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_lt5');
+SELECT cached(:'tier_lt5');
+SELECT cached(:'tier_label_lt10');
 
 -- a write to the table: the rows are loaded again, from pages that are no longer all visible, and not kept until it is vacuumed
 INSERT INTO ents VALUES (7, 7, 3, 'new');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 
 -- an update and a delete, each vacuumed
 UPDATE ents SET tier = 9, label = 'moved' WHERE id = 8;
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 DELETE FROM ents WHERE id < 100;
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 
 -- a write that is rolled back moves the pages too, and the rows are what they were
 BEGIN;
 UPDATE ents SET label = 'rolled back' WHERE id = 500;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 
 -- a transaction that sees its own uncommitted rows never takes the rows of another snapshot
 BEGIN;
 INSERT INTO ents VALUES (11, 5, 2, 'mine');
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 
 -- rewritten table: another file, whose pages are visible to all once it is vacuumed
 VACUUM FULL ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 
 -- off: nothing is kept
 SET sift.agg_lookup_cache_kb = 0;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 RESET sift.agg_lookup_cache_kb;
 
 -- a preserved side is written to by the scan (the rows no tuple matched): it is never kept, and every run sees its own
-\set q3 'SELECT coalesce(e.label, ''none'') AS nm, count(*) AS n, sum(ev.amount) AS total FROM ev FULL JOIN ents e ON e.id = ev.dim_a_id GROUP BY 1'
+\set full_join_label 'SELECT coalesce(e.label, ''none'') AS nm, count(*) AS n, sum(ev.amount) AS total FROM ev FULL JOIN ents e ON e.id = ev.dim_a_id GROUP BY 1'
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_hashjoin = off; SET enable_mergejoin = off;
-SELECT cached(:'q3');
-SELECT cached(:'q3');
-SELECT * FROM same(:'q3');
+SELECT cached(:'full_join_label');
+SELECT cached(:'full_join_label');
+SELECT * FROM same(:'full_join_label');
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_hashjoin; RESET enable_mergejoin;
 -- a table that does not fit the budget is loaded for its query alone
 SET sift.agg_lookup_cache_kb = 8;
-\set q4 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 11 GROUP BY 1, 2'
-SELECT cached(:'q4');
-SELECT cached(:'q4');
-SELECT * FROM same(:'q4');
+\set tier_label_lt11 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 11 GROUP BY 1, 2'
+SELECT cached(:'tier_label_lt11');
+SELECT cached(:'tier_label_lt11');
+SELECT * FROM same(:'tier_label_lt11');
 RESET sift.agg_lookup_cache_kb;
 -- ... and is kept once the budget is larger (the refusal is of that budget): the memory of the rows decides, not the pages of the table
-SELECT cached(:'q4');
-SELECT cached(:'q4');
-SELECT * FROM same(:'q4');
+SELECT cached(:'tier_label_lt11');
+SELECT cached(:'tier_label_lt11');
+SELECT * FROM same(:'tier_label_lt11');
 -- a condition that is not constant (a stable function) is another query's table every time: not kept
 SELECT cached('SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < extract(day from current_date)::int - extract(day from current_date)::int + 10 GROUP BY 1');
 SELECT cached('SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < extract(day from current_date)::int - extract(day from current_date)::int + 10 GROUP BY 1');

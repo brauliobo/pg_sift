@@ -61,54 +61,54 @@ BEGIN
 END $$;
 
 -- one text key, repeated keys, NULL and empty keys on both sides, every column type
-\set q1 'SELECT coalesce(d.label, ''-'') AS label, coalesce(d.num::text, ''-'') AS num, d.b, d.dd, count(*) AS n, sum(ev.amount) AS total, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2, 3, 4'
-\set q1b 'SELECT coalesce(encode(d.bytes, ''hex''), ''-'') AS bytes, coalesce(d.u::text, ''-'') AS u, count(*) AS n, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2'
-SELECT nodes(:'q1');
-SELECT nodes(:'q1');
-SELECT * FROM same(:'q1');
-SELECT nodes(:'q1b');
-SELECT * FROM same(:'q1b');
+\set left_join_wide_leaves 'SELECT coalesce(d.label, ''-'') AS label, coalesce(d.num::text, ''-'') AS num, d.b, d.dd, count(*) AS n, sum(ev.amount) AS total, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2, 3, 4'
+\set left_join_bytes_uuid 'SELECT coalesce(encode(d.bytes, ''hex''), ''-'') AS bytes, coalesce(d.u::text, ''-'') AS u, count(*) AS n, sum(d.f) AS f FROM ev LEFT JOIN dims d ON d.k = ev.k GROUP BY 1, 2'
+SELECT nodes(:'left_join_wide_leaves');
+SELECT nodes(:'left_join_wide_leaves');
+SELECT * FROM same(:'left_join_wide_leaves');
+SELECT nodes(:'left_join_bytes_uuid');
+SELECT * FROM same(:'left_join_bytes_uuid');
 
 -- a varchar key with multi-byte values, an inner join
-\set q2 'SELECT coalesce(d.label, ''-'') AS label, d.b, count(*) AS n, sum(d.f) AS f FROM ev JOIN dims d ON d.kv = ev.kv GROUP BY 1, 2'
-SELECT nodes(:'q2');
-SELECT nodes(:'q2');
-SELECT * FROM same(:'q2');
+\set inner_join_kv 'SELECT coalesce(d.label, ''-'') AS label, d.b, count(*) AS n, sum(d.f) AS f FROM ev JOIN dims d ON d.kv = ev.kv GROUP BY 1, 2'
+SELECT nodes(:'inner_join_kv');
+SELECT nodes(:'inner_join_kv');
+SELECT * FROM same(:'inner_join_kv');
 
 -- an integer and a bigint key together with a text one
-\set q3 'SELECT coalesce(d.label, ''-'') AS label, d.dd, count(*) AS n, sum(ev.amount) AS total FROM ev LEFT JOIN dims d ON d.n = ev.n AND d.n8 = ev.n8 AND d.k = ev.k GROUP BY 1, 2'
-SELECT nodes(:'q3');
-SELECT nodes(:'q3');
-SELECT * FROM same(:'q3');
+\set left_join_three_keys 'SELECT coalesce(d.label, ''-'') AS label, d.dd, count(*) AS n, sum(ev.amount) AS total FROM ev LEFT JOIN dims d ON d.n = ev.n AND d.n8 = ev.n8 AND d.k = ev.k GROUP BY 1, 2'
+SELECT nodes(:'left_join_three_keys');
+SELECT nodes(:'left_join_three_keys');
+SELECT * FROM same(:'left_join_three_keys');
 
 -- one integer key: a semi join and an anti join
-\set q4 'SELECT ev.n % 7 AS g, count(*) AS n, sum(ev.amount) AS total FROM ev WHERE ev.n IN (SELECT d.n FROM dims d WHERE d.n8 % 3 = 0) GROUP BY 1'
-\set q5 'SELECT ev.n % 7 AS g, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.n = ev.n AND d.b) GROUP BY 1'
-SELECT nodes(:'q4');
-SELECT * FROM same(:'q4');
-SELECT nodes(:'q5');
-SELECT * FROM same(:'q5');
+\set in_subselect 'SELECT ev.n % 7 AS g, count(*) AS n, sum(ev.amount) AS total FROM ev WHERE ev.n IN (SELECT d.n FROM dims d WHERE d.n8 % 3 = 0) GROUP BY 1'
+\set not_exists 'SELECT ev.n % 7 AS g, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM dims d WHERE d.n = ev.n AND d.b) GROUP BY 1'
+SELECT nodes(:'in_subselect');
+SELECT * FROM same(:'in_subselect');
+SELECT nodes(:'not_exists');
+SELECT * FROM same(:'not_exists');
 
 -- arms that read other columns of a table share its kept rows: one entry holds the columns of them all, and a query that reads one of them takes it
-\set q7a 'SELECT d.label AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
-\set q7b 'SELECT d.num::text AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
-\set q7c 'SELECT d.label || coalesce(d.num::text, ''-'') AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+\set group_label 'SELECT d.label AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+\set group_num_text 'SELECT d.num::text AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
+\set group_label_concat 'SELECT d.label || coalesce(d.num::text, ''-'') AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
 SELECT count(*) AS entries_before FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table' \gset
-SELECT nodes(:'q7a');
-SELECT nodes(:'q7b');
-SELECT nodes(:'q7c');
-SELECT nodes(:'q7a');
-SELECT nodes(:'q7b');
+SELECT nodes(:'group_label');
+SELECT nodes(:'group_num_text');
+SELECT nodes(:'group_label_concat');
+SELECT nodes(:'group_label');
+SELECT nodes(:'group_num_text');
 SELECT count(*) - :entries_before AS new_entries FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table';
-SELECT * FROM same(:'q7a');
-SELECT * FROM same(:'q7b');
-SELECT * FROM same(:'q7c');
+SELECT * FROM same(:'group_label');
+SELECT * FROM same(:'group_num_text');
+SELECT * FROM same(:'group_label_concat');
 
 -- a preserved side with NULL keys: its rows no tuple matched are output rows
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_indexonlyscan = off; SET enable_hashjoin = off; SET enable_mergejoin = off;
-\set q6 'SELECT coalesce(d.label, ''-'') AS label, coalesce(ev.k, ''-'') AS k, count(*) AS n FROM ev FULL JOIN dims d ON d.k = ev.k AND d.n = ev.n GROUP BY 1, 2'
-SELECT nodes(:'q6');
-SELECT * FROM same(:'q6');
+\set full_join_label_key 'SELECT coalesce(d.label, ''-'') AS label, coalesce(ev.k, ''-'') AS k, count(*) AS n FROM ev FULL JOIN dims d ON d.k = ev.k AND d.n = ev.n GROUP BY 1, 2'
+SELECT nodes(:'full_join_label_key');
+SELECT * FROM same(:'full_join_label_key');
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_hashjoin; RESET enable_mergejoin;
 
 DROP FUNCTION nodes(text), same(text);

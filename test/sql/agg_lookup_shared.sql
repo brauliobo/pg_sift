@@ -44,75 +44,75 @@ BEGIN
 	RETURN NEXT;
 END $$;
 
-\set q1 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
-\set q2 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
+\set tier_label_lt10 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
+\set tier_lt5 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
 -- a text key
-\set q3 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.code = ''c'' || ev.dim_a_id GROUP BY 1'
+\set text_key_join 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.code = ''c'' || ev.dim_a_id GROUP BY 1'
 
 -- the first query loads the table and keeps it, the next ones read it; another condition is another table
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q2');
-SELECT cached(:'q2');
-SELECT cached(:'q1');
-SELECT cached(:'q3');
-SELECT cached(:'q3');
-SELECT * FROM same(:'q3');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_lt5');
+SELECT cached(:'tier_lt5');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'text_key_join');
+SELECT cached(:'text_key_join');
+SELECT * FROM same(:'text_key_join');
 
 -- a write: the rows are loaded again from pages that are not all visible, and kept again once vacuumed
 INSERT INTO ents VALUES (7, 7, 3, 'new', 'cnew');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 UPDATE ents SET tier = 9, label = 'moved', code = 'cmoved' WHERE id = 8;
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q3');
-SELECT * FROM same(:'q3');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'text_key_join');
+SELECT * FROM same(:'text_key_join');
 DELETE FROM ents WHERE id < 100;
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 
 -- rolled back, and a transaction that sees its own rows
 BEGIN;
 UPDATE ents SET label = 'rolled back' WHERE id = 500;
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 BEGIN;
 INSERT INTO ents VALUES (11, 5, 2, 'mine', 'cmine');
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
-SELECT * FROM same(:'q1');
+SELECT * FROM same(:'tier_label_lt10');
 
 -- a rewritten table is another file
 VACUUM FULL ents;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
 VACUUM ents;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
-SELECT * FROM same(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
+SELECT * FROM same(:'tier_label_lt10');
 
 -- the rows of one role are not read by another
 CREATE ROLE lookshm_other;
 GRANT SELECT ON ev, ents TO lookshm_other;
 SET ROLE lookshm_other;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 RESET ROLE;
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
 DROP OWNED BY lookshm_other;
 DROP ROLE lookshm_other;
 
@@ -125,8 +125,8 @@ DROP ROLE lookshm_plain;
 
 -- off: nothing is read and nothing is kept
 SET sift.agg_lookup_shared_kb = 0;
-SELECT cached(:'q1');
-SELECT cached(:'q1');
+SELECT cached(:'tier_label_lt10');
+SELECT cached(:'tier_label_lt10');
 SET sift.agg_lookup_shared_kb = 4096;
 -- a table of more than half of the budget is loaded for its query alone, and kept once the budget is larger
 \set qa 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 0 GROUP BY 1, 2'
@@ -153,9 +153,9 @@ SELECT * FROM same(:'qb');
 -- the cache of the backend first, when it is on: the same rows
 SET sift.agg_lookup_shared_kb = 4096;
 RESET sift.agg_lookup_cache_kb;
-SELECT cached(:'q3');
-SELECT cached(:'q3');
-SELECT * FROM same(:'q3');
+SELECT cached(:'text_key_join');
+SELECT cached(:'text_key_join');
+SELECT * FROM same(:'text_key_join');
 
 DROP FUNCTION same(text);
 DROP FUNCTION cached(text);
