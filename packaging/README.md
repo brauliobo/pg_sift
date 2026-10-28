@@ -18,23 +18,25 @@ What this directory and the repository root hold for each way of installing pg_s
 
 ## Packages for each PostgreSQL major
 
-A release attaches twelve packages, one pair for each major the extension supports and each architecture (x86-64 and arm64). The name carries the major `N`; the architecture is `amd64`/`arm64` in the `.deb` and `x86_64`/`aarch64` in the `.rpm`:
+A release attaches 16 packages: twelve, one pair for each major the extension supports and each architecture (x86-64 and arm64), and four for Amazon Linux 2023. The name carries the major `N`; the architecture is `amd64`/`arm64` in the `.deb` and `x86_64`/`aarch64` in the `.rpm`:
 
 | Family | File | Built and smoke-tested in | Needs |
 |---|---|---|---|
 | Debian, Ubuntu | `postgresql-N-pg-sift_X.Y.Z-1_{amd64,arm64}.deb` | built on Ubuntu 22.04 (glibc 2.35, so one package serves every newer release), installed in fresh Debian 12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 containers | PGDG `postgresql-N` |
 | RHEL, Rocky, Alma | `pg_sift_N-X.Y.Z-1.el9.{x86_64,aarch64}.rpm` | built on Rocky 9, installed in fresh Rocky 9, Alma 9 and Alma 10 containers | PGDG `postgresqlN-server` |
+| Amazon Linux 2023 | `pg_sift_N-X.Y.Z-1.amzn2023.{x86_64,aarch64}.rpm`, N = 17 or 18 | built and installed in fresh `amazonlinux:2023` containers | the distribution's own `postgresqlN-server` (17 and 18; it has no 19, installs one major at a time and reads `/usr/lib64/pgsql` and `/usr/share/pgsql`, where the PGDG `el9` package does not put its files) |
 
 Pick the major of the server (`SHOW server_version`); a package of another major does not install. There is one Debian recipe (`debian/`, with `@PG@` where the major goes) and one `pg_sift.spec` (`%{pgmajor}`):
 `packaging/container.sh` substitutes the major, so a new major is one word in `PGS`, not a copy of the recipes; the recipes name no architecture (`Architecture: any`, `ExclusiveArch: x86_64 aarch64`), so a new one is one word in `ARCHES` and a runner.
 
 | Parameter | Default | Effect |
 |---|---|---|
-| `PGS` (environment of `scripts/package.sh`) | `17 18 19` | the majors built, tested, verified and listed in the matrix of the `release` workflow (`scripts/package.sh majors`); a release publishes only when every package of every major and family is in the set (`scripts/package.sh verify DIR`) |
-| `FAMILIES` | `deb rpm` | the families built |
-| `ARCHES` | `x86_64 aarch64` | the architectures `verify` requires and the matrix lists (`scripts/package.sh arches`); a host builds its own, with the native images: the release runs `x86_64` on `ubuntu-24.04` and `aarch64` on the hosted `ubuntu-24.04-arm` runner |
+| `PGS` (environment of `scripts/package.sh`) | `17 18 19` | the majors built, tested, verified and listed in the matrix of the `release` workflow (`scripts/package.sh matrix`: one job for each package); a release publishes only when every package of every major and family is in the set (`scripts/package.sh verify DIR`) |
+| `FAMILIES` | `deb rpm amzn` | the families built (`amzn`: the Amazon Linux 2023 `.rpm`, one spec with an `%if 0%{?amzn}` block for the distribution's paths and `-server-devel` package) |
+| `AMZN_PGS` | `17 18` | the majors that have an `amzn` package (the distribution has no 19): the matrix and `verify` skip the others |
+| `ARCHES` | `x86_64 aarch64` | the architectures `verify` requires and the matrix lists; a host builds its own, with the native images: the release runs `x86_64` on `ubuntu-24.04` and `aarch64` on the hosted `ubuntu-24.04-arm` runner |
 | `PG` (`scripts/package.sh build`) | none | the major of one build |
-| `BUILD_DEB`, `BUILD_RPM`, `TEST_DEB`, `TEST_RPM` | Ubuntu 22.04, Rocky 9; the images above | the images that build and test |
+| `BUILD_DEB`, `BUILD_RPM`, `BUILD_AMZN`, `TEST_DEB`, `TEST_RPM`, `TEST_AMZN` | Ubuntu 22.04, Rocky 9, Amazon Linux 2023; the images above | the images that build and test |
 
 The server and its development files come from PGDG in the build container: apt `trixie-pgdg` and yum `pgdgN` for 17 and 18. PostgreSQL 19 is not released yet (PGDG ships `19~rc1`), so its packages come from the apt
 component `19` of the same suite and the yum repository `pgdg19-updates-testing`, which `container.sh` enables when the stable `pgdgN` does not exist; the library is built against the release candidate and the smoke test

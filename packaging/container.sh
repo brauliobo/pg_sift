@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG.
+# Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG (Amazon Linux 2023: from the distribution).
 #   container.sh build   build the package of /src/pg_sift-$VER.tar.gz into /out
 #   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade), remove it
 # /pkg is the packaging/ directory. Env: PG (the major, build; the test reads it from the package name), VER, EPOCH (source date),
@@ -13,6 +13,7 @@ command -v apt-get >/dev/null && FMT=deb || FMT=rpm
 . /etc/os-release
 
 pgdg_repo() {
+	[[ $ID != amzn ]] || return 0 # Amazon Linux 2023: the distribution has postgresql17 and 18 (no 19), no PGDG repository for it
 	if [[ $FMT == deb ]]; then
 		export DEBIAN_FRONTEND=noninteractive
 		apt-get update -qq
@@ -49,7 +50,9 @@ LOG
 }
 
 build_rpm() {
-	dnf -y -q --enablerepo=crb install rpm-build gcc make redhat-rpm-config postgresql$PG-devel lz4-devel libzstd-devel libicu-devel
+	local crb=--enablerepo=crb devel=postgresql$PG-devel
+	[[ $ID != amzn ]] || { crb=; devel=postgresql$PG-server-devel; }
+	dnf -y -q $crb install rpm-build gcc make redhat-rpm-config $devel lz4-devel libzstd-devel libicu-devel
 	nice rpmbuild -bb /pkg/pg_sift.spec --define "pgmajor $PG" --define "pkg_version $VER" --define "_sourcedir /src" \
 		--define "_topdir /tmp/rpmbuild" --define "_smp_mflags -j$JOBS" >/dev/null
 	cp /tmp/rpmbuild/RPMS/*/*.rpm /out
@@ -70,6 +73,7 @@ test_pkg() {
 	install_pkg "$pkg"
 	local bin=/usr/lib/postgresql/$PG/bin libdir=/usr/lib/postgresql/$PG/lib share=/usr/share/postgresql/$PG ver t
 	[[ $FMT == deb ]] || { bin=/usr/pgsql-$PG/bin libdir=/usr/pgsql-$PG/lib share=/usr/pgsql-$PG/share; }
+	[[ $ID != amzn ]] || { bin=/usr/bin libdir=/usr/lib64/pgsql share=/usr/share/pgsql; }
 	export PATH=$bin:$PATH
 	ver=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$share/extension/pg_sift.control")
 	t=$(mktemp -d) && chown postgres "$t"
