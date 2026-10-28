@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The benchmark cases of the optimizations (bench/cases.tsv, bench/cases/*.sql; bench/bench cases, steps/cases.sh).
 
-    python3 -I cases.py run   [--cases ID,..] [--engines LIST] [--rows N] [--rounds R] [--runs N] [--duck-port P] [--out FILE] [--docs]
+    python3 -I cases.py run   [--cases ID,..] [--engines LIST] [--rows N] [--rounds R] [--runs N] [--duck-port P] [--io cold|warm|off] [--out FILE] [--docs]
     python3 -I cases.py list
     python3 -I cases.py plan  [--cases ..] [--rows N] [--scales L]      (what a run needs, no server)
 
@@ -347,18 +347,18 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
 INDEX_IN_PLAN = re.compile(r'(?:Index(?: Only)? Scan(?: Backward)? using|Bitmap Index Scan on) (\w+)|Index: (\w+)')
 
 
-def io_load(session, case, lane, sql, text):
+def io_load(session, case, lane, sql, text, mode):
     """what a lane reads, whatever the storage (steps/iolib.py): the IO of the first run after the case's tables were emptied from shared buffers and the OS cache (cold), then of the run
-    after it (warm), and the bytes of the indexes the plan reads (a btree, the column index of a scan). Without eviction (before PostgreSQL 18) the one run is warm.
+    after it (warm), and the bytes of the indexes the plan reads (a btree, the column index of a scan). MODE warm (and off) skips the eviction: one warm run. Without pg_buffercache the one run is warm.
     Returns ([measurements], index names, index bytes)"""
     s = session.persistent() if isinstance(session, Fresh) else session
     try:
         tables = iolib.schema_tables(s, case.schema() + '_base' if lane == 'base' else case.schema())
-        ios = [iolib.measure(s, sql, tables)]
+        ios = [iolib.measure(s, sql, tables if mode == 'cold' else None)]
         if ios[0]['cache'] == 'cold':
             IO_HOW.add(ios[0]['how'])
             ios.append(iolib.measure(s, sql))
-        else:
+        elif mode == 'cold':
             log('%s on %s: warm only (%s)' % (case.id, lane, ios[0]['how']))
         names = sorted({a or b for a, b in INDEX_IN_PLAN.findall(text)})
         size = sum(int(s.run("SELECT pg_relation_size('%s')" % n)[1][0]) for n in names) if names else 0
@@ -515,7 +515,7 @@ def run_point(args, cases, rows, engines, results, failed):
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
-                    if not xs:   # no pg_stat_io on this server
+                    if not xs or args.io == 'off' and metric.startswith('io_'):   # no pg_stat_io on this server, or --io off
                         continue
                     point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
@@ -538,8 +538,8 @@ def run_point(args, cases, rows, engines, results, failed):
                     else:
                         failed.append('%s%s on %s: perf cannot count instructions (perf_event_paranoid)' % (c.id, tag, lane))
                 if lane != 'pg_duckdb' and not c.load:
-                    ios, names, size = io_load(lanes[lane], c, lane, expand(c.statement(lane), c), texts.get(lane, ''))
-                    for io in ios:
+                    ios, names, size = io_load(lanes[lane], c, lane, expand(c.statement(lane), c), texts.get(lane, ''), args.io)
+                    for io in ios if args.io != 'off' else []:   # off: the rows of before the IO measure (buffers, index_bytes) only
                         for metric, value in iolib.metrics(io).items():
                             point.append(dict(case=c.id, arm=lane, metric=metric, value=value, note=io['how'] or 'warm', load=load))
                     if ios:
@@ -789,6 +789,8 @@ def main():
     ap.add_argument('--work-mem', help='work_mem of every lane (the cluster runs 64MB; a large setting is 4GB): written to the file as the work_mem meta')
     ap.add_argument('--lane-budget', type=float, default=LANE_BUDGET, help='seconds of timed runs after which a lane stops repeating, with at least %d runs (0: always the full rounds x runs); a case whose statement takes seconds is not run fifteen times' % MIN_RUNS)
     ap.add_argument('--any-plan', action='store_true', help='the planner\'s plan at this size is what the rows show, not a failure (a smoke run: at a few thousand rows it keeps PostgreSQL\'s plan)')
+    ap.add_argument('--io', choices=['cold', 'warm', 'off'], default='cold', help='the IO rows of every lane (steps/iolib.py): cold empties the case\'s tables from the shared buffers and the OS cache first (io_cold_*, then io_warm_*), warm measures the warm run only, '
+                    'off writes no io_* rows. A run of a case replaces all of its rows in bench/results, so --io off (or warm) drops the io_cold_* rows the file had')
     ap.add_argument('--no-share', action='store_true', help='one table for every case, as before (the build of a case does not depend on the others that ran)')
     ap.add_argument('--times', help='write the seconds of every case to this file (bench/results/cases-time.tsv with --docs), without the results')
     ap.add_argument('--docs', action='store_true')

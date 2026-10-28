@@ -113,18 +113,32 @@ class Live(unittest.TestCase):
         sql = 'SELECT count(*) FROM t WHERE i < 30000'
         cold = iolib.measure(self.s, sql, ['public.t'])
         warm = iolib.measure(self.s, sql)
-        if self.major < 18:
-            self.assertEqual(cold['cache'], 'warm', cold['how'])
-            return
         self.assertEqual((cold['cache'], warm['cache']), ('cold', 'warm'), cold['how'])
         self.assertGreater(cold['read'], 10)
         self.assertEqual((warm['read'], warm['hit_pct']), (0, 100.0))
         # the plan's blocks and the counters of pg_stat_io are one measure: a few blocks of the helper's own catalog queries are the difference
-        self.assertAlmostEqual(cold['read_bytes'] / 8192, cold['read'], delta=30)
+        self.assertAlmostEqual(cold['stat_read_bytes'] / 8192, cold['read'], delta=30)
+        self.assertEqual(cold['read_bytes'], cold['read'] * 8192)   # the MB of a row are the plan's blocks
         self.assertEqual(warm['read_bytes'], 0)
         if cold['proc_read_bytes'] is not None and iolib.fs_type(self.dir) != 'tmpfs':
             self.assertGreater(cold['proc_read_bytes'], 0)   # physical bytes: a compressing file system reads fewer than the blocks say
         self.assertTrue(cold['how'].startswith('evict'), cold['how'])
+
+    def test_workers_reads_are_counted(self):
+        # a parallel scan: the workers read in other backends, which pg_stat_io names `background worker`; the blocks of the plan and its bytes are one measure
+        self.s.run('SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0')
+        try:
+            io = iolib.measure(self.s, "SELECT count(*) FROM t WHERE s > 'x'", ['public.t'])
+        finally:
+            self.s.run('RESET ALL')
+            self.s.run('SET max_parallel_workers_per_gather = 0')
+        if io['cache'] == 'cold':
+            self.assertAlmostEqual(io['stat_read_bytes'] / 8192, io['read'], delta=30)
+
+    def test_a_write_dirties_blocks_and_writes_wal(self):
+        io = iolib.measure(self.s, 'INSERT INTO t SELECT i, md5(i::text) FROM generate_series(1, 20000) i')
+        self.assertGreater(io['dirtied'], 0)
+        self.assertGreater(io['wal_bytes'], 0)
 
     def test_a_script_reports_its_wal_and_size(self):
         io = iolib.measure(self.s, 'CREATE INDEX t_s ON t (s); DROP INDEX t_s', None, ['public.t'])

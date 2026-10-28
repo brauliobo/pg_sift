@@ -8,7 +8,7 @@ What one run reports (`measure`; every figure is a difference over the run, None
     hit read dirtied written   shared blocks of the plan's top node, EXPLAIN (ANALYZE, BUFFERS): the blocks served from shared buffers, read from the OS, dirtied, written.
                                A statement EXPLAIN cannot wrap (DDL, COPY, VACUUM, several statements) takes hit and read from pg_stat_io.
     read_ms                    time in reads, track_io_timing (EXPLAIN's I/O read time)
-    stat_*                     pg_stat_io of the client backends and parallel workers, relations (not WAL): reads, read_bytes, read_ms, writes, write_bytes, extends, extend_bytes.
+    stat_*                     pg_stat_io of the client backends, parallel workers (named `background worker` there) and io workers, relations (not WAL): reads, read_bytes, read_ms, writes, write_bytes, extends, extend_bytes.
                                PostgreSQL 17 has op_bytes instead of the byte columns (reads * op_bytes); 18 and 19 have them. Before 16 there is no pg_stat_io.
                                The delta is the cluster's, so it counts every other client backend that runs at the same time: measure on a quiet server
     proc_read_bytes            read_bytes of /proc/PID/io of the backend and of the io workers (PostgreSQL 18 reads in them with io_method = worker): what the storage device
@@ -18,9 +18,9 @@ What one run reports (`measure`; every figure is a difference over the run, None
     size_bytes                 growth of the total size of the tables passed as `sized` (a build's files: bulk index builds bypass the write counters of pg_stat_io)
     cache, how                 `cold` after `cool` emptied the relations of TABLES, else `warm`; how says what was emptied
 
-The cold run needs no root: `pg_buffercache_evict_relation` (PostgreSQL 18; the extension is created when missing) empties the shared buffers of each table, its TOAST table and its
+The cold run needs no root: `pg_buffercache_evict_relation` (PostgreSQL 18; 17: `pg_buffercache_evict`; the extension is created when missing) empties the shared buffers of each table, its TOAST table and its
 indexes, and posix_fadvise(DONTNEED) on their files (after an fsync) empties the OS page cache; on tmpfs the files are the memory and nothing else is emptied, and where the
-files cannot be opened the page cache stays. Before 18 there is no eviction: the run is warm and `how` says so (restart the server for a cold run there). A cold run is the first
+files cannot be opened the page cache stays. PostgreSQL 17 evicts buffer by buffer (`pg_buffercache_evict`); without pg_buffercache the run is warm and `how` says so (restart the server for a cold run). A cold run is the first
 run after the eviction; `measure` of the same statement right after is the warm run.
 
 The harness uses `measure` (steps/cases.py) and `metrics` / `load_metrics` for the rows of bench/results; the same function serves any other script.
@@ -39,7 +39,7 @@ MB = 2 ** 20
 EXPLAINABLE = re.compile(r'\s*(select|with|insert|update|delete|merge|values|table)\b', re.I)
 EXPLAIN = 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) '
 STAT_FIELDS = ('reads', 'read_bytes', 'read_ms', 'writes', 'write_bytes', 'extends', 'extend_bytes', 'hits')
-STAT_WHERE = "backend_type IN ('client backend', 'parallel worker') AND object <> 'wal'"
+STAT_WHERE = "backend_type IN ('client backend', 'background worker', 'parallel worker', 'io worker') AND object <> 'wal'"
 
 
 def one(s, sql):
@@ -130,12 +130,22 @@ def schema_tables(s, schema):
 
 def cool(s, tables):
     """empty the relations of TABLES from shared buffers and the OS page cache: how ('evict+fadvise', 'evict (tmpfs)', 'evict (OS cache kept: ...)', plus a note of buffers that stayed
-    pinned), or 'warm: REASON' when nothing could be emptied"""
+    pinned), or 'warm: REASON' when nothing could be emptied (PostgreSQL 17 evicts buffer by buffer, 18 by relation)"""
     rels = relations(tables)
     try:
-        if one(s, "SELECT to_regprocedure('pg_buffercache_evict_relation(regclass)') IS NOT NULL")[0] != 't':
+        s.run('CHECKPOINT')   # a dirty buffer would stay in memory
+        probe = "SELECT to_regprocedure('pg_buffercache_evict_relation(regclass)') IS NOT NULL, to_regprocedure('pg_buffercache_evict(integer)') IS NOT NULL"
+        if 't' not in one(s, probe):
             s.run('CREATE EXTENSION IF NOT EXISTS pg_buffercache')
-        _, skipped = one(s, 'SELECT coalesce(sum(r.buffers_evicted), 0), coalesce(sum(r.buffers_skipped), 0) FROM (%s) x(c), LATERAL pg_buffercache_evict_relation(c) r' % rels)
+        by_relation, by_buffer = (x == 't' for x in one(s, probe))
+        if by_relation:
+            evict = 'SELECT coalesce(sum(r.buffers_evicted), 0), coalesce(sum(r.buffers_skipped), 0) FROM (%s) x(c), LATERAL pg_buffercache_evict_relation(c) r' % rels
+        elif by_buffer:   # PostgreSQL 17: one buffer at a time
+            evict = ("SELECT count(*) FILTER (WHERE e), count(*) FILTER (WHERE NOT e) FROM (SELECT pg_buffercache_evict(bufferid) e FROM pg_buffercache WHERE reldatabase = "
+                     "(SELECT oid FROM pg_database WHERE datname = current_database()) AND relfilenode IN (SELECT pg_relation_filenode(c) FROM (%s) x(c))) y" % rels)
+        else:
+            return 'warm: no eviction (pg_buffercache is not installed)'
+        _, skipped = one(s, evict)
         files = [l for l in s.run('SELECT pg_relation_filepath(c) FROM (%s) x(c)' % rels)[1] if l]
         data = one(s, 'SHOW data_directory')[0]
     except RuntimeError as e:
@@ -201,7 +211,7 @@ def measure(s, sql, tables=None, sized=None):
     hit, read = plan['hit'], plan['read']
     d.update(plan, cache='cold' if how.startswith('evict') else 'warm', how=how,
              hit_pct=100.0 * hit / (hit + read) if hit is not None and read is not None and hit + read else None,
-             read_bytes=d['stat_read_bytes'] if d['stat_read_bytes'] is not None else read * block if read is not None else None)
+             read_bytes=read * block if read is not None else None)   # the plan's blocks; pg_stat_io's own bytes stay in stat_read_bytes
     return d
 
 
