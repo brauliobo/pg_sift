@@ -97,7 +97,7 @@ parse_value(const SiftColDef *def, char *s)
 	SiftColValue v = {0};
 
 	/* the head of a wide value: the text of the type, as a constant of the predicate */
-	if (def->lanes > 1 && !sift_col_def_arrlen_head(def))
+	if (sift_col_def_value_lanes(def) > 1)
 	{
 		if (def->type == SIFT_COLT_INTERVAL)
 		{
@@ -446,7 +446,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			sift_col_read(&unit, leaf, &less, &vec);
 		}
 		sift_col_read(&unit, leaf, &sel, &vec);
-		if (def->lanes > 1 && !sift_col_def_arrlen_head(def))
+		if (sift_col_def_value_lanes(def) > 1)
 			sift_col_read_lanes(&unit, leaf, &sel, lanes);
 		for (uint32 r = 0; r < sel.count; r++)
 		{
@@ -455,7 +455,7 @@ sift_test_col_read(PG_FUNCTION_ARGS)
 			StringInfoData buf;
 
 			initStringInfo(&buf);
-			if (def->lanes > 1 && !sift_col_def_arrlen_head(def) && !(vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1)))
+			if (sift_col_def_value_lanes(def) > 1 && !(vec.nulls && (vec.nulls[r / 64] >> (r % 64) & 1)))
 				append_wide(&buf, def, lanes, r);
 			else if (vec.offsets)
 			{

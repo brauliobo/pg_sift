@@ -264,6 +264,75 @@ wide_leaf(AggCtx *c, Node *e)
 	return -1;
 }
 
+/*
+ * The operators on a range or a network column whose lanes the source tests (SiftSrcLeaf.shape): the operator with the column as its left
+ * operand and as its right one, as the operator of SWT_* the column is on the left of (0: not offered that way, the column is read as a value).
+ */
+static const struct
+{
+	Oid			fn;
+	int			left;
+	int			right;
+}			shape_ops[] = {
+	{F_RANGE_CONTAINS, SWT_R_CONTAINS, SWT_R_CONTAINED},
+	{F_RANGE_CONTAINED_BY, SWT_R_CONTAINED, SWT_R_CONTAINS},
+	{F_RANGE_OVERLAPS, SWT_R_OVERLAPS, SWT_R_OVERLAPS},
+	{F_RANGE_BEFORE, SWT_R_BEFORE, SWT_R_AFTER},
+	{F_RANGE_AFTER, SWT_R_AFTER, SWT_R_BEFORE},
+	{F_RANGE_OVERLEFT, SWT_R_OVERLEFT, 0},
+	{F_RANGE_OVERRIGHT, SWT_R_OVERRIGHT, 0},
+	{F_RANGE_ADJACENT, SWT_R_ADJACENT, SWT_R_ADJACENT},
+	{F_RANGE_CONTAINS_ELEM, SWT_R_ELEM, 0},
+	{F_ELEM_CONTAINED_BY_RANGE, 0, SWT_R_ELEM},
+	{F_NETWORK_SUB, SWT_N_SUB, SWT_N_SUP},
+	{F_NETWORK_SUBEQ, SWT_N_SUBEQ, SWT_N_SUPEQ},
+	{F_NETWORK_SUP, SWT_N_SUP, SWT_N_SUB},
+	{F_NETWORK_SUPEQ, SWT_N_SUPEQ, SWT_N_SUBEQ},
+	{F_NETWORK_OVERLAP, SWT_N_OVERLAP, SWT_N_OVERLAP}
+};
+
+static int
+shape_leaf(AggCtx *c, Node *e)
+{
+	int			att = attr_of_expr(c, e);
+
+	for (int i = 0; att > 0 && i < c->lay->nleaves - c->nvleaf; i++)
+	{
+		SiftSrcLeaf *l = leaf_of(c, i);
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && l->shape && l->typid == exprType(e))
+			return i;
+	}
+	return -1;
+}
+
+/* `column op operand` (or the commuted form) of an operator in shape_ops, the operand a constant, parameter or stable expression */
+static bool
+shape_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
+{
+	Node	   *l = strip_relabel(linitial(((OpExpr *) n)->args)),
+			   *r = strip_relabel(lsecond(((OpExpr *) n)->args));
+	Oid			fn = func_of(n);
+	int			side,
+				at;
+
+	for (int i = 0; i < lengthof(shape_ops); i++)
+		if (shape_ops[i].fn == fn)
+		{
+			if (shape_ops[i].left && (*leaf = shape_leaf(c, l)) >= 0 && pseudo_const(r))
+				*op = shape_ops[i].left, *operand = r;
+			else if (shape_ops[i].right && (*leaf = shape_leaf(c, r)) >= 0 && pseudo_const(l))
+				*op = shape_ops[i].right, *operand = l;
+			else
+				return false;
+			side = leaf_of(c, *leaf)->shape;
+			at = *op >= SWT_N_SUB;
+			*argtype = exprType(*operand);
+			return (side == 2) == at;
+		}
+	return false;
+}
+
 static bool
 source_can_wide(AggCtx *c)
 {
@@ -281,6 +350,8 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 
 	*operand = NULL;
 	*argtype = InvalidOid;
+	if (IsA(n, OpExpr) && list_length(((OpExpr *) n)->args) == 2 && shape_test(c, n, leaf, op, operand, argtype))
+		return true;
 	if (IsA(n, NullTest) && !((NullTest *) n)->argisrow)
 	{
 		*op = ((NullTest *) n)->nulltesttype == IS_NOT_NULL ? SWT_NOTNULL : SWT_ISNULL;

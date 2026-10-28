@@ -154,6 +154,7 @@ sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf 
 	l->arrhead = sift_col_def_arrlen_head(def);
 	l->arrlen = sift_col_def_arrlen_lane(def) ? def->lane : 0;
 	l->wide = leaf_wide(def);
+	l->shape = sift_col_def_shape(def);
 	l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(desc, def) : InvalidOid;
 	l->scale = def->scale;
 	l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
@@ -392,7 +393,7 @@ col_nsb(void *impl)
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
 }
 
-#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
+#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE * SIFT_COL_SHAPE_PREDS)
 
 /* The predicates a begin over the prune entries tests (the zone trees and the tests behind them are made once for the entries) */
 static int
@@ -405,8 +406,7 @@ col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *pr
 	for (int i = 0; i < src->flt.n; i++)
 		preds[n++] = src->flt.pred[i];
 	for (int i = 0; i < src->nwtest; i++)
-		if (src->wtest[i].verdict == SIFT_COLW_PRED)
-			preds[n++] = src->wtest[i].pred;
+		n += sift_colw_preds(&src->wtest[i], preds + n);
 	return n;
 }
 

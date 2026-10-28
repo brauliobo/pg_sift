@@ -133,7 +133,7 @@ SELECT count(*) AS leaves_after_auto FROM sift.col_leaves('al_col');
 SELECT option_value AS array_lengths FROM pg_options_to_table((SELECT reloptions FROM pg_class WHERE oid = 'al_col'::regclass)) WHERE option_name = 'array_lengths';
 SELECT * FROM shapes('auto');
 
--- no array column: nothing is written; a range keeps its image alone
+-- no array column: no lengths are written; a range and an inet have the lanes of their containment operators (id 1 + range 3 + inet 2)
 CREATE TABLE ar (id int, r int4range, i inet) WITH (autovacuum_enabled = false);
 INSERT INTO ar SELECT i, int4range(i, i + 5), ('10.0.0.' || i % 250)::inet FROM generate_series(1, 300) i;
 CREATE INDEX ar_col ON ar USING sift_col (id, r, i);

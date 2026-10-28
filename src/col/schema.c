@@ -115,6 +115,7 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->cols[i].path = copy;
 		s->ngroups += defs[i].kind == SIFT_COLK_GROUP;
 		s->wide |= sift_col_def_needs_wide(&defs[i]);
+		s->contain |= sift_col_def_shape(&defs[i]) != 0;
 		s->kinds |= sift_col_def_has_kinds(&defs[i]);
 	}
 	s->hash = schema_hash(defs, n);

@@ -1409,7 +1409,7 @@ sift_aggpart_same_layout(const SiftSrcLayout *a, const SiftSrcLayout *b)
 				   *y = &b->leaf[i];
 
 		if (x->id != y->id || x->attno != y->attno || x->parent != y->parent || x->kind != y->kind || x->vtype != y->vtype || x->typid != y->typid ||
-			x->wtypid != y->wtypid || x->wide != y->wide || x->scale != y->scale || x->lossy != y->lossy || x->astext != y->astext ||
+			x->wtypid != y->wtypid || x->shape != y->shape || x->wide != y->wide || x->scale != y->scale || x->lossy != y->lossy || x->astext != y->astext ||
 			!equal(x->path, y->path) || strcmp(x->name, y->name) != 0)
 			return false;
 	}

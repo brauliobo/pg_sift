@@ -128,7 +128,7 @@ extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
 extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
 /*
  * The leaves of one attribute of a sift_col index (col/types.c): defs[0 .. result) with the type, storage class, scale, lanes, lane and path set;
- * the caller sets id and attno (parent is -1). defs has room for SIFT_COL_MAX_LANES. arrlen: an array keeps its lengths as two lanes (option array_lengths). ERROR for a type the engine does not hold.
+ * the caller sets id and attno (parent is -1). A range or network column also gets the lanes of its containment operators (col/shape.c). defs has room for SIFT_COL_MAX_LANES. arrlen: an array keeps its lengths as two lanes (option array_lengths). ERROR for a type the engine does not hold.
  */
 /* An array type proper (not int2vector, oidvector, a range or a domain): only its image has lengths */
 extern bool sift_col_is_array_type(Oid typid);

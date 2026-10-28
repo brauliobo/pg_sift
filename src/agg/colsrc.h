@@ -65,6 +65,7 @@ typedef struct SiftSrcLeaf
 	SiftSrcVecType vtype;		/* of the values; of the counts (SCV_I32) for a group leaf */
 	Oid			typid;			/* SQL type of the values: what the query's expression has to produce for a match. InvalidOid for a wide leaf: no
 								 * expression reads its values (wtypid) */
+	int			shape;			/* the head of a range (1) or a network (2) that also keeps the lanes its containment operators test (SWT_R_*, SWT_N_*; col/shape.c); else 0 */
 	Oid			wtypid;			/* a wide leaf: its SQL type, which only a conjunct of the query tests (SAP_WIDE); else InvalidOid */
 	bool		wide;			/* numeric of more than 18 digits or any other shape, interval: an SCV_CODE leaf whose dictionary entries are
 								 * not text (src/agg/wide.h): only an expression PostgreSQL evaluates reads it, no kernel, native aggregate, histogram or text test */
@@ -295,6 +296,22 @@ typedef struct SiftSrcStrTest
 #define SWT_NOTIN		7
 #define SWT_ISNULL		8
 #define SWT_NOTNULL		9
+/* the operators of a leaf with shape != 0, the leaf on the left (SIFT_COLW_R_*, SIFT_COLW_N_* of col/col.h are the same numbers); the operand is a range, an element of its subtype, or a network */
+#define SWT_SHAPE_FIRST	16
+#define SWT_R_CONTAINS	16
+#define SWT_R_CONTAINED	17
+#define SWT_R_OVERLAPS	18
+#define SWT_R_BEFORE	19
+#define SWT_R_AFTER		20
+#define SWT_R_OVERLEFT	21
+#define SWT_R_OVERRIGHT	22
+#define SWT_R_ADJACENT	23
+#define SWT_R_ELEM		24
+#define SWT_N_SUB		25
+#define SWT_N_SUBEQ		26
+#define SWT_N_SUP		27
+#define SWT_N_SUPEQ		28
+#define SWT_N_OVERLAP	29
 
 typedef struct SiftSrcWideTest
 {

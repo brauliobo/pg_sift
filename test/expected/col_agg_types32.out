@@ -50,14 +50,18 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('wt_col') ORDER BY leaf;
    13 | na#1 | integer (lane 1)       | scalar
    14 | na#2 | integer (lane 2)       | scalar
    15 | r    | int4range              | scalar
-   16 | tr   | tstzrange              | scalar
-   17 | mr   | int4multirange         | scalar
-(18 rows)
+   16 | r#1  | int4range (lane 1)     | scalar
+   17 | r#2  | int4range (lane 2)     | scalar
+   18 | tr   | tstzrange              | scalar
+   19 | tr#1 | tstzrange (lane 1)     | scalar
+   20 | tr#2 | tstzrange (lane 2)     | scalar
+   21 | mr   | int4multirange         | scalar
+(22 rows)
 
 SELECT format FROM sift.col_segments('wt_col') WHERE kind = 'immutable';
  format 
 --------
-     12
+     26
 (1 row)
 
 -- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)

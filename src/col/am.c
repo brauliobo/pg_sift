@@ -820,7 +820,7 @@ build_rel(Relation index, MemoryContext mcxt)
 				for (int i = 0; i < n && id < 0; i++)
 					if (strcmp(names[i], tok) == 0)
 						id = i;
-				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !sift_crun_leaf_ok(r->schema, &r->schema->cols[id]))
+				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !(sift_crun_leaf_ok(r->schema, &r->schema->cols[id]) || sift_col_def_shape_start(r->schema->cols, id)))
 					ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_cut option: \"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX)));
 				r->cut[r->ncut++] = id;
 			}

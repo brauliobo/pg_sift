@@ -493,14 +493,14 @@ SELECT * FROM shapes('auto');
  auto other_dims        | scan same
 (20 rows)
 
--- no array column: nothing is written; a range keeps its image alone
+-- no array column: no lengths are written; a range and an inet have the lanes of their containment operators (id 1 + range 3 + inet 2)
 CREATE TABLE ar (id int, r int4range, i inet) WITH (autovacuum_enabled = false);
 INSERT INTO ar SELECT i, int4range(i, i + 5), ('10.0.0.' || i % 250)::inet FROM generate_series(1, 300) i;
 CREATE INDEX ar_col ON ar USING sift_col (id, r, i);
 SELECT count(*) AS leaves FROM sift.col_leaves('ar_col');
  leaves 
 --------
-      3
+      6
 (1 row)
 
 SELECT coalesce((SELECT option_value FROM pg_options_to_table(reloptions) WHERE option_name = 'array_lengths'), 'unset') AS array_lengths FROM pg_class WHERE oid = 'ar_col'::regclass;

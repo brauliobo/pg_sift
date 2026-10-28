@@ -35,18 +35,20 @@ SELECT leaf, path, type, kind FROM sift.col_leaves('nt_col') ORDER BY leaf;
     0 | id   | integer             | scalar
     1 | grp  | integer             | scalar
     2 | ip   | inet                | scalar
-    3 | cd   | cidr                | scalar
-    4 | mac  | macaddr             | scalar
-    5 | mac8 | macaddr8            | scalar
-    6 | tz   | time with time zone | scalar
-    7 | b    | bit                 | scalar
-    8 | vb   | bit varying         | scalar
-(9 rows)
+    3 | ip#1 | inet (lane 1)       | scalar
+    4 | cd   | cidr                | scalar
+    5 | cd#1 | cidr (lane 1)       | scalar
+    6 | mac  | macaddr             | scalar
+    7 | mac8 | macaddr8            | scalar
+    8 | tz   | time with time zone | scalar
+    9 | b    | bit                 | scalar
+   10 | vb   | bit varying         | scalar
+(11 rows)
 
 SELECT format FROM sift.col_segments('nt_col') WHERE kind = 'immutable';
  format 
 --------
-     12
+     26
 (1 row)
 
 -- the rows of both plans as the text PostgreSQL prints them (the columns of a query are named), or their error; the off plan hashes (a sort keeps an arbitrary one of equal keys)

@@ -44,7 +44,8 @@
 #define SIFT_COL_FORMAT_KTAB	22		/* 3.5: the segment has the key table of some leaf: its distinct keys with the rows, sums, minima and maxima of each, over the whole segment; written under sift.col_format_minor 15 or more for the leaves the index keeps key lists for */
 #define SIFT_COL_FORMAT_RUNL	23		/* 3.5: the segment has a key list of some leaf in some unit stored as runs of consecutive keys, written where no bitmap or list of offsets fits the share of the unit; written only for an index whose key_columns keep key lists */
 #define SIFT_COL_FORMAT_COUNT	24		/* 3.5: the dictionary of a leaf of the option count_columns also holds the rows of each string by its place in byte order, so that a count of a prefix, a range or an equality of the leaf is read from the dictionary; written under sift.col_format_minor 15 or more */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_COUNT	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_CONTAIN	26		/* 3.6: the leaf list has the lanes of a range or a network column: the start and end of the set of a range, the first address and the family and mask of a network, as INT leaves after the image; written only for an index with the reloption contain_columns */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_CONTAIN	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -85,6 +86,7 @@ typedef enum SiftColStore
 #define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (col/wide.h) is the same limit for a scaled 128-bit integer of two lanes */
 
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
+#define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
 #define SIFT_COLD_LOSSY		0x0001	/* values that may not fit the declared type, or whose bytes are not the type's equality (char without a length): predicates on it must not be pushed down */
 
 /*
@@ -176,36 +178,58 @@ sift_col_def_needs_wide(const SiftColDef *d)
 		d->type == SIFT_COLT_ENUM || sift_col_def_is_image(d);
 }
 
+/*
+ * The head of a range or a network: the image of the datum (a STR leaf) followed by the INT lanes its containment operators test (col/shape.c):
+ * a range has the start and the end of the set it holds, a network the first address of its block and its family and mask length (3 leaves each). Reads of the value use the head alone.
+ */
+#define SIFT_COL_SHAPE_RANGE	1
+#define SIFT_COL_SHAPE_INET		2
+
+static inline int
+sift_col_def_shape(const SiftColDef *d)
+{
+	if (d->lane != 0 || d->type != SIFT_COLT_VARLENA || !(d->flags & SIFT_COLD_SHAPE))
+		return 0;
+	return d->lanes == 3 ? SIFT_COL_SHAPE_RANGE : d->lanes == 2 ? SIFT_COL_SHAPE_INET : 0;
+}
+
+/* the first lane of the head def[i - 1] of a range or a network: the start of the set, an integer key the units can be cut by */
+static inline bool
+sift_col_def_shape_start(const SiftColDef *defs, int i)
+{
+	return defs[i].lane == 1 && sift_col_def_shape(&defs[i - 1]) != 0;
+}
+
 /* a leaf whose value the column engine tests on its stored lanes or image (numeric, money, interval: col/widescan.c; an image: its equality and IN, for the types the query side names) */
 static inline bool
 sift_col_def_lane_tested(const SiftColDef *d)
 {
-	return d->lane == 0 && (d->type == SIFT_COLT_VARLENA ? d->lanes == 0 : (d->lanes > 0 || d->type == SIFT_COLT_MONEY || (sift_col_def_is_image(d) && d->type != SIFT_COLT_TIMETZ)));
+	return d->lane == 0 && (d->lanes > 0 || d->type == SIFT_COLT_MONEY || (sift_col_def_is_image(d) && d->type != SIFT_COLT_TIMETZ));
 }
 
 /*
  * The head of an array that keeps its lengths: the image, then the INT lanes cardinality(x) (lane 1) and
- * array_length(x, 1) (lane 2), each NULL where PostgreSQL's function is. A range or inet has no lanes.
+ * array_length(x, 1) (lane 2), each NULL where PostgreSQL's function is. A range or inet has the lanes of sift_col_def_shape, flagged SIFT_COLD_SHAPE.
  */
 #define SIFT_COL_ARRLEN_LANES	3
 
 static inline bool
 sift_col_def_arrlen_head(const SiftColDef *d)
 {
-	return d->type == SIFT_COLT_VARLENA && d->lanes == SIFT_COL_ARRLEN_LANES;
+	return d->type == SIFT_COLT_VARLENA && d->lanes == SIFT_COL_ARRLEN_LANES && !(d->flags & SIFT_COLD_SHAPE);
 }
 
 static inline bool
 sift_col_def_arrlen_lane(const SiftColDef *d)
 {
-	return d->type == SIFT_COLT_VARLENA && d->lane > 0;
+	return d->type == SIFT_COLT_VARLENA && d->lane > 0 && !(d->flags & SIFT_COLD_SHAPE);
 }
 
 /* how many of a head's leaves hold its value: the lanes of an array's lengths are read apart */
 static inline int
 sift_col_def_value_lanes(const SiftColDef *d)
 {
-	return sift_col_def_arrlen_head(d) || d->lanes < 2 ? 1 : d->lanes;
+	return sift_col_def_arrlen_head(d) || sift_col_def_shape(d) || d->lanes < 2 ? 1 : d->lanes;
 }
 
 /* The JSON type of an overflowing value; the numbers are on disk */
@@ -715,18 +739,53 @@ typedef enum SiftColWVerdict
 	SIFT_COLW_NONNULL,
 	SIFT_COLW_NONNULL_NONAN,
 	SIFT_COLW_NAN,
-	SIFT_COLW_PRED
+	SIFT_COLW_PRED,
+	SIFT_COLW_SHAPE				/* a containment operator on a range or a network: `shape` (col/shape.c) */
 } SiftColWVerdict;
+
+/*
+ * The operators on the head of a range or a network (col/shape.c) as ops of sift_colw_test, with the head on the left and the operand (a range, an
+ * element of its subtype, a network) on the right; the same numbers as SWT_* of agg/colsrc.h.
+ */
+#define SIFT_COLW_SHAPE_FIRST	16
+#define SIFT_COLW_R_CONTAINS	16		/* @> a range */
+#define SIFT_COLW_R_CONTAINED	17		/* <@ a range */
+#define SIFT_COLW_R_OVERLAPS	18
+#define SIFT_COLW_R_BEFORE		19		/* << */
+#define SIFT_COLW_R_AFTER		20		/* >> */
+#define SIFT_COLW_R_OVERLEFT	21		/* &< */
+#define SIFT_COLW_R_OVERRIGHT	22		/* &> */
+#define SIFT_COLW_R_ADJACENT	23		/* -|- */
+#define SIFT_COLW_R_ELEM		24		/* @> an element */
+#define SIFT_COLW_N_SUB			25		/* << a network */
+#define SIFT_COLW_N_SUBEQ		26		/* <<= */
+#define SIFT_COLW_N_SUP			27		/* >> */
+#define SIFT_COLW_N_SUPEQ		28		/* >>= */
+#define SIFT_COLW_N_OVERLAP		29		/* && */
+#define SIFT_COL_SHAPE_PREDS	4		/* the lane tests of one alternative of a shape test */
+
+typedef struct SiftColShape SiftColShape;
 
 typedef struct SiftColWTest
 {
 	SiftColWVerdict verdict;
 	SiftColPred pred;
 	bool		nan_passes;
+	SiftColShape *shape;
 } SiftColWTest;
 
-extern void sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t);
+extern void sift_colw_test(const SiftColDef *def, Oid typid, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t);
 extern bool sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
+/* The predicates a unit can be pruned by for a test (out has room for SIFT_COL_SHAPE_PREDS); the zone of a lane that holds an overflow keeps its unit */
+extern int sift_colw_preds(const SiftColWTest *t, SiftColPred *out);
+/* The rows of sel that the lane col holds as overflows into out (sel->nwords words), the rows a test decides with PostgreSQL's operator */
+extern void sift_colw_ovf_rows(const SiftColUnit *unit, int col, const SiftColSel *sel, uint64 *out);
+extern SiftColSel *sift_colw_sel_copy(const SiftColUnit *unit, const SiftColSel *base);
+
+extern int	sift_col_shape_of(Oid typid);
+extern void sift_col_shape_values(const SiftColDef *def, Datum d, SiftColValue *v);
+extern void sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, MemoryContext mcxt, SiftColWTest *t);
+extern bool sift_col_shape_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
 
 /*
  * The JSON type of the value of the top level leaf col, as jsonb_typeof gives it for the path: a stored value has

@@ -25,8 +25,8 @@ lane_pred(int leaf, SiftColOp op, const SiftColValue *v)
 	return (SiftColPred) {leaf, op, 1, v};
 }
 
-static SiftColSel *
-sel_copy(const SiftColUnit *unit, const SiftColSel *base)
+SiftColSel *
+sift_colw_sel_copy(const SiftColUnit *unit, const SiftColSel *base)
 {
 	SiftColSel *s = palloc(sizeof(SiftColSel));
 
@@ -51,14 +51,14 @@ static SiftColSel *
 pair_cmp(const SiftColUnit *unit, int col, SiftColOp op, int64 hi, int64 lo, const SiftColSel *base)
 {
 	SiftColSel *a,
-			   *b = sel_copy(unit, base);
+			   *b = sift_colw_sel_copy(unit, base);
 	SiftColOp	strict = op == SIFT_COLOP_GE ? SIFT_COLOP_GT : op == SIFT_COLOP_LE ? SIFT_COLOP_LT : op;
 
 	lane_filter(unit, col, SIFT_COLOP_EQ, hi, b);
 	lane_filter(unit, col + 1, op, lo, b);
 	if (op == SIFT_COLOP_EQ)
 		return b;
-	a = sel_copy(unit, base);
+	a = sift_colw_sel_copy(unit, base);
 	lane_filter(unit, col, strict, hi, a);		/* lane 0 beyond the constant's */
 	sift_colk->bits_or(a->bits, b->bits, a->nwords);
 	sift_col_sel_count(a);
@@ -101,7 +101,7 @@ sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 			}
 		case SIFT_COLOP_IN:
 			{
-				SiftColSel *acc = sel_copy(unit, sel);
+				SiftColSel *acc = sift_colw_sel_copy(unit, sel);
 
 				memset(acc->bits, 0, acc->nwords * sizeof(uint64));
 				for (int i = 0; i < p->nvals; i++)
@@ -115,7 +115,7 @@ sift_colw_filter(const SiftColUnit *unit, const SiftColPred *p, SiftColSel *sel)
 			}
 		case SIFT_COLOP_NOTIN:
 			{
-				SiftColSel *cur = sel_copy(unit, sel);
+				SiftColSel *cur = sift_colw_sel_copy(unit, sel);
 
 				for (int i = 0; i < p->nvals && cur->count > 0; i++)
 				{
@@ -259,7 +259,12 @@ exact_key(const SiftColDef *def, Datum d, SiftColValue *v)
 
 	memset(v, 0, sizeof(*v));
 	if (sift_col_def_is_image(def))
-		sift_col_datum_values(def, d, false, v);
+	{
+		SiftColValue lanes[SIFT_COL_MAX_LANES];		/* a range or network head also yields its lanes */
+
+		sift_col_datum_values(def, d, false, lanes);
+		*v = lanes[0];
+	}
 	else if (def->type == SIFT_COLT_MONEY)
 		v->v.i = DatumGetInt64(d);
 	else if (def->type == SIFT_COLT_INTERVAL)
@@ -371,11 +376,13 @@ list_test(SiftColWTest *t, const SiftColDef *def, bool notin, int nvals, const D
 }
 
 void
-sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t)
+sift_colw_test(const SiftColDef *def, Oid typid, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t)
 {
 	memset(t, 0, sizeof(*t));
 	t->pred.col = def->id;
-	if (op == SIFT_COLW_ISNULL || op == SIFT_COLW_NOTNULL)
+	if (op >= SIFT_COLW_SHAPE_FIRST)
+		sift_col_shape_test(def, typid, op, vals[0], mcxt, t);
+	else if (op == SIFT_COLW_ISNULL || op == SIFT_COLW_NOTNULL)
 		test_pred(t, def, op == SIFT_COLW_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL, op == SIFT_COLW_NOTNULL);
 	else if (op == SIFT_COLW_IN || op == SIFT_COLW_NOTIN)
 		list_test(t, def, op == SIFT_COLW_NOTIN, nvals, vals, isnull, mcxt);
@@ -385,9 +392,9 @@ sift_colw_test(const SiftColDef *def, int op, int nvals, const Datum *vals, cons
 		cmp_test(t, def, op, vals[0], mcxt);
 }
 
-/* the rows of sel whose value is a NaN of a numeric of two lanes (stored as NULL with the overflow flag of its lanes) */
-static void
-nan_rows(const SiftColUnit *unit, int col, const SiftColSel *sel, uint64 *out)
+/* the rows of sel that the lane col holds as overflows (a NaN of a numeric of two lanes: NULL with the flag in its lanes) */
+void
+sift_colw_ovf_rows(const SiftColUnit *unit, int col, const SiftColSel *sel, uint64 *out)
 {
 	SiftColZone z;
 	SiftColVec	v;
@@ -413,7 +420,7 @@ sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel)
 
 	memset(nan, 0, Max(sel->nwords, 1) * sizeof(uint64));
 	if (numw)
-		nan_rows(unit, col, sel, nan);
+		sift_colw_ovf_rows(unit, col, sel, nan);
 	switch (t->verdict)
 	{
 		case SIFT_COLW_NONE:
@@ -430,6 +437,8 @@ sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel)
 			p = &nn;
 			nanp = t->verdict == SIFT_COLW_NONNULL;
 			break;
+		case SIFT_COLW_SHAPE:
+			return sift_col_shape_apply(unit, t, sel);
 		case SIFT_COLW_PRED:
 			break;
 	}

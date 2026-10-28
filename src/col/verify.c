@@ -116,6 +116,24 @@ check_wide(Relation index, const SiftColSchema *sc, const SiftColRow *row)
 
 		if (def->lanes < 2 || sift_col_def_arrlen_head(def))	/* the lengths of an array are checked with its value: array_length of an empty array is NULL */
 			continue;
+		if (sift_col_def_shape(def))
+		{
+			SiftColValue lane[SIFT_COL_MAX_LANES] = {{{0}}};
+
+			/* the lanes are what the image gives: the rows of a NULL head have NULL lanes, any other row the lanes of its datum (an overflow where a bound does not fit) */
+			if (!v->isnull)
+			{
+				sift_col_shape_values(def, PointerGetDatum(memcpy(palloc(v->len), v->v.s, v->len)), lane);
+				for (int k = 1; k < def->lanes; k++)
+					if (row->val[c + k].isnull != lane[k].isnull || row->val[c + k].overflow != lane[k].overflow || (!lane[k].isnull && row->val[c + k].v.i != lane[k].v.i))
+						corrupt(index, "Lane %d of leaf %d is not what the value gives.", k, c);
+			}
+			else
+				for (int k = 1; k < def->lanes; k++)
+					if (!row->val[c + k].isnull)
+						corrupt(index, "Lane %d of leaf %d holds a value for a NULL.", k, c);
+			continue;
+		}
 		for (int k = 1; k < def->lanes; k++)
 			if (row->val[c + k].isnull != v->isnull || row->val[c + k].overflow != v->overflow)
 				corrupt(index, "The lanes of leaf %d disagree on whether a value is NULL.", c);

@@ -103,7 +103,7 @@ sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 {
 	if (sift_col_def_arrlen_lane(def))
 		return INT4OID;
-	if (def->attno > 0 && def->path[0] == '\0')
+	if (def->attno > 0 && (def->path[0] == '\0' || def->lane > 0))
 		return getBaseType(TupleDescAttr(desc, def->attno - 1)->atttypid);
 	return type_of_tag(def->type);
 }
@@ -168,6 +168,7 @@ make_lanes(Form_pg_attribute att, SiftColDef *defs, int lanes)
 		d->kind = SIFT_COLK_SCALAR;
 		d->type = defs[0].type;
 		d->scale = defs[0].scale;
+		d->flags = defs[0].flags & SIFT_COLD_SHAPE;
 		d->lanes = k == 0 && lanes > 1 ? lanes : 0;
 		d->lane = k;
 		d->path = k == 0 ? "" : psprintf("%s#%d", NameStr(att->attname), k);
@@ -191,6 +192,7 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen)
 {
 	Oid			typid = att->atttypid;
 	SiftColStore store = SIFT_COLS_INT;
+	int			shape;
 
 	memset(defs, 0, SIFT_COL_MAX_LANES * sizeof(SiftColDef));
 	defs[0].type = sift_col_type_of_oid(typid);
@@ -224,6 +226,12 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, bool arrlen)
 			}
 			if (defs[0].type == SIFT_COLT_ENUM)
 				return make_lanes(att, defs, 1);
+			if ((shape = sift_col_shape_of(typid)) != 0)
+			{
+				defs[0].store = SIFT_COLS_STR;
+				defs[0].flags = SIFT_COLD_SHAPE;
+				return make_lanes(att, defs, shape == SIFT_COL_SHAPE_INET ? 2 : 3);
+			}
 			if (defs[0].type == SIFT_COLT_UUID || defs[0].type == SIFT_COLT_BYTEA || sift_col_def_is_image(&defs[0]))
 			{
 				defs[0].store = SIFT_COLS_STR;
@@ -504,6 +512,8 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 					v[2].isnull = v[2].v.i == 0;	/* array_length of an empty array is NULL */
 				}
 			}
+			if (sift_col_def_shape(def))
+				sift_col_shape_values(def, d, v);
 			break;
 		case SIFT_COLT_NUMERIC:
 			if (def->store == SIFT_COLS_STR)
