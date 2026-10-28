@@ -56,10 +56,10 @@
 #define COL_SCAN_PROBE		4.0		/* one key looked up in a point directory: its slots are a page or two of a table the lookups of other keys do not share */
 #define COL_SCAN_UNIT		22.0	/* reading and decoding the head of a unit that is kept, besides its pages */
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
-#define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
-#define COL_SCAN_EMIT_IOS	0.15	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 1,200 instructions a row (272M for 160,000 rows of 800,000, a sequential scan 570M) */
+#define COL_SCAN_ROW		0.002	/* the filter of one value of a column of a kept unit: 1 ns a value measured on a date column (3,000,000 values read in 2.9 ms), 2 with the units around it */
+#define COL_SCAN_EMIT_IOS	0.003	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: a third of COL_SCAN_EMIT, so that it never costs more than the tuple scan of the same rows */
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
-#define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
+#define COL_SCAN_EMIT		0.01		/* handing one row over: its position in the unit, its TID and its visibility, 10 to 12 ns a row measured in the bitmap node (a year of 600,000 rows 7 ms, all 3,000,000 rows 30 ms); the cost units are about a microsecond, as the constants above */
 
 bool		sift_enable_col_scan = true;
 double		sift_plan_scale = 1.0;
