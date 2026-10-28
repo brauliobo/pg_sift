@@ -41,7 +41,7 @@ Run it before and after the update: the second run must have no `warn` the first
 ```
 
 # 1. install the files of the new release (package, or from source)
-sudo apt install ./postgresql-18-pg-sift_X.Y.Z-1_amd64.deb
+sudo apt install ./postgresql-N-pg-sift_X.Y.Z-1_amd64.deb
 make USE_PGXS=1 && sudo make USE_PGXS=1 install
 
 # 2. preflight (section 1), then in every database that has the extension
@@ -84,7 +84,7 @@ without them is initialised with `initdb --no-data-checksums`).
 ```
 
 # the library of the same pg_sift release for the new major
-sudo apt install ./postgresql-18-pg-sift_X.Y.Z-1_amd64.deb
+sudo apt install ./postgresql-N-pg-sift_X.Y.Z-1_amd64.deb
 make USE_PGXS=1 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config && sudo make USE_PGXS=1 PG_CONFIG=/usr/lib/postgresql/18/bin/pg_config install   # from source
 
 # the new cluster, then the check (it starts both clusters and loads pg_sift in each), then the upgrade

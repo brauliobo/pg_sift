@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Runs inside a throwaway container (scripts/package.sh): PostgreSQL 18 comes from PGDG.
+# Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG.
 #   container.sh build   build the package of /src/pg_sift-$VER.tar.gz into /out
 #   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade), remove it
-# /pkg is the packaging/ directory. Env: VER, EPOCH (source date), HOST_UID (owner of /out files), PKG (test).
+# /pkg is the packaging/ directory. Env: PG (the major, build; the test reads it from the package name), VER, EPOCH (source date),
+# HOST_UID (owner of /out files), PKG (test).
 set -euo pipefail
 
-PG=18
 JOBS=4
 command -v apt-get >/dev/null && FMT=deb || FMT=rpm
 # shellcheck source=/dev/null
@@ -18,12 +18,16 @@ pgdg_repo() {
 		apt-get update -qq
 		apt-get install -y -qq --no-install-recommends ca-certificates curl lsb-release postgresql-common
 		sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
+		# the component of the major too: a major still in beta or release candidate (19 today) lives only there
+		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -c "$PG" >/dev/null
 	else
 		local major=${VERSION_ID%%.*}
 		dnf -y -q install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$major-x86_64/pgdg-redhat-repo-latest.noarch.rpm"
-		# only the repo of the version built: a broken signature of another major's metadata must not fail the build
-		awk -v keep="[pgdg$PG]" '/^\[/ {off = $0 != keep && $0 ~ /^\[pgdg[0-9]+\]$/} off && /^enabled *=/ {$0 = "enabled=0"} 1' \
+		# only the repo of the version built: a broken signature of another major's metadata must not fail the build; a major not
+		# released yet (19 today) has only its testing repo, which is enabled then
+		local keep=pgdg$PG
+		grep -q "^\[$keep\]" /etc/yum.repos.d/pgdg-redhat-all.repo || keep=$keep-updates-testing
+		awk -v keep="[$keep]" '/^\[/ {sec = $0; off = sec != keep && sec ~ /^\[pgdg[0-9]+\]$/} /^enabled *=/ {if (sec == keep) $0 = "enabled=1"; else if (off) $0 = "enabled=0"} 1' \
 			/etc/yum.repos.d/pgdg-redhat-all.repo > /tmp/pgdg.repo && mv /tmp/pgdg.repo /etc/yum.repos.d/pgdg-redhat-all.repo
 		(( major >= 10 )) || dnf -y -q module disable postgresql # the AppStream module would shadow PGDG before EL 10
 	fi
@@ -32,6 +36,7 @@ pgdg_repo() {
 build_deb() {
 	apt-get install -y -qq --no-install-recommends build-essential fakeroot debhelper postgresql-server-dev-$PG liblz4-dev libzstd-dev libicu-dev
 	cp -r /pkg/debian debian
+	sed -i "s/@PG@/$PG/g" debian/*
 	cat > debian/changelog <<LOG
 pg-sift ($VER-1) unstable; urgency=medium
 
@@ -45,7 +50,7 @@ LOG
 
 build_rpm() {
 	dnf -y -q --enablerepo=crb install rpm-build gcc make redhat-rpm-config postgresql$PG-devel lz4-devel libzstd-devel libicu-devel
-	nice rpmbuild -bb /pkg/pg_sift_$PG.spec --define "pkg_version $VER" --define "_sourcedir /src" \
+	nice rpmbuild -bb /pkg/pg_sift.spec --define "pgmajor $PG" --define "pkg_version $VER" --define "_sourcedir /src" \
 		--define "_topdir /tmp/rpmbuild" --define "_smp_mflags -j$JOBS" >/dev/null
 	cp /tmp/rpmbuild/RPMS/x86_64/*.rpm /out
 }
@@ -84,5 +89,7 @@ test_pkg() {
 	echo "ok: removed $name"
 }
 
+[[ $1 == build ]] || { PG=$(pkg_name "/out/$PKG"); PG=${PG//[^0-9]/}; } # the major of postgresql-17-pg-sift, pg_sift_17
+: "${PG:?}"
 pgdg_repo
 case $1 in build) build ;; test) test_pkg ;; esac

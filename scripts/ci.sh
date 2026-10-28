@@ -363,6 +363,7 @@ if [[ $MODE == --selftest ]]; then
 	done < "$REPO/scripts/leftovers.allow"
 	"$REPO/scripts/check-neutral.sh" --selftest || bad=1
 	"$REPO/scripts/gen-options.sh" --selftest || bad=1
+	"$REPO/scripts/package.sh" --selftest || bad=1
 	"$REPO/scripts/check-bench-cases.sh" --selftest || bad=1
 	"$REPO/scripts/apt-install.sh" --selftest || bad=1
 	# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message

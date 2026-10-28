@@ -7,8 +7,8 @@ What is supported, for how long, and how to move between releases. Upgrade steps
 | PostgreSQL | pg_sift | Notes |
 |---|---|---|
 | 17 | supported | the oldest the build accepts (`PG_MIN_MAJOR` in the Makefile); no `extension_control_path`, so an image-volume extension ([CONTAINERS.md](CONTAINERS.md)) needs 18 |
-| 18 | supported | the reference version of the benchmarks and of the packages |
-| 19 | supported | CI builds PostgreSQL 19 from its git branch and runs the same jobs as for 17 and 18; on 2026-10-22 the official `postgres:19` image tag did not exist (`19rc1` did) and PGDG packaged `postgresql-19` as `19~rc1`; the release `.deb` and `.rpm` are built for 18 only, so on 19 build from source |
+| 18 | supported | the reference version of the benchmarks |
+| 19 | supported | CI builds PostgreSQL 19 from its git branch and runs the same jobs as for 17 and 18; on 2026-10-22 the official `postgres:19` image tag did not exist (`19rc1` did) and PGDG packaged `postgresql-19` as `19~rc1`; the release `.deb` and `.rpm` for 19 are built and smoke-tested against PGDG's `19~rc1` packages (apt component `19`, yum `pgdg19-updates-testing`) |
 | 16 and older | not supported | the build stops with an error |
 
 ## pg_sift versions

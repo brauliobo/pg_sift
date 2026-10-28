@@ -1,5 +1,4 @@
-# PGDG layout (RHEL, Rocky, Alma). Build: rpmbuild -bb --define "pkg_version X.Y.Z" --define "_sourcedir DIR" (scripts/package.sh).
-%global pgmajor 18
+# PGDG layout (RHEL, Rocky, Alma). Build: rpmbuild -bb --define "pgmajor N" --define "pkg_version X.Y.Z" --define "_sourcedir DIR" (scripts/package.sh).
 %global pgbin   /usr/pgsql-%{pgmajor}/bin
 %global debug_package %{nil}
 %global _build_id_links none
