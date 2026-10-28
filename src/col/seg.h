@@ -128,6 +128,10 @@ extern const uint8 *sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len);
 extern const uint8 *sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail);
 extern void sift_cseg_unit_fill(SiftColSegment *seg, uint32 u, uint32 off, uint32 len);
 
+/* The bytes of the unit records at the start of the segment stream, and the range of it sift_cseg_unit_head reads of unit u, for sift_sr_ahead */
+extern uint64 sift_cseg_units_len(const SiftColSegment *seg);
+extern void sift_cseg_unit_head_span(const SiftColSegment *seg, uint32 u, uint64 *off, uint64 *len);
+
 /* The segment's dictionary of a STR leaf (loaded on first use, NULL for other leaves) */
 extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
 /*

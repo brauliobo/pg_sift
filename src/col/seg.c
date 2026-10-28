@@ -245,16 +245,32 @@ sift_cseg_unit(SiftColSegment *seg, uint32 u, uint32 *len)
 	return pv->unitbuf;
 }
 
+uint64
+sift_cseg_units_len(const SiftColSegment *seg)
+{
+	return sec(seg, SIFT_SEC_POSTINGS)->len;
+}
+
+void
+sift_cseg_unit_head_span(const SiftColSegment *seg, uint32 u, uint64 *off, uint64 *len)
+{
+	*off = sec(seg, SIFT_SEC_POSTINGS)->off + seg->sbdir[u].off;
+	*len = Min(seg->sbdir[u].len, SIFT_COL_UNIT_HEAD);
+}
+
 const uint8 *
 sift_cseg_unit_head(SiftColSegment *seg, uint32 u, uint32 *len, uint32 *avail)
 {
 	SegPriv    *pv = PRIV(seg);
 	const SiftColSBRef *r = &seg->sbdir[u];
+	uint64		off,
+				n;
 
 	unit_room(seg, pv, r->len);
 	*len = r->len;
-	*avail = Min(r->len, SIFT_COL_UNIT_HEAD);
-	seg_read(seg, sec(seg, SIFT_SEC_POSTINGS)->off + r->off, *avail, pv->unitbuf);
+	sift_cseg_unit_head_span(seg, u, &off, &n);
+	*avail = n;
+	seg_read(seg, off, *avail, pv->unitbuf);
 	/* the directory of a key-cut unit of many rows ends beyond the head, and the chunk table follows it */
 	if (*avail < r->len)
 	{

@@ -448,6 +448,12 @@ extern BlockNumber sift_wt_reserve(SiftWriteTarget *wt, uint32 nblocks);
 extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
 
 /*
+ * Where read-ahead takes its byte ranges from: the next range the following gets will touch, in ascending order of offset (a range may overlap
+ * the one before); false when there are no more.
+ */
+typedef bool (*SiftSrAheadFn) (void *arg, uint64 *off, uint64 *len);
+
+/*
  * Stream reader over a segment's extents. sift_sr_get returns a pointer to
  * len bytes at logical offset off: into the buffer page when the range fits
  * one page (pinned + share-locked until the next call or release), else a
@@ -459,6 +465,7 @@ extern void sift_wt_put_page(SiftWriteTarget *wt, BlockNumber blkno, Page page);
 typedef struct SiftStreamReader
 {
 	Relation	index;
+	MemoryContext mcxt;			/* where the read-ahead stream is made */
 	const SiftExtent *extents;
 	int			nextents;
 	uint64		gen;
@@ -468,11 +475,17 @@ typedef struct SiftStreamReader
 	int			cur;			/* extent of the last lookup */
 	uint32		npages;
 	uint32	   *pagestart;		/* first logical page of each extent, [nextents + 1] */
-	struct ReadStream *stream;	/* optional prefetch stream */
-	int			pf_cur;
-	uint32		pf_issue;		/* next page the stream callback yields */
-	uint32		pf_next;		/* next page the stream returns */
-	uint32		pf_end;
+	struct ReadStream *stream;	/* read-ahead in progress (sift_sr_ahead, sift_sr_prefetch) */
+	SiftSrAheadFn ahead;		/* where the ranges to read ahead come from, until it has no more */
+	void	   *ahead_arg;
+	bool		cold;			/* reads waited for the device since sift_sr_release: the stream starts with the first range */
+	int			slow;			/* ... counted */
+	int			pf_cur;			/* extent hint of the stream's callback */
+	uint32		pf_limit;		/* gets of this page on do not wait for the stream: they are not of the ranges it reads */
+	uint32		pf_page;		/* next page of the range the callback yields from ... */
+	uint32		pf_end;			/* ... and the page past it */
+	Buffer		pf_buf;			/* the stream's next buffer, taken from it but not used yet, or InvalidBuffer */
+	uint32		pf_buf_page;	/* its logical page */
 } SiftStreamReader;
 
 extern void sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents,
@@ -481,6 +494,20 @@ extern const void *sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, voi
 
 /* Reads [off, off + len) ahead through a ReadStream for the following gets */
 extern void sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len);
+
+/*
+ * Reads ahead the ranges next yields, through a ReadStream, once two gets have waited for the device for their pages (every range of the
+ * following sift_sr_ahead calls then): a scan whose pages are cached, or that the kernel reads ahead in time, never starts the stream and pays
+ * a counter read.
+ * effective_io_concurrency = 0 reads nothing ahead. next = NULL ends it. The ranges lie below offset upto; a get from there on (the
+ * directories at the end of a segment) is not one the stream waits for.
+ */
+extern void sift_sr_ahead(SiftStreamReader *sr, SiftSrAheadFn next, void *arg, uint64 upto);
+
+#ifdef SIFT_TESTING
+/* sift.test_ahead_cold: every reader reads ahead from its first get, as one whose pages are not in shared buffers does */
+extern PGDLLIMPORT bool sift_test_ahead_cold;
+#endif
 extern void sift_sr_release(SiftStreamReader *sr);
 
 /* Drops the share lock the last read left on its page (a pointer it returned is invalid): the caller may then serve interrupts */

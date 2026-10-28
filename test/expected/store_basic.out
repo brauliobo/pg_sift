@@ -44,22 +44,23 @@ SELECT info('b_idx');
 SELECT gen, size, nextents, sift._test_seg_read('b_idx', gen) = payload AS replay,
 	sift._test_seg_read('b_idx', gen, 1) >= 0 AS random,
 	sift._test_seg_read('b_idx', gen, 2) = size AS pages,
-	sift._test_seg_read('b_idx', gen, 3) = size AS copies
+	sift._test_seg_read('b_idx', gen, 3) = size AS copies,
+	sift._test_seg_read('b_idx', gen, 4) >= 0 AS ahead
 FROM sift._test_segments('b_idx') ORDER BY gen;
- gen |   size   | nextents | replay | random | pages | copies 
------+----------+----------+--------+--------+-------+--------
-   1 |        0 |        0 | t      | t      | t     | t
-   2 |        1 |        1 | t      | t      | t     | t
-   3 |     8151 |        1 | t      | t      | t     | t
-   4 |     8152 |        1 | t      | t      | t     | t
-   5 |     8153 |        1 | t      | t      | t     | t
-   6 |    16303 |        1 | t      | t      | t     | t
-   7 |    16304 |        1 | t      | t      | t     | t
-   8 |    16305 |        1 | t      | t      | t     | t
-   9 |   130432 |        1 | t      | t      | t     | t
-  10 |   130433 |        1 | t      | t      | t     | t
-  11 |  1048576 |        1 | t      | t      | t     | t
-  12 | 10485760 |        1 | t      | t      | t     | t
+ gen |   size   | nextents | replay | random | pages | copies | ahead 
+-----+----------+----------+--------+--------+-------+--------+-------
+   1 |        0 |        0 | t      | t      | t     | t      | t
+   2 |        1 |        1 | t      | t      | t     | t      | t
+   3 |     8151 |        1 | t      | t      | t     | t      | t
+   4 |     8152 |        1 | t      | t      | t     | t      | t
+   5 |     8153 |        1 | t      | t      | t     | t      | t
+   6 |    16303 |        1 | t      | t      | t     | t      | t
+   7 |    16304 |        1 | t      | t      | t     | t      | t
+   8 |    16305 |        1 | t      | t      | t     | t      | t
+   9 |   130432 |        1 | t      | t      | t     | t      | t
+  10 |   130433 |        1 | t      | t      | t     | t      | t
+  11 |  1048576 |        1 | t      | t      | t     | t      | t
+  12 | 10485760 |        1 | t      | t      | t     | t      | t
 (12 rows)
 
 SELECT sift._test_check('b_idx');

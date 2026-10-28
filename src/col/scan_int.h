@@ -31,6 +31,10 @@ typedef struct ColCursor
 	uint64		cseg_gen;
 	uint32		cur;
 	uint32		end;
+	SiftColSource *src;			/* the owner, for cursor_ahead */
+	uint32		ahead;			/* the next unit cursor_ahead looks at */
+	uint32		ahead_end;		/* the units below this one are in the cluster cursor_ahead is on, which it reads ahead (ahead_skip false) or leaves to the kernel */
+	bool		ahead_skip;
 	bool		full;			/* the scan covers every unit of the segment, and the cursor has handed none over yet: its key table may stand for them (SiftColSource.whole) */
 	bool		count_ok;		/* the whole segment is exact and its dictionary counts the rows that pass SiftColSource.pcnt (col_count_segment): the first unit handed over is the segment, with count_rows of them */
 	uint64		count_rows;
@@ -187,6 +191,7 @@ struct SiftColSource
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
 	int			wmeas[SIFT_PAGG_MAX_MEAS];
+	uint64	   *ahead_kept;		/* the superblocks of the units the whole scan reads (sift_col_kept_map), for the read-ahead of its cursors; NULL: none */
 	int			nseg;
 	ColCursor  *seg;
 	ColMem	   *mem;

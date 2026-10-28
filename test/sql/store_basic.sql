@@ -20,7 +20,8 @@ SELECT info('b_idx');
 SELECT gen, size, nextents, sift._test_seg_read('b_idx', gen) = payload AS replay,
 	sift._test_seg_read('b_idx', gen, 1) >= 0 AS random,
 	sift._test_seg_read('b_idx', gen, 2) = size AS pages,
-	sift._test_seg_read('b_idx', gen, 3) = size AS copies
+	sift._test_seg_read('b_idx', gen, 3) = size AS copies,
+	sift._test_seg_read('b_idx', gen, 4) >= 0 AS ahead
 FROM sift._test_segments('b_idx') ORDER BY gen;
 SELECT sift._test_check('b_idx');
 REINDEX INDEX b_idx;

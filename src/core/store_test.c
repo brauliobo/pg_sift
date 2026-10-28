@@ -329,6 +329,67 @@ read_random(Relation index, SiftStreamReader *sr, const TestSeg *seg)
 	return total;
 }
 
+#define AHEAD_PIECES	40
+
+typedef struct AheadPieces
+{
+	int			next;
+	uint64		off[AHEAD_PIECES];
+	uint32		len[AHEAD_PIECES];
+} AheadPieces;
+
+static bool
+ahead_next(void *arg, uint64 *off, uint64 *len)
+{
+	AheadPieces *p = arg;
+
+	if (p->next == AHEAD_PIECES)
+		return false;
+	*off = p->off[p->next];
+	*len = p->len[p->next++];
+	return true;
+}
+
+static int
+ahead_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* Pieces here and there, read in the order they are read ahead from: the stream starts with the first (a reader that has not missed yet starts none) and every byte read matches */
+static uint64
+read_ahead(SiftStreamReader *sr, const TestSeg *seg)
+{
+	char	   *want = palloc(MAX_RANDOM_PIECE);
+	char	   *scratch = palloc(MAX_RANDOM_PIECE);
+	AheadPieces *p = palloc0(sizeof(AheadPieces));
+	uint64		rng = seg->seed ^ 0xa4ead;
+	uint64		total = 0;
+
+	if (seg->align)
+		elog(ERROR, "reads ahead need an unaligned segment");
+	if (seg->size == 0)
+		return 0;
+	for (int i = 0; i < AHEAD_PIECES; i++)
+		p->off[i] = sift_mix64(rng++) % seg->size;
+	qsort(p->off, AHEAD_PIECES, sizeof(uint64), ahead_cmp);
+	for (int i = 0; i < AHEAD_PIECES; i++)
+		p->len[i] = next_piece(&rng, 0, seg->size - p->off[i]);
+	sift_sr_ahead(sr, ahead_next, p, seg->size);
+	sr->cold = true;
+	for (int i = 0; i < AHEAD_PIECES; i++)
+	{
+		fill(seg->seed, p->off[i], want, p->len[i]);
+		if (memcmp(sift_sr_get(sr, p->off[i], p->len[i], scratch), want, p->len[i]) != 0)
+			mismatch(sr->index, seg, p->off[i]);
+		total += p->len[i];
+	}
+	return total;
+}
+
 /* Throughput: every byte through direct page pointers or 1 MB copies */
 static uint64
 read_bulk(SiftStreamReader *sr, const TestSeg *seg, size_t chunk)
@@ -358,6 +419,8 @@ read_segment(Relation index, const TestSeg *seg, int mode)
 		n = read_replay(index, &sr, seg);
 	else if (mode == 1)
 		n = read_random(index, &sr, seg);
+	else if (mode == 4)
+		n = read_ahead(&sr, seg);
 	else
 		n = read_bulk(&sr, seg, mode == 2 ? PAYLOAD : 1024 * 1024);
 	sift_sr_release(&sr);

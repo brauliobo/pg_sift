@@ -1314,6 +1314,62 @@ sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max)
 	return n;
 }
 
+/* units whose records lie this close (bytes between them) make one cluster; a cluster longer than AHEAD_CLUSTER of which the kept units fill half or more is a read the kernel's own read-ahead follows */
+#define AHEAD_GAP		(192 * 1024)
+#define AHEAD_CLUSTER	(512 * 1024)
+
+static uint32
+next_ahead_unit(const ColCursor *c, uint32 u)
+{
+	while (u < c->seg->nsb && !sift_col_bit_test(c->src->ahead_kept, c->seg->sbdir[u].sb))
+		u++;
+	return u;
+}
+
+/*
+ * The head of the next unit of the scan after the one it reads (beyond the morsel: the scan takes a few units at a time), for sift_sr_ahead.
+ * A scan that keeps most units, or runs of them close together, reads them in order, which the kernel follows with a read-ahead of its own, where
+ * the reads of a stream of a few pages each would only add to the work: those clusters are left alone, and the isolated ones are read ahead.
+ * No more while the units go as superunits, whose records are not read.
+ */
+static bool
+cursor_ahead(void *arg, uint64 *off, uint64 *len)
+{
+	ColCursor  *c = arg;
+	const SiftColSegment *seg = c->seg;
+	uint32		u = Max(c->ahead, c->cur);
+
+	if (c->src->super || c->src->whole || c->src->pcnt)
+		return false;
+	for (u = next_ahead_unit(c, u); u < seg->nsb; u = next_ahead_unit(c, u))
+	{
+		if (u >= c->ahead_end)
+		{
+			uint32		v = u;
+			uint64		end = seg->sbdir[u].off + seg->sbdir[u].len,
+						kept = seg->sbdir[u].len;
+
+			for (uint32 w = next_ahead_unit(c, u + 1); w < seg->nsb && seg->sbdir[w].off - end < AHEAD_GAP; w = next_ahead_unit(c, w + 1))
+			{
+				v = w;
+				end = seg->sbdir[w].off + seg->sbdir[w].len;
+				kept += seg->sbdir[w].len;
+			}
+			c->ahead_end = v + 1;
+			c->ahead_skip = end - seg->sbdir[u].off > AHEAD_CLUSTER && kept * 2 >= end - seg->sbdir[u].off;
+		}
+		if (!c->ahead_skip)
+		{
+			sift_cseg_unit_head_span(seg, u, off, len);
+			c->ahead = u + 1;
+			return true;
+		}
+		u = c->ahead = c->ahead_end;
+	}
+	c->ahead = seg->nsb;
+	return false;
+}
+
 void
 sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
@@ -1331,7 +1387,14 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 	src->ptid_unsorted = false;
 	src->pstream = 0;
 	for (int i = 0; i < src->nseg; i++)
-		prune_segment(src, &src->seg[i], preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
+	{
+		ColCursor  *c = &src->seg[i];
+
+		prune_segment(src, c, preds, npreds, zones, nzones, sb_lo, sb_hi, cached);
+		c->src = src;
+		if (src->ahead_kept != NULL && !src->super && !src->whole && !src->pcnt)
+			sift_sr_ahead(&c->seg->sr, cursor_ahead, c, sift_cseg_units_len(c->seg));
+	}
 	if (src->ptid_unsorted)
 		ptid_merge_runs(src->ptid, src->nptid);
 	if (!src->mem_loaded && !(src->flags & SIFT_COLO_NOWBUF))
@@ -1358,6 +1421,9 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 	MemoryContext old;
 	bool		ok = true;
 
+	if (src->ahead_kept != NULL)
+		pfree(src->ahead_kept);
+	src->ahead_kept = NULL;
 	if (!keep_cached(src, preds, npreds, zones))
 		return false;
 	MemoryContextReset(src->scan);
@@ -1398,6 +1464,13 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 	}
 	MemoryContextSwitchTo(old);
 	src->counted = ok ? src->sig_gen : 0;
+	if (ok)
+	{
+		src->ahead_kept = MemoryContextAlloc(GetMemoryChunkContext(src), SIFT_COL_NWORDS(nspace) * sizeof(uint64));
+		memcpy(src->ahead_kept, kept, SIFT_COL_NWORDS(nspace) * sizeof(uint64));
+		for (int i = 0; i < src->nseg; i++)
+			src->seg[i].ahead = src->seg[i].ahead_end = 0;
+	}
 	return ok;
 }
 
