@@ -87,8 +87,21 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 
 	SIFT_INVARIANT(nt <= COL_MAX_WIDE, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
 	src->wtest = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColWTest));
+	src->wpred = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColPred));
+	src->nwpred = 0;
 	for (int i = 0; i < nt; i++)
+	{
+		const SiftColPred *alt[2];
+		int			npred[2];
+		SiftColValue *v = MemoryContextAllocZero(src->cxt, sizeof(SiftColValue));
+
 		sift_colw_test(sift_col_def(src->cs, t[i].leaf), src->lay->leaf[t[i].leaf].typid, t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
+		v->v.s = (const char *) &src->wtest[i];
+		if (src->wtest[i].verdict == SIFT_COLW_PRED)
+			src->wpred[src->nwpred++] = src->wtest[i].pred;
+		else if (sift_colw_alts(&src->wtest[i], alt, npred) > 0)
+			src->wpred[src->nwpred++] = (SiftColPred) {src->wtest[i].pred.col, SIFT_COLOP_SHAPE, 1, v};
+	}
 	src->nwtest = nt;
 	return nt;
 }

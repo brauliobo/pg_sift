@@ -60,6 +60,10 @@ SELECT same('SELECT count(*) FROM kr WHERE r @> 12121212'), same('SELECT count(*
 DROP INDEX kr_off, kr_list, kr_ord;
 SELECT kept_share('SELECT count(*) FROM kr WHERE r @> 12121212') < 0.2, kept_share('SELECT count(*) FROM kr WHERE r && int4range(15000000, 15000100)') < 0.2;
 
+-- a test that holds in two ways (adjacent ranges, a network that overlaps or contains the constant) prunes the units that neither way can hold
+SELECT same('SELECT count(*) FROM kr WHERE r -|- int4range(15000000, 15000100)'), same('SELECT count(*) FROM kr WHERE ip && ''20.5.0.0/20'''), same('SELECT count(*) FROM kr WHERE ip << ''20.5.0.0/20''');
+SELECT kept_share('SELECT count(*) FROM kr WHERE r -|- int4range(15000000, 15000100)') < 0.2;
+
 REINDEX INDEX kr_auto;
 SELECT kopt('kr_auto');
 

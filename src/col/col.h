@@ -804,8 +804,8 @@ typedef struct SiftColWTest
 
 extern void sift_colw_test(const SiftColDef *def, Oid typid, int op, int nvals, const Datum *vals, const bool *isnull, MemoryContext mcxt, SiftColWTest *t);
 extern bool sift_colw_apply(const SiftColUnit *unit, const SiftColWTest *t, SiftColSel *sel);
-/* The predicates a unit can be pruned by for a test (out has room for SIFT_COL_SHAPE_PREDS); the zone of a lane that holds an overflow keeps its unit */
-extern int sift_colw_preds(const SiftColWTest *t, SiftColPred *out);
+/* The alternatives whose union a unit is pruned by for a containment test (each is the predicates, all true, of one way the test holds; 0: the test prunes nothing); the zone of a lane that holds an overflow keeps its unit */
+extern int sift_colw_alts(const SiftColWTest *t, const SiftColPred *alt[2], int npred[2]);
 /* The rows of sel that the lane col holds as overflows into out (sel->nwords words), the rows a test decides with PostgreSQL's operator */
 extern void sift_colw_ovf_rows(const SiftColUnit *unit, int col, const SiftColSel *sel, uint64 *out);
 extern SiftColSel *sift_colw_sel_copy(const SiftColUnit *unit, const SiftColSel *base);

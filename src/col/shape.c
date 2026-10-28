@@ -405,20 +405,18 @@ sift_col_shape_test(const SiftColDef *def, Oid typid, int op, Datum operand, Mem
 }
 
 int
-sift_colw_preds(const SiftColWTest *t, SiftColPred *out)
+sift_colw_alts(const SiftColWTest *t, const SiftColPred *alt[2], int npred[2])
 {
 	const SiftColShape *sh = t->shape;
 
-	if (t->verdict == SIFT_COLW_PRED)
-		out[0] = t->pred;
-	else if (t->verdict != SIFT_COLW_SHAPE || sh->decide_all || sh->nalt != 1)
+	if (t->verdict != SIFT_COLW_SHAPE || sh->decide_all)
 		return 0;
-	else
+	for (int a = 0; a < sh->nalt; a++)
 	{
-		memcpy(out, sh->pred[0], sh->npred[0] * sizeof(SiftColPred));
-		return sh->npred[0];
+		alt[a] = sh->pred[a];
+		npred[a] = sh->npred[a];
 	}
-	return 1;
+	return sh->nalt;
 }
 
 /* PostgreSQL's operator on the images of the rows: clears the rows of `rows` it is not true for */

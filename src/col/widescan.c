@@ -193,16 +193,30 @@ sift_colw_prune(SiftColSegment *seg, const SiftColPred *p, uint64 *keep)
 	}
 	if (p->op == SIFT_COLOP_SHAPE)
 	{
-		SiftColPred lanes[SIFT_COL_SHAPE_PREDS];
-		int			n = sift_colw_preds((const SiftColWTest *) p->vals[0].v.s, lanes);
+		const SiftColPred *alt[2];
+		int			npred[2];
+		int			nalt = sift_colw_alts((const SiftColWTest *) p->vals[0].v.s, alt, npred);
+		uint32		nwords = (seg->nsb + 63) / 64;
+		uint64	   *any = palloc0(nwords * sizeof(uint64));
+		uint64	   *kept = palloc(nwords * sizeof(uint64));
 
-		for (int i = 0; i < n; i++)
+		/* a unit stays when it may hold a row of any alternative */
+		for (int a = 0; a < nalt; a++)
 		{
-			SiftCTest	t;
+			memcpy(kept, keep, nwords * sizeof(uint64));
+			for (int i = 0; i < npred[a]; i++)
+			{
+				SiftCTest	t;
 
-			sift_ctest_make(&seg->schema->cols[lanes[i].col], NULL, &lanes[i], &t);
-			sift_cseg_prune(seg, lanes[i].col, &t, keep, 0, seg->nsb, NULL, true);
+				sift_ctest_make(&seg->schema->cols[alt[a][i].col], NULL, &alt[a][i], &t);
+				sift_cseg_prune(seg, alt[a][i].col, &t, kept, 0, seg->nsb, NULL, true);
+			}
+			sift_colk->bits_or(any, kept, nwords);
 		}
+		if (nalt > 0)
+			memcpy(keep, any, nwords * sizeof(uint64));
+		pfree(any);
+		pfree(kept);
 		return;
 	}
 	for (uint32 u = 0; u < seg->nsb; u++)

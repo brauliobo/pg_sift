@@ -396,7 +396,7 @@ col_nsb(void *impl)
 	return sift_col_heap_sbs(((ColSource *) impl)->cs);
 }
 
-#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE * SIFT_COL_SHAPE_PREDS)
+#define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
 
 /* The predicates a begin over the prune entries tests (the zone trees and the tests behind them are made once for the entries) */
 static int
@@ -409,8 +409,8 @@ col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *pr
 		preds[n++] = src->spred[i];
 	for (int i = 0; i < src->flt.n; i++)
 		preds[n++] = src->flt.pred[i];
-	for (int i = 0; i < src->nwtest; i++)
-		n += sift_colw_preds(&src->wtest[i], preds + n);
+	for (int i = 0; i < src->nwpred; i++)
+		preds[n++] = src->wpred[i];
 	return n;
 }
 

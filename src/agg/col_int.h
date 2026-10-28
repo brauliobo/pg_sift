@@ -89,6 +89,8 @@ typedef struct ColSource
 	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin */
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
+	SiftColPred *wpred;			/* the predicates that prune the units by the conjuncts of wtest that can: a wide integer test as it is, a containment test as SIFT_COLOP_SHAPE (col_preds) */
+	int			nwpred;
 	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
 	uint64	   *wgen;
 	uint64		ugen;			/* the unit the source is at, counted */

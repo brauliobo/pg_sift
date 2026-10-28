@@ -208,3 +208,4 @@ long_text_unwrap_cheap	wrapped with LZ4 instead of zstd where the default formul
 dict_network_equal_cheap	no longer fits the cache of parsed dictionaries	orders	default	Custom Scan \(SiftAgg\)	native	-	minstr	faster33	no
 int2_sum_const	`sum` and `avg` of a smallint column plus, minus or times an integer constant	orders	default	Pushed Aggregates: sum\(\(orders\.quantity \+ 1\)\).*[1-9][0-9]* from pre-aggregates	native	-	ms	faster33	no
 hits_regex_count	`LIKE '%suffix'`, `starts_with(col, 'abc')`	hits	-	Pushed Aggregates	native	-	ms	faster33	no
+contain_union	a containment that holds in two ways (`&&`, `<<`, `-|-`) prunes the units	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_union_gist	ms	faster33	no

@@ -6,6 +6,7 @@ committed results (bench/results/store.json, articles.tsv, places.tsv, cases.tsv
     python3 -I bench/steps/budget.py [--results DIR] [--benchmarks FILE]      (steps/highlights.py runs it)
 """
 import argparse
+import math
 import os
 import re
 import subprocess
@@ -158,8 +159,9 @@ def cases_table(results, p):
     rows = sorted({v[0] for v in one.values()})
     n = max(rows, key=lambda r: sum(1 for v in one.values() if v[0] == r))
     one = {k: v for k, v in one.items() if v[0] == n}
-    build, run = sum(v[1] for v in one.values()), sum(v[2] for v in one.values())
-    fixed = sum(v[1] for v in extra.values())
+    # fsum: the same total on every Python (sum() of floats is compensated since 3.12, so a total near half a second rounded differently in the lint job, 3.9)
+    build, run = math.fsum(v[1] for v in one.values()), math.fsum(v[2] for v in one.values())
+    fixed = math.fsum(v[1] for v in extra.values())
     out = ['%d cases at %s orders on one backend: %.0f s of table builds (a case that reads the table of an earlier one has 0), %.0f s of timed runs (%s rounds of 1 untimed and 5 timed runs on every lane, a lane stops repeating after %s s: the preset of the pass), '
            '%.0f s to generate the orders: **%.0f minutes** for the 88 cases of that run; the generic cases add about 2 more, and the stage allows 16.' % (len(one), format(n, ','), build, run, p.get('P_CASE_ROUNDS', 3), p.get('P_LANE_BUDGET', 20), fixed, (build + run + fixed) / 60), '',
            '<details><summary>Seconds of each case: build and timed runs</summary>', '', '| case | build (s) | timed runs (s) |', '|---|---:|---:|']
