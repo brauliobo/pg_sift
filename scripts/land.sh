@@ -119,13 +119,30 @@ wait_checks() {
 	done
 }
 
-# fetch_tip: origin/BASE of the clone (bounded; runs side by side with other landings, so a held ref lock is waited for)
-fetch_tip() { timeout 120 git -C "$CLONE" -c core.filesRefLockTimeout=10000 fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base"; }
+# fetch_tip: origin/BASE of the clone (bounded; runs side by side with other landings, so a held ref lock is waited for and a ref they just moved is fetched again)
+fetch_tip() {
+	local err
+	for _ in 1 2 3; do
+		err=$(timeout 120 git -C "$CLONE" -c core.filesRefLockTimeout=10000 fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>&1) && return 0
+		sleep 1 # wait: for the landing that just updated this ref (its fetch changed it between our read and our lock)
+	done
+	echo "$err" >&2
+	return 1
+}
 
 # changelog_check: in the work tree, after a merge of the tip: the CHANGELOG.md must not be broken (see land-union.py); needs mb and before (the merge base, the commit merged into)
 changelog_check() {
 	git show "$mb:CHANGELOG.md" >"$WORK/cl.mb" && git show "$before:CHANGELOG.md" >"$WORK/cl.head" && git show "origin/$base:CHANGELOG.md" >"$WORK/cl.tip" || return 0
 	python3 "$HERE/land-union.py" --changelog CHANGELOG.md "$WORK/cl.mb" "$WORK/cl.head" "$WORK/cl.tip" || { echo "SOURCE CONFLICT in CHANGELOG.md: the merge of the tip left it broken (above); nothing is pushed, owner must merge the tip"; return 2; }
+}
+
+# fetch_pr_head PR: prints the commit the head of PR points at. The ref that carries it is private to this run: runs of one PR overlap (a dry run takes no lock), and a ref
+# they shared was deleted by one under the other
+fetch_pr_head() {
+	local h=refs/land/pr$1.$BASHPID sha
+	timeout 120 git -C "$CLONE" fetch -q origin "+refs/pull/$1/head:$h" || return 1
+	sha=$(git -C "$CLONE" rev-parse "$h"); git -C "$CLONE" update-ref -d "$h"
+	echo "$sha"
 }
 
 # red MESSAGE [LOG]: a gate is red
@@ -140,8 +157,7 @@ worker() {
 	case $state in MERGED) echo "#$pr is already merged"; exit 0 ;; CLOSED) echo "REFUSED #$pr: the PR is closed"; exit 6 ;; esac
 	dels=$(gh pr view "$pr" --repo "$repo" --json files -q '[.files[]|select(.changeType=="DELETED")|.path]|join(" ")') || exit 75
 	[[ -z $dels || -n ${ALLOW_DELETE:-} ]] || { echo "REFUSED #$pr: the PR deletes files ($dels); check they are its own, then ALLOW_DELETE=1"; exit 5; }
-	fetch_tip && timeout 120 git fetch -q origin "+refs/pull/$pr/head:refs/land/pr$pr" || { echo "cannot fetch #$pr or $base"; exit 75; }
-	head=$(git rev-parse "refs/land/pr$pr"); git update-ref -d "refs/land/pr$pr"
+	fetch_tip && head=$(fetch_pr_head "$pr") || { echo "cannot fetch #$pr or $base"; exit 75; }
 
 	cand=$head   # the commit the gates look at; the one that is checked and merged is the PR head, or what this run pushes
 	for round in 1 2 3; do

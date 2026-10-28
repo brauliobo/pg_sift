@@ -8,6 +8,7 @@
 #   5. TERM and KILL of the holder release its lock at once and the next run of that PR goes on; TERM stops the worker and removes the work tree
 #   6. a background process of the worker or of the merge call that outlives the landing holds no lock; the normal end removes what the worker left
 #   7. the privacy gate fails on a hit and closed without its deny list
+#   7b. overlapping runs of one PR fetch its head without disturbing each other
 #   8. land-union.py keeps both sides of added lines only
 #   9. a CHANGELOG a merge of the tip left broken (markers, a duplicated line, an entry moved out of Unreleased or lost) is refused
 #  10. the verdict on the required checks (ok, missing, pending, red, a head that is not the PR head, a re-run) and the bounded wait for pending and missing ones
@@ -149,6 +150,20 @@ for what in missing comments regex; do
 	[[ $(rc_of privacy_range HEAD~2 HEAD~1) == 2 && $(rc_of privacy_text) == 2 ]] || fail "the privacy gate does not fail closed with a $what deny list"
 done
 unset LAND_DENY
+
+# 7b. the head of a PR is fetched through a handle of the run: overlapping runs of one PR do not delete each other's
+git init -q --bare "$T/origin.git"; g remote add origin "$T/origin.git"; g push -q origin HEAD:refs/pull/5/head
+# shellcheck source=land.sh
+fp() { ( . "$LAND"; for _ in $(seq 15); do [[ $(fetch_pr_head 5) == "$(g rev-parse HEAD)" ]] || exit 1; done ); }
+fp & p1=$!; fp & p2=$!; fp & p3=$!
+wait "$p1" && wait "$p2" && wait "$p3" || fail "overlapping fetches of one PR head disturb each other"
+# and the tip of a branch that other landings fetch into the same clone while it moves
+git --git-dir="$T/origin.git" update-ref refs/heads/b "$(g rev-parse HEAD)"
+# shellcheck source=land.sh disable=SC2034
+ft() { ( . "$LAND"; base=b; for _ in $(seq 12); do fetch_tip || exit 1; done ); }
+mover() { local i p; for i in $(seq 30); do p=$(git --git-dir="$T/origin.git" rev-parse refs/heads/b); git --git-dir="$T/origin.git" -c user.name=t -c user.email=t@example.com update-ref refs/heads/b "$(git --git-dir="$T/origin.git" -c user.name=t -c user.email=t@example.com commit-tree -p "$p" -m "n$i" "$p^{tree}")"; done; }
+mover & pm=$!; ft & p1=$!; ft & p2=$!; ft & p3=$!
+wait "$pm"; wait "$p1" && wait "$p2" && wait "$p3" || fail "overlapping fetches of a moving tip fail"
 
 # 8. the union resolver
 while IFS='|' read -r want name ours theirs; do
