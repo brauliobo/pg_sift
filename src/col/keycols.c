@@ -590,6 +590,9 @@ sift_col_auto_paths(Relation heap, Relation index)
 #define GORD_AUTO_CORR		0.99
 #define GORD_AUTO_GROWTH_PCT 25
 #define GORD_AUTO_MAX		2
+#define GORD_TIME_SPEEDUP	25.0	/* S of the shape a time column's array is for: ts >= x ORDER BY ts LIMIT 10 on scattered values, 9.39 M to 0.38 M instructions at 500,000 rows (ORDER BY ts DESC LIMIT 10 10x, OFFSET 1000 11x) */
+#define GORD_TIME_WRITE_PCT	35.0	/* W: CREATE INDEX of a one-column timestamp index 1.031 G to 1.387 G instructions (500,000 rows) */
+#define GORD_ROW_OVERHEAD	1.3		/* the bytes a row of an index beyond the bits of its distinct values (units, zones, presence): 3.73 measured against 2.4 estimated for one timestamp column */
 #define GORD_GROUP_DISTINCT	100		/* the group of a time column's arrays: an integer of this many distinct values or more (an entity), at most one in GORD_GROUP_DEPTH rows of the table apiece (the 24 bytes of a group stay under a tenth of the 5 of an entry) */
 #define GORD_GROUP_DEPTH	64
 #define GORD_GROUP_BYTES	6.0		/* the second order of a timestamp: its 5.6 bytes a row and the groups (the structure's share of the room, as an array's) */
@@ -702,7 +705,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	int			ncand = 0,
 				npick = 0,
 				pick[GORD_AUTO_MAX];
-	double		room;
+	double		room,
+				index_bytes;
 	StringInfoData v;
 
 	(void) sift_cpagg_auto_list(opt, &autolist);
@@ -714,7 +718,8 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	analyze_if_unknown(heap, index);
 	if (heap->rd_rel->reltuples < GORD_AUTO_ROWS)
 		return;
-	room = est_index_bytes(heap, index) * GORD_AUTO_GROWTH_PCT / 100;
+	index_bytes = est_index_bytes(heap, index) + GORD_ROW_OVERHEAD;
+	room = index_bytes * GORD_AUTO_GROWTH_PCT / 100;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);
 	cand = palloc(rel->schema->ncols * sizeof(GordCand));
 	fit = palloc(rel->schema->ncols * sizeof(bool));
@@ -743,8 +748,10 @@ sift_col_auto_gorder(Relation heap, Relation index)
 	{
 		const SiftColDef *d = &rel->schema->cols[cand[i].leaf];
 		bool		narrow = d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4 || d->type == SIFT_COLT_DATE;
+		double		bytes = narrow ? 4.4 : 5.6;
 
-		fit[i] = (narrow ? 4.4 : 5.6) + (rel->pagg.run[cand[i].leaf] ? 0 : (narrow ? 2.2 : 3.5)) <= room;
+		/* a date or timestamp: the default formula decides, B = log2(S) / log2(1.05) against C = G / 3 + W / 5, with no ceiling; the others fit the room */
+		fit[i] = cand[i].time ? log2(GORD_TIME_SPEEDUP) / log2(1.05) > bytes / index_bytes * 100.0 / 3.0 + GORD_TIME_WRITE_PCT / 5.0 : bytes <= room;
 		timepick |= fit[i] && cand[i].time;
 	}
 	/* the arrays of a time column are grouped by the entity column that has the most values: WHERE g = x ORDER BY ts LIMIT n then reads n entries of x in each segment, where the plain order has the units read (3.3 to 12.2 M instructions against 0.27 M for a b-tree, 500,000 to 3,000,000 rows). The entity column is not an array of its own then */
@@ -763,6 +770,9 @@ sift_col_auto_gorder(Relation heap, Relation index)
 			cut |= rel->cut[k] == c;
 		if (cut || !col_stats(heap, hatt, &ndistinct, &cr, &width) || cr >= GORD_AUTO_CORR || ndistinct < GORD_GROUP_DISTINCT || heap->rd_rel->reltuples / ndistinct < GORD_GROUP_DEPTH)
 			continue;
+		/* a foreign key or a column named *_id is the entity the rows belong to; among those, or among the rest, the one of most values */
+		if (is_fk_column(heap, hatt) || ends_in_id(leaf_name(index, d)))
+			ndistinct += heap->rd_rel->reltuples;
 		if (ndistinct > gdist)
 		{
 			gdist = ndistinct;

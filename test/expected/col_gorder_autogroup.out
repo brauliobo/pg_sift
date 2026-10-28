@@ -16,7 +16,7 @@ FROM generate_series(1, 120000) i;
 INSERT INTO ag VALUES (200000, 100000, 1, timestamp '2024-02-02', 'one');
 ANALYZE ag;
 CREATE INDEX ag_i ON ag USING sift_col (id, g, v, ts, pad);
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts to the sorted runs, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                           reloptions                          
 --------------------------------------------------------------
@@ -118,7 +118,7 @@ SELECT sift.col_verify('ag_i');
 (1 row)
 
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts to the sorted runs, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                           reloptions                          
 --------------------------------------------------------------
@@ -134,7 +134,7 @@ SELECT ag_chk('SELECT id, ts FROM ag WHERE g = 7 ORDER BY ts, id LIMIT 20') AS r
 -- the user's: off keeps the plain order only; a column named groups every array and keeps no plain order (a scan that does not pin it reads the units)
 ALTER INDEX ag_i SET (order_array_group = 'off');
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts to the sorted runs
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                        reloptions                       
 --------------------------------------------------------
@@ -166,7 +166,7 @@ ALTER INDEX ag_i RESET (order_array_group);
 ALTER INDEX ag_i RESET (order_array_columns);
 ALTER INDEX ag_i RESET (order_columns);
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts to the sorted runs, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts, and order_array_group = 'auto' a second order of each date and timestamp column sorted by g first
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                           reloptions                          
 --------------------------------------------------------------
@@ -177,7 +177,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 UPDATE ag SET g = id;
 ANALYZE ag;
 REINDEX INDEX ag_i;
-NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of id, ts to the sorted runs
+NOTICE:  sift_col index "ag_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of id, ts
 SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
                          reloptions                          
 -------------------------------------------------------------

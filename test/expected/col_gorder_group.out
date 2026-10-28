@@ -78,7 +78,7 @@ BEGIN
 	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
 		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
-		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 1000; END IF;
+		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
 		used := used OR pl LIKE '%Global Order%';
 	END LOOP;
 	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
@@ -132,8 +132,8 @@ $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 26
- units  | 10
+ array  | 20
+ units  | 16
 (2 rows)
 
 -- rows after the index (the write buffer, filtered by the group), deletes, updates of the group and of the key, VACUUM, a promotion and a merge
@@ -151,8 +151,8 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 26
- units  | 10
+ array  | 20
+ units  | 16
 (2 rows)
 
 VACUUM gg;
@@ -166,8 +166,8 @@ SELECT result, count(*) FROM gg_all() GROUP BY 1 ORDER BY 1;
 SELECT * FROM gg_mm_all();
  result | n  
 --------+----
- array  | 26
- units  | 10
+ array  | 20
+ units  | 16
 (2 rows)
 
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;

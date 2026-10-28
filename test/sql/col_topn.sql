@@ -273,7 +273,7 @@ CREATE TABLE cb (id serial PRIMARY KEY, ts timestamp, memo text) WITH (fillfacto
 INSERT INTO cb (ts, memo) SELECT timestamp '2024-01-01' + (hashint4(i + 11) & 2147483647) % 60000000 * interval '1 second', ct_words(i)
 FROM generate_series(1, 100000) i;
 CREATE INDEX cb_bm ON cb USING sift (memo);
-CREATE INDEX cb_col ON cb USING sift_col (id, ts);
+CREATE INDEX cb_col ON cb USING sift_col (id, ts) WITH (order_array_columns = off);
 VACUUM (ANALYZE) cb;
 SELECT $q$SELECT id, ts FROM cb WHERE memo @@> 'fast OR late OR damaged OR refund OR gift OR invoice OR exchange OR missing OR perfect OR broken OR express OR pickup OR thanks OR wrong OR size OR color OR cable OR wire OR box OR label' ORDER BY id DESC LIMIT 10$q$ AS q \gset
 BEGIN;

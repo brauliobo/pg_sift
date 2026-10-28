@@ -84,7 +84,7 @@ BEGIN
 	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
 		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
-		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 1000; END IF;
+		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
 		used := used OR pl LIKE '%Global Order%';
 	END LOOP;
 	RETURN CASE WHEN NOT agg THEN 'native' WHEN used AND cheap THEN 'array' WHEN NOT used AND NOT cheap THEN 'units' ELSE 'MISPRICED' END;
@@ -136,8 +136,8 @@ $$ SELECT gt_mm(format('SELECT %s(%s) FROM gt WHERE %s', f, c, w)), count(*)
 SELECT * FROM gt_mm_all();
  result | n  
 --------+----
- array  | 24
- units  | 74
+ array  | 22
+ units  | 76
 (2 rows)
 
 -- rows after the index: the write buffer joins the merge, deleted rows and rows of other versions are skipped
@@ -154,8 +154,8 @@ VACUUM gt;
 SELECT * FROM gt_mm_all();
  result | n  
 --------+----
- array  | 24
- units  | 74
+ array  |  8
+ units  | 90
 (2 rows)
 
 SELECT result, count(*) FROM gt_all(ARRAY[1, 10, 200, 2000]) GROUP BY 1 ORDER BY 1;

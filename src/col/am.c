@@ -789,7 +789,7 @@ build_rel(Relation index, MemoryContext mcxt)
 		}
 		for (int i = 0; i < n; i++)
 			if (r->pagg.gorder[i] && !r->pagg.run[i] && r->pagg.gorderauto)
-				r->pagg.run[i] = true;
+				;
 			else if (r->pagg.gorder[i] && !r->pagg.run[i])
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid order_array_columns option: column \"%s\" is not in order_columns", names[i]),
 								errhint("The global order extends the sorted run of a column: add it to order_columns.")));

@@ -1,0 +1,130 @@
+-- A date or timestamp column of scattered values gets its global order array by the default formula (order_array_columns), whatever the width of the index:
+-- B = log2(25) / log2(1.05) = 66 against C = G / 3 + W / 5 for an array of 4.6 bytes a row in an index of 3.7. The sorted run is not added with it. A one-column index so
+-- has ORDER BY ts LIMIT, ts >= x ORDER BY ts LIMIT, OFFSET and a bounded min/max read the array (an unbounded min(ts), max(ts) of a table of several segments is priced
+-- against the pre-aggregates of the units, which cost less).
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+CREATE TABLE nd (id int, ts timestamp, pad text);
+ALTER TABLE nd ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO nd SELECT i, CASE WHEN i % 89 = 0 THEN NULL ELSE timestamp '2020-01-01' + (abs(hashint4(i)) % 100000000) * interval '1 second' END, 'x' FROM generate_series(1, 150000) i;
+ANALYZE nd;
+CREATE INDEX nd_i ON nd USING sift_col (ts);
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
+            reloptions            
+----------------------------------
+ {"order_array_columns=auto: ts"}
+(1 row)
+
+SELECT min(format) AS format FROM sift.col_segments('nd_i') WHERE kind = 'immutable';
+ format 
+--------
+     30
+(1 row)
+
+SELECT sift.col_verify('nd_i');
+ col_verify 
+------------
+ 
+(1 row)
+
+-- an answer is right when the rows are the heap's; 'global order' says the scan read the array
+CREATE FUNCTION nd_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
+	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'global order' ELSE 'units' END;
+END $$;
+SELECT result, count(*) FROM (
+	SELECT nd_chk(format('SELECT id, ts FROM nd WHERE %s ORDER BY ts %s %s, id LIMIT %s OFFSET %s', w, d, nl, l, o)) AS result
+	FROM unnest(ARRAY['true', 'ts >= timestamp ''2021-03-01''', 'ts < timestamp ''2020-02-01''', 'ts BETWEEN timestamp ''2020-06-01'' AND timestamp ''2020-06-03''', 'ts IS NOT NULL']) w,
+		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l, unnest(ARRAY[0, 1000]) o) r
+GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |   120
+(1 row)
+
+-- the minimum and maximum of a bound read the array
+SELECT nd_chk('SELECT max(ts) FROM nd WHERE ts < timestamp ''2021-06-01''') AS upper,
+	   nd_chk('SELECT min(ts) FROM nd WHERE ts >= timestamp ''2021-06-01''') AS lower;
+    upper     |    lower     
+--------------+--------------
+ global order | global order
+(1 row)
+
+-- rows after the build, a merge and a REINDEX
+INSERT INTO nd SELECT 200000 + i, timestamp '2020-01-01' + (i * 7919 % 100000000) * interval '1 second', 'w' FROM generate_series(1, 3000) i;
+DELETE FROM nd WHERE id % 211 = 0;
+SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS buffers, nd_chk('SELECT id, ts FROM nd WHERE ts >= timestamp ''2021-03-01'' ORDER BY ts, id LIMIT 20') AS buffers_range;
+   buffers    | buffers_range 
+--------------+---------------
+ global order | global order
+(1 row)
+
+SELECT sift.col_merge('nd_i'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS merged_desc, nd_chk('SELECT max(ts) FROM nd WHERE ts < timestamp ''2021-06-01''') AS merged_max;
+ merged_desc  |  merged_max  
+--------------+--------------
+ global order | global order
+(1 row)
+
+SELECT sift.col_verify('nd_i');
+ col_verify 
+------------
+ 
+(1 row)
+
+REINDEX INDEX nd_i;
+NOTICE:  sift_col index "nd_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of ts
+SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
+            reloptions            
+----------------------------------
+ {"order_array_columns=auto: ts"}
+(1 row)
+
+-- off is the user's; a table under 100,000 rows and a column in heap order get none
+ALTER INDEX nd_i SET (order_array_columns = 'off');
+REINDEX INDEX nd_i;
+SELECT reloptions FROM pg_class WHERE relname = 'nd_i';
+        reloptions         
+---------------------------
+ {order_array_columns=off}
+(1 row)
+
+SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS off;
+  off  
+-------
+ units
+(1 row)
+
+CREATE TABLE ns AS SELECT id, ts FROM nd WHERE id <= 90000;
+ANALYZE ns;
+CREATE INDEX ns_i ON ns USING sift_col (ts);
+CREATE TABLE no AS SELECT i AS id, timestamp '2020-01-01' + i * interval '1 second' AS ts FROM generate_series(1, 150000) i;
+ANALYZE no;
+CREATE INDEX no_i ON no USING sift_col (ts);
+SELECT relname, reloptions FROM pg_class WHERE relname IN ('ns_i', 'no_i') ORDER BY 1;
+ relname | reloptions 
+---------+------------
+ no_i    | 
+ ns_i    | 
+(2 rows)
+
+DROP TABLE nd, ns, no;
+DROP FUNCTION nd_chk(text);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

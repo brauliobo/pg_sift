@@ -11,9 +11,9 @@ ALTER TABLE ga ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ga SELECT i, abs(hashint4(i)) % 5000000, i % 50, timestamp '2024-01-01' + i * interval '1 second', md5(i::text) FROM generate_series(1, 120000) i;
 -- no statistics yet: the build analyzes the table and chooses
 CREATE INDEX ga_nostats ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_nostats": order_array_columns = 'auto' adds the sorted keys and heap addresses of r to the sorted runs
-DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.
+NOTICE:  sift_col index "ga_nostats": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
+DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).
+HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_nostats';
            reloptions            
 ---------------------------------
@@ -24,9 +24,9 @@ DROP INDEX ga_nostats;
 ANALYZE ga;
 -- r is scattered, g has 50 values, id and ts follow the heap
 CREATE INDEX ga_auto ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_auto": order_array_columns = 'auto' adds the sorted keys and heap addresses of r to the sorted runs
-DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.
+NOTICE:  sift_col index "ga_auto": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
+DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).
+HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_auto';
            reloptions            
 ---------------------------------
@@ -89,9 +89,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'gs_i';
 
 -- the choice is made again by REINDEX: after the statistics change the column is dropped
 CREATE INDEX ga_re ON ga USING sift_col (id, r, g, ts, pad);
-NOTICE:  sift_col index "ga_re": order_array_columns = 'auto' adds the sorted keys and heap addresses of r to the sorted runs
-DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.
+NOTICE:  sift_col index "ga_re": order_array_columns = 'auto' adds the sorted keys and heap addresses of r
+DETAIL:  3.9 bytes a row for each column, 0.4 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).
+HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 SELECT reloptions FROM pg_class WHERE relname = 'ga_re';
            reloptions            
 ---------------------------------
@@ -118,9 +118,9 @@ SELECT setseed(0.5);
 
 INSERT INTO gt SELECT i, (random() * 100000000)::int, timestamptz '2024-01-01' + random() * interval '700 days', md5(i::text) FROM generate_series(1, 120000) i;
 CREATE INDEX gt_i ON gt USING sift_col (id, v, ts, pad);
-NOTICE:  sift_col index "gt_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of v, ts to the sorted runs
-DETAIL:  5.7 bytes a row for each column, 1.3 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).
-HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.
+NOTICE:  sift_col index "gt_i": order_array_columns = 'auto' adds the sorted keys and heap addresses of v, ts
+DETAIL:  5.7 bytes a row for each column, 1.3 MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and for a date or timestamp that the default formula pays (the benefit of an ordered read against the growth of the index and of its build), for another column at most a quarter of the index (a table with no statistics is analyzed first).
+HINT:  A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to write none.
 SELECT reloptions FROM pg_class WHERE relname = 'gt_i';
              reloptions              
 -------------------------------------

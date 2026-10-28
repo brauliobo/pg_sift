@@ -12,7 +12,7 @@ SELECT i, (hashint4(i) & 2147483647) % 50, (hashint4(i + 1) & 2147483647) % 7, (
 	   timestamp '2024-01-01' + (hashint4(i + 7) & 2147483647) % 6000000 * interval '1 second',
 	   (ARRAY['cat_a', 'cat_b', 'cat_c', 'cat_d'])[1 + i % 4], 'n' || i
 FROM generate_series(1, 200000) i;
-CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind);
+CREATE INDEX cd_col ON cd USING sift_col (id, a, b, c, d, e, f, amount, ts, kind) WITH (order_array_columns = off);
 VACUUM (ANALYZE) cd;
 
 CREATE FUNCTION cd_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
