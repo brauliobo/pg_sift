@@ -15,28 +15,65 @@ lut_put(uint64 *lut, uint32 code, bool v)
 	lut[code >> 6] |= (uint64) v << (code & 63);
 }
 
+/* the entry of code c (n: the NULL input) of the table of predicate p, tested when first asked for */
+static void
+lut_entry(AggExec *ex, const SiftSrcDict *d, PredState *st, uint64 *lut, uint64 *known, uint32 c)
+{
+	Datum		v;
+
+	if (known[c >> 6] >> (c & 63) & 1)
+		return;
+	known[c >> 6] |= UINT64CONST(1) << (c & 63);
+	if (c == d->n)
+		lut_put(lut, c, eval_bool(ex, st->expr, (Datum) 0, true));
+	else
+	{
+		v = text_datum(st->param->paramtype, st->param->paramtypmod, d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
+		lut_put(lut, c, eval_bool(ex, st->expr, v, false));
+	}
+}
+
+/*
+ * The table of the entries of the dictionary for predicate p, one bit each (then the bits of the entries tested, and a last word, set when all
+ * are): the entries are tested for the codes of the rows [start, start + n) that still count when the leaves are read for them only (a segment
+ * dictionary of 200,000 urls costs a test each, a few rows of a unit need a few), else for all of them.
+ */
 static uint64 *
-dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p)
+dict_lut(AggExec *ex, DictSlot *s, const SiftSrcDict *d, SiftAggPred *p, const uint32 *codes, int start, int n)
 {
 	uint64	   *lut = s->lut[p->id];
 	PredState  *st = &ex->ps[p->id];
 	MemoryContext old;
+	uint32		nw;
+	uint64	   *known;
 
-	if (lut)
-		return lut;
 	d = sift_srcdict_whole(d);
-	lut = MemoryContextAllocZero(ex->cxt, ((d->n + 64) / 64) * sizeof(uint64));
+	nw = (d->n + 64) / 64;
+	if (lut == NULL)
+		lut = s->lut[p->id] = MemoryContextAllocZero(ex->cxt, (2 * nw + 1) * sizeof(uint64));
+	if (lut[2 * nw])
+		return lut;
+	known = lut + nw;
 	old = MemoryContextSwitchTo(ex->lutcx->ecxt_per_tuple_memory);
-	for (uint32 c = 0; c < d->n; c++)
+	if (ex->rsel)
 	{
-		Datum		v = text_datum(st->param->paramtype, st->param->paramtypmod, d->bytes + d->off[c],
-								   d->off[c + 1] - d->off[c]);
+		for (int w = start >> 6; w << 6 < start + n; w++)
+			for (uint64 b = ex->rsel[w]; b; b &= b - 1)
+			{
+				int			r = (w << 6) + pg_rightmost_one_pos64(b);
 
-		lut_put(lut, c, eval_bool(ex, st->expr, v, false));
+				if (r >= start + n)
+					break;
+				lut_entry(ex, d, st, lut, known, codes[r - start]);
+			}
 	}
-	lut_put(lut, d->n, eval_bool(ex, st->expr, (Datum) 0, true));
+	else
+	{
+		for (uint32 c = 0; c <= d->n; c++)
+			lut_entry(ex, d, st, lut, known, c);
+		lut[2 * nw] = 1;
+	}
 	MemoryContextSwitchTo(old);
-	s->lut[p->id] = lut;
 	return lut;
 }
 
@@ -235,8 +272,8 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 	if (lf->vtype == SCV_CODE)
 	{
 		DictSlot   *s = dict_slot(ex, v->dict);
-		uint64	   *lut = dict_lut(ex, s, v->dict, p);
 		const uint32 *codes = (const uint32 *) v->data + start;
+		uint64	   *lut;
 
 		if (v->isnull)
 		{
@@ -244,6 +281,7 @@ eval_lut(AggExec *ex, SiftAggPred *p, PredState *st, int start, int n, uint64 *o
 				ex->tmpu32[i] = v->isnull[start + i] ? v->dict->n : codes[i];
 			codes = ex->tmpu32;
 		}
+		lut = dict_lut(ex, s, v->dict, p, codes, start, n);
 		sift_colk->lut[SIFT_COLW_32](codes, n, lut, out);
 	}
 	else

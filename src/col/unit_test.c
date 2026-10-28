@@ -235,7 +235,7 @@ check_unit(TCtx *t, const Case *c, const SiftColBatch *b, const SiftColRow *rows
 
 			check_strs(t, what, &ref, &ch);
 			check_zone_inline(t, what, &ref, &zones[col], tags);
-			CHECK(t, sift_cchunk_istr_codes(&ch, CurrentMemoryContext, &own, &codes), "%s: no codes of an inline chunk", what);
+			CHECK(t, sift_cchunk_istr_codes(&ch, CurrentMemoryContext, NULL, 0, &own, &codes), "%s: no codes of an inline chunk", what);
 			check_decode(t, what, &s->cols[col], own, &ref, &codes);
 			check_tests(t, what, &s->cols[col], own, &ref, &codes, &zones[col], false);
 			check_tests(t, what, &s->cols[col], NULL, &ref, &ch, &zones[col], true);

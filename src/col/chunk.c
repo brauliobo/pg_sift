@@ -166,7 +166,7 @@ bitmap_count(const uint64 *bits, uint32 n)
 }
 
 bool
-sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict, SiftCChunk *out)
+sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, const uint32 *idx, uint32 m, SiftCDict **dict, SiftCChunk *out)
 {
 	uint32	   *off,
 			   *codes;
@@ -179,9 +179,13 @@ sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict
 	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
 	*dict = sift_cdict_create(mcxt);
 	codes = MemoryContextAllocZero(mcxt, (Size) c->n * sizeof(uint32) + SIFT_COL_PAD);
-	for (uint32 i = 0; i < c->n; i++)
+	for (uint32 k = 0; k < (idx ? m : c->n); k++)
+	{
+		uint32		i = idx ? idx[k] : k;
+
 		if (!sift_col_bit_test(c->nulls, i))
 			codes[i] = sift_cdict_intern(*dict, bytes + off[i], off[i + 1] - off[i]);
+	}
 	out->enc = SIFT_COLENC_FOR;
 	out->bits = 32;
 	out->base = 0;

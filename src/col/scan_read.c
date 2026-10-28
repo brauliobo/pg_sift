@@ -73,7 +73,7 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 	const SiftColDef *def = &cu->src->schema->cols[col];
 	int64	   *keys = MemoryContextAllocZero(arena, (m + SIFT_COL_PAD / 8) * sizeof(int64));
 	SiftCChunk	c;
-	bool		present = unit_chunk(cu, col, &c);
+	bool		present = unit_chunk_sel(cu, col, idx, m, &c);
 
 	vec->store = def->store;
 	vec->n = m;
@@ -125,7 +125,7 @@ read_positions(ColUnit *cu, int col, const uint32 *idx, uint32 m, uint32 total, 
 					if (cu->dict_lazy && cu->seg != NULL && !unit_inline(cu, col) && sift_cseg_dict_view_lazy(cu->seg, col, d))
 						d->id = dict_id(cu, col);
 					else
-						sift_cdict_view(unit_dict(cu, col), dict_id(cu, col), d);
+						sift_cdict_view(cu->istr && cu->istr[col].dict ? cu->istr[col].dict : unit_dict(cu, col), dict_id(cu, col), d);
 					sift_ccodes_below(codes, m, d->n + 1);
 					vec->dict = d;
 				}

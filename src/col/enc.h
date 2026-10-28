@@ -310,9 +310,10 @@ extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint3
 /*
  * An inline STR chunk (enc ISTR) as the dictionary-coded chunk the readers and tests work on: *dict is a dictionary of the chunk's own
  * strings (palloc'd in mcxt, codes in first-seen order) and *out a FOR chunk of the codes (payload palloc'd in mcxt, with the NULL and
- * overflow bitmaps of c). False when c is another encoding (*out is then c).
+ * overflow bitmaps of c). idx[0..m) names the only positions given a code (the others read 0), NULL: all. False when c is another encoding
+ * (*out is then c).
  */
-extern bool sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, SiftCDict **dict, SiftCChunk *out);
+extern bool sift_cchunk_istr_codes(const SiftCChunk *c, MemoryContext mcxt, const uint32 *idx, uint32 m, SiftCDict **dict, SiftCChunk *out);
 
 /*
  * Tests: a predicate of a leaf made executable against one segment's dictionary (a STR constant becomes a code or a LUT; a constant

@@ -108,6 +108,7 @@ typedef struct ColInline
 	SiftCDict  *dict;
 	SiftCChunk	chunk;
 	uint64		id;
+	uint64	   *have;			/* the positions that have a code, NULL: all of them */
 } ColInline;
 
 typedef struct ColUnit
@@ -253,6 +254,7 @@ set_ones(uint64 *bits, uint32 n)
 extern void seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const SiftColPred *p, SiftCTest *t);
 extern bool unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c);
 extern bool unit_chunk(ColUnit *cu, int col, SiftCChunk *c);
+extern bool unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c);
 extern bool unit_inline(ColUnit *cu, int col);
 extern SiftCDict *unit_dict(ColUnit *cu, int col);
 extern const uint64 *unit_allvisible(ColUnit *cu);

@@ -39,9 +39,13 @@ unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c)
 	return sift_cunit_chunk(&cu->v, col, c);
 }
 
-/* The same, an inline STR chunk as codes of a dictionary of its own (unit_dict, dict_id) */
+/*
+ * The same, an inline STR chunk as codes of a dictionary of its own (unit_dict, dict_id): its strings are interned on first use, for the positions
+ * idx[0..m) of a selected read only (NULL: all). A chunk interned for fewer positions than a later read wants is interned again, under a new
+ * dictionary id: the vectors read from the first form keep theirs.
+ */
 bool
-unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
+unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c)
 {
 	if (!unit_chunk_raw(cu, col, c))
 		return false;
@@ -49,14 +53,36 @@ unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
 	{
 		ColInline  *in = &cu->istr[col];
 
+		if (in->dict != NULL && in->have != NULL)
+		{
+			bool		all = idx != NULL;
+
+			for (uint32 k = 0; all && k < m; k++)
+				all = sift_col_bit_test(in->have, idx[k]);
+			if (!all)
+				in->dict = NULL;
+		}
 		if (in->dict == NULL)
 		{
-			sift_cchunk_istr_codes(c, cu->src->arena, &in->dict, &in->chunk);
+			sift_cchunk_istr_codes(c, cu->src->arena, idx, m, &in->dict, &in->chunk);
 			in->id = INL_ID_FLAG | ++cu->src->inl_seq << 8 | col;
+			in->have = NULL;
+			if (idx != NULL)
+			{
+				in->have = MemoryContextAllocZero(cu->src->arena, SIFT_COL_NWORDS(c->n) * sizeof(uint64));
+				for (uint32 k = 0; k < m; k++)
+					in->have[idx[k] >> 6] |= UINT64CONST(1) << (idx[k] & 63);
+			}
 		}
 		*c = in->chunk;
 	}
 	return true;
+}
+
+bool
+unit_chunk(ColUnit *cu, int col, SiftCChunk *c)
+{
+	return unit_chunk_sel(cu, col, NULL, 0, c);
 }
 
 /* Is the STR leaf stored inline in this unit (known from the zones, without reading the chunk) */

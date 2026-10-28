@@ -383,6 +383,7 @@ unit_forget(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 
+	ex->rsel = NULL;
 	memset(ex->uvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->nvec_ok, 0, ex->lay->nleaves * sizeof(bool));
 	memset(ex->gofs, 0, ex->lay->nleaves * sizeof(uint32 *));
@@ -458,8 +459,29 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 	SiftSrcUnit *u = &ex->unit;
 	int			nrw = (nrow + 63) / 64;
 
+	uint64		strdone = 0;
+
+	/* the text tests the source runs on the encoded form come first: they decode no leaf, and leave the others and the aggregates few rows to read */
+	for (int i = 0; i < Min(s->npred, 64); i++)
+	{
+		SiftAggPred *p = s->pred[i];
+		SiftSrcStrTest *str = ex->ps[p->id].str;
+
+		if (str && p->level == 0 && !p->late && !(ex->pushed && ex->pushed[i]) && sift_colsrc_filter_str(ex->src, u, str, rmask))
+		{
+			if (cand)
+				sift_colsrc_filter_str(ex->src, u, str, cand);
+			strdone |= UINT64CONST(1) << i;
+		}
+	}
+	if (!cand && strdone != 0 && !sift_colk->bits_count(rmask, nrw))
+	{
+		ex->qlevel = s->group >= 0;
+		return;
+	}
 	/* a few rows left: the leaves are decoded for them only (not with rows to read again: they are tested on whole leaves, and a selected read of an overflowed slot is an error) */
-	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0) && sift_colsrc_can_read_sel(ex->src) && sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
+	if (!cand && (ex->nfilter > 0 || ex->ntype > 0 || ex->nwide > 0 || strdone != 0) && sift_colsrc_can_read_sel(ex->src) &&
+		sift_colk->bits_count(rmask, nrw) * SPARSE_RATIO < nrow)
 		ex->rsel = rmask;
 	/* row level conjuncts */
 	for (int i = 0; i < s->npred; i++)
@@ -467,7 +489,7 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 		SiftAggPred *p = s->pred[i];
 		SiftSrcStrTest *str = ex->ps[p->id].str;
 
-		if (p->level != 0 || p->late || (ex->pushed && ex->pushed[i]))
+		if (p->level != 0 || p->late || (ex->pushed && ex->pushed[i]) || (i < 64 && (strdone >> i & 1)))
 			continue;
 		if (ex->npoint_elem > 0 && elem_answered(ex, p, sift_colsrc_point_exact(ex->src, u)))
 			continue;
@@ -697,7 +719,6 @@ process_unit(AggExec *ex)
 	if (ex->topn && !topn_viable(ex))
 		return;
 	rmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));
-	ex->rsel = NULL;
 	sift_colsrc_live(ex->src, u, rmask);
 	check_overflow(ex, rmask, false);
 	if (ex->topn && sift_topn_lazy_unit(ex->topn, ex->src, u))

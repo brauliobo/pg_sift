@@ -184,3 +184,4 @@ image_equality	are tests of the source on the stored image	orders	default	Custom
 contain_key_cut	cut the units by the start of a range column	orders	(id)	Custom Scan \(SiftAgg\)	native	no_cut:search_path = contain_key_cut_off,gist:search_path = contain_key_cut_gist	ms	faster33	no
 contain_range	are answered by a `sift_col` index from integer leaves	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_range_gist	ms	faster33	no
 contain_inet	`ip <<= net` 1.4 ms	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_inet_gist	ms	faster33	no
+text_rest_sparse	tests its other conditions on the rows that test left	orders	(id)	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
