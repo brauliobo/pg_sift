@@ -501,6 +501,8 @@ A sub-select is planned in its own query level and its arms are named `L2:single
 - A `cost` refusal that the heap check decided says so: `the scan costs 705, the normal plan 658; 100% of the heap pages are not all-visible, which adds 163 to the scan: VACUUM (ANALYZE) the table` (a rewrite by `CLUSTER`, `VACUUM FULL` or `pg_repack` leaves the visibility map empty).
 - A `cte_cost` refusal says the same when the heap check of the inlined scans keeps the shared CTE (`inline costs 1654 (the scans 1654), the shared CTE 1740 (the work the scans replace 1740); 100% of the heap pages are not all-visible, which adds 547 to the scans: VACUUM (ANALYZE) the table`), and only when the inlined plan would win without that charge in both plans.
 
+- A statement with no aggregate (`SELECT * FROM t WHERE id = 5`) gets one row, the arm `index`: `used` says whether the plan reads a `sift_col` index (an index, index-only or bitmap scan), and when it does not `slug` is `no_source` (the table has no such index), `where` (no condition of the statement is one the index answers) or `cost` (the plan with a `sift_col` index is estimated dearer: `scan_cost` is its cost and `normal_cost` the chosen plan's). The statement is planned a second time with the sequential scan off to tell them apart; nothing is run (test `agg_explain_why_scan`).
+
 ```sql
 SELECT arm, used, slug FROM sift.explain_why('SELECT kind, count(*) FROM plain_table GROUP BY 1');
 ```

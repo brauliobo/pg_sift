@@ -247,7 +247,7 @@ SELECT bool_or(used) AS rewritten FROM sift.explain_why($q$ SELECT o.id, EXISTS 
 SELECT bool_or(used) AS inequality FROM sift.explain_why($q$ SELECT o.id, EXISTS (SELECT 1 FROM items i WHERE i.set_id < o.k AND i.set_id > o.k - 3) AS has FROM key_sets o $q$);
  inequality 
 ------------
- 
+ f
 (1 row)
 
 DROP TABLE key_sets, items, nothing;

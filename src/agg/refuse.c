@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "access/tupdesc.h"
+#include "access/table.h"
 #include "access/xact.h"
 #include "executor/executor.h"
 #include "fmgr.h"
@@ -18,7 +19,10 @@
 #include "nodes/parsenodes.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "commands/defrem.h"
 #include "tcop/tcopprot.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
 #include "utils/builtins.h"
 #include "utils/float.h"
 #include "utils/guc.h"
@@ -310,7 +314,7 @@ report(const ArmNote *a)
 	if (why_store != NULL)
 	{
 		Datum		v[6];
-		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL && a->scan == 0, a->paths == NIL && a->scan == 0};
+		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL && a->scan == 0, (a->paths == NIL && a->scan == 0) || a->normal < 0};
 
 		v[0] = CStringGetTextDatum(a->name);
 		v[1] = BoolGetDatum(a->used);
@@ -514,6 +518,129 @@ agg_stage_end(AggStage *st)
 	stage_volatile = st->outer_volatile;
 }
 
+/* does the plan read a sift_col index (an index, index-only or bitmap scan of the access method) anywhere, in a child, a subquery or an initplan? */
+static bool
+plan_reads_sift_index(const Plan *p, const List *subplans, Oid amoid)
+{
+	List	   *kids = NIL;
+
+	if (p == NULL)
+		return false;
+	switch (nodeTag(p))
+	{
+		case T_IndexScan:
+			if (get_rel_relam(((const IndexScan *) p)->indexid) == amoid)
+				return true;
+			break;
+		case T_IndexOnlyScan:
+			if (get_rel_relam(((const IndexOnlyScan *) p)->indexid) == amoid)
+				return true;
+			break;
+		case T_BitmapIndexScan:
+			if (get_rel_relam(((const BitmapIndexScan *) p)->indexid) == amoid)
+				return true;
+			break;
+		case T_Append:
+			kids = ((const Append *) p)->appendplans;
+			break;
+		case T_MergeAppend:
+			kids = ((const MergeAppend *) p)->mergeplans;
+			break;
+		case T_BitmapAnd:
+			kids = ((const BitmapAnd *) p)->bitmapplans;
+			break;
+		case T_BitmapOr:
+			kids = ((const BitmapOr *) p)->bitmapplans;
+			break;
+		case T_SubqueryScan:
+			if (plan_reads_sift_index(((const SubqueryScan *) p)->subplan, subplans, amoid))
+				return true;
+			break;
+		case T_CustomScan:
+			kids = ((const CustomScan *) p)->custom_plans;
+			break;
+		default:
+			break;
+	}
+	foreach_ptr(Plan, k, kids)
+		if (plan_reads_sift_index(k, subplans, amoid))
+			return true;
+	foreach_node(SubPlan, sp, p->initPlan)
+		if (plan_reads_sift_index(list_nth(subplans, sp->plan_id - 1), subplans, amoid))
+			return true;
+	return plan_reads_sift_index(p->lefttree, subplans, amoid) || plan_reads_sift_index(p->righttree, subplans, amoid);
+}
+
+static bool
+plan_stmt_reads_sift_index(const PlannedStmt *ps, Oid amoid)
+{
+	return plan_reads_sift_index(ps->planTree, ps->subplans, amoid);
+}
+
+/* does a table of the statement have a sift_col index? */
+static bool
+tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
+{
+	foreach_node(RangeTblEntry, rte, ps->rtable)
+	{
+		Relation	rel;
+		bool		found = false;
+
+		if (rte->rtekind != RTE_RELATION)
+			continue;
+		rel = table_open(rte->relid, AccessShareLock);
+		foreach_oid(ix, RelationGetIndexList(rel))
+			found |= get_rel_relam(ix) == amoid;
+		table_close(rel, AccessShareLock);
+		if (found)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The statement has no aggregate, so no arm of the pushdown looked at it: the row "index" says whether the plan reads a sift_col index, and if not why. The statement is
+ * planned again with the sequential scan off: a plan with a sift_col index then is the one the normal plan was estimated cheaper than (cost, with both costs);
+ * none means the table has no such index (no_source) or no condition of the statement is one the index answers (where).
+ */
+static void
+why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps)
+{
+	Oid			amoid = get_am_oid("sift_col", true);
+	int			nest;
+	PlannedStmt *again = NULL;
+
+	if (!OidIsValid(amoid) || ps->commandType != CMD_SELECT)
+		return;
+	if (plan_stmt_reads_sift_index(ps, amoid))
+	{
+		agg_report("index", AGG_REFUSE_NONE, NULL, true, ps->planTree->total_cost, -1);
+		return;
+	}
+	if (!tables_have_sift_index(ps, amoid))
+	{
+		agg_report("index", AGG_REFUSE_NO_SOURCE, NULL, false, 0, -1);
+		return;
+	}
+	nest = NewGUCNestLevel();
+	PG_TRY();
+	{
+		(void) set_config_option("enable_seqscan", "off", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
+		foreach_ptr(PlannedStmt, p2, pg_plan_queries(pg_analyze_and_rewrite_fixedparams(copyObject(raw), sql, NULL, 0, NULL), sql, CURSOR_OPT_PARALLEL_OK, NULL))
+			if (p2->commandType == CMD_SELECT)
+				again = p2;
+	}
+	PG_FINALLY();
+	{
+		AtEOXact_GUC(false, nest);
+	}
+	PG_END_TRY();
+	if (again != NULL && plan_stmt_reads_sift_index(again, amoid))
+		agg_report("index", AGG_REFUSE_COST, NULL, false, again->planTree->total_cost, ps->planTree->total_cost);
+	else
+		agg_report("index", AGG_REFUSE_WHERE, NULL, false, 0, -1);
+}
+
 Datum
 sift_agg_explain_why(PG_FUNCTION_ARGS)
 {
@@ -522,12 +649,14 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	bool		saved = sift_explain_refusals;
 	List	   *trees = pg_parse_query(sql),
 			   *queries;
-	RawStmt    *raw;
+	RawStmt    *raw,
+			   *again_raw;
 
 	if (list_length(trees) != 1 || !IsA((raw = linitial_node(RawStmt, trees))->stmt, SelectStmt))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.explain_why takes one SELECT statement"),
 						errhint("Pass the text of a single SELECT, without a second statement.")));
 	InitMaterializedSRF(fcinfo, 0);
+	again_raw = copyObject(raw);	/* analysis rewrites the sub-selects of the tree in place */
 	queries = pg_analyze_and_rewrite_fixedparams(raw, sql, NULL, 0, NULL);
 	PG_TRY();
 	{
@@ -536,7 +665,11 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 		sift_explain_refusals = true;
 		foreach_ptr(PlannedStmt, ps, pg_plan_queries(queries, sql, CURSOR_OPT_PARALLEL_OK, NULL))
 			if (ps->commandType == CMD_SELECT)
+			{
 				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+				if (tuplestore_tuple_count(why_store) == 0)
+					why_index_arm(again_raw, sql, ps);
+			}
 	}
 	PG_FINALLY();
 	{

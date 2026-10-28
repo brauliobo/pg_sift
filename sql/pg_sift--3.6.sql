@@ -625,7 +625,7 @@ COMMENT ON FUNCTION sift.stats_reset() IS 'Resets the session counters that sift
 CREATE FUNCTION sift.explain_why(query text, OUT arm text, OUT used bool, OUT slug text, OUT reason text, OUT scan_cost float8, OUT normal_cost float8)
 	RETURNS SETOF record
 	AS 'MODULE_PATHNAME', 'sift_agg_explain_why' LANGUAGE C STRICT VOLATILE;
-COMMENT ON FUNCTION sift.explain_why(text) IS 'Why each candidate path of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run: one row per arm with the first reason it gave up.';
+COMMENT ON FUNCTION sift.explain_why(text) IS 'Why each candidate path of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run: one row per arm with the first reason it gave up; a statement with no aggregate gets the row index: whether the plan reads a sift_col index and, if not, no_source, where or cost.';
 
 -- The slugs sift.explain_why and sift.stats() name, with their class: 'limit' when the query has more of something than a fixed limit of the
 -- extension allows (docs/LIMITS.md), 'semantic' otherwise.

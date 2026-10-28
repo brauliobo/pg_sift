@@ -48,3 +48,6 @@ ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD
 	OPERATOR 18 pg_catalog.@> (anyrange, anyelement),
 	OPERATOR 3 pg_catalog.= (inet, inet), OPERATOR 21 pg_catalog.<< (inet, inet), OPERATOR 22 pg_catalog.<<= (inet, inet), OPERATOR 23 pg_catalog.>> (inet, inet),
 	OPERATOR 24 pg_catalog.>>= (inet, inet), OPERATOR 25 pg_catalog.&& (inet, inet);
+
+-- sift.explain_why answers a statement with no aggregate: the row index
+COMMENT ON FUNCTION sift.explain_why(text) IS 'Why each candidate path of the aggregate pushdown kept or left the normal plan for one SELECT, planned and not run: one row per arm with the first reason it gave up; a statement with no aggregate gets the row index: whether the plan reads a sift_col index and, if not, no_source, where or cost.';
