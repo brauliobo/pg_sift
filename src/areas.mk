@@ -4,9 +4,10 @@
 SIFT_DIRS    := $(patsubst %/,%,$(wildcard $(SRC)/*/))
 SIFT_INCDIRS := $(SRC)
 SIFT_INC     := $(addprefix -I,$(SIFT_INCDIRS))
-# The code generation baseline of every build of src/: portable x86-64 (the vector kernels opt in per function with target attributes); the compiler's own
+# The code generation baseline of every build of src/: portable x86-64 (the vector kernels opt in per function with target attributes) and plain armv8-a on
+# Linux/AArch64 (NEON, no LSE or crypto: a distribution's pg_config may carry -march=armv8.2-a+crypto, which would not run on every Arm CPU); the compiler's own
 # default elsewhere, where -march=x86-64 is an error.
-SIFT_BASE_ISA := $(if $(filter x86_64,$(shell uname -m)),-march=x86-64 -mtune=generic)
+SIFT_BASE_ISA := $(if $(filter x86_64,$(shell uname -m)),-march=x86-64 -mtune=generic,$(if $(filter Linux-aarch64,$(shell uname -s)-$(shell uname -m)),-march=armv8-a -mtune=generic))
 # The include directories of the server headers' own dependencies (libintl.h from Homebrew's gettext), for the builds outside PGXS that include postgres.h.
 SIFT_PGCPP := $(shell pg_config --cppflags)
 # The matching link flags: the library directories (lz4, zstd) and libintl, which the server's libpgport needs where gettext is separate (not the whole of --libs: -lnuma and
