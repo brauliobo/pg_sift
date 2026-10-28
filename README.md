@@ -76,7 +76,7 @@ The last row is a month of random dates, which no unit can skip: the gain is the
 
 ### Install
 
-PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). Release packages (x86-64 and arm64) cover PostgreSQL 17, 18 and 19: take the file of your server's major `N` (the `19` packages are built against PGDG's `19~rc1` until it ships 19.0).
+PostgreSQL 17, 18 and 19 on Linux (x86-64 and arm64); 17 and 18 on macOS arm64 (Homebrew has no `postgresql@19` yet: build 19 from source). Release packages (x86-64 and arm64/aarch64, any aarch64 Linux: AWS Graviton, Ampere, Azure and Google Arm, Raspberry Pi 4/5) cover PostgreSQL 17, 18 and 19: take the file of your server's major `N` (the `19` packages are built against PGDG's `19~rc1` until it ships 19.0).
 
 | Where | How |
 |---|---|

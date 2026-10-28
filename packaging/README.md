@@ -40,6 +40,15 @@ The server and its development files come from PGDG in the build container: apt 
 component `19` of the same suite and the yum repository `pgdg19-updates-testing`, which `container.sh` enables when the stable `pgdgN` does not exist; the library is built against the release candidate and the smoke test
 runs on it. The build is the same for every major (`src/core/compat.h` holds the differences in the source). `scripts/package.sh --selftest` (in `scripts/ci.sh --selftest`) checks the guard and that no recipe names a literal major.
 
+## arm64 (aarch64)
+
+The arm64 packages are generic AArch64: they run on any aarch64 Linux whose distribution matches the package family (AWS Graviton, Ampere, Azure and Google Cloud Arm instances, a Raspberry Pi 4 or 5, a Linux VM on Apple silicon).
+
+- **Baseline.** No `-march`, `-mcpu` or feature flag is passed: the compiler's default, plain `armv8-a`, which includes Advanced SIMD (NEON). The SIMD dispatch (`sift.simd`, `core/cpu.c`) takes NEON at compile time on arm64, so the level is `neon` on every aarch64 CPU; nothing depends on CRC32, LSE, dot-product, FP16 or SVE at compile time (`src/` has no `__ARM_FEATURE_*`, `getauxval` or CRC32 intrinsic; the shipped `pg_sift.so` has no CRC32, dot-product, FP16 or SVE instruction). The only LSE instructions in `pg_sift.so` are the six of libgcc's outline-atomics helpers (`__aarch64_cas*`, `__aarch64_ldadd*`, `__aarch64_swp*`), which the helpers pick at run time after testing the CPU.
+- **Names and sources.** `postgresql-N-pg-sift_X.Y.Z-1_arm64.deb` from PGDG `postgresql-N` on Debian 13 and Ubuntu 24.04, `pg_sift_N-X.Y.Z-1.el9.aarch64.rpm` from PGDG `postgresqlN-server` on Rocky, Alma and RHEL 9 and 10, installed with the same commands as x86-64.
+- **Build.** The `release` workflow builds them on the hosted `ubuntu-24.04-arm` runner and installs each in fresh arm64 containers of the images above. GCC 14.2 of Debian 13 failed to compile `src/col/codec_vec.h` on arm64 until the type of its double vectors lost an alignment attribute.
+- **AWS (Graviton).** On an EC2 Graviton instance with Debian 13 or Ubuntu 24.04: `sudo apt install ./postgresql-N-pg-sift_X.Y.Z-1_arm64.deb`; with a RHEL-compatible AMI: `sudo dnf install ./pg_sift_N-X.Y.Z-1.el9.aarch64.rpm`; then `CREATE EXTENSION pg_sift`. Amazon RDS and Aurora do not load extensions that are not on their list, so pg_sift needs a self-managed PostgreSQL (EC2, or a container).
+
 ## PGXN archive
 
 PGXN takes a zip of the tag with `META.json` at the top of it:
