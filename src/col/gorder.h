@@ -25,12 +25,23 @@
 #define SIFT_CGORD_VERSION	1
 #define SIFT_CGORD_VERSION_GROUP	2
 #define SIFT_CGORD_GRPENT	24
-#define SIFT_CGORD_ROWS		1024
+#define SIFT_CGORD_ROWS		1024		/* the entries of a chunk written below column format minor 30, and the most a chunk holds (the slots of the arrays) */
+#define SIFT_CGORD_ROWS_FINE	512		/* from minor 30: a seek and a cursor decode half of the entries */
 #define SIFT_CGORD_HDR		32
 #define SIFT_CGORD_DIRENT	24
 #define SIFT_CORDER_MAX_ROWS 16384	/* a range of the keys with more rows is read from the units: the addresses of a range are sorted by position before the heap is read (col/scan.c, prune_range_tids) */
 #define SIFT_CGORD_MEM_ROWS	4096		/* rows of the write buffers a scan sorts for the order, at least (sift_col_gorder_open) */
 #define SIFT_CGORD_CAP		(SIFT_CGORD_ROWS + 8)		/* slots of the arrays sift_cgord_decode fills */
+
+/* A chunk of a global order decoded whole: the seek that ends in a chunk leaves it to the cursor that reads the entries from there (at UINT32_MAX: none) */
+typedef struct SiftCGOrdBuf
+{
+	uint32		at;				/* the position of the chunk's first entry */
+	uint32		cm;				/* the entries of the chunk decoded: the first cm */
+	uint32		rows;			/* the entries of the chunk */
+	int64		key[SIFT_CGORD_CAP];
+	uint64		addr[SIFT_CGORD_CAP];
+} SiftCGOrdBuf;
 
 typedef struct SiftCGOrdHdr
 {
@@ -62,11 +73,17 @@ typedef struct SiftCGOrdDir
 
 /*
  * Appends the block of the key (key[i], tid[i]) of the rows with a value and the addresses ntid of those without (the lists are left as they are); the addresses
- * are heap addresses (block << 16 | offset, offsets below 512). The block is a multiple of 8 bytes.
+ * are heap addresses (block << 16 | offset, offsets below 512). The chunks hold SIFT_CGORD_ROWS_FINE entries (a block of SIFT_CGORD_ROWS is read as well). The block is a multiple of 8 bytes.
  */
 extern void sift_cgord_build(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, StringInfo out);
 /* The same grouped by the leaf gcol: group[i] is the group of entry i of key / tid, ngroup[i] that of ntid[i]; every entry has one */
 extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint32 nvals, uint64 *ntid, int64 *ngroup, uint32 nnull, int gcol, StringInfo out);
+
+#ifdef SIFT_TESTING
+extern int	sift_test_col_gorder_rows;		/* sift.test_col_gorder_rows: 1024 writes the chunks of minor 21, 0 the current ones */
+#endif
+/* The entries of the chunks a block is written with: SIFT_CGORD_ROWS_FINE (SIFT_CGORD_ROWS in a test that asks for it, with the segment format 21) */
+extern uint32 sift_cgord_rows(void);
 
 /* Does the leaf get a block: a plain integer, date or timestamp attribute of the top level whose key is the integer itself (what the scan reads back as the value) */
 extern bool sift_cgord_leaf_ok(const SiftColSchema *s, const SiftColDef *d);
@@ -77,8 +94,8 @@ extern bool sift_cgord_head(const uint8 *blk, uint64 len, SiftCGOrdHdr *h);
 /* The groups of a version 2 block of len bytes whose header was parsed, false when they are out of the block, not ascending, or do not tile the entries */
 extern bool sift_cgord_groups(const uint8 *blk, const SiftCGOrdHdr *h, uint64 len, SiftCGOrdGrp *out);
 
-/* The directory entry of chunk c of a block whose header was parsed, false when the entry is out of the block or its offsets are */
-extern bool sift_cgord_dirent(const uint8 *dir, const SiftCGOrdHdr *h, uint64 len, uint32 c, SiftCGOrdDir *d);
+/* The directory entry ent (SIFT_CGORD_DIRENT bytes) of chunk c of a block whose header was parsed, false when the entry is out of the block or its offsets are */
+extern bool sift_cgord_dirent(const uint8 *ent, const SiftCGOrdHdr *h, uint64 len, uint32 c, SiftCGOrdDir *d);
 
 /* Entries of chunk c: crows, or what is left in the last one */
 static inline uint32

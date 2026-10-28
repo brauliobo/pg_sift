@@ -126,7 +126,7 @@ SELECT sift.col_promote('go_n'::regclass) >= 0 AS promoted;
  t
 (1 row)
 
-SELECT count(*) FILTER (WHERE format < 21) AS old_segments, count(*) FILTER (WHERE format = 21) AS new_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
+SELECT count(*) FILTER (WHERE format < 21) AS old_segments, count(*) FILTER (WHERE format >= 21) AS new_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
  old_segments | new_segments 
 --------------+--------------
             1 |            1

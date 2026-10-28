@@ -101,10 +101,11 @@ q clean "CREATE INDEX facts_late_hll ON facts USING sift_col (id, g, n) WITH (cu
 check "hll_columns set after the build warns that the old units have no sketch, with the REINDEX" grep -q -E '^warn +facts_late_hll +option +hll_columns with column format [0-9]+ .*REINDEX INDEX CONCURRENTLY public\.facts_late_hll;' <<<"$(uc clean)"
 check "to 3.3: an index with sketches (format 20) is a blocker that says to reset hll_columns" grep -q -E '^blocker +facts_hll .*ALTER INDEX facts_hll RESET \(hll_columns\), then REINDEX INDEX facts_hll' <<<"$(uc --to 3.3 clean)"
 q clean "DROP INDEX facts_late_hll, facts_hll" >/dev/null
-# the global order of order_array_columns is column format 21, which 3.3 cannot read
+# the global order of order_array_columns is column format 30 (chunks of 512 entries; 21 with 1,024), which 3.5 cannot read
 q clean "CREATE INDEX facts_gord ON facts USING sift_col (id, g, n) WITH (order_columns = 'id', order_array_columns = 'id')" >/dev/null
-check "to 3.3: an index with a global order (format 21) is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
-check "to 3.4: the same index is ok" test -z "$(row "$(uc --to 3.4 clean)" blocker facts_gord)"
+check "to 3.3: an index with a global order (format 30) is a blocker" test -n "$(row "$(uc --to 3.3 clean)" blocker facts_gord)"
+check "to 3.5: the same index is a blocker that says to turn order_array_columns off" grep -q -E "^blocker +facts_gord .*ALTER INDEX facts_gord SET \(order_array_columns = 'off'\), then REINDEX INDEX facts_gord" <<<"$(uc --to 3.5 clean)"
+check "to 3.6: the same index is ok" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_gord)"
 q clean "DROP INDEX facts_gord" >/dev/null
 # the key table of a segment is column format 22: 3.4 refuses it, an index written with key_table = off is column format 15
 q clean "CREATE TABLE key_facts AS SELECT i AS id, i % 20 AS k, md5(i::text) || md5(i::text || 'a') AS pad FROM generate_series(1, 20000) i" \

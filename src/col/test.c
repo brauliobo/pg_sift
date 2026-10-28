@@ -1781,7 +1781,7 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 			continue;
 		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
 		if (sift_cseg_gorder(seg, leaf, &entries, &values))
-			for (uint32 c = 0; c * SIFT_CGORD_ROWS < entries; c++)
+			for (uint32 c = 0, base = 0; base < entries; c++)
 			{
 				uint32		m = sift_cseg_gorder_chunk(seg, leaf, c, kv, av);
 
@@ -1790,7 +1790,7 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 					ItemPointerData tid;
 					Datum		v[5];
 					bool		nulls[5] = {false};
-					uint32		pos = c * SIFT_CGORD_ROWS + k;
+					uint32		pos = base + k;
 
 					ItemPointerSet(&tid, (BlockNumber) (av[k] >> 16), (OffsetNumber) (av[k] & 0xFFFF));
 					v[0] = Int64GetDatum(i);
@@ -1801,6 +1801,7 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 					nulls[2] = pos >= values;
 					tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 				}
+				base += m;
 			}
 		sift_cseg_close(seg);
 	}

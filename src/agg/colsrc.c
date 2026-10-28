@@ -353,15 +353,15 @@ sift_colsrc_gorder_range(SiftSrcSource *src, int i, int leaf, uint32 *vs, uint32
 }
 
 uint32
-sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+sift_colsrc_gorder_seek(SiftSrcSource *src, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep)
 {
-	return src->prov->gorder_seek(src->impl, i, leaf, vs, ve, key, after);
+	return src->prov->gorder_seek(src->impl, i, leaf, vs, ve, key, after, keep);
 }
 
-uint32
-sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr)
+void
+sift_colsrc_gorder_head(SiftSrcSource *src, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
-	return src->prov->gorder_head(src->impl, i, leaf, c, w, key, addr);
+	src->prov->gorder_head(src->impl, i, leaf, p, w, buf);
 }
 
 void

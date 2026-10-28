@@ -645,12 +645,12 @@ notice_order_array(Relation index)
 	if (autolist)
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns = 'auto' adds the sorted keys and heap addresses of %s to the sorted runs", RelationGetRelationName(index), names.data),
-				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 30, which a library before 3.6 cannot read. The build chose them from the statistics of the table: 100,000 rows or more, 1,000 or more distinct values, a correlation with the heap order under 0.99 (the zones cannot skip units), and at most a quarter of the index (a table with no statistics is analyzed first).", bytes / rows, bytes / (1024.0 * 1024.0)),
 				 errhint("A range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit, and ORDER BY column LIMIT n reads n entries, whatever the number of units. ALTER INDEX .. SET (order_array_columns = 'off'), then REINDEX, drops it; set sift.col_format_minor to 14 to keep the sorted runs only.")));
 	else
 		ereport(NOTICE,
 				(errmsg("sift_col index \"%s\": order_array_columns adds the sorted keys and heap addresses to the sorted runs of %d column%s", RelationGetRelationName(index), n, n == 1 ? "" : "s"),
-				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 21, which a library before 3.4 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
+				 errdetail("%.1f bytes a row for each column, %.1f MB together; the segments are column format minor 30, which a library before 3.6 cannot read.", bytes / rows, bytes / (1024.0 * 1024.0)),
 				 errhint("ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.")));
 }
 

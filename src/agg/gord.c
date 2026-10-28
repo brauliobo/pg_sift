@@ -20,8 +20,6 @@ typedef struct GCur
 	uint32		ve;
 	uint32		ns;				/* the NULL rows of the group of the scan: [ns, ne) */
 	uint32		ne;
-	uint32		chunk;			/* the chunk in key/addr, UINT32_MAX: none */
-	uint32		cm;				/* the entries of the chunk decoded: the first cm, the scan asks for more when it goes past them */
 	int			region;			/* 0, 1: the regions in the order of the scan; 2: done */
 	uint32		pos;			/* the next entry of the region (a group of a descending scan: pos in [gs, ge)) */
 	uint32		end;
@@ -31,15 +29,8 @@ typedef struct GCur
 	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
 	int64		k;
 	uint64		tid;
-	int64	   *key;			/* a GBuf of the pool */
-	uint64	   *addr;
+	SiftCGOrdBuf *buf;			/* from the pool: the chunk of the entry in buf->key / buf->addr (a seek may have left it): the first buf->cm entries, the scan asks for more when it goes past them */
 } GCur;
-
-typedef struct GBuf
-{
-	int64		key[SIFT_CGORD_CAP];
-	uint64		addr[SIFT_CGORD_CAP];
-} GBuf;
 
 /*
  * The 16 KB of keys and addresses of a cursor are the largest buffers of a lookup, and a block of that size is a malloc of its own that goes back to the kernel with
@@ -48,17 +39,34 @@ typedef struct GBuf
  */
 #define GBUF_KEEP	64
 static MemoryContext gbuf_cx;
-static GBuf *gbuf_spare[GBUF_KEEP];
+static SiftCGOrdBuf *gbuf_spare[GBUF_KEEP];
 static int	ngbuf_spare;
 
-static GBuf *
+static void
+gbuf_put(SiftCGOrdBuf *b)
+{
+	if (ngbuf_spare < GBUF_KEEP)
+		gbuf_spare[ngbuf_spare++] = b;
+	else
+		pfree(b);
+}
+
+static SiftCGOrdBuf *
 gbuf_get(void)
 {
+	SiftCGOrdBuf *b;
+
 	if (ngbuf_spare > 0)
-		return gbuf_spare[--ngbuf_spare];
-	if (gbuf_cx == NULL)
-		gbuf_cx = AllocSetContextCreate(TopMemoryContext, "sift cache cursors", ALLOCSET_DEFAULT_SIZES);
-	return MemoryContextAlloc(gbuf_cx, sizeof(GBuf));
+		b = gbuf_spare[--ngbuf_spare];
+	else
+	{
+		if (gbuf_cx == NULL)
+			gbuf_cx = AllocSetContextCreate(TopMemoryContext, "sift cache cursors", ALLOCSET_DEFAULT_SIZES);
+		b = MemoryContextAlloc(gbuf_cx, sizeof(SiftCGOrdBuf));
+	}
+	b->at = UINT32_MAX;
+	b->cm = b->rows = 0;
+	return b;
 }
 
 struct SiftGOrd
@@ -88,33 +96,26 @@ gord_release(void *arg)
 	SiftGOrd   *g = arg;
 
 	for (int i = 0; i < g->ncur; i++)
-	{
-		if (ngbuf_spare < GBUF_KEEP)
-			gbuf_spare[ngbuf_spare++] = (GBuf *) g->cur[i]->key;
-		else
-			pfree(g->cur[i]->key);
-	}
+		gbuf_put(g->cur[i]->buf);
 }
 
 /* the chunk of the entry p is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
 static pg_noinline void
 cur_fill(SiftGOrd *g, GCur *c, uint32 p)
 {
-	uint32		ch = p / SIFT_CGORD_ROWS,
-				w = Max(c->chunk == ch ? c->cm * 2 : g->head, p % SIFT_CGORD_ROWS + 1);
+	uint32		w = p - c->buf->at < c->buf->rows ? c->buf->cm * 2 : g->head;
 
-	c->cm = sift_colsrc_gorder_head(g->src, c->src, g->leaf, ch, Min(w, (uint32) SIFT_CGORD_ROWS), c->key, c->addr);
-	c->chunk = ch;
+	sift_colsrc_gorder_head(g->src, c->src, g->leaf, p, w, c->buf);
 }
 
 /* the entry p of the cursor's source */
 static inline void
 cur_at(SiftGOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 {
-	if (c->chunk != p / SIFT_CGORD_ROWS || p % SIFT_CGORD_ROWS >= c->cm)
+	if (p - c->buf->at >= c->buf->cm)
 		cur_fill(g, c, p);
-	*key = c->key[p % SIFT_CGORD_ROWS];
-	*addr = c->addr[p % SIFT_CGORD_ROWS];
+	*key = c->buf->key[p - c->buf->at];
+	*addr = c->buf->addr[p - c->buf->at];
 }
 
 /* a descending scan reads the entries of a key in the order of their addresses, the keys backwards: the group [gs, ge) ends where the last one starts */
@@ -206,7 +207,6 @@ cur_next(SiftGOrd *g, GCur *c)
 static void
 cur_start(SiftGOrd *g, GCur *c)
 {
-	c->chunk = UINT32_MAX;
 	c->region = 0;
 	c->have = false;
 	cur_enter(g, c);
@@ -236,7 +236,6 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	for (int i = 0; i < n; i++)
 	{
 		GCur	   *c = MemoryContextAlloc(cxt, sizeof(GCur));
-		GBuf	   *gb;
 		uint32		rvs,
 					rve;
 
@@ -244,15 +243,15 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 		c->src = i;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
+		c->buf = gbuf_get();
 		sift_colsrc_gorder_range(src, i, leaf, &rvs, &rve, &c->ns, &c->ne);
-		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false) : rvs;
-		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true) : rve;
-		if (g->bounded && b->has_lo && b->has_hi && b->lo > b->hi)
+		c->vs = g->bounded && b->has_lo ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->lo, false, desc ? NULL : c->buf) : rvs;
+		c->ve = g->bounded && b->has_hi ? sift_colsrc_gorder_seek(src, i, leaf, rvs, rve, b->hi, true, desc ? c->buf : NULL) : rve;
+		if ((g->bounded && b->has_lo && b->has_hi && b->lo > b->hi) || (c->vs >= c->ve && (g->bounded || c->ns >= c->ne)))
+		{
+			gbuf_put(c->buf);
 			continue;
-		if (c->vs >= c->ve && (g->bounded || c->ns >= c->ne))
-			continue;
-		c->key = (int64 *) (gb = gbuf_get())->key;
-		c->addr = gb->addr;
+		}
 		g->cur[g->ncur++] = c;
 	}
 	g->head = Max(GORD_HEAD_MIN, Min((uint32) SIFT_CGORD_ROWS, g->ncur > 0 ? 5 * (uint32) Max(rows, 0) / (4 * g->ncur) : 0));

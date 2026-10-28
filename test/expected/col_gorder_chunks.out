@@ -1,0 +1,136 @@
+-- The chunks of the global order of a leaf have 512 entries (column format minor 30) and, in a segment written before, 1,024 (minor 21; sift.test_col_gorder_rows = 1024 writes them): a
+-- seek, a cursor, a range of addresses and the verify read both, one table holds segments of both, and a merge writes the current ones.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.async_maintenance = off;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE gc (id int, k int, ts timestamp, pad text DEFAULT repeat('x', 100));
+ALTER TABLE gc ALTER COLUMN pad SET STORAGE PLAIN;
+SET sift.test_col_gorder_rows = 1024;
+INSERT INTO gc (id, k, ts) SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i * 7919) % 50021 END, timestamp '2024-01-01' + ((i * 104729::bigint) % 8000000) * interval '1 second' FROM generate_series(1, 20000) i;
+CREATE INDEX gc_i ON gc USING sift_col (id, k, ts) WITH (write_buffer_limit = 256, order_columns = 'k, ts', order_array_columns = 'k, ts');
+NOTICE:  sift_col index "gc_i": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 2 columns
+DETAIL:  3.0 bytes a row for each column, 0.1 MB together; the segments are column format minor 30, which a library before 3.6 cannot read.
+HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
+RESET sift.test_col_gorder_rows;
+INSERT INTO gc (id, k, ts) SELECT 20000 + i, CASE WHEN i % 89 = 0 THEN NULL ELSE (i * 6841) % 50021 END, timestamp '2024-01-01' + ((i * 7919::bigint) % 8000000) * interval '1 second' FROM generate_series(1, 20000) i;
+SELECT sift.col_promote('gc_i'::regclass) >= 0 AS promoted;
+ promoted 
+----------
+ t
+(1 row)
+
+VACUUM (ANALYZE) gc;
+SELECT sift.col_verify('gc_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT format, count(*) AS segments FROM sift.col_segments('gc_i') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+ format | segments 
+--------+----------
+     21 |        1
+     30 |        4
+(2 rows)
+
+-- the entries of both kinds of segment ascend
+SELECT seg, count(*) AS entries, bool_and(key >= prev) FILTER (WHERE NOT null_row) AS ascending
+FROM (SELECT seg, pos, key, null_row, lag(key) OVER (PARTITION BY seg ORDER BY pos) AS prev FROM sift._test_col_gorder('gc_i', 1)) e GROUP BY seg ORDER BY seg;
+ seg | entries | ascending 
+-----+---------+-----------
+   0 |   20000 | t
+   1 |    6385 | t
+   2 |    6384 | t
+   3 |    6385 | t
+   4 |     846 | t
+(5 rows)
+
+-- the answers through the arrays are the heap's, for ranges that start and end inside a chunk of either size, across chunks, and past the ends
+CREATE FUNCTION gc_ids(w text, o text, via_sift boolean) RETURNS bigint[] LANGUAGE plpgsql AS $$
+DECLARE r bigint[];
+BEGIN
+	PERFORM set_config('sift.enable_col_scan', via_sift::text, true), set_config('sift.enable_topn', via_sift::text, true), set_config('enable_seqscan', (NOT via_sift)::text, true),
+			set_config('enable_indexscan', via_sift::text, true), set_config('enable_bitmapscan', via_sift::text, true), set_config('enable_indexonlyscan', via_sift::text, true);
+	EXECUTE format('SELECT coalesce(array_agg(id), ''{}'') FROM (SELECT id FROM gc WHERE %s %s) z', w, o) INTO r;
+	RETURN r;
+END $$;
+SELECT w, o, gc_ids(w, o, true) = gc_ids(w, o, false) AS same, cardinality(gc_ids(w, o, false)) AS n
+FROM (VALUES
+	('k BETWEEN 100 AND 300', 'ORDER BY id'),
+	('k BETWEEN 100 AND 5000', 'ORDER BY id'),
+	('k >= 49000', 'ORDER BY id'),
+	('k < 50', 'ORDER BY id'),
+	('k = 7919', 'ORDER BY id'),
+	('k BETWEEN -5 AND 100000', 'ORDER BY id'),
+	('k > 60000', 'ORDER BY id'),
+	('ts >= timestamp ''2024-03-01'' AND ts < timestamp ''2024-03-02''', 'ORDER BY id'),
+	('k IS NULL', 'ORDER BY id'),
+	('k >= 10000', 'ORDER BY k, id LIMIT 10'),
+	('k >= 10000', 'ORDER BY k DESC, id LIMIT 10'),
+	('k >= 10000', 'ORDER BY k, id LIMIT 10 OFFSET 700'),
+	('true', 'ORDER BY k, id LIMIT 300'),
+	('true', 'ORDER BY k DESC, id LIMIT 300 OFFSET 1500'),
+	('ts >= timestamp ''2024-02-01''', 'ORDER BY ts, id LIMIT 25'),
+	('ts >= timestamp ''2024-02-01''', 'ORDER BY ts DESC, id LIMIT 25'),
+	('k > 20000', 'ORDER BY k, id LIMIT 2000 OFFSET 11')
+) v(w, o);
+                              w                               |                     o                     | same |   n   
+--------------------------------------------------------------+-------------------------------------------+------+-------
+ k BETWEEN 100 AND 300                                        | ORDER BY id                               | t    |   161
+ k BETWEEN 100 AND 5000                                       | ORDER BY id                               | t    |  3876
+ k >= 49000                                                   | ORDER BY id                               | t    |   801
+ k < 50                                                       | ORDER BY id                               | t    |    41
+ k = 7919                                                     | ORDER BY id                               | t    |     1
+ k BETWEEN -5 AND 100000                                      | ORDER BY id                               | t    | 39570
+ k > 60000                                                    | ORDER BY id                               | t    |     0
+ ts >= timestamp '2024-03-01' AND ts < timestamp '2024-03-02' | ORDER BY id                               | t    |   435
+ k IS NULL                                                    | ORDER BY id                               | t    |   430
+ k >= 10000                                                   | ORDER BY k, id LIMIT 10                   | t    |    10
+ k >= 10000                                                   | ORDER BY k DESC, id LIMIT 10              | t    |    10
+ k >= 10000                                                   | ORDER BY k, id LIMIT 10 OFFSET 700        | t    |    10
+ true                                                         | ORDER BY k, id LIMIT 300                  | t    |   300
+ true                                                         | ORDER BY k DESC, id LIMIT 300 OFFSET 1500 | t    |   300
+ ts >= timestamp '2024-02-01'                                 | ORDER BY ts, id LIMIT 25                  | t    |    25
+ ts >= timestamp '2024-02-01'                                 | ORDER BY ts DESC, id LIMIT 25             | t    |    25
+ k > 20000                                                    | ORDER BY k, id LIMIT 2000 OFFSET 11       | t    |  2000
+(17 rows)
+
+-- the range reads the addresses of both kinds of segment and no unit
+SELECT p.units AS units_with_addresses, p.rows = 0 AS no_row_read, f.units > p.units AS fewer_units
+FROM sift._test_col_counters('gc_i', '1:ge:100;1:le:300', 24) p, sift._test_col_counters('gc_i', '1:ge:100;1:le:300', 0) f;
+ units_with_addresses | no_row_read | fewer_units 
+----------------------+-------------+-------------
+                    0 | t           | t
+(1 row)
+
+-- a merge writes one segment of the current chunks, and the answers stay the heap's
+SELECT sift.col_merge('gc_i'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT sift.col_verify('gc_i', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT format, count(*) AS segments FROM sift.col_segments('gc_i') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
+ format | segments 
+--------+----------
+     30 |        1
+(1 row)
+
+SELECT gc_ids('k BETWEEN 100 AND 5000', 'ORDER BY id', true) = gc_ids('k BETWEEN 100 AND 5000', 'ORDER BY id', false) AS range_same,
+	   gc_ids('k >= 10000', 'ORDER BY k DESC, id LIMIT 10', true) = gc_ids('k >= 10000', 'ORDER BY k DESC, id LIMIT 10', false) AS desc_same;
+ range_same | desc_same 
+------------+-----------
+ t          | t
+(1 row)
+
+DROP TABLE gc;
+DROP FUNCTION gc_ids(text, text, boolean);
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

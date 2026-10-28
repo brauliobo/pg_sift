@@ -63,7 +63,7 @@ SELECT count(*) AS entries FROM sift._test_col_gorder('go_n', 0);
 ALTER INDEX go_n SET (order_array_columns = 'id, b');
 INSERT INTO go (id, b) SELECT 30000 + i, i FROM generate_series(1, 100) i;
 SELECT sift.col_promote('go_n'::regclass) >= 0 AS promoted;
-SELECT count(*) FILTER (WHERE format < 21) AS old_segments, count(*) FILTER (WHERE format = 21) AS new_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
+SELECT count(*) FILTER (WHERE format < 21) AS old_segments, count(*) FILTER (WHERE format >= 21) AS new_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_n', 0);
 SELECT sift.col_verify('go_n');
 -- sift.upgrade_commands() lists the REINDEX that gives the older segments their array

@@ -128,7 +128,7 @@ struct SiftColSegWriter
 	CountAcc   *cnt;			/* [ncols], NULL unless the segment counts the rows of the codes of some leaf (option count_columns, minor 24) */
 	PointAcc   *pt;				/* [ncols], NULL unless the segment keeps point directories (sift_colw_set_preagg) */
 	bool		anypoints;		/* some leaf has a point directory to write */
-	bool		anyord;			/* some leaf has a global order block to write (minor 21) */
+	bool		anyord;			/* some leaf has a global order block to write (minor 30; minor 21 had chunks of SIFT_CGORD_ROWS) */
 	bool		anytids;		/* ... and one of them lists heap addresses, or the rows of the values of a list in the frame of the addresses (column format minor 16) */
 	bool		inexact;		/* some unit lacks its kinds: the segment keeps the minor it has (minor 14 promises complete kinds) */
 	uint8	   *dform;			/* [ncols] the dictionary is written in blocks to be read in place (DICT_BLOCKS), and with the order to be searched in place (DICT_LOOKUP): minor 14; 0: the compact form */
@@ -896,7 +896,7 @@ build_points(SiftColSegWriter *w)
 				a->onvals = a->n;
 				sift_cgord_build(a->key, a->tid, a->n, a->ntid, a->nn, &a->otab);
 			}
-			a->onch = (a->onent + SIFT_CGORD_ROWS - 1) / SIFT_CGORD_ROWS;
+			a->onch = (a->onent + sift_cgord_rows() - 1) / sift_cgord_rows();
 			w->anyord = a->onch > 0 || w->anyord;
 		}
 		if (a->want && !a->bad && a->n > 0)
@@ -1552,7 +1552,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 	if (w->anypoints)
 		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
 	if (w->anyord)
-		w->format = Max(w->format, SIFT_COL_FORMAT_GORDER);
+		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
 	if (w->keyed)
 		w->format = Max(w->format, SIFT_COL_FORMAT_KEYED);
 	if (w->schema->contain)

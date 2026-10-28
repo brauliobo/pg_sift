@@ -669,15 +669,15 @@ col_gorder_range(void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns
 }
 
 static uint32
-col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after)
+col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep)
 {
-	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after);
+	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after, keep);
 }
 
-static uint32
-col_gorder_head(void *impl, int i, int leaf, uint32 c, uint32 w, int64 *key, uint64 *addr)
+static void
+col_gorder_head(void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
-	return sift_col_gorder_head(((ColSource *) impl)->cs, i, leaf, c, w, key, addr);
+	sift_col_gorder_head(((ColSource *) impl)->cs, i, leaf, p, w, buf);
 }
 
 static void

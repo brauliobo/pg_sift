@@ -16,6 +16,8 @@
 #include "col/runs.h"
 #include "core/store.h"
 
+struct SiftCGOrdBuf;
+
 #define SIFT_COL_SEG_MAGIC_UNIT		0x554C4F43	/* "COLU" */
 
 /* SBDIR entry */
@@ -298,12 +300,13 @@ extern void sift_cseg_verify_points(SiftColSegment *seg);
  */
 extern bool sift_cseg_gorder(SiftColSegment *seg, int col, uint32 *entries, uint32 *values);
 extern uint32 sift_cseg_gorder_chunk(SiftColSegment *seg, int col, uint32 c, int64 *key, uint64 *addr);
+extern void sift_cseg_gorder_fill(SiftColSegment *seg, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);	/* _head for the chunk that holds entry p, into buf */
 extern uint32 sift_cseg_gorder_head(SiftColSegment *seg, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);	/* _chunk for the first w entries of the chunk only */
 extern int	sift_cseg_gorder_group(SiftColSegment *seg, int col);	/* the leaf the block is grouped by, -1 when it is not */
 extern void sift_cseg_gorder_range(SiftColSegment *seg, int col, int64 group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);	/* the entries of a group (all of a block that is not grouped) */
 extern uint32 sift_cseg_gorder_count(SiftColSegment *seg, int col, int64 lo, int64 hi);
 extern bool sift_cseg_gorder_tids(SiftColSegment *seg, int col, int64 lo, int64 hi, uint32 limit, SiftKey **tids, uint32 *ntids);
-extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none */
+extern uint32 sift_cseg_gorder_seek(SiftColSegment *seg, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);	/* the first entry of [vs, ve) with key >= key (after: > key); ve when none; the chunk it ends in is left in keep */
 extern void sift_cseg_prune_sets(SiftColSegment *seg, int col, const SiftCTest *t, uint64 *keep, uint32 ulo, uint32 uhi, uint64 *setcut);
 /* The bytes the summaries of the segment take */
 extern uint64 sift_cseg_set_bytes(SiftColSegment *seg);

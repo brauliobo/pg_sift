@@ -20,6 +20,8 @@
 #include "col/wide.h"
 #include "core/filter.h"
 
+struct SiftCGOrdBuf;
+
 #define SIFT_COL_FORMAT_MINOR	15			/* the newest minor 3.3 writes and the default of sift.col_format_minor; SiftSegEntry.format of a col segment: minor 2 adds the pre-aggregates (docs/COL-PREAGG.md), minor 3 the dictionaries as codec string lists, minor 4 the type tag of an overflowing value, the kinds, the element rollups (docs/COL-PREAGG.md 2) and the optional version section of the unfrozen rows of a sift_table (docs/COL-TAM.md section 7), minor 5 the wide leaves, minor 6 the guarantee that the kinds of its leaves are complete, minor 7 the minimum and maximum of each integer measure in every group of the cube (docs/COL-PREAGG.md 2), minor 8 the calendar cells of a date or timestamp column as a dim of the cube of a sift_table (docs/COL-PREAGG.md 2), minor 9 the rollup of the rows of a unit by a few scalar columns (docs/COL-PREAGG.md 2), minor 10 the small-set summary of the leaves of the option key_columns, minor 12 the summaries of groups of units, the option superunit (docs/COL-PREAGG.md 10), minor 13 the sorted run of the leaves of the option order_columns, minor 14 the dictionaries that a lookup reads in place, minor 15 the key lists and bitmaps of the leaves of the option key_columns, minor 16 the point directory of heap addresses of the leaves of the option point_tid_columns */
 #define SIFT_COL_FORMAT_MIN_READ 3			/* the oldest minor 3.1 reads; 3.0 read only minor 3 (no release wrote 0 to 2) */
 #define SIFT_COL_FORMAT_TAGS	4			/* what 3.1 writes: the tags and kinds of a chunk (minor 4 and 5 say nothing about their completeness); the minor of a segment of a schema without shredded leaves, and of one whose kinds a merge could not carry over, under the default setting */
@@ -46,7 +48,8 @@
 #define SIFT_COL_FORMAT_COUNT	24		/* 3.5: the dictionary of a leaf of the option count_columns also holds the rows of each string by its place in byte order, so that a count of a prefix, a range or an equality of the leaf is read from the dictionary; written under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_HASH	25		/* 3.6: the dictionary of a leaf that is searched in place also holds a hash of its strings to their codes: an equality finds its string with one read and a block; written under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_CONTAIN	26		/* 3.6: the leaf list has the lanes of a range or a network column: the start and end of the set of a range, the first address and the family and mask of a network, as INT leaves after the image; written only for an index with the reloption contain_columns */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_CONTAIN	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_FINEORD	30		/* 3.6: the global order of a leaf (minor 21) is in chunks of 512 entries, not 1024: a seek and a cursor decode half of the entries; written for every global order under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_FINEORD	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
@@ -696,14 +699,14 @@ extern bool sift_col_point_lazy(const SiftColSource *src);
 extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
 /*
  * The global order of leaf col (col/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
- * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _chunk: the entries
- * [c * SIFT_CGORD_ROWS, + the count returned) as keys and heap addresses, each SIFT_CGORD_CAP slots.
+ * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _head: the first w entries of
+ * the chunk that holds entry p, from the entry *at, as keys and heap addresses, each SIFT_CGORD_CAP slots; the count returned.
  */
 extern int sift_col_gorder_open(SiftColSource *src, int col, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped);
 extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *entries, uint32 *values);
-extern uint32 sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);
+extern void sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
-extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after);
+extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep);
 /* the predicates (bit i: preds[i] of the begin) the rows of the unit's point directory answer exactly (SIFT_COLO_POINT_ROWS) */
 extern uint64 sift_col_point_exact(const SiftColUnit *unit);
 /*

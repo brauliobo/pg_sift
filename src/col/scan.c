@@ -2011,31 +2011,32 @@ sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve
 }
 
 uint32
-sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after)
+sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after, SiftCGOrdBuf *keep)
 {
 	const ColGOrdMem *g = src->gmem;
 	uint32		lo = vs,
 				hi = ve;
 
 	if (i < src->nseg)
-		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after);
+		return sift_cseg_gorder_seek(src->seg[i].seg, col, vs, ve, key, after, keep);
 	SIFT_BISECT(uint32, mid, lo, hi, after ? g->key[mid] <= key : g->key[mid] < key);
 	return lo;
 }
 
-uint32
-sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 c, uint32 w, int64 *key, uint64 *addr)
+void
+sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
 	const ColGOrdMem *g = src->gmem;
-	uint32		from,
-				m;
 
 	if (i < src->nseg)
-		return sift_cseg_gorder_head(src->seg[i].seg, col, c, w, key, addr);
-	from = c * SIFT_CGORD_ROWS;
-	m = Min(Min(g->n - from, (uint32) SIFT_CGORD_ROWS), w);
-	memcpy(key, g->key + from, m * sizeof(int64));
-	for (uint32 k = 0; k < m; k++)
-		addr[k] = g->tid[from + k];
-	return m;
+	{
+		sift_cseg_gorder_fill(src->seg[i].seg, col, p, w, buf);
+		return;
+	}
+	buf->at = p / SIFT_CGORD_ROWS * SIFT_CGORD_ROWS;
+	buf->rows = Min(g->n - buf->at, (uint32) SIFT_CGORD_ROWS);
+	buf->cm = Min(buf->rows, Max(w, p - buf->at + 1));
+	memcpy(buf->key, g->key + buf->at, buf->cm * sizeof(int64));
+	for (uint32 k = 0; k < buf->cm; k++)
+		buf->addr[k] = g->tid[buf->at + k];
 }
