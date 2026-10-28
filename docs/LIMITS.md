@@ -56,6 +56,7 @@ on a few rows; `sift._test_limits()` lists every limit with its default and the 
 
 | id | Limit | Default | Unit | At the limit | Changed by | Source | Test |
 |---|---|---|---|---|---|---|---|
+| `merge_disk_peak` | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | 2 | times the live index | the step fails with PostgreSQL's disk-full error before it replaces a segment |  | `col/maint.c` |  |
 | `col_leaves` | leaf slots of a sift_col index and columns of a sift_table (127 are usable) | 128 | leaves | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected |  | `col/col.h` `SIFT_COL_MAX_COLS` | yes |
 | `string_bytes` | one string value of a column leaf | 1,073,741,823 (~1024 MiB) | bytes | ERROR 54000 at build or merge |  | `col/col.h` `SIFT_COL_MAX_VALUE` | yes |
 | `unit_bytes` | string bytes of one leaf in one column unit | 1,073,741,823 (~1024 MiB) | bytes | the values after it are stored as overflow and read from the heap (NOTICE) |  | `col/col.h` `SIFT_COL_UNIT_MAX_BYTES` | yes |
