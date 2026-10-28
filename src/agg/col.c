@@ -533,6 +533,15 @@ col_count_cmp(void *impl, int leaf)
 		sift_col_count_cmp(src->cs, leaf);
 }
 
+static void
+col_count_elem_src(void *impl)
+{
+	ColSource  *src = impl;
+
+	if (src->sel.keep == NULL)
+		sift_col_count_elem(src->cs);
+}
+
 static bool
 col_unit_count(void *impl, const SiftSrcUnit *unit, int64 *rows)
 {
@@ -851,6 +860,7 @@ static const SiftSrcProvider col_provider = {
 	.whole = col_whole,
 	.count_range = col_count_range,
 	.count_cmp = col_count_cmp,
+	.count_elem = col_count_elem_src,
 	.unit_count = col_unit_count,
 	.point_exact = col_point_exact,
 	.split = col_split,

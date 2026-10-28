@@ -658,6 +658,8 @@ typedef struct SiftSrcProvider
 	void		(*count_range) (void *impl, int leaf, SiftSrcStrOp op, const char *s, uint32 len);
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
+	/* Optional: the same for the only condition, an equality on an element of a list (the prune_str test that stands for it): a segment whose point directory lists the rows of the value counts them */
+	void		(*count_elem) (void *impl);
 	bool		(*unit_count) (void *impl, const SiftSrcUnit *unit, int64 *rows);
 	/* Optional (NULL: none): the element tests (prune_str's tests that stand for an EXISTS over a list, bit i: the i-th test given) whose rows the unit's point directory lists exactly: the unit comes narrowed to them, and the executor need not test them again */
 	uint64		(*point_exact) (void *impl, const SiftSrcUnit *unit);
@@ -1013,6 +1015,13 @@ sift_colsrc_count_range(SiftSrcSource *src, int leaf, SiftSrcStrOp op, const cha
 {
 	if (src->prov->count_range != NULL)
 		src->prov->count_range(src->impl, leaf, op, s, len);
+}
+
+static inline void
+sift_colsrc_count_elem(SiftSrcSource *src)
+{
+	if (src->prov->count_elem != NULL)
+		src->prov->count_elem(src->impl);
 }
 
 static inline void

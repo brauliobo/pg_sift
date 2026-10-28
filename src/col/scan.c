@@ -766,6 +766,62 @@ prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int co
 }
 
 /*
+ * The rows of the segment that own the one value the only test names, from the list of the point directory of its element leaf: false when the test is not
+ * the lone equality of a list leaf with a directory, the value has no list (too common to be listed, or no row owns it: the units are pruned instead), or a
+ * unit flags an overflow value in the leaf or its group (a row whose list the index cannot read is the executor's). It is asked before the units are looked at
+ * (their visibility costs more than the pruning of a value no row owns); the caller then needs every unit clean and all-visible.
+ */
+bool
+col_count_elem(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *n)
+{
+	const SiftColDef *def;
+	SiftCTest	t;
+	int64	   *keys;
+	int			nkeys;
+	uint32	   *rows,
+				nrows;
+	bool		ok;
+
+	if (npreds != 1)
+		return false;
+	def = &seg->schema->cols[preds[0].col];
+	if (def->parent < 0 || sift_cseg_point_is_tid(seg, preds[0].col) || sift_cseg_point_count(seg, preds[0].col) == 0)
+		return false;
+	if (def->store == SIFT_COLS_STR)
+		seg_test(src, seg, def, &preds[0], &t);
+	else
+		make_test(src, def, NULL, &preds[0], &t);
+	if ((keys = point_keys(&t, &nkeys)) == NULL)
+		return false;
+	if (nkeys != 1)
+	{
+		pfree(keys);
+		return false;
+	}
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		SiftCZone	ze,
+					zg;
+
+		sift_cseg_zone(seg, preds[0].col, u, &ze);
+		sift_cseg_zone(seg, def->parent, u, &zg);
+		if ((ze.flags | zg.flags) & SIFT_COLZ_OVERFLOW)
+		{
+			pfree(keys);
+			return false;
+		}
+	}
+	ok = sift_cseg_point_rows(seg, preds[0].col, keys, 1, &rows, &nrows);
+	if (ok)
+	{
+		*n = nrows;
+		pfree(rows);
+	}
+	pfree(keys);
+	return ok;
+}
+
+/*
  * The narrowest range among the predicates (the bounds of one leaf together), in rows of the segment by the global order of its leaf: a lookup of a key that lists
  * many more rows is left to the range, which narrows it by the zones and the heap instead of decoding the list.
  */
@@ -1667,14 +1723,14 @@ sift_col_super(SiftColSource *src, bool on)
 	src->super = on;
 	src->whole = 0;
 	src->pcnt = 0;
-	src->pcnt_int = false;
+	src->pcnt_int = src->pcnt_elem = false;
 }
 
 void
 sift_col_count_range(SiftColSource *src, int leaf, SiftColOp op, const char *s, uint32 len)
 {
 	src->pcnt = leaf + 1;
-	src->pcnt_int = false;
+	src->pcnt_int = src->pcnt_elem = false;
 	src->pcnt_op = op;
 	src->pcnt_val = (SiftColValue) {.v.s = s, .len = len};
 }
@@ -1684,6 +1740,15 @@ sift_col_count_cmp(SiftColSource *src, int leaf)
 {
 	src->pcnt = leaf + 1;
 	src->pcnt_int = true;
+	src->pcnt_elem = false;
+}
+
+void
+sift_col_count_elem(SiftColSource *src)
+{
+	src->pcnt = 1;
+	src->pcnt_int = false;
+	src->pcnt_elem = true;
 }
 
 void

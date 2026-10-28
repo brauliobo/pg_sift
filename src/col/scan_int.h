@@ -191,6 +191,7 @@ struct SiftColSource
 	int			pcnt;			/* sift_col_count_range: 1 + the text leaf, 0: none */
 	SiftColOp	pcnt_op;
 	bool		pcnt_int;		/* ... an integer leaf: the rows whose key lies in the range its comparisons give, counted by its global order (sift_col_count_cmp) */
+	bool		pcnt_elem;		/* ... the rows that own the value of the only test, an element of a list, counted by its point directory (sift_col_count_elem) */
 	SiftColValue pcnt_val;
 	int			nwmeas;			/* ... and the measures it must keep */
 	int			wmeas[SIFT_PAGG_MAX_MEAS];
@@ -256,6 +257,7 @@ set_ones(uint64 *bits, uint32 n)
 	} while (0)
 
 extern void seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const SiftColPred *p, SiftCTest *t);
+extern bool col_count_elem(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *n);
 extern bool unit_chunk_raw(ColUnit *cu, int col, SiftCChunk *c);
 extern bool unit_chunk(ColUnit *cu, int col, SiftCChunk *c);
 extern bool unit_chunk_sel(ColUnit *cu, int col, const uint32 *idx, uint32 m, SiftCChunk *c);

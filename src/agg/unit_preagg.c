@@ -1271,7 +1271,7 @@ preagg_init(AggExec *ex)
 	}
 	/* a count(*) of one text test (equality, range or prefix): the source may count a segment from its dictionary (option count_columns) */
 	ex->pcount = ex->pcount_cmp = false;
-	if (ex->super_on && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred >= 1 && !ex->spec->left_lateral && ex->ntype == 0 && ex->nwide == 0)
+	if ((ex->super_on || (sift_agg_super && ex->search == NULL)) && ex->spec->nkeys == 0 && ex->spec->group < 0 && ex->spec->npred >= 1 && !ex->spec->left_lateral && ex->ntype == 0 && ex->nwide == 0)
 	{
 		const SiftSrcStrTest *t = ex->spec->npred == 1 && ex->nfilter == 0 ? ex->ps[ex->spec->pred[0]->id].str : NULL;
 		bool		only = true,
@@ -1281,14 +1281,21 @@ preagg_init(AggExec *ex)
 			only = ex->spec->agg[ai].kind == SAA_COUNT_STAR && ex->spec->agg[ai].filter == NULL;
 		for (int i = 0; only && ex->pushed && t != NULL && i < ex->spec->npred; i++)
 			only = !ex->pushed[i];
-		text = only && t != NULL && t->nvals == 1 && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX);
+		text = ex->super_on && only && t != NULL && t->nvals == 1 && (t->op == SSTR_EQ || (t->op >= SSTR_LT && t->op <= SSTR_GE) || t->op == SSTR_PREFIX);
 		if (text)
 		{
 			sift_colsrc_count_range(ex->src, t->leaf, t->op, t->vals[0], t->lens[0]);
 			ex->pcount = true;
 		}
+		/* ... or of the one test that an element of a list equals a value: a segment whose point directory lists the rows of the value counts them */
+		else if (only && t == NULL && ex->spec->npred == 1 && ex->nfilter == 0 && ex->spec->pred[0]->kind == SAP_ANY_ELEM && ex->spec->pred[0]->op == 0 &&
+				 !ex->spec->pred[0]->late && ex->npoint_elem == 1 && ex->ps[ex->spec->pred[0]->id].elem == 1)
+		{
+			sift_colsrc_count_elem(ex->src);
+			ex->pcount = true;
+		}
 		/* ... or of comparisons of one integer leaf (the source applies them to the units it reads): a segment with the global order of it counts the rows between the bounds */
-		else if (only && t == NULL)
+		else if (ex->super_on && only && t == NULL)
 		{
 			int			leaf = sift_agg_cmp_only_leaf(ex);
 

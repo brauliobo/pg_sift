@@ -686,8 +686,9 @@ count_keys(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, in
 }
 
 /*
- * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), or whose global order holds the keys of the
- * leaf of sift_col_count_cmp (order_array_columns: the rows of the range are the entries between its bounds), answers the count for all its units
+ * A segment whose dictionary of the leaf of sift_col_count_range holds the rows of each string (option count_columns), whose global order holds the keys of the
+ * leaf of sift_col_count_cmp (order_array_columns: the rows of the range are the entries between its bounds), or whose point directory lists the rows of the value
+ * of sift_col_count_elem, answers the count for all its units
  * at once when every one is exact on its own, as col_whole_take wants of a segment: every page all-visible, no dead row or exception, the directory current.
  * The checks come in the order of col_super_take (all-visible bits, directory, liveness). Then col_super_take hands the segment over as one unit.
  */
@@ -705,7 +706,12 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 
 	if (fan == 0 || seg->nsb == 0)
 		return false;
-	if (src->pcnt_int)
+	if (src->pcnt_elem)
+	{
+		if (!col_count_elem(src, seg, preds, npreds, &n))
+			return false;
+	}
+	else if (src->pcnt_int)
 	{
 		if (!sift_cseg_gorder(seg, src->pcnt - 1, &entries, &values) || sift_cseg_gorder_group(seg, src->pcnt - 1) >= 0 || !count_keys(src, seg, preds, npreds, &lo, &hi))
 			return false;
@@ -728,7 +734,7 @@ col_count_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, in
 			return false;
 		n = m;
 	}
-	else if (!sift_cseg_dict_count(seg, src->pcnt - 1, src->pcnt_op, &src->pcnt_val, &n))
+	else if (!src->pcnt_elem && !sift_cseg_dict_count(seg, src->pcnt - 1, src->pcnt_op, &src->pcnt_val, &n))
 		return false;
 	c->count_ok = true;
 	c->count_rows = n;

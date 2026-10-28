@@ -704,7 +704,7 @@ process_unit(AggExec *ex)
 			   *cand;
 
 	unit_begin(ex);
-	if (nrow > 0 && ex->pa_on && !ex->spec->left_lateral && preagg_unit(ex))
+	if (nrow > 0 && (ex->pa_on || (ex->pcount && u->nsu > 0)) && !ex->spec->left_lateral && preagg_unit(ex))
 	{
 		/* a superunit stands for its units: they count as the units they are */
 		ex->n_units += Max(u->nsu, 1) - 1;
