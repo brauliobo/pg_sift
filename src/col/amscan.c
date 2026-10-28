@@ -1493,7 +1493,32 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
  * one that aggregates, groups, deduplicates, has a window function or sorts under a LIMIT, keeps the paths it always had on such an index: an index whose columns
  * are all of the default class gives it no index or bitmap path (a path built and then dropped would take the sequential scan it dominates with it), so that the
  * calibrated choice between SiftAgg and the normal plan is the one of 3.5 for them. An index with a column of a named class is offered everything, as before.
+ * SiftAgg reads the index alone, so a statement that reads a column the index does not hold (avg(score) over a window of the dates) is not its to answer, and the
+ * index keeps its paths for the rows of the window.
  */
+static bool
+index_holds_columns_read(PlannerInfo *root, IndexOptInfo *ii)
+{
+	Query	   *q = root->parse;
+	Bitmapset  *used = NULL;
+	int			x = -1;
+
+	pull_varattnos((Node *) q->targetList, ii->rel->relid, &used);
+	pull_varattnos((Node *) q->jointree, ii->rel->relid, &used);
+	pull_varattnos(q->havingQual, ii->rel->relid, &used);
+	while ((x = bms_next_member(used, x)) >= 0)
+	{
+		AttrNumber	attno = x + FirstLowInvalidHeapAttributeNumber;
+		bool		held = false;
+
+		for (int i = 0; i < ii->ncolumns && !held; i++)
+			held = ii->indexkeys[i] == attno;
+		if (!held)
+			return false;
+	}
+	return true;
+}
+
 static void
 plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 {
@@ -1506,6 +1531,8 @@ plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
 	for (int i = 0; i < ii->nkeycolumns; i++)
 		if (ii->opcintype[i] != ANYELEMENTOID)
 			return;
+	if (!index_holds_columns_read(root, ii))
+		return;
 	ii->amhasgetbitmap = ii->amhasgettuple = false;
 }
 
