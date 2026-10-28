@@ -2800,7 +2800,8 @@ scan_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *m
 			bool		isnull = !row_key(k0, key0, i, &v);
 			TopEnt		e;
 
-			if (*barred && rank_after(rank_of(k0, isnull, v), *bar))
+			/* one key: a row that only ties with the n-th wins nothing (the NULL rows of a column with 30% NULLs, NULLS FIRST, are all ties) */
+			if (*barred && (t->nkey == 1 ? !rank_after(*bar, rank_of(k0, isnull, v)) : rank_after(rank_of(k0, isnull, v), *bar)))
 				continue;
 			memset(&e, 0, sizeof(e));
 			e.k[0] = v;
@@ -2862,15 +2863,15 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 				nb = 0;
 	bool		all;
 	uint64	   *vm = palloc0((SIFT_COL_NWORDS(nrow) + SIFT_COL_SELWORDS) * sizeof(uint64));
+	uint64	   *nullw = NULL;
+	bool		anynull = false;
 	uint64		hit[SIFT_COL_SELWORDS];
 	SegBest    *sb = palloc(nseg * sizeof(SegBest));
 
 	memcpy(vm, rmask, nw * sizeof(uint64));
 	if (key0->isnull)
 	{
-		uint64	   *nullw = palloc((SIFT_COL_NWORDS(nrow) + SIFT_COL_SELWORDS) * sizeof(uint64));
-		bool		any = false;
-
+		nullw = palloc((SIFT_COL_NWORDS(nrow) + SIFT_COL_SELWORDS) * sizeof(uint64));
 		sift_colk_nonzero(key0->isnull, nrow, nullw);
 		for (int w = 0; w < nw; w++)
 		{
@@ -2878,11 +2879,11 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 
 			vm[w] &= ~nm;
 			nullw[w] = nm;
-			any |= nm != 0;
+			anynull |= nm != 0;
 		}
-		if (any)
+		/* NULLs first: they are the first rows of the sort. NULLs last: the values come first and a bar of a value spares them all (ORDER BY ni LIMIT 10 of 30% NULLs pushed 6,000 rows of the first unit) */
+		if (anynull && k0->nulls_first)
 			scan_rows(t, k0, key0, nullw, 0, nw, bar, barred, m);
-		pfree(nullw);
 	}
 	/* every row of the unit is selected: the kernels need no mask */
 	all = sift_colk->bits_count(vm, nw) == nrow;
@@ -2963,6 +2964,20 @@ vec_rows(SiftTopN *t, const TopKey *k0, const SiftSrcVec *key0, const uint64 *rm
 		else
 			scan_rows(t, k0, key0, vm + off / 64, off / 64, sw, bar, barred, m);
 	}
+	if (anynull && !k0->nulls_first)
+	{
+		Rank		g;
+
+		if (bar_rank(t, &g) && (!*barred || rank_after(*bar, g)))
+		{
+			*bar = g;
+			*barred = true;
+		}
+		if (!*barred || bar->cls != 1)
+			scan_rows(t, k0, key0, nullw, 0, nw, bar, barred, m);
+	}
+	if (nullw)
+		pfree(nullw);
 	pfree(sb);
 	pfree(vm);
 }

@@ -39,6 +39,9 @@ INSERT INTO tq VALUES
  ('SELECT j FROM tt ORDER BY j DESC LIMIT 10'),
  ('SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40'),
  ('SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300'),
+ ('SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10'),
+ ('SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7'),
+ ('SELECT k FROM tt ORDER BY k LIMIT 12000'),
  ('SELECT j, id FROM tt ORDER BY j, id LIMIT 10'),
  ('SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10');
 SET sift.enable_agg = on;
@@ -54,11 +57,14 @@ SELECT q, chk(q) FROM tq ORDER BY q;
  SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    | same
  SELECT j, id FROM tt ORDER BY j, id LIMIT 10         | same
  SELECT k FROM tt ORDER BY k DESC LIMIT 10            | same
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   | same
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k LIMIT 10                 | same
+ SELECT k FROM tt ORDER BY k LIMIT 12000              | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    | same
-(10 rows)
+(13 rows)
 
 -- rows in the write buffer, deleted rows, a vacuum
 INSERT INTO tt SELECT 20000 + i, CASE WHEN i % 2 = 0 THEN NULL ELSE -i END, 100 - i % 3, 'x' FROM generate_series(1, 200) i;
@@ -71,11 +77,14 @@ SELECT q, chk(q) FROM tq ORDER BY q;
  SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    | same
  SELECT j, id FROM tt ORDER BY j, id LIMIT 10         | same
  SELECT k FROM tt ORDER BY k DESC LIMIT 10            | same
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   | same
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k LIMIT 10                 | same
+ SELECT k FROM tt ORDER BY k LIMIT 12000              | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    | same
-(10 rows)
+(13 rows)
 
 DELETE FROM tt WHERE id % 5 = 0 AND id < 3000;
 SELECT q, chk(q) FROM tq ORDER BY q;
@@ -87,11 +96,14 @@ SELECT q, chk(q) FROM tq ORDER BY q;
  SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    | same
  SELECT j, id FROM tt ORDER BY j, id LIMIT 10         | same
  SELECT k FROM tt ORDER BY k DESC LIMIT 10            | same
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   | same
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k LIMIT 10                 | same
+ SELECT k FROM tt ORDER BY k LIMIT 12000              | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    | same
-(10 rows)
+(13 rows)
 
 VACUUM tt;
 SELECT q, chk(q) FROM tq ORDER BY q;
@@ -103,11 +115,14 @@ SELECT q, chk(q) FROM tq ORDER BY q;
  SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    | same
  SELECT j, id FROM tt ORDER BY j, id LIMIT 10         | same
  SELECT k FROM tt ORDER BY k DESC LIMIT 10            | same
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   | same
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 | same
  SELECT k FROM tt ORDER BY k LIMIT 10                 | same
+ SELECT k FROM tt ORDER BY k LIMIT 12000              | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     | same
  SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    | same
-(10 rows)
+(13 rows)
 
 SELECT q, read_units(q) AS units FROM tq ORDER BY q;
 ERROR:  invalid input syntax for type integer: "2 read"
