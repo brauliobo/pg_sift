@@ -960,7 +960,7 @@ build_points(SiftColSegWriter *w)
 			}
 			else
 			{
-				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_ELEM_MIN, (uint32) w->rows / SIFT_CPOINT_ELEM_SHARE) : 0, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
+				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_DENSE_ROWS, (uint32) w->rows / SIFT_CPOINT_DENSE_SHARE) : 0, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
 				w->anytids |= a->nslots > 0 && elem_point(w, c);
 			}
 			w->anypoints |= a->nslots > 0;

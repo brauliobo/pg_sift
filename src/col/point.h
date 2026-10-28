@@ -25,7 +25,7 @@
 #define SIFT_CPOINT_MAX_KEYS	65536		/* an IN list of more keys is answered by the units (a lookup that finds more rows is too, below) */
 #define SIFT_CPOINT_MIN_KEYS	64			/* up to this many keys a lookup is made whatever the segment's rows */
 #define SIFT_CPOINT_MAX_RANGE	64			/* so is a range of more keys: the zones cut a range of values by their order */
-#define SIFT_CPOINT_DENSE_ROWS	4096		/* a list that expects more rows than this and a 64th of the segment's rows reads them for nothing: the units hold them as well */
+#define SIFT_CPOINT_DENSE_ROWS	4096		/* a list that expects more rows than this and a 64th of the segment's rows reads them for nothing: the units hold them as well; so a value of a list in more is not listed (SIFT_CPOINT_DENSE) */
 #define SIFT_CPOINT_DENSE_SHARE	64
 #define SIFT_CPOINT_CHUNK_MIN	65			/* a lookup of this many keys or more is read a chunk of keys at a time by a stream (sift_cseg_point_stream_open): a LIMIT looks up the first chunk only */
 #define SIFT_CPOINT_CHUNK_FIRST	32			/* keys of the first chunk; each chunk has four times as many as the one before */
@@ -35,8 +35,6 @@
 #define SIFT_CPOINT_SEG_ROWS	(UINT32_C(1) << 30)	/* a segment of this many rows or more has no tables: a slot keeps a list offset in 31 bits */
 #define SIFT_CPOINT_LIST		(UINT32_C(1) << 31)	/* in a slot, the low 32 bits are this flag and the word offset of a list of rows, not the only row of the key */
 #define SIFT_CPOINT_DENSE	UINT32_C(0x7FFFFFFF)	/* in a slot, the payload of a key too common to list: the units answer it; no row of a segment is this */
-#define SIFT_CPOINT_ELEM_MIN	1024	/* a value of a list is listed up to this many rows, or a 128th of the segment's if more: past that the units answer, as fast and without the bytes */
-#define SIFT_CPOINT_ELEM_SHARE	128
 #define SIFT_CPOINT_RECLEN		32			/* the bytes of a record of the header */
 
 /* A table is for a plain integer-like, text or uuid column of the top level (the leaves a small-set summary takes) */

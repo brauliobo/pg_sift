@@ -80,6 +80,9 @@ CREATE FUNCTION shapes(tag text, t text) RETURNS TABLE(shape text, result text) 
 		('int equal swapped', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids = ARRAY[1001, 7]$q$),
 		('int contains', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[7]$q$),
 		('int two', $q$SELECT count(*) AS c FROM %1$I WHERE ids @> ARRAY[7, 2003]$q$),
+		('int two listed', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[2003, 2004]$q$),
+		('int two dense', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids @> ARRAY[1001, 2003]$q$),
+		('int overlap listed', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[2003, 2004, 99999]$q$),
 		('int overlap', $q$SELECT count(*) AS c, sum(id) AS s FROM %1$I WHERE ids && ARRAY[7, 1001, 99999]$q$),
 		('int any', $q$SELECT count(*) AS c FROM %1$I WHERE 2004 = ANY (ids)$q$),
 		('int contained', $q$SELECT count(*) AS c FROM %1$I WHERE ids <@ ARRAY[7, 1001, 2003, 1, 2, 1000, 2000, 1002, 2001, 2002, 3, 4]$q$),
@@ -158,6 +161,13 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM reads($q$SELECT count(*) FROM ae WHERE tags @> ARRAY['zz']$q$);
-DROP TABLE ae, ad;
+-- a value in a few thousand rows is listed as well: of a pair, the list of the one that is listed gives the rows to test (1001 is in too many rows to be listed)
+CREATE TABLE ar (id int, ids int[]) WITH (autovacuum_enabled = false);
+INSERT INTO ar SELECT id, ids FROM gen(1, 30000);
+CREATE INDEX ar_col ON ar USING sift_col (id, ids) WITH (paths = 'ids[] int4');
+VACUUM (FREEZE, ANALYZE) ar;
+SELECT * FROM reads($q$SELECT count(*) FROM ar WHERE ids @> ARRAY[1001, 2003]$q$);
+SELECT * FROM reads($q$SELECT count(*) FROM ar WHERE ids @> ARRAY[1001]$q$);
+DROP TABLE ae, ad, ar;
 DROP FUNCTION gen(int, int), chk(text), shapes(text, text), reads(text);
 DROP EXTENSION pg_sift;
