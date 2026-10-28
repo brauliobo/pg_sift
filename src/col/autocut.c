@@ -2,9 +2,9 @@
  * col/autocut.c - the default of the option key_cut: CREATE INDEX and REINDEX of an index without key_cut (or with key_cut = 'auto')
  * cut the units by a key when a sample of the heap says that zones cannot skip the units of that key. The key is the first leaf, in the order of the index,
  * that is key-shaped (sift_col_key_shaped); when none of those is cut by, the first date or timestamp leaf, for a range of its values (ranges_read). A leaf is
- * chosen when an equality on one of its values reads at least AUTOCUT_RATIO times the units its rows fill
- * and at least AUTOCUT_MIN_UNITS, no other leaf of the index follows the order of the table (key_cut would widen its zones), and the index would not grow by
- * more than AUTOCUT_GROWTH_PCT. The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
+ * chosen when the default formula says the cut pays: the benefit of the lookups it saves (an equality on one of its values, or a range holding the rows of one unit,
+ * reads the units its rows fill and not those whose zones hold the key) is at least the cost of the growth of the index and of the build; no other leaf of the index
+ * follows the order of the table (key_cut would widen its zones). The size is predicted from the sample: the integer leaves of the sampled rows are encoded by the codec of the index in the
  * units of the superblock cut and in the units of the key cut, the addresses of the rows are priced by what they measured, and the other leaves are
  * priced as unchanged. When the key would be worth cutting by and the index would grow more, the build only says so, with the command. The choice is
  * written to the option as 'auto: col', so that a promotion, a merge and a REINDEX keep it; key_cut = 'off' keeps the units by superblock. An index with
@@ -41,8 +41,6 @@
 #include "core/sql.h"
 #include "core/cmp.h"
 
-#define AUTOCUT_MIN_UNITS	64		/* units an equality reads, at least */
-#define AUTOCUT_RATIO		8		/* times the units its rows fill, at least */
 #define AUTOCUT_KEYS		32		/* keys taken from the sample, more than half of them must read that many */
 #define AUTOCUT_SBS			256		/* superblocks sampled, at most */
 #define AUTOCUT_MIN_SBS		32
@@ -52,12 +50,22 @@
 #define AUTOCUT_OTHER_PCT	1		/* percent more units that an equality on another leaf may keep under the cut of a lane: the cut spreads its zones over all the units */
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
 #define AUTOCUT_DIR_ROWS	256		/* rows of a unit of the cut whose directory is encoded from the sample, at least */
+#define AUTOCUT_OVERHEAD_BYTES	0.17	/* what a row takes in the index besides its leaves and the directory of its unit: the headers of the segment and of the units, the page overhead and the free space of the last pages (0.13 + 0.04); the pre-aggregates, 0.03 to 0.59 a row and changed by the cut either way, are not predicted */
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
-#define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
-#define AUTOCUT_TIME_GROWTH_PCT 25	/* ... for a cut by a date, timestamp or lane: a range there reads at least AUTOCUT_RATIO times the units its rows fill, a gain far past what 25% of growth costs */
+/*
+ * The default formula decides: B = R * log2(S) / log2(1.05), a gain of 5% being one unit, S the instructions of a lookup
+ * (an equality or a range that holds the rows of one unit) without the cut over those with it, R 1 (0.5 for the lane of a range or a network); C = G / 3 + W / 5, G the
+ * predicted growth of the index in percent (3% being one unit), W the instructions the cut adds to the build in percent (5% being one unit).
+ */
+#define AUTOCUT_FIXED_ROWS	64000	/* a lookup costs this many rows besides the rows it reads: opening the index, the snapshot and the directory of the segments, 0.5 M instructions (a day count of a cut index of 3,000,000 rows takes 0.67 to 0.81 M) */
+#define AUTOCUT_ROW_INSTR	8.5		/* instructions to read and filter one row of a unit: 25.4 M for the 134 units of 3,000,000 rows of 56 bytes, 28.6 M for the 293 of 190 bytes */
+#define AUTOCUT_MIN_SAVED	100000	/* instructions a lookup must save, at least (the default formula) */
+#define AUTOCUT_BUILD_BASE	1250	/* instructions a row takes to build the index without the cut, besides the leaves */
+#define AUTOCUT_BUILD_LEAF	520		/* ... for each leaf of the index */
+#define AUTOCUT_BUILD_CUT	1150	/* ... that the cut adds to each row: the sort by the key (3,000,000 rows: +3.5 G instructions for 1 to 3 leaves, +35 to +67% of a build) */
 #define AUTOCUT_SECOND_SLACK 1		/* percent the prediction may exceed the cut by the key alone for the date to be its second key: the sample does not see the runs and addresses a date order shrinks */
-#define AUTOCUT_QUICK_SLACK	12		/* points over AUTOCUT_TIME_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points over the sample's) */
+#define AUTOCUT_QUICK_SLACK	4		/* units of cost over the benefit that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points of growth, 2 to 5 units of cost, over the sample's) */
 
 typedef struct Cell
 {
@@ -181,13 +189,39 @@ scattered(const Track *t, int n)
 	return m >= 2 && !(share * m <= 2 || share <= 0.25);
 }
 
+/* the instructions of a lookup that reads `reads` units over those of one that reads the `ideal` units its rows fill */
+static double
+cut_speedup(double reads, double ideal, double rows_per_unit)
+{
+	return (AUTOCUT_FIXED_ROWS + reads * rows_per_unit) / (AUTOCUT_FIXED_ROWS + ideal * rows_per_unit);
+}
+
+/* whether a cut saves the default formula's minimum, S >= 1.05 and AUTOCUT_MIN_SAVED instructions a lookup */
+static bool
+cut_pays_a_lookup(double reads, double ideal, double rows_per_unit)
+{
+	return cut_speedup(reads, ideal, rows_per_unit) >= 1.05 && (reads - ideal) * rows_per_unit * AUTOCUT_ROW_INSTR >= AUTOCUT_MIN_SAVED;
+}
+
+static double
+cut_benefit(double speedup, double relevance)
+{
+	return relevance * log2(Max(speedup, 1.0)) / log2(1.05);
+}
+
+static double
+cut_cost(double growth_pct, int nleaves)
+{
+	return growth_pct / 3 + 100.0 * AUTOCUT_BUILD_CUT / (AUTOCUT_BUILD_BASE + (double) AUTOCUT_BUILD_LEAF * nleaves) / 5;
+}
+
 /*
  * The sampled superblocks of a key candidate give the units an equality on its keys reads: the median over AUTOCUT_KEYS keys taken at random rows, and the
- * median of the units their rows fill. fired: more than half of the keys read AUTOCUT_MIN_UNITS and AUTOCUT_RATIO times the units their rows fill. keyed: the
- * index keeps a key list of the leaf.
+ * median of the units their rows fill. fired: the cut would save a lookup what the default formula asks (cut_pays_a_lookup). keyed: the index keeps a key list of
+ * the leaf.
  */
 static double
-units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, double min_units, double *ideal, bool *fired)
+units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, double *ideal, bool *fired)
 {
 	double		f = nsampled / nsb,
 				total = 0,
@@ -195,8 +229,7 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 				at,
 				reads[AUTOCUT_KEYS],
 				fills[AUTOCUT_KEYS];
-	int			nk = 0,
-				nfire = 0;
+	int			nk = 0;
 	int64		i = 0;
 
 	*fired = false;
@@ -235,7 +268,6 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 			}
 			reads[nk] = Min(nsb, 1 + others / f);
 			fills[nk] = Max(1, (mine + (rows - mine) / f) / rows_per_unit);
-			nfire += reads[nk] >= min_units && reads[nk] >= AUTOCUT_RATIO * fills[nk];
 			nk++;
 			at += step;
 		}
@@ -244,10 +276,10 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 	}
 	if (nk == 0)
 		return 0;
-	*fired = nfire * 2 > nk;
 	qsort(reads, nk, sizeof(double), sift_cmp_f64);
 	qsort(fills, nk, sizeof(double), sift_cmp_f64);
 	*ideal = fills[nk / 2];
+	*fired = cut_pays_a_lookup(reads[nk / 2], *ideal, rows_per_unit);
 	return reads[nk / 2];
 }
 
@@ -257,7 +289,7 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
  * that meet it (the first stands for itself, the others for 1/f each), and the units its rows fill are those of the rows with a value in it.
  */
 static double
-ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_units, double *ideal, bool *fired)
+ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double rows_per_unit, double *ideal, bool *fired)
 {
 	double		f = nsampled / nsb,
 				reads[AUTOCUT_KEYS],
@@ -265,7 +297,6 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_u
 	int64	   *s = palloc_array(int64, nrows);
 	uint32		n = 0,
 				half;
-	int			nfire = 0;
 
 	*fired = false;
 	for (uint32 i = 0; i < nrows; i++)
@@ -295,13 +326,12 @@ ranges_read(const Track *t, uint32 nrows, int nsampled, double nsb, double min_u
 			hits += t->has[u] && t->lo[u] <= hi && lo <= t->hi[u];
 		reads[k] = Min(nsb, hits > 1 ? 1 + (hits - 1) / f : 1);
 		fills[k] = Max(1, (double) (to - from + 1) / n * nsb);
-		nfire += reads[k] >= min_units && reads[k] >= AUTOCUT_RATIO * fills[k];
 	}
 	pfree(s);
-	*fired = nfire * 2 > AUTOCUT_KEYS;
 	qsort(reads, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
 	qsort(fills, AUTOCUT_KEYS, sizeof(double), sift_cmp_f64);
 	*ideal = fills[AUTOCUT_KEYS / 2];
+	*fired = cut_pays_a_lookup(reads[AUTOCUT_KEYS / 2], *ideal, rows_per_unit);
 	return reads[AUTOCUT_KEYS / 2];
 }
 
@@ -380,11 +410,11 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 		if (key < 0)
 			bytes += sift_cunit_directory_bytes(tid + s->start[u], nsel - from, false, nused, &pages);
 	}
-	unit = Max(1, nsel / nused);
+	unit = key >= 0 ? Max(nsel / nsb, AUTOCUT_DIR_ROWS) : Max(1, nsel / nused);	/* a unit of the cut holds the rows of the whole heap in a range of the key, the sampled share of them */
 	initStringInfo(&buf);
 	if (key >= 0)
 	{
-		uint32		dir_rows = Max(nsel / nsb, AUTOCUT_DIR_ROWS);
+		uint32		dir_rows = unit;
 		double		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / dir_rows)));
 
 		qsort_arg(sel, nsel, sizeof(uint32), row_cmp, (void *) order);
@@ -423,7 +453,7 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 	pfree(sel);
 	pfree(tid);
 	pfree(keys);
-	return bytes / Max(nsel, 1);
+	return bytes / Max(nsel, 1) + AUTOCUT_OVERHEAD_BYTES;
 }
 
 typedef struct CutVerdict
@@ -439,6 +469,8 @@ typedef struct CutVerdict
 	double		reads;
 	double		ideal;
 	double		growth;
+	double		benefit;		/* the default formula: B and C of the cut (cut_benefit, cut_cost) */
+	double		cost;
 	bool		range;			/* the leaf is a time leaf: a range of its values is read, not an equality */
 } CutVerdict;
 
@@ -500,8 +532,6 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "point_tid_columns is set";
 	else if (sift_col_options_order_columns(index)[0] != '\0')
 		v->reason = "order_columns is set";
-	else if (nsb < AUTOCUT_MIN_UNITS)
-		v->reason = "the table has fewer than 64 units";
 	else if (!ActiveSnapshotSet())
 		v->reason = "no snapshot";
 	if (v->reason != NULL)
@@ -538,15 +568,16 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : mid_rows(heap, nblocks, nsb);
 	/* a quarter of the heap at most: the sample costs what a build of the share costs; and at least AUTOCUT_MIN_SBS units whatever their rows */
 	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), Max(AUTOCUT_ROWS / Max(rows_per_unit, 1), AUTOCUT_MIN_SBS));
+	/* a table of fewer units is sampled whole: the formula, not a count of units, says whether so few units pay for a cut */
 	cap = (uint32) Min(Max((double) AUTOCUT_ROWS, 1.25 * full * Max(rows_per_unit, 1)), (double) full * SIFT_COL_UNIT_MAX_ROWS);
+	if (nblocks == 0)
+	{
+		v->reason = "the table is empty";
+		goto done;
+	}
 	if (ncand == 0)
 	{
 		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date) and no date, timestamp, range or inet column";
-		goto done;
-	}
-	if (full < AUTOCUT_MIN_SBS)
-	{
-		v->reason = "the units are too large for a sample";
 		goto done;
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
@@ -654,9 +685,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				/* the key list of a leaf is kept where it fits the share of the bytes of a unit (SIFT_CSET_PRES_PCT) */
 				u = units_read(&tr[t], samp->nsb, nsb, rows_per_unit,
 							   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row,
-							   quick ? AUTOCUT_MIN_UNITS / 4 : AUTOCUT_MIN_UNITS, &fill, &fired);
+							   &fill, &fired);
 			else
-				u = ranges_read(&tr[t], samp->n, samp->nsb, nsb, quick ? AUTOCUT_MIN_UNITS / 4 : AUTOCUT_MIN_UNITS, &fill, &fired);
+				u = ranges_read(&tr[t], samp->n, samp->nsb, nsb, rows_per_unit, &fill, &fired);
 			if (first < 0)
 			{
 				first = t;
@@ -702,16 +733,20 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		first_open++;
 	if (first_open == nfire)
 		goto done;
-	/* a time leaf is cut by or left alone, never advised, so the first look prices its cut and ends there when it grows the index well over the limit */
+	/* a time leaf is cut by or left alone, never advised, so the first look prices its cut and ends there when the cost is well over the benefit */
 	if (quick)
 	{
 		for (int i = first_open; i < nfire; i++)
-			if (!blocked[i] && tr[fire[i]].time &&
-				100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row > AUTOCUT_TIME_GROWTH_PCT + AUTOCUT_QUICK_SLACK)
+			if (!blocked[i] && tr[fire[i]].time)
 			{
-				blocked[i] = true;
-				if (i == 0)
-					v->reason = "a range of the leaf reads many units, but the index would grow by more than 25%";
+				double		g = 100.0 * (layout_bytes(tr, ntr, samp, fire[i], -1, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES - def_row) / def_row;
+
+				if (cut_benefit(cut_speedup(reads[i], fills[i], rows_per_unit), tr[fire[i]].shape ? 0.5 : 1.0) + AUTOCUT_QUICK_SLACK < cut_cost(g, ntr + untracked))
+				{
+					blocked[i] = true;
+					if (i == 0)
+						v->reason = "a range of the leaf reads many units, but the cost of the cut is above its benefit";
+				}
 			}
 		for (first_open = 0; first_open < nfire && blocked[first_open];)
 			first_open++;
@@ -720,13 +755,15 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->maybe = true;
 		goto done;
 	}
-	/* the first that fires and does not grow the index is cut by; when every one that fires would grow it, the first is advised */
+	/* the first that fires and whose benefit is at least its cost is cut by; when every one that fires costs more than it gains, the first is advised */
 	for (int i = 0; i < nfire && v->res != SIFT_AUTOCUT_CUT; i++)
 	{
 		int			pick = fire[i],
 					sec;
 		double		growth,
-					limit;
+					benefit,
+					cost;
+		bool		pays;
 
 		if (blocked[i])
 			continue;
@@ -748,31 +785,35 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				}
 			}
 		growth = 100.0 * (kc_row - def_row) / def_row;
-		limit = tr[pick].time ? AUTOCUT_TIME_GROWTH_PCT : AUTOCUT_GROWTH_PCT;
-		if (tr[pick].time && growth > limit)
+		benefit = cut_benefit(cut_speedup(reads[i], fills[i], rows_per_unit), tr[pick].shape ? 0.5 : 1.0);
+		cost = cut_cost(growth, ntr + untracked);
+		pays = benefit >= cost;
+		if (tr[pick].time && !pays)
 		{
 			if (v->res == SIFT_AUTOCUT_NONE && i == first_open)
-				v->reason = "a range of the leaf reads many units, but the index would grow by more than 25%";
+				v->reason = "a range of the leaf reads many units, but the cost of the cut is above its benefit";
 			continue;
 		}
-		if (growth <= limit || v->res == SIFT_AUTOCUT_NONE)
+		if (pays || v->res == SIFT_AUTOCUT_NONE)
 		{
 			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
 			v->reads = reads[i];
 			v->ideal = fills[i];
 			v->range = tr[pick].time;
 			v->growth = growth;
+			v->benefit = benefit;
+			v->cost = cost;
 			v->second[0] = '\0';
 			if (sec >= 0)
 				strlcpy(v->second, cut_name(index, sc, tr[sec].c), sizeof(v->second));
 			v->reason = NULL;
-			v->res = growth <= limit ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
+			v->res = pays ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
 		}
 	}
 	if (v->res == SIFT_AUTOCUT_CUT)
-		v->reason = v->range ? "a range of the leaf reads many units and the index grows by at most 25%" : "an equality on the key reads many units and the index does not grow";
+		v->reason = v->range ? "a range of the leaf reads many units and the benefit of the cut is at least its cost" : "an equality on the key reads many units and the benefit of the cut is at least its cost";
 	else if (v->res == SIFT_AUTOCUT_ADVISED)
-		v->reason = v->range ? "a range of the leaf reads many units, but the index would grow by more than 3%" : "an equality on the key reads many units, but the index would grow by more than 3%";
+		v->reason = v->range ? "a range of the leaf reads many units, but the cost of the cut is above its benefit" : "an equality on the key reads many units, but the cost of the cut is above its benefit";
 done:
 	MemoryContextSwitchTo(old);
 	if (v->reason != NULL)
@@ -814,8 +855,8 @@ sift_col_auto_cut(Relation heap, Relation index)
 		appendStringInfo(&opt, "auto: %s%s%s", v.leaf, v.second[0] ? ", " : "", v.second);
 		sift_col_set_option(index, "key_cut", opt.data);
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%)",
-						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth),
+				(errmsg("sift_col index \"%s\": key_cut = '%s' was chosen: %s \"%s\" would read about %.0f of %.0f units, where %.0f hold its rows (predicted index size %+.1f%%, benefit %.0f against cost %.0f)",
+						RelationGetRelationName(index), opt.data + 6, v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, v.growth, v.benefit, v.cost),
 				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
 						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
 						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
@@ -833,8 +874,8 @@ sift_col_auto_cut(Relation heap, Relation index)
 			ereport(NOTICE,
 					(errmsg("sift_col index \"%s\": %s \"%s\" reads about %.0f of %.0f units, where %.0f hold its rows; key_cut = '%s' would cut that, and the index would grow by %.1f%%",
 							RelationGetRelationName(index), v.range ? "a range holding the rows of one unit of" : "an equality on", v.leaf, v.reads, v.units, v.ideal, keys, v.growth),
-					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when the index does not grow by more than %d%%. No other leaf follows the order of the table.",
-							   v.sampled, AUTOCUT_GROWTH_PCT),
+					 errdetail("The predicted size comes from a sample of %.0f superblocks; an automatic cut is chosen only when its benefit is at least its cost (here %.0f against %.0f: a gain of 5%% in a lookup is one unit of benefit, 3%% of growth and 5%% of build instructions one of cost). No other leaf follows the order of the table.",
+							   v.sampled, v.benefit, v.cost),
 					 errhint("CREATE INDEX .. WITH (key_cut = '%s'), or ALTER INDEX %s SET (key_cut = '%s') and REINDEX, if the lookups of this key matter more than the size.",
 							 keys, quote_identifier(RelationGetRelationName(index)), keys)));
 		}

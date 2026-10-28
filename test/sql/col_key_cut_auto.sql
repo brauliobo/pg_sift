@@ -81,10 +81,19 @@ INSERT INTO kg SELECT i, (random() * 100)::int, (random() * 1000)::int, (random(
 VACUUM (FREEZE, ANALYZE) kg;
 SET client_min_messages = notice;
 CREATE INDEX kg_narrow ON kg USING sift_col (tenant_id, a1, a2, a3);
+-- three tenants: an equality reads most of the units and the cut saves little, which does not pay for its build: the build advises it
+SET client_min_messages = warning;
+CREATE TABLE kf (id int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kf SELECT i, (random() * 2)::int FROM generate_series(1, 400000) i;
+VACUUM (FREEZE, ANALYZE) kf;
+SET client_min_messages = notice;
+CREATE INDEX kf_few ON kf USING sift_col (tenant_id);
 SET client_min_messages = warning;
 CREATE INDEX ka_seq ON ka USING sift_col (tenant_id, seq, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 CREATE INDEX ka_wide ON ka USING sift_col (tenant_id, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
 SELECT 'narrow' AS idx, leaf, decision, growth_pct > 3 AS grows, reason FROM sift.key_cut_decision('kg_narrow')
+UNION ALL SELECT 'few', leaf, decision, growth_pct > 3, reason FROM sift.key_cut_decision('kf_few')
 UNION ALL SELECT 'seq', leaf, decision, growth_pct > 3, reason FROM sift.key_cut_decision('ka_seq')
 UNION ALL SELECT 'wide', leaf, decision, growth_pct > 3, reason FROM sift.key_cut_decision('ka_wide');
 -- a table that was never analyzed has no statistics: a unit aims at the rows a superblock holds (the key cut of its build used to aim at 1024, 4 times too small
@@ -112,13 +121,13 @@ SELECT 'auto' AS idx, leaf, decision, reason FROM sift.key_cut_decision('kt_auto
 UNION ALL SELECT 'arrival', leaf, decision, reason FROM sift.key_cut_decision('kt_arrival')
 UNION ALL SELECT 'both', leaf, decision, reason FROM sift.key_cut_decision('kt_both')
 UNION ALL SELECT 'narrow', leaf, decision, reason FROM sift.key_cut_decision('kt_narrow');
--- a date of 1,826 values on narrow rows: the cut lists the addresses of every row, so the index grows by more than 3%, and a range reads 100 times the units its rows fill: the cut is chosen up to 25%
+-- a date of 1,826 values on narrow rows: the cut lists the addresses of every row, so the index grows, and a range reads 100 times the units its rows fill: the benefit pays for the growth
 CREATE TABLE kd (id int, d date, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
 INSERT INTO kd SELECT i, '2022-01-01'::date + (random() * 1826)::int, repeat('x', 60) FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_i ON kd USING sift_col (d);
-SELECT kopt('kd_i'), growth_pct > 3 AND growth_pct <= 25 AS grows_up_to_25, decision FROM sift.key_cut_decision('kd_i');
+SELECT kopt('kd_i'), growth_pct > 3 AS grows, decision FROM sift.key_cut_decision('kd_i');
 DROP TABLE kd;
 CREATE INDEX kt_off ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (key_cut = 'off');
 SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -131,6 +140,6 @@ SELECT count(*), sum(a1), min(id) FROM kt WHERE ts >= '2024-06-01' AND ts < '202
 UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kt_auto'::regclass, 'kt_off'::regclass, 'kt_both'::regclass);
 SELECT sift.col_verify('kt_auto', true);
 DROP TABLE kt;
-DROP TABLE ka, kg, ku;
+DROP TABLE ka, kg, kf, ku;
 DROP FUNCTION kopt(regclass), kunits(text);
 DROP EXTENSION pg_sift;
