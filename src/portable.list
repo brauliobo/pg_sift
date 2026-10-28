@@ -69,6 +69,7 @@ core/page.h
 bm25/parallel.h
 core/neon.h
 core/simd_isa.h
+col/text_vec.h
 core/popcount.h
 bm25/posting.h
 bm25/posting_int.h

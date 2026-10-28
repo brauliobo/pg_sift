@@ -11,6 +11,7 @@
  *   SIFT_V_ANY(m)             a lane of m is not zero (one instruction: PTEST, UMAXV)
  *   SIFT_V_WIDEN(a, b)        the product of the low signed 32 bits of each int64 lane as a full lane
  *   SIFT_V_BITS32/BITS64(m)   the lane masks of an int32 / int64 compare as the bits of its lanes
+ *   SIFT_V_BITS8(m)           the lane masks of a byte compare as bits; AND with SIFT_V_BITS8_ONES keeps one bit a byte, at bit SIFT_V_BITS8_SHIFT * byte index (NEON: four bits a byte)
  */
 #ifndef SIFT_SIMD_ISA_H
 #define SIFT_SIMD_ISA_H
@@ -30,6 +31,9 @@
 #define SIFT_V_WIDEN(a, b) _mm256_mul_epi32((__m256i) (a), (__m256i) (b))
 #define SIFT_V_BITS32(m) ((uint64) (uint32) _mm256_movemask_ps((__m256) (m)))
 #define SIFT_V_BITS64(m) ((uint64) (uint32) _mm256_movemask_pd((__m256d) (m)))
+#define SIFT_V_BITS8(m) ((uint64) (uint32) _mm256_movemask_epi8((__m256i) (m)))
+#define SIFT_V_BITS8_ONES (~UINT64CONST(0))
+#define SIFT_V_BITS8_SHIFT 0
 #if defined(__clang__)
 #define SIFT_VEC_PUSH _Pragma("clang attribute push(__attribute__((target(\"avx2,bmi,bmi2,popcnt\"))), apply_to = function)")
 #define SIFT_VEC_POP _Pragma("clang attribute pop")
@@ -45,6 +49,9 @@
 #define SIFT_V_WIDEN(a, b) _mm512_mul_epi32((__m512i) (a), (__m512i) (b))
 #define SIFT_V_BITS32(m) ((uint64) _mm512_movepi32_mask((__m512i) (m)))
 #define SIFT_V_BITS64(m) ((uint64) _mm512_movepi64_mask((__m512i) (m)))
+#define SIFT_V_BITS8(m) ((uint64) _mm512_movepi8_mask((__m512i) (m)))
+#define SIFT_V_BITS8_ONES (~UINT64CONST(0))
+#define SIFT_V_BITS8_SHIFT 0
 #if defined(__clang__)
 #define SIFT_VEC_PUSH _Pragma("clang attribute push(__attribute__((target(\"avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt\"))), apply_to = function)")
 #define SIFT_VEC_POP _Pragma("clang attribute pop")
@@ -72,6 +79,10 @@ sift_v_bits32_neon(uint32x4_t m)
 }
 #define SIFT_V_BITS32(m) sift_v_bits32_neon((uint32x4_t) (m))
 #define SIFT_V_BITS64(m) ((uint64) (vgetq_lane_u64((uint64x2_t) (m), 0) & 1) | ((vgetq_lane_u64((uint64x2_t) (m), 1) & 1) << 1))
+/* a byte mask as a nibble a byte: SHRN by 4 narrows each 16 bit pair of mask bytes to one byte of two nibbles */
+#define SIFT_V_BITS8(m) vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8((uint8x16_t) (m)), 4)), 0)
+#define SIFT_V_BITS8_ONES UINT64CONST(0x1111111111111111)
+#define SIFT_V_BITS8_SHIFT 2
 #define SIFT_VEC_PUSH
 #define SIFT_VEC_POP
 #endif

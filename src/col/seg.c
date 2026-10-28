@@ -690,6 +690,27 @@ look_find(const SiftCDictLook *look, const char *s, uint32 len)
 	return pos < l->n && sift_csorted_cmp(&so, pos, &c) == 0 ? (int64) look_perm(l, pos) : -1;
 }
 
+/* The strings that hold c, block by block in code order: a block of DICT_BLOCK strings is a word of lut, and its bytes and offsets are what str_contains takes */
+static uint32
+look_contains(DictLook *l, const SiftColValue *c, uint64 *lut)
+{
+	uint32		count = 0;
+
+	for (uint32 b = 0; b * DICT_BLOCK < l->n; b++)
+	{
+		uint32		cnt = Min(DICT_BLOCK, l->n - b * DICT_BLOCK),
+					off[DICT_BLOCK + 1];
+
+		if (l->blkno != b)
+			look_load_block(l, b);
+		for (uint32 i = 0; i <= cnt; i++)
+			off[i] = l->blkoff[i];
+		sift_colk->str_contains(lut + b, (const char *) l->blkraw, off, cnt, c->v.s, c->len);
+		count += pg_popcount64(lut[b]);
+	}
+	return count;
+}
+
 static uint32
 look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint64 *lut)
 {
@@ -698,6 +719,8 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint6
 	uint32		from,
 				to;
 
+	if (op == SIFT_COLOP_CONTAINS)
+		return look_contains((DictLook *) l, c, lut);
 	look_cache((DictLook *) l);
 	sift_csorted_range(&so, op, c, &from, &to);
 	for (uint32 pos = from; pos < to;)

@@ -438,7 +438,8 @@ typedef enum SiftColOp
 	SIFT_COLOP_NOTIN,			/* nvals constants: rows whose value is none of them (NULL rows are not selected) */
 	SIFT_COLOP_ISNULL,
 	SIFT_COLOP_NOTNULL,
-	SIFT_COLOP_PREFIX			/* STR only: vals[0] is a prefix of the value (LIKE 'abc%' in the C collation) */
+	SIFT_COLOP_PREFIX,			/* STR only: vals[0] is a prefix of the value (LIKE 'abc%' in the C collation) */
+	SIFT_COLOP_CONTAINS			/* STR only: vals[0] (not empty) is a substring of the value, bytewise (LIKE '%abc%') */
 } SiftColOp;
 
 /*

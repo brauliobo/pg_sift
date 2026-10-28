@@ -118,11 +118,21 @@ typedef struct SiftColKernels
 	 * its end, so parent has room for end[np - 1] entries and SIFT_COL_PAD bytes more (the entries past end[np - 1] are undefined).
 	 */
 	void		(*expand_parents) (const uint32 *end, uint32 np, uint32 *parent);
+
+	/*
+	 * Text: bit s of out (SIFT_COLK_WORDS(n) words written, the bits past n zero) = string s holds the m >= 1 bytes of needle, for the n strings
+	 * bytes[off[s]] .. bytes[off[s + 1]) (off ascending, the bytes before off[0] and past off[n] are not read, nor is any padding). Bytewise: for
+	 * valid UTF-8 and a needle of valid UTF-8 that is the match of characters.
+	 */
+	void		(*str_contains) (uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m);
 } SiftColKernels;
 
 /* The active table (follows sift.simd), and a level's table for tests; never NULL, falls back downwards */
 extern PGDLLIMPORT const SiftColKernels *sift_colk;
 extern const SiftColKernels *sift_col_kernels_for(SiftSimdLevel level);
+
+/* Whether the len bytes at s hold the m >= 1 bytes of needle: str_contains for one string (what the vector kernels finish with, and what a test of one value uses) */
+extern bool sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m);
 
 /* Registers the rebind with the cpu module; _PG_init */
 extern void sift_col_kernels_init(void);

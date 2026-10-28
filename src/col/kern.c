@@ -191,6 +191,34 @@ expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
 			parent[i] = p;
 }
 
+bool
+sift_colk_contains1(const uint8 *s, uint32 len, const uint8 *needle, uint32 m)
+{
+	const uint8 *last;
+
+	if (len < m)
+		return false;
+	last = s + (len - m);
+	for (const uint8 *p = s; p <= last; p++)
+	{
+		p = memchr(p, needle[0], last - p + 1);
+		if (p == NULL)
+			return false;
+		if (memcmp(p, needle, m) == 0)
+			return true;
+	}
+	return false;
+}
+
+static void
+str_contains_scalar(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m)
+{
+	memset(out, 0, SIFT_COLK_WORDS(n) * sizeof(uint64));
+	for (uint32 s = 0; s < n; s++)
+		if (sift_colk_contains1((const uint8 *) bytes + off[s], off[s + 1] - off[s], (const uint8 *) needle, m))
+			out[s >> 6] |= UINT64CONST(1) << (s & 63);
+}
+
 const SiftColKernels sift_col_kernels_scalar = {
 	.range = {range_u8_scalar, range_u16_scalar, range_u32_scalar, range_u64_scalar},
 	.lut = {lut_u8_scalar, lut_u16_scalar, lut_u32_scalar},
@@ -210,6 +238,7 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.f8_from_keys = sift_colk_f8_from_keys_scalar,
 	.bits_to_flags = sift_colk_bits_to_flags_scalar,
 	.expand_parents = expand_parents_scalar,
+	.str_contains = str_contains_scalar,
 };
 
 #if defined(SIFT_HAVE_NEON)
@@ -234,6 +263,7 @@ const SiftColKernels sift_col_kernels_neon = {
 	.f8_from_keys = sift_colk_f8_from_keys_neon,
 	.bits_to_flags = sift_colk_bits_to_flags_neon,
 	.expand_parents = sift_colk_expand_parents_neon,
+	.str_contains = sift_colk_str_contains_neon,
 };
 #endif
 

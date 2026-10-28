@@ -7,6 +7,7 @@
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
+#include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/fmgroids.h"
@@ -237,7 +238,28 @@ str_func_op(Oid funcid)
 	return 0;
 }
 
-/* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' */
+/*
+ * LIKE 'abc%' is a prefix test and LIKE '%abc%' a substring test, both bytewise for every deterministic collation; a substring match of bytes is one of
+ * characters in UTF-8 and the single byte encodings only (a trail byte of SJIS or GBK is also an ASCII one). On true the literal is in *s, *len.
+ */
+static bool
+like_test(const char **s, uint32 *len, SiftSrcStrOp *op)
+{
+	bool		head = *len > 0 && **s == '%',
+				tail = *len > 1 && (*s)[*len - 1] == '%';
+	const char *lit = *s + head;
+	uint32		n = *len - head - 1;
+
+	if (!tail || n == 0 || memchr(lit, '%', n) || memchr(lit, '_', n) || memchr(lit, '\\', n) ||
+		(head && GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() != 1))
+		return false;
+	*s = lit;
+	*len = n;
+	*op = head ? SSTR_CONTAINS : SSTR_PREFIX;
+	return true;
+}
+
+/* leaf <op> constant, constant <op> leaf, leaf LIKE 'prefix%' or '%part%' */
 static bool
 str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 {
@@ -262,13 +284,8 @@ str_cmp_test(OpExpr *op, SiftSrcStrTest *out)
 	}
 	if (!IsA(a, Param) || !str_const(b, &s, &len))
 		return false;
-	if (sop == SSTR_PREFIX)
-	{
-		/* 'abc%': a LIKE with no other wildcard is bytewise for every deterministic collation */
-		if (len < 2 || s[len - 1] != '%' || memchr(s, '%', len - 1) || memchr(s, '_', len - 1) || memchr(s, '\\', len - 1))
-			return false;
-		len--;
-	}
+	if (sop == SSTR_PREFIX && !like_test(&s, &len, &sop))
+		return false;
 	if (sop >= SSTR_LT && sop <= SSTR_GE ? op->inputcollid != C_COLLATION_OID : !get_collation_isdeterministic(op->inputcollid))
 		return false;
 	out->op = sop;

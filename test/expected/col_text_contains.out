@@ -1,0 +1,140 @@
+-- LIKE '%part%' on a text leaf runs on the encoded strings, bytewise, in one pass over the bytes of a dictionary: the rows are the normal plan's for every
+-- way the strings are stored (a dictionary read in the stream and then parsed, strings inline in the unit, the write buffer, a sift_table), for needles at the
+-- edges (a string boundary inside the dictionary's bytes, the whole string, longer than any string, NUL-free multibyte text), and for the patterns that stay
+-- with the executor (a wildcard or an escape inside the part, ILIKE, NOT LIKE, a suffix).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+\ir test/agg_rows_helpers.sql
+\set ECHO none
+CREATE TABLE ct (id int, s text, k text, c text) WITH (autovacuum_enabled = off);
+INSERT INTO ct SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5((i % 7000)::text), 'k' || (i % 40), 'c' || md5(i::text)
+FROM generate_series(1, 30000) i;
+INSERT INTO ct VALUES (30001, '', '', ''), (30002, NULL, NULL, NULL), (30003, 'ab', 'ab', 'ab'), (30004, 'cd', 'cd', 'cd'), (30005, 'abcd', 'abcd', 'abcd'),
+	(30006, 'a%b', 'a%b', 'a%b'), (30007, 'a_b', 'a_b', 'a_b'), (30008, 'naïve café', 'naïve café', 'naïve café'), (30009, 'aaaa', 'aaaa', 'aaaa'),
+	(30010, E'back\\slash', E'back\\slash', 'x'), (30011, 'ba', 'ba', 'ba'), (30012, 'Shop1.EXAMPLE', 'Shop1.EXAMPLE', 'Shop1.EXAMPLE');
+CREATE INDEX ct_idx ON ct USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, k sift.col_text_ops, c sift.col_text_ops);
+VACUUM ct;
+-- rows only in the write buffer
+INSERT INTO ct SELECT 40000 + i, 'https://shop' || (i % 50) || '.example/item/wb' || md5(i::text), 'wb' || (i % 3), 'wb' || i FROM generate_series(1, 300) i;
+CREATE TABLE ctt (LIKE ct) USING sift_table;
+INSERT INTO ctt SELECT * FROM ct;
+VACUUM ctt;
+CREATE TABLE ct_pat (col text, pat text);
+INSERT INTO ct_pat VALUES
+	('s', '%item/%'), ('s', '%shop17.%'), ('s', '%shop1%'), ('s', '%.example/item/a%'), ('s', '%https://%'), ('s', '%x%'), ('s', '%zz%'), ('s', '%e%'),
+	('s', '%' || md5('5') || '%'), ('s', '%' || substr(md5('77'), 4, 6) || '%'), ('s', '%' || substr(md5('77'), 4, 3) || '%'), ('s', '%https://shop1.example/item/' || md5('1') || '%'),
+	('s', '%' || repeat('abcdef', 40) || '%'), ('s', '%wb%'), ('s', '%a%'), ('s', '% %'), ('s', '%ï%'),
+	('k', '%k1%'), ('k', '%1%'), ('k', '%b%'), ('k', '%bc%'), ('k', '%ab%'), ('k', '%cd%'), ('k', '%abcd%'), ('k', '%aa%'), ('k', '%ba%'), ('k', '%é%'), ('k', '%ï%'), ('k', '%ve c%'),
+	('k', '%wb%'), ('k', '%back%'), ('k', '%EXAMPLE%'), ('k', '%1.E%'), ('k', '%k39%'),
+	('c', '%ab%'), ('c', '%cd%'), ('c', '%b%'), ('c', '%c%'), ('c', '%' || substr(md5('9'), 2, 5) || '%'), ('c', '%wb2%'), ('c', '%wb29%'), ('c', '%x%'),
+	-- these stay with the executor
+	('s', '%item_a%'), ('s', '%i_em%'), ('s', '%a\%b%'), ('s', '%item/'), ('s', '%item/%a%'), ('s', 'https://%item/%'), ('s', '%'), ('s', '%%'), ('s', '%%%'),
+	('k', '%a_b%'), ('k', '%a\%b%'), ('k', '%a\_b%'), ('k', 'ab%'), ('k', '%cd'), ('k', 'a%b'), ('k', '%\\%');
+-- every shape against the normal plan; a few are repeated so that the dictionaries are first read in the stream and then parsed (after 32 tests)
+CREATE FUNCTION ct_check(tag text, tbl text, reps int, pats text[] DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r record;
+	q text;
+	bad int := 0;
+	n int := 0;
+BEGIN
+	FOR i IN 1..reps LOOP
+		FOR r IN SELECT col, pat FROM ct_pat WHERE pats IS NULL OR pat = ANY (pats) ORDER BY col, pat LOOP
+			FOREACH q IN ARRAY ARRAY[
+				format('SELECT count(*), sum(id), min(id), max(id) FROM %s WHERE %I LIKE %L', tbl, r.col, r.pat),
+				format('SELECT id FROM %s WHERE %I LIKE %L AND id %% 3 = 0', tbl, r.col, r.pat),
+				format('SELECT count(*) FROM %s WHERE %I LIKE %L OR id < 5', tbl, r.col, r.pat),
+				format('SELECT count(*) FROM %s WHERE %I NOT LIKE %L', tbl, r.col, r.pat)] LOOP
+				n := n + 1;
+				IF agg_rows(q, true) IS DISTINCT FROM agg_rows(q, false) THEN
+					bad := bad + 1;
+					RAISE NOTICE '%: %', tag, q;
+				END IF;
+			END LOOP;
+		END LOOP;
+	END LOOP;
+	RETURN tag || ': ' || n || ' statements, ' || bad || ' differ';
+END $$;
+SELECT ct_check('sift_col', 'ct', 1);
+              ct_check              
+------------------------------------
+ sift_col: 232 statements, 0 differ
+(1 row)
+
+SELECT ct_check('sift_table', 'ctt', 1);
+               ct_check               
+--------------------------------------
+ sift_table: 232 statements, 0 differ
+(1 row)
+
+-- the dictionaries are parsed and cached after enough tests
+SELECT ct_check('parsed', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
+             ct_check             
+----------------------------------
+ parsed: 544 statements, 0 differ
+(1 row)
+
+-- the units whose dictionary lacks the part are not read: an absent or a rare part reads fewer rows than a common one
+CREATE FUNCTION ct_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Rows Scanned: ' THEN
+			RETURN substring(l FROM 'Rows Scanned: (\d+)')::int;
+		END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT ct_scanned('SELECT count(*) FROM ct WHERE s LIKE ''%zz%''') < ct_scanned('SELECT count(*) FROM ct WHERE s LIKE ''%item/%''') AS absent_reads_fewer,
+       ct_scanned('SELECT count(*) FROM ct WHERE c LIKE ''%wb29%''') < ct_scanned('SELECT count(*) FROM ct WHERE c LIKE ''%c%''') AS rare_reads_fewer;
+ absent_reads_fewer | rare_reads_fewer 
+--------------------+------------------
+ t                  | t
+(1 row)
+
+-- group by, aggregates and joins over the filtered rows
+SELECT agg_pushed(q) AS pushed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same
+FROM (VALUES
+	('SELECT k, count(*), sum(id) FROM ct WHERE s LIKE ''%item/a%'' GROUP BY k'),
+	('SELECT count(DISTINCT k) FROM ct WHERE s LIKE ''%shop1%'' AND k LIKE ''%1%'''),
+	('SELECT count(*) FROM ct WHERE s LIKE ''%shop1%'' AND c LIKE ''%b%''')) v(q) ORDER BY q;
+ pushed | same 
+--------+------
+ t      | t
+ t      | t
+ t      | t
+(3 rows)
+
+-- after writes: more rows, deletes, updates and a merge keep the answers
+INSERT INTO ct SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 5000) i;
+DELETE FROM ct WHERE id % 11 = 0;
+UPDATE ct SET s = s || '/moved' WHERE id % 13 = 0;
+SELECT ct_check('written', 'ct', 1);
+             ct_check              
+-----------------------------------
+ written: 232 statements, 0 differ
+(1 row)
+
+VACUUM ct;
+SELECT ct_check('vacuumed', 'ct', 1);
+              ct_check              
+------------------------------------
+ vacuumed: 232 statements, 0 differ
+(1 row)
+
+-- every level of the kernels returns the same rows
+SET sift.simd = scalar;
+SELECT ct_check('scalar', 'ct', 1);
+             ct_check             
+----------------------------------
+ scalar: 232 statements, 0 differ
+(1 row)
+
+RESET sift.simd;
+DROP FUNCTION ct_check(text, text, int, text[]), ct_scanned(text);
+DROP TABLE ct_pat, ct, ctt;
+DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
+DROP EXTENSION pg_sift;

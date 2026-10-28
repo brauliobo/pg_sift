@@ -625,7 +625,7 @@ istr_candidates(const SiftCChunk *c, SiftColOp op, const SiftColPred *p)
 			   *one;
 	int64		k;
 
-	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || !istr_split(c, &pre, &prelen, &strs, &strslen))
+	if ((op == SIFT_COLOP_IN && p->nvals > STRS_PREFIX_MAXIN) || op == SIFT_COLOP_CONTAINS || !istr_split(c, &pre, &prelen, &strs, &strslen))
 		return NULL;
 	cc = sift_cc_open_rows(CurrentMemoryContext, pre, prelen, false, c->n);
 	cand = palloc0(nw * sizeof(uint64));
@@ -685,20 +685,23 @@ chunk_strs(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 	if (!any)
 		return;
 	sift_cchunk_strs(c, CurrentMemoryContext, &off, &bytes);
-	for (uint32 w = 0; w < cw; w++)
-	{
-		uint64		m = cand ? cand[w] : ~UINT64CONST(0);
-
-		if (w == c->n / 64)
-			m &= (UINT64CONST(1) << (c->n % 64)) - 1;
-		for (; m; m &= m - 1)
+	if (op == SIFT_COLOP_CONTAINS)
+		sift_colk->str_contains(tmp, bytes, off, c->n, p->vals[0].v.s, p->vals[0].len);
+	else
+		for (uint32 w = 0; w < cw; w++)
 		{
-			uint32		i = w * 64 + pg_rightmost_one_pos64(m);
+			uint64		m = cand ? cand[w] : ~UINT64CONST(0);
 
-			if (!sift_col_bit_test(c->nulls, i) && strs_match(op, p, t->strset, bytes + off[i], off[i + 1] - off[i]))
-				tmp[w] |= UINT64CONST(1) << (i % 64);
+			if (w == c->n / 64)
+				m &= (UINT64CONST(1) << (c->n % 64)) - 1;
+			for (; m; m &= m - 1)
+			{
+				uint32		i = w * 64 + pg_rightmost_one_pos64(m);
+
+				if (!sift_col_bit_test(c->nulls, i) && strs_match(op, p, t->strset, bytes + off[i], off[i + 1] - off[i]))
+					tmp[w] |= UINT64CONST(1) << (i % 64);
+			}
 		}
-	}
 	pfree(off);
 	pfree(bytes);
 	if (cand)

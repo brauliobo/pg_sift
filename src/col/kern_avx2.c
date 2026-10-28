@@ -456,6 +456,11 @@ expand_parents_avx2(const uint32 *end, uint32 np, uint32 *parent)
 	}
 }
 
+SIFT_VEC_PUSH
+#define TV_FN(x)	static void x##_avx2
+#include "col/text_vec.h"
+SIFT_VEC_POP
+
 const SiftColKernels sift_col_kernels_avx2 = {
 	.range = {range_u8_avx2, range_u16_avx2, range_u32_avx2, range_u64_avx2},
 	.lut = {lut_u8_avx2, lut_u16_avx2, lut_u32_avx2},
@@ -475,6 +480,7 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.f8_from_keys = f8_from_keys_avx2,
 	.bits_to_flags = bits_to_flags_avx2,
 	.expand_parents = expand_parents_avx2,
+	.str_contains = str_contains_avx2,
 };
 
 #endif

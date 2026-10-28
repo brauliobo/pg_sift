@@ -260,6 +260,9 @@ sift_colk_bits_and_count_neon(const uint64 *a, const uint64 *b, uint32 nwords)
 #define CV_FN(x)	void sift_colk_##x##_neon
 #include "col/kern_vec.h"
 
+#define TV_FN(x)	void sift_colk_##x##_neon
+#include "col/text_vec.h"
+
 /* keep &= the sets that share a bit with the probe (4 words each); the bits from n on are left as they are */
 void
 sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep)

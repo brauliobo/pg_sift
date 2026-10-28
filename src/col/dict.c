@@ -155,6 +155,8 @@ sift_cstr_matches(SiftColOp op, const char *s, uint32 len, const SiftColValue *c
 			return sift_cstr_cmp(s, len, c->v.s, c->len) > 0;
 		case SIFT_COLOP_GE:
 			return sift_cstr_cmp(s, len, c->v.s, c->len) >= 0;
+		case SIFT_COLOP_CONTAINS:
+			return sift_colk_contains1((const uint8 *) s, len, (const uint8 *) c->v.s, c->len);
 		default:					/* PREFIX */
 			return len >= c->len && memcmp(s, c->v.s, c->len) == 0;
 	}
@@ -350,6 +352,11 @@ sift_cdict_match(SiftCDict *d, SiftColOp op, const SiftColValue *c, uint64 *lut)
 
 	if (d->look)
 		return d->look->match(d->look, op, c, lut);
+	if (op == SIFT_COLOP_CONTAINS)
+	{
+		sift_colk->str_contains(lut, d->bytes, d->off, d->n, c->v.s, c->len);
+		return sift_colk->bits_count(lut, (d->n + 63) / 64);
+	}
 	if (d->sorted == NULL && d->n >= DICT_SORT_MIN && d->tests++ >= DICT_SORT_AFTER)
 		cdict_sort(d);
 	if (d->sorted == NULL)

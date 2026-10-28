@@ -471,6 +471,60 @@ test_expand_parents(Test *t)
 	mix(t, parent, e * sizeof(uint32));
 }
 
+/*
+ * Strings of a few letters, so that near misses are common (and some bytes >= 0x80), behind a stretch of junk the kernel must not read, with the text
+ * ending at the guard page; a needle cut from a string, from across two strings (never a match), or random. Checked against two plain loops.
+ */
+static void
+test_str_contains(Test *t)
+{
+	uint32		n = rnd(t, 3) ? rnd(t, 200) : pick_n(t) % 700,
+				junk = rnd(t, 3) ? 0 : rnd(t, 50),
+				alpha = 1 + rnd(t, 5),
+				maxlen = rnd(t, 3) == 0 ? 6 : rnd(t, 2) ? 40 : 300,
+				total = junk,
+				m,
+				at;
+	uint32	   *off = in_array(t, sizeof(uint32), n + 1);
+	uint64	   *out;
+	uint8	   *text,
+			   *needle;
+
+	for (uint32 s = 0; s < n; s++)
+	{
+		off[s] = total;
+		total += rnd(t, 4) == 0 ? 0 : rnd(t, maxlen + 1);
+	}
+	off[n] = total;
+	text = guarded(t, Max(total, 1));
+	for (uint32 i = 0; i < total; i++)
+		text[i] = rnd(t, 40) == 0 ? (uint8) (0x80 + rnd(t, 128)) : (uint8) ('a' + rnd(t, alpha));
+	m = 1 + (rnd(t, 3) ? rnd(t, 8) : rnd(t, 100));
+	needle = guarded(t, m);
+	at = n > 0 ? off[rnd(t, n)] : 0;
+	if (rnd(t, 4) != 0 && at + m <= total)
+		memcpy(needle, text + at, m);		/* a slice that may start in one string and end in the next: a match only when it fits in one */
+	else
+		for (uint32 i = 0; i < m; i++)
+			needle[i] = (uint8) ('a' + rnd(t, alpha));
+	out = out_array(t, sizeof(uint64), SIFT_COLK_WORDS(n));
+	t->k->str_contains(out, (const char *) text, off, n, (const char *) needle, m);
+	for (uint32 s = 0; s < n; s++)
+	{
+		bool		want = false;
+
+		for (uint32 p = off[s]; !want && p + m <= off[s + 1]; p++)
+			want = memcmp(text + p, needle, m) == 0;
+		if (sift_col_bit_test(out, s) != want)
+			elog(ERROR, "sift_col_kern: string %u of %u (%u bytes) %s the %u bytes of the needle", s, n, off[s + 1] - off[s],
+				 want ? "does not hold" : "holds", m);
+	}
+	for (uint32 s = n; s < SIFT_COLK_WORDS(n) * 64; s++)
+		if (sift_col_bit_test(out, s))
+			elog(ERROR, "sift_col_kern: bit %u past the %u strings is set", s, n);
+	mix(t, out, SIFT_COLK_WORDS(n) * sizeof(uint64));
+}
+
 static int64
 run_cases(const SiftColKernels *k, int32 seed)
 {
@@ -497,6 +551,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 		test_gather(&t);
 		test_decode_lanes(&t);
 		test_expand_parents(&t);
+		test_str_contains(&t);
 		MemoryContextReset(cx);
 		unmap_all(&t);
 	}

@@ -263,7 +263,7 @@ typedef struct SiftSrcPrune
 /*
  * A test on a text leaf (SCV_CODE, top level scalar) that a source may run on the encoded form of its units instead of the executor
  * evaluating the predicate over the leaf's dictionary and codes. Bytewise, so the planner
- * pushes EQ, NE, IN and NOT IN for any deterministic collation and the range operators and PREFIX only for the C collation. vals are
+ * pushes EQ, NE, IN, NOT IN, PREFIX and CONTAINS for any deterministic collation (CONTAINS only where a byte match is a character match) and the range operators only for the C collation. vals are
  * not copied: they outlive the call (prune_str: the scan).
  */
 typedef enum SiftSrcStrOp
@@ -276,7 +276,8 @@ typedef enum SiftSrcStrOp
 	SSTR_GE,
 	SSTR_IN,
 	SSTR_NOTIN,					/* non-NULL values none of vals */
-	SSTR_PREFIX					/* values that start with vals[0] */
+	SSTR_PREFIX,				/* values that start with vals[0] */
+	SSTR_CONTAINS				/* values that hold vals[0] (not empty), bytewise */
 } SiftSrcStrOp;
 
 typedef struct SiftSrcStrTest
