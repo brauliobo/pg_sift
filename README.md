@@ -225,6 +225,7 @@ Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|o
 - [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
 - [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
 - [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
+- [docs/CONTAINMENT.md](docs/CONTAINMENT.md): range and network containment from `sift_col`, its numbers and what it does not serve.
 - [docs/FORMATS.md](docs/FORMATS.md): the on-disk format numbers (metapage minor, segment formats, flags).
 - [docs/UPGRADING.md](docs/UPGRADING.md): the upgrade preflight (`scripts/upgrade-check.sh`), `ALTER EXTENSION UPDATE`, `pg_upgrade` to a newer PostgreSQL major and going back to an older release.
 - [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.

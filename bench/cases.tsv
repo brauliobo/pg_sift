@@ -181,3 +181,5 @@ group_float_key	by a float key whose values have a short mantissa	orders	default
 jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 rolling_window	compared with a stable operand	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 image_equality	are tests of the source on the stored image	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
+contain_range	are answered by a `sift_col` index from integer leaves	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_range_gist	ms	faster33	no
+contain_inet	`ip <<= net` 1.4 ms	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_inet_gist	ms	faster33	no
