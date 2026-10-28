@@ -202,7 +202,7 @@ jobs:
         if: ${{ matrix.git }}
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh libipc-run-perl liblz4-dev libzstd-dev libicu-dev
+          scripts/apt-install.sh libipc-run-perl liblz4-dev libzstd-dev libicu-dev libxml2
           echo "$HOME/pg19/bin" >> "$GITHUB_PATH"
 
       # test/t/pg_upgrade.sh upgrades from the major before the server's when its binaries are in /usr/lib/postgresql/N-1 (17 to 18, 18 to 19) and builds
