@@ -263,20 +263,40 @@ promote_next(Relation index, bool propagate, uint64 *busy)
 }
 
 /*
- * The share of dead rows above which a lone segment is rewritten when dead_rewrite_pct is 0: the rewrite pays once the scans of the dead rows between two VACUUMs
- * cost more than it does. The rewrite re-encodes every live row, 3,700 + 570 * bytes instructions (300,000 rows measured 5,800 at 3.7 bytes a row, 42,800 at 68);
- * a dead row costs a scan of the unit that holds it about 430 instructions (a grouped sum over 300,000 rows at 13% dead: 17.2 M against 0.5 M), whatever the width
- * of the row. With SIFT_COL_DEAD_SCANS scans between two VACUUMs, dead * 430 * scans = live * row_cost, i.e. 10% for the narrow row and 45% for the wide one.
+ * Does the rewrite of a lone segment pay when dead_rewrite_pct is 0? A query reads a unit with a dead row net of the dead rows, about SIFT_COL_DEAD_ROW instructions each,
+ * and by its rows, about SIFT_COL_DEAD_SCAN_ROW instructions each, once more than a tenth of the unit is dead: min(dead * 430, rows * 45) a unit (a grouped sum over 300,000
+ * rows: 10.7 M with 5% of them dead in every unit, 17.2 M with 13%, 1.3 M with the first 13% dead, which are whole units). The rewrite re-encodes every live row, 900 + 463 *
+ * bytes instructions (300,000 rows: 4,200 at 7.1 bytes a row, 35,400 at 74.5). It pays once the SIFT_COL_DEAD_SCANS scans between two VACUUMs of the dirty units cost more; a
+ * segment half dead is rewritten whatever the scans, for the space.
  */
-static int
-dead_pct(const SiftSegEntry *e)
+static bool
+rewrite_pays(SiftColSegment *seg, const SiftSegEntry *e)
 {
-	uint64		row_cost = 3700 + 570 * e->bytes / Max(e->ndocs, 1);
+	uint64		live = sift_cseg_live_rows(seg),
+				scan = 0,
+				row_cost = 900 + 463 * e->bytes / Max(e->ndocs, 1);
+	uint64	   *bits = palloc(SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
 
-	return Max(1, 100 * row_cost / (row_cost + (uint64) SIFT_COL_DEAD_SCAN_INSTR * SIFT_COL_DEAD_SCANS));
+	if (live * 2 <= e->ndocs)
+		return true;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		uint32		n = seg->sbdir[u].nrows,
+					dead = 0;
+
+		if (!sift_cseg_dirty(seg, u))
+			continue;
+		sift_cseg_live(seg, u, bits);
+		for (uint32 w = 0; w < SIFT_COL_NWORDS(n); w++)
+			dead += pg_popcount64(bits[w]);
+		dead = n - dead;
+		scan += Min((uint64) dead * SIFT_COL_DEAD_ROW, (uint64) n * SIFT_COL_DEAD_SCAN_ROW);
+	}
+	pfree(bits);
+	return scan * SIFT_COL_DEAD_SCANS >= live * row_cost;
 }
 
-/* A segment worth a rewrite alone: more dead rows than dead_rewrite_pct, or an overflow flag that only dead rows account for */
+/* A segment worth a rewrite alone: more dead rows than dead_rewrite_pct (0: when the rewrite pays), or an overflow flag that only dead rows account for */
 bool
 sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 {
@@ -287,7 +307,8 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	if (!(e->flags & SIFT_SEG_DIRTY))
 		return false;
 	seg = sift_cseg_open(index, e, CurrentMemoryContext);
-	dead = sift_cseg_live_rows(seg) * 100 < e->ndocs * (100 - (pct ? pct : dead_pct(e))) || sift_cseg_stale_ovf(seg);
+	dead = pct ? sift_cseg_live_rows(seg) * 100 < e->ndocs * (100 - pct) : rewrite_pays(seg, e);
+	dead = dead || sift_cseg_stale_ovf(seg);
 	sift_cseg_close(seg);
 	return dead;
 }

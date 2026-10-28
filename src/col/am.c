@@ -417,7 +417,7 @@ sift_col_init(void)
 					  "Write buffer size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
-					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (0 by the cost of the rewrite against the scans, 100 never)",
+					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (0 when the scans of its dirty units cost more than the rewrite, 100 never)",
 					  SIFT_COL_DEAD_AUTO, 0, 100, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "vacuum_truncate",
 					   "VACUUM gives the free blocks at the end of the index file back to the operating system",
