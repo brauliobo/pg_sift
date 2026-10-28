@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 114 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 115 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1518,6 +1518,19 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** new in 3.5
 - **Advice:** Leave at the default. 0 turns the sharing off (each backend then folds the statistics of an index once, as before); more room helps only a server with indexes of many integer leaves (a record is 33 kB for each).
 
+#### sift.col_dict_shared_cache_kb
+
+`sift_col` · default · since 3.6 · default 65536 kB
+
+- **What it does:** a new backend, a pooled connection or a parallel worker reads the parsed dictionary of a column that another backend parsed, in place, instead of inflating and indexing all of it again
+- **Gain:** first statement of a new backend, `ip = x/51` over 1,000,000 rows of IPv4 and IPv6 networks, millions of instructions of one backend: 286 (cut index) and 332 (uncut) to 2.5 and 2.3 once another backend has kept the dictionary, 877 and 516 to 2.5 and 2.4 over 2,000,000 rows (the dictionary no longer fits the 64 MB of a private cache); 1,000,000 rows take 66 MB of the ring, 2,000,000 132 MB and 3,000,000 213 MB
+- **Impact:** index size: -; build, merge and writes: -; other: one ring of records for the server, whatever the number of backends, taken whole from dynamic shared memory when the first backend keeps a dictionary (65,536 kB by default, 4,194,304 kB at most, so that the setting cannot ask for a size a server is not likely to have): this memory is in addition to shared_buffers, is not reclaimable like page cache (with dynamic_shared_memory_type = posix it counts against /dev/shm and the shared memory of a container, and is swap-backed), and gets no huge pages; with posix at most a quarter of /dev/shm is used and the log says so; where the ring cannot be had the backend logs once and parses its own; a dictionary under 128 kB or over half of the ring is not kept; the context is superuser, as the other shared caches: the value of the backend that creates the ring wins (a superuser who sets a size in a session before the ring exists decides the size for the server), so to set the size for the server set it in postgresql.conf and restart (a later change of the setting only turns the sharing on and off, 0 for off, and never resizes or frees the ring)
+- **When:** Servers whose clients connect often (a pool that resets its sessions, an application that opens a connection for each request) or run parallel queries over large sift_col indexes with text columns of many distinct values: the first statement of each connection parses the dictionaries of the columns it reads.
+- **Default:** 65536 kB — On: 64 MB of shared memory, allocated by the first backend that keeps a dictionary of 128 kB or more, and a read in place (a few instructions) in place of the parse; the rows are those of the segment, so nothing else changes. 64 MB holds the dictionaries of about 1,000,000 distinct values with their hash tables; more room is a choice of the DBA, not the default.
+- **Turn off:** SET sift.col_dict_shared_cache_kb = 0 (superuser; postgresql.conf for all backends): no segment is made or attached by the backend, and each backend parses and keeps its own dictionaries.
+- **Upgrade from 3.5:** new in 3.6
+- **Advice:** Leave at the default on a server with a few hundred MB of shared memory to spare. 0 turns the sharing off (each backend then parses and keeps its own dictionaries, up to the dict_cache_kb of the index); raise it for dictionaries of more than about 1,000,000 distinct values with their hash tables (a ring of 256 MB held the dictionaries of 1,000,000, 2,000,000 and 3,000,000 rows of the measurement); lower it on a small server or a container, whose /dev/shm is 64 MB.
+
 #### auto(dict-tsig)
 
 `sift_col` · default · since 3.6 · default automatic
@@ -2232,7 +2245,7 @@ all · deprecated · since 1.0 · default 4096
 After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift_col(array_lengths)`.
+Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift.col_dict_shared_cache_kb`, `sift_col(array_lengths)`.
 
 | Option | 3.5 | 3.6 | Column format | What a 3.5 user gets after the update |
 |---|---|---|---|---|
@@ -2257,6 +2270,7 @@ Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift_col(array_len
 | `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
 | `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
 | `sift.col_leaf_cache_kb` | 4096 kB | 4096 kB |  | new in 3.5 |
+| `sift.col_dict_shared_cache_kb` | new | 65536 kB |  | new in 3.6 |
 | `auto(dict-tsig)` | automatic | automatic | minor 29, unreadable by 3.5 | Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index. |
 | `auto(text-lz4)` | automatic | automatic |  | Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice. |
 <!-- sift-upgrade:end -->

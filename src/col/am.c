@@ -357,6 +357,13 @@ sift_col_init(void)
 							"Rewrite workers of sift_col indexes that may run at once in a database, 0 for no limit.",
 							"A worker above the limit looks again after sift.maintenance_naptime, then twice as late each time, 8 times in all; the next VACUUM asks again.",
 							&sift_col_auto_merge_max_workers, 0, 0, 64, PGC_SUSET, 0, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.col_dict_shared_cache_kb",
+							"Shared memory, for all backends together, that keeps the parsed dictionaries of sift_col segments (128 kB or more each), so that a new backend or a pooled connection reads a dictionary another backend parsed in place instead of parsing it (0: off, each backend parses and keeps its own, up to the dict_cache_kb of the index).",
+							"The ring of records is allocated, at the size of this setting, by the first backend that keeps a dictionary after the server starts, and its size is recorded for the other backends: a later change turns the use of it on and off (0), never its size, which changes at the next start of the server. "
+							"The memory is in addition to shared_buffers, is taken whole when the ring is made, and with dynamic_shared_memory_type = posix comes from /dev/shm (at most a quarter of it is used, with a message in the log) and counts in the shared memory of the container. "
+							"A record is about 21 bytes for each distinct value, and 16 to 32 more with its hash table; a record over half of the ring is not kept.",
+							&sift_col_dict_shared_cache_kb, 65536, 0, 4194304,
+							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.col_leaf_cache_kb",
 							"Shared memory, for all backends together, that keeps what the zones of the units of a sift_col index say to the planner (a record for each leaf and a sample of the unit zones), so that a new backend does not read them all (0: off).",
 							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), not its size. A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
@@ -388,8 +395,8 @@ sift_col_init(void)
 							"Testing: a column scan sleeps up to this many microseconds at the points where VACUUM or DML can interleave (0 = no).",
 							NULL, &sift_test_col_jitter_us, 0, 0, 1000000, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_dict_shared",
-							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = not shared, 2 = every dictionary shared, 3 = the table cannot be had, 4 = a ring of 8 MB.",
-							NULL, &sift_test_col_dict_shared, 0, 0, 4, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+							"Testing: the dictionaries shared between backends (col/dictshm.c): 0 = as built, 1 = every dictionary shared, 2 = the table cannot be had.",
+							NULL, &sift_test_col_dict_shared, 0, 0, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_verify_inval",
 							 "Testing: the heap check of sift.col_verify invalidates the index's relcache entry (what another session's VACUUM or ANALYZE does) at every tuple.",
 							 NULL, &sift_test_col_verify_inval, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

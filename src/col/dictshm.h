@@ -21,6 +21,9 @@ typedef struct DictKey
 	uint32		unit;			/* UINT32_MAX: the dictionary of the leaf, else the list lengths of that unit */
 } DictKey;
 
+/* sift.col_dict_shared_cache_kb: the size of the ring of records, 0 shares nothing */
+extern int	sift_col_dict_shared_cache_kb;
+
 /* The table is there for this backend: a parallel leader asks before it enters parallel mode, where it cannot be made, and tells its workers, which join it */
 extern bool sift_dictshm_prepare(void);
 extern void sift_dictshm_join(void);
@@ -33,7 +36,7 @@ extern SiftCDict *sift_dictshm_read(const DictKey *k, MemoryContext parent);
 extern bool sift_dictshm_write(const DictKey *k, const SiftCDict *d);
 
 #ifdef SIFT_TESTING
-/* sift.test_col_dict_shared: 1 = not shared, 2 = every dictionary is shared, 3 = the table fails */
+/* sift.test_col_dict_shared: 1 = every dictionary is shared, 2 = the table fails */
 extern PGDLLIMPORT int sift_test_col_dict_shared;
 extern void sift_dictshm_pinned(int64 *records, int64 *pins);
 #endif

@@ -1,5 +1,5 @@
 -- The parsed dictionaries of segments are shared between backends (col/dictshm.c): the first backend that parses a dictionary keeps it in shared memory, the
--- next copies it. sift.test_col_dict_shared = 2 shares every dictionary, 1 shares none. Every shape must return the rows of the dictionaries parsed from the
+-- next copies it. sift.test_col_dict_shared = 1 shares every dictionary, sift.col_dict_shared_cache_kb = 0 none. Every shape must return the rows of the dictionaries parsed from the
 -- segment and of the stock plan, whichever backend parsed them, and a segment a merge or VACUUM rewrote (a new generation) must never be read from the bytes
 -- of the old one. \c is a new backend.
 CREATE EXTENSION pg_sift;
@@ -52,20 +52,20 @@ BEGIN
 END $$;
 
 -- not shared: nothing is kept or found
-SET sift.test_col_dict_shared = 1;
+SET sift.col_dict_shared_cache_kb = 0;
 SELECT snap('off');
 SELECT * FROM shared();
 
 -- the first backend of the table keeps what it parses, the second copies it
 \c
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 SELECT explain_has($$SELECT g, count(*) FROM ds WHERE w LIKE '%a1%' GROUP BY g$$, 'Shared Dictionaries: hits 0, misses') AS verbose_counts_misses;
 SELECT snap('first');
 SELECT * FROM shared();
 \c
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 SELECT explain_has($$SELECT g, count(*) FROM ds WHERE w LIKE '%a1%' GROUP BY g$$, 'Shared Dictionaries: hits') AS verbose_counts_hits;
 SELECT snap('second');
 SELECT hits_found AS second_copies FROM shared();
@@ -75,7 +75,7 @@ SELECT shape, count(DISTINCT h) AS answers FROM seen GROUP BY shape HAVING count
 -- a rewritten segment is another generation: new rows, a merge, a delete and a VACUUM
 \c
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 INSERT INTO ds SELECT 30000 + i, 'key' || (i * 31 % 9500), 'g' || (i % 17), 'zz' || i % 1500, i % 100, '198.19.0.0'::inet + i FROM generate_series(1, 5000) i;
 SELECT sift.col_merge('ds_col', true) >= 0 AS merged;
 DELETE FROM ds WHERE id % 5 = 0;
@@ -89,26 +89,26 @@ SELECT snap('merged_first');
 SELECT hits_found AS old_generation_copied, misses_counted AS new_generation_parsed FROM shared();
 \c
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 SELECT snap('merged_second');
 SELECT hits_found AS merged_second_copies FROM shared();
 SELECT count(*) AS shapes_checked FROM (SELECT shape FROM seen WHERE label IN ('stock', 'merged_first', 'merged_second') GROUP BY shape HAVING count(DISTINCT h) = 1) a;
 
 -- parallel workers join the table the leader attached (a worker cannot make it): the same rows as the parallel scan with the sharing off
 \c
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT snap('par_first');
 SELECT value > 0 AS workers_launched FROM sift.stats() WHERE name = 'workers_launched';
 \c
-SET sift.test_col_dict_shared = 2;
+SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT snap('par_second');
 SELECT hits_found AS parallel_copies FROM shared();
 \c
-SET sift.test_col_dict_shared = 1;
+SET sift.col_dict_shared_cache_kb = 0;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
 SELECT snap('par_off');
@@ -117,7 +117,7 @@ SELECT shape FROM seen WHERE label IN ('stock', 'par_first', 'par_second', 'par_
 -- the table that cannot be had: no error, the same rows
 \c
 SET max_parallel_workers_per_gather = 0;
-SET sift.test_col_dict_shared = 3;
+SET sift.test_col_dict_shared = 2;
 SELECT snap('no_table');
 SELECT count(DISTINCT h) AS answers FROM seen WHERE shape = 1 AND label IN ('stock', 'no_table');
 SELECT shape FROM seen WHERE label IN ('stock', 'no_table') GROUP BY shape HAVING count(DISTINCT h) > 1;

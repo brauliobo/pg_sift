@@ -7,7 +7,7 @@ REPO=$(cd "$(dirname "$0")/../.." && pwd)
 . "$(dirname "$0")/lib.bash"
 
 plan 8
-node_init primary 2 "sift.test_col_dict_shared = 4"
+node_init primary 2 "sift.col_dict_shared_cache_kb = 8192"
 node_start primary || bail "primary start failed"
 TABLES=12
 {

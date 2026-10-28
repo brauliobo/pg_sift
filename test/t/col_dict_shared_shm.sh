@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The parsed dictionaries that backends share (col/dictshm.c) in a /dev/shm of a container (Docker's default is 64 MB; where /dev/shm is bigger than 1 GB the
-# test uses sift.test_col_dict_shared = 3, which makes the table fail as a full one does): the table takes a quarter of /dev/shm at most, a second backend
+# test uses sift.test_col_dict_shared = 2, which makes the table fail as a full one does): the table takes a quarter of /dev/shm at most, a second backend
 # copies what the first parsed to the same rows as the stock plan (also in a parallel query), a ring too small for the dictionaries asked stops writing instead
 # of churning, and a /dev/shm with no room for the table costs no error and no wrong row: the backend goes without it, as before.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -51,7 +51,10 @@ check "a parallel query, its workers joined to the table, returns the same rows"
 SHM_KB=$(df -Pk /dev/shm | awk 'NR == 2 {print $2}')
 if ((SHM_KB <= 1048576)); then
 	BIG=$(find /dev/shm -maxdepth 1 -name 'PostgreSQL.*' -size +$((SHM_KB / 4 + 1024))k | wc -l)
-	check "the table takes no more than a quarter of /dev/shm" test "$BIG" == 0
+	CUT=1
+	# the default ring (64 MB) is cut to a quarter of a /dev/shm under 256 MB, and the log says so
+	((SHM_KB >= 262144)) || grep -q 'the shared dictionaries take .* kB, not the 65536 kB of sift.col_dict_shared_cache_kb' "$(dir primary)/postgres.log" || CUT=0
+	check "the table takes no more than a quarter of /dev/shm, and the log says when the size is cut" test "$BIG|$CUT" == "0|1"
 else
 	skip 1 "/dev/shm is $((SHM_KB / 1024)) MB: the cap of a small one is not reached"
 fi
@@ -75,7 +78,7 @@ if ((SHM_KB <= 1048576)); then
 	MODE=
 else
 	node_stop primary
-	MODE="SET sift.test_col_dict_shared = 3"
+	MODE="SET sift.test_col_dict_shared = 2"
 fi
 node_start primary || bail "restart failed"
 N=$(backend "SET sift.enable_agg = on" ${MODE:+"$MODE"} -- 1 2)
