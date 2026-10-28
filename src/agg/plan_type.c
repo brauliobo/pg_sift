@@ -393,6 +393,59 @@ wide_test(AggCtx *c, Node *n, int *leaf, int *op, Node **operand, Oid *argtype)
 }
 
 /*
+ * `x = a OR x = b ...` on one column with one operator, the operands constants, parameters or stable expressions, is `x = ANY (ARRAY[a, b, ..])`: both are true for
+ * the same rows and NULL for the same others, and the source takes the list as one test (the units of its values, not every unit; the executor reads no value).
+ * The expression as it was when it is not such an OR.
+ */
+static Node *
+or_equalities_as_any(Node *n)
+{
+	BoolExpr   *b;
+	OpExpr	   *first = NULL;
+	Node	   *var = NULL;
+	List	   *elems = NIL;
+	ArrayExpr  *arr;
+	ScalarArrayOpExpr *sa;
+
+	if (!IsA(n, BoolExpr) || (b = (BoolExpr *) n)->boolop != OR_EXPR)
+		return n;
+	foreach_ptr(Node, arg, b->args)
+	{
+		OpExpr	   *op = (OpExpr *) strip_relabel(arg);
+		Node	   *l,
+				   *r;
+		Oid			lt,
+					rt;
+
+		if (!IsA(op, OpExpr) || list_length(op->args) != 2 || builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ ||
+			(first && (op->opno != first->opno || op->inputcollid != first->inputcollid)))
+			return n;
+		l = strip_relabel(linitial(op->args));
+		r = strip_relabel(lsecond(op->args));
+		if (!pseudo_const(r) || pseudo_const(l) || (var && !equal(var, l)))
+			return n;
+		first = first ? first : op;
+		var = l;
+		elems = lappend(elems, r);
+	}
+	arr = makeNode(ArrayExpr);
+	arr->element_typeid = exprType(linitial(elems));
+	arr->array_typeid = get_array_type(arr->element_typeid);
+	if (!OidIsValid(arr->array_typeid))
+		return n;
+	arr->elements = elems;
+	arr->location = -1;
+	sa = makeNode(ScalarArrayOpExpr);
+	sa->opno = first->opno;
+	sa->opfuncid = first->opfuncid;
+	sa->useOr = true;
+	sa->inputcollid = first->inputcollid;
+	sa->args = list_make2(var, arr);
+	sa->location = -1;
+	return (Node *) sa;
+}
+
+/*
  * A test of a wide leaf as a conjunct of the query: the source keeps the rows that pass (SAP_WIDE) and the executor never reads the values, which
  * is why it is only a conjunct: an OR, a CASE, a FILTER or a key would have to read them.
  */
@@ -403,10 +456,12 @@ compile_wide(AggCtx *c, Node *n)
 				op;
 	Node	   *operand;
 	Oid			argtype;
+	Node	   *test;
 	SiftAggPred *p;
 
 	n = strip_relabel(n);
-	if (c->nwide >= SIFT_AGG_MAX_WIDE || !wide_test(c, n, &leaf, &op, &operand, &argtype) || !source_can_wide(c))
+	test = or_equalities_as_any(n);
+	if (c->nwide >= SIFT_AGG_MAX_WIDE || !wide_test(c, test, &leaf, &op, &operand, &argtype) || !source_can_wide(c))
 		return NULL;
 	c->nwide++;
 	p = new_pred(c, SAP_WIDE);

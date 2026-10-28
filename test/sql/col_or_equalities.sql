@@ -1,0 +1,79 @@
+-- `a = x OR a = y` on a network, a range or a numeric column is the test `a IN (x, y)` of the source: the same rows as the heap with or without the aggregate scan,
+-- after every kind of write, and the units that hold neither value are pruned.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+
+-- 90 superblocks (fillfactor 10); addresses with masks, ranges and numerics scattered over them, and the NULLs
+CREATE TABLE oq (id int, ip inet, r int4range, n numeric(12,2), pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO oq SELECT i, set_masklen('20.0.0.0'::inet + (random() * 16777215)::int, 8 + (random() * 24)::int), int4range(a, a + 1 + (random() * 50)::int),
+	(random() * 1000000)::numeric(12,2), repeat('x', 100)
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 150000) i) s;
+INSERT INTO oq VALUES (150001, NULL, NULL, NULL, 'nulls'), (150002, '2001:db8::1', 'empty', 0, 'v6'), (150003, '2001:db8::/32', '(,)', -1.5, 'v6 net'), (150004, '20.5.7.9/32', '[5,6)', 3.25, 'host');
+VACUUM (FREEZE, ANALYZE) oq;
+CREATE INDEX oq_col ON oq USING sift_col (ip, r, n);
+
+-- the answer of q with the aggregate scan, with the plain index scan and with the heap
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; c bigint;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true); EXECUTE q INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true); PERFORM set_config('enable_seqscan', 'off', true); EXECUTE q INTO c;
+	PERFORM set_config('enable_seqscan', 'on', true); PERFORM set_config('enable_indexscan', 'off', true); PERFORM set_config('enable_bitmapscan', 'off', true); EXECUTE q INTO b;
+	RETURN a = b AND c = b;
+END $$;
+CREATE FUNCTION kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text; kept numeric := 0; pruned numeric := 0;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '^ *Units: ' THEN kept := substring(l from '[0-9]+')::numeric; END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned')::numeric; END IF;
+	END LOOP;
+	RETURN round(kept / nullif(kept + pruned, 0), 1);
+END $$;
+
+CREATE TABLE oq_q (slug text, q text);
+INSERT INTO oq_q SELECT slug, replace(q, '@T@', 'oq') FROM (VALUES
+	('network_equals_either', 'SELECT count(*) FROM @T@ WHERE ip = (SELECT ip FROM @T@ WHERE id = 11) OR ip = (SELECT ip FROM @T@ WHERE id = 99999)'),
+	('network_equals_two_hosts', 'SELECT count(*) FROM @T@ WHERE ip = ''20.5.7.9/32'' OR ip = ''2001:db8::1'''),
+	('network_equals_three_commuted', 'SELECT count(*) FROM @T@ WHERE ''20.5.7.9/32'' = ip OR ip = ''2001:db8::/32'' OR ip = ''20.5.7.9/32'''),
+	('network_equals_masked_pair', 'SELECT count(*) FROM @T@ WHERE ip = ''20.0.0.0/8'' OR ip = ''20.0.0.0/9'''),
+	('network_equals_with_null', 'SELECT count(*) FROM @T@ WHERE ip = ''20.5.7.9/32'' OR ip = NULL'),
+	('network_equals_or_overlap', 'SELECT count(*) FROM @T@ WHERE ip = ''20.5.7.9/32'' OR ip && ''20.5.0.0/16'''),
+	('network_equals_in_and', 'SELECT count(*) FROM @T@ WHERE (ip = ''20.5.7.9/32'' OR ip = ''2001:db8::1'') AND id > 100'),
+	('range_equals_either', 'SELECT count(*) FROM @T@ WHERE r = ''[5,6)'' OR r = ''empty'''),
+	('range_equals_unbounded', 'SELECT count(*) FROM @T@ WHERE r = ''(,)'' OR r = (SELECT r FROM @T@ WHERE id = 11)'),
+	('numeric_equals_either', 'SELECT count(*) FROM @T@ WHERE n = 3.25 OR n = -1.5'),
+	('numeric_equals_duplicate', 'SELECT count(*) FROM @T@ WHERE n = 3.25 OR n = 3.250'),
+	('rows_network_equals_either', 'SELECT sum(id) FROM @T@ WHERE ip = ''20.5.7.9/32'' OR ip = ''2001:db8::1'''),
+	('rows_range_equals_either', 'SELECT sum(id) FROM @T@ WHERE r = ''[5,6)'' OR r = ''empty''')
+) v(slug, q);
+CREATE FUNCTION oq_all() RETURNS TABLE (slug text, equal_to_heap boolean) LANGUAGE sql AS $$ SELECT slug, same(q) FROM oq_q ORDER BY slug $$;
+
+SELECT * FROM oq_all();
+-- every kind of write: the write buffer, an update and a delete of the rows the values hold, a merge, a REINDEX
+INSERT INTO oq SELECT 200000 + i, CASE WHEN i % 2 = 0 THEN '20.5.7.9/32'::inet ELSE '20.0.0.0/8'::inet END, CASE WHEN i % 2 = 0 THEN '[5,6)'::int4range ELSE 'empty'::int4range END, CASE WHEN i % 2 = 0 THEN 3.25 ELSE -1.5 END, 'late' FROM generate_series(1, 300) i;
+SELECT * FROM oq_all();
+UPDATE oq SET ip = '2001:db8::1', n = 3.25 WHERE id % 1000 = 7;
+DELETE FROM oq WHERE id % 1000 = 3;
+SELECT * FROM oq_all();
+SELECT sift.col_merge('oq_col', true) >= 0;
+SELECT * FROM oq_all();
+REINDEX INDEX oq_col;
+SELECT * FROM oq_all();
+
+-- the units: the values of the OR are in the few units of an index cut by the node of the address, as the units of the IN list of the same values
+CREATE TABLE oq6 (id int, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+INSERT INTO oq6 SELECT i, '20.0.0.0'::inet + (random() * 16777215)::int, repeat('x', 100) FROM generate_series(1, 150000) i;
+VACUUM (FREEZE, ANALYZE) oq6;
+CREATE INDEX oq6_col ON oq6 USING sift_col (ip);
+SELECT same('SELECT count(*) FROM oq6 WHERE ip = (SELECT ip FROM oq6 WHERE id = 5) OR ip = (SELECT ip FROM oq6 WHERE id = 77777)');
+SELECT kept_share('SELECT count(*) FROM oq6 WHERE ip = ''20.5.7.9'' OR ip = ''20.200.1.1'' OR ip = ''20.99.3.3''') < 0.2 AS or_keeps_few_units,
+       kept_share('SELECT count(*) FROM oq6 WHERE ip = ''20.5.7.9'' OR ip = ''20.200.1.1'' OR ip = ''20.99.3.3''') = kept_share('SELECT count(*) FROM oq6 WHERE ip IN (''20.5.7.9'', ''20.200.1.1'', ''20.99.3.3'')') AS same_units_as_in_list;
+
+DROP FUNCTION oq_all(), same(text), kept_share(text);
+DROP TABLE oq, oq6, oq_q;
+DROP EXTENSION pg_sift;
