@@ -394,3 +394,6 @@ CREATE FUNCTION sift._test_col_gorder(index regclass, leaf int4, OUT seg int8, O
 
 CREATE FUNCTION sift._test_relcache_burn(slots int4) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_relcache_burn' LANGUAGE C STRICT;
+
+CREATE FUNCTION sift._test_col_dict_shared_stale() RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_stale' LANGUAGE C;

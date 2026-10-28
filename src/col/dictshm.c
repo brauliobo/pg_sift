@@ -20,9 +20,12 @@
 #include "storage/bufmgr.h"
 #include "storage/dsm_impl.h"
 #include "storage/spin.h"
+#include "fmgr.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 
 #include "agg/stats.h"
+#include "core/host.h"
 #include "col/dictshm.h"
 #include "col/dsmreg.h"
 
@@ -30,7 +33,7 @@
 #define DSHM_WAYS		8
 #define DSHM_MAGIC		0x44534831
 /* the name carries the layout */
-#define DSHM_NAME		"sift_col_dict_1"
+#define DSHM_NAME		"sift_col_dict_2"
 /* the smallest record worth a copy: under it the segment is as cheap to read */
 #define DSHM_MIN_BYTES	(128 * 1024)
 #define DSHM_WINDOW		16
@@ -71,6 +74,7 @@ typedef struct DshmHdr
 {
 	uint32		magic;
 	pg_crc32c	crc;			/* of the arrays that follow, not of the padding */
+	DictKey		key;			/* whose record it is: the directory may name a place that another record took */
 	uint32		n;
 	uint32		nbytes;
 	uint32		flags;
@@ -208,7 +212,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext mcxt)
 		return NULL;
 	rec = s->data + off;
 	memcpy(&h, rec, sizeof(h));
-	if (h.magic != DSHM_MAGIC || h.n == 0 || len != record_size(h.n, h.nbytes, (h.flags & F_SORTED) != 0))
+	if (h.magic != DSHM_MAGIC || memcmp(&h.key, k, sizeof(*k)) != 0 || h.n == 0 || len != record_size(h.n, h.nbytes, (h.flags & F_SORTED) != 0))
 		return NULL;
 	d = sift_cdict_plain_begin(mcxt, h.n);
 	memcpy(d->off, rec + sizeof(h), ((Size) h.n + 1) * sizeof(uint32));
@@ -239,42 +243,38 @@ sift_dictshm_read(const DictKey *k, MemoryContext mcxt)
 	return NULL;
 }
 
-void
-sift_dictshm_write(const DictKey *k, const SiftCDict *d)
+/* A place in the ring for a record of len bytes, the entries it overlaps thrown out; false when the writes are on hold */
+static bool
+ring_reserve(Dshm *s, Size len, Size *off)
 {
-	Dshm	   *s;
-	DshmEnt    *b;
-	bool		sorted = d->stored_order && d->sorted != NULL;
-	Size		len = record_size(d->n, d->nbytes, sorted),
-				off,
-				at;
-	DshmHdr		h = {.magic = DSHM_MAGIC, .n = d->n, .nbytes = d->nbytes, .flags = (d->blocked ? F_BLOCKED : 0) | (sorted ? F_SORTED : 0)};
-	char	   *rec;
-	int			slot = -1;
-
-	if (len < (TEST_MODE(2) ? 0 : DSHM_MIN_BYTES) || d->n == 0 || (s = dshm_get()) == NULL || len > s->size / 2)
-		return;
-	sift_stat_add(SIFT_STAT_DICT_SHARED_MISSES, 1);
 	SpinLockAcquire(&s->mutex);
 	if (s->hold > 0)
 	{
 		s->hold--;
 		SpinLockRelease(&s->mutex);
 		sift_stat_add(SIFT_STAT_DICT_SHARED_HELD, 1);
-		return;
+		return false;
 	}
-	off = s->head + len > s->size ? 0 : s->head;
-	s->head = off + len;
+	*off = s->head + len > s->size ? 0 : s->head;
+	s->head = *off + len;
 	for (int i = 0; i < lengthof(s->dir); i++)
-		if (s->dir[i].used && s->dir[i].off < off + len && off < s->dir[i].off + s->dir[i].len)
+		if (s->dir[i].used && s->dir[i].off < *off + len && *off < s->dir[i].off + s->dir[i].len)
 		{
 			s->dir[i].used = false;
 			s->thrown++;
 		}
 	SpinLockRelease(&s->mutex);
+	return true;
+}
 
-	rec = s->data + off;
-	at = sizeof(h);
+static void
+ring_fill(Dshm *s, const DictKey *k, const SiftCDict *d, Size off)
+{
+	bool		sorted = d->stored_order && d->sorted != NULL;
+	DshmHdr		h = {.magic = DSHM_MAGIC, .key = *k, .n = d->n, .nbytes = d->nbytes, .flags = (d->blocked ? F_BLOCKED : 0) | (sorted ? F_SORTED : 0)};
+	char	   *rec = s->data + off;
+	Size		at = sizeof(h);
+
 	memcpy(rec + at, d->off, ((Size) d->n + 1) * sizeof(uint32));
 	at += ((Size) d->n + 1) * sizeof(uint32);
 	memcpy(rec + at, d->bytes, d->nbytes);
@@ -282,8 +282,18 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		memcpy(rec + sorted_at(d->n, d->nbytes), d->sorted, (Size) d->n * sizeof(uint32));
 	h.crc = arrays_crc(d->off, d->bytes, sorted ? d->sorted : NULL, d->n, d->nbytes);
 	memcpy(rec, &h, sizeof(h));
+}
 
-	b = bucket(s, k);
+/*
+ * The record is there for the others. Another writer may have been given the same place meanwhile (the ring wrapped while this one copied: the entry it
+ * overlapped was not there yet to be thrown out), which is why a record names its key and the reader compares it.
+ */
+static void
+ring_publish(Dshm *s, const DictKey *k, Size off, Size len)
+{
+	DshmEnt    *b = bucket(s, k);
+	int			slot = -1;
+
 	SpinLockAcquire(&s->mutex);
 	/* the same key goes (a record that did not check); the oldest goes if all places are taken */
 	for (int i = 0; i < DSHM_WAYS; i++)
@@ -309,3 +319,99 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	}
 	SpinLockRelease(&s->mutex);
 }
+
+void
+sift_dictshm_write(const DictKey *k, const SiftCDict *d)
+{
+	Dshm	   *s;
+	Size		len = record_size(d->n, d->nbytes, d->stored_order && d->sorted != NULL),
+				off;
+
+	if (len < (TEST_MODE(2) ? 0 : DSHM_MIN_BYTES) || d->n == 0 || (s = dshm_get()) == NULL || len > s->size / 2)
+		return;
+	sift_stat_add(SIFT_STAT_DICT_SHARED_MISSES, 1);
+	if (!ring_reserve(s, len, &off))
+		return;
+	ring_fill(s, k, d, off);
+	ring_publish(s, k, off, len);
+}
+
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_col_dict_shared_stale);
+
+/* 6,000 strings of 64 bytes that start with c: two such dictionaries have the same record size, and the strings tell them apart */
+static SiftCDict *
+stale_dict(char c)
+{
+	SiftCDict  *d = sift_cdict_create(CurrentMemoryContext);
+
+	for (int i = 0; i < 6000; i++)
+	{
+		char		str[65];
+
+		snprintf(str, sizeof(str), "%c%063d", c, i);
+		sift_cdict_intern(d, str, 64);
+	}
+	return d;
+}
+
+/*
+ * sift._test_col_dict_shared_stale(): a writer that copied its record and was not scheduled again before it published, while the ring wrapped over the
+ * place it had been given and another writer, whose dictionary has the size of its own, filled that place and published. The first one is published now,
+ * for a place that holds the record of the other: the table must not hand the dictionary of the other to a reader of the first one. Returns the first
+ * letter of the dictionary the reader of the first key gets, NULL when it gets none. The ring is made small for the test and put back, empty.
+ */
+Datum
+sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
+{
+	Dshm	   *s = dshm_get();
+	DictKey		ka,
+				kc;
+	SiftCDict  *da = stale_dict('a'),
+			   *dc = stale_dict('c'),
+			   *got;
+	Size		len = record_size(da->n, da->nbytes, false),
+				size,
+				offa,
+				offb,
+				offc;
+	char		res[2] = {0, 0};
+
+	if (s == NULL)
+		PG_RETURN_NULL();
+	memset(&ka, 0, sizeof(ka));
+	kc = ka;
+	ka.gen = 1;
+	kc.gen = 2;
+	SpinLockAcquire(&s->mutex);
+	size = s->size;
+	s->size = len * 5 / 2;
+	s->head = 0;
+	s->hold = 0;
+	for (int i = 0; i < lengthof(s->dir); i++)
+		s->dir[i].used = false;
+	SpinLockRelease(&s->mutex);
+
+	ring_reserve(s, len, &offa);
+	ring_fill(s, &ka, da, offa);
+	ring_reserve(s, len, &offb);
+	ring_reserve(s, len, &offc);
+	ring_fill(s, &kc, dc, offc);
+	ring_publish(s, &kc, offc, len);
+	ring_publish(s, &ka, offa, len);
+	SIFT_INVARIANT(offa == offc && offb != offa, "the test ring did not wrap: %zu, %zu, %zu", offa, offb, offc);
+	got = sift_dictshm_read(&ka, CurrentMemoryContext);
+	if (got != NULL)
+		res[0] = got->bytes[got->off[0]];
+
+	SpinLockAcquire(&s->mutex);
+	s->size = size;
+	s->head = 0;
+	for (int i = 0; i < lengthof(s->dir); i++)
+		s->dir[i].used = false;
+	SpinLockRelease(&s->mutex);
+	if (got == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(res));
+}
+#endif
