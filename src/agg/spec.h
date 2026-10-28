@@ -122,7 +122,7 @@ typedef struct SiftAggPred
 	int			op;				/* SAP_CMP, SAP_ELEM_ROW: SiftCmpOp (leaf op operand); SAP_IN, SAP_NULL: 1 = NOT IN / IS NOT NULL; SAP_ANY_ELEM: 1 = NOT; SAP_TYPE: the types; SAP_WIDE: SWT_* (agg/colsrc.h) */
 	Node	   *expr;			/* SAP_CMP, SAP_NCMP, SAP_WIDE: operand (no Vars); SAP_IN, SAP_WIDE IN / NOT IN: array operand; SAP_LUT: bool expression of Param 0 (PARAM_EXEC); SAP_GATE: the condition */
 	Oid			argtype;		/* SAP_CMP, SAP_IN, SAP_NCMP, SAP_WIDE: type of the operand (element type for IN) */
-	Node	   *cal;			/* SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
+	Node	   *cal;			/* SAP_LUT of an equality of a periodic calendar step (extract(hour FROM ts) = 14, to_char(ts, 'MM') = '03'): List (f(placeholder), operand), whose ranges the source tests first (init_filter.c); SAP_CMP of a calendar step (agg/pred_cal.c): f(placeholder) of the calendar step `f(x) op C` (agg/pred_cal.c); the operand C of `expr` is turned into the least x with f(x) >= C (calmode 1) or the greatest x with f(x) <= C (2) when the scan starts */
 	int			calmode;
 	SiftAggNum	num;			/* SAP_NCMP */
 	int			level;			/* 0 row, 1 element: of the leaves the node uses (AND/OR: the highest of the children) */
@@ -774,6 +774,20 @@ extern bool sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay
 extern int64 sift_aggspec_operand_int(Oid t, Datum d);
 extern Datum sift_cal_bound(Node *cal, int mode, Datum operand);
 extern bool sift_cal_nan(Oid rtype, Datum d);
+/* the window a periodic calendar step is monotone in (SAP_LUT, SAP_COMBO with cal set: calmode is a SCW_*) */
+typedef enum SiftCalWindow
+{
+	SCW_NONE,
+	SCW_YEAR,
+	SCW_MONTH,
+	SCW_DAY,
+	SCW_HOUR,
+	SCW_MINUTE
+} SiftCalWindow;
+#define SCW_MAXWIN 256		/* the most windows a prefilter enumerates */
+#define SCW_YEAR4 32			/* to_char starts with YYYY: only years 1000 to 9999 are in order as text */
+extern int64 sift_cal_windows(int win, int64 min, int64 max);
+extern int	sift_cal_periodic(Node *cal, Oid ttype, int win, Datum operand, int64 min, int64 max, int maxwin, int64 **arms);
 /* the bytes the scan allocates and clears to test an IN list of nv values over a range of span values (agg/pred_in.c; 0: a hash table), for the cost */
 extern double sift_agg_in_table_bytes(uint64 span, int nv);
 extern double sift_agg_in_test_ns(uint64 span, int nv);

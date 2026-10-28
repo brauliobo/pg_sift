@@ -64,11 +64,11 @@ sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFi
 	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
 	SiftColValue *vals;
 
-	if (f->op == SSF_RANGES)
+	if (f->op == SSF_RANGES || f->op == SSF_RANGES_HINT)
 	{
 		if (fl->rng == NULL)
 			fl->rng = MemoryContextAlloc(cxt, SIFT_COLSRC_MAX_FILTERS * sizeof(SiftAggRanges));
-		fl->rng[fl->nrng++] = (SiftAggRanges) {col, f->leaf, f->nset / 2, f->set};
+		fl->rng[fl->nrng++] = (SiftAggRanges) {col, f->leaf, f->nset / 2, f->set, f->op == SSF_RANGES_HINT};
 		return;
 	}
 	vals = MemoryContextAllocZero(cxt, Max(nvals, 1) * sizeof(SiftColValue));
@@ -135,6 +135,9 @@ clear_nan_rows(const SiftColUnit *cu, const SiftColPred *p, SiftColSel *sel)
 	sift_col_sel_count(sel);
 }
 
+/* a unit with more of the ranges of a prefilter than this is not narrowed by it: a search for each costs more than the test it saves */
+#define RANGES_UNIT_ARMS	32
+
 /*
  * A union of ranges on one leaf: each arm narrows a copy of sel the way a single range does (two bounds, the sorted run window), and sel becomes the rows
  * of any arm. An arm without a bound keeps the rows with a value.
@@ -142,21 +145,53 @@ clear_nan_rows(const SiftColUnit *cu, const SiftColPred *p, SiftColSel *sel)
 static void
 filter_ranges(const SiftColUnit *cu, const SiftAggRanges *r, SiftColSel *sel)
 {
-	uint64	   *from = palloc(sel->nwords * sizeof(uint64)),
-			   *any = palloc0(sel->nwords * sizeof(uint64));
+	SiftColZone z;
+	int			lo = 0,
+				hi = r->narms,
+				first;
+	uint64	   *from,
+			   *any;
 
-	memcpy(from, sel->bits, sel->nwords * sizeof(uint64));
-	for (int a = 0; a < r->narms; a++)
+	/* the arms are ascending and apart: those of the unit's zone are a run of them */
+	sift_col_zone(cu, r->col, &z);
+	if (z.nnull < z.nvals && !z.has_ovf)
 	{
-		SiftColValue lo = {.v.i = r->arm[2 * a]},
-					hi = {.v.i = r->arm[2 * a + 1]};
+		while (lo < hi)
+		{
+			int			m = (lo + hi) / 2;
+
+			if (r->arm[2 * m + 1] < z.min)
+				lo = m + 1;
+			else
+				hi = m;
+		}
+		first = lo;
+		for (hi = first; hi < r->narms && r->arm[2 * hi] <= z.max; hi++)
+			;
+		if (r->hint && hi - first > RANGES_UNIT_ARMS)
+			return;
+	}
+	else
+	{
+		if (r->hint)
+			return;
+		first = 0;
+		hi = r->narms;
+	}
+	from = palloc(sel->nwords * sizeof(uint64));
+	any = palloc0(sel->nwords * sizeof(uint64));
+	memcpy(from, sel->bits, sel->nwords * sizeof(uint64));
+	for (int a = first; a < hi; a++)
+	{
+		SiftColValue lov = {.v.i = r->arm[2 * a]},
+					hiv = {.v.i = r->arm[2 * a + 1]};
 		SiftColPred	p[2];
 		int			np = 0;
 
-		if (lo.v.i != PG_INT64_MIN)
-			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_GE, 1, &lo};
-		if (hi.v.i != PG_INT64_MAX)
-			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_LE, 1, &hi};
+		if (lov.v.i != PG_INT64_MIN)
+			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_GE, 1, &lov};
+		if (hiv.v.i != PG_INT64_MAX)
+			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_LE, 1, &hiv};
 		if (np == 0)
 			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_NOTNULL, 0, NULL};
 		memcpy(sel->bits, from, sel->nwords * sizeof(uint64));

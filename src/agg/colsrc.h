@@ -490,7 +490,8 @@ typedef enum SiftSrcFilterOp
 	SSF_IN,
 	SSF_NOTIN,
 	SSF_NOTNULL,				/* a value is present */
-	SSF_RANGES					/* the union of ranges: set holds nset / 2 pairs (lo, hi), inclusive, PG_INT64_MIN / PG_INT64_MAX where a side is open */
+	SSF_RANGES,					/* the union of ranges: set holds nset / 2 pairs (lo, hi), inclusive, ascending and apart, PG_INT64_MIN / PG_INT64_MAX where a side is open */
+	SSF_RANGES_HINT				/* the same, for rows the executor tests again: a unit that holds many of the ranges is left as it is */
 } SiftSrcFilterOp;
 
 typedef struct SiftSrcFilter

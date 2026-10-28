@@ -6,7 +6,10 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "utils/datetime.h"
 #include "utils/datum.h"
+#include "utils/numeric.h"
+#include "utils/timestamp.h"
 #include "utils/lsyscache.h"
 
 #include "port/pg_bitutils.h"
@@ -498,6 +501,41 @@ leaf_sample_range(AggExec *ex, int leaf, int64 *min, int64 *max)
 	return any;
 }
 
+static int
+pair_cmp(const void *a, const void *b)
+{
+	return pg_cmp_s64(((const int64 *) a)[0], ((const int64 *) b)[0]);
+}
+
+/* the pairs (lo, hi) of set sorted, the overlapping and touching ones merged: the number of values left in set */
+static int
+merge_ranges(int64 *set, int n)
+{
+	int			m = 0;
+
+	qsort(set, n / 2, 2 * sizeof(int64), pair_cmp);
+	for (int a = 0; a < n; a += 2)
+		if (m > 0 && (set[m - 1] == PG_INT64_MAX || set[a] <= set[m - 1] + 1))
+			set[m - 1] = Max(set[m - 1], set[a + 1]);
+		else
+		{
+			set[m++] = set[a];
+			set[m++] = set[a + 1];
+		}
+	return m;
+}
+
+/* the share of the values between min and max that the ranges of set cover, and whether it is at most 1 / RANGES_SHARE */
+static bool
+ranges_narrow(const int64 *set, int n, int64 min, int64 max)
+{
+	double		covered = 0;
+
+	for (int a = 0; a < n; a += 2)
+		covered += Max((double) Min(set[a + 1], max) - (double) Max(set[a], min) + 1, 0);
+	return covered * RANGES_SHARE <= (double) max - (double) min + 1;
+}
+
 /* An OR whose arms are comparisons (or ANDs of them) of one integer-valued leaf with constants, as the union of the ranges they keep (the empty ones dropped) */
 static bool
 ranges_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
@@ -506,7 +544,6 @@ ranges_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 	int64	   *set,
 				min,
 				max;
-	double		covered = 0;
 	int			n = 0;
 
 	while (c->kind == SAP_AND || c->kind == SAP_OR)
@@ -527,17 +564,61 @@ ranges_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 			set[n++] = hi;
 		}
 	}
+	n = merge_ranges(set, n);
 	/* the source tests an arm by the sorted run of a unit, which answers a range of an eighth of the rows or less: a union that covers more of the values of the index (taken as even, from a sample of its superblocks) is cheaper in the executor, on the decoded leaf */
-	if (!leaf_sample_range(ex, c->leaf, &min, &max))
-		return false;
-	for (int a = 0; a < n; a += 2)
-		covered += (double) Min(set[a + 1], max) - (double) Max(set[a], min) + 1;
-	if (covered * RANGES_SHARE > (double) max - (double) min + 1)
+	if (!leaf_sample_range(ex, c->leaf, &min, &max) || !ranges_narrow(set, n, min, max))
 		return false;
 	f->leaf = c->leaf;
 	f->op = SSF_RANGES;
 	f->nset = n;
 	f->set = set;
+	return true;
+}
+
+/* The year of a timestamp of the clock of UTC, for the range where the text of YYYY is in order */
+static bool
+years_in_order(int64 min, int64 max)
+{
+	struct pg_tm tm;
+	fsec_t		fsec;
+
+	return timestamp2tm(min, NULL, &tm, &fsec, NULL, NULL) == 0 && tm.tm_year >= 1001 && timestamp2tm(max, NULL, &tm, &fsec, NULL, NULL) == 0 && tm.tm_year <= 9998;
+}
+
+/*
+ * The prefilter of an equality of a periodic calendar step (plan_cal.c, compile_periodic): the ranges of the leaf where the step equals its operand, found when the scan starts
+ * from the span of the leaf in the index (all its units: the ranges keep every row of the answer only if the span does). The executor tests the predicate again, so that a unit holding
+ * many ranges (the hours of a day, over years) is not narrowed.
+ */
+static bool
+periodic_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
+{
+	SiftSrcZone z;
+	List	   *cal = (List *) p->cal;
+	int			leaf = intVal(lthird(cal));
+	Oid			ttype = ex->lay->leaf[leaf].typid;
+	int			win = p->calmode & ~SCW_YEAR4;
+	ExprState  *e;
+	Datum		d;
+	bool		isnull;
+	int64	   *arms;
+	int			n;
+
+	if (p->level != 0 || leaf >= ex->nbase || ex->src == NULL || !sift_colsrc_has_zone_range(ex->src) ||
+		sift_colsrc_zone_range(ex->src, 0, sift_colsrc_nsb(ex->src), leaf, &z) <= 0 || z.nnull >= z.nvals ||
+		z.min < MIN_TIMESTAMP + 400 * USECS_PER_DAY || z.max > END_TIMESTAMP - 400 * USECS_PER_DAY || ((p->calmode & SCW_YEAR4) && !years_in_order(z.min, z.max)))
+		return false;
+	e = ExecInitExpr((Expr *) lsecond(cal), EXPR_PARENT(ex));
+	d = ExecEvalExprSwitchContext(e, ex->lutcx, &isnull);
+	if (isnull)
+		return false;
+	n = sift_cal_periodic(linitial(cal), ttype, win, d, z.min, z.max, SCW_MAXWIN, &arms);
+	if (n < 0 || !ranges_narrow(arms, 2 * n, z.min, z.max))
+		return false;
+	f->leaf = leaf;
+	f->op = SSF_RANGES_HINT;
+	f->nset = 2 * n;
+	f->set = arms;
 	return true;
 }
 
@@ -556,9 +637,15 @@ filter_init(AggExec *ex)
 	{
 		SiftAggPred *p = s->pred[i];
 
+		memset(&f[n], 0, sizeof(SiftSrcFilter));
+			if (p->cal != NULL && (p->kind == SAP_LUT || p->kind == SAP_COMBO))
+		{
+			if (periodic_filter(ex, p, &f[n]))
+				at[n++] = i;
+			continue;
+		}
 		if (p->level != 0 || p->late || (p->kind != SAP_OR && (p->leaf >= ex->nbase || (p->kind != SAP_CMP && p->kind != SAP_IN))))
 			continue;
-		memset(&f[n], 0, sizeof(SiftSrcFilter));
 		if (p->kind == SAP_OR ? ranges_filter(ex, p, &f[n]) : int_filter(ex, p, &f[n]))
 			at[n++] = i;
 	}
@@ -567,7 +654,7 @@ filter_init(AggExec *ex)
 	for (int k = 0; k < n; k++)
 		if (ok >> k & 1)
 		{
-			ex->pushed[at[k]] = true;
+			ex->pushed[at[k]] = f[k].op != SSF_RANGES_HINT;
 			ex->pflt[at[k]] = f[k];
 			ex->nfilter++;
 		}

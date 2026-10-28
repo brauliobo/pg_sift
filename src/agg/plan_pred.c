@@ -798,5 +798,8 @@ compile_pred(AggCtx *c, Node *n)
 		return p;
 	if ((p = compile_existential(c, n, &leaf_target)) != NULL)
 		return p;
-	return compile_lut(c, n);
+	p = compile_lut(c, n);
+	if (p != NULL)
+		compile_periodic(c, n, p);
+	return p;
 }

@@ -206,3 +206,140 @@ compile_calendar_cmp(AggCtx *c, OpExpr *op)
 			return bound_pred(c, leaf, t, cmp, fe, cmp == SCMP_GE || cmp == SCMP_LT ? 1 : 2, r, known ? bound_sel(c, f.x, t, cmp, fe, cmp == SCMP_GE || cmp == SCMP_LT ? 1 : 2, folded) : whole);
 	}
 }
+
+/*
+ * An equality of a periodic calendar step with a constant (extract(hour FROM ts) = 14, extract(month ..) = 3, doy, day, minute, and to_char of
+ * the numeric fields YYYY, MM, DD, HH24, MI, SS in that order) on a timestamp leaf is not a range of the leaf, but inside a window (the day of the hour, the year of the month
+ * ..) the step never goes back, so its equal values are one interval of the window (sift_cal_periodic): the ranges of the windows of the leaf's span are a prefilter the
+ * source applies before the expression runs (init_filter.c). The predicate stays what it was (a lookup table or a combo): the prefilter may keep more rows than the answer;
+ * cal is the List (f(placeholder), operand, leaf).
+ */
+typedef struct PeriodField
+{
+	const char *name;
+	int			win;
+} PeriodField;
+
+static const PeriodField period_fields[] = {{"minute", SCW_HOUR}, {"hour", SCW_DAY}, {"day", SCW_MONTH}, {"doy", SCW_YEAR}, {"month", SCW_YEAR}, {NULL, 0}};
+
+/* to_char formats made of the numeric fields in order of size, so that the text of a window is in order: the window of the first one (YYYY: SCW_NONE | SCW_YEAR4) */
+static int
+to_char_window(const char *fmt)
+{
+	static const char *const tok[] = {"YYYY", "MM", "DD", "HH24", "MI", "SS"};
+	static const int win[] = {SCW_NONE | SCW_YEAR4, SCW_YEAR, SCW_MONTH, SCW_DAY, SCW_HOUR, SCW_MINUTE};
+	int			last = -1,
+				first = -1;
+
+	for (const char *q = fmt; *q;)
+	{
+		int			t;
+
+		for (t = 0; t < 6; t++)
+			if (strncmp(q, tok[t], strlen(tok[t])) == 0)
+				break;
+		if (t < 6)
+		{
+			if (t <= last)
+				return -1;
+			if (first < 0)
+				first = t;
+			last = t;
+			q += strlen(tok[t]);
+		}
+		else if (strchr("-/:. ", *q) != NULL)
+			q++;
+		else
+			return -1;
+	}
+	return first < 0 ? -1 : win[first];
+}
+
+/* the window of f, and f(placeholder); false when f is no periodic step. The weekday and the quarter are not tried: an eighth of the values is the most a prefilter keeps, and they are a seventh and a fourth */
+static bool
+period_func(Node *e, Oid *ttype, int *win, FuncExpr **fcopy, Node **x)
+{
+	FuncExpr   *fe;
+	Oid			fid;
+	Const	   *k;
+	bool		tz;
+
+	if (!IsA(e, FuncExpr))
+		return false;
+	fe = (FuncExpr *) e;
+	fid = fe->funcid;
+	if (fid == F_TO_CHAR_TIMESTAMP_TEXT || fid == F_TO_CHAR_TIMESTAMPTZ_TEXT)
+	{
+		k = (Const *) lsecond(fe->args);
+		*ttype = fid == F_TO_CHAR_TIMESTAMP_TEXT ? TIMESTAMPOID : TIMESTAMPTZOID;
+		if (!IsA(k, Const) || k->constisnull || (*win = to_char_window(TextDatumGetCString(k->constvalue))) < 0)
+			return false;
+		*x = linitial(fe->args);
+		*fcopy = copyObject(fe);
+		linitial((*fcopy)->args) = makeConst(*ttype, -1, InvalidOid, sizeof(int64), TimestampGetDatum(0), false, true);
+		return true;
+	}
+	if (fid != F_EXTRACT_TEXT_TIMESTAMP && fid != F_EXTRACT_TEXT_TIMESTAMPTZ && fid != F_DATE_PART_TEXT_TIMESTAMP && fid != F_DATE_PART_TEXT_TIMESTAMPTZ)
+		return false;
+	tz = fid == F_EXTRACT_TEXT_TIMESTAMPTZ || fid == F_DATE_PART_TEXT_TIMESTAMPTZ;
+	*ttype = tz ? TIMESTAMPTZOID : TIMESTAMPOID;
+	k = (Const *) linitial(fe->args);
+	if (bucket_unit(e, tz) == NULL)
+		return false;
+	for (const PeriodField *pf = period_fields; pf->name; pf++)
+		if (pg_strcasecmp(TextDatumGetCString(k->constvalue), pf->name) == 0)
+		{
+			*win = pf->win;
+			*x = llast(fe->args);
+			*fcopy = copyObject(fe);
+			llast((*fcopy)->args) = makeConst(*ttype, -1, InvalidOid, sizeof(int64), TimestampGetDatum(0), false, true);
+			return true;
+		}
+	return false;
+}
+
+void
+compile_periodic(AggCtx *c, Node *n, SiftAggPred *p)
+{
+	OpExpr	   *op;
+	Oid			lt,
+				rt,
+				ttype;
+	Node	   *l,
+			   *r;
+	FuncExpr   *f;
+	Node	   *x;
+	int			win,
+				leaf;
+	int64		lo,
+				hi;
+	const SiftSrcLeaf *lf;
+
+	if (!IsA(n, OpExpr) || (p->kind != SAP_LUT && p->kind != SAP_COMBO))
+		return;
+	op = (OpExpr *) n;
+	if (builtin_cmp(op->opno, &lt, &rt) != SCMP_EQ || list_length(op->args) != 2 || (op->inputcollid != InvalidOid && !get_collation_isdeterministic(op->inputcollid)))
+		return;
+	l = strip_relabel(linitial(op->args));
+	r = strip_relabel(lsecond(op->args));
+	if (!pseudo_const(r))
+	{
+		Node	   *tmp = l;
+
+		l = r;
+		r = tmp;
+	}
+	if (!pseudo_const(r) || !period_func(l, &ttype, &win, &f, &x) || exprType(r) != f->funcresulttype)
+		return;
+	leaf = match_leaf(c, strip_relabel(x));
+	if (leaf < 0)
+		return;
+	lf = leaf_of(c, leaf);
+	if (lf->typid != ttype || lf->kind != SCL_SCALAR || lf->vtype != SCV_I64 || lf->lossy || lf->parent >= 0)
+		return;
+	/* more windows than the scan enumerates, by the statistics of the column: not tried (each try costs a read of the zones of the index) */
+	if (leaf_stats_range(c, leaf, &lo, &hi) && sift_cal_windows(win, lo, hi) > SCW_MAXWIN)
+		return;
+	p->cal = (Node *) list_make3(f, r, makeInteger(leaf));
+	p->calmode = win;
+}

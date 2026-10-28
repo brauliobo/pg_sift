@@ -16,7 +16,8 @@ typedef struct SiftAggRanges
 	int			col;
 	int			leaf;
 	int			narms;
-	const int64 *arm;			/* narms pairs (lo, hi), inclusive */
+	const int64 *arm;			/* narms pairs (lo, hi), inclusive, ascending and apart */
+	bool		hint;			/* SSF_RANGES_HINT */
 } SiftAggRanges;
 
 typedef struct SiftAggFilters

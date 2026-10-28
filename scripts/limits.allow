@@ -46,3 +46,4 @@ VK_MAX_MEMORY_HEAPS	constant of the Vulkan API
 VK_MAX_MEMORY_TYPES	constant of the Vulkan API
 VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API
 VSHM_MAX_SETS	the array of the shared verdict table, which sift.verdict_cache_kb (up to 1 MB) fills in part
+CAL_MAX_CUTS	the most clock changes of the session zone the prefilter of a periodic calendar step splits its windows at (a span of several centuries); more and the step is tested by the expression, no result changes

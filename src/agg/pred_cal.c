@@ -16,7 +16,9 @@
 #include "nodes/primnodes.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
+#include "pgtime.h"
 #include "utils/datetime.h"
+#include "utils/fmgroids.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
@@ -33,6 +35,8 @@ cal_eval(Node *e, Timestamp x)
 	f = castNode(FuncExpr, e);
 	if (list_length(f->args) == 1)
 		return OidFunctionCall1Coll(f->funcid, InvalidOid, TimestampGetDatum(x));
+	if (f->funcid == F_TO_CHAR_TIMESTAMP_TEXT || f->funcid == F_TO_CHAR_TIMESTAMPTZ_TEXT)
+		return OidFunctionCall2Coll(f->funcid, InvalidOid, TimestampGetDatum(x), ((Const *) lsecond(f->args))->constvalue);
 	return OidFunctionCall2Coll(f->funcid, InvalidOid, ((Const *) linitial(f->args))->constvalue, TimestampGetDatum(x));
 }
 
@@ -67,6 +71,12 @@ cal_cmp(FuncExpr *f, Datum c, Timestamp x)
 			return (DatumGetTimestamp(r) > DatumGetTimestamp(c)) - (DatumGetTimestamp(r) < DatumGetTimestamp(c));
 		case NUMERICOID:
 			return DatumGetInt32(DirectFunctionCall2(numeric_cmp, r, c));
+		case TEXTOID:
+			{
+				int			v = strcmp(TextDatumGetCString(r), TextDatumGetCString(c));
+
+				return (v > 0) - (v < 0);
+			}
 		default:
 			return (DatumGetFloat8(r) > DatumGetFloat8(c)) - (DatumGetFloat8(r) < DatumGetFloat8(c));
 	}
@@ -145,4 +155,177 @@ sift_cal_bound(Node *cal, int mode, Datum operand)
 			lo = mid;
 	}
 	return TimestampGetDatum(mode == 1 ? hi : lo);
+}
+
+/* the first window of a calendar field (SCW_*) at or before x, in the clock of the leaf's type (a timestamptz in the session's zone), and the one after it */
+static Timestamp
+window_start(Oid ttype, int win, Timestamp x)
+{
+	static const char *const unit[] = {NULL, "year", "month", "day", "hour", "minute"};
+	Datum		u = CStringGetTextDatum(unit[win]);
+
+	return DatumGetTimestamp(DirectFunctionCall2(ttype == TIMESTAMPOID ? timestamp_trunc : timestamptz_trunc, u, TimestampGetDatum(x)));
+}
+
+static Timestamp
+window_next(Oid ttype, int win, Timestamp ws)
+{
+	Interval	iv = {0, 0, 0};
+	Timestamp	next;
+
+	switch (win)
+	{
+		case SCW_YEAR:
+			iv.month = 12;
+			break;
+		case SCW_MONTH:
+			iv.month = 1;
+			break;
+		case SCW_DAY:
+			iv.day = 1;
+			break;
+		case SCW_HOUR:
+			iv.time = USECS_PER_HOUR;
+			break;
+		default:
+			iv.time = USECS_PER_MINUTE;
+	}
+	next = DatumGetTimestamp(DirectFunctionCall2(ttype == TIMESTAMPOID ? timestamp_pl_interval : timestamptz_pl_interval, TimestampGetDatum(ws), PointerGetDatum(&iv)));
+	next = window_start(ttype, win, next);
+	/* the truncation of an instant of a repeated hour may give the window it started from: the step itself is then the window */
+	return next > ws ? next : DatumGetTimestamp(DirectFunctionCall2(ttype == TIMESTAMPOID ? timestamp_pl_interval : timestamptz_pl_interval, TimestampGetDatum(ws), PointerGetDatum(&iv)));
+}
+
+
+#define CAL_MAX_CUTS	4096
+
+/*
+ * The instants of [min, max] where the clock of the session's zone goes back (the end of daylight time, a change of the standard offset): the text and the fields of the clock
+ * are not in order across one. Ascending, palloc'd; returns their number, or -1 for more than CAL_MAX_CUTS.
+ */
+static int
+clock_cuts(int64 min, int64 max, int64 **cuts)
+{
+	pg_time_t	t = timestamptz_to_time_t(min),
+				end = timestamptz_to_time_t(max),
+				boundary;
+	long int	before,
+				after;
+	int			bdst,
+				adst,
+				n = 0;
+	int64	   *out = palloc(16 * sizeof(int64));
+	int			cap = 16;
+
+	while (t <= end && pg_next_dst_boundary(&t, &before, &bdst, &boundary, &after, &adst, session_timezone) == 1 && boundary <= end)
+	{
+		if (after < before)
+		{
+			if (n == CAL_MAX_CUTS)
+				return -1;
+			if (n == cap)
+				out = repalloc(out, (cap *= 2) * sizeof(int64));
+			out[n++] = time_t_to_timestamptz(boundary);
+		}
+		t = boundary;
+	}
+	*cuts = out;
+	return n;
+}
+
+/* the most windows (SCW_*) a range holds, by their shortest length (a day of a clock change is 23 hours) */
+int64
+sift_cal_windows(int win, int64 min, int64 max)
+{
+	static const int64 shortest[] = {0, 365 * USECS_PER_DAY, 28 * USECS_PER_DAY, 23 * USECS_PER_HOUR, USECS_PER_HOUR / 2, USECS_PER_MINUTE};
+
+	win &= ~SCW_YEAR4;
+	return win == SCW_NONE ? 1 : (max - min) / shortest[win] + 1;
+}
+
+/*
+ * The ranges of [min, max] where the field f(x) of a periodic calendar step (the minutes of an hour, the hours of a day, the months of a year) equals the operand:
+ * inside a window (SCW_*; SCW_NONE: the whole range) f never goes back, so its equal values are one interval, found by two bisections with f itself; the
+ * windows are the hours, days .. of the session's clock from the one of min. The pairs (lo, hi), inclusive, ascending and apart, are palloc'd in *arms;
+ * returns their number, or -1 when the range has more than maxwin windows.
+ */
+int
+sift_cal_periodic(Node *cal, Oid ttype, int win, Datum operand, Timestamp min, Timestamp max, int maxwin, int64 **arms)
+{
+	FuncExpr   *f = castNode(FuncExpr, cal);
+	int			cap = 16,
+				n = 0,
+				nwin = 0,
+				ncut = 0,
+				ci = 0;
+	int64	   *out = palloc(cap * sizeof(int64)),
+			   *cuts = NULL;
+	Timestamp	ws = win == SCW_NONE ? min : window_start(ttype, win, min);
+
+	if (sift_cal_windows(win, min, max) > maxwin)
+		return -1;
+	/* inside a window the clock must not go back, or the field does: a window ends where it does */
+	if (ttype == TIMESTAMPTZOID && (ncut = clock_cuts(min, max, &cuts)) < 0)
+		return -1;
+	while (ws <= max)
+	{
+		Timestamp	next = win == SCW_NONE ? (Timestamp) max + 1 : window_next(ttype, win, ws),
+					we,
+					lo = ws,
+					hi;
+
+		while (ci < ncut && cuts[ci] <= ws)
+			ci++;
+		if (ci < ncut && cuts[ci] < next)
+			next = cuts[ci];
+		we = next - 1;
+		hi = we;
+		if (++nwin > maxwin)
+			return -1;
+		/* f(ws) <= operand <= f(we): lo is the first x with f(x) >= operand, hi the last with f(x) <= operand, and they are the equal values when f(lo) is the operand */
+		if (cal_cmp(f, operand, ws) <= 0 && cal_cmp(f, operand, we) >= 0)
+		{
+			Timestamp	a = ws,
+						b = we;
+
+			if (cal_cmp(f, operand, a) < 0)
+			{
+				while (b - a > 1)
+				{
+					Timestamp	m = a + (b - a) / 2;
+
+					if (cal_cmp(f, operand, m) >= 0)
+						b = m;
+					else
+						a = m;
+				}
+				lo = b;
+			}
+			if (cal_cmp(f, operand, lo) == 0)
+			{
+				a = lo;
+				b = we;
+				if (cal_cmp(f, operand, b) > 0)
+				{
+					while (b - a > 1)
+					{
+						Timestamp	m = a + (b - a) / 2;
+
+						if (cal_cmp(f, operand, m) > 0)
+							b = m;
+						else
+							a = m;
+					}
+					hi = a;
+				}
+				if (n + 2 > cap)
+					out = repalloc(out, (cap *= 2) * sizeof(int64));
+				out[n++] = lo;
+				out[n++] = hi;
+			}
+		}
+		ws = next;
+	}
+	*arms = out;
+	return n / 2;
 }

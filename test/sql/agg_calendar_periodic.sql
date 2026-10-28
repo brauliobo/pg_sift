@@ -1,0 +1,115 @@
+-- An equality of a periodic calendar step of a timestamp leaf with a constant (extract(month|doy|day|hour|minute FROM x), to_char of the numeric fields YYYY, MM, DD,
+-- HH24, MI, SS in order) is not a range of the leaf, but inside a window (the year of the month, the day of the hour ..) it never goes back: the source narrows the units to the
+-- ranges of the windows of the leaf's span ("Filters In Source"), and the expression is tested again. The rows are those of the normal plan in the zones whose clocks jump, for operands
+-- that no row has (13 months, the 25th hour, a fraction), formats the text of which is not in order, infinite timestamps and NULL.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE pc (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
+INSERT INTO pc
+SELECT i, t AT TIME ZONE 'UTC', t
+FROM (SELECT g AS i, timestamptz '2019-01-01 00:00+00' + g * interval '47 minutes' AS t FROM generate_series(1, 60000) g) s;
+INSERT INTO pc VALUES (100001, '2024-03-10 02:30', '2024-03-10 07:30+00'), (100002, '2024-11-03 01:30', '2024-11-03 05:30+00'), (100003, '2024-11-03 01:30', '2024-11-03 06:30+00'),
+	(100004, '2024-12-31 23:59:59.999999', '2024-12-31 23:59:59.999999+00'), (100005, '2024-02-29 12:00', '2024-02-29 12:00+00'), (100006, NULL, NULL);
+CREATE INDEX pc_col ON pc USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) pc;
+-- eight months across the clock changes of 2024 (under 256 days): few enough windows for the hours and the minutes to be tried
+CREATE TABLE pw AS SELECT g AS id, t AT TIME ZONE 'UTC' AS ts, t AS tz FROM (SELECT g, timestamptz '2024-03-08 00:00+00' + g * interval '5 minutes' AS t FROM generate_series(0, 69600) g) s;
+CREATE INDEX pw_col ON pw USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) pw;
+-- the same with infinite timestamps: the span of the leaf is no window to enumerate, the expression is tested for every row
+CREATE TABLE pi AS SELECT * FROM pc WHERE id <= 2000;
+INSERT INTO pi VALUES (200001, 'infinity', 'infinity'), (200002, '-infinity', '-infinity');
+CREATE INDEX pi_col ON pi USING sift_col (id, ts, tz);
+VACUUM (FREEZE, ANALYZE) pi;
+
+CREATE FUNCTION count_of(q text, scan bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	EXECUTE format('SET LOCAL sift.enable_agg = %s', CASE WHEN scan THEN 'on' ELSE 'off' END);
+	EXECUTE q INTO n;
+	RETURN n;
+END $$;
+-- does the scan narrow by the ranges of the step?
+CREATE FUNCTION narrowed(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; s bool := false;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		s := s OR l LIKE '%Filters In Source: %';
+	END LOOP;
+	RETURN s;
+END $$;
+
+CREATE TABLE pc_case (f text, o text);
+INSERT INTO pc_case VALUES
+	('extract(month FROM %1$s)', '1'), ('extract(month FROM %1$s)', '3'), ('extract(month FROM %1$s)', '12'), ('extract(month FROM %1$s)', '13'), ('extract(month FROM %1$s)', '0'),
+	('extract(month FROM %1$s)', '2.5'), ('date_part(''month'', %1$s)', '11'), ('extract(doy FROM %1$s)', '1'), ('extract(doy FROM %1$s)', '60'), ('extract(doy FROM %1$s)', '366'), ('extract(day FROM %1$s)', '1'), ('extract(day FROM %1$s)', '29'),
+	('extract(day FROM %1$s)', '31'), ('extract(dow FROM %1$s)', '0'), ('extract(dow FROM %1$s)', '3'), ('extract(dow FROM %1$s)', '6'), ('extract(dow FROM %1$s)', '7'), ('extract(dow FROM %1$s)', '-1'),
+	('extract(dow FROM %1$s)', '0.5'), ('extract(hour FROM %1$s)', '0'), ('extract(hour FROM %1$s)', '1'), ('extract(hour FROM %1$s)', '2'), ('extract(hour FROM %1$s)', '14'),
+	('extract(hour FROM %1$s)', '23'), ('extract(hour FROM %1$s)', '24'), ('extract(minute FROM %1$s)', '0'), ('extract(minute FROM %1$s)', '30'), ('extract(minute FROM %1$s)', '59'),
+	('to_char(%1$s, ''YYYY-MM'')', '''2024-03'''), ('to_char(%1$s, ''YYYY-MM'')', '''2024-3'''), ('to_char(%1$s, ''YYYY-MM-DD'')', '''2024-11-03'''), ('to_char(%1$s, ''YYYY-MM-DD HH24:MI'')', '''2024-11-03 01:30'''),
+	('to_char(%1$s, ''YYYY'')', '''2024'''), ('to_char(%1$s, ''MM'')', '''03'''), ('to_char(%1$s, ''MM'')', '''3'''), ('to_char(%1$s, ''MM-DD'')', '''02-29'''), ('to_char(%1$s, ''DD'')', '''31'''),
+	('to_char(%1$s, ''DD HH24'')', '''03 01'''), ('to_char(%1$s, ''HH24:MI'')', '''01:30'''), ('to_char(%1$s, ''MI:SS'')', '''30:00'''),
+	-- not in order as text: the normal plan
+	('to_char(%1$s, ''MM/YYYY'')', '''03/2024'''), ('to_char(%1$s, ''Mon'')', '''Mar'''), ('to_char(%1$s, ''DD-MM'')', '''29-02''');
+
+-- every case in every zone, on both column types, against the normal plan; "narrowed" counts the statements the source narrowed
+CREATE TABLE pc_result (zone text, statements int, same int, narrowed int);
+DO $$
+DECLARE
+	z text; c record; col text; t text; q text; n int; s int; nr int;
+BEGIN
+	FOREACH z IN ARRAY ARRAY['UTC', 'America/New_York', 'Australia/Lord_Howe', 'Asia/Kolkata', 'Pacific/Apia', 'America/Sao_Paulo', 'Europe/London'] LOOP
+		n := 0; s := 0; nr := 0;
+		EXECUTE format('SET LOCAL TimeZone = %L', z);
+		FOREACH t IN ARRAY ARRAY['pc', 'pi', 'pw'] LOOP
+			FOREACH col IN ARRAY ARRAY['tz', 'ts'] LOOP
+				FOR c IN SELECT * FROM pc_case LOOP
+					q := format('SELECT count(*) FROM %s WHERE ' || replace(c.f, '%1$s', col) || ' = %s', t, c.o);
+					n := n + 1;
+					IF count_of(q, true) = count_of(q, false) THEN s := s + 1; END IF;
+					IF narrowed(q) THEN nr := nr + 1; END IF;
+				END LOOP;
+			END LOOP;
+		END LOOP;
+		INSERT INTO pc_result VALUES (z, n, s, nr);
+	END LOOP;
+END $$;
+SELECT zone, statements > 0 AS ran, statements = same AS all_same, narrowed FROM pc_result ORDER BY zone;
+
+-- the cases that narrow, and those that do not: more windows than a scan enumerates (the hours of seven years), a table with an infinite timestamp, a union of more than an eighth
+-- of the values (no equality), a text that is not in order
+SELECT narrowed('SELECT count(*) FROM pc WHERE extract(month FROM ts) = 3') AS month,
+       narrowed('SELECT count(*) FROM pc WHERE to_char(tz, ''YYYY-MM-DD'') = ''2024-11-03''') AS day_text,
+       narrowed('SELECT count(*) FROM pw WHERE extract(hour FROM tz) = 3') AS hour,
+       narrowed('SELECT count(*) FROM pc WHERE extract(hour FROM tz) = 3') AS hour_years,
+       narrowed('SELECT count(*) FROM pw WHERE extract(minute FROM tz) < 30') AS not_an_equality,
+       narrowed('SELECT count(*) FROM pi WHERE extract(month FROM ts) = 3') AS infinite,
+       narrowed('SELECT count(*) FROM pc WHERE to_char(ts, ''MM/YYYY'') = ''03/2024''') AS text_not_in_order;
+
+-- a parameter of a generic plan, in the zone of the session that runs the scan
+PREPARE by_month(int) AS SELECT count(*) FROM pc WHERE extract(month FROM tz) = $1;
+SET plan_cache_mode = force_generic_plan;
+SET TimeZone = 'UTC';
+EXECUTE by_month(3);
+SET TimeZone = 'Pacific/Apia';
+EXECUTE by_month(3);
+EXECUTE by_month(13);
+SET sift.enable_agg = off;
+EXECUTE by_month(3);
+EXECUTE by_month(13);
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+
+-- the other conjuncts, a join and a group
+SELECT count_of('SELECT count(*) FROM pc WHERE extract(month FROM tz) = 3 AND id % 7 = 0', true) = count_of('SELECT count(*) FROM pc WHERE extract(month FROM tz) = 3 AND id % 7 = 0', false) AS with_conjunct;
+SELECT (SELECT md5(string_agg(m || ':' || n, ',' ORDER BY m)) FROM (SELECT extract(hour FROM tz) m, count(*) n FROM pc WHERE extract(month FROM tz) = 3 GROUP BY 1) a) =
+       (SELECT md5(string_agg(m || ':' || n, ',' ORDER BY m)) FROM (SELECT extract(hour FROM tz) m, count(*) n FROM pc WHERE extract(month FROM tz) = 3 AND NOT (id < 0) GROUP BY 1) a) AS group_same;
+
+DROP FUNCTION count_of(text, bool);
+DROP FUNCTION narrowed(text);
+DROP TABLE pc_result, pc_case, pw, pi, pc;
+DROP EXTENSION pg_sift;

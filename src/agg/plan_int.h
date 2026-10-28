@@ -377,6 +377,7 @@ extern void junction_done(SiftAggPred *p);
 extern SiftAggPred *compile_junction(AggCtx *c, SiftAggPredKind kind, List *args);
 extern SiftAggPred *compile_pred(AggCtx *c, Node *n);
 extern SiftAggPred *compile_calendar_cmp(AggCtx *c, OpExpr *op);
+extern void compile_periodic(AggCtx *c, Node *n, SiftAggPred *p);
 
 extern int typeof_leaf(AggCtx *c, Node *e);
 extern bool source_can_types(AggCtx *c);
