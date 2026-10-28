@@ -131,7 +131,11 @@ cell_datum(ColNeed *nd, int64 i, bool *isnull)
 		{
 			MemoryContext old = MemoryContextSwitchTo(nd->cx);
 
-			nd->dval[c] = PointerGetDatum(cstring_to_text_with_len(v->dict->bytes + v->dict->off[c], v->dict->off[c + 1] - v->dict->off[c]));
+			char		buf[SIFT_SRC_DICT_ENTRY];
+			uint32		len;
+			const char *str = sift_srcdict_str(v->dict, c, &len, buf);
+
+			nd->dval[c] = PointerGetDatum(cstring_to_text_with_len(str, len));
 			nd->dmade[c] = true;
 			MemoryContextSwitchTo(old);
 		}
@@ -323,8 +327,10 @@ apply_test(const ColTest *t, const ColNeed *nd, int nrow, uint64 *rows)
 
 	if (t->text)
 	{
-		for (uint32 c = 0; c < v->dict->n; c++)
-			if (v->dict->off[c + 1] - v->dict->off[c] == (uint32) t->tlen && memcmp(v->dict->bytes + v->dict->off[c], t->tv, t->tlen) == 0)
+		const SiftSrcDict *d = sift_srcdict_whole(v->dict);
+
+		for (uint32 c = 0; c < d->n; c++)
+			if (d->off[c + 1] - d->off[c] == (uint32) t->tlen && memcmp(d->bytes + d->off[c], t->tv, t->tlen) == 0)
 			{
 				code = c;
 				break;
