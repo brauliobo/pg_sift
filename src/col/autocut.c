@@ -581,7 +581,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			ncand += tr[ntr].cand || tr[ntr].time;
 			ntr++;
 		}
-		else if (ntr < AUTOCUT_LEAVES && d->lane > 0 && sift_col_def_shape(&sc->cols[c - d->lane]) != 0 && hatt != 0)
+		else if (ntr < AUTOCUT_LEAVES && d->lane > 0 && sift_col_def_shape(&sc->cols[c - d->lane]) != 0 && !(sift_col_def_shape(&sc->cols[c - d->lane]) == SIFT_COL_SHAPE_INET && d->lane > 1) && hatt != 0)
 		{
 			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
 			 * do not repeat, and a range of them is read like a range of dates */

@@ -75,6 +75,15 @@ SELECT leaf, decision, growth_pct < 0 AS shrinks FROM sift.key_cut_decision('ki_
 SELECT same('SELECT count(*) FROM ki WHERE ip <<= ''20.5.0.0/20'''), same('SELECT count(*) FROM ki WHERE ip >>= ''20.5.7.9'''), same('SELECT count(*) FROM ki WHERE ip = ''20.5.7.9''');
 SELECT kept_share('SELECT count(*) FROM ki WHERE ip <<= ''20.5.0.0/20''') < 0.2;
 DROP TABLE ki;
+
+-- ... and of IPv6 addresses, whose offset lane (lane 2 of a network) is NULL in every row: it is no leaf that follows the order of the table
+CREATE TABLE k6 (ip inet, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+INSERT INTO k6 SELECT format('2001:db8:%s:%s:%s::1', to_hex((random() * 65535)::int), to_hex((random() * 65535)::int), to_hex((random() * 65535)::int))::inet, repeat('x', 100) FROM generate_series(1, 250000);
+VACUUM (FREEZE, ANALYZE) k6;
+CREATE INDEX k6_ip ON k6 USING sift_col (ip);
+SELECT kopt('k6_ip');
+SELECT same('SELECT count(*) FROM k6 WHERE ip <<= ''2001:db8:5::/48'''), same('SELECT count(*) FROM k6 WHERE ip >>= ''2001:db8:5:7::1'''), same('SELECT count(*) FROM k6 WHERE ip = ''2001:db8:5:7::1''');
+DROP TABLE k6;
 DROP TABLE kr;
 
 -- another leaf whose zones skip about half of the units (a date that drifts over the table): the cut by a lane would keep all of them for it, so it is not chosen
