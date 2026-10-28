@@ -398,12 +398,17 @@ sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint3
 }
 
 bool
-sift_cgord_str_get(const uint8 *b, uint32 len, uint32 idx, char *out, uint32 *slen)
+sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint32 idx, char *out, uint32 *slen)
 {
-	uint32		pos = 0,
-				olen = 0;
+	uint32		pos,
+				olen;
 
-	for (uint32 i = 0; i <= idx; i++)
+	/* the string before idx is out's: a walk in rank order decodes each string once (a block of 16 would otherwise be decoded from its start for every one) */
+	if (idx + 1 < st->next)
+		*st = (SiftCStrPos) {0, 0, 0};
+	pos = st->pos;
+	olen = st->olen;
+	for (uint32 i = st->next; i <= idx; i++)
 	{
 		uint32		shared = 0,
 					own = 0;
@@ -437,6 +442,7 @@ sift_cgord_str_get(const uint8 *b, uint32 len, uint32 idx, char *out, uint32 *sl
 		memcpy(out + shared, b + pos, own);
 		pos += own;
 		olen = shared + own;
+		*st = (SiftCStrPos) {i + 1, pos, olen};
 	}
 	*slen = olen;
 	return true;

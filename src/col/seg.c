@@ -3927,9 +3927,10 @@ sift_cseg_gorder_str(SiftColSegment *seg, int col, uint32 r, uint32 *len)
 		seg_read(seg, sec + off[0], off[1] - off[0], g->sblk);
 		g->sbno = b;
 		g->sblen = off[1] - off[0];
+		g->spos = (SiftCStrPos) {0, 0, 0};
 	}
 	str = (char *) g->sblk + (Size) SIFT_CGORD_STR_BLK * (SIFT_CGORD_STR_MAX + 8);
-	if (!sift_cgord_str_get(g->sblk, g->sblen, r % SIFT_CGORD_STR_BLK, str, len))
+	if (!sift_cgord_str_get(g->sblk, g->sblen, &g->spos, r % SIFT_CGORD_STR_BLK, str, len))
 		corrupt(seg, "The strings of the global order of leaf %d have a malformed block %u.", col, b);
 	return str;
 }

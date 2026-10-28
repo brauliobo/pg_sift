@@ -166,6 +166,68 @@ SELECT tt_chk('SELECT s FROM tl ORDER BY s LIMIT 10') AS long_strings;
  units
 (1 row)
 
+-- many sources: 6 segments of one index and the strings of a locale ("en-x-icu" orders apple before Apple before banana, the bytes order Apple before apple), with the same strings in
+-- several segments (ties across sources), NULLs, both directions, an OFFSET past the first chunk and the rows after a delete and an update; the answers are the heap's
+CREATE TABLE tm (id int, s text COLLATE "en-x-icu", c text COLLATE "C");
+CREATE INDEX tm_i ON tm USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, c sift.col_text_ops) WITH (order_array_columns = 's, c');
+SELECT sift.col_promote('tm_i'::regclass) >= 0 AS promoted_empty;
+ promoted_empty 
+----------------
+ t
+(1 row)
+
+DO $$
+BEGIN
+	FOR b IN 1..6 LOOP
+		INSERT INTO tm SELECT b * 10000 + i,
+			CASE WHEN i % 17 = 0 THEN NULL ELSE (ARRAY['apple', 'Apple', 'banana', 'Banana', 'ápple', 'cherry'])[1 + (i * b) % 6] || (i * 7 + b) % 400 END,
+			CASE WHEN i % 19 = 0 THEN NULL ELSE (ARRAY['apple', 'Apple', 'banana', 'Banana', 'ápple', 'cherry'])[1 + (i * b + 1) % 6] || (i * 11 + b) % 400 END
+		FROM generate_series(1, 2500) i;
+		PERFORM sift.col_promote('tm_i'::regclass);
+	END LOOP;
+END $$;
+SELECT count(*) >= 6 AS six_segments FROM sift.col_segments('tm_i') WHERE kind = 'immutable';
+ six_segments 
+--------------
+ t
+(1 row)
+
+CREATE TABLE tmq (q text);
+INSERT INTO tmq SELECT format('SELECT %s FROM tm ORDER BY %s %s %s LIMIT %s OFFSET %s', col, col, dir, nl, lim, off)
+FROM unnest(ARRAY['s', 'c']) col, unnest(ARRAY['', 'DESC']) dir, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[10, 700]) lim, unnest(ARRAY[0, 1500]) off;
+SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |    32
+(1 row)
+
+DELETE FROM tm WHERE id % 7 = 0;
+UPDATE tm SET s = 'Apple' || (id % 5), c = 'banana' || (id % 3) WHERE id % 11 = 0;
+SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |    32
+(1 row)
+
+SELECT sift.col_merge('tm_i'::regclass, true) >= 0 AS merged;
+ merged 
+--------
+ t
+(1 row)
+
+SELECT sift.col_verify('tm_i');
+ col_verify 
+------------
+ 
+(1 row)
+
+SELECT result, count(*) FROM (SELECT tt_chk(q) AS result FROM tmq) r GROUP BY 1 ORDER BY 1;
+    result    | count 
+--------------+-------
+ global order |    32
+(1 row)
+
+DROP TABLE tm, tmq;
 -- the build chooses a text column of an index when order_array_columns is unset or 'auto': benefit log2(300) / log2(1.05) = 117 against cost G / 3 + W / 5 (the bytes of the
 -- array in the share of the index, the sort of the strings in the share of the build; 62% for 4 columns under the C collation of these tests, 420% under a locale), on a table of 100,000 rows
 -- or more, 1,000 or more distinct values scattered over the heap, strings up to 64 bytes. A longer string is stored again in the array, so that column is left to the list.

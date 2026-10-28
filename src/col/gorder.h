@@ -98,8 +98,15 @@ extern void sift_cgord_build_grouped(int64 *key, uint64 *tid, int64 *group, uint
 typedef int (*SiftCStrCmp) (const char *a, uint32 la, const char *b, uint32 lb, uint32 collid);
 extern SiftCStrCmp sift_cgord_strcmp;
 extern void sift_cgord_build_text(int64 *key, uint64 *tid, uint32 nvals, uint64 *ntid, uint32 nnull, const SiftCDict *d, uint32 collid, StringInfo out);
-/* The string of rank r of a text block: b is the front coded block of the strings that holds it (r / SIFT_CGORD_STR_BLK), len its bytes; out SIFT_CGORD_STR_MAX; false when malformed */
-extern bool sift_cgord_str_get(const uint8 *b, uint32 len, uint32 idx, char *out, uint32 *slen);
+/* Where the decode of a front coded block of strings stands: the next string to decode, its place in the block, and the bytes of the string before it, which out holds */
+typedef struct SiftCStrPos
+{
+	uint32		next;
+	uint32		pos;
+	uint32		olen;
+} SiftCStrPos;
+/* The string idx of a text block (idx = rank % SIFT_CGORD_STR_BLK): b is the front coded block of the strings that holds it, len its bytes; out SIFT_CGORD_STR_MAX, which keeps the string decoded last so that the next call goes on from it; false when malformed */
+extern bool sift_cgord_str_get(const uint8 *b, uint32 len, SiftCStrPos *st, uint32 idx, char *out, uint32 *slen);
 /* The strings section of a block of len bytes whose header was parsed: its number of strings and blocks; false when it is malformed */
 extern bool sift_cgord_str_head(const uint8 *sec, const SiftCGOrdHdr *h, uint32 *nstr, uint32 *nblk);
 

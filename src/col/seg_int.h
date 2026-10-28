@@ -343,6 +343,7 @@ typedef struct GOrdLeaf
 	uint32		sbno;
 	uint32		sblen;
 	uint8	   *sblk;			/* allocated by the first string: the block, then the string decoded from it */
+	SiftCStrPos spos;			/* the decode of the block, which goes on from the string decoded last */
 } GOrdLeaf;
 
 typedef struct SegPriv

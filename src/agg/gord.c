@@ -14,6 +14,7 @@
 typedef struct GCur
 {
 	int			src;
+	int			slot;			/* its place in the cursors of the scan (the leaf of the tournament of a text key) */
 	uint32		entries;
 	uint32		values;
 	uint32		vs;				/* the values in the range of the scan: [vs, ve) */
@@ -86,6 +87,7 @@ struct SiftGOrd
 	bool		started;
 	GCur	   *prev;			/* the source of the last entry given, and the best of the others at that time (NULL: the sources are scanned) */
 	GCur	   *runner;
+	int		   *tree;			/* a text key: the tournament of the cursors, tree[0] the winner and tree[1..] the loser of each match (log2 of the sources compares a step, where the scan of them compares each) */
 	bool		last_set;
 	int			last_cls;
 	int64		last_key;
@@ -277,6 +279,7 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 			gbuf_put(c->buf);
 			continue;
 		}
+		c->slot = g->ncur;
 		g->cur[g->ncur++] = c;
 	}
 	g->head = Max(GORD_HEAD_MIN, Min((uint32) SIFT_CGORD_ROWS, g->ncur > 0 ? 5 * (uint32) Max(rows, 0) / (4 * g->ncur) : 0));
@@ -325,6 +328,98 @@ cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b, bool text)
 	return SIFT_CMP3(a->tid, b->tid);
 }
 
+/* a cursor with no entry left loses every match */
+static inline bool
+text_before(const SiftGOrd *g, const GCur *a, const GCur *b)
+{
+	return a->have && (!b->have || cand_cmp(g, a, b, true) < 0);
+}
+
+/* the match of leaf slot j up to the root: the winner of the others replaces it where it loses */
+static void
+text_replay(SiftGOrd *g, int j)
+{
+	int			k = g->ncur,
+				w = j;
+
+	for (int node = (k + j) / 2; node >= 1; node /= 2)
+		if (text_before(g, g->cur[g->tree[node]], g->cur[w]))
+		{
+			int			l = g->tree[node];
+
+			g->tree[node] = w;
+			w = l;
+		}
+	g->tree[0] = w;
+}
+
+static void
+text_tournament(SiftGOrd *g)
+{
+	int			k = g->ncur;
+	int		   *win = palloc(2 * k * sizeof(int));
+
+	if (g->tree == NULL)
+		g->tree = MemoryContextAlloc(GetMemoryChunkContext(g), Max(k, 1) * sizeof(int));
+	for (int j = 0; j < k; j++)
+		win[k + j] = j;
+	for (int i = k - 1; i >= 1; i--)
+	{
+		int			a = win[2 * i],
+					b = win[2 * i + 1];
+
+		win[i] = text_before(g, g->cur[a], g->cur[b]) ? a : b;
+		g->tree[i] = win[i] == a ? b : a;
+	}
+	g->tree[0] = k > 1 ? win[1] : 0;
+	pfree(win);
+}
+
+/* the merge of a text key: the sources are the leaves of a tournament, so a step compares strings log2(sources) times, where the scan of the sources does it once for each */
+static bool
+gord_next_text(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
+{
+	if (!g->started)
+	{
+		g->prev = NULL;
+		for (int i = 0; i < g->ncur; i++)
+			cur_start(g, g->cur[i]);
+		text_tournament(g);
+		g->started = true;
+	}
+	for (;;)
+	{
+		GCur	   *best;
+		bool		dup;
+
+		if (g->ncur == 0 || !(best = g->cur[g->tree[0]])->have)
+			return false;
+		*key = best->k;
+		*isnull = best->cls != 1;
+		ItemPointerSet(tid, (BlockNumber) (best->tid >> 16), (OffsetNumber) (best->tid & 0xFFFF));
+		/* the entry of another source can repeat the last one */
+		dup = g->last_set && g->last_cls == best->cls && g->last_tid == best->tid &&
+			(best->cls == 1 ? g->last_len == best->slen && memcmp(g->last_str, best->str, best->slen) == 0 : g->last_key == best->k);
+		g->prev = best;
+		if (!dup)
+		{
+			g->last_set = true;
+			g->last_cls = best->cls;
+			g->last_key = best->k;
+			g->last_tid = best->tid;
+			if (best->cls == 1)
+			{
+				memcpy(g->last_str, best->str, best->slen);
+				g->last_len = best->slen;
+			}
+		}
+		cur_next(g, best);
+		text_replay(g, best->slot);
+		if (!dup)
+			return true;
+	}
+}
+
 const char *
 sift_gord_str(const SiftGOrd *g, uint32 *len)
 {
@@ -338,10 +433,11 @@ sift_gord_group(const SiftGOrd *g)
 	return g->grouped;
 }
 
-/* text is constant in each of the two copies below: the merge of integer keys carries no test of it */
-static pg_attribute_always_inline bool
-gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text)
+bool
+sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
+	if (g->collid != 0)
+		return gord_next_text(g, key, isnull, tid);
 	if (!g->started)
 	{
 		for (int i = 0; i < g->ncur; i++)
@@ -357,7 +453,7 @@ gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text
 		 * The source that gave the last entry stays the best while its next one comes before the runner-up of the others (they have not moved): one comparison for a row
 		 * where the scan of every source costs one for each
 		 */
-		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner, text) >= 0))
+		if (best == NULL || !best->have || (g->runner != NULL && cand_cmp(g, best, g->runner, false) >= 0))
 		{
 			best = g->runner = NULL;
 			for (int i = 0; i < g->ncur; i++)
@@ -366,12 +462,12 @@ gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text
 
 				if (!c->have)
 					continue;
-				if (best == NULL || cand_cmp(g, c, best, text) < 0)
+				if (best == NULL || cand_cmp(g, c, best, false) < 0)
 				{
 					g->runner = best;
 					best = c;
 				}
-				else if (g->runner == NULL || cand_cmp(g, c, g->runner, text) < 0)
+				else if (g->runner == NULL || cand_cmp(g, c, g->runner, false) < 0)
 					g->runner = c;
 			}
 		}
@@ -381,8 +477,7 @@ gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text
 		*isnull = best->cls != 1;
 		ItemPointerSet(tid, (BlockNumber) (best->tid >> 16), (OffsetNumber) (best->tid & 0xFFFF));
 		/* a source holds an entry once: only the entry of another source can repeat the last one */
-		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_tid == best->tid &&
-			(text && best->cls == 1 ? g->last_len == best->slen && memcmp(g->last_str, best->str, best->slen) == 0 : g->last_key == best->k))
+		if (best != g->prev && g->last_set && g->last_cls == best->cls && g->last_tid == best->tid && g->last_key == best->k)
 		{
 			g->prev = best;
 			cur_next(g, best);
@@ -393,18 +488,7 @@ gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid, bool text
 		g->last_cls = best->cls;
 		g->last_key = best->k;
 		g->last_tid = best->tid;
-		if (text && best->cls == 1)
-		{
-			memcpy(g->last_str, best->str, best->slen);
-			g->last_len = best->slen;
-		}
 		cur_next(g, best);
 		return true;
 	}
-}
-
-bool
-sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
-{
-	return g->collid != 0 ? gord_next(g, key, isnull, tid, true) : gord_next(g, key, isnull, tid, false);
 }
