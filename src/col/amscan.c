@@ -790,7 +790,7 @@ sift_col_amcanreturn(Relation index, int attno)
 	SiftColRel *r = sift_col_rel(index);
 	const SiftColDef *d = &r->meta.cols[r->first[attno]];
 
-	if (r->nleaves[attno] != 1 || r->name[attno] || index->rd_opcintype[attno - 1] == ANYELEMENTOID || (d->path && d->path[0]) || (d->flags & SIFT_COLD_LOSSY))
+	if (r->nleaves[attno] != 1 || r->name[attno] || (d->path && d->path[0]) || (d->flags & SIFT_COLD_LOSSY))
 		return false;
 	switch (d->type)
 	{
@@ -1389,6 +1389,29 @@ add_address_paths(PlannerInfo *root, RelOptInfo *rel)
 		add_path(rel, p);
 }
 
+
+/*
+ * A column of the default class sift.col_ops (what CREATE INDEX .. USING sift_col (col) gives) is in the family of the typed classes (pg_sift--3.6.sql), so a
+ * statement that returns rows (WHERE id = 5, an IN list, a range, LIKE 'abc%') can take an index or bitmap scan of a plain index. A statement SiftAgg can answer,
+ * one that aggregates, groups, deduplicates, has a window function or sorts under a LIMIT, keeps the paths it always had on such an index: an index whose columns
+ * are all of the default class gives it no index or bitmap path (a path built and then dropped would take the sequential scan it dominates with it), so that the
+ * calibrated choice between SiftAgg and the normal plan is the one of 3.5 for them. An index with a column of a named class is offered everything, as before.
+ */
+static void
+plain_index_for_rows_only(PlannerInfo *root, IndexOptInfo *ii)
+{
+	Query	   *q = root->parse;
+
+	if (ii->relam != sift_col_am_oid() ||
+		!(q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->distinctClause != NIL || q->hasWindowFuncs ||
+		  (q->sortClause != NIL && (q->limitCount != NULL || q->limitOffset != NULL))))
+		return;
+	for (int i = 0; i < ii->nkeycolumns; i++)
+		if (ii->opcintype[i] != ANYELEMENTOID)
+			return;
+	ii->amhasgetbitmap = ii->amhasgettuple = false;
+}
+
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 
@@ -1403,6 +1426,7 @@ col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *
 		if (ii->relam == sift_col_am_oid())
 		{
 			indexed = true;
+			plain_index_for_rows_only(root, ii);
 			if (!sift_enable_col_scan)
 				ii->amhasgetbitmap = ii->amhasgettuple = false;
 		}
@@ -1464,14 +1488,18 @@ static build_simple_rel_hook_type prev_simple_rel_hook;
 static void
 col_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
+	bool		indexed = false;
+
 	if (prev_simple_rel_hook)
 		prev_simple_rel_hook(root, rel, rte);
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->relam == sift_col_am_oid())
 		{
-			col_scale_rel(rel);
-			return;
+			indexed = true;
+			plain_index_for_rows_only(root, ii);
 		}
+	if (indexed)
+		col_scale_rel(rel);
 }
 
 static void

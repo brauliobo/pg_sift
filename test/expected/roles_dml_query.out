@@ -128,7 +128,7 @@ $$);
  SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ok: (5,1.457) ; (10,1.457) ; (15,1.457)                                                                     | rq_own, rq_byp, rq_rd
  SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ERROR: sift.score() is not available on "rdocs" while row-level security or a security barrier view applies | rq_rls
  EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Custom Scan (SiftScan)                                                                             | rq_own, rq_byp, rq_rd
- EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Seq Scan on rdocs                                                                                  | rq_rls
+ EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Bitmap Index Scan on rdocs_col                                                                     | rq_rls
 (8 rows)
 
 -- with USAGE on the schema sift taken back from PUBLIC: the operator needs none, the ranking function does

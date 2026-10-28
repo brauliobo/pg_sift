@@ -1,0 +1,72 @@
+-- A column of the default class sift.col_ops (what CREATE INDEX .. USING sift_col (col) gives) is read by the planner as the class of its type, so one plain index
+-- serves the aggregates and the filters that return rows (docs/COL-SCAN.md): equality, IN, range, LIKE 'abc%', IS NULL, index-only scans, for the types that have
+-- a class; a type that has none (inet) and a column that names a class keep their behaviour. The rows are the heap's in every case.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+
+CREATE TABLE dc (id int, big int8, small int2, d date, ts timestamp, tz timestamptz, n numeric(12,2), b bool, f4 float4, f8 float8, c char(8), v varchar(40), t text, u uuid,
+				 ip inet, nn numeric, nb numeric(30,5), cb bpchar, pad text DEFAULT repeat('x', 100));
+INSERT INTO dc (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, nn, nb, cb)
+SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE (g % 4000)::int8 * 7919 + 1000000007 END, (g % 3000)::int2, date '2000-01-01' + g % 5000, timestamp '2022-01-01' + g * interval '17 seconds',
+	   timestamptz '2022-01-01' + g * interval '31 seconds', (g * 7 % 90000)::numeric / 100, g % 2 = 0, (g % 977)::float4 / 4, g / 3.0, lpad((g % 700)::text, 8, 'z'),
+	   'name' || g % 1500, CASE WHEN g % 61 = 0 THEN NULL ELSE 'k' || md5(g::text) END, md5((g % 15000)::text)::uuid, ('10.0.0.0'::inet + g % 2000),
+	   CASE WHEN g % 977 = 0 THEN 'NaN'::numeric ELSE g::numeric * 123456789012345678901234567 / 1000 END, g::numeric(30,5) * 1000000000000000000 + 0.12345, 'cb' || g % 900
+FROM generate_series(1, 30000) g;
+CREATE INDEX dc_plain ON dc USING sift_col (id, big, small, d, ts, tz, n, b, f4, f8, c, v, t, u, ip, nn, nb, cb);
+VACUUM (ANALYZE) dc;
+
+CREATE FUNCTION dc_scan(w text, via text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('EXPLAIN (COSTS OFF) %s', w) INTO r;
+	RETURN CASE WHEN r ~ 'Index Only Scan using dc_' THEN 'index only' WHEN r ~ 'Index Scan using dc_' THEN 'index scan' WHEN r ~ 'Bitmap Heap Scan on dc' THEN 'bitmap'
+				WHEN r ~ 'Seq Scan on dc' THEN 'seq' ELSE r END;
+END $$;
+CREATE FUNCTION dc_rows(w text, idx bool) RETURNS bigint[] LANGUAGE plpgsql
+	SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
+DECLARE r bigint[];
+BEGIN
+	IF idx THEN SET LOCAL enable_seqscan = off; ELSE SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off; END IF;
+	EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM dc WHERE %s', w) INTO r;
+	RETURN r;
+END $$;
+
+CREATE TABLE dc_q (n serial, w text);
+INSERT INTO dc_q (w) VALUES
+ ('id = 777'), ('id = 0'), ('id IN (5, 17, 29999, 30001)'), ('id BETWEEN 100 AND 130'), ('id < 20'), ('id >= 29990'), ('id = ANY (ARRAY(SELECT g FROM generate_series(100, 300, 7) g))'),
+ ('big = 1000000007 + 7919 * 11'), ('big IS NULL'), ('big IN (1000000007, 1000000007 + 7919 * 3999, 5)'),
+ ('small = 2999'), ('small BETWEEN 10 AND 12'), ('d = date ''2000-01-01'' + 4999'), ('d >= date ''2013-06-01'''), ('ts = timestamp ''2022-01-01'' + 1234 * interval ''17 seconds'''),
+ ('ts BETWEEN timestamp ''2022-01-03'' AND timestamp ''2022-01-03 01:00'''), ('tz = timestamptz ''2022-01-01'' + 4321 * interval ''31 seconds'''),
+ ('n = 5.67'), ('n BETWEEN 100 AND 100.5'), ('b AND id < 30'), ('NOT b AND id < 31'), ('f4 = 12.25'), ('f8 = 5000'), ('f8 > 9999.5'),
+ ('c = ''zzzzz012'''), ('c IN (''zzzzzz00'', ''zzzzz699'', ''nothing'')'), ('v = ''name42'''), ('v LIKE ''name14%'''), ('v IN (''name1'', ''name1499'', ''none'')'),
+ ('t = ''k'' || md5(''777'')'), ('t LIKE ''k00%'''), ('t ^@ ''k0a'''), ('t IS NULL'), ('t IN (''k'' || md5(''5''), ''k'' || md5(''6''), ''none'')'),
+ ('u = md5(''777'')::uuid'), ('u IN (md5(''1'')::uuid, md5(''2'')::uuid, md5(''x'')::uuid)'), ('nn = 123456789012345678901234567 * 5 / 1000'), ('nn = ''NaN'''), ('nn > 1e30'), ('nb = 5::numeric(30,5) * 1000000000000000000 + 0.12345'), ('nb < 1e20'),
+ ('cb = ''cb77'''), ('cb IN (''cb1'', ''cb899'', ''x'')'),
+ ('id < 500 AND t IS NOT NULL AND b'), ('small = 5 AND d >= date ''2010-01-01''');
+
+SELECT count(*) AS shapes FROM dc_q;
+-- the default class and the typed class give the heap's rows
+SELECT n, w FROM dc_q WHERE dc_rows(w, true) IS DISTINCT FROM dc_rows(w, false) ORDER BY n;
+SELECT count(*) FILTER (WHERE cardinality(dc_rows(w, false)) > 0) AS with_rows FROM dc_q;
+-- the planner takes the index for a selective test, and not for a type with no class
+SELECT dc_scan('SELECT * FROM dc WHERE id = 777', '') AS id_eq, dc_scan('SELECT id FROM dc WHERE id = 777', '') AS id_only,
+	   dc_scan('SELECT * FROM dc WHERE u = md5(''777'')::uuid', '') AS uuid_eq, dc_scan('SELECT * FROM dc WHERE t = ''k'' || md5(''777'')', '') AS text_eq,
+	   dc_scan('SELECT * FROM dc WHERE id BETWEEN 100 AND 130', '') AS id_range, dc_scan('SELECT * FROM dc WHERE ip = ''10.0.0.9''', '') AS inet_eq;
+-- an index-only scan returns the values of the default class
+SELECT dc_scan('SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11', '') AS big_only;
+SELECT big, small FROM dc WHERE big = 1000000007 + 7919 * 11 ORDER BY small LIMIT 3;
+
+-- the same table with the classes named: the same plans, the same rows
+CREATE INDEX dc_typed ON dc USING sift_col (id sift.col_int4_ops, big sift.col_int8_ops, t sift.col_text_ops, u sift.col_uuid_ops);
+DROP INDEX dc_plain;
+SELECT n, w FROM dc_q WHERE dc_rows(w, true) IS DISTINCT FROM dc_rows(w, false) AND w ~ '^(id|big|t|u) ' ORDER BY n;
+SELECT dc_scan('SELECT * FROM dc WHERE id = 777', '') AS id_eq, dc_scan('SELECT * FROM dc WHERE small = 5', '') AS small_has_no_index;
+
+-- a multicolumn index with one class named and one not
+CREATE INDEX dc_mixed ON dc USING sift_col (small sift.col_int2_ops, d);
+SELECT dc_scan('SELECT * FROM dc WHERE d = date ''2000-01-01'' + 4999 AND small = 7', '') <> 'seq' AS uses_mixed;
+SELECT dc_rows('d = date ''2000-01-01'' + 4999 AND small < 3000', true) = dc_rows('d = date ''2000-01-01'' + 4999 AND small < 3000', false) AS same_rows;
+
+DROP TABLE dc, dc_q;
+DROP FUNCTION dc_scan(text, text), dc_rows(text, bool);
+DROP EXTENSION pg_sift;

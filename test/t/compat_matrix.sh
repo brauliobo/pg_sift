@@ -334,7 +334,7 @@ sift.async_maintenance = off'
 			"CREATE TRIGGER t_dg BEFORE UPDATE ON dgb FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()" "DROP TRIGGER t_dg ON dgb"
 		err=$(q "ALTER EXTENSION pg_sift UPDATE TO '3.2'" 2>&1)
 		check "3.2 downgrade: there is no script back" grep -q 'no update path' <<<"$err"
-		check "3.2 downgrade: the catalog stays at 3.5" test "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.5
+		check "3.2 downgrade: the catalog stays at 3.6" test "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.6
 		# pg_dump writes CREATE EXTENSION without a version: a server that has the 3.2 files only restores the database at 3.2, and every index with an option of
 		# 3.3 fails to be created (the tables, the other indexes and the data come through)
 		qd() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir mx)/sock" -p "$(port mx)" -U postgres -d "$db" "${@/#/--command=}"; }
@@ -352,16 +352,16 @@ sift.async_maintenance = off'
 			"3.2 $(q "SELECT count(*) FROM docs_df") $(q "SELECT count(*) FROM tbl_ca") "
 		check "3.2 downgrade: the restored indexes without such an option verify" qd rst "SELECT sift.col_verify(c.oid::regclass::text, true) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'" "SELECT sift.verify('dgb_idx', true)"
 		node_stop mx
-		# and forward again: the 3.5 library on the same files, the event triggers enabled, the setting reset
+		# and forward again: the 3.6 library on the same files, the event triggers enabled, the setting reset
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree after the downgrade"
-		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.5
+		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()" | cut -c1-3)" == 3.6
 		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.col_format_minor" "SELECT pg_reload_conf()" >/dev/null
 		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT string_agg(evtenabled::text, '') FROM pg_event_trigger WHERE evtname IN ('sift_table_ddl_check', 'sift_table_repack_guard')")" == OO
 		check "3.2 downgrade: forward again: ALTER TABLE works with this tree's library" q "ALTER TABLE dgb DROP COLUMN extra"
 		check "3.2 downgrade: forward again: the indexes verify" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
-		check "3.2 downgrade: forward again: the restored database goes to 3.5 with ALTER EXTENSION UPDATE" test "$(qd rst "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.5
-		uc --to 3.5 postgres >/dev/null; rc=$?
+		check "3.2 downgrade: forward again: the restored database goes to 3.6 with ALTER EXTENSION UPDATE" test "$(qd rst "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 3.6
+		uc --to 3.6 postgres >/dev/null; rc=$?
 		check "3.2 downgrade: forward again: the preflight finds nothing to block" test $rc -eq 0
 		node_stop mx
 	fi

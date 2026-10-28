@@ -1,6 +1,6 @@
 # The bitmap scan of a sift_col index, and replacing a btree with one
 
-A `sift_col` index built with the operator classes `sift.col_*_ops` is a **bitmap index scan** for the planner: `WHERE id = 5`, `IN` lists, ranges, `IS [NOT] NULL`, `LIKE 'abc%'` on integer, date, timestamp, boolean, float, numeric(p <= 18, s), char(n), text and uuid columns return rows through `Bitmap Heap Scan` or `Index Scan` (and `Index Only Scan` for the fixed-width columns), for any subset of the columns of a multicolumn index, combined with `BitmapAnd` and `BitmapOr`. Without the classes (the default class `sift.col_ops`) the index serves only the column scans of SiftAgg (aggregates, `GROUP BY`, `DISTINCT`, `ORDER BY .. LIMIT`, [COL-PLAN.md](COL-PLAN.md)) and a query that returns rows reads the heap. The classes are catalog entries over the same index: an existing index keeps its class and its bytes.
+A `sift_col` index built with the operator classes `sift.col_*_ops` is a **bitmap index scan** for the planner: `WHERE id = 5`, `IN` lists, ranges, `IS [NOT] NULL`, `LIKE 'abc%'` on integer, date, timestamp, boolean, float, numeric(p <= 18, s), char(n), text and uuid columns return rows through `Bitmap Heap Scan` or `Index Scan` (and `Index Only Scan` for the fixed-width columns), for any subset of the columns of a multicolumn index, combined with `BitmapAnd` and `BitmapOr`. Since 3.6 the default class `sift.col_ops` (what `CREATE INDEX .. USING sift_col (id, name)` gives) is in the same position: its family holds the operators of every class, so one plain index serves the column scans of SiftAgg (aggregates, `GROUP BY`, `DISTINCT`, `ORDER BY .. LIMIT`, [COL-PLAN.md](COL-PLAN.md)) and the filters of a statement that returns rows, including the `WHERE` of an `UPDATE` or `DELETE`. A statement that aggregates, groups, deduplicates, has a window function or sorts under a `LIMIT` is not offered the index and bitmap paths of an index whose columns are all of the default class, so its plan is the one it had (SiftAgg, or the normal plan); name the classes to give it both. The classes are catalog entries over the same index: an existing index keeps its class and its bytes, and `ALTER EXTENSION pg_sift UPDATE` is all it needs.
 
 ```sql
 CREATE INDEX ON items USING sift_col (id sift.col_int4_ops, kind sift.col_text_ops, ts sift.col_timestamptz_ops);
@@ -18,6 +18,26 @@ SELECT * FROM items WHERE kind = 'cat_a' AND ts >= '2024-03-01' AND ts < '2024-0
 | `col_bpchar_ops` (char(n) only), `col_uuid_ops` | char(n), uuid | `=` only |
 
 `= ANY (array)` is one scan (a set test per unit); `x < ANY (array)` is the test against the largest element. `IS NULL`/`IS NOT NULL` are index quals. A column of a multicolumn index may carry another class (or the default one: the scan then ignores it).
+
+## A plain index and a point lookup, per column type
+
+One single-column `sift_col` index per column, 200,000 rows, instructions of the backend for `SELECT * FROM p WHERE c = K` and for an `IN` list of 16 keys, the statement planned and run in a loop of `EXECUTE` (the loop with the statement only formatted subtracted), warm; "seq scan before" is what a plain index gave in 3.5 (the rows came from the heap). The index is the plain one (`USING sift_col (c)`); the point directory of `point_tid_columns` is the opt-in column, with the size it costs. A `bool` column and a `float8` one: the plain index answers a `float8` equality in 0.42 M and cannot hold a directory; a `bool` equality returns half the table and keeps the sequential scan.
+
+| column (200,000 rows) | seq scan before | plain index | plain + `point_tid_columns` | b-tree | plain / +point_tid / b-tree index MB |
+|---|---|---|---|---|---|
+| smallint, 6 rows a key | 84 M / 105 M | 1.14 M / 19.23 M | 0.24 M / 0.98 M | 0.23 M / 0.85 M | 0.50 / 2.25 / 2.20 |
+| integer, unique | 89 M / 110 M | 0.29 M / 2.29 M | 0.21 M / 0.48 M | 0.18 M / 0.39 M | 0.20 / 3.43 / 4.51 |
+| bigint, 6 rows a key | 95 M / 117 M | 0.36 M / 3.71 M | 0.21 M / 0.51 M | 0.18 M / 0.41 M | 0.20 / 2.65 / 4.38 |
+| date, 40 rows a key | 101 M / 123 M | 1.35 M / 21.84 M | 0.39 M / 3.02 M | 0.36 M / 2.44 M | 0.45 / 1.38 / 1.43 |
+| timestamp, unique | 106 M / 128 M | 0.32 M / 2.33 M | 0.21 M / 0.52 M | 0.18 M / 0.43 M | 0.20 / 3.43 / 4.51 |
+| timestamptz, unique | 112 M / 134 M | 0.32 M / 2.34 M | 0.21 M / 0.52 M | 0.18 M / 0.43 M | 0.19 / 3.43 / 4.51 |
+| uuid, unique | 128 M / 159 M | 0.29 M / 2.35 M | 0.22 M / 0.81 M | 0.19 M / 0.50 M | 3.44 / 8.45 / 6.33 |
+| text, unique | 157 M / 182 M | 0.29 M / 2.43 M | 0.25 M / 1.16 M | 0.19 M / 0.50 M | 3.71 / 8.64 / 11.83 |
+| text, 200 rows a key | 164 M / 183 M | 2.14 M / 182.58 M | 1.08 M / 14.21 M | 1.08 M / 11.01 M | 0.45 / 0.85 / 1.38 |
+| float8, unique | 154 M / 179 M | 0.42 M / 2.51 M | n/a | 0.18 M / 0.41 M | 0.32 / nan / 4.51 |
+| numeric(12,2), 1.3 rows a key | 178 M / 188 M | 0.38 M / 4.51 M | 0.21 M / 0.54 M | 0.19 M / 0.58 M | 0.22 / 3.43 / 4.51 |
+
+The plain index reads the zones and key lists of the units (about 0.3 M instructions to find one key, 1.6 times a b-tree, 0.05 ms) and costs 0.2 to 0.5 MB in 200,000 rows for a number or a date, the dictionary for a string. Where a key has many rows (a smallint or date with 6 to 40 rows a key, a text with 200) or an `IN` list is long, the units are read and the directory pays: smallint 1.14 M to 0.24 M, date 1.35 M to 0.39 M, a list of 16 smallints 19.2 M to 0.98 M. It costs 16 bytes a row for a unique key (the size of a b-tree) and 1 to 10 for a key that repeats, so it is opt-in for the columns whose lookups matter.
 
 ## How it works
 

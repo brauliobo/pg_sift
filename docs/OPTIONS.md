@@ -2179,7 +2179,7 @@ After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 
 <!-- sift-upgrade:start -->
 No default changed since 3.5; new: `sift_col(array_lengths)`.
 
-| Option | 3.5 | 3.5 | Column format | What a 3.5 user gets after the update |
+| Option | 3.5 | 3.6 | Column format | What a 3.5 user gets after the update |
 |---|---|---|---|---|
 | `sift_col(array_lengths)` | new | auto |  | An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout"). |
 | `sift_col(key_table)` | true | true | minor 22 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
