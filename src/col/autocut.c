@@ -47,7 +47,7 @@
 #define AUTOCUT_SBS			256		/* superblocks sampled, at most */
 #define AUTOCUT_MIN_SBS		32
 #define AUTOCUT_QUICK_SBS	8		/* superblocks of the first look, which most tables end at: it prices the decision at a share of the heap, not at a pass over it */
-#define AUTOCUT_ROWS		400000	/* rows sampled, at most */
+#define AUTOCUT_ROWS		400000	/* rows sampled, at most, unless AUTOCUT_MIN_SBS superblocks hold more: the sample is a number of units, so that a table of narrow rows (25,000 to a unit) is sampled as one of wide rows */
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
 #define AUTOCUT_OTHER_PCT	1		/* percent more units that an equality on another leaf may keep under the cut of a lane: the cut spreads its zones over all the units */
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
@@ -486,6 +486,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				fills[AUTOCUT_LEAVES];
 	bool		blocked[AUTOCUT_LEAVES] = {false};
 	int			first_open;
+	uint32		cap;
 	int64	   *tmp;
 	TupleTableSlot *slot;
 	const char *leaf = NULL;
@@ -535,7 +536,9 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			untracked++;
 	}
 	rows_per_unit = heap->rd_rel->reltuples > 0 ? heap->rd_rel->reltuples / nsb : mid_rows(heap, nblocks, nsb);
-	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), AUTOCUT_ROWS / Max(rows_per_unit, 1));	/* a quarter of the heap at most: the sample costs what a build of the share costs */
+	/* a quarter of the heap at most: the sample costs what a build of the share costs; and at least AUTOCUT_MIN_SBS units whatever their rows */
+	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), Max(AUTOCUT_ROWS / Max(rows_per_unit, 1), AUTOCUT_MIN_SBS));
+	cap = (uint32) Min(Max((double) AUTOCUT_ROWS, 1.25 * full * Max(rows_per_unit, 1)), (double) full * SIFT_COL_UNIT_MAX_ROWS);
 	if (ncand == 0)
 	{
 		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date) and no date, timestamp, range or inet column";
@@ -548,11 +551,11 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	}
 	want = quick ? Min(full, AUTOCUT_QUICK_SBS) : full;
 	samp = palloc0(sizeof(Samp));
-	samp->tid = palloc_array(SiftKey, AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS);
+	samp->tid = palloc_array(SiftKey, cap + SIFT_COL_UNIT_MAX_ROWS);
 	for (int t = 0; t < ntr; t++)
 	{
-		tr[t].v = palloc_array(int64, AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS);
-		tr[t].nl = palloc_array(bool, AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS);
+		tr[t].v = palloc_array(int64, cap + SIFT_COL_UNIT_MAX_ROWS);
+		tr[t].nl = palloc_array(bool, cap + SIFT_COL_UNIT_MAX_ROWS);
 	}
 	slot = table_slot_create(heap, NULL);
 	for (int s = 0; s < want; s++)
@@ -563,7 +566,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		uint32		from = samp->n,
 					nrow = 0;
 
-		if (start >= nblocks || samp->n + SIFT_COL_UNIT_MAX_ROWS > AUTOCUT_ROWS + SIFT_COL_UNIT_MAX_ROWS)
+		if (start >= nblocks || samp->n > cap)
 			continue;
 		scan = table_beginscan_strat(heap, GetActiveSnapshot(), 0, NULL, true, false);
 		heap_setscanlimits(scan, start, Min(SIFT_SB_PAGES, nblocks - start));

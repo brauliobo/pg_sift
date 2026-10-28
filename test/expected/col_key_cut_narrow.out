@@ -1,0 +1,32 @@
+-- The sample of the default key_cut is a number of units (superblocks of 256 pages), not a number of rows: a table of narrow rows, with more than 12,500 rows a unit, is
+-- sampled like one of wide rows (32 units at least) and decided by its predicted size, instead of ending at "the units are too large for a sample" whatever its size.
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+CREATE TABLE kn (d date, a int, pad text) WITH (autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kn SELECT '2020-01-01'::date + (random() * 1826)::int, (random() * 1000)::int, repeat('x', 112) FROM generate_series(1, 900000) i;
+VACUUM (FREEZE, ANALYZE) kn;
+SELECT pg_relation_size('kn') / 8192 / 256 >= 64 AS units_at_least_64,
+       (SELECT reltuples FROM pg_class WHERE relname = 'kn') / (pg_relation_size('kn') / 8192 / 256) > 12500 AS rows_a_unit_over_12500;
+ units_at_least_64 | rows_a_unit_over_12500 
+-------------------+------------------------
+ t                 | t
+(1 row)
+
+CREATE INDEX kn_i ON kn USING sift_col (d, a);
+NOTICE:  sift_col index "kn_i": key_cut = 'd' was chosen: a range holding the rows of one unit of "d" would read about 67 of 68 units, where 1 hold its rows (predicted index size +22.7%)
+DETAIL:  A sample of 32 superblocks shows the values of "d" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
+HINT:  ALTER INDEX kn_i SET (key_cut = 'off') and REINDEX keep the units by block range.
+SELECT leaf, sampled, decision, reason IS DISTINCT FROM 'the units are too large for a sample' AS was_sampled FROM sift.key_cut_decision('kn_i');
+ leaf | sampled | decision | was_sampled 
+------+---------+----------+-------------
+ d    |      32 | cut      | t
+(1 row)
+
+DROP TABLE kn;
+DROP EXTENSION pg_sift;
