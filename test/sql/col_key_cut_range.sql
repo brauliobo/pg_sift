@@ -63,5 +63,18 @@ SELECT kept_share('SELECT count(*) FROM kr WHERE r @> 12121212') < 0.2, kept_sha
 REINDEX INDEX kr_auto;
 SELECT kopt('kr_auto');
 DROP TABLE kr;
+
+-- another leaf whose zones skip about half of the units (a date that drifts over the table): the cut by a lane would keep all of them for it, so it is not chosen
+CREATE TABLE kp (r int4range, d int, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kp SELECT int4range(a, a + 1 + (random() * 5000)::int), (i::bigint * 1000000 / 125000)::int + (random() * 600000)::int,
+	('20.0.0.0'::inet + (random() * 16777215)::int), repeat('x', 100)
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
+VACUUM (FREEZE, ANALYZE) kp;
+CREATE INDEX kp_auto ON kp USING sift_col (r, d, ip);
+SELECT kopt('kp_auto');
+SELECT leaf, decision, reason FROM sift.key_cut_decision('kp_auto');
+SELECT kept_share('SELECT count(*) FROM kp WHERE d BETWEEN 500000 AND 501000') < 0.6;
+DROP TABLE kp;
 DROP FUNCTION kopt(regclass), kept_share(text), same(text);
 DROP EXTENSION pg_sift;

@@ -49,6 +49,7 @@
 #define AUTOCUT_QUICK_SBS	8		/* superblocks of the first look, which most tables end at: it prices the decision at a share of the heap, not at a pass over it */
 #define AUTOCUT_ROWS		400000	/* rows sampled, at most */
 #define AUTOCUT_TRIAL_SBS	48		/* superblocks of the sample whose integer leaves are encoded to predict the size */
+#define AUTOCUT_OTHER_PCT	1		/* percent more units that an equality on another leaf may keep under the cut of a lane: the cut spreads its zones over all the units */
 #define AUTOCUT_LEAVES		8		/* leaves read: the candidates and those that may compete with them */
 #define AUTOCUT_DIR_ROWS	256		/* rows of a unit of the cut whose directory is encoded from the sample, at least */
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample */
@@ -142,32 +143,41 @@ time_type(uint8 type)
 	return type == SIFT_COLT_DATE || type == SIFT_COLT_TIMESTAMP || type == SIFT_COLT_TIMESTAMPTZ;
 }
 
-/* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
-static bool
-scattered(const Track *t, int n)
+/* the share of the sampled superblocks whose zone holds the middle of another one's: the units an equality on the leaf keeps (1: its zones prune nothing); m: the superblocks that have the leaf */
+static double
+zone_share(const Track *t, int n, int *m)
 {
 	double		lo[AUTOCUT_SBS],
 				hi[AUTOCUT_SBS],
 				point = 0;
-	int			m = 0;
 
+	*m = 0;
 	for (int i = 0; i < n; i++)
 		if (t->has[i])
 		{
-			lo[m] = t->lo[i];
-			hi[m++] = t->hi[i];
+			lo[*m] = t->lo[i];
+			hi[(*m)++] = t->hi[i];
 		}
-	if (m < 2)
-		return false;
-	for (int i = 0; i < m; i++)
+	if (*m < 2)
+		return 1;
+	for (int i = 0; i < *m; i++)
 	{
 		double		mid = (lo[i] + hi[i]) / 2;
 
-		for (int j = 0; j < m; j++)
+		for (int j = 0; j < *m; j++)
 			point += lo[j] <= mid && mid <= hi[j];
 	}
-	point /= m;
-	return !(point <= 2 || point / m <= 0.25);
+	return point / *m / *m;
+}
+
+/* whether the zones of the sampled superblocks of a leaf leave most of them out of an equality (the verdict "scattered" of sift.col_clustering) */
+static bool
+scattered(const Track *t, int n)
+{
+	int			m;
+	double		share = zone_share(t, n, &m);
+
+	return m >= 2 && !(share * m <= 2 || share <= 0.25);
 }
 
 /*
@@ -664,16 +674,26 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "an equality on the key reads few units, or not many times those its rows fill";
 		goto done;
 	}
-	/* a leaf that follows the order of the table would lose its zones to the cut: the first look says so as well as the sample does, and ends there */
+	/* a leaf that follows the order of the table would lose its zones to the cut: the first look says so as well as the sample does, and ends there. The cut of a lane serves
+	 * a test on the lane only, so any other leaf whose zones skip units (its equality keeps less than all of them) would keep all of them under it */
 	for (int i = 0; i < nfire; i++)
 		for (int t = 0; t < ntr && !blocked[i]; t++)
-			if (t != fire[i] && !scattered(&tr[t], samp->nsb))
-			{
-				blocked[i] = true;
-				if (i == 0)
-					v->reason = psprintf("the leaf \"%s\" follows the order of the table, and the cut would widen its zones",
-										 cut_name(index, sc, tr[t].c));
-			}
+		{
+			int			m;
+			const char *what = NULL;
+
+			if (t == fire[i])
+				continue;
+			if (!scattered(&tr[t], samp->nsb))
+				what = "follows the order of the table, and the cut would widen its zones";
+			else if (tr[fire[i]].shape && zone_share(&tr[t], samp->nsb, &m) * (100 + AUTOCUT_OTHER_PCT) < 100)
+				what = "has zones that skip units, and the cut by a lane would keep them all";
+			if (what == NULL)
+				continue;
+			blocked[i] = true;
+			if (i == 0)
+				v->reason = psprintf("the leaf \"%s\" %s", cut_name(index, sc, tr[t].c), what);
+		}
 	for (first_open = 0; first_open < nfire && blocked[first_open];)
 		first_open++;
 	if (first_open == nfire)

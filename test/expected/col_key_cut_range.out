@@ -116,5 +116,37 @@ SELECT kopt('kr_auto');
 (1 row)
 
 DROP TABLE kr;
+-- another leaf whose zones skip about half of the units (a date that drifts over the table): the cut by a lane would keep all of them for it, so it is not chosen
+CREATE TABLE kp (r int4range, d int, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kp SELECT int4range(a, a + 1 + (random() * 5000)::int), (i::bigint * 1000000 / 125000)::int + (random() * 600000)::int,
+	('20.0.0.0'::inet + (random() * 16777215)::int), repeat('x', 100)
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
+VACUUM (FREEZE, ANALYZE) kp;
+CREATE INDEX kp_auto ON kp USING sift_col (r, d, ip);
+SELECT kopt('kp_auto');
+ kopt 
+------
+ none
+(1 row)
+
+SELECT leaf, decision, reason FROM sift.key_cut_decision('kp_auto');
+ leaf | decision |                                      reason                                       
+------+----------+-----------------------------------------------------------------------------------
+ r#1  | none     | the leaf "d" has zones that skip units, and the cut by a lane would keep them all
+(1 row)
+
+SELECT kept_share('SELECT count(*) FROM kp WHERE d BETWEEN 500000 AND 501000') < 0.6;
+ ?column? 
+----------
+ t
+(1 row)
+
+DROP TABLE kp;
 DROP FUNCTION kopt(regclass), kept_share(text), same(text);
 DROP EXTENSION pg_sift;
