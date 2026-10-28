@@ -387,9 +387,9 @@ load_index(Relation rel, const SiftAggJoin *j, bool own, ColNeed *need, int *nne
 	return covering_index(rel, need, *nneed);
 }
 
-/* will the load of the table read the leaves of an index (the planner prices it by that)? */
+/* will the load of the table read the leaves of an index (the planner prices it by that)? *nnumeric: how many of the columns it makes a numeric of, one allocation a row each */
 bool
-map_load_cols_possible(Relation rel, const SiftAggJoin *j)
+map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric)
 {
 	ColNeed		need[SIFT_AGG_MAX_JKEYS + SIFT_AGG_MAX_JCOLS];
 	int			nneed;
@@ -397,6 +397,9 @@ map_load_cols_possible(Relation rel, const SiftAggJoin *j)
 
 	if (ix == NULL)
 		return false;
+	*nnumeric = 0;
+	for (int p = 0; p < nneed; p++)
+		*nnumeric += need[p].lf->typid == NUMERICOID;
 	index_close(ix, AccessShareLock);
 	return true;
 }

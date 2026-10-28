@@ -158,7 +158,7 @@ int map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows);
 int map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows);
 void map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c);
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
-bool map_load_cols_possible(Relation rel, const SiftAggJoin *j);
+bool map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric);
 bool map_load_cols(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own, Relation rel);
 void map_loaded(AggExec *ex, int nrows, instr_time t0);
 MapTab *map_load(AggExec *ex, int ci);

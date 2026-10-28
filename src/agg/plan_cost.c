@@ -2403,11 +2403,12 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	/* the pages of a table read whole cost what PostgreSQL's own sequential scan of them costs (a 1.5-million-row table: 11,000 of 15,000 more), at most a random fetch each */
 	{
 		Relation	rel = relation_open(root->simple_rte_array[jc->rti]->relid, NoLock);
-		bool		cols = map_load_cols_possible(rel, &jc->j);
+		int			nnum = 0;
+		bool		cols = map_load_cols_possible(rel, &jc->j, &nnum);
 
 		relation_close(rel, NoLock);
 		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
-		*row_cost = cols ? AGG_LOAD_ROW_COLS : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+		*row_cost = cols ? AGG_LOAD_ROW_COLS + nnum * AGG_LOAD_NUMERIC : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	}
 	return tuples;
 }
