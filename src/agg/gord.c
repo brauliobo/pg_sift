@@ -31,9 +31,35 @@ typedef struct GCur
 	int			cls;			/* 0: NULL rows first, 1: values, 2: NULL rows last */
 	int64		k;
 	uint64		tid;
+	int64	   *key;			/* a GBuf of the pool */
+	uint64	   *addr;
+} GCur;
+
+typedef struct GBuf
+{
 	int64		key[SIFT_CGORD_CAP];
 	uint64		addr[SIFT_CGORD_CAP];
-} GCur;
+} GBuf;
+
+/*
+ * The 16 KB of keys and addresses of a cursor are the largest buffers of a lookup, and a block of that size is a malloc of its own that goes back to the kernel with
+ * the top of the heap when the statement ends (24 page faults for 6 segments, a fifth of the time of a lookup of 0.5 million instructions). The backend keeps the blocks
+ * it has used, and a scan gets them back through the reset callback of its context.
+ */
+#define GBUF_KEEP	64
+static MemoryContext gbuf_cx;
+static GBuf *gbuf_spare[GBUF_KEEP];
+static int	ngbuf_spare;
+
+static GBuf *
+gbuf_get(void)
+{
+	if (ngbuf_spare > 0)
+		return gbuf_spare[--ngbuf_spare];
+	if (gbuf_cx == NULL)
+		gbuf_cx = AllocSetContextCreate(TopMemoryContext, "sift cache cursors", ALLOCSET_DEFAULT_SIZES);
+	return MemoryContextAlloc(gbuf_cx, sizeof(GBuf));
+}
 
 struct SiftGOrd
 {
@@ -53,7 +79,22 @@ struct SiftGOrd
 	int			last_cls;
 	int64		last_key;
 	uint64		last_tid;
+	MemoryContextCallback release;
 };
+
+static void
+gord_release(void *arg)
+{
+	SiftGOrd   *g = arg;
+
+	for (int i = 0; i < g->ncur; i++)
+	{
+		if (ngbuf_spare < GBUF_KEEP)
+			gbuf_spare[ngbuf_spare++] = (GBuf *) g->cur[i]->key;
+		else
+			pfree(g->cur[i]->key);
+	}
+}
 
 /* the chunk of the entry p is decoded as far as p, doubling when the scan goes on (a few rows of a big table decode a few entries) */
 static pg_noinline void
@@ -189,13 +230,17 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 	g->nulls_first = nulls_first;
 	g->bounded = b != NULL && (b->has_lo || b->has_hi);
 	g->cur = MemoryContextAlloc(cxt, Max(n, 1) * sizeof(GCur *));
+	g->release.func = gord_release;
+	g->release.arg = g;
+	MemoryContextRegisterResetCallback(cxt, &g->release);
 	for (int i = 0; i < n; i++)
 	{
-		GCur	   *c = MemoryContextAlloc(cxt, sizeof(GCur));		/* the arrays are read after they are filled: no need to clear their 16 KB */
+		GCur	   *c = MemoryContextAlloc(cxt, sizeof(GCur));
+		GBuf	   *gb;
 		uint32		rvs,
 					rve;
 
-		memset(c, 0, offsetof(GCur, key));
+		memset(c, 0, sizeof(GCur));
 		c->src = i;
 		if (!sift_colsrc_gorder_info(src, i, leaf, &c->entries, &c->values) || c->entries == 0)
 			continue;
@@ -206,6 +251,8 @@ sift_gord_open(SiftSrcSource *src, int leaf, int rows, bool desc, bool nulls_fir
 			continue;
 		if (c->vs >= c->ve && (g->bounded || c->ns >= c->ne))
 			continue;
+		c->key = (int64 *) (gb = gbuf_get())->key;
+		c->addr = gb->addr;
 		g->cur[g->ncur++] = c;
 	}
 	g->head = Max(GORD_HEAD_MIN, Min((uint32) SIFT_CGORD_ROWS, g->ncur > 0 ? 5 * (uint32) Max(rows, 0) / (4 * g->ncur) : 0));

@@ -418,8 +418,10 @@ scan_buffers(AggExec *ex)
 		st->cout[ex->jcombo[x]] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 		ex->seid[x] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	}
-	for (int p = 0; p < SIFT_AGG_MAX_CLEAVES; p++)
-		ex->cvid[p] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int p = 0; p < s->combo[ci].nleaves; p++)
+			if (ex->cvid[p] == NULL)
+				ex->cvid[p] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint64));
 	for (int ci = 0; ci < s->ncombo; ci++)
 	{
 		ex->cfree[ci] = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
@@ -450,7 +452,8 @@ scan_buffers(AggExec *ex)
 	ex->ncnt = MemoryContextAlloc(ex->cxt, (s->naggs + 1) * sizeof(int64 *));
 	ex->fwin = MemoryContextAllocZero(ex->cxt, maxv);
 	ex->nb = MemoryContextAlloc(ex->cxt, maxv);
-	ex->vstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * maxv * sizeof(double));
+	if (s->naggs > 0)
+		ex->vstk = MemoryContextAlloc(ex->cxt, (Size) SIFT_AGG_MAX_VX * maxv * sizeof(double));
 	ex->pix = MemoryContextAlloc(ex->cxt, maxv * sizeof(uint32));
 	ex->okm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
 	ex->tmpm = MemoryContextAlloc(ex->cxt, (VECW + PADW) * sizeof(uint64));
