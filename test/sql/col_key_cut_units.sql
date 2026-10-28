@@ -40,6 +40,16 @@ SELECT nunits('SELECT count(*), sum(amt) FROM nk WHERE cust = 4242') AS lookup_u
 SELECT nunits('SELECT count(*), sum(amt) FROM nk WHERE cust IN (7, 9000, 19999)') AS list_units;
 SELECT (SELECT count(*) || ' ' || sum(amt) FROM nk WHERE cust = 4242) = (SELECT count(*) || ' ' || sum(amt) FROM nu WHERE cust = 4242) AS lookup_same;
 
+-- a few pages of an all-visible heap lose rows (the visibility map is read 8 bytes of 32 pages at a time, the pages are in different words): the keys of those rows
+-- are counted without them, from the units whose pages are not all-visible
+CREATE TEMP TABLE dirty_ids AS SELECT id FROM nu WHERE ctid >= '(40,1)' AND ctid < '(41,1)' OR ctid >= '(2500,1)' AND ctid < '(2501,1)' OR ctid >= '(5000,1)' AND ctid < '(5001,1)';
+CREATE TEMP TABLE dirty_custs AS SELECT DISTINCT cust FROM nu WHERE id IN (SELECT id FROM dirty_ids);
+DELETE FROM nk WHERE id IN (SELECT id FROM dirty_ids);
+DELETE FROM nu WHERE id IN (SELECT id FROM dirty_ids);
+SELECT (SELECT count(*) FROM dirty_ids) > 100 AS rows_deleted,
+       NOT EXISTS (SELECT 1 FROM (SELECT cust, count(*), sum(amt) FROM nk WHERE cust IN (SELECT cust FROM dirty_custs) GROUP BY 1 EXCEPT SELECT cust, count(*), sum(amt) FROM nu WHERE cust IN (SELECT cust FROM dirty_custs) GROUP BY 1) d) AS dirty_pages_same;
+DROP TABLE dirty_ids, dirty_custs;
+
 -- after deletes and a merge the units are cut again and the answers hold
 DELETE FROM nk WHERE id % 11 = 0;
 DELETE FROM nu WHERE id % 11 = 0;

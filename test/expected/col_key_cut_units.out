@@ -75,6 +75,20 @@ SELECT (SELECT count(*) || ' ' || sum(amt) FROM nk WHERE cust = 4242) = (SELECT 
  t
 (1 row)
 
+-- a few pages of an all-visible heap lose rows (the visibility map is read 8 bytes of 32 pages at a time, the pages are in different words): the keys of those rows
+-- are counted without them, from the units whose pages are not all-visible
+CREATE TEMP TABLE dirty_ids AS SELECT id FROM nu WHERE ctid >= '(40,1)' AND ctid < '(41,1)' OR ctid >= '(2500,1)' AND ctid < '(2501,1)' OR ctid >= '(5000,1)' AND ctid < '(5001,1)';
+CREATE TEMP TABLE dirty_custs AS SELECT DISTINCT cust FROM nu WHERE id IN (SELECT id FROM dirty_ids);
+DELETE FROM nk WHERE id IN (SELECT id FROM dirty_ids);
+DELETE FROM nu WHERE id IN (SELECT id FROM dirty_ids);
+SELECT (SELECT count(*) FROM dirty_ids) > 100 AS rows_deleted,
+       NOT EXISTS (SELECT 1 FROM (SELECT cust, count(*), sum(amt) FROM nk WHERE cust IN (SELECT cust FROM dirty_custs) GROUP BY 1 EXCEPT SELECT cust, count(*), sum(amt) FROM nu WHERE cust IN (SELECT cust FROM dirty_custs) GROUP BY 1) d) AS dirty_pages_same;
+ rows_deleted | dirty_pages_same 
+--------------+------------------
+ t            | t
+(1 row)
+
+DROP TABLE dirty_ids, dirty_custs;
 -- after deletes and a merge the units are cut again and the answers hold
 DELETE FROM nk WHERE id % 11 = 0;
 DELETE FROM nu WHERE id % 11 = 0;
@@ -98,7 +112,7 @@ SELECT nvetted('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1') AS dirty_vette
 SELECT nvetted('SELECT sum(amt) FROM nk WHERE amt > 0') AS dirty_filter_vetted;
                                     dirty_filter_vetted                                    
 -------------------------------------------------------------------------------------------
- Rows: 655200 scanned (1 filters in source), 594569 aggregated, 160 dense chunks, 1 groups
+ Rows: 655200 scanned (1 filters in source), 594289 aggregated, 160 dense chunks, 1 groups
 (1 row)
 
 DROP FUNCTION nvetted(text);

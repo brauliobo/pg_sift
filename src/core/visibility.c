@@ -261,6 +261,18 @@ dirty_scan(SiftVis *v)
 		{
 			uint8		b = map ? map[i] : 0;
 
+			/* 32 pages at a time while all of them are all-visible: the map of a heap of tens of millions of rows is read for each statement */
+			if (map && (i & 7) == 0 && i + 8 <= len)
+			{
+				uint64		w;
+
+				memcpy(&w, map + i, sizeof(w));
+				if ((w & UINT64CONST(0x5555555555555555)) == UINT64CONST(0x5555555555555555))
+				{
+					i += 7;
+					continue;
+				}
+			}
 			if ((b & 0x55) == 0x55)
 				continue;
 			for (int k = 0; k < 4; k++)
