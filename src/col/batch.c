@@ -61,6 +61,48 @@ sift_cbatch_reset(SiftColBatch *b, uint32 sb)
 	}
 }
 
+/* A batch that is complete, at the rows it holds: the arrays grew by doubling, and a batch of 43,008 rows holds 65,536 slots of each (a third of its memory) */
+void
+sift_cbatch_trim(SiftColBatch *b)
+{
+	if (b->nrows == 0)
+		return;
+	if (b->rowcap > b->nrows)
+	{
+		b->keys = repalloc(b->keys, b->nrows * sizeof(SiftKey));
+		if (b->xmin)
+		{
+			b->xmin = repalloc(b->xmin, b->nrows * sizeof(uint32));
+			b->cmin = repalloc(b->cmin, b->nrows * sizeof(uint32));
+		}
+		for (int i = 0; i < b->schema->ncols; i++)
+			if (b->col[i].eoff)
+				b->col[i].eoff = repalloc(b->col[i].eoff, ((Size) b->nrows + 1) * sizeof(uint32));
+		b->rowcap = b->nrows;
+	}
+	for (int i = 0; i < b->schema->ncols; i++)
+	{
+		SiftCVals  *v = &b->col[i];
+
+		if (v->n == 0 || v->cap <= v->n)
+			continue;
+		v->key = repalloc(v->key, v->n * sizeof(int64));
+		if (v->nulls)
+			v->nulls = repalloc(v->nulls, words_of(v->n) * sizeof(uint64));
+		if (v->ovf)
+			v->ovf = repalloc(v->ovf, words_of(v->n) * sizeof(uint64));
+		if (v->otag)
+			v->otag = repalloc(v->otag, v->n);
+		if (v->voff)
+		{
+			v->voff = repalloc(v->voff, ((Size) v->n + 1) * sizeof(uint32));
+			v->vcap = Max(v->voff[v->n], 1);
+			v->vb = repalloc(v->vb, v->vcap);
+		}
+		v->cap = v->n;
+	}
+}
+
 static void
 bitmap_set(MemoryContext mcxt, uint64 **bits, uint32 cap, uint32 i)
 {

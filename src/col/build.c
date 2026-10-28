@@ -52,6 +52,10 @@ struct ColBuild
 	MemoryContext tmpcxt;		/* one tuple */
 	SiftWriteTarget *wt;
 	Size		budget;			/* memory a segment's writer may hold */
+	Size		run_cap;		/* key_cut: the most the rows of a run may take (run_budget) */
+	uint64		share;			/* key_cut: the rows the participant is expected to scan */
+	uint64		held_rows;		/* key_cut: the rows in held */
+	Size		trimmed;		/* key_cut: the bytes the trims of the batches in held freed */
 	SiftColBatch *batch;		/* the rows of the current superblock, flushed at the next one */
 	MemoryContext heldcxt;		/* the batches in held */
 	List	   *held;			/* an index with the option key_cut: the batches of the superblocks since the last run, written sorted by the key as a segment when they pass the budget, and at the end (col/order.c) */
@@ -118,6 +122,27 @@ sift_colb_budget(int nslots)
 		return (Size) sift_test_col_segment_kb * 1024;
 #endif
 	return Max(b, nslots == 1 ? SIFT_COL_BUILD_SERIAL_BUDGET : SIFT_COL_BUILD_MIN_BUDGET);
+}
+
+/* The most memory the rows of a run may take: the references the sort makes of them are a third of their bytes, the writer and the rest are what a participant keeps besides */
+static Size
+run_cap(int nslots)
+{
+	return (Size) maintenance_work_mem * 1024 * 11 / 16 / nslots;
+}
+
+/*
+ * The memory the rows of a run may take (held, after the trims) before it is written: the budget in the bytes the batches took before they were trimmed, which it
+ * was set for (the runs are the rows they were), or more when the runs of the participant's share of the rows would not fit the directory with it (a run past the
+ * directory is merged with others while the table is scanned, and a row is written once more for each level of the merges: 6 million of 10 million rows at
+ * 64 MB), up to run_cap.
+ */
+static Size
+run_budget(ColBuild *b, Size held)
+{
+	double		need = (double) held / b->held_rows * b->share / Max(b->maxsegs - 3, 1);
+
+	return Max((Size) ((double) b->budget * held / (held + b->trimmed)), (Size) Min(need, (double) b->run_cap));
 }
 
 /*
@@ -243,6 +268,8 @@ write_run(ColBuild *b, bool last)
 	pfree(in);
 	list_free(b->held);
 	b->held = NIL;
+	b->held_rows = 0;
+	b->trimmed = 0;
 	MemoryContextReset(b->heldcxt);
 	/* room for the last run, which the end of the scan writes whatever is left */
 	while (!last && b->nsegs + 1 >= b->maxsegs)
@@ -256,8 +283,15 @@ flush_batch(ColBuild *b)
 		return;
 	if (sift_col_key_cut(b->r))
 	{
+		Size		before = MemoryContextMemAllocated(b->heldcxt, true),
+					held;
+
+		sift_cbatch_trim(b->batch);
+		held = MemoryContextMemAllocated(b->heldcxt, true);
+		b->trimmed += before - held;
 		b->held = lappend(b->held, b->batch);
-		if (MemoryContextMemAllocated(b->heldcxt, true) > b->budget)
+		b->held_rows += b->batch->nrows;
+		if (held > run_budget(b, held))
 			write_run(b, false);
 		b->batch = sift_cbatch_create(b->heldcxt, b->r->schema);
 		return;
@@ -385,7 +419,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 }
 
 ColBuild *
-sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared)
+sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, SiftSegEntry *segs, bool shared, int nslots)
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_col build", ALLOCSET_DEFAULT_SIZES);
 	ColBuild   *b = MemoryContextAllocZero(cxt, sizeof(ColBuild));
@@ -398,9 +432,10 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->tmpcxt = AllocSetContextCreate(cxt, "sift_col build tuple", ALLOCSET_DEFAULT_SIZES);
 	b->wt = wt;
 	b->budget = budget;
+	b->run_cap = Max(budget, run_cap(nslots));
 #ifdef SIFT_TESTING
 	if (sift_test_col_segment_kb > 0)
-		b->budget = (Size) sift_test_col_segment_kb * 1024;
+		b->run_cap = b->budget = (Size) sift_test_col_segment_kb * 1024;
 	if (sift_test_col_max_segments > 0)
 		maxsegs = Min(maxsegs, sift_test_col_max_segments);
 #endif
@@ -424,6 +459,7 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 
 		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
 		b->total_rows = (uint64) tuples;
+		b->share = b->total_rows / nslots;
 		table_close(heap, NoLock);
 	}
 	return b;
@@ -640,7 +676,7 @@ serial_build(Relation heap, Relation index, IndexInfo *info)
 	if (key_cut)
 		sift_colb_init_meta(index);
 	wt = sift_wt_begin(index, key_cut ? SIFT_WRITE_SHARED : SIFT_WRITE_BULK);
-	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false);
+	b = sift_colb_begin(index, wt, sift_colb_budget(1), SIFT_COL_BUILD_SEGMENTS, segs, false, 1);
 	SpinLockInit(&acc->mutex);
 	PG_TRY();
 	{

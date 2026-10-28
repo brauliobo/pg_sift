@@ -232,6 +232,7 @@ extern bool sift_cbatch_kinds_exact(const SiftColBatch *b);
 extern SiftColBatch *sift_cbatch_create(MemoryContext mcxt, const SiftColSchema *schema);
 /* Empties the batch (memory kept) for superblock sb; the dictionaries restart */
 extern void sift_cbatch_reset(SiftColBatch *b, uint32 sb);
+extern void sift_cbatch_trim(SiftColBatch *b);
 /* Sets the version of row r (< nrows or the row being added), makes the batch versioned on the first nonzero xmin */
 extern void sift_cbatch_set_ver(SiftColBatch *b, uint32 r, uint32 xmin, uint32 cmin);
 /* Appends a row; its TID's superblock must be b->sb and its key above the last one's. STR values are interned. */

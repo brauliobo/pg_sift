@@ -83,7 +83,7 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 {
 	ColPart    *part = part_of(sh, parts, slot);
 	SiftWriteTarget *wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
-	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true);
+	ColBuild   *b = sift_colb_begin(index, wt, sh->budget, sh->maxsegs, part->segs, true, sh->nlaunched + 1);
 	double		reltuples = 0;
 
 	PG_TRY();
