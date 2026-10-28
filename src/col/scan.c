@@ -957,6 +957,9 @@ sig_same(const SiftColSource *src, const SiftColPred *p, int n)
 
 		if (a->col != b->col || a->op != b->op || a->nvals != b->nvals)
 			return false;
+		/* a list of thousands of numbers is the same at every begin: one comparison of the bytes, not of each field of each value */
+		if (!str && b->nvals > 0 && memcmp(a->vals, b->vals, b->nvals * sizeof(SiftColValue)) == 0)
+			continue;
 		for (int j = 0; j < b->nvals; j++)
 		{
 			const SiftColValue *x = &a->vals[j],
