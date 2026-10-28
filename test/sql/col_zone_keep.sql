@@ -46,10 +46,13 @@ END $$;
 
 CREATE TABLE sm_q (n serial, cond text);
 INSERT INTO sm_q (cond) VALUES ('k = 40 OR k = 41'), ('k BETWEEN 10 AND 12 OR k >= 98'), ('id < 300 OR id BETWEEN 20000 AND 20100'), ('(k = 40 OR k = 70) AND id > 10000'),
-	('k < 0 OR k > 500'), ('k = 40 OR f = 3'), ('k BETWEEN 0 AND 99 OR id < 1'), ('(k = 3 OR k = 4) AND (id < 2000 OR id > 24000)'), ('k = 99 OR (k = 50 AND f = 7)');
+	('k < 0 OR k > 500'), ('k = 40 OR f = 3'), ('k BETWEEN 0 AND 99 OR id < 1'), ('(k = 3 OR k = 4) AND (id < 2000 OR id > 24000)'), ('k = 99 OR (k = 50 AND f = 7)'),
+	('k = 40'), ('k = 99 AND id > 25000'), ('k BETWEEN 98 AND 99 AND f = 3');
 
 -- sum(id) is exact in any order (items of two superblocks), sum of a float keeps its order (items of one); the table in order (sm_o), with stray rows (sm: a unit
--- the OR keeps for one arm only), and cut by the key (sm_k)
+-- the OR keeps for one arm only), and cut by the key (sm_k). The last three conditions keep a few units of a hundred (or none): the morsels without a kept
+-- unit are skipped, where the stray rows of sm spread the key over units that are not in its order
+
 SELECT t, a, n, cond, s.* FROM (VALUES ('sm_o'), ('sm'), ('sm_k')) tt(t), (VALUES ('sum(id)'), ('avg(f)')) aa(a), sm_q, LATERAL same(t, a, cond) s ORDER BY t DESC, a, n;
 
 DROP FUNCTION same(text, text, text), units_of(text);

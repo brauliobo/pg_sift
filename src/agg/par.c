@@ -143,6 +143,9 @@ shared_init(ScanShared *sh, AggExec *ex)
 	if (part_flush_on(ex))
 		sh->nitems = ex->spec->nparts;
 	pg_atomic_init_u32(&sh->next, 0);
+	pg_atomic_init_flag(&sh->kept_counted);
+	if (ex->skip != NULL)			/* the leader's map, made to decide on workers, counted */
+		pg_atomic_test_set_flag(&sh->kept_counted);
 	if (ex->topn)
 		topn_shared_init(sh, ex);
 }
@@ -168,7 +171,7 @@ skip_map(AggExec *ex)
 		m = ex->skip = MemoryContextAllocZero(ex->cxt, sizeof(SkipMap));
 		m->nsb = nsb;
 		m->kept = MemoryContextAllocZero(ex->cxt, (nsb + 63) / 64 * sizeof(uint64));
-		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept, &m->rows);
+		m->ok = sift_colsrc_kept(ex->src, ex->prune, ex->nzone, nsb, m->kept, &m->rows, ex->shared == NULL || pg_atomic_test_set_flag(&ex->shared->kept_counted));
 	}
 	return m;
 }
@@ -290,11 +293,44 @@ scan_item(AggExec *ex, uint32 item)
 		scan_range(ex, item * sh->morsel, Min((item + 1) * sh->morsel, sh->nsb));
 }
 
+/*
+ * The first item from `item` whose units the zones leave a unit in (nitems when none): an item of a morsel of superblocks that holds none costs its pass of
+ * the loop of the scan, which an index of thousands of units pays once for each pair of them, whatever the zones keep (a lookup of one key of tens of
+ * thousands: 2.4 million instructions at 15,638 units, 0.4 at 500).
+ */
+static uint32
+next_item(AggExec *ex, uint32 item)
+{
+	const ScanShared *sh = ex->shared;
+	uint32		sb;
+
+	if (sh->ordered || part_flush_on(ex) || item >= sh->nitems)
+		return item;
+	sb = next_kept(ex, item * sh->morsel, 1);
+	return sb >= sh->nsb ? sh->nitems : sb / sh->morsel;
+}
+
 bool
 take_item(AggExec *ex, uint32 *item)
 {
 	*item = pg_atomic_fetch_add_u32(&ex->shared->next, 1);
 	return *item < ex->shared->nitems;
+}
+
+/* take_item for the items of scan_items, which skips the ones without a kept unit */
+static bool
+take_kept_item(AggExec *ex, uint32 *item)
+{
+	pg_atomic_uint32 *next = &ex->shared->next;
+	uint32		cur = pg_atomic_read_u32(next);
+
+	do
+	{
+		*item = next_item(ex, cur);
+		if (*item >= ex->shared->nitems)
+			return false;
+	} while (!pg_atomic_compare_exchange_u32(next, &cur, *item + 1));
+	return true;
 }
 
 /* the check that avg(float8) owes (float_guard): the inputs of the whole scan could have overflowed the sum of squares */
@@ -458,7 +494,7 @@ scan_items(AggExec *ex)
 {
 	uint32		item;
 
-	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_item(ex, &item))
+	while (!sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
 	{
 		scan_item(ex, item);
 		/* the cells of the last row are groups of the item's table */

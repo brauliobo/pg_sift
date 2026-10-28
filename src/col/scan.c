@@ -1415,11 +1415,12 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 /*
  * The superblocks that hold a unit no test prunes, for the whole scan at once: an aggregate begins for every morsel of units, and the begin of a morsel that the
  * zones clear costs as much as the tests of its units. Sets bit sb of kept for each such unit (and each batch of the write buffer), and adds the units the
- * tests prune, and those the summaries cleared, to *pruned and *set once for all: the cursors of the scan then leave them uncounted. Each unit is tested once,
+ * tests prune, and those the summaries cleared, to *pruned and *set once for all when count (the participants of a parallel scan each build the map, one counts):
+ * the cursors of the scan then leave them uncounted. Each unit is tested once,
  * through the cache of keep_cached. *rows adds the rows of the units it keeps. False (nothing to rely on) when the cache does not apply or a superblock lies past nspace.
  */
 bool
-sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint64 *rows)
+sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 nspace, uint64 *kept, uint64 *rows, bool count)
 {
 	MemoryContext old;
 	bool		ok = true;
@@ -1454,8 +1455,11 @@ sift_col_kept_map(SiftColSource *src, const SiftColPred *preds, int npreds, cons
 		{
 			uint64		bits = c->keep[w];
 
-			src->cnt.units_pruned += Min(64, nsb - w * 64) - pg_popcount64(bits);
-			src->cnt.units_set += pg_popcount64(c->setcut[w] & ~bits);
+			if (count)
+			{
+				src->cnt.units_pruned += Min(64, nsb - w * 64) - pg_popcount64(bits);
+				src->cnt.units_set += pg_popcount64(c->setcut[w] & ~bits);
+			}
 			for (; bits; bits &= bits - 1)
 			{
 				const SiftColSBRef *u = &c->seg->sbdir[w * 64 + pg_rightmost_one_pos64(bits)];

@@ -10,6 +10,7 @@ typedef struct ScanShared
 {
 	pg_atomic_uint64 topn_bound;	/* a top-N: the first-key rank of the n-th row of any participant (agg/topn.h) */
 	pg_atomic_uint32 next;		/* the next item to take */
+	pg_atomic_flag kept_counted;	/* a participant has counted the units the kept map prunes (all of them build one, and each would count them again) */
 	uint32		nitems;
 	uint32		nsb;
 	uint32		morsel;			/* superblocks of an item (the scans that keep their state in the leader: all of them) */

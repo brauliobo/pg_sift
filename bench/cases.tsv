@@ -193,4 +193,5 @@ distinct_pairs_sort	are sorted as int8 datums	orders	(id)	Custom Scan \(SiftAgg\
 calendar_periodic	the rows of a unit that the prefilter of an equality of a periodic calendar step keeps	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no
 numeric_sum_records	made from the lanes of each row	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 contain_rows	returns the rows of a containment of a range (`@>`	orders	(id)	Index Scan using ranges_rows_col|Bitmap Index Scan on ranges_rows_col	native	gist:search_path = contain_rows_gist	ms	faster33	no
+key_lookup_units	skips the morsels of units that the zones clear	orders	(id)	Custom Scan \(SiftAgg\)	native	u4008:search_path = key_lookup_u4008,u500:search_path = key_lookup_u500	ms	faster33	no
 dict_shared_first_statement	copied from shared memory	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
