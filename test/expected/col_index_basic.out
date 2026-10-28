@@ -743,6 +743,9 @@ COMMIT;
 -- Partial and expression indexes
 -- ---------------------------------------------------------------------------------------------------------
 CREATE INDEX o_partial ON orders USING sift_col (tenant_id, status) WHERE express;
+NOTICE:  sift_col index "o_partial": an equality on "tenant_id" reads about 3 of 3 units, where 1 hold its rows; key_cut = 'tenant_id' would cut that, and the index would grow by 19.0%
+DETAIL:  The predicted size comes from a sample of 3 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 4 against 16: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
+HINT:  CREATE INDEX .. WITH (key_cut = 'tenant_id'), or ALTER INDEX o_partial SET (key_cut = 'tenant_id') and REINDEX, if the lookups of this key matter more than the size.
 NOTICE:  sift_col index o_partial keeps the keys of tenant_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 400 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX o_partial SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.

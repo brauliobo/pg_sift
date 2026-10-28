@@ -20,6 +20,9 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 FROM generate_series(1, 24000) i;
 CREATE INDEX cs_bm ON cs USING sift (memo);
 CREATE INDEX cs_col ON cs USING sift_col (store, status, amount, placed) WITH (write_buffer_limit = 256);
+NOTICE:  sift_col index "cs_col": key_cut = 'placed' was chosen: a range holding the rows of one unit of "placed" would read about 19 of 19 units, where 1 hold its rows (predicted index size -9.3%, benefit 6 against cost 4)
+DETAIL:  A sample of 19 superblocks shows the values of "placed" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
+HINT:  ALTER INDEX cs_col SET (key_cut = 'off') and REINDEX keep the units by block range.
 -- FREEZE makes VACUUM wait for pinned pages: the counters below need every page all-visible.
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) cs;
 -- the plans that are not SiftAgg are disabled for the pushed run; the reference has the planner's own choice with sift.enable_agg off

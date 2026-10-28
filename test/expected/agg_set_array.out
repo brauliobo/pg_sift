@@ -486,6 +486,9 @@ CREATE INDEX evk_col ON evk USING sift_col (k2, k8, kt, kd, kts, ktz, g, amount)
 NOTICE:  sift_col index evk_col writes a rollup of the rows by g, amount
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 3 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX evk_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "evk_col": key_cut = 'kd' was chosen: a range holding the rows of one unit of "kd" would read about 3 of 3 units, where 1 hold its rows (predicted index size -5.7%, benefit 9 against cost 2)
+DETAIL:  A sample of 3 superblocks shows the values of "kd" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
+HINT:  ALTER INDEX evk_col SET (key_cut = 'off') and REINDEX keep the units by block range.
 VACUUM (FREEZE, ANALYZE) evk;
 SELECT * FROM compare_modes('SELECT g, count(*) AS n, sum(amount) AS s FROM evk WHERE k2 = ANY ($1) GROUP BY g', '''{-1500,-3,0,7,1499,NULL}''::int2[]');
  pushed  | rows_on | rows_diff 

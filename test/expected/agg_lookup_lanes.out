@@ -8,6 +8,9 @@ SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 CREATE TABLE ev (id int PRIMARY KEY, ent_id int8, val float8) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE abs(hashint4(i)) % 5000 END, (hashint4(i + 5) % 1000) / 7.0 FROM generate_series(1, 120000) i;
 CREATE INDEX ev_col ON ev USING sift_col (ent_id, val);
+NOTICE:  sift_col index "ev_col": an equality on "ent_id" reads about 3 of 3 units, where 1 hold its rows; key_cut = 'ent_id' would cut that, and the index would grow by 25.6%
+DETAIL:  The predicted size comes from a sample of 3 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 12 against 19: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
+HINT:  CREATE INDEX .. WITH (key_cut = 'ent_id'), or ALTER INDEX ev_col SET (key_cut = 'ent_id') and REINDEX, if the lookups of this key matter more than the size.
 NOTICE:  sift_col index ev_col keeps the keys of ent_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1944 bytes together, which a count(DISTINCT) of one reads instead of its rows.
 HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.

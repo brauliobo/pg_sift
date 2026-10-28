@@ -12,6 +12,9 @@ CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, foreign_id, day, kind, amoun
 NOTICE:  sift_col index ev_col writes a rollup of the rows by foreign_id, kind
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 4 sampled stretches of about a unit, about 40 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
+NOTICE:  sift_col index "ev_col": key_cut = 'day' was chosen: a range holding the rows of one unit of "day" would read about 4 of 4 units, where 1 hold its rows (predicted index size +13.5%, benefit 15 against cost 10)
+DETAIL:  A sample of 4 superblocks shows the values of "day" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so a range reads the few units of its range; the addresses of the rows of a unit are in the index. Reading all the rows of one key of another leaf takes more units.
+HINT:  ALTER INDEX ev_col SET (key_cut = 'off') and REINDEX keep the units by block range.
 NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
 DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 1568 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: foreign_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
 HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
