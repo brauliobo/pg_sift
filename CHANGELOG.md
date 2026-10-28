@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Improved: packaging: the smoke test of every arm64 package runs `scripts/check-aarch64-baseline.sh` on the installed `pg_sift.so` (binutils in the arm64 test containers), so a `-march` or `-mcpu` in a distribution's flags, or a newer-than-ARMv8-A instruction from any other cause, fails the release before it publishes.
+
 ## 3.5.3 - 2026-10-28
 
 - Improved: packaging: the release attaches an `.rpm` for Amazon Linux 2023 (`pg_sift_N-X.Y.Z-1.amzn2023.{x86_64,aarch64}.rpm`, N = 17 or 18), built and smoke-tested in `amazonlinux:2023` containers of both architectures (4 more packages, 16 in all): the distribution's PostgreSQL keeps its files in `/usr/lib64/pgsql` and `/usr/share/pgsql`, where the PGDG `el9` package puts them in `/usr/pgsql-N`, so that package installs there but `CREATE EXTENSION` does not find the extension. One spec (an `%if 0%{?amzn}` block), and `scripts/package.sh matrix` is now the source of the release matrix (`verify` requires the same packages).
