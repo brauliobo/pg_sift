@@ -59,6 +59,7 @@ typedef struct CountAcc
 
 /* The small-set summaries (or the sorted runs) of one leaf: the blobs of its units one after the other and where each starts */
 #define CDICT_LOOKUP_MIN	1024
+#define CDICT_TSIG_MIN_KB	1024
 #define LST_MIN_UNITS		64		/* a segment of fewer units keeps no leaf statistics: its zone arrays are a few pages */
 #define LST_SHARE_DIV		33		/* the leaf statistics take at most 1/33 (3%) of the segment: units of a few rows and many leaves keep none */
 /* the dictionaries written in blocks that their leaves did not ask for (DICT_BLOCKS, not DICT_LOOKUP) add together at most 1/33 (3%) of the segment (what it wrote before the dictionaries, and these in the compact form) */
@@ -80,6 +81,7 @@ typedef struct SetAcc
 struct SiftColSegWriter
 {
 	SiftWriteTarget *wt;
+	uint64		index_rows;		/* the rows of the index (sift_colw_set_index_rows) */
 	uint64		gen;
 	const SiftColSchema *schema;
 	const SiftCcPolicy *pol;	/* [ncols] compression policy per leaf, NULL: plain chunks */
@@ -813,6 +815,12 @@ sift_colw_rows(const SiftColSegWriter *w)
 	return w->rows;
 }
 
+void
+sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows)
+{
+	w->index_rows = rows;
+}
+
 uint64
 sift_colw_bytes(const SiftColSegWriter *w)
 {
@@ -1007,6 +1015,26 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	sift_sw_write(w->sw, foot, sizeof(foot));
 }
 
+/*
+ * Whether the dictionary of leaf c gets the trigram signatures (and so the blocks form, whatever the budget of the blocks). A dictionary that a backend keeps parsed is
+ * searched with no block to inflate, so the signatures pay when it no longer fits the cache of parsed dictionaries (dict_cache_kb): its strings, parsed and scaled to the
+ * rows of the index (the segments of an index are alike), pass the cache, or this segment's alone pass the half of it that a single dictionary may take. An index
+ * that fits gets none. And it needs dict_tsig_min bytes of strings of 5 bytes or more in the segment
+ */
+static bool
+tsig_wanted(const SiftColSegWriter *w, int c)
+{
+	Size		cache = sift_cdict_cache_budget(),
+				parsed;
+	double		scale = Max((double) w->index_rows / (double) Max(sift_colw_rows(w), 1), 1.0);
+
+	if (w->setting < SIFT_COL_FORMAT_PRESENCE || w->dict[c]->nbytes < (Size) sift_limit(dict_tsig_min, CDICT_TSIG_MIN_KB) * 1024 ||
+		w->dict[c]->nbytes < (Size) 5 * w->dict[c]->n)
+		return false;
+	parsed = sift_cdict_parsed_bytes(w->dict[c]->nbytes, w->dict[c]->n);
+	return parsed > cache / 2 || (double) parsed * scale > (double) cache;
+}
+
 static void
 write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 {
@@ -1055,10 +1083,10 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		tab[c] = sizeof(uint32) * 2 + ncols * sizeof(uint64) + blob.len;
 		if (extra[c] != SIZE_MAX && blocks && !asked[c])
 		{
-			if (extra[c] <= budget)
+			if (extra[c] <= budget || tsig_wanted(w, c))
 			{
 				form = DICT_BLOCKS;
-				budget -= extra[c];
+				budget -= Min(extra[c], budget);
 			}
 			else if (extra[c] <= compact[c] / CDICT_BLOCKS_CLEAR_DENOM)
 			{
@@ -1084,6 +1112,10 @@ write_dicts(SiftColSegWriter *w, SiftSectionRef *sec)
 		}
 		if (form == DICT_BLOCKS)
 			w->format = Max(w->format, SIFT_COL_FORMAT_DICTIDX);
+		/* a dictionary of long strings read in blocks gets the trigram signature of each (a substring test then reads the blocks that may hold the part) */
+		w->dict[c]->tsig = (form == DICT_BLOCKS || form == DICT_LOOKUP || form == DICT_LOOKUP_COUNT) && tsig_wanted(w, c);
+		if (w->dict[c]->tsig)
+			w->format = Max(w->format, SIFT_COL_FORMAT_TSIG);
 		pol = w->pol ? &w->pol[c] : NULL;
 		sift_cdict_serialize(w->dict[c], pol, form, &blob);
 	}

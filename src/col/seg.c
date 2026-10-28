@@ -706,17 +706,56 @@ look_find(const SiftCDictLook *look, const char *s, uint32 len)
 	return pos < l->n && sift_csorted_cmp(&so, pos, &c) == 0 ? (int64) look_perm(l, pos) : -1;
 }
 
-/* The strings that hold c, block by block in code order: a block of DICT_BLOCK strings is a word of lut, and its bytes and offsets are what str_contains takes */
-static uint32
-look_contains(DictLook *l, const SiftColValue *c, uint64 *lut)
-{
-	uint32		count = 0;
+/*
+ * The strings that hold c, block by block in code order: a block of DICT_BLOCK strings is a word of lut, and its bytes and offsets are what str_contains takes.
+ * With the trigram signatures of the blocks (column format minor 29) a literal of three bytes or more reads, decompresses and scans only the blocks whose
+ * signature has the bit of each of its trigrams; *passed is how many that were.
+ */
+#define SIG_CHUNK	(64 * 1024)
 
+static uint32
+look_contains(DictLook *l, const SiftColValue *c, uint64 *lut, uint32 *passed)
+{
+	uint32		count = 0,
+				nbits = l->sig_at != 0 && c->len >= 3 ? c->len - 2 : 0,
+				sigbytes = l->sig_at != 0 ? (1u << l->sig_lg) / 8 : 0,
+				per = nbits > 0 ? Max(SIG_CHUNK / sigbytes, 1) : 1,
+				got = 0,
+				first = 0;
+	uint32	   *bits = NULL;
+	uint8	   *sig = NULL;
+
+	if (nbits > 0)
+	{
+		bits = palloc(nbits * sizeof(uint32));
+		for (uint32 j = 0; j < nbits; j++)
+			bits[j] = sift_tsig_bit((const uint8 *) c->v.s + j, l->sig_lg);
+		sig = palloc((Size) per * sigbytes);
+	}
+	*passed = 0;
 	for (uint32 b = 0; b * DICT_BLOCK < l->n; b++)
 	{
 		uint32		cnt = Min(DICT_BLOCK, l->n - b * DICT_BLOCK),
 					off[DICT_BLOCK + 1];
 
+		if (nbits > 0)
+		{
+			const uint8 *s;
+			bool		may = true;
+
+			if (b >= first + got)
+			{
+				first = b;
+				got = Min(per, (l->n + DICT_BLOCK - 1) / DICT_BLOCK - b);
+				seg_read(l->seg, l->sig_at + (uint64) b * sigbytes, (Size) got * sigbytes, sig);
+			}
+			s = sig + (Size) (b - first) * sigbytes;
+			for (uint32 j = 0; j < nbits && may; j++)
+				may = s[bits[j] >> 3] >> (bits[j] & 7) & 1;
+			if (!may)
+				continue;
+		}
+		(*passed)++;
 		if (l->blkno != b)
 			look_load_block(l, b);
 		for (uint32 i = 0; i <= cnt; i++)
@@ -724,6 +763,14 @@ look_contains(DictLook *l, const SiftColValue *c, uint64 *lut)
 		sift_colk->str_contains(lut + b, (const char *) l->blkraw, off, cnt, c->v.s, c->len);
 		count += pg_popcount64(lut[b]);
 	}
+	if (bits)
+	{
+		pfree(bits);
+		pfree(sig);
+	}
+	/* a signature that leaves over half the blocks (a short part, a frequent one) saves little: the next search parses the dictionary and keeps it if the cache holds it, as for one without signatures */
+	if (l->sig_at != 0 && *passed * 2 > (l->n + DICT_BLOCK - 1) / DICT_BLOCK)
+		sift_cseg_dict_heavy(l->seg, l->col, (uint64) l->n * DICT_PARSE_COST);
 	return count;
 }
 
@@ -736,7 +783,7 @@ look_match(const SiftCDictLook *look, SiftColOp op, const SiftColValue *c, uint6
 				to;
 
 	if (op == SIFT_COLOP_CONTAINS)
-		return look_contains((DictLook *) l, c, lut);
+		return look_contains((DictLook *) l, c, lut, &(uint32) {0});
 	look_cache((DictLook *) l);
 	sift_csorted_range(&so, op, c, &from, &to);
 	for (uint32 pos = from; pos < to;)
@@ -766,6 +813,25 @@ look_alloc(SiftColSegment *seg)
 	return l;
 }
 
+/* Where the trigram signatures of the blocks lie, when the dictionary has them: after the form, 8-aligned (the dictionary starts 8-aligned), end being where the form ends */
+static void
+look_sig(DictLook *l, uint64 off, uint64 len, uint64 end)
+{
+	uint64		at = off + (end - off + 7) / 8 * 8;
+	uint32		hdr[2];
+	uint64		nblk = ((uint64) l->n + DICT_BLOCK - 1) / DICT_BLOCK;
+
+	if (at + DICT_TSIG_HEAD > off + len)
+		return;
+	seg_read(l->seg, at, sizeof(hdr), hdr);
+	if (hdr[0] != DICT_TSIG_MAGIC)
+		return;
+	if (hdr[1] < DICT_TSIG_LO_LG || hdr[1] > DICT_TSIG_HI_LG || at + DICT_TSIG_HEAD + nblk * ((1u << hdr[1]) / 8) > off + len)
+		corrupt(l->seg, "The signatures of the dictionary of leaf %d are malformed.", l->col);
+	l->sig_at = at + DICT_TSIG_HEAD;
+	l->sig_lg = hdr[1];
+}
+
 /* A searchable dictionary (form 2) from where its parts lie, which the backend kept from the query that read them */
 static DictLook *
 look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
@@ -785,6 +851,8 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->hash_at = bc->head.hash_at;
 	l->blocked = true;
 	l->blkno = UINT32_MAX;
+	l->sig_at = bc->head.sig_at;
+	l->sig_lg = bc->head.sig_lg;
 	l->look = (SiftCDictLook) {look_find, look_match};
 	l->stub.n = l->n;
 	l->stub.look = &l->look;
@@ -805,6 +873,7 @@ dict_look(SiftColSegment *seg, int col)
 	DictLook   *l;
 	uint64		nblk;
 	uint32		blen;
+	uint64		end = 0;
 	SiftCBisect *bc;
 	bool		hashed;
 
@@ -854,11 +923,13 @@ dict_look(SiftColSegment *seg, int col)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		seg_read(seg, l->boff_at + nblk * sizeof(uint32), sizeof(uint32), &blen);
 		l->blk_len = blen;
+		end = l->blk_at + blen;
 		if (head[0] == DICT_LOOKUP || head[0] == DICT_LOOKUP_COUNT)
 		{
 			l->perm_at = (l->blk_at + blen + 3) / 4 * 4;
 			if (l->perm_at + (uint64) l->n * sizeof(uint32) > off + len)
 				corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+			end = l->perm_at + (uint64) l->n * sizeof(uint32);
 			if (head[0] == DICT_LOOKUP_COUNT)
 			{
 				uint32		last;
@@ -869,6 +940,7 @@ dict_look(SiftColSegment *seg, int col)
 				seg_read(seg, l->cum_at + (uint64) 8 * DICT_COUNT_NB(l->n) + sizeof(uint32), sizeof(last), &last);
 				if (l->cum_at + DICT_COUNT_HEAD(l->n) + last > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+				end = l->cum_at + DICT_COUNT_HEAD(l->n) + last;
 			}
 			if (hashed)
 			{
@@ -882,14 +954,16 @@ dict_look(SiftColSegment *seg, int col)
 				}
 				if (l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32) > off + len)
 					corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+				end = l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32);
 			}
+			look_sig(l, off, len, end);
 			l->look = (SiftCDictLook) {look_find, look_match};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
 			if (l->n >= BISECT_MIN && HEAD_CACHED() && (bc = sift_cseg_bisect(seg, col, l->n)) != NULL)
 			{
-				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at, l->hash_at};
+				bc->head = (DictLookHead) {l->n, l->fixed, l->nbytes, l->offs_at, l->bytes_at, l->boff_at, l->blk_at, l->blk_len, l->perm_at, l->cum_at, l->hash_at, l->sig_at, l->sig_lg};
 				bc->have_head = true;
 				l->bc = bc;
 				l->bc_tried = true;
@@ -897,6 +971,14 @@ dict_look(SiftColSegment *seg, int col)
 		}
 		else if (l->blk_at + blen > off + len)
 			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
+		else
+		{
+			/* form 3 is searched only by a substring test (sift_cseg_dict_search): that stub has no find */
+			look_sig(l, off, len, end);
+			l->look = (SiftCDictLook) {NULL, look_match};
+			l->stub.n = l->n;
+			l->stub.look = &l->look;
+		}
 	}
 	pv->look[col] = l;
 	return l;
@@ -1092,7 +1174,7 @@ sift_cseg_dict_count(SiftColSegment *seg, int col, SiftColOp op, const SiftColVa
 }
 
 SiftCDict *
-sift_cseg_dict_search(SiftColSegment *seg, int col)
+sift_cseg_dict_search(SiftColSegment *seg, int col, SiftColOp op)
 {
 	SegPriv    *pv = PRIV(seg);
 	DictLook   *l;
@@ -1104,11 +1186,51 @@ sift_cseg_dict_search(SiftColSegment *seg, int col)
 	if (pv->dict[col] != NULL)
 		return pv->dict[col];
 	l = dict_look(seg, col);
-	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost */
-	if (l && l->searchable && ((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
-							   l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
+	/* a dictionary the backend tests again and again is worth its parse, and then its hash table and sorted order, unless the cache cannot hold them: then every parse is lost; a substring test of a blocked one reads its blocks (those the signatures leave) until then, and for good where the parse is lost */
+	if (l && (l->searchable || (op == SIFT_COLOP_CONTAINS && l->blocked && (l->sig_at != 0 || sift_cseg_dict_nokeep(seg, col)))) &&
+		((l->hash_at != 0 ? sift_cseg_dict_spent(seg, col, 0) < (uint64) l->n * DICT_PARSE_COST :
+		  l->bc != NULL ? l->bc->spent < (uint64) l->n * DICT_PARSE_COST : sift_cseg_dict_asked(seg, col) <= DICT_PARSE_AFTER) || sift_cseg_dict_nokeep(seg, col)))
 		return &l->stub;
 	return sift_cseg_dict(seg, col);
+}
+
+void
+sift_cseg_dict_tsig_check(SiftColSegment *seg, int col, const SiftCDict *d)
+{
+	DictLook   *l = dict_look(seg, col);
+	Size		bytes;
+	uint8	   *want,
+			   *have;
+
+	if (l == NULL || l->sig_at == 0)
+		return;
+	if (seg->entry.format < SIFT_COL_FORMAT_TSIG)
+		corrupt(seg, "The dictionary of leaf %d has trigram signatures in a segment of column format 1.%d.", col, seg->entry.format);
+	bytes = (Size) ((l->n + DICT_BLOCK - 1) / DICT_BLOCK) * ((1u << l->sig_lg) / 8);
+	want = palloc(bytes);
+	have = palloc(bytes);
+	sift_cdict_tsig_fill(d, l->sig_lg, want);
+	seg_read(seg, l->sig_at, bytes, have);
+	if (memcmp(want, have, bytes) != 0)
+		corrupt(seg, "The trigram signatures of the dictionary of leaf %d are not those of its strings.", col);
+	pfree(want);
+	pfree(have);
+}
+
+bool
+sift_cseg_dict_tsig(SiftColSegment *seg, int col, const char *needle, uint32 len, uint32 *passed, uint32 *total)
+{
+	DictLook   *l = seg->schema->cols[col].store == SIFT_COLS_STR ? dict_look(seg, col) : NULL;
+	SiftColValue c = {.v.s = needle,.len = len};
+	uint64	   *lut;
+
+	if (l == NULL || l->sig_at == 0)
+		return false;
+	lut = palloc0(SIFT_COL_NWORDS(l->n) * sizeof(uint64));
+	look_contains(l, &c, lut, passed);
+	*total = (l->n + DICT_BLOCK - 1) / DICT_BLOCK;
+	pfree(lut);
+	return true;
 }
 
 bool

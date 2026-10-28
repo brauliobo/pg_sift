@@ -55,6 +55,8 @@ extern SiftColSegWriter *sift_colw_begin(SiftWriteTarget *wt, uint64 gen, const 
  * `preagg`). Set before the first sift_colw_add.
  */
 extern void sift_colw_set_preagg(SiftColSegWriter *w, const SiftCPaggSpec *spec);
+/* The rows of the whole index the segment belongs to (a build: the heap's estimate; a merge or promotion: the directory's): the writer signs the dictionaries when those of the index overflow the cache of parsed dictionaries. 0: unknown */
+extern void sift_colw_set_index_rows(SiftColSegWriter *w, uint64 rows);
 /* The units added from now on are key-cut (SiftColBatch.keyed); after set_preagg, before the first unit */
 extern void sift_colw_set_keyed(SiftColSegWriter *w, uint32 aim_rows);
 /* Encodes and writes the batch as the unit of its superblock; superblocks strictly ascending, batch non-empty */
@@ -140,7 +142,11 @@ extern SiftCDict *sift_cseg_dict(SiftColSegment *seg, int col);
  * The dictionary a test of a STR leaf is made over: the parsed one when it is at hand, else a dictionary of n codes that find and match search in the stream, without parsing it; else the parsed one. Only n, find and
  * match may be used, and it is valid for the life of the segment.
  */
-extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col);
+extern SiftCDict *sift_cseg_dict_search(SiftColSegment *seg, int col, SiftColOp op);
+/* sift.col_verify: the signatures stored for the dictionary d of leaf col are the ones its strings make (a no-op without signatures) */
+extern void sift_cseg_dict_tsig_check(SiftColSegment *seg, int col, const SiftCDict *d);
+/* For each of the dictionary of leaf col: the blocks the signatures leave for a substring test of needle, and all its blocks (false: no signatures) */
+extern bool sift_cseg_dict_tsig(SiftColSegment *seg, int col, const char *needle, uint32 len, uint32 *passed, uint32 *total);
 /* sift.col_verify: the counts of the leaf's dictionary against the rows of each code that the units hold */
 extern void sift_cseg_dict_count_check(SiftColSegment *seg, int col, const uint32 *rows);
 /* Whether the dictionary of the leaf holds the counts */

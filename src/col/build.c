@@ -67,6 +67,7 @@ struct ColBuild
 	int			nsegs;
 	int			maxsegs;
 	bool		shared;			/* a participant of a parallel build */
+	uint64		total_rows;		/* the heap's estimate of the rows of the index */
 	double		indexed;
 	double		reported;
 };
@@ -195,6 +196,7 @@ compact(ColBuild *b)
 	}
 	w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, cx);
 	sift_colw_set_preagg(w, &b->r->pagg);
+	sift_colw_set_index_rows(w, b->total_rows);
 	sift_colw_set_keyed(w, b->aim);
 	sift_colk_merge(w, in, seg, n, NULL, NULL, b->r->schema, b->r->cut, b->r->ncut, sift_colk_unit_rows(b->aim), b->budget / 1024, cx, NULL, NULL);
 	sift_colw_finish(w, &neu);
@@ -263,6 +265,7 @@ flush_batch(ColBuild *b)
 	{
 		b->wcxt = AllocSetContextCreate(b->cxt, "sift_col build segment", ALLOCSET_DEFAULT_SIZES);
 		b->w = sift_colw_begin(b->wt, next_gen(b), b->r->schema, b->r->policy, sift_col_format_minor, b->wcxt);
+		sift_colw_set_index_rows(b->w, b->total_rows);
 		sift_colw_set_preagg(b->w, &b->r->pagg);
 	}
 	sift_colw_add(b->w, b->batch);
@@ -412,6 +415,16 @@ sift_colb_begin(Relation index, SiftWriteTarget *wt, Size budget, int maxsegs, S
 	b->segs = segs;
 	b->maxsegs = maxsegs;
 	b->shared = shared;
+	{
+		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+		BlockNumber pages;
+		double		tuples,
+					allvisfrac;
+
+		table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+		b->total_rows = (uint64) tuples;
+		table_close(heap, NoLock);
+	}
 	return b;
 }
 

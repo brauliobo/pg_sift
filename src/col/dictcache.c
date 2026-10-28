@@ -328,6 +328,27 @@ sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
 	return ask_ent(seg, col)->nokeep;
 }
 
+Size
+sift_cdict_cache_budget(void)
+{
+	return CDICT_CACHE_BYTES;
+}
+
+Size
+sift_cdict_parsed_bytes(Size nbytes, uint32 n)
+{
+	return nbytes + (Size) n * (sizeof(uint32) + CDICT_SLOT_BYTES);
+}
+
+void
+sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent)
+{
+	AskEnt	   *e = ask_ent(seg, col);
+
+	e->asks = Max(e->asks, DICT_PARSE_AFTER);
+	e->spent = Max(e->spent, spent);
+}
+
 SiftCDict *
 sift_cseg_dict_peek(SiftColSegment *seg, int col)
 {

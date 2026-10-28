@@ -199,6 +199,13 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		}
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx);
+		{
+			uint64		idx_rows = nbrows;
+
+			for (int i = 0; i < nin; i++)
+				idx_rows += in[i].ndocs;
+			sift_colw_set_index_rows(w, idx_rows);
+		}
 		/* the lists the segments hold, as a merge writes them: a promotion that wrote the option's would leave the new segment without */
 		if (sift_col_is_index(index))
 			sift_col_pagg_rewrite(index, in, nin, &rewrite);
@@ -578,6 +585,7 @@ typedef struct MergeOut
 	const SiftCPaggSpec *pagg;
 	int			format;
 	MemoryContext cx;
+	uint64		index_rows;		/* the rows of the index */
 	uint64		expect;			/* the bytes of one partition, for the throttle */
 	uint64		cut;			/* the bytes of units from which a partition is done */
 	int			parts;
@@ -598,6 +606,7 @@ out_begin(MergeOut *o)
 	sift_wt_expect(o->wt, o->expect);
 	throttle(o->wt);
 	o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->schema, o->policy, o->format, o->pcx);
+	sift_colw_set_index_rows(o->w, o->index_rows);
 	if (o->pagg)
 		sift_colw_set_preagg(o->w, o->pagg);
 	if (o->keyed)
@@ -669,6 +678,15 @@ merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *
 	{
 		sift_col_pagg_rewrite(index, in, n, &rewrite);
 		pagg = &rewrite;
+	}
+	{
+		SiftDirSnapshot *dir = palloc(sizeof(SiftDirSnapshot));
+
+		sift_dir_read(index, dir);
+		for (int i = 0; i < dir->nsegs; i++)
+			if (dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+				o.index_rows += dir->segs[i].ndocs;
+		pfree(dir);
 	}
 	for (int i = 0; i < n; i++)
 	{

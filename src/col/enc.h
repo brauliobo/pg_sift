@@ -56,6 +56,7 @@ typedef struct SiftCDict
 	const struct SiftCDictLook *look;	/* a dictionary that stays in the stream (n only): find and match read the segment (col/seg.c) */
 	uint32	   *rows;			/* writer only: the rows of each code (option count_columns); serialized with the order as DICT_LOOKUP_COUNT */
 	bool		hashed;			/* writer only: serialize the hash of the strings after the order (DICT_HASHED) */
+	bool		tsig;			/* writer only: a blocks form is followed by the trigram signature of each block (DICT_TSIG_MAGIC) */
 } SiftCDict;
 
 /* The two searches a test makes of a dictionary, for one that stays in the stream */
@@ -156,6 +157,22 @@ sift_cdict_hash_slot(uint64 h, uint32 cb, uint32 code)
 {
 	return ((uint32) h & (UINT32_MAX >> cb)) << cb | (code + 1);
 }
+/*
+ * The trigram signature (column format minor 29): after a blocks form (2, 3, 4), 8-aligned, u32 DICT_TSIG_MAGIC, u32 lg and, for each block of DICT_BLOCK strings,
+ * 2^lg bits (lg 8 to 14, chosen from the distinct trigrams of a sample of blocks) with the bit sift_tsig_bit of every trigram of every string of the block. A literal of
+ * three bytes or more can be in a block only if the bits of all its trigrams are set.
+ */
+#define DICT_TSIG_MAGIC		0x47495354
+#define DICT_TSIG_HEAD		(2 * sizeof(uint32))
+#define DICT_TSIG_LO_LG	8
+#define DICT_TSIG_HI_LG	14
+static inline uint32
+sift_tsig_bit(const uint8 *p, uint32 lg)
+{
+	return ((uint32) (p[0] | p[1] << 8 | p[2] << 16) * 0x9E3779B1u) >> (32 - lg);
+}
+/* The signatures of all the blocks of d, 2^lg bits each, into sig (room for them): what the writer stores and sift.col_verify compares with */
+extern void sift_cdict_tsig_fill(const SiftCDict *d, uint32 lg, uint8 *sig);
 extern void sift_cdict_serialize(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo out);
 /* The bytes the blocks form (DICT_BLOCKS) adds to the compact one, and the bytes of the compact form, estimated from a sample of the blocks and of the start of the dictionary: short strings that repeat their words compress across the dictionary and not within a block, ids, hashes and long strings alike in both */
 extern Size sift_cdict_blocks_extra(SiftCDict *d, const SiftCcPolicy *pol, Size *compact_bytes);

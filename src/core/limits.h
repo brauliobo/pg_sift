@@ -123,6 +123,9 @@
 	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write.c", 1024, "strings", \
 	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
 	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \
+	X(dict_tsig_min, "CDICT_TSIG_MIN_KB", "col/seg_write.c", 1024, "kB", \
+	  "bytes of the strings a segment dictionary in blocks needs before it is written with a trigram signature of each block, once the dictionary of its leaf, scaled to the index, no longer fits the parsed ones a backend keeps (dict_cache_kb), so that a substring test reads the blocks that may hold the part and not all of them (column format minor 29)", \
+	  "no signature: a substring test reads every block of the dictionary", "-", 1) \
 	X(lst_min_units, "LST_MIN_UNITS", "col/seg_write.c", 64, "units", \
 	  "units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf", \
 	  "no statistics block: the plan reads the zone arrays of the segment (a few pages)", "-", 1) \

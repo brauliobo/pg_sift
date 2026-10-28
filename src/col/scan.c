@@ -320,7 +320,7 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 	MemoryContext old;
 
 	if (p->nvals < 1)
-		return make_test(src, def, sift_cseg_dict_search(seg, p->col), p, t);
+		return make_test(src, def, sift_cseg_dict_search(seg, p->col, p->op), p, t);
 	for (int i = 0; i < Min(src->ntests, COL_TEST_CACHE) && e == NULL; i++)
 		if (src->tests[i].seg == seg && same_pred(&src->tests[i].pred, p))
 			e = &src->tests[i];
@@ -328,7 +328,7 @@ seg_test(SiftColSource *src, SiftColSegment *seg, const SiftColDef *def, const S
 	{
 		old = MemoryContextSwitchTo(src->mcxt);
 		e = test_copy(src, seg, p);
-		make_test(src, def, sift_cseg_dict_search(seg, p->col), &e->pred, &e->t);
+		make_test(src, def, sift_cseg_dict_search(seg, p->col, p->op), &e->pred, &e->t);
 		MemoryContextSwitchTo(old);
 	}
 	*t = e->t;

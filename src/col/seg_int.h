@@ -269,6 +269,8 @@ typedef struct DictLookHead
 	uint64		perm_at;
 	uint64		cum_at;			/* the row counts of the places in byte order, by block (DICT_LOOKUP_COUNT, col/enc.h), 0: none */
 	uint64		hash_at;		/* the hash of the strings to their codes (DICT_HASHED, col/enc.h), 0: none */
+	uint64		sig_at;			/* the trigram signatures of the blocks (DICT_TSIG_MAGIC), 0: none */
+	uint32		sig_lg;
 } DictLookHead;
 
 typedef struct SiftCBisect
@@ -297,6 +299,8 @@ typedef struct DictLook
 	uint64		perm_at;
 	uint64		cum_at;			/* form 4: the row counts by block after code[n] (col/enc.h); 0: none */
 	uint64		hash_at;		/* DICT_HASHED: the hash after all of the above; 0: none */
+	uint64		sig_at;			/* the trigram signatures of the blocks, 2^sig_lg bits each (col/enc.h); 0: none */
+	uint32		sig_lg;
 	uint32		blkno;			/* the block in blkraw (UINT32_MAX: none) */
 	bool		searchable;		/* form 2: find and match read the stream */
 	bool		blocked;		/* forms 2 and 3: the strings are in blocks */
@@ -429,6 +433,11 @@ extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);
 /* Counts one more test of the dictionary of leaf col that was searched in the stream, and says how many the backend made */
 extern uint32 sift_cseg_dict_asked(SiftColSegment *seg, int col);
 extern bool sift_cseg_dict_nokeep(SiftColSegment *seg, int col);
+/* A test the signatures hardly helped (spent: the cost it counts) makes the next search parse the dictionary, as the searches of the stream would have after DICT_PARSE_AFTER */
+/* The bytes of parsed dictionaries a backend keeps (dict_cache_kb), and what a dictionary of n strings of nbytes takes parsed: the strings, an offset and the lookup slots of each */
+extern Size sift_cdict_cache_budget(void);
+extern Size sift_cdict_parsed_bytes(Size nbytes, uint32 n);
+extern void sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent);
 /* Adds add to what the checks of strings the hash of the dictionary found cost in this backend, and returns the sum: the dictionary is parsed once they cost what the parse does (DICT_PARSE_COST) */
 extern uint64 sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add);
 /* The bisection cache of the dictionary of leaf col (n strings), pinned for the segment's context; made empty when the cache has none, NULL if it has no room */

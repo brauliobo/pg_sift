@@ -728,6 +728,7 @@ verify_dicts(SiftColSegment *seg)
 		}
 		if (seg->entry.format < SIFT_COL_FORMAT_DICTIDX)
 			corrupt(seg, "The dictionary of leaf %d is stored in blocks in a segment of column format 1.%d.", c, seg->entry.format);
+		sift_cseg_dict_tsig_check(seg, c, d);
 		if (!d->stored_order)
 			continue;
 		seen = palloc0(SIFT_COL_NWORDS(d->n) * sizeof(uint64));

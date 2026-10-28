@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_types);
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
+PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
 PG_FUNCTION_INFO_V1(sift_test_col_pagg_fold);
@@ -1679,6 +1680,42 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 			tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* sift._test_col_dict_tsig(index, leaf, needle): for each immutable segment whether the dictionary of the leaf has trigram signatures, and how many of its blocks a substring test of needle reads */
+Datum
+sift_test_col_dict_tsig(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	int			leaf = PG_GETARG_INT32(1);
+	text	   *needle = PG_GETARG_TEXT_PP(2);
+	SiftDirSnapshot *snap = palloc(sizeof(SiftDirSnapshot));
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_dir_read(index, snap);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		uint32		passed = 0,
+					total = 0;
+		bool		signed_;
+		Datum		v[4];
+		bool		nulls[4] = {false};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		signed_ = sift_cseg_dict_tsig(seg, leaf, VARDATA_ANY(needle), VARSIZE_ANY_EXHDR(needle), &passed, &total);
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = BoolGetDatum(signed_);
+		v[2] = Int32GetDatum(passed);
+		v[3] = Int32GetDatum(total);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+		sift_cseg_close(seg);
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;

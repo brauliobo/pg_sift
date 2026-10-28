@@ -3,6 +3,7 @@
 -- edges (a string boundary inside the dictionary's bytes, the whole string, longer than any string, NUL-free multibyte text), and for the patterns that stay
 -- with the executor (a wildcard or an escape inside the part, ILIKE, NOT LIKE, a suffix).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
@@ -96,6 +97,11 @@ SELECT ct_check('written', 'ct', 1);
 VACUUM ct;
 SELECT ct_check('vacuumed', 'ct', 1);
 
+-- a dictionary that the cache cannot keep is read in blocks for every test, after the parse that found out
+SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT ct_check('not kept', 'ct', 34, ARRAY['%item/%', '%shop17.%', '%ab%']);
+RESET sift.test_limits;
+
 -- every level of the kernels returns the same rows
 SET sift.simd = scalar;
 SELECT ct_check('scalar', 'ct', 1);
@@ -104,4 +110,5 @@ RESET sift.simd;
 DROP FUNCTION ct_check(text, text, int, text[]), ct_scanned(text);
 DROP TABLE ct_pat, ct, ctt;
 DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

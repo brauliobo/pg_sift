@@ -442,6 +442,8 @@ put_counts(const SiftCDict *d, StringInfo out)
 	pfree(data.data);
 }
 
+static void put_tsig(const SiftCDict *d, uint32 nblk, StringInfo out, int start);
+
 /*
  * The forms read in place: the strings in blocks of DICT_BLOCK codes, each compressed on its own when the policy allows and it is smaller (a string
  * is one read of its block), and for DICT_LOOKUP the codes in byte order of the strings (the work of a bisection is a few block reads)
@@ -550,10 +552,84 @@ serialize_blocks(SiftCDict *d, const SiftCcPolicy *pol, uint32 form, StringInfo 
 		if (form & DICT_HASHED)
 			put_hash(d, out);
 	}
+	if (d->tsig)
+		put_tsig(d, nblk, out, start);
 	pfree(boff);
 	pfree(raw);
 	if (z)
 		pfree(z);
+}
+
+/* The bits of a block's signature, from the distinct trigrams of a sample of blocks: about as many bits as trigrams (the signature fills to 60%) */
+static uint32
+tsig_lg(const SiftCDict *d, uint32 nblk)
+{
+	uint32		ns = Min(nblk, 16),
+				lg = DICT_TSIG_LO_LG;
+	uint64		distinct = 0;
+	uint8	   *seen = palloc0((Size) 1 << 21);
+
+	for (uint32 k = 0; k < ns; k++)
+	{
+		uint32		lo = (uint32) ((uint64) k * nblk / ns) * DICT_BLOCK,
+					hi = Min(lo + DICT_BLOCK, d->n);
+
+		for (int pass = 0; pass < 2; pass++)
+			for (uint32 c = lo; c < hi; c++)
+				for (uint32 p = d->off[c]; p + 3 <= d->off[c + 1]; p++)
+				{
+					uint32		t = (uint8) d->bytes[p] | (uint8) d->bytes[p + 1] << 8 | (uint8) d->bytes[p + 2] << 16;
+
+					if (pass == 0 && !(seen[t >> 3] >> (t & 7) & 1))
+						distinct++;
+					if (pass == 0)
+						seen[t >> 3] |= 1 << (t & 7);
+					else
+						seen[t >> 3] = 0;
+				}
+	}
+	pfree(seen);
+	distinct /= ns;
+	while (lg < DICT_TSIG_HI_LG && ((uint64) 1 << lg) < distinct)
+		lg++;
+	return lg;
+}
+
+void
+sift_cdict_tsig_fill(const SiftCDict *d, uint32 lg, uint8 *sig)
+{
+	uint32		bytes = (1u << lg) / 8;
+
+	memset(sig, 0, (Size) ((d->n + DICT_BLOCK - 1) / DICT_BLOCK) * bytes);
+	for (uint32 c = 0; c < d->n; c++)
+	{
+		uint8	   *s = sig + (Size) (c / DICT_BLOCK) * bytes;
+
+		for (uint32 p = d->off[c]; p + 3 <= d->off[c + 1]; p++)
+		{
+			uint32		bit = sift_tsig_bit((const uint8 *) d->bytes + p, lg);
+
+			s[bit >> 3] |= 1 << (bit & 7);
+		}
+	}
+}
+
+static void
+put_tsig(const SiftCDict *d, uint32 nblk, StringInfo out, int start)
+{
+	uint32		lg = tsig_lg(d, nblk),
+				bytes = (1u << lg) / 8,
+				magic;
+	uint8	   *sig = palloc((Size) nblk * bytes);
+
+	sift_cdict_tsig_fill(d, lg, sig);
+	while ((out->len - start) % 8)
+		appendStringInfoChar(out, '\0');
+	magic = DICT_TSIG_MAGIC;
+	put_val(out, magic);
+	put_val(out, lg);
+	put_bytes(out, sig, (Size) nblk * bytes);
+	pfree(sig);
 }
 
 #define BLOCKS_SAMPLE	16				/* blocks spread over the dictionary that sift_cdict_blocks_extra compresses */
