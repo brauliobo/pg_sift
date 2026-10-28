@@ -91,6 +91,12 @@
 #define AGG_VLEAF_ELEM		9.0		/* an element of an object looked up by key (a metric of a free key object), per row and key */
 #define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
 #define AGG_JOIN_PROBE		58.0	/* a tuple's probe of a lookup table of 250,000 rows by its join key: the key's hash and the rows it finds, in the operators AGG_SCAN_SPEED scales (35 ns measured); it grows with the square root of the rows, as the table leaves the cache */
+#define AGG_ENTRY_ROW		70.0	/* a new entry of a combo of a join that reads values beyond its key (a CASE of a lookup column and a measure): the hash insert and the id of its value, 215 ns measured with 2.8 million entries (2,040 instructions with one expression, 5,450 with seven) */
+#define AGG_ENTRY_SLOT		30.0	/* ... and each expression of the combo evaluated for it: 88 ns measured, 570 instructions of a numeric CASE */
+#define AGG_FAN_ROW			120.0	/* a joined tuple beyond the rows the scan reads (a lookup table with many rows for a key: a fact table joined from a date scan), for a lookup table past what the cache holds: the columns of the row bound and the ids of its values (1,330 instructions measured at 720,000 rows and at 2.9 million, 910 at 290,000); it grows with the square root of the rows past the cache up to AGG_FAN_CAP times */
+#define AGG_FAN_CACHE		150000.0	/* the rows of a lookup table whose binds stay in the cache of a core: the price starts past them (a price at any size, and for correlated or CTE lookups, flipped 12 statements of the lab corpus to the normal plan, which takes more than 60 s on them) */
+#define AGG_FAN_CAP			2.0	/* ... and no more than twice: the cost per tuple measured is the same at 720,000 rows as at 2.9 million */
+#define AGG_FAN_SLOT		80.0	/* ... and each expression of the combos evaluated for it: 97 ns measured at 2.9 million rows, a numeric CASE of a column of the lookup table */
 #define AGG_WIDE_LEAF		3.0		/* a 64-bit leaf of a combo, per tuple: the hash probe for the id of its value */
 #define AGG_DIRECT_NUM		2.0		/* the transition of a PostgreSQL-evaluated value (numeric_add): the normal plan pays it per row too, at the price PostgreSQL gives a transition function */
 #define AGG_DIRECT_CMP		1.0		/* the type's comparison of one (min, max): the same in both plans */
@@ -373,6 +379,34 @@ json_build_walker(Node *n, double *ops)
 	return expression_tree_walker(n, json_build_walker, ops);
 }
 
+/* the leaves of the combo of a join that are not its key: the values its expressions read, which make an entry for each distinct combination */
+static int
+join_extra_leaves(const SiftAggCombo *cb, const SiftAggJoin *j)
+{
+	int			extra = 0;
+
+	for (int p = 0; p < cb->nleaves; p++)
+	{
+		bool		key = false;
+
+		for (int k = 0; k < j->nkey; k++)
+			key |= j->keypos[k] == p;
+		extra += !key;
+	}
+	return extra;
+}
+
+/* the expressions of a combo that PostgreSQL evaluates to a numeric: an entry of those allocates and compares digits (an integer one was not measured to cost as much) */
+static int
+combo_numeric_slots(const SiftAggCombo *cb)
+{
+	int			n = 0;
+
+	for (int sl = 0; sl < cb->nslots; sl++)
+		n += exprType((Node *) cb->slot[sl].expr) == NUMERICOID;
+	return n;
+}
+
 /* the combo is only the argument of sums and averages that add the entries of their dictionary leaf (SiftAggAgg.wsum): no tuple is evaluated by it */
 static bool
 combo_wsum_only(const SiftAggSpec *s, int ci)
@@ -454,6 +488,8 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 					real_cost_walker((Node *) cb->slot[j->fslot].expr, &real);
 					*entry_cost += combo_entries(c, s, cb, probes, false) * (AGG_EVAL_SLOT + real) / AGG_SCAN_SPEED;
 				}
+				else if (join_extra_leaves(cb, j) > 0 && combo_numeric_slots(cb) > 0)
+					*entry_cost += combo_entries(c, s, cb, probes, false) * (AGG_ENTRY_ROW + cb->nslots * AGG_ENTRY_SLOT) / AGG_SCAN_SPEED;
 			}
 			/* Without equality keys, every cached input tests every child row. */
 			if (j->nkey == 0 && j->params == NIL)
@@ -2607,6 +2643,14 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	}
 	for (int a = 0; a < s->narms; a++)
 		k->scan_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
+	for (int ci = 0; ci < s->ncombo; ci++)
+		if (s->combo[ci].join >= 0 && ((JoinCtx *) list_nth(c->joins, s->combo[ci].join))->j.params == NIL)
+		{
+			JoinCtx    *jc = list_nth(c->joins, s->combo[ci].join);
+			double		past = c->root->simple_rte_array[jc->rti]->rtekind == RTE_RELATION ? c->root->simple_rel_array[jc->rti]->rows - AGG_FAN_CACHE : 0.0;
+
+			k->scan_cost += Max(k->agg_rows - k->sel_rows * k->elems, 0.0) * (AGG_FAN_ROW + s->combo[ci].nslots * AGG_FAN_SLOT) * Min(sqrt(Max(past, 0.0) / AGG_FAN_CACHE), AGG_FAN_CAP);
+		}
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
 	k->cold_ops += entry_cost * (parallel_divisor(s->nworkers) - 1.0);
