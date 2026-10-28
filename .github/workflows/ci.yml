@@ -418,15 +418,26 @@ jobs:
           bash --version | head -1
           make check
 
+      # PostgreSQL 17 has no extension_control_path: sift is installed into the server's own directories (the runner is throwaway). replica_mixed and
+      # scaling_slope need PostgreSQL 18 and skip themselves, and the older releases are not built on 17 either (scripts/old-lib-check.sh)
+      - name: make check (the same tests) on PostgreSQL 17
+        env:
+          SIFT_CI_TMP: ${{ runner.temp }}/sift-ci17
+          SIFT_CI_JOBS: '^(installcheck-(facets|filter_pushdown)|tap-shell-(col_auto_merge_concurrent|col_refresh_crash|col_rollup_ondemand|col_wbuf_batch|leakcheck_gate|pg_upgrade|pg_upgrade_32|replica_mixed|scaling_slope))$'
+          SIFT_CI_NO_HARNESS: 1
+        run: |
+          PATH="$(brew --prefix)/bin:$(brew --prefix postgresql@17)/bin:$PATH"; export PATH
+          make check
+
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v6
         with:
           name: pg_sift-test-logs-macos
           path: |
-            ${{ runner.temp }}/sift-ci/logs
-            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
-            ${{ runner.temp }}/sift-ci/lane*/regress/*/regression.diffs
+            ${{ runner.temp }}/sift-ci*/logs
+            ${{ runner.temp }}/sift-ci*/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci*/lane*/regress/*/regression.diffs
           if-no-files-found: ignore
 
   # the one name for a branch ruleset to require: the shard names of the jobs above change with the diff and the event, this one does not.
