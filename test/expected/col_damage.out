@@ -38,7 +38,7 @@ UNION ALL SELECT 'dc_col', array_agg(DISTINCT format) FROM sift._test_col_format
   idx   | minors 
 --------+--------
  dc_col | {7}
- dm_col | {6}
+ dm_col | {16}
  dw_col | {25}
 (3 rows)
 

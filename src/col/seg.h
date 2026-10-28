@@ -260,7 +260,9 @@ extern void sift_cseg_prune(SiftColSegment *seg, int col, const SiftCTest *t, ui
  */
 extern bool sift_cseg_point_rows(SiftColSegment *seg, int col, const int64 *keys, int nkeys, uint32 **rows, uint32 *nrows);
 /* Does the directory list the row (in the segment) under the key */
-extern bool sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 row);
+/* Does the directory list the row under the key? *dense: the key has no list (any row may hold it) */
+extern bool sift_cseg_point_has(SiftColSegment *seg, int col, int64 key, uint32 row, bool *dense);
+extern uint32 sift_cseg_point_ndense(SiftColSegment *seg, int col);
 /*
  * A point directory of heap addresses (column format minor 16; sift_cseg_point_rows and _has refuse its leaves): whether leaf col has one, the addresses it lists,
  * ascending, under a fingerprint of one of the keys (false when there are too many), and whether it lists each non-NULL row (key[i], tid[i]) of a unit, with the

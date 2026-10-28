@@ -298,9 +298,12 @@ verify_hll(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 	pfree(want.data);
 }
 
-/* The point directory of the leaf lists every row of the unit that holds a value, and none of a leaf with overflow values (listed counts them over the segment) */
+/*
+ * The point directory of the leaf lists every row of the unit that holds a value (a row once however many times it holds it, for the values of a list: grp is the
+ * counts of the list), and none of a leaf with overflow values (listed counts them over the segment; a key with no list is counted by the segment)
+ */
 static void
-verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftKey *keys, uint64 *listed)
+verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, const SiftCPaggCol *grp, const SiftKey *keys, uint64 *listed)
 {
 	uint32		base = (uint32) seg->sbdir[u].rank_base;
 
@@ -317,11 +320,41 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 			corrupt(seg, "The point directory of leaf %d does not list the address of a row of unit %u under its key.", c, u);
 		return;
 	}
+	if (grp != NULL)
+	{
+		uint32		j = 0;
+
+		for (uint32 r = 0; r < seg->sbdir[u].nrows; r++)
+		{
+			uint32		n = (grp->nulls && (grp->nulls[r / 64] >> (r % 64) & 1)) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
+
+			for (uint32 i = j; i < j + n; i++)
+			{
+				bool		dense,
+							dup = false;
+
+				if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
+					continue;
+				for (uint32 k = j; k < i && !dup; k++)
+					dup = !(col->nulls && (col->nulls[k / 64] >> (k % 64) & 1)) && col->key[k] == col->key[i];
+				if (dup)
+					continue;
+				if (!sift_cseg_point_has(seg, c, col->key[i], base + r, &dense))
+					corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + r, u);
+
+				*listed += !dense;
+			}
+			j += n;
+		}
+		return;
+	}
 	for (uint32 i = 0; i < col->n; i++)
 	{
+		bool		dense;
+
 		if (col->nulls && (col->nulls[i / 64] >> (i % 64) & 1))
 			continue;
-		if (!sift_cseg_point_has(seg, c, col->key[i], base + i))
+		if (!sift_cseg_point_has(seg, c, col->key[i], base + i, &dense))
 			corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + i, u);
 		(*listed)++;
 	}
@@ -395,7 +428,7 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 		verify_set(seg, c, u, &pcol[c]);
 		verify_run(seg, c, u, &pcol[c], keys);
 		verify_hll(seg, c, u, &pcol[c]);
-		verify_point(seg, c, u, &pcol[c], keys, &listed[c]);
+		verify_point(seg, c, u, &pcol[c], def->parent >= 0 ? &pcol[def->parent] : NULL, keys, &listed[c]);
 		if (def->store == SIFT_COLS_STR && ch.enc != SIFT_COLENC_ISTR)
 		{
 			SiftCDict  *d = sift_cseg_dict(seg, c);
@@ -412,8 +445,8 @@ verify_unit(SiftColSegment *seg, uint32 u, SiftKey *keys, uint64 *listed, SiftCK
 		}
 		if (crows[c] != NULL && (ch.enc == SIFT_COLENC_ISTR || ch.ovf != NULL))
 			corrupt(seg, "The dictionary of leaf %d counts the rows of its strings, but the unit of SB %u stores them inline or has an overflow value.", c, r->sb);
-		if (need[c])
-			kept[c] = vals;
+		if (need[c] || def->kind == SIFT_COLK_GROUP)
+			kept[c] = vals;			/* the counts of a list: the directory of its elements reads them */
 		else if (kt)
 			late[c] = vals;			/* the key table adds the leaves of the unit together, below */
 		else
@@ -748,7 +781,7 @@ sift_cseg_verify(SiftColSegment *seg)
 		CHECK_FOR_INTERRUPTS();
 	}
 	for (int c = 0; c < seg->schema->ncols; c++)
-		if (listed[c] != sift_cseg_point_count(seg, c))
+		if (listed[c] + sift_cseg_point_ndense(seg, c) != sift_cseg_point_count(seg, c))
 			corrupt(seg, "The point directory of leaf %d lists %u rows, its units hold %llu values.", c, sift_cseg_point_count(seg, c), ULL(listed[c]));
 	for (int c = 0; c < seg->schema->ncols; c++)
 		if (haskt[c] && !sift_ktab_check(kt, sift_cseg_ktab(seg, c)))

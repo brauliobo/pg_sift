@@ -83,6 +83,8 @@ typedef struct ColSource
 	SiftAggFilters flt;			/* the filters set_filters accepted */
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
 	int			nspred;
+	int		   *spmap;			/* per spred: the test of prune_str it stands for */
+	int			spoff;			/* the position of the first spred among the predicates of a begin (col_preds) */
 	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin */
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;

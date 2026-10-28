@@ -66,6 +66,12 @@ ent_cmp(const void *a, const void *b)
 	return SIFT_CMP3(x->val, y->val);
 }
 
+static int
+fp_cmp(const void *a, const void *b)
+{
+	return SIFT_CMP3(*(const uint32 *) a, *(const uint32 *) b);
+}
+
 /* A key of several rows: the count and the rows as words after the slots; the payload names the list */
 static uint64
 row_list(StringInfo lists, const PointEnt *e, uint32 cnt)
@@ -82,19 +88,22 @@ row_list(StringInfo lists, const PointEnt *e, uint32 cnt)
 	return payload;
 }
 
-/* ... of several heap addresses: the count, the bytes and the deltas of their codes as varints, padded to a word */
+/*
+ * ... of several heap addresses (tid), or of the rows of the values of a list: the count, the bytes and the deltas of their codes as varints, padded to a word.
+ * The first code of a list of rows is the row itself (it may be 0).
+ */
 static uint64
-tid_list(StringInfo lists, const PointEnt *e, uint32 cnt)
+delta_list(StringInfo lists, const PointEnt *e, uint32 cnt, bool tid)
 {
 	StringInfoData body;
-	uint32		nbytes;
-	uint64		prev = 0,
-				payload = (uint64) (lists->len / sizeof(uint32)) << 16 | SIFT_CPOINT_TID_LIST;
+	uint32		nbytes,
+				word = lists->len / sizeof(uint32);
+	uint64		prev = 0;
 
 	initStringInfo(&body);
 	for (uint32 k = 0; k < cnt; k++)
 	{
-		uint64		code = sift_cpoint_tid_code(e[k].val);
+		uint64		code = tid ? sift_cpoint_tid_code(e[k].val) : e[k].val;
 
 		sift_col_put_varint(&body, code - prev);
 		prev = code;
@@ -106,29 +115,69 @@ tid_list(StringInfo lists, const PointEnt *e, uint32 cnt)
 	while (lists->len % 4)
 		appendStringInfoChar(lists, '\0');
 	pfree(body.data);
-	return payload;
+	return tid ? (uint64) word << 16 | SIFT_CPOINT_TID_LIST : SIFT_CPOINT_LIST | word;
 }
 
-/* The directory of the keys, by the rows (row) or by the heap addresses (tid): a key with several values points at a list in the words after the slots */
+/*
+ * The directory of the keys, by the rows (row) or by the heap addresses (tid): a key with several values points at a list in the words after the slots.
+ * dense > 0 is the table of the values of a list: a row is listed once for a key, the lists are the delta lists, a key in more than `dense` rows has the
+ * payload SIFT_CPOINT_DENSE and no list, and a table in which two keys share a fingerprint is not built (no slots): its slots must name the key. *nrows is
+ * the rows the lists hold, a dense key counting one.
+ */
 static void
-point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
 	PointEnt   *e = palloc(n * sizeof(PointEnt));
-	uint32		nk = 0;
+	uint32		nk = 0,
+				nr = 0;
 	uint64	   *t;
 	StringInfoData lists;
 
 	for (uint32 i = 0; i < n; i++)
 		e[i] = (PointEnt) {key[i], tid ? tid[i] : row[i]};
 	qsort(e, n, sizeof(PointEnt), ent_cmp);
+	if (dense > 0)
+	{
+		uint32		m = 0;
+
+		for (uint32 i = 0; i < n; i++)
+			if (m == 0 || e[i].key != e[m - 1].key || e[i].val != e[m - 1].val)
+				e[m++] = e[i];
+		n = m;
+	}
 	for (uint32 i = 0, j; i < n; i = j)
 	{
 		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
 			;
 		nk++;
+		nr += dense > 0 && j - i > dense ? 1 : j - i;
+	}
+	if (dense > 0)
+	{
+		uint32	   *fp = palloc(Max(nk, 1) * sizeof(uint32));
+		uint32		m = 0;
+		bool		clash = false;
+
+		for (uint32 i = 0, j; i < n; i = j)
+		{
+			for (j = i + 1; j < n && e[j].key == e[i].key; j++)
+				;
+			fp[m++] = (uint32) (sift_cpoint_hash(e[i].key) & 0xFFFFFFFF);
+		}
+		qsort(fp, m, sizeof(uint32), fp_cmp);
+		for (uint32 i = 1; i < m && !clash; i++)
+			clash = fp[i] == fp[i - 1];
+		pfree(fp);
+		if (clash)
+		{
+			*nslots = *nkeys = *words = *nrows = 0;
+			pfree(e);
+			return;
+		}
 	}
 	*nslots = sift_cpoint_slots(nk);
 	*nkeys = nk;
+	*nrows = nr;
 	t = palloc(*nslots * sizeof(uint64));
 	memset(t, 0xFF, *nslots * sizeof(uint64));
 	initStringInfo(&lists);
@@ -140,8 +189,10 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, St
 
 		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
 			;
-		if (j - i > 1)
-			payload = tid ? tid_list(&lists, e + i, j - i) : row_list(&lists, e + i, j - i);
+		if (dense > 0 && j - i > dense)
+			payload = SIFT_CPOINT_DENSE;
+		else if (j - i > 1)
+			payload = tid || dense > 0 ? delta_list(&lists, e + i, j - i, tid != NULL) : row_list(&lists, e + i, j - i);
 		while (t[p] != SIFT_CPOINT_EMPTY)
 			p = (p + 1) & (*nslots - 1);
 		t[p] = tid ? (h & 0xFFFF) << 48 | payload : (h & 0xFFFFFFFF) << 32 | payload;
@@ -157,13 +208,15 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, St
 }
 
 void
-sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
-	point_build(key, row, NULL, n, out, nslots, nkeys, words);
+	point_build(key, row, NULL, n, dense, out, nslots, nkeys, words, nrows);
 }
 
 void
 sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
 {
-	point_build(key, NULL, tid, n, out, nslots, nkeys, words);
+	uint32		nrows;
+
+	point_build(key, NULL, tid, n, 0, out, nslots, nkeys, words, &nrows);
 }

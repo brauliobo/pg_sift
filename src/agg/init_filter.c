@@ -324,16 +324,49 @@ prune_init(AggExec *ex)
 			ex->prune[ex->nzone++] = *z;
 }
 
+/* the element tests of the conjuncts p and of the ANDs below it: they only prune, the executor tests the elements */
+static int
+elem_tests(AggExec *ex, const SiftAggPred *p, SiftSrcStrTest *all, int n)
+{
+	if (p->kind == SAP_AND)
+		for (int i = 0; i < p->nchild; i++)
+			n = elem_tests(ex, p->child[i], all, n);
+	else if (sift_aggspec_elem_test(p, ex->lay, ex->nbase, &all[n]))
+	{
+		ex->ps[p->id].elem = ++n;
+		ex->npoint_elem++;
+	}
+	return n;
+}
+
+static int
+pred_nodes(const SiftAggPred *p)
+{
+	int			n = 1;
+
+	for (int i = 0; i < p->nchild; i++)
+		n += pred_nodes(p->child[i]);
+	return n;
+}
+
 /* The text tests of the query a source can run on the encoded form: they prune its units and narrow the rows of each (process_unit) */
 void
 str_init(AggExec *ex)
 {
-	SiftSrcStrTest *all = palloc(Max(ex->spec->npred, 1) * sizeof(SiftSrcStrTest));
-	int			n = 0;
+	int			cap = 0,
+				n = 0;
+	SiftSrcStrTest *all;
 
 	for (int i = 0; i < ex->spec->npred; i++)
+		cap += pred_nodes(ex->spec->pred[i]);
+	all = palloc0(Max(cap, 1) * sizeof(SiftSrcStrTest));
+	for (int i = 0; i < ex->spec->npred; i++)
+	{
 		if (sift_aggspec_str_test(ex->spec->pred[i], ex->lay, ex->nbase, &all[n]))
 			ex->ps[ex->spec->pred[i]->id].str = &all[n++];
+		else
+			n = elem_tests(ex, ex->spec->pred[i], all, n);
+	}
 	if (n > 0)
 		sift_colsrc_prune_str(ex->src, all, n);
 }

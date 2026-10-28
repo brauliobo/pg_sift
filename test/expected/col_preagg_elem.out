@@ -85,9 +85,9 @@ CREATE INDEX pe_col ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
         preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)', cube_minmax = false, superunit = 0);
 SELECT fmt('pe_col');
- fmt 
------
- 6,6
+  fmt  
+-------
+ 16,16
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -278,7 +278,7 @@ SELECT count(*) FILTER (WHERE NOT exact) AS inexact FROM sift.col_unit_agg('pe_c
 SELECT fmt('pe_col');
  fmt 
 -----
- 6
+ 16
 (1 row)
 
 -- parallel build and REINDEX
@@ -327,9 +327,9 @@ SELECT sift.col_promote('pe_col') >= 0 AS promoted;
 RESET sift.col_format_minor;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
-  fmt  
--------
- 6,6,3
+   fmt   
+---------
+ 16,16,3
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -425,9 +425,9 @@ SELECT (SELECT array_agg((sb, key, n, nn, sum) ORDER BY sb, key) FROM sift.col_u
 
 REINDEX INDEX pe_col3;
 SELECT fmt('pe_col3');
- fmt 
------
- 6,6
+  fmt  
+-------
+ 16,16
 (1 row)
 
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col3', 'items[].k')) > 0 AS reindexed_elem_groups;

@@ -513,7 +513,40 @@ eval_combo(AggExec *ex, SiftAggPred *p, int qlevel, int start, int n, uint64 *ou
 void
 rows_of_elems(const uint32 *offs, int nrow, const uint64 *eb, uint64 *out)
 {
+	uint32		m = offs[nrow],
+				nw = (m + 63) / 64,
+				live = 0;
+
 	memset(out, 0, ((nrow + 63) / 64) * sizeof(uint64));
+	for (uint32 w = 0; w < nw; w++)
+		live += eb[w] != 0;
+	/* a few passing elements (a rare value of a list): the rows that own them by a search, not a look at every row */
+	if (live * 8 < (uint32) nrow)
+	{
+		int			r = 0;
+
+		for (uint32 w = 0; w < nw; w++)
+			for (uint64 bits = eb[w]; bits; bits &= bits - 1)
+			{
+				uint32		p = w * 64 + pg_rightmost_one_pos64(bits);
+				int			hi = nrow;
+
+				if (p >= m)
+					return;
+				/* the row r with offs[r] <= p < offs[r + 1]; a row of no element is never found */
+				while (r + 1 < hi)
+				{
+					int			mid = (r + hi) / 2;
+
+					if (offs[mid] <= p)
+						r = mid;
+					else
+						hi = mid;
+				}
+				out[r >> 6] |= UINT64CONST(1) << (r & 63);
+			}
+		return;
+	}
 	for (int r = 0; r < nrow; r++)
 	{
 		uint32		lo = offs[r],

@@ -32,6 +32,7 @@ typedef struct PredState
 	ExprState  *expr;			/* SAP_LUT */
 	Param	   *param;
 	bool		null_result;	/* SAP_LUT: the expression for a NULL input */
+	int			elem;			/* 1 + the index of the element test of an EXISTS over a list that the source may answer exactly (str_init), else 0 */
 	SiftSrcStrTest *str;		/* a row level text test of the query, which the source runs on the encoded form (str_init) */
 	RangeTab	rt;				/* SAP_LUT on an integer leaf: result bytes */
 	uint64	   *rowmask;		/* element queries, a row predicate: the unit's rows */

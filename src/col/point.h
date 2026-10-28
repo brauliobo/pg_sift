@@ -18,6 +18,7 @@
 #define SIFT_CPOINT_MODE_ROWS	0		/* record word 5: the slots list the rows of the segment (the other modes of the frame) */
 #define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/gorder.h): chunks, entries, values, 0, words of 8 bytes */
 #define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows */
+#define SIFT_CPOINT_MODE_ZROWS	3		/* ... or the slots list rows as the table of addresses lists them: a list is {u32 count, u32 bytes, the first row then the differences in LEB128} (the values of a list) */
 #define SIFT_CPOINT_TID_LIST	UINT64CONST(0x8000)	/* in a table of addresses, in the low 16 bits of a slot's payload: the high 32 are the word offset of a list, not a block (no offset number has this bit) */
 #define SIFT_CPOINT_TID_MAXOFF	512		/* an offset number of the address codes below this, which every heap page of 8 kB does (MaxHeapTuplesPerPage is 291) */
 #define SIFT_CPOINT_EMPTY	UINT64_MAX
@@ -33,6 +34,9 @@
 #define SIFT_CPOINT_MAX_ROWS	65536		/* a lookup that finds more rows is not a point lookup: the units answer it */
 #define SIFT_CPOINT_SEG_ROWS	(UINT32_C(1) << 30)	/* a segment of this many rows or more has no tables: a slot keeps a list offset in 31 bits */
 #define SIFT_CPOINT_LIST		(UINT32_C(1) << 31)	/* in a slot, the low 32 bits are this flag and the word offset of a list of rows, not the only row of the key */
+#define SIFT_CPOINT_DENSE	UINT32_C(0x7FFFFFFF)	/* in a slot, the payload of a key too common to list: the units answer it; no row of a segment is this */
+#define SIFT_CPOINT_ELEM_MIN	1024	/* a value of a list is listed up to this many rows, or a 128th of the segment's if more: past that the units answer, as fast and without the bytes */
+#define SIFT_CPOINT_ELEM_SHARE	128
 #define SIFT_CPOINT_RECLEN		32			/* the bytes of a record of the header */
 
 /* A table is for a plain integer-like, text or uuid column of the top level (the leaves a small-set summary takes) */
@@ -88,8 +92,10 @@ extern void sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n
 
 /*
  * Appends the leaf's block for the n entries (key, row) to out, rows ascending in each key: the table (nslots * 8 bytes), then the lists, each {u32 count (2 or
- * more), u32 rows[count]} (words * 4 bytes, padded to 8), for the keys with more than one row. nkeys is the distinct keys.
+ * more), u32 rows[count]} (words * 4 bytes, padded to 8), for the keys with more than one row. nkeys is the distinct keys. A key with more than `dense` rows
+ * (0: no limit) has the payload SIFT_CPOINT_DENSE and no list; nrows is the rows the lists hold, a dense key counting one. With dense > 0 the table is of the
+ * values of a list (SIFT_CPOINT_MODE_ZROWS): the lists are those of the table of addresses, and the rows of each key are listed once.
  */
-extern void sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words);
+extern void sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows);
 
 #endif

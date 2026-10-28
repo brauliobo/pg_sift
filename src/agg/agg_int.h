@@ -173,6 +173,7 @@ typedef struct AggExec
 	bool	   *pushed;			/* per spec->pred: the source applies it (filter_init) */
 	SiftSrcFilter *pflt;		/* ... and the filter it applies */
 	int			nfilter;		/* how many */
+	int			npoint_elem;	/* the element tests the source may answer exactly (str_init) */
 	int			ntype;			/* the SAP_TYPE conjuncts: the source keeps the rows of their types (type_init) */
 	bool		recheck;		/* the source reads again the rows that hold a value a leaf cannot store (spec->recheck, recheck_init) */
 	bool		recheck_late;	/* ... and a row that holds one raises where it reaches the aggregate, after the lookups (SRK_CAST), not after its own conjuncts */

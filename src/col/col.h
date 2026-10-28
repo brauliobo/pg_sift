@@ -704,6 +704,8 @@ extern bool sift_col_gorder_info(SiftColSource *src, int i, int col, uint32 *ent
 extern uint32 sift_col_gorder_head(SiftColSource *src, int i, int col, uint32 c, uint32 w, int64 *key, uint64 *addr);
 extern void sift_col_gorder_range(SiftColSource *src, int i, int col, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne);
 extern uint32 sift_col_gorder_seek(SiftColSource *src, int i, int col, uint32 vs, uint32 ve, int64 key, bool after);
+/* the predicates (bit i: preds[i] of the begin) the rows of the unit's point directory answer exactly (SIFT_COLO_POINT_ROWS) */
+extern uint64 sift_col_point_exact(const SiftColUnit *unit);
 /*
  * sift_col_filter for a source opened with SIFT_COLO_POINTS: a unit may come with the rows that a point directory lists for one predicate of the begin
  * (the rows whose fingerprint matches). Then sel is narrowed to them, that predicate is left out of the filter, and *used is true: the caller has the heap

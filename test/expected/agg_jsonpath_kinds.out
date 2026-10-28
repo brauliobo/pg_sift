@@ -111,7 +111,7 @@ SELECT sift.col_promote('k_col');
 SELECT fmt('k_col');
  fmt  
 ------
- 3,12
+ 3,16
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -189,7 +189,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 12
+ 16
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -234,7 +234,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 12
+ 16
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;
@@ -342,7 +342,7 @@ VACUUM kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 3,7
+ 3,16
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -363,7 +363,7 @@ VACUUM (FULL) kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 7
+ 16
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -422,7 +422,7 @@ VACUUM FULL kt;
 SELECT tfmt('kt');
  tfmt 
 ------
- 7
+ 16
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
@@ -584,7 +584,7 @@ REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
 -----
- 12
+ 16
 (1 row)
 
 SELECT n, t_check(q) FROM q ORDER BY n;

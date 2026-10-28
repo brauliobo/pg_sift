@@ -340,11 +340,18 @@ str_in_test(ScalarArrayOpExpr *sa, SiftSrcStrTest *out)
 	return true;
 }
 
+static bool
+str_expr_test(const SiftAggPred *p, SiftSrcStrTest *out)
+{
+	Node	   *e = strip_relabel(p->expr);
+
+	return IsA(e, OpExpr) ? str_cmp_test((OpExpr *) e, out) : IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
+}
+
 bool
 sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
 {
 	const SiftSrcLeaf *lf;
-	Node	   *e;
 
 	if (p->kind != SAP_LUT || p->level != 0 || p->leaf >= nbase)	/* a virtual leaf (a member by key, a count) is not stored */
 		return false;
@@ -352,8 +359,39 @@ sift_aggspec_str_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase,
 	if (lf->kind != SCL_SCALAR || lf->vtype != SCV_CODE || lf->parent >= 0 || lf->lossy || !text_type(lf->typid))
 		return false;
 	out->leaf = p->leaf;
-	e = strip_relabel(p->expr);
-	return IsA(e, OpExpr) ? str_cmp_test((OpExpr *) e, out) : IsA(e, ScalarArrayOpExpr) && str_in_test((ScalarArrayOpExpr *) e, out);
+	out->ints = NULL;
+	return str_expr_test(p, out);
+}
+
+/* EXISTS element = a string, or in a set, of a list of text: the element leaf's test, for the units and rows that own such an element (a source prunes by it; the executor tests the elements) */
+bool
+sift_aggspec_elem_test(const SiftAggPred *p, const SiftSrcLayout *lay, int nbase, SiftSrcStrTest *out)
+{
+	const SiftAggPred *t;
+	const SiftSrcLeaf *lf;
+
+	if (p->kind != SAP_ANY_ELEM || p->nchild != 1 || p->op)
+		return false;
+	t = p->child[0];
+	if (t->leaf >= nbase)
+		return false;
+	lf = &lay->leaf[t->leaf];
+	if (lf->kind != SCL_SCALAR || lf->parent < 0 || lf->lossy)
+		return false;
+	out->leaf = t->leaf;
+	out->ints = NULL;
+	if (t->kind == SAP_CMP && t->op == SCMP_EQ && (lf->typid == INT2OID || lf->typid == INT4OID || lf->typid == INT8OID) && IsA(t->expr, Const) &&
+		!((Const *) t->expr)->constisnull && ((Const *) t->expr)->consttype == INT8OID)
+	{
+		int64	   *v = palloc(sizeof(int64));
+
+		*v = DatumGetInt64(((Const *) t->expr)->constvalue);
+		*out = (SiftSrcStrTest) {.leaf = t->leaf,.op = SSTR_EQ,.nvals = 1,.ints = v};
+		return true;
+	}
+	if (t->kind != SAP_LUT || lf->vtype != SCV_CODE || !text_type(lf->typid))
+		return false;
+	return str_expr_test(t, out) && (out->op == SSTR_EQ || out->op == SSTR_IN);
 }
 
 static bool

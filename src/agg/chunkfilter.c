@@ -48,7 +48,7 @@ SiftColPred
 sift_aggfilt_str_pred(const SiftSrcStrTest *t, SiftColValue *vals, int col)
 {
 	for (int i = 0; i < t->nvals; i++)
-		vals[i] = (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
+		vals[i] = t->ints ? (SiftColValue) {.v.i = t->ints[i]} : (SiftColValue) {.v.s = t->vals[i], .len = t->lens[i]};
 	return (SiftColPred) {col, str_op(t->op), t->nvals, vals};
 }
 bool

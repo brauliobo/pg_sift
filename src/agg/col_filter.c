@@ -42,9 +42,13 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 	ColSource  *src = impl;
 
 	src->spred = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
+	src->spmap = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(int));
 	for (int i = 0; i < nt && src->nspred < COL_MAX_STR_PRUNE; i++)
 		if (!src->lay->leaf[t[i].leaf].lossy)
+		{
+			src->spmap[src->nspred] = i;
 			src->spred[src->nspred++] = sift_aggfilt_str_pred(&t[i], MemoryContextAlloc(src->cxt, t[i].nvals * sizeof(SiftColValue)), t[i].leaf);
+		}
 }
 
 static void

@@ -287,6 +287,7 @@ typedef struct SiftSrcStrTest
 	int			nvals;
 	const char *const *vals;
 	const uint32 *lens;
+	const int64 *ints;			/* the operands of a test of an integer leaf (an element of a list of integers): vals and lens are unused */
 } SiftSrcStrTest;
 
 /*
@@ -646,6 +647,8 @@ typedef struct SiftSrcProvider
 	/* Optional: the same for the comparisons of an integer leaf, all the conditions of the scan: a segment whose global order of the leaf holds the keys counts them */
 	void		(*count_cmp) (void *impl, int leaf);
 	bool		(*unit_count) (void *impl, const SiftSrcUnit *unit, int64 *rows);
+	/* Optional (NULL: none): the element tests (prune_str's tests that stand for an EXISTS over a list, bit i: the i-th test given) whose rows the unit's point directory lists exactly: the unit comes narrowed to them, and the executor need not test them again */
+	uint64		(*point_exact) (void *impl, const SiftSrcUnit *unit);
 	void		(*split) (void *impl, const SiftSrcUnit *unit);
 	uint32		(*super_span) (void *impl);	/* the superblocks a range of a parallel scan should span for a group of units to fit in it */
 	/*
@@ -995,6 +998,12 @@ sift_colsrc_count_cmp(SiftSrcSource *src, int leaf)
 {
 	if (src->prov->count_cmp != NULL)
 		src->prov->count_cmp(src->impl, leaf);
+}
+
+static inline uint64
+sift_colsrc_point_exact(SiftSrcSource *src, const SiftSrcUnit *unit)
+{
+	return src->prov->point_exact != NULL ? src->prov->point_exact(src->impl, unit) : 0;
 }
 
 static inline bool

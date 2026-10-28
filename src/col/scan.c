@@ -665,6 +665,23 @@ prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col
 		return prune_point_tids(src, c, i, col, keys, nkeys, keep);
 	if (!sift_cseg_point_rows(seg, col, keys, nkeys, &rows, &nrows))
 		return false;
+	if (c->prow != NULL)
+	{
+		uint32		m = 0;
+
+		for (uint32 a = 0, b = 0; a < c->nprow && b < nrows;)
+			if (c->prow[a] < rows[b])
+				a++;
+			else if (c->prow[a] > rows[b])
+				b++;
+			else
+			{
+				rows[m++] = rows[b];
+				a++;
+				b++;
+			}
+		nrows = m;
+	}
 	has = palloc0(SIFT_COL_NWORDS(seg->nsb) * sizeof(uint64));
 	for (uint32 k = 0; k < nrows; k++)
 	{
@@ -679,6 +696,9 @@ prune_keys(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int col
 	c->prow = rows;
 	c->nprow = nrows;
 	c->ppred = i;
+	/* the directory of a list leaf holds each value's rows exactly (no two values share a fingerprint, or it was not written) */
+	if (seg->schema->cols[col].parent >= 0 && i < 64)
+		c->pexact |= UINT64CONST(1) << i;
 	return true;
 }
 
@@ -725,7 +745,8 @@ prune_point(SiftColSource *src, SiftColSegment *seg, ColCursor *c, int i, int co
 	int64	   *keys;
 	bool		ok;
 
-	if (c->prow != NULL || c->ptids || (keys = point_keys(t, &nkeys)) == NULL)
+	/* the lists of the values of a list leaf intersect: a row is kept for each value it must own */
+	if ((c->prow != NULL && seg->schema->cols[col].parent < 0) || c->ptids || (keys = point_keys(t, &nkeys)) == NULL)
 		return false;
 	/*
 	 * A list that names a good share of the rows is no lookup: the zones and the units answer it as well. So does one whose keys have many rows
@@ -1017,7 +1038,7 @@ prune_points_once(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const S
 			seg_test(src, seg, def, &preds[i], &t);
 		else
 			make_test(src, def, NULL, &preds[i], &t);
-		if (prune_point(src, seg, c, i, preds[i].col, &t, c->ckeep))
+		if (prune_point(src, seg, c, i, preds[i].col, &t, c->ckeep) && def->parent < 0)
 			break;
 	}
 	MemoryContextSwitchTo(old);
@@ -1066,6 +1087,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	{
 		/* the dictionary answers for the segment: no zone, summary or directory is read for its units */
 		c->prow = NULL;
+		c->pexact = 0;
 		c->ptids = false;
 		c->ptidv = NULL;
 		c->nptidv = 0;
@@ -1079,6 +1101,7 @@ prune_segment(SiftColSource *src, ColCursor *c, const SiftColPred *preds, int np
 	if (!cached || c->cgen != src->sig_gen || c->cseg != seg || c->cseg_gen != seg->entry.gen)
 	{
 		c->prow = NULL;
+		c->pexact = 0;
 		c->ptids = false;
 		c->ptidv = NULL;
 		c->nptidv = 0;
@@ -1496,6 +1519,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 				hi++;
 			cu->nprow = hi - lo;
 			cu->ppred = best->ppred;
+			cu->pexact = best->pexact;
 		}
 		else if (best->ptidv != NULL)
 		{
@@ -1699,6 +1723,14 @@ sift_col_point_narrow(const SiftColUnit *unit, SiftColSel *sel)
 	memcpy(sel->bits, keep, sel->nwords * sizeof(uint64));
 	cu->src->cnt.point_units++;
 	cu->src->cnt.point_rows += sift_col_sel_count(sel);
+}
+
+uint64
+sift_col_point_exact(const SiftColUnit *unit)
+{
+	const ColUnit *cu = unit->priv;
+
+	return cu->prow != NULL ? cu->pexact : 0;
 }
 
 void

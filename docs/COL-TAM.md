@@ -424,6 +424,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Decoding only the rows a filter keeps | works | works | a unit with few kept rows decodes them, and one the integer filters left few rows is narrowed to them |
 | Decoding straight into the executor's vector | works | partial | a leaf that is not wide decodes into the executor's buffer in its own type (the read shared with `sift_col`); wide leaves (numeric over 18 digits, interval, enum) decode, then copy |
 | Point directory and heap addresses of a key (`point_columns`, `point_tid_columns`) | works | n/a | a table has no index scan of its own: a btree serves point lookups |
+| Rows of the values of a list (`paths` of a list of strings or numbers) | works | missing | the point directory of a list's values lists the rows that own each value, exactly; a table has no directory of the elements of a list |
 | Units cut by a key (`key_cut`) | works | n/a | a table has no option surface; a lookup of a key reads the units of its superblocks |
 | Sorted runs and run heads (`order_columns`) | works | works | a table writes the run of its timestamp columns where the run takes at most 3% of a unit (a column loaded in order: its rows are the run, and a unit keeps the first and last keys); `ORDER BY .. LIMIT 32` of such a column reads no unit |
 | Run heads of a superblock, read without opening its unit | works | missing | a superblock of a table may hold write buffer rows and tombstones that its page masks do not show, so the unit is opened |

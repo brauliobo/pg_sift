@@ -437,6 +437,20 @@ cand_conjunct(AggExec *ex, uint64 *cand, SiftAggPred *p, const uint64 *pass, int
 }
 
 /* The rows the source's filters left, narrowed by the row level conjuncts the source did not apply; cand: the rows the source reads again, narrowed the same way */
+/* the unit's rows are exactly those the point directory lists for every element test of p (an AND of them): the conjunct holds for all of them */
+static bool
+elem_answered(AggExec *ex, const SiftAggPred *p, uint64 exact)
+{
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (!elem_answered(ex, p->child[i], exact))
+				return false;
+		return true;
+	}
+	return p->kind == SAP_ANY_ELEM && ex->ps[p->id].elem > 0 && (exact >> (ex->ps[p->id].elem - 1) & 1);
+}
+
 static void
 unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 {
@@ -454,6 +468,8 @@ unit_conjuncts(AggExec *ex, uint64 *rmask, uint64 *cand, int nrow)
 		SiftSrcStrTest *str = ex->ps[p->id].str;
 
 		if (p->level != 0 || p->late || (ex->pushed && ex->pushed[i]))
+			continue;
+		if (ex->npoint_elem > 0 && elem_answered(ex, p, sift_colsrc_point_exact(ex->src, u)))
 			continue;
 		if (str && sift_colsrc_filter_str(ex->src, u, str, rmask))
 		{

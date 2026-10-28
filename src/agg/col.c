@@ -401,6 +401,7 @@ col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *pr
 {
 	int			n = sift_aggzone_preds(&src->zones, src->cxt, NULL, prune, nprune, preds);
 
+	src->spoff = n;
 	for (int i = 0; i < src->nspred; i++)
 		preds[n++] = src->spred[i];
 	for (int i = 0; i < src->flt.n; i++)
@@ -431,6 +432,20 @@ col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint6
 	int			n = col_preds(src, prune, nprune, preds);
 
 	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept, rows);
+}
+
+/* the tests of prune_str whose rows the point directory of the unit answers exactly */
+static uint64
+col_point_exact(void *impl, const SiftSrcUnit *unit)
+{
+	ColSource  *src = impl;
+	uint64		bits = sift_col_point_exact(&src->unit),
+				mask = 0;
+
+	for (int i = 0; bits != 0 && i < src->nspred; i++)
+		if (src->spoff + i < 64 && (bits >> (src->spoff + i) & 1))
+			mask |= UINT64CONST(1) << src->spmap[i];
+	return mask;
 }
 
 static bool
@@ -822,6 +837,7 @@ static const SiftSrcProvider col_provider = {
 	.count_range = col_count_range,
 	.count_cmp = col_count_cmp,
 	.unit_count = col_unit_count,
+	.point_exact = col_point_exact,
 	.split = col_split,
 	.super_span = col_super_span,
 	.read = col_read,

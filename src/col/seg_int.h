@@ -321,6 +321,8 @@ typedef struct PointLeaf
 	uint32		count;
 	uint32		words;
 	bool		tids;			/* the slots list heap addresses (column format minor 16), not rows of the segment */
+	bool		zrows;			/* the lists of rows are coded as those of addresses (SIFT_CPOINT_MODE_ZROWS) */
+	uint32		ndense;			/* the keys that have no list (SIFT_CPOINT_DENSE), counted by sift_cseg_verify_points */
 } PointLeaf;
 
 /* The global order block of a leaf (col/gorder.h): stream offset and bytes, the directory read on first use */
