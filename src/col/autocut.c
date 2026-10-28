@@ -37,6 +37,7 @@
 #include "col/codec.h"
 #include "col/enc.h"
 #include "col/col.h"
+#include "col/preagg.h"
 #include "core/cmp.h"
 #include "col/setsum.h"
 #include "core/sql.h"
@@ -102,6 +103,17 @@ typedef struct Samp
 	int			nsb;
 	SiftKey	   *tid;			/* the address of each sampled row, the sampled superblocks side by side (superblock s starts at block s * SIFT_SB_PAGES) */
 } Samp;
+
+/* point_tid_columns is a list the user wrote: the 'auto: col' of an earlier build (col/keycols.c) is decided again after this choice, and lists rows on a key-cut index as point_columns does */
+static bool
+point_tid_set(Relation index)
+{
+	const char *opt = sift_col_options_point_tid_columns(index);
+	bool		autolist;
+
+	(void) sift_cpagg_auto_list(opt, &autolist);
+	return opt[0] != '\0' && !autolist;
+}
 
 static int
 cell_cmp(const void *a, const void *b)
@@ -555,7 +567,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->reason = "sift.col_format_minor is below 15";
 	else if (!dry && !sift_col_options_key_cut_auto(index))
 		v->reason = "key_cut is set";
-	else if (sift_col_options_point_tid_columns(index)[0] != '\0')
+	else if (point_tid_set(index))
 		v->reason = "point_tid_columns is set";
 	else if (sift_col_options_order_columns(index)[0] != '\0')
 		v->reason = "order_columns is set";

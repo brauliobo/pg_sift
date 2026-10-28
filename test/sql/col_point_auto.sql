@@ -1,15 +1,15 @@
--- The point directory by the default formula: an equality on an integer column of nearly unique values that does not follow the order of the table reads every unit
+-- The point directory of heap addresses by the default formula: an equality on an integer column of nearly unique values that does not follow the order of the table reads every unit
 -- (the keys of a unit span the whole range), so a CREATE INDEX whose benefit B (the speedup of the equality) is at least its cost C (the growth of the index and of the build)
--- writes the column to point_columns as 'auto: col' and says so. Not a column in heap order, not one of few values, not a table where the lookup is cheap, not an option the user set.
+-- writes the column to point_tid_columns as 'auto: col' and says so. Not a column in heap order, not one of few values, not a table where the lookup is cheap, not an option the user set.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
-CREATE TABLE pa (id int, rid int8, a int, b int, c int, d int, e int, f int) WITH (autovacuum_enabled = false);
+CREATE TABLE pa (id int, rid int8, a int, b int, c int, d int, e int, f int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO pa SELECT g, hashint8extended(g, 9) & 4611686018427387903, (hashint8extended(g, 1) & 1023)::int, (hashint8extended(g, 2) & 1023)::int, (hashint8extended(g, 3) & 1023)::int,
-	(hashint8extended(g, 4) & 1023)::int, (hashint8extended(g, 5) & 1023)::int, (hashint8extended(g, 6) & 1023)::int FROM generate_series(1, 400000) g;
+	(hashint8extended(g, 4) & 1023)::int, (hashint8extended(g, 5) & 1023)::int, (hashint8extended(g, 6) & 1023)::int, (hashint8extended(g, 7) & 127)::int FROM generate_series(1, 400000) g;
 VACUUM (FREEZE, ANALYZE) pa;
-CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE 'point_columns=%'), '-') $$;
+CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE 'point_tid_columns=%'), '-') $$;
 
 -- the column of random values: chosen, with the numbers of the formula
 SET client_min_messages = notice;
@@ -22,24 +22,32 @@ CREATE TABLE pas AS SELECT * FROM pa WHERE id <= 20000;
 VACUUM (FREEZE, ANALYZE) pas;
 CREATE INDEX pas_rid ON pas USING sift_col (rid, a, b, c, d, e, f);
 -- the options the user sets are kept
-CREATE INDEX pa_off ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'off');
+CREATE INDEX pa_off ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'off');
 CREATE INDEX pa_user ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'a');
 CREATE INDEX pa_tid ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid_columns = 'rid');
-SELECT i AS idx, popt(i::regclass) AS point_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid']) i ORDER BY 1;
+CREATE INDEX pa_plain ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_columns = 'rid');
+SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid', 'pa_plain']) i ORDER BY 1;
+
+-- an index cut by a key (key_cut) keeps the directory, and a rebuild keeps both: the choice of the build does not stop the cut
+CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f);
+SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
+REINDEX INDEX pa_kc;
+SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
+DROP INDEX pa_kc;
 
 -- a rebuild decides again from the data it finds and keeps the choice
 REINDEX INDEX pa_rid;
 REINDEX INDEX pa_id;
 SELECT popt('pa_rid') AS rid_after_reindex, popt('pa_id') AS id_after_reindex;
-ALTER INDEX pa_rid SET (point_columns = 'off');
+ALTER INDEX pa_rid SET (point_tid_columns = 'off');
 REINDEX INDEX pa_rid;
 SELECT popt('pa_rid') AS rid_off;
-ALTER INDEX pa_rid RESET (point_columns);
+ALTER INDEX pa_rid RESET (point_tid_columns);
 REINDEX INDEX pa_rid;
 SELECT popt('pa_rid') AS rid_decided_again;
 
 -- the answers are those of the table
-DROP INDEX pa_id, pa_few, pa_off, pa_user, pa_tid;
+DROP INDEX pa_id, pa_few, pa_off, pa_user, pa_tid, pa_plain;
 SELECT rid AS k FROM pa WHERE id = 123457 \gset
 SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*), min(id) FROM pa WHERE rid = :k;

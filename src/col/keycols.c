@@ -689,8 +689,9 @@ analyze_if_unknown(Relation heap, Relation index)
 
 /*
  * The point directory by the default formula. An equality on an integer column of nearly unique values that does not follow the order of the heap
- * reads every unit, whatever the zones and the key lists: the keys are spread over the whole range of each unit. The directory (option point_columns) answers it in a
- * flat 0.2 M instructions. Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
+ * reads every unit, whatever the zones and the key lists: the keys are spread over the whole range of each unit. The directory of heap addresses (option point_tid_columns: an equality or
+ * an IN list returns the addresses with no unit read) answers it in a flat 0.2 M instructions, and a 16-key IN list in 0.49 M (a b-tree 0.50 M; the directory of
+ * rows, point_columns, reads a unit for each key: 0.74 M). Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
  * 0.17 M + 5 instructions a row), 0.2 M with it (a b-tree 0.14 M); the index 16.5 bytes a row larger (8.3 to 25.4 MB at 1,000,000 int8 rows, a b-tree 22.5 MB); CREATE INDEX
  * +21% instructions (1,756 to 2,126 a row, 1,719 to 2,092 for int4). B = log2(S) / log2(1.05) against C = G / 3 + W / 5.
  */
@@ -796,6 +797,7 @@ sift_col_auto_point(Relation heap, Relation index)
 {
 	const char *opt;
 	const char *ordopt;
+	const char *plain;
 	const SiftColRel *rel;
 	StringInfoData list;
 	bool		autolist;
@@ -805,10 +807,11 @@ sift_col_auto_point(Relation heap, Relation index)
 	if (sift_col_format_minor < SIFT_COL_FORMAT_PRESENCE)
 		return;
 	rel = sift_col_rel_private(index, CurrentMemoryContext);	/* the options an earlier default wrote reach the relation here */
-	opt = sift_col_options_point_columns(index);
+	opt = sift_col_options_point_tid_columns(index);
+	plain = sift_col_options_point_columns(index);
 	ordopt = sift_col_options_order_array_columns(index);
 	(void) sift_cpagg_auto_list(opt, &autolist);
-	if (sift_col_options_point_tid_columns(index)[0] != '\0' || (opt[0] != '\0' && !autolist))
+	if (plain[0] != '\0' || (opt[0] != '\0' && !autolist))
 		return;
 	rows = heap->rd_rel->reltuples;
 	initStringInfo(&list);
@@ -838,14 +841,14 @@ sift_col_auto_point(Relation heap, Relation index)
 		append_name(&list, leaf_name(index, d));
 		base += POINT_AUTO_DIR_BYTES;
 		ereport(NOTICE,
-				(errmsg("sift_col index \"%s\": point_columns includes \"%s\", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory; predicted index size %+.0f%%, benefit %.0f against cost %.0f)",
+				(errmsg("sift_col index \"%s\": point_tid_columns includes \"%s\", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %.1f M instructions against %.1f M with the directory; predicted index size %+.0f%%, benefit %.0f against cost %.0f)",
 						RelationGetRelationName(index), leaf_name(index, d), (POINT_AUTO_FIXED + POINT_AUTO_ROW * rows) / 1e6, POINT_AUTO_LOOKUP / 1e6, G, B, C),
-				 errhint("ALTER INDEX %s SET (point_columns = 'off') and REINDEX keep the index without it.", RelationGetRelationName(index))));
+				 errhint("ALTER INDEX %s SET (point_tid_columns = 'off') and REINDEX keep the index without it.", RelationGetRelationName(index))));
 	}
 	if (list.len == 0)
 	{
 		if (opt[0] != '\0')
-			sift_col_set_option(index, "point_columns", "auto");
+			sift_col_set_option(index, "point_tid_columns", "auto");
 		return;
 	}
 	{
@@ -853,7 +856,7 @@ sift_col_auto_point(Relation heap, Relation index)
 
 		initStringInfo(&v);
 		appendStringInfo(&v, "auto: %s", list.data);
-		sift_col_set_option(index, "point_columns", v.data);
+		sift_col_set_option(index, "point_tid_columns", v.data);
 		pfree(v.data);
 	}
 }

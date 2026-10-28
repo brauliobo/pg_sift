@@ -742,8 +742,10 @@ notice_point_tid(Relation index)
 	const SiftColLeafStats *ls;
 	const SiftColIndexMeta *d;
 	double		units = 0;
+	bool		autolist;
 
-	if (sift_col_options_point_tid_columns(index)[0] == '\0')
+	(void) sift_cpagg_auto_list(sift_col_options_point_tid_columns(index), &autolist);
+	if (sift_col_options_point_tid_columns(index)[0] == '\0' || autolist)	/* the choice of the build says so itself */
 		return;
 	if (sift_col_options_key_cut(index)[0] != '\0')
 	{
