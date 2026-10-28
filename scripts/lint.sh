@@ -25,6 +25,7 @@ CHECKS=(
 	'slugs		scripts/check-slugs.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/ci.sh --selftest'
+	'land		scripts/land.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'
 )
 

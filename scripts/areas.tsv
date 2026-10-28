@@ -86,6 +86,8 @@
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb
 # the focus table and its generator: read by `scripts/ci.sh affected --focus` only (a local shortcut; CI runs the jobs of the map above)
 ^scripts/focus(-gen\.sh|\.tsv)$	-
+# the landing script: run by people, by no job
+^scripts/land(\.sh|-selftest\.sh|-union\.py)$	-
 
 # Focused performance uses the groups above; shared build/SQL cover every group. {perf} marks what cannot change the extension it builds twice
 # (the gate, its selector, the CI machinery): identical builds measure only noise, so they select nothing (the nightly run still measures everything).

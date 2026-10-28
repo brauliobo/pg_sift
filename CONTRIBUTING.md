@@ -77,6 +77,10 @@ Before sending a change:
 
 Contributions are licensed under the [PostgreSQL License](LICENSE) like the rest of the project.
 
+## Merging
+
+`scripts/land.sh PR` lands one pull request: it merges the tip of the PR's base into the branch (conflicts only in lists both sides add to, in the CHANGELOG and in generated files are resolved; any other conflict is exit 2, `SOURCE CONFLICT`: merge the tip yourself), runs `scripts/lint.sh`, the generator checks and the privacy gate, pushes only when needed, waits for the required checks (`neutral` and `lint`, or the branch protection list) and merges by rebase, or by squash when the branch holds a merge commit. Exit codes: 0 merged, 1 required checks red, 2 source conflict, 3 merge commit failed, 4 a gate is red, 5 the PR deletes files (`ALLOW_DELETE=1` after checking they are its own), 6 closed, 75 try again (checks pending, the tip or the branch moved). `--dry-run` prints the plan and pushes and merges nothing. Landings take turns on one kernel lock (`land.lock`), which goes away with its holder however it ends; nothing matches process names. State and settings are outside git, in `$XDG_STATE_HOME/pg_sift/land` (`LAND_DIR`): the lock, `MERGED.md`, and `privacy.deny`, the private list of names the privacy gate refuses (one regular expression per line; `LAND_DENY` names another file; without it the gate fails closed). `scripts/land.sh --selftest` is part of `scripts/lint.sh`.
+
 ## Releasing
 
 Write `docs/releases/vX.Y.Z.md` from `docs/releases/TEMPLATE.md`, keep the release notes under `## Unreleased` of the CHANGELOGs, push `main`, then
