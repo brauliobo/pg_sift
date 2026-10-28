@@ -1,5 +1,5 @@
 -- the shape on the orders: an item quantity against the store and the customer of the order (NULL for one order in ten)
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- sets: K4000
 -- key: -

@@ -96,7 +96,7 @@ def cmd_section(args):
     args.threads = effective(args, plan=False)   # the tables do not exist yet
     lanes = [e for e in SECTION_LANES if e in args.engines]
     gate('section', [])   # no lane has its database yet: each is dropped and loaded below
-    read = load_queries(['03'])[0]
+    read = load_queries(['revenue-per-month'])[0]
     try:
         for eid in lanes:
             log(f'section on {eid}, {args.rows:,} rows')

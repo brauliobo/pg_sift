@@ -1,5 +1,5 @@
 -- the @? operator, && and || of members and the path as an aggregate FILTER
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

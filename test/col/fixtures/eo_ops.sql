@@ -1,5 +1,5 @@
 -- an element tested against a column of its own row: = <> < <= > >= (the column and the member are int4), NULL columns, JSON null and missing members
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

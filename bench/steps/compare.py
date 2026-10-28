@@ -26,7 +26,6 @@ import store_charts  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 MINE = ('sift', 'sift_table')
-SLUG = store_charts.question_slugs()
 NOT = 'not measured'
 LABEL = {'pg': 'PostgreSQL', 'ch': 'ClickHouse', 'es': 'Elasticsearch', 'citus': 'Citus columnar', 'duckdb': 'pg_duckdb'}
 
@@ -71,7 +70,7 @@ def store_pairs(S, D, tier, e, qs):
             r = S.lat(tier, e, q, 'warm')
             theirs, mine = (r['value'] if r else None), best_mine(S, tier, q)
         if theirs and mine:
-            out.append((SLUG[q], theirs / mine))
+            out.append((q, theirs / mine))
     return out
 
 
@@ -154,10 +153,10 @@ def rows_of(results):
     def store_row(name, qq, st=S, D=D1, tier=t1):
         rows.append((name, {e: cell(store_pairs(st, D, tier, e, qq)) for e in est}))
 
-    store_row('Point lookup by key', ['01'])
-    store_row('Counts and sums by group, distinct counts, time buckets', ['02', '03', '04', '06'])
-    store_row('Filtered average, range count', ['05', '07'])
-    store_row('Text search with filters: a count, a group-by, the newest 10 (pg_duckdb: a substring match)', ['08', '09', '10'])
+    store_row('Point lookup by key', ['point-lookup'])
+    store_row('Counts and sums by group, distinct counts, time buckets', ['orders-per-country', 'revenue-per-month', 'top-categories', 'customers-per-month'])
+    store_row('Filtered average, range count', ['average-shipped-order', 'big-recent-orders'])
+    store_row('Text search with filters: a count, a group-by, the newest 10 (pg_duckdb: a substring match)', ['search-count', 'search-facets', 'search-newest'])
     if SS:
         t10 = SS.tier_of(10_000_000, 3)
         if t10:
@@ -326,7 +325,8 @@ def generic_block(results):
                                                    '; '.join('%s (%s)' % (reason.replace('|', '\\|'), ', '.join('`%s`' % c for c in cs)) for reason, cs in why.items()) or '-'))
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
-            'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above).', ''] + head + body
+            'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
+            'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
 
 
 def sources_block(results):
@@ -356,7 +356,7 @@ def numbers_block(results):
             vals = {e: v[0] for e, v in vals.items() if v}
             lo = min(vals.values())
             cells = [(f'**{extras.ms(vals[e])}**' if vals[e] <= lo * (1 + TIE) else extras.ms(vals[e])) if e in vals else 'n/a' for e in es]
-            body.append(f'| Q{q} {SLUG[q]} | ' + ' | '.join(cells) + ' |')
+            body.append(f'| {q} | ' + ' | '.join(cells) + ' |')
         return head + body
 
     qs = list(S.queries)

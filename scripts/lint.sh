@@ -22,6 +22,7 @@ CHECKS=(
 	'approx		scripts/check-approx.sh'
 	'kernels	python3 scripts/check-kernels.py'
 	'memory		scripts/check-memory.sh && scripts/check-memory.sh --selftest'
+	'slugs		scripts/check-slugs.sh'
 	'leakcheck	scripts/leakcheck.sh selftest'
 	'plan		scripts/ci.sh --selftest'
 	'diff-fuzz	test/fuzz/diff_fuzz.py --selftest'

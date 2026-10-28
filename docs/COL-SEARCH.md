@@ -132,13 +132,13 @@ Top-N, same table and conditions (`title @@> 'wireless headphones'` unless noted
 
 | Query | 1M before | 1M after | 10M before | 10M after |
 |---|---|---|---|---|
-| `ORDER BY created_at DESC, id DESC LIMIT 10` (Q10) | 7.1 ms | 2.4 ms | 191 ms | 19.5 ms |
+| `ORDER BY created_at DESC, id DESC LIMIT 10` (search-newest) | 7.1 ms | 2.4 ms | 191 ms | 19.5 ms |
 | `ORDER BY created_at, id LIMIT 10` | 7.5 ms | 3.1 ms | 288 ms | 24.5 ms |
-| `... LIMIT 100` (Q10 shape) | 6.0 ms | 3.1 ms | 189 ms | 22.0 ms |
+| `... LIMIT 100` (search-newest shape) | 6.0 ms | 3.1 ms | 189 ms | 22.0 ms |
 | `ORDER BY amount DESC, id LIMIT 20` | 101 ms | 6.7 ms | 842 ms | 38.2 ms |
 | `ORDER BY customer_id, id LIMIT 10` | 18.9 ms | 4.2 ms | 487 ms | 34.1 ms |
-| Q10 shape, 292k matches (`wireless`) | 96 ms | 5.1 ms | 785 ms | 29.1 ms |
-| Q10 shape, no search, filters only | 91.7 ms | 4.2 ms | 1196 ms | 19.5 ms |
+| search-newest shape, 292k matches (`wireless`) | 96 ms | 5.1 ms | 785 ms | 29.1 ms |
+| search-newest shape, no search, filters only | 91.7 ms | 4.2 ms | 1196 ms | 19.5 ms |
 | `ORDER BY id DESC LIMIT 10` (id follows the table) | 0.41 ms | 0.32 ms | 11 ms (default plan) | 0.74-1.1 ms |
 
 Against ordered btrees (pgbench latency, serial; orders of 1M and 10M rows with random titles of three words from thirty, a btree on `id` and on `created_at`, `title @@> 'wireless headphones'`, about 0.5% of the rows; host CPU pressure 4-6%, I/O 0% before and after each batch). "Before" is `sift.enable_topn = off`, which leaves the btree plan where there is one:
@@ -150,7 +150,7 @@ Against ordered btrees (pgbench latency, serial; orders of 1M and 10M rows with 
 | `ORDER BY amount DESC, id LIMIT 20` | 1.3 ms | 1.4 ms | 26.4 ms | 10.6 ms |
 | `ORDER BY customer_id, id LIMIT 10` | 1.2 ms | 1.0 ms | 22.8 ms | 10.2 ms |
 
-At 10M the top-N on `id` is 1.25x slower than the btree (0.7 against 0.57 ms, planning included): opening the two posting lists copies their bytes, which the btree scan of 2,000 rows does not pay (2.0 ms before the best-superblock-first order: one unit read instead of eight). Where the btree plan stays (`created_at`) the two columns differ by noise. `created_at` does not follow the table, so Q10 reads all units whose zone can beat the heap; the gain is the avoided heap fetches and sort. A column that follows the table (`id`) stops after the first window: 2 units of 496 superblocks at 1M, 8 units at 10M.
+At 10M the top-N on `id` is 1.25x slower than the btree (0.7 against 0.57 ms, planning included): opening the two posting lists copies their bytes, which the btree scan of 2,000 rows does not pay (2.0 ms before the best-superblock-first order: one unit read instead of eight). Where the btree plan stays (`created_at`) the two columns differ by noise. `created_at` does not follow the table, so search-newest reads all units whose zone can beat the heap; the gain is the avoided heap fetches and sort. A column that follows the table (`id`) stops after the first window: 2 units of 496 superblocks at 1M, 8 units at 10M.
 
 Selectivity at 1M (`... AND status = 'shipped' GROUP BY category`, serial):
 

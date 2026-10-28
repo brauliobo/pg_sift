@@ -1,5 +1,5 @@
 -- the rows that match, not only their number: an element equal to the column of another row (the neighbour holds the value of the next one) must not match
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

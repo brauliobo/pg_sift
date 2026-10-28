@@ -1,5 +1,5 @@
 -- preagg: rollup: grouping sets (ROLLUP, CUBE, an empty set) over the dims, each set folding the tuples under its own columns
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

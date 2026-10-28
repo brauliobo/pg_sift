@@ -156,7 +156,7 @@ def measure(sessions, queries, args):
             noisy = not quiet or busy()
             if not noisy:
                 break
-            log('%s: the host was busy, measuring again' % q.name)
+            log('%s: the host was busy, measuring again' % q.id)
         for arm, _, _, _ in LANES:
             ms, out, note, used[q.id, arm] = cells[arm]
             if ms and arm != 'pg' and cells['pg'][1] is not None:
@@ -164,7 +164,7 @@ def measure(sessions, queries, args):
                     note += ' RESULT DIFFERS'
                 elif 'substring' in note:
                     note += ', same rows'
-            rows.append(dict(version=args.version, case='%s %s' % (q.id, q.name), arm=arm, metric='warm_ms', note=(note + (' NOISY' if noisy else '')).strip(), load=open('/proc/loadavg').read().split()[0],
+            rows.append(dict(version=args.version, case=q.id, arm=arm, metric='warm_ms', note=(note + (' NOISY' if noisy else '')).strip(), load=open('/proc/loadavg').read().split()[0],
                              **stats(ms, note)))
     return rows, used
 
@@ -178,7 +178,7 @@ def stats(ms, note):
 def cold(queries, ports, used, args, rows):
     for q in queries:
         for arm, srv, table, setting in LANES:
-            warm = next(r for r in rows if r['case'] == '%s %s' % (q.id, q.name) and r['arm'] == arm and r['metric'] == 'warm_ms')
+            warm = next(r for r in rows if r['case'] == q.id and r['arm'] == arm and r['metric'] == 'warm_ms')
             times = []
             if warm['value'] not in ('NA', 'error'):
                 for _ in range(args.runs):

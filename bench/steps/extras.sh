@@ -4,7 +4,7 @@
 # scratch cluster of its own (steps/scratch.sh: systemd scope, never an existing cluster), holds /tmp/sift-perf.lock (blocking) for its timed part, writes
 # bench/results/<name>.tsv (steps/extras.py: one row per number, with the load average while it ran) and, with --docs, the generated blocks.
 #
-#   rollup       element rollups: j02 and j17 as the normal plan, the scan of every unit and the answer from the rollups, 100k / 1M / 10M documents; index size and
+#   rollup       element rollups: group-elem and item-agg-having as the normal plan, the scan of every unit and the answer from the rollups, 100k / 1M / 10M documents; index size and
 #                CREATE INDEX cost with and without the rollups (bench/sql/jsonb/rollup/run.sql). 10M needs about 25 GB: SCRATCH_MEM=30G, ROLLUP_SIZES to choose
 #   tablewrites  sift_table against the heap, the same orders loaded, queried, updated, deleted and vacuumed (bench/tbl.sh), a COPY of 5M rows in one
 #                transaction (tbl-bigcopy.sh) and a stress run (tbl-stress.sh), on 3.0.2 and 3.1.0
@@ -115,7 +115,7 @@ item_rollup() {
 					'build serial ms: min '*) N=$builds MIN=$(awk '{print $5}' <<<"$line") emit "build@$k" "$variant" wall_ms "$(awk '{print $7}' <<<"$line")" ;;
 					'build 2 workers ms: min '*) N=$builds MIN=$(awk '{print $6}' <<<"$line") emit "build@$k" "$variant" wall_ms_2_workers "$(awk '{print $8}' <<<"$line")" ;;
 					'index bytes: '*) emit "index@$k" "$variant" bytes "${line#index bytes: }" ;;
-					j??*' normal/scanned/pre ms: '*)
+					*' normal/scanned/pre ms: '*)
 						local q=${line%% *} a b c
 						read -r a b c <<<"$(sed 's/.*ms: //; s/ \/ / /g' <<<"$line")"
 						emit "$q@$k" normal ms "$a" "rollup=$variant"; emit "$q@$k" scanned ms "$b" "rollup=$variant"; emit "$q@$k" rollup ms "$c" "rollup=$variant" ;;
@@ -124,7 +124,7 @@ item_rollup() {
 		done
 		build_psql -d postgres -c "DROP DATABASE jb" >/dev/null
 	done
-	finish_item rollup "Element rollups of jsonb arrays: j02 and j17 as the normal plan, the scan of every unit and the answer from the rollups (bench/sql/jsonb/rollup/run.sql)." \
+	finish_item rollup "Element rollups of jsonb arrays: group-elem and item-agg-having as the normal plan, the scan of every unit and the answer from the rollups (bench/sql/jsonb/rollup/run.sql)." \
 		--meta "build=$VERSION" --meta "method=server-side median ms of 21 runs (normal plan: 7), one backend, no parallel workers, seq_page_cost 10000, rollup worker off; index and build rows with the default rollups and with rollup = 'off'"
 }
 

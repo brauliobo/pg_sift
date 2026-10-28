@@ -1,5 +1,5 @@
 -- two members of the same element, a member of another element does not count, a category list, and the EXISTS under OR and NOT
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

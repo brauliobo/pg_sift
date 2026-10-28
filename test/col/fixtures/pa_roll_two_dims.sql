@@ -1,5 +1,5 @@
 -- preagg: rollup: the groups of two dims of the items (category, kind) with count, sum, count of a float and avg: the tuples of the unit's rollup
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

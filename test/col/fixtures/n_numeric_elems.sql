@@ -1,5 +1,5 @@
 -- numeric columns of the order next to the unnested items: a row level numeric in a predicate and in an expression with an item level integer
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

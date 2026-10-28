@@ -1,5 +1,5 @@
 -- LEFT JOIN LATERAL whose own conditions (the sub-select's WHERE, the ON clause) say which items exist: an order none of whose items passes is one NULL tuple
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

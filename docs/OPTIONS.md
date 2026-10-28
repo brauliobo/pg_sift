@@ -204,10 +204,10 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col` · default · since 2.0 · default true
 
 - **What it does:** VACUUM gives the free blocks at the end of the file back to the operating system
-- **Gain:** Q02 after VACUUM 11.49 to 7.75 ms (median, 1,000,000 rows after update/delete churn)
+- **Gain:** orders-per-country after VACUUM 11.49 to 7.75 ms (median, 1,000,000 rows after update/delete churn)
 - **Impact:** index size: smaller: free MiB inside the column file after VACUUM 16.055 to 0.008; table and indexes 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: update/delete throughput medians unchanged; VACUUM takes a brief exclusive lock that it skips when busy; other: a brief exclusive lock when it is free; none while a physical standby streams (a cut would stall its replay for as long as its longest query on the index runs), the free end then stays in the file for the next rewrite
 - **When:** VACUUM of a sift_col index: the exclusive lock only if free at once, tail segments copied into free runs, then the free end returned. A VACUUM that uses parallel index workers leaves it to the next one.
-- **Default:** true — On, as for a heap: table and indexes 200.3 to 154.5 MiB and Q02 11.49 to 7.75 ms after churn (1,000,000 rows); the lock is brief and skipped when busy, update/delete throughput unchanged.
+- **Default:** true — On, as for a heap: table and indexes 200.3 to 154.5 MiB and orders-per-country 11.49 to 7.75 ms after churn (1,000,000 rows); the lock is brief and skipped when busy, update/delete throughput unchanged.
 - **Turn off:** ALTER INDEX .. SET (vacuum_truncate = false), no REINDEX; RESET restores true. sift.vacuum_rewrite_limit = 0 only stops the copy of tail segments, not the truncation of a free end.
 - **Upgrade from 3.5:** unchanged
 - **Advice:** Leave on. Turn it off (ALTER INDEX SET vacuum_truncate = false) only if the brief exclusive lock is not acceptable; while a physical standby streams VACUUM cuts nothing anyway.
@@ -786,7 +786,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 `sift_col`, `sift_table` · default · since 3.4 · default on
 
 - **What it does:** the rows of a lookup table are read from the leaves of a sift_col index of it that holds the columns the join reads, not from the heap
-- **Gain:** a table of 200,000 rows loaded by the query (1,000,000 orders): 33.5 to 23.3 ms; the load of the fact-first TPC-H-like Q3 at 400,000 lineitem rows: 102 M to 41 M instructions
+- **Gain:** a table of 200,000 rows loaded by the query (1,000,000 orders): 33.5 to 23.3 ms; the load of the fact-first `tpch_shipping_priority` case at 400,000 lineitem rows: 102 M to 41 M instructions
 - **Impact:** index size: as `sift.agg_lookup_pushdown`; build, merge and writes: as `sift.agg_lookup_pushdown`; other: none: the same memory as the load from the heap
 - **When:** A joined table with a sift_col index that holds its join columns (integer, date, timestamp, text, numeric of up to 18 digits) and no value its leaves cannot store; the first query after a write to the table, or any query when the lookup cache is off. A table cached from an earlier query is not loaded again.
 - **Default:** on — On: the heap is read a tuple at a time (about 160 ns a row read); the leaves are decoded a unit at a time, and the conditions `column <op> constant` of the table are tested on them before a tuple is made. The result is the same rows.

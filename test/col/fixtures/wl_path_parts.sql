@@ -1,5 +1,5 @@
 -- jsonb_path_exists on the nested array of a document that is an index expression: a lax $.parts[*] with a string member of an astext leaf
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

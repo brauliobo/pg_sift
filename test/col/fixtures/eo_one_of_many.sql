@@ -1,5 +1,5 @@
 -- several elements per row and one test per element: the same element must pass the comparison with the column and the one with a literal
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

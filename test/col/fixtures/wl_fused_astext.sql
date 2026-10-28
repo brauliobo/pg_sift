@@ -1,5 +1,5 @@
 -- per-item arms over a text leaf with the cast in the aggregate: the arms are fused, the cast guarded for the scores that are no number
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

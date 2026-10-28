@@ -108,7 +108,7 @@ and on whatever else the host runs. A cell the engine cannot run is `NA`, one wh
 | `dataset` | `articles`, `places` |
 | `tier` | `slim`, `ab`, `full`, `slim-cold`, `ab-cold`, `full-cold` (rows of the earlier sessions say `quick`) |
 | `engine` | `sift`, `sift_nopos` (`positions = off`), `elasticsearch`, `pg_search`, `pg_textsearch`, `rum`, `bm25` (pgx-bm25); `-` for host rows |
-| `class` | articles: `and or phrase mixed count filter join`; places: `p1 p2 p3 p4 w1 a2 a2s a3 x2`; `-` for build and host rows |
+| `class` | articles: `and or phrase mixed count filter join`; places: `prefix-1 prefix-2 prefix-3 prefix-4 whole-word word-prefix-2 word-prefix-1 name-region-country name-country`; `-` for build and host rows |
 | `variant` | places workload `top boost filter count scan` (cold: the workload too); `emulation` on the build rows of the extra columns and indexes of an emulated workload; `forcemerge` on the Elasticsearch build rows of its force-merge (`build_s` the merge time, `index_mib` the size before it; the unmarked row is the bulk load and refresh and the size after the merge); `-` otherwise |
 | `metric` | `qps` (articles, 8 clients), `p50_ms` / `p95_ms` (places, 1 client), `cold_p50_ms` / `cold_max_ms` (tier `<tier>-cold`), `index_mib`, `build_s` (CREATE INDEX; Elasticsearch: bulk load and refresh), `setup_s` (work before it, rum's generated column), `heap_growth_mib` (table growth of that setup), `load_1m`; host rows (`engine` `-`): `corpus` (documents of the tier), `wall_s` (seconds of a phase of the session: `variant` dump, build, cells, ...), `session` (the whole session) |
 | `value`, `min`, `max` | median over the interleaved rounds and its range (`NA` / `error` as above); one build per engine for the build metrics |
@@ -207,7 +207,7 @@ host: read it with the per-round values (`values`).
 ### Regression check
 
 `bench/bench regress --run` builds sift from this checkout and the reference `sift_ref` from the git ref `--ref` (default the tag `SIFT_REF` of `versions.env`, v1.1.0, under the extension name `pg_sift_ref`),
-measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `p1 p3 w1 a3` with the workloads `top boost`; `--engines sift,sift_ref,sift_nopos`
+measures both on the articles and places with a reduced matrix (articles `and or phrase count filter join`; places classes `prefix-1 prefix-3 whole-word name-region-country` with the workloads `top boost`; `--engines sift,sift_ref,sift_nopos`
 and `--classes`, `--workloads` widen it) with 3 rounds, and compares each cell with its reference: queries per second, p50 latency, cold-cache p50, index size and CREATE INDEX time. A cell is a
 REGRESSION when the new value is worse by more than 5% **and** by more than 2 combined standard errors (`sqrt(se_new^2 + se_ref^2)`); a cell that fails on the new engine only is one too, a cell that fails on both is an
 ERROR. Builds and cold-cache cells are single measurements: 15% relative error is assumed for them (`--noise`). The exit status is 1 on a regression, 2 on an ERROR or when nothing could be compared. `regress`
@@ -344,16 +344,16 @@ the `shared_buffers` of the Postgres engines.
 readers run; WAL bytes from `pg_current_wal_lsn`; it changes the documents, so it runs last in a round and a run with it should not be compared with one without). Defaults of `workload`: 8 clients, 5 s warm-up, 30 s timed,
 `statement_timeout` 120 s. `workload` and `suite` are `run --dataset articles` over the classes (and engines) they select.
 
-Places classes are what a user has typed: `p1`-`p4` a name's first word cut to 1-4 letters, `w1` a whole
-word, `a2`/`a2s` two words (last cut to 2 / 1 letters), `a3` name, region and country word, `x2` name word
+Places classes are what a user has typed: `prefix-1` to `prefix-4` a name's first word cut to 1-4 letters, `whole-word` a whole
+word, `word-prefix-2`/`word-prefix-1` two words (last cut to 2 / 1 letters), `name-region-country` name, region and country word, `name-country` name word
 plus country word; workloads `top` (top-20), `boost` (name matches x3), `filter` (`country_code = 'US'`),
 `count`, `scan` (unordered, `population >= 100000`).
 
 ## Analytics (sift_col)
 
 `bench/bench analytics run` measures aggregate queries over jsonb (objects with dynamic keys, arrays of objects) instead of text search:
-a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), the queries S1-S7 on the store sets K10, K400 and K4000 and the
-whole-table scans G1-G8, as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
+a deterministic orders corpus (1.2M orders by default, `--scale 10` for 12M), the seven set reports on the store sets K10, K400 and K4000 and the
+eight whole-table scans (`whole-*`), as the CPU time and instructions of one backend with the baseline plan against the sift_col plan, optionally
 against flat tables and a throwaway ClickHouse; `analytics clickbench` runs the 43 queries of ClickBench. It uses a cluster of its own
 
 ## Analytics for everyone: the orders dataset (`bench/bench store`)

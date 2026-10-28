@@ -6,9 +6,9 @@ DIR holds countryInfo.txt, admin1CodesASCII.txt and featureCodes_en.txt, CITIES_
 dump such as cities500.txt. Writes OUTDIR/places.tsv (id, name, alternate_names, admin1, country,
 country_code, feature, population) and OUTDIR/queries.tsv (id, class, q): 300 typed queries per class
 sampled from the places themselves, the way a user types them:
-  p1-p4  first word of a name cut to 1-4 letters      w1   a whole first word
-  a2     two words, the last cut to 2 letters         a2s  the same cut to 1 letter
-  a3     name word, region word, country word         x2   name word and country word
+  prefix-1 to prefix-4  first word of a name cut to 1-4 letters      whole-word     a whole first word
+  word-prefix-2         two words, the last cut to 2 letters         word-prefix-1  the same cut to 1 letter
+  name-region-country   name word, region word, country word        name-country   name word and country word
 GeoNames data is CC BY 4.0 (https://www.geonames.org).
 """
 import csv, os, random, re, sys
@@ -54,12 +54,12 @@ def main(d, cities, out, seed):
                 k += 1
 
     for k in (1, 2, 3, 4):
-        emit('p%d' % k, lambda nw, rw, cw, k=k: nw[0][:k] if nw else None)
-    emit('w1', lambda nw, rw, cw: nw[0] if nw else None)
-    emit('a2', lambda nw, rw, cw: nw[0] + ' ' + (rw or cw or ['x'])[0][:2] if nw and (rw or cw) else None)
-    emit('a2s', lambda nw, rw, cw: nw[0] + ' ' + (rw or cw or ['x'])[0][:1] if nw and (rw or cw) else None)
-    emit('a3', lambda nw, rw, cw: ' '.join([nw[0], rw[0], cw[0]]) if nw and rw and cw else None)
-    emit('x2', lambda nw, rw, cw: nw[0] + ' ' + cw[0] if nw and cw else None)
+        emit('prefix-%d' % k, lambda nw, rw, cw, k=k: nw[0][:k] if nw else None)
+    emit('whole-word', lambda nw, rw, cw: nw[0] if nw else None)
+    emit('word-prefix-2', lambda nw, rw, cw: nw[0] + ' ' + (rw or cw or ['x'])[0][:2] if nw and (rw or cw) else None)
+    emit('word-prefix-1', lambda nw, rw, cw: nw[0] + ' ' + (rw or cw or ['x'])[0][:1] if nw and (rw or cw) else None)
+    emit('name-region-country', lambda nw, rw, cw: ' '.join([nw[0], rw[0], cw[0]]) if nw and rw and cw else None)
+    emit('name-country', lambda nw, rw, cw: nw[0] + ' ' + cw[0] if nw and cw else None)
     with open(os.path.join(out, 'queries.tsv'), 'w', encoding='utf-8') as f:
         for i, (cls, q) in enumerate(queries, 1):
             f.write('%d\t%s\t%s\n' % (i, cls, esc(q)))

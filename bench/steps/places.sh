@@ -24,8 +24,8 @@
 set -euo pipefail
 mode=${1:-quick}; what=${2:-run}; check=${3:-all}
 case $mode in
-  quick) export TIER=Q; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count} ;;
-  full)  export TIER=F; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-p1 p2 p3 p4 w1 a2 a2s a3 x2}; WLS=${WLS:-top boost filter count scan} ;;
+  quick) export TIER=Q; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-prefix-1 prefix-2 prefix-3 prefix-4 whole-word word-prefix-2 word-prefix-1 name-region-country name-country}; WLS=${WLS:-top boost filter count} ;;
+  full)  export TIER=F; SECS=${SECS:-1} MINR=${MINR:-2} MAXR=${MAXR:-3}; CLASSES=${CLASSES:-prefix-1 prefix-2 prefix-3 prefix-4 whole-word word-prefix-2 word-prefix-1 name-region-country name-country}; WLS=${WLS:-top boost filter count scan} ;;
   *) sed -n '2,5p' "$0"; exit 1 ;;
 esac
 [[ $what != check ]] || export NO_CACHE=1   # the oracle tables live in the `places` database of every lane
@@ -100,7 +100,7 @@ ensure_places() { # once per cluster: the places table (a vacuumed template of e
   if [[ $what == check ]]; then PGDATABASE=places q -f "$BENCH/sql/places_oracle.sql" >/dev/null; PGDATABASE=places q -c "SELECT place_oracle_fill($NQ)" >/dev/null; fi
 }
 # what an engine outside Postgres needs rendered: the workloads and classes of the cells, those of the cold-cache cells
-x_requests() { if [[ $what == cold ]]; then echo "top boost filter count|p1 p2 a2 a3"; else echo "$WLS|$CLASSES"; fi; }
+x_requests() { if [[ $what == cold ]]; then echo "top boost filter count|prefix-1 prefix-2 word-prefix-2 name-region-country"; else echo "$WLS|$CLASSES"; fi; }
 prepare() { # ENGINE, in its lane: the places loaded, the engine's copy built (or the lane taken from the cache)
   local e=$1 key req
   export RUN=$ROOT/places/$e
@@ -141,7 +141,7 @@ if [[ $what == cold ]]; then
       PGDATABASE=$(edb "$e") cold_ms "$s" -v q="$tq" -v sq="$tsq" -v sqb="$tsqb" -v tq="$ttq" -v ng="$tng"
     }
     PGDATABASE=$(edb "$e") cold_table places
-    for wl in top boost filter count; do for c in p1 p2 a2 a3; do
+    for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do
       b=$(base "$c")
       if [[ -n $(stmt "$wl" "$e") ]]; then
         s=$(stmt "$wl" "$e" | sed "s/:\(sqb\|sq\|tq\|ng\|q\)\b/:'\1'/g")
@@ -153,7 +153,7 @@ if [[ $what == cold ]]; then
   # shellcheck disable=SC2329  # run by lane_run
   cold_http() { # ENGINE, in its lane: an engine outside Postgres closes and opens its index before every request (steps/xlib.sh)
     local e=$1 wl c
-    for wl in top boost filter count; do for c in p1 p2 a2 a3; do
+    for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do
       printf '%s\t%s\t%s\t%s\n' "$wl" "$c" "$e" "$(xe "$e" x_cold_class "$ROOT/places/$e/$wl.$c.q" places)"
     done; done >"$ROOT/places/$e/cold.part"
   }
@@ -162,7 +162,7 @@ if [[ $what == cold ]]; then
     lane_run "$e" $fn "$e"
   done
   printf 'workload\tclass\tengine\tp50_ms\tmax_ms\tn\n' >"$DEST/cold.tsv"
-  for wl in top boost filter count; do for c in p1 p2 a2 a3; do for e in $ENGINES; do grep -P "^$wl\t$c\t$e\t" "$ROOT/places/$e/cold.part" || true; done; done; done | tee -a "$DEST/cold.tsv"
+  for wl in top boost filter count; do for c in prefix-1 prefix-2 word-prefix-2 name-region-country; do for e in $ENGINES; do grep -P "^$wl\t$c\t$e\t" "$ROOT/places/$e/cold.part" || true; done; done; done | tee -a "$DEST/cold.tsv"
   phase 'cold'
   exit 0
 fi

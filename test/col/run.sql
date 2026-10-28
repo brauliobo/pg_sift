@@ -124,10 +124,10 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN 'EXPLAIN ERROR ' || SQLSTATE || ': ' || SQLERRM;
 END $$;
 
--- The go/no-go targets of --bench on a query run: the K4000 queries that must push down (expect agg, and the S shapes of the analytics
+-- The go/no-go targets of --bench on a query run: the K4000 queries that must push down (expect agg, and the set reports of the analytics
 -- corpus) at least 20 times faster than the reference, the K10 and K400 ones that push down not slower than 0.95
-CREATE FUNCTION coldiff.bench_target(name text, expect text, used boolean, ref_ms float8, ms float8) RETURNS text IMMUTABLE LANGUAGE sql AS $$
-	SELECT CASE WHEN name LIKE '%@K4000' AND (expect = 'agg' OR name ~ '^S[0-9]')
+CREATE FUNCTION coldiff.bench_target(scenario text, name text, expect text, used boolean, ref_ms float8, ms float8) RETURNS text IMMUTABLE LANGUAGE sql AS $$
+	SELECT CASE WHEN name LIKE '%@K4000' AND (expect = 'agg' OR scenario = 'analytics')
 				THEN CASE WHEN NOT used THEN 'NOT PUSHED DOWN' WHEN ref_ms / nullif(ms, 0) >= 20 THEN 'ok >= 20x' ELSE 'MISSED: 20x' END
 				WHEN used AND (name LIKE '%@K10' OR name LIKE '%@K400')
 				THEN CASE WHEN ref_ms / nullif(ms, 0) >= 0.95 THEN 'ok no regression' ELSE 'REGRESSION' END
@@ -258,7 +258,7 @@ DECLARE
 	setname text; sets text[]; q text; stmt text; plan text; v text; err_ref text; err_got text; msg text; used boolean; gat boolean;
 	shape_ok boolean; slug text; t0 timestamptz; ref_ms float8; ms float8; times float8[]; name text; expect text := coalesce(h ->> 'expect', 'any');
 	keycols int[]; wanted_error boolean := coalesce(h ->> 'error', '') IN ('yes', 'either'); req text; ok boolean; i int; mutated text;
-	shape text := coalesce(h ->> 'shape', CASE WHEN qname ~ '^[SG][0-9]+$' THEN qname END);
+	shape text := coalesce(h ->> 'shape', CASE WHEN scen = 'analytics' THEN qname END);
 BEGIN
 	-- a fixture that expects the scan runs where the tiny table makes the btree plan look cheap too: its page costs are raised unless it sets them
 	-- or the run is at the server's costs (coldiff.sh --default-costs, on a table large enough for them)

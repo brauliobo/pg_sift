@@ -1,5 +1,5 @@
 -- generic aggregates of expressions of several leaves, of the rows and of the unnested items, with FILTER; the expressions are PostgreSQL's own
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

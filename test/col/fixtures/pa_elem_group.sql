@@ -1,5 +1,5 @@
 -- preagg: count, sum and count of the items' integer and float per category: the groups of the unit's element cubes
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

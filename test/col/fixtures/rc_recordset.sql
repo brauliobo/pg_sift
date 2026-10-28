@@ -1,6 +1,6 @@
 -- documents that are an array, a string, a number or a JSON null and values the leaves cannot store (a numeric string, a number where a text is declared): the
 -- rows are read again from the heap and give what jsonb_to_recordset gives
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

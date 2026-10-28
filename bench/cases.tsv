@@ -107,11 +107,11 @@ lookup_columns	is loaded from the leaves of a `sift_col` index of the table	orde
 topn_from_units	takes the rows of the result from the units that gave them	orders	default	Heap Fetches: 0	native,pg_duckdb	-	ms	faster33	no
 cte_lookup_par	a scan whose lookup joins read a CTE, a sub-select or a function	orders	default	Pushed Aggregates	native,pg_duckdb	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no
 point_dense_keys	only while the keys are expected to have fewer rows than 4,096	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no
-tpch_q1	tpch_q1	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
-tpch_q6	tpch_q6	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
-tpch_q3	tpch_q3	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q10	tpch_q10	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q12	tpch_q12	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_pricing_summary	tpch_q1	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
+tpch_forecast_revenue	tpch_q6	tpch	-	Pushed Aggregates	native	-	ms	faster33	no
+tpch_shipping_priority	tpch_q3	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_returned_items	tpch_q10	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_shipping_modes	tpch_q12	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 hits_count	hits_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_filter_count	hits_filter_count	hits	-	Pushed Aggregates	native	-	ms	faster33	no
 hits_sum_avg	hits_sum_avg	hits	-	Pushed Aggregates	native	-	ms	faster33	no
@@ -150,9 +150,9 @@ topn_run_range	starts at the first entry of the range, found by two binary searc
 order_array_keyset	the scan takes the whole groups of rows that share a value of the first key	orders	default	Global Order: true	native	no_array:search_path = order_array_keyset_plain	ms	faster33	no
 order_array_group	the reloption `order_array_group` of a `sift_col` index	orders	default	Global Order: true	native	no_group:search_path = order_array_group_plain	ms	faster33	no
 group_order_window	emits its groups in that order	orders	default	Group Order Keys	native	-	ms	faster33	no
-tpch_q3_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q10_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
-tpch_q12_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_shipping_priority_cold	tpch_q3_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_returned_items_cold	tpch_q10_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+tpch_shipping_modes_cold	tpch_q12_cold	tpch	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
 dict_blocks_first_statement	are decompressed one at a time	orders	default	fallback:Index Scan using orders_pkey	native	warm_forced:sift.agg_force = on	ms	faster33	no
 point_tid_key_range	a key with a range on another column hands the heap only the rows of the range	orders	default	Index Scan|Bitmap Heap Scan	native	-	ms	faster33	no
 group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no

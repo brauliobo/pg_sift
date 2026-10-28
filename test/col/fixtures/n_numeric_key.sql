@@ -1,5 +1,5 @@
 -- numeric group keys: the scaled value is the group, the key prints with the column's scale (trailing zeros), NULL is a group, two keys and a filter
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

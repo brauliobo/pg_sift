@@ -1,5 +1,5 @@
 -- a test on the elements and on the row, with the rows that hold a value the leaves cannot store among those tested
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

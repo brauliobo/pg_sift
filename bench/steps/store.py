@@ -57,7 +57,7 @@ def cmd_stats(args):
             method, path, body = 'POST', '/orders/_search?request_cache=false', json.dumps({'query': {'ids': {'values': [path.rsplit('/', 1)[1]]}}}).encode()
         took = [json.loads(es.request(method, path.replace('request_cache=true', 'request_cache=false'), body))['took'] for _ in range(args.runs)]
         out['es'][q.id] = dict(took_ms=statistics.median(took))
-        log(f'{q.id} {q.name}: clickhouse {out["ch"][q.id]["median"]}; elasticsearch took {out["es"][q.id]["took_ms"]} ms')
+        log(f'{q.id}: clickhouse {out["ch"][q.id]["median"]}; elasticsearch took {out["es"][q.id]["took_ms"]} ms')
     with open(args.o, 'w') as f:
         json.dump(out, f, indent=1)
         f.write('\n')

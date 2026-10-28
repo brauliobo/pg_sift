@@ -1,5 +1,5 @@
 -- the arms share one WHERE that keeps the cast off the scores that are no number: it is the scan's own, and the fused scan casts only what passes it
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

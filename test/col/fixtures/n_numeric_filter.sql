@@ -1,5 +1,5 @@
 -- numeric sums of the orders: totals per store set, a FILTER on another column, no group and an empty set
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- sets: K10 K400 K4000
 -- key: -

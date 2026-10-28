@@ -1,7 +1,7 @@
 -- the WHERE of the outer query over inner aggregates that is not a comparison with a constant (an OR, two aggregates, an expression of one):
 -- PostgreSQL pushes it into the arms' HAVING and evaluates it on the values of each inner group
 -- the float thresholds are off the grid of the one-decimal prices: an average on the grid depends on the addition order, which differs between PostgreSQL's own plans
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

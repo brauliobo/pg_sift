@@ -1,5 +1,5 @@
 -- the sign that is a JSON number, a boolean or null in some parts: the recordset reads them as text, so does the astext leaf
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

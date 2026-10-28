@@ -1,5 +1,5 @@
 -- arms of a UNION ALL that read one CTE of the derived table that holds them (planned inline when the arms run on the index)
--- shape: S4
+-- shape: time-series-granularities
 -- expect: any
 -- key: 1 2
 -- scenario: yes

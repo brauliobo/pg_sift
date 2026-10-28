@@ -1,5 +1,5 @@
 -- preagg: rollup: three dims (category, kind, quantity) and min and max of a float measure
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

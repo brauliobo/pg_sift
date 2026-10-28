@@ -1,5 +1,5 @@
--- S4: a time series at four granularities, every arm a GROUP BY of the same CTE (planned inline when the arms run on the index)
--- shape: S4
+-- time-series-granularities: a time series at four granularities, every arm a GROUP BY of the same CTE (planned inline when the arms run on the index)
+-- shape: time-series-granularities
 -- expect: any
 -- sets: K10 K400 K4000
 -- key: 1 2

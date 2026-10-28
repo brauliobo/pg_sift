@@ -86,7 +86,7 @@ def tables(S, detail):
     out = ['**Bulk changes** (rows per second, higher is better)', '']
     out += md_table(head(['orders', 'change']), [line(S, s, ('-', v, 'phase_rows_s'), lambda x: f'{x:,.0f}', best_high, label) for s in S.sizes for v, label in CHANGES]) + ['']
     out += ['**The read around a churn** (the monthly revenue query, and the next query after a single-row change; p50 ms, lower is better)', '']
-    qs = [('03', 'revenue per month')] + ([('05', 'average shipped order')] if detail else [])
+    qs = [('revenue-per-month', 'revenue per month')] + ([('average-shipped-order', 'average shipped order')] if detail else [])
     rows = [line(S, s, (q, v, 'latency_ms'), ms, best_bold, f'{label}: {name}') for s in S.sizes for q, label in qs for v, name in STATES]
     rows += [line(S, s, ('-', 'commit', 'visible_ms'), ms, best_bold, 'a single-row change seen by the next query') for s in S.sizes]
     out += md_table(head(['orders', 'state']), rows) + ['']
@@ -122,10 +122,10 @@ def losses(S):
             if pg and mine and pg > max(mine.values()) * 1.05:
                 best = max(mine, key=mine.get)
                 out.append(f'{label} at {s:,} orders: PostgreSQL {pg / mine[best]:.1f}x faster than {NAMES[best]} ({rate(pg)} against {rate(mine[best])} rows/s); {CAUSE["bulk"]}.')
-    pg = S.med(big, 'pg', '03', 'after churn', 'latency_ms')
+    pg = S.med(big, 'pg', 'revenue-per-month', 'after churn', 'latency_ms')
     slow = []
     for e in ('sift', 'sift_table'):
-        a, b, c = (S.med(big, e, '03', v, 'latency_ms') for v, _ in STATES)
+        a, b, c = (S.med(big, e, 'revenue-per-month', v, 'latency_ms') for v, _ in STATES)
         if a and b and b > 10 * a:
             slow.append(f'{NAMES[e]} {ms(b)} ms ({b / a:.0f}x its fresh {ms(a)} ms; {ms(c)} ms after VACUUM)')
     if slow:
@@ -157,7 +157,7 @@ def benchmarks_block(S):
 def chart(S):
     big = S.sizes[-1]
     charts.ENGINES.update({e: (NAMES[e].replace('`', ''), COLORS[e]) for e in S.lanes})
-    series = [(e, [S.med(big, e, '03', v, 'latency_ms') for v, _ in STATES]) for e in S.lanes]
+    series = [(e, [S.med(big, e, 'revenue-per-month', v, 'latency_ms') for v, _ in STATES]) for e in S.lanes]
     cap = f'{big:,} orders, one connection, p50 of {S.run0["probes"]} runs; pg_sift {S.run0["servers"].get("sift_sift", "?")}, {S.meta["date"]}'
     return charts.grouped('The monthly revenue read around a churn', 'p50 milliseconds, logarithmic axis, lower is better', [(name, '') for _, name in STATES], series, ms, 'p50 latency (ms)', cap, log=True)
 

@@ -1,5 +1,5 @@
 -- numeric predicates on numeric(18, 0) and numeric(18, 6): constants at the edges of int64 and of the scaled range, half a unit, and trailing zeros
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 SELECT

@@ -1,5 +1,5 @@
 -- generic aggregates over columns of a lookup-joined table: the value of each joined row (NULL for a LEFT JOIN row without a match) goes through PostgreSQL's transition function
--- shape: S1
+-- shape: metrics-summary
 -- expect: agg
 -- key: -
 SELECT o.source, array_agg(s.kind ORDER BY o.id) AS kinds, string_agg(DISTINCT s.country_code, ',') AS ccs, min(s.name) AS lo, max(upper(s.kind)) AS hi,

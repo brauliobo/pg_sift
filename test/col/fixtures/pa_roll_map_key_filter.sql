@@ -1,5 +1,5 @@
 -- preagg: rollup: a map with a filter on its keys
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

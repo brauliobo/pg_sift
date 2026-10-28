@@ -1,5 +1,5 @@
 -- numeric expressions in aggregate arguments: + - * and unary minus with the scales PostgreSQL gives (2 + 6, 2 * 6, 2 * 0), abs, an integer column cast to numeric, negative values, NULL operands
--- shape: S6
+-- shape: notes-path-exists
 -- expect: agg
 -- key: -
 -- scenario: yes

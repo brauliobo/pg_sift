@@ -1,5 +1,5 @@
 -- preagg: rollup: a group key that is a function of a text dim (upper, left), with a test on the dim and a NULL dim
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

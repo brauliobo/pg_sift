@@ -1,5 +1,5 @@
 -- preagg: rollup: a subset of the dims of the unit (kind alone, then kind and quantity) re-aggregated from the tuples
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

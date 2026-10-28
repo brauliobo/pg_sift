@@ -1,6 +1,6 @@
 -- the same with a condition on the inner average (a cell of the arm that fails it is no group) and a filtered outer aggregate (its bound is no
 -- average of one-decimal scores, whose last bit depends on the order of the additions)
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

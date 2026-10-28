@@ -1,5 +1,5 @@
 -- the values of a group do not fit the histogram of a 64kB work_mem: they go through a sort, with the same result
--- shape: G7
+-- shape: whole-percentiles-by-category
 -- expect: agg
 -- key: -
 -- guc: work_mem = 64kB

@@ -1,5 +1,5 @@
 -- a float8 member against a float8 column: NaN equals itself and is greater than every number, -0 equals 0, NULL is unknown
--- shape: S7
+-- shape: items-exists-same-element
 -- expect: agg
 -- key: -
 -- scenario: yes

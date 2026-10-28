@@ -1,5 +1,5 @@
 -- preagg: rollup: a group key that is a band of an integer dim (CASE, coalesce, division), next to a text dim
--- shape: S2
+-- shape: item-summary-rollup
 -- expect: agg
 -- key: -
 -- scenario: yes

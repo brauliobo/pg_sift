@@ -128,7 +128,7 @@ def run_query(q, clients, args, rows):
     times = time_cell(live, stmts, clients, args)
     for e in live:
         rows.add(e, q.id, 'warm', 'latency_ms', 'ms', st=summary(times[e]))
-    log(f'{q.id} {q.name}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
+    log(f'{q.id}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
     return stop
 
 
@@ -251,7 +251,7 @@ def cmd_cold(args):
     for e, q in cells:
         got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args, how[e])
         if got[e, q.id][0]:
-            log(f'cold {e} {q.id} {q.name}: {med(got[e, q.id][0]):.3g} ms')
+            log(f'cold {e} {q.id}: {med(got[e, q.id][0]):.3g} ms')
     for e, q in cells:   # a NOISY cell is measured again once, at the end of the stage, not waited on (at most --max-rerun of them: a restart cell takes a minute)
         why = got[e, q.id][1].judge({container(e)})
         if got[e, q.id][0] and why and len(again) < args.max_rerun:
@@ -322,7 +322,7 @@ def cmd_interference(args):
                 pin(b, None)
         out.append(dict(question=q.id, title=q.title, unpinned=free, pinned=alone, concurrent=together, median_change=together['median'] / alone['median'] - 1, p95_change=together['p95'] / alone['p95'] - 1,
                         pinning_change=alone['median'] / free['median'] - 1))
-        log(f'{q.id} {q.name}: {target} unpinned {free["median"]:.3g} ms, pinned {alone["median"]:.3g} ms, with {len(others)} others {together["median"]:.3g} ms '
+        log(f'{q.id}: {target} unpinned {free["median"]:.3g} ms, pinned {alone["median"]:.3g} ms, with {len(others)} others {together["median"]:.3g} ms '
             f'(median {out[-1]["median_change"]:+.1%}, p95 {out[-1]["p95_change"]:+.1%})')
     worst = max(abs(r['median_change']) for r in out)
     log(f'{target} with {" ".join(others)} running at the same time on cores of their own: the median changed by at most {worst:.1%}, the p95 by at most {max(abs(r["p95_change"]) for r in out):.1%}')
