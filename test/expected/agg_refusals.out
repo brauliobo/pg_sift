@@ -140,7 +140,7 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
  top n limit         | topn      | f    | topn_shape
  top n no index      | topn      | f    | no_source
  limit 1 lookup      | lookup    | f    | lateral_limit
- two level           | two_level | t    | 
+ two level           | two_level | f    | cost
  two level arms      | two_level | f    | two_arms
  two level key       | two_level | f    | two_keys
  two level aggregate | two_level | f    | two_aggs

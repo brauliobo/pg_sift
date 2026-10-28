@@ -2,6 +2,8 @@
 -- group key: it is NULL in every group. Every query runs as the two-level scan, as the arms alone (sift.agg_two_level off) and as the normal
 -- plan; the answers must be the same.
 CREATE EXTENSION pg_sift;
+-- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
+SET sift.agg_force = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

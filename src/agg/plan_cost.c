@@ -1907,7 +1907,6 @@ typedef struct CostAcc
 	double		load_rows;
 	double		cold_ops;		/* operators of the image leaves whose dictionaries a worker inflates for itself (AGG_WIDE_COLD) */
 	double		gen_cost;
-	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
 	double		zone_kept;
 	double		sparse;			/* of the rows of a unit that is read, the share whose dictionary entries are mapped: the kept rows when few pass (cost_read), else all */
@@ -2607,7 +2606,7 @@ cost_work(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			k->gen_cost += k->agg_rows * s->agg[i].gen->cost + k->rows_out * (s->agg[i].gen->ordered || s->agg[i].gen->sorted || s->agg[i].gen->hyp ? AGG_GEN_GROUP : AGG_GEN_STATE);
 	}
 	for (int a = 0; a < s->narms; a++)
-		k->arm_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
+		k->scan_cost += k->agg_rows * (s->arm[a].hmask ? AGG_ARM_HIDDEN : AGG_ARM_TUPLE);
 	k->scan_cost += combo_eval_cost(c, s, k->rows, k->agg_rows, k->scan_rows, k->rows * Max(k->zone_kept, 1.0 / k->units), k->sel_rows * k->elems * k->key_share, &entry_cost) + bucket_eval_cost(c, s, k->agg_rows) + distinct_id_ops(c, s, k);
 	/* each process evaluates the entries it meets: the workers divide the probes, not those (cost_parallel divides the cold operators with the rest) */
 	k->cold_ops += entry_cost * (parallel_divisor(s->nworkers) - 1.0);
@@ -2631,9 +2630,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 {
 	double		tables = s->nworkers + 1;
 	double		load = Min(k->load_cost * cpu_operator_cost, k->scan_cost);
-	double		arm = k->arm_cost * AGG_SCAN_SPEED * cpu_operator_cost,
-				serial = k->scan_cost,
-				setup = parallel_setup_cost * AGG_SETUP_FACTOR;
+	double		setup = parallel_setup_cost * AGG_SETUP_FACTOR;
 	bool		priced = parallel_setup_cost > 0;	/* 0 asks for the workers, whatever they save */
 
 	/*
@@ -2642,7 +2639,7 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 	 */
 	if (priced)
 		setup = Max(setup, (3.0 + 0.35 * s->nworkers) * AGG_START_MS);
-	k->scan_cost = (k->scan_cost + arm - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
+	k->scan_cost = (k->scan_cost - load + (priced ? k->cold_ops * AGG_SCAN_SPEED * cpu_operator_cost : 0)) / parallel_divisor(s->nworkers) + load + k->load_rows * AGG_SHARE_ROW * AGG_SCAN_SPEED * cpu_operator_cost +
 		tables * Min(k->rows_out, Max(k->agg_rows / tables, 1.0)) * (AGG_MERGE_GROUP + (priced ? s->nkeys * AGG_MERGE_KEY : 0.0)) * AGG_SCAN_SPEED * cpu_operator_cost;
 	for (int i = 0; i < s->naggs; i++)
 	{
@@ -2659,15 +2656,6 @@ cost_parallel(AggCtx *c, SiftAggSpec *s, CostAcc *k, Cost *startup)
 		/* the pairs of the sets of a joined column are at most one a row, and at most the values of each group: a column of few values sends few */
 		if (priced && s->agg[i].kind == SAA_M_DISTINCT)
 			k->scan_cost += Min(k->agg_rows, k->rows_out * s->agg[i].est_distinct) * AGG_DISTINCT_MERGE * AGG_SCAN_SPEED * cpu_operator_cost;
-	}
-	if (arm > 0)
-	{
-		/*
-		 * The price of the path without workers leaves the arms out: the plan competes with the arms alone, whose rows the operators above them
-		 * price below what they cost. The workers take the share of it that they take of the whole work, with the arms in.
-		 */
-		k->scan_cost = serial * (k->scan_cost + setup) / (serial + arm);
-		return;
 	}
 	*startup += setup;
 }

@@ -3,6 +3,8 @@
 -- so that the cells add up to a large exact total; the sum can only leave bigint past 2^32 such rows, which no test can hold (the bound was
 -- checked by adding 2^62 to every cell). Each query runs as the scan, in parallel and as the normal plan; the rows and the type must be the same.
 CREATE EXTENSION pg_sift;
+-- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
+SET sift.agg_force = on;
 SET seq_page_cost = 1000; SET random_page_cost = 1000;
 CREATE TABLE events (id int PRIMARY KEY, kind text, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO events

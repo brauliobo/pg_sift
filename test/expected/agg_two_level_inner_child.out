@@ -3,6 +3,8 @@
 -- table (a pulled up sub-select's WHERE) at the join in those arms and in the WHERE of the third. The arms are still one scan: its outer join, the
 -- NOT NULL test as the filter of the arms that have it. The answers are the normal plan's.
 CREATE EXTENSION pg_sift;
+-- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
+SET sift.agg_force = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

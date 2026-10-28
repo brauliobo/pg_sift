@@ -3,6 +3,8 @@
 -- plan with the slug shape_width (rows_shape for the aggregates of a rows set) and the limit in the reason; one at the width runs in the scan and gives the rows of the normal plan. Each width is
 -- tried at its default (where the shape is cheap to make) and at a value sift.test_limits lowers it to.
 CREATE EXTENSION pg_sift;
+-- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
+SET sift.agg_force = on;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
