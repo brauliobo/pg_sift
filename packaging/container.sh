@@ -16,7 +16,7 @@ pgdg_repo() {
 	if [[ $FMT == deb ]]; then
 		export DEBIAN_FRONTEND=noninteractive
 		apt-get update -qq
-		apt-get install -y -qq --no-install-recommends ca-certificates curl lsb-release postgresql-common
+		apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg lsb-release postgresql-common
 		sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
 		# the component of the major too: a major still in beta or release candidate (19 today) lives only there
 		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -c "$PG" >/dev/null

@@ -38,6 +38,7 @@
 #include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/uuid.h"
+#include "utils/timestamp.h"
 
 #include "col/am.h"
 #include "col/pg.h"
