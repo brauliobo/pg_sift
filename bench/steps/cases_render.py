@@ -20,8 +20,11 @@ import mdtable  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 MEASURES = ('PostgreSQL ms', 'pg_sift ms', 'speed-up', 'slope PostgreSQL', 'slope pg_sift')
+IO_MEASURES = ('PostgreSQL MB read', 'pg_sift MB read')   # after the speed-up, when the results have the cold IO of the headline cases
 OFF = ('scan', 'bulk_off', 'runs_off', 'zone_off')   # the variants that are the optimization's own setting turned off
-UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms'}
+UNIT = {'ms': 'ms', 'minstr': 'M instructions', 'wal_bytes': 'WAL bytes per row', 'cpu_ms': 'CPU ms',
+        'io_cold_read_mb': 'MB read, cold', 'io_cold_read_blocks': 'blocks read, cold', 'io_extend_mb': 'MB of file growth'}
+IO = tuple(m for m in UNIT if m.startswith('io_'))   # the IO rows shown beside the time of a case, where the results have them (steps/iolib.py)
 VARIANT = {'agg_forced': 'the aggregate scan forced whatever the plans cost (`sift.agg_force = on`)', 'scan': 'the units scanned (`sift.agg_preagg = off`)', 'runs_off': 'the sorted runs not read (`sift.topn_runs = off`)', 'zone_off': 'the zones of the keys after the first not used (`sift.topn_zone_keys = off`)',
            'forced': 'the top-N scan forced by turning the btree plans off (`enable_indexscan`, `enable_indexonlyscan`, `enable_bitmapscan`)', 'bulk_off': 'the same `sift_table` and COPY with write buffers instead of column groups (`sift.table_bulk_groups = off`), promotion included'}
 
@@ -34,11 +37,11 @@ def speed(r):
     return '%.0fx' % r if r >= 9.5 else '%.1fx' % r
 
 
-def collect(rows, registry, root=REPO):
-    """per (case, metric): the native and sift values, the others by arm, the plan and whether the host was busy"""
+def collect(rows, registry, io=False):
+    """per (case, metric): the native and sift values, the others by arm, the plan and whether the host was busy; with io, the IO rows (IO) of the cases that have them follow the case's own metrics"""
     out = []
     for c in registry:
-        for m in c.metrics:
+        for m in c.metrics + [m for m in IO if io and extras.get(rows, case=c.id, arm='sift', metric=m)]:
             get = lambda arm: extras.get(rows, case=c.id, arm=arm, metric=m)  # noqa: E731
             n, s = get('native'), get('sift')
             if not n or not s:
@@ -46,7 +49,7 @@ def collect(rows, registry, root=REPO):
             val = lambda r: float(r['value']) if r and r['value'] not in ('', 'NA', 'error') else None  # noqa: E731
             others = {arm: ('not supported' if (r := get(arm)) and r['value'] == 'NA' else val(r)) for arm in c.baselines[1:] + [v[0] for v in c.variants] if get(arm)}
             forced, why = get(cases_mod.FORCED[0]), get('why')
-            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), kept=c.fallback, noisy=any('NOISY' in (r['note'] or '') for r in (n, s)),
+            out.append(dict(case=c, metric=m, native=val(n), sift=val(s), others=others, plan=re.sub(r' NOISY$', '', s['note']), kept=c.fallback and m not in IO, noisy=any('NOISY' in (r['note'] or '') for r in (n, s)),
                             forced=val(forced), forced_note=re.sub(r' NOISY$', '', forced['note']) if forced else '', why=why['note'] if why else ''))
     return out
 
@@ -150,20 +153,38 @@ def gap_lines(figs):
             'A **cost-model gap** is a case where the forced scan beats PostgreSQL and the planner still declines it; a **feature gap** a shape the scan cannot run (the reason is the one `sift.explain_why` gives); **planner right**: the forced scan is not faster.', ''] + head + body
 
 
+def iohow(meta):
+    return 'cold start: ' + meta['io_cold'].split(' (the cold run')[0] if meta.get('io_cold') else 'a cold start where the server can evict'
+
+
+def io_takeaway(figs):
+    """the sentence on the cold MB read of pg_sift against PostgreSQL, as a line of the block (none without IO rows)"""
+    rs = [(f, f['native'] / f['sift']) for f in figs if f['metric'] == IO[0] and f['native'] and f['sift'] and not f['kept']]
+    if not rs:
+        return []
+    less = [r for _, r in rs if r >= 1 + TIE]
+    more = [(f, 1 / r) for f, r in rs if r <= 1 - TIE]
+    text = 'cold, pg_sift reads fewer MB than PostgreSQL on %d of %d cases%s, about the same on %d' % (len(less), len(rs), ' (%s to %s less)' % (speed(min(less)), speed(max(less))) if less else '', len(rs) - len(less) - len(more))
+    if more:
+        text += ', more on %d: %s' % (len(more), ', '.join('%s (%s more)' % (f['case'].id, speed(r)) for f, r in more))
+    return ['**IO:** ' + text + '.', '']
+
+
 def rounds(meta):
     m = re.search(r'(\d+) rounds of 1 untimed and (\d+) timed runs', meta.get('method', ''))
     return '%s rounds of %s interleaved timed runs' % m.groups() if m else 'the timed runs'
 
 
 def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
-    figs = collect(rows, registry)
-    if not figs:
+    figs = collect(rows, registry, io=True)
+    timed = [f for f in figs if f['metric'] not in IO]
+    if not timed:
         return ['Not measured at this build yet: `bench/bench cases --docs` writes this block.']
-    n = len({f['case'].id for f in figs})
+    n = len({f['case'].id for f in timed})
     worst = {}
-    for f in figs:
+    for f in timed:
         worst[f['case'].id] = min(worst.get(f['case'].id, 2), ranked(f))
-    figs = sorted(figs, key=lambda f: worst[f['case'].id])   # losses first, then ties and kept plans, then the wins, each in the registry's order
+    figs = sorted(figs, key=lambda f: worst[f['case'].id])   # losses first, then ties and kept plans, then the wins, each in the registry's order; the IO rows follow the case's own
     head = ['| case | shape | unit | PostgreSQL | pg_sift | other engines and variants | speed-up | plan |', '|---|---|---|---:|---:|---|---:|---|']
     body = []
     for f in figs:
@@ -172,16 +193,18 @@ def lines(meta, rows, registry, results_dir='bench/results', bench_dir='bench'):
         if r and isinstance(f['others'].get('bulk_off'), float) and f['sift']:
             sp += ' (`sift.table_bulk_groups` on vs off: %s lower)' % speed(f['others']['bulk_off'] / f['sift'])
         first = f['metric'] == f['case'].metrics[0]
+        plan = 'cold: ' + f['plan'] if f['metric'] in IO[:2] else f['plan']   # the note of a cold row is how the cache was emptied
         body.append('| `%s` | %s | %s | %s | %s | %s | %s | %s |' % (f['case'].id, f['case'].label.replace('|', '\\|') if first else '(the same case)', UNIT[f['metric']], figure(f['native']), 'PostgreSQL\'s plan' if f['kept'] else figure(f['sift']), cell_others(f), sp,
-                                                                  ('`%s`' % f['plan'].replace('|', '\\|')) if len(f['plan']) < 90 else '`%s`...' % f['plan'][:86]))
+                                                                  ('`%s`' % plan.replace('|', '\\|')) if len(plan) < 90 else '`%s`...' % plan[:86]))
     used = {k for f in figs for k in f['others'] if k in VARIANT}
     noisy = [f['case'].id for f in figs if f['noisy']]
     out = ['%d benchmark cases (`bench/cases.tsv`) on %s rows (the orders of the orders benchmark; the cases on `events` use the plan-choice gate\'s events, dims and facts, `test/plan/gen.sql`), one backend with no parallel workers, median of %s; lower is better, the speed-up is the PostgreSQL figure over the pg_sift one. %s' % (
         n, '{:,}'.format(int(meta.get('orders', 0))), rounds(meta), extras.footer(meta)), ''] + head + body + [
-        '', '**Takeaway:** ' + takeaway(figs), '', '**Caveats**', '',
+        '', '**Takeaway:** ' + takeaway(timed), ''] + io_takeaway(figs) + ['**Caveats**', '',
         '- PostgreSQL is the same table, indexes and statement with `sift.enable_agg = off` (the btrees of the store\'s PostgreSQL lane are there); pg_duckdb is a container with a plain copy of the rows (`n/a`: it does not run the case, `not supported`: DuckDB cannot execute the statement).',
         '- The plan column is what the pg_sift lane\'s EXPLAIN showed; a case whose plan is not the expected one, or whose answer differs from PostgreSQL\'s, stops the run.']
     out += ['- Variants: ' + '; '.join('`%s` is %s' % (k, VARIANT[k]) for k in sorted(used)) + '.'] * bool(used)
+    out += ['- IO rows: `MB read, cold` is what `pg_stat_io` counted the backend reading in the first run after the tables, their TOAST tables and indexes were emptied from shared buffers (and from the OS page cache when the data directory is on a disk), `blocks read` the shared reads of `EXPLAIN (ANALYZE, BUFFERS)` in that run (%s). Less is better; lanes are compared on the same cold start. The warm figures and the bytes the device was asked for are in the results file (`io_warm_*`, `io_cold_device_mb`).' % iohow(meta)] * any(f['metric'] in IO for f in figs)
     out += ['- Measured while the host was busy (the load average is in each row of the results): %s. Read the ratios, not the milliseconds.' % ', '.join(sorted(set(noisy)))] * bool(noisy)
     return out + ['', 'Raw results: [%s/cases.tsv](%s/cases.tsv); the cases: [%s/cases.tsv](%s/cases.tsv); reproduce with `bench/bench cases` (`--docs --rows 1000000` for the published size).' % (results_dir, results_dir, bench_dir, bench_dir)]
 
@@ -290,6 +313,8 @@ def featured(rows, registry, scale_rows):
     the speed-up and the log-log slope of each over the sizes of cases-scale.tsv when it has them"""
     import bench_charts
     figs = {f['case'].id: f for f in collect(rows, registry) if f['metric'] == f['case'].metrics[0]}
+    cold = {f['case'].id: f for f in collect(rows, registry, io=True) if f['metric'] == IO[0]}
+    measures = MEASURES[:3] + IO_MEASURES + MEASURES[3:] if any(c.headline and c.id in cold for c in registry) else MEASURES
     ser = {}
     for r in scale_rows:
         cid, _, n = r['case'].partition('@')
@@ -305,12 +330,13 @@ def featured(rows, registry, scale_rows):
         sp = declined(f).replace("default: PostgreSQL's plan; ", '') if f['kept'] else '**%s**' % speed(r) if r and r >= 1 + TIE else '%s slower' % speed(1 / r) if r and r <= 1 - TIE else 'tie'
         sl = ['%.2f' % bench_charts.slope(*zip(*sorted(ser[c.id][a]))) if len(ser.get(c.id, {}).get(a, [])) >= 3 else 'n/a' for a in ('native', 'sift')]
         line.update({(m, c.id): v for m, v in zip(MEASURES, (figure(f['native']), "PostgreSQL's plan" if f['kept'] else figure(f['sift']), sp, *sl))})
+        line.update({(m, c.id): figure(cold[c.id][arm]) if c.id in cold else 'n/a' for m, arm in zip(IO_MEASURES, ('native', 'sift'))})
     groups = []
     for title, families in CONTEXTS:
         ids = [c.id for c in registry if (MEASURES[0], c.id) in line and bench_charts.family(c.id) in families]
         if ids:
             groups.append((title, [(i, '[%s](bench/cases/%s.sql)' % (wrap_id(i), i)) for i in ids]))
-    return (mdtable.tables(MEASURES, groups, lambda m, i: line[m, i], first='') + ([''] + flips if flips else [])) if groups else []
+    return (mdtable.tables(measures, groups, lambda m, i: line[m, i], first='') + ([''] + flips if flips else [])) if groups else []
 
 
 def plan_flips(scale_rows):
@@ -339,7 +365,7 @@ def readme_lines(meta, rows, registry, scale_rows, results_dir='bench/results'):
            '**Takeaway:** ' + takeaway(figs, brief=True), '']
     table = featured(rows, registry, scale_rows)
     if table:
-        out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows):' % results_dir, ''] + table + ['']
+        out += ['The cases that read like an application\'s query, one table for each context; the header of a column links its SQL in `bench/cases/`, the slope is that of time against rows over the sizes of [cases-scale.tsv](%s/cases-scale.tsv) (1.0: time proportional to the rows)%s:' % (results_dir, ', and MB read is the IO of the first run after the tables were emptied from memory (cold)' if any(m in ' '.join(table) for m in IO_MEASURES) else ''), ''] + table + ['']
     out += ['<picture><source media="(prefers-color-scheme: dark)" srcset="docs/img/cases-ecdf-dark.svg"><img alt="Share of cases at least as fast as x times PostgreSQL" src="docs/img/cases-ecdf-light.svg"></picture>', '',
             'Every case with its plan and variants: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#benchmark-cases); raw results [%s/cases.tsv](%s/cases.tsv); the cases [bench/cases.tsv](bench/cases.tsv); reproduce with `bench/bench cases --docs --rows 1000000`.' % (results_dir, results_dir), '',
             '[^cases]: %s Median of %s; PostgreSQL %s, pg_sift %s, `work_mem` %s, no parallel workers; host load at the start %s. Where the planner keeps PostgreSQL\'s plan the bar is gray.' % (

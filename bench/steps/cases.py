@@ -31,6 +31,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import benchlib  # noqa: E402  (steps/benchlib.py)
+import iolib  # noqa: E402  (the IO load of a statement)
 from duckdb import Session, same, wait_quiet, busy  # noqa: E402  (a persistent psql session, the comparison of rows, the quiet gate)
 from store_lib import sections  # noqa: E402  (`--@ name` sections)
 
@@ -55,6 +56,7 @@ MIN_RUNS = 3
 SCAN = re.compile(r'Custom Scan \(Sift')
 FORCED = ('agg_forced', 'sift.agg_force = on')   # the lane of a fallback case: what the scan can do where the planner declines it
 TIMES = {}   # case id -> [build seconds, run seconds] of the last point
+IO_HOW = set()   # how the cold runs were made cold (iolib.cool), for the meta lines of the results file
 
 
 log, die = benchlib.logger('cases')
@@ -213,6 +215,13 @@ class Fresh:
         finally:
             s.close()
 
+    def persistent(self):
+        """a new backend with the lane's settings, for the measures that need one backend across statements (steps/iolib.py); the caller closes it"""
+        s = server_session(TIMEOUT)
+        for st in self.setup:
+            s.run(st)
+        return s
+
     def close(self):
         pass
 
@@ -338,14 +347,28 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
 INDEX_IN_PLAN = re.compile(r'(?:Index(?: Only)? Scan(?: Backward)? using|Bitmap Index Scan on) (\w+)|Index: (\w+)')
 
 
-def pages_read(session, sql, text):
-    """what a lane touches, whatever the storage: the shared buffers of one run (hit + read of the top node of EXPLAIN (ANALYZE, BUFFERS)) and the bytes of the indexes its plan reads
-    (a btree, the column index of a scan); (None, None, '') when the plan has no buffers line"""
-    plan = session.run('EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF) %s' % sql.rstrip(';'))[1]
-    m = next((re.search(r'shared hit=(\d+)(?: read=(\d+))?', l) for l in plan if 'Buffers:' in l and 'shared' in l), None)
-    names = sorted({a or b for a, b in INDEX_IN_PLAN.findall(text)})
-    size = sum(int(session.run("SELECT pg_relation_size('%s')" % n)[1][0]) for n in names) if names else 0
-    return (int(m.group(1)) + int(m.group(2) or 0), int(m.group(2) or 0), names, size) if m else (None, None, names, size)
+def io_load(session, case, lane, sql, text):
+    """what a lane reads, whatever the storage (steps/iolib.py): the IO of the first run after the case's tables were emptied from shared buffers and the OS cache (cold), then of the run
+    after it (warm), and the bytes of the indexes the plan reads (a btree, the column index of a scan). Without eviction (before PostgreSQL 18) the one run is warm.
+    Returns ([measurements], index names, index bytes)"""
+    s = session.persistent() if isinstance(session, Fresh) else session
+    try:
+        tables = iolib.schema_tables(s, case.schema() + '_base' if lane == 'base' else case.schema())
+        ios = [iolib.measure(s, sql, tables)]
+        if ios[0]['cache'] == 'cold':
+            IO_HOW.add(ios[0]['how'])
+            ios.append(iolib.measure(s, sql))
+        else:
+            log('%s on %s: warm only (%s)' % (case.id, lane, ios[0]['how']))
+        names = sorted({a or b for a, b in INDEX_IN_PLAN.findall(text)})
+        size = sum(int(s.run("SELECT pg_relation_size('%s')" % n)[1][0]) for n in names) if names else 0
+        return ios, names, size
+    except RuntimeError as e:   # a statement the lane cannot EXPLAIN or finish in the timeout has no IO rows; the run goes on
+        log('%s on %s: no IO rows (%s)' % (case.id, lane, str(e)[:100]))
+        return [], [], 0
+    finally:
+        if s is not session:
+            s.close()
 
 
 def why(session, sql):
@@ -394,7 +417,7 @@ def measure_load(case, csv, rounds, rows):
     lanes = {'sift': ('sift_table', []), 'native': ('heap', [])}
     for name, settings in case.variants:
         lanes[name] = ('sift_table', ['SET %s' % s for s in settings.split(';')])
-    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': []} for lane in lanes}, {}, {}
+    out, errors, plans = {lane: {'wal_bytes': [], 'ms': [], 'cpu_ms': [], 'io_extend_mb': [], 'io_write_mb': []} for lane in lanes}, {}, {}
     for r in range(rounds):
         names = list(lanes)
         for lane in names[r % len(names):] + names[:r % len(names)]:
@@ -408,6 +431,7 @@ def measure_load(case, csv, rounds, rows):
                     die('%s: the preparation failed on %s: %s' % (case.id, lane, err))
             pid = s.run('SELECT pg_backend_pid()')[1][0]
             s.run('CHECKPOINT')
+            io0 = iolib.snapshot(s)
             lsn, cpu = wal_lsn(s), cpu_ns(pid)
             ms = 0
             for stmt in re.split(r';[ \t]*\n', case.sec.get('load_sift', case.sec['load']) if am == 'sift_table' else case.sec['load']):   # the statements of the load, their times added
@@ -416,6 +440,8 @@ def measure_load(case, csv, rounds, rows):
                     die('%s: the load failed on %s: %s' % (case.id, lane, err))
                 ms += took
             cpu, lsn = cpu_ns(pid) - cpu, wal_lsn(s) - lsn
+            for metric, mb in iolib.load_metrics(iolib.delta(io0, iolib.snapshot(s))).items():
+                out[lane][metric].append(mb)
             checked = '\n'.join(s.run(case.sec['check'])[1]) if lane == 'sift' else ''
             plans[lane] = checked.replace('\n', ', ')
             if lane == 'sift' and not re.search(case.plan, checked, re.M):
@@ -489,6 +515,8 @@ def run_point(args, cases, rows, engines, results, failed):
             failed += ['%s%s on %s: %s' % (c.id, tag, lane, e) for lane, e in errors.items()]
             for lane, ms in out.items():
                 for metric, xs in ms.items():
+                    if not xs:   # no pg_stat_io on this server
+                        continue
                     point.append(dict(case=c.id, arm=lane, metric=metric, note=(('sift_table, segments written: %s' if 'USING {am}' in c.sec['prepare'] else 'heap with a sift_col index, rows: %s') % plans[lane] if lane == 'sift' else 'heap' if lane == 'native' else 'sift_table, %s' % lane), load=load, **stats(xs)))
             continue
         lanes = lane_sessions(c, engines, args.duck_port)
@@ -510,9 +538,13 @@ def run_point(args, cases, rows, engines, results, failed):
                     else:
                         failed.append('%s%s on %s: perf cannot count instructions (perf_event_paranoid)' % (c.id, tag, lane))
                 if lane != 'pg_duckdb' and not c.load:
-                    got, read, names, size = pages_read(lanes[lane], expand(c.statement(lane), c), texts.get(lane, ''))
-                    if got is not None:
-                        point.append(dict(case=c.id, arm=lane, metric='buffers', value=str(got), note='shared hit + read of one run, read=%d' % read, load=load))
+                    ios, names, size = io_load(lanes[lane], c, lane, expand(c.statement(lane), c), texts.get(lane, ''))
+                    for io in ios:
+                        for metric, value in iolib.metrics(io).items():
+                            point.append(dict(case=c.id, arm=lane, metric=metric, value=value, note=io['how'] or 'warm', load=load))
+                    if ios:
+                        warm = ios[-1]
+                        point.append(dict(case=c.id, arm=lane, metric='buffers', value=str(warm['hit'] + warm['read']), note='shared hit + read of one run, read=%d' % warm['read'], load=load))
                     if names:
                         point.append(dict(case=c.id, arm=lane, metric='index_bytes', value=str(size), note=', '.join(names), load=load))
             lanes[lane].close()
@@ -595,6 +627,8 @@ def write_results(args, cases, results, load_before):
             'cpu': host(), 'method': 'client-side milliseconds of one psql session per lane, interleaved: %d rounds of 1 untimed and %d timed runs, median of all; the sift lane is the '
             'planner\'s own choice, native is sift.enable_agg = off on the same table; %s parallel workers; every answer compared with native' % (args.rounds, args.runs, os.environ.get('CASES_WORKERS', '2')),
             'host_load_before': load_before, 'host_load_after': host_load(), 'work_mem': os.environ.get('CASES_WORK_MEM', '64MB')}
+    if IO_HOW:
+        meta['io_cold'] = '; '.join(sorted(IO_HOW)) + ' (the cold run is the first after the relations of the case were emptied; io_warm is the run after it; steps/iolib.py)'
     for r in results:
         r['version'] = version
     path = args.out
