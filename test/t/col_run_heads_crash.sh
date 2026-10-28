@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # kill -9 of the postmaster and all backends in the middle of concurrent inserts, updates, deletes, VACUUM, promotion and merge of a sift_col index
-# with order_columns (the heads of the sorted runs, column format minor 18, and with order_array_columns the global order of the keys, minor 21), then crash recovery and checks: every segment and every head verify,
+# with order_columns (the heads of the sorted runs, column format minor 18, and with order_array_columns the global order of the keys, minor 21 or later), then crash recovery and checks: every segment and every head verify,
 # ORDER BY .. LIMIT n over the index returns what the normal plan returns (the units answered from a head are those that are clean), and the space
 # stays bounded. SIFT_COL_CRASH_ITERS (default 20, 3 quick).
 . "$(dirname "$0")/lib.bash"
@@ -15,7 +15,7 @@ autovacuum = off"
 node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"${COL_TOPN_FIXTURE[@]}" >/dev/null || bail "setup failed"
-check "the segments carry the heads" test "$(sql crash "SELECT string_agg(DISTINCT format::text, ',') FROM sift._test_col_formats('t_col')")" == 21
+check "the segments carry the heads" test "$(sql crash "SELECT bool_and(format >= 21) AND count(DISTINCT format) = 1 FROM sift._test_col_formats('t_col')")" == t
 check "the top-N scan answers units from the heads" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'Units Answered By Run Head')" == 1
 check "and reads the global order of the key" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 100" | grep -c 'Global Order')" == 1
 
@@ -56,5 +56,5 @@ done
 sql crash "VACUUM (index_cleanup on, disable_page_skipping) t" "SELECT sift.col_merge('t_col', true)" "SELECT sift.col_merge('t_col', true)" "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) t" >/dev/null
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('t_col', true)" 2>&1)"
 check "and leaves one immutable segment with the heads, whose top-N answers are the heap's, with and without the global order" \
-	test "$(sql crash "SELECT (SELECT count(*) FROM sift.col_segments('t_col') WHERE kind = 'immutable' AND format = 21) = 1 AND topn_same()")" == t
+	test "$(sql crash "SELECT (SELECT count(*) FROM sift.col_segments('t_col') WHERE kind = 'immutable' AND format >= 21) = 1 AND topn_same()")" == t
 finish
