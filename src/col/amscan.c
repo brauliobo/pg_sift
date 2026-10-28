@@ -57,6 +57,7 @@
 #define COL_SCAN_UNIT_PAGES	3		/* the pages of that head, or of the whole unit where the index is narrower */
 #define COL_SCAN_ROW		0.009	/* the filter of one value of a column of a kept unit */
 #define COL_SCAN_EMIT_IOS	0.15	/* ... to an index-only scan, which forms a tuple of the columns the plan reads and no heap row: 1,200 instructions a row (272M for 160,000 rows of 800,000, a sequential scan 570M) */
+#define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 #define COL_SCAN_EMIT		0.5		/* handing one row over: its position in the unit, its TID and its visibility (a tuple scan 0.9, a bitmap 0.3 measured) */
 
 bool		sift_enable_col_scan = true;
@@ -1288,6 +1289,44 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 	return kept;
 }
 
+static bool
+exec_param_of_parent(Node *node, PlannerInfo *root)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Param) && ((Param *) node)->paramkind == PARAM_EXEC)
+	{
+		for (PlannerInfo *up = root->parent_root; up != NULL; up = up->parent_root)
+			foreach_node(PlannerParamItem, ppi, up->plan_params)
+				if (ppi->paramId == ((Param *) node)->paramid)
+					return true;
+		return false;
+	}
+	return expression_tree_walker(node, exec_param_of_parent, root);
+}
+
+/*
+ * A scan whose key is a parameter of a parent query (EXISTS (SELECT .. WHERE t.k = outer.k), a scalar subselect) runs once for each row the parent evaluates it for,
+ * and PostgreSQL multiplies the price of one run by its estimate of those rows (twice the rows of the node, which a few correlated filters put 1,000 times too low)
+ * to choose between that plan and a hashed subplan, which pays once. A probe of a point directory (0.2 to 0.4 ms, 270 units) multiplied by 10 rows looks cheaper than
+ * the pass over the table (28,000 units) and runs 5,000 times: 2.9 s against 92 ms. So the total of the probe is never below COL_SCAN_RESCAN of the sequential scan
+ * (PostgreSQL divides both by the rows a key matches to price an EXISTS, so the ratio holds there): the hashed subplan wins whenever it is there, as it does with the scan
+ * off, and where none fits in memory the probe still beats the sequential scan for each row (0.03 ms against 2 ms).
+ */
+static double
+rescan_floor(PlannerInfo *root, IndexPath *path)
+{
+	IndexOptInfo *index = path->indexinfo;
+
+	if (root->parent_root == NULL)
+		return 0.0;
+	foreach_node(IndexClause, ic, path->indexclauses)
+		foreach_node(RestrictInfo, ri, ic->indexquals)
+			if (exec_param_of_parent((Node *) ri->clause, root))
+				return COL_SCAN_RESCAN * (index->rel->pages * seq_page_cost + index->rel->tuples * cpu_tuple_cost);
+	return 0.0;
+}
+
 /*
  * The cost of the scan in the planner's units (about microseconds, see COL_SCAN_FIXED): the startup is the opening of the index and the pruning of the units (the
  * zones and summaries of each, or the keys looked up in the point directory and the bits of the kept units); the rest is reading the kept units, filtering their
@@ -1307,6 +1346,7 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 				units,
 				kept_units,
 				idx_rows,
+				rescan,
 				scale = cpu_operator_cost / 0.0025;
 	int			ncols = list_length(path->indexclauses),
 				nprobes;
@@ -1326,8 +1366,9 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * ncols * scale * COL_SCAN_ROW
 		+ index->pages * cpu_tuple_cost
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS : COL_SCAN_EMIT) + cpu_index_tuple_cost);
+	rescan = rescan_floor(root, path);
 	*indexStartupCost = costs.indexStartupCost;
-	*indexTotalCost = costs.indexTotalCost;
+	*indexTotalCost = Max(costs.indexTotalCost, rescan);
 	*indexSelectivity = costs.indexSelectivity;
 	/* the addresses of a lookup come in heap order (a list ascends, the segments follow each other), so the tuple scan reads the heap as a bitmap scan does */
 	*indexCorrelation = nprobes > 0 ? tid : 0.0;

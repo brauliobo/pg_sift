@@ -1,0 +1,70 @@
+-- A probe of a sift_col index whose key is a parameter of the parent query (EXISTS (..) OR EXISTS (..), a scalar subselect) runs once for each row the parent evaluates
+-- it for. PostgreSQL multiplies the price of one probe by its estimate of those rows to choose between that plan and a hashed subplan, and a few correlated filters put
+-- the estimate 1,000 times too low: the probe (0.3 ms) then ran 5,000 times against one pass of 90 ms. The probe is priced at 90% of the sequential scan of the table at
+-- the least, so the hashed subplan wins where it fits in memory and the probe is still the plan of each row where it does not (docs/COL-SCAN.md).
+CREATE EXTENSION pg_sift;
+SET sift.async_maintenance = off;
+-- o: 20,000 rows with four perfectly correlated columns (the estimate of the rows left by o.a = 3 AND .. AND o.e = 3 is 5, the rows are 1,818)
+CREATE TABLE sp_o AS SELECT g id, g % 11 a, g % 11 b, g % 11 c, g % 11 e FROM generate_series(1, 20000) g;
+CREATE TABLE sp_d AS SELECT g d, g / 90 y FROM generate_series(0, 1799) g;
+CREATE TABLE sp_f AS SELECT g id, (g * 7919 % 20000) + 1 cust, g % 1800 d, g % 97 q, (g % 5000)::numeric(7,2) p, g % 31 w FROM generate_series(1::bigint, 60000) g;
+CREATE INDEX sp_f_col ON sp_f USING sift_col (id, cust, d, q, p, w) WITH (point_columns = 'cust');
+VACUUM (ANALYZE) sp_o, sp_d, sp_f;
+CREATE FUNCTION sp_plan(q text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
+DECLARE r text = '';
+	l text;
+BEGIN
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) %s', q) LOOP r = r || l || E'\n'; END LOOP;
+	RETURN CASE WHEN r ~ 'hashed SubPlan' THEN 'hashed subplan' WHEN r ~ 'Index Only Scan using sp_f_col' THEN 'probe of the index' WHEN r ~ 'Seq Scan on sp_f' THEN 'seq scan of the fact' ELSE r END;
+END $$;
+CREATE FUNCTION sp_count(q text, scan bool) RETURNS bigint LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET sift.enable_agg = off AS $$
+DECLARE r bigint;
+BEGIN
+	EXECUTE format('SET LOCAL sift.enable_col_scan = %s', scan);
+	EXECUTE q INTO r;
+	RETURN r;
+END $$;
+\set exists_or 'SELECT count(*) FROM sp_o o WHERE o.a = 3 AND o.b = 3 AND o.c = 3 AND o.e = 3 AND (EXISTS (SELECT 1 FROM sp_f f, sp_d d WHERE o.id = f.cust AND f.d = d.d AND d.y = 5) OR EXISTS (SELECT 1 FROM sp_f f, sp_d d WHERE o.id + 1 = f.cust AND f.d = d.d AND d.y = 6))'
+\set wide 'SELECT count(*) FROM sp_o o WHERE o.a = 3 AND o.b = 3 AND o.c = 3 AND o.e = 3 AND (EXISTS (SELECT 1 FROM sp_f f, sp_d d WHERE o.id = f.cust AND f.d = d.d AND d.y BETWEEN 1 AND 15) OR EXISTS (SELECT 1 FROM sp_f f, sp_d d WHERE o.id + 1 = f.cust AND f.d = d.d AND d.y BETWEEN 5 AND 18))'
+\set scalar 'SELECT count(*) FROM sp_o o WHERE o.a = 3 AND o.b = 3 AND o.c = 3 AND o.e = 3 AND (SELECT f.q FROM sp_f f WHERE f.cust = o.id LIMIT 1) > 90'
+-- the EXISTS .. OR EXISTS of the TPC-DS customer demographics queries: one pass of the fact table, hashed, as with the scan off
+SELECT sp_plan(:'exists_or');
+    sp_plan     
+----------------
+ hashed subplan
+(1 row)
+
+SELECT sp_count(:'exists_or', true) = sp_count(:'exists_or', false) AS same_rows;
+ same_rows 
+-----------
+ t
+(1 row)
+
+-- no hashed subplan fits (the keys of 14 years of dates, work_mem at its least) and a scalar subselect has none: each row probes the index, which is two orders of
+-- magnitude cheaper than a sequential scan of the fact for each row
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT sp_plan(:'wide');
+      sp_plan       
+--------------------
+ probe of the index
+(1 row)
+
+SELECT sp_plan(:'scalar');
+      sp_plan       
+--------------------
+ probe of the index
+(1 row)
+
+RESET work_mem;
+RESET hash_mem_multiplier;
+-- the same probe with a constant is an index-only scan, as before
+SELECT sp_plan('SELECT cust FROM sp_f WHERE cust = 12345');
+      sp_plan       
+--------------------
+ probe of the index
+(1 row)
+
+DROP FUNCTION sp_plan(text), sp_count(text, bool);
+DROP TABLE sp_o, sp_d, sp_f;
+DROP EXTENSION pg_sift;
