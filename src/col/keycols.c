@@ -645,7 +645,7 @@ est_index_bytes(Relation heap, Relation index)
 	return bytes;
 }
 
-/* The table has a row estimate of at least GORD_AUTO_ROWS and no statistics of the first column of the index: the choice would decide nothing, so the table is analyzed, as ANALYZE does (the NOTICE of the arrays it chooses says so). A REINDEX cannot: ANALYZE opens the index it rebuilds */
+/* The table has a row estimate of at least GORD_AUTO_ROWS and no statistics of the first column of the index: the choice would decide nothing, so the indexed columns of the table are analyzed, as ANALYZE (columns) does (the NOTICE of the arrays it chooses says so). A REINDEX cannot: ANALYZE opens the index it rebuilds */
 static void
 analyze_if_unknown(Relation heap, Relation index)
 {
@@ -654,6 +654,7 @@ analyze_if_unknown(Relation heap, Relation index)
 				allvis;
 	AttrNumber	hatt = index->rd_index->indkey.values[0];
 	StringInfoData cmd;
+	const char *sep = "";
 
 	if (hatt == 0 || ReindexIsProcessingIndex(RelationGetRelid(index)) || ReindexIsProcessingHeap(RelationGetRelid(heap)) || SearchSysCacheExists3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(heap)), Int16GetDatum(hatt), BoolGetDatum(false)))
 		return;
@@ -661,7 +662,17 @@ analyze_if_unknown(Relation heap, Relation index)
 	if (tuples < GORD_AUTO_ROWS)
 		return;
 	initStringInfo(&cmd);
-	appendStringInfo(&cmd, "ANALYZE %s.%s", quote_identifier(get_namespace_name(RelationGetNamespace(heap))), quote_identifier(RelationGetRelationName(heap)));
+	appendStringInfo(&cmd, "ANALYZE %s.%s (", quote_identifier(get_namespace_name(RelationGetNamespace(heap))), quote_identifier(RelationGetRelationName(heap)));
+	for (int i = 0; i < index->rd_index->indnatts; i++)
+	{
+		AttrNumber	att = index->rd_index->indkey.values[i];
+
+		if (att == 0)
+			continue;
+		appendStringInfo(&cmd, "%s%s", sep, quote_identifier(get_attname(RelationGetRelid(heap), att, false)));
+		sep = ", ";
+	}
+	appendStringInfoChar(&cmd, ')');
 	if (SPI_connect() != SPI_OK_CONNECT)
 		return;
 	(void) SPI_execute(cmd.data, false, 0);

@@ -1,0 +1,17 @@
+-- A table of 100,000 rows or more with no statistics has the columns of the index analyzed by CREATE INDEX (the choice of the global order reads them), not the other columns:
+-- they keep no statistics until the user runs ANALYZE, and a table that already has statistics is not analyzed at all.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+
+CREATE TABLE ac AS SELECT i AS id, (i * 7919) % 1000 AS a, md5(i::text) AS b, i % 7 AS c FROM generate_series(1, 120000) i;
+CREATE INDEX ac_ix ON ac USING sift_col (id, a);
+SELECT attname FROM pg_stats WHERE schemaname = 'public' AND tablename = 'ac' ORDER BY attname;
+
+-- statistics of a column the index does not hold are the user's: a REINDEX leaves them as they are, and a later ANALYZE adds them
+REINDEX INDEX ac_ix;
+SELECT attname FROM pg_stats WHERE schemaname = 'public' AND tablename = 'ac' ORDER BY attname;
+ANALYZE ac (b);
+SELECT attname FROM pg_stats WHERE schemaname = 'public' AND tablename = 'ac' ORDER BY attname;
+DROP TABLE ac;
+DROP EXTENSION pg_sift CASCADE;
