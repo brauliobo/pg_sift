@@ -37,6 +37,7 @@
 #include "col/codec.h"
 #include "col/enc.h"
 #include "col/col.h"
+#include "core/cmp.h"
 #include "col/setsum.h"
 #include "core/sql.h"
 #include "core/cmp.h"
@@ -355,24 +356,29 @@ encoded_bytes(const Track *t, const uint32 *rows, uint32 n, StringInfo buf, int6
 	return buf->len;
 }
 
-static int
-row_cmp(const void *a, const void *b, void *arg)
+/* a sampled row with the values of the (at most two) leaves a cut sorts by, so that the sort compares them in line */
+typedef struct SortRow
 {
-	const Track *const *kk = arg;
-	uint32		x = *(const uint32 *) a,
-				y = *(const uint32 *) b;
+	int64		v[2];
+	uint32		row;
+	bool		nl[2];
+} SortRow;
 
-	for (int i = 0; i < 2 && kk[i] != NULL; i++)
+static inline int
+sort_row_cmp(const SortRow *x, const SortRow *y)
+{
+	for (int i = 0; i < 2; i++)
 	{
-		const Track *k = kk[i];
-
-		if (k->nl[x] != k->nl[y])
-			return k->nl[x] ? 1 : -1;
-		if (!k->nl[x] && k->v[x] != k->v[y])
-			return k->v[x] < k->v[y] ? -1 : 1;
+		if (x->nl[i] != y->nl[i])
+			return x->nl[i] ? 1 : -1;
+		if (!x->nl[i] && x->v[i] != y->v[i])
+			return x->v[i] < y->v[i] ? -1 : 1;
 	}
-	return x < y ? -1 : x > y;
+	return SIFT_CMP3(x->row, y->row);
 }
+
+#define SORT_ROW_LESS(x, y) (sort_row_cmp(x, y) < 0)
+SIFT_DEFINE_SORT(sort_rows, SortRow, SORT_ROW_LESS)
 
 /*
  * The bytes of the integer leaves and of the row directories of the rows of at most AUTOCUT_TRIAL_SBS of the sampled superblocks (every k-th) in the units of the
@@ -417,7 +423,21 @@ layout_bytes(const Track *tr, int ntr, const Samp *s, int key, int key2, double 
 		uint32		dir_rows = unit;
 		double		wider = Max(0, log2(heap_pages / rows_per_unit / ((double) nused * SIFT_SB_PAGES / dir_rows)));
 
-		qsort_arg(sel, nsel, sizeof(uint32), row_cmp, (void *) order);
+		SortRow    *by = palloc_array(SortRow, nsel);
+
+		for (uint32 i = 0; i < nsel; i++)
+		{
+			by[i] = (SortRow) {.row = sel[i]};
+			for (int k = 0; k < 2 && order[k] != NULL; k++)
+			{
+				by[i].nl[k] = order[k]->nl[sel[i]];
+				by[i].v[k] = order[k]->v[sel[i]];
+			}
+		}
+		sort_rows(by, nsel);
+		for (uint32 i = 0; i < nsel; i++)
+			sel[i] = by[i].row;
+		pfree(by);
 		for (uint32 from = 0; from < nsel; from += dir_rows)
 		{
 			uint32		n = Min(dir_rows, nsel - from);
