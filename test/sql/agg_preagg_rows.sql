@@ -33,7 +33,7 @@ INSERT INTO pa_q VALUES
 	(11, 'FILTER on a dim',    'SELECT b, count(*), sum(v) FILTER (WHERE a = 1), count(*) FILTER (WHERE a > 4) FROM %s GROUP BY b, c'),
 	(12, 'having, limit',      'SELECT a, b, sum(v) FROM %s GROUP BY a, b HAVING count(*) > 3 ORDER BY 3 DESC NULLS LAST, 1, 2 LIMIT 5'),
 	(13, 'date and a',         'SELECT d, a, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' GROUP BY d, a'),
-	(14, 'test of date',       'SELECT a, count(*), sum(v) FROM %s WHERE d = date ''2024-05-01'' GROUP BY a'),
+	(14, 'test of date',       'SELECT a, count(*), sum(v) FROM %s WHERE d = date ''2024-05-04'' GROUP BY a'),
 	(15, 'other test: scan',   'SELECT a, b, count(*) FROM %s WHERE v > 0 GROUP BY a, b'),
 	(16, 'float: scan',        'SELECT a, b, max(f), min(f) FROM %s GROUP BY a, b'),
 	(17, 'distinct: scan',     'SELECT a, b, count(DISTINCT c) FROM %s GROUP BY a, b'),
@@ -178,6 +178,8 @@ SELECT count(*) FILTER (WHERE NOT same) AS differ FROM pa_check('rc');
 SET max_parallel_maintenance_workers = 0;
 REINDEX INDEX rc_col;
 SELECT * FROM pa_check('rc');
+-- the default key_cut is d here: a date no row has lies between the zones of the units, and nothing is read
+SELECT * FROM pa_units('SELECT a, count(*), sum(v) FROM rc WHERE d = date ''2024-05-01'' GROUP BY a');
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
