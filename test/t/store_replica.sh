@@ -8,6 +8,9 @@
 . "$(dirname "$0")/lib.bash"
 
 SECS=$(knob SIFT_CHURN_SECS 15 3)
+# how long a standby reader holds its segment before it reads: the primary drops, recycles and rewrites it, and the standby replays that, inside this time
+# (a loaded machine, a sanitizer build, takes seconds for it)
+READER_MS=${SIFT_READER_MS:-6000}
 plan 10
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
@@ -42,9 +45,14 @@ recycle_race() {
 	g=$(sql primary "SELECT sift._test_seg_write('$IDX', 20000000, $1)")
 	hwm=$(sql primary "SELECT value FROM sift._test_info('$IDX') WHERE key = 'high_water'")
 	catchup primary standby
-	sql standby "\\set VERBOSITY verbose" "SELECT sift._test_seg_read('$IDX', $g, 0, 4000)" >"$S/reader.out" 2>&1 &
+	sql standby "\\set VERBOSITY verbose" "SELECT sift._test_seg_read('$IDX', $g, 0, $READER_MS)" >"$S/reader.out" 2>&1 &
 	READER=$!
-	sleep 2
+	# the reader is running (it found its segment within a moment of that): the time it holds is all for the primary's work, not for the start of a backend
+	for _ in $(seq 100); do
+		[[ $(sql standby "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%_test_seg_read%' AND pid <> pg_backend_pid()") == 1 ]] && break
+		sleep 0.1
+	done
+	sleep 0.3
 	sql primary "${2:-SELECT 1}" "SELECT sift._test_seg_drop('$IDX', $g)" "SELECT sift._test_recycle('$IDX')" \
 		"SELECT sift._test_seg_write('$IDX', 20000000, $(($1 + 1)))" >/dev/null
 	catchup primary standby
