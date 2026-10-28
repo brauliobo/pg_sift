@@ -127,6 +127,36 @@ VACUUM wl;
 INSERT INTO wl (id, k, s, u, ts) SELECT i, i % 900, 's' || i % 600, md5(i::text)::uuid, now() FROM generate_series(8001, 8500) i;
 INSERT INTO wl_q (w) VALUES ('id = 8100'), ('k = 100'), ('s = ''s100'''), ('u = md5(''8100'')::uuid');
 :check;
+-- a backend keeps what it read of the write buffer between its lookups: every lookup after a batch finds the rows of the batch, rows that span pages
+-- (a text of 20,000 characters) and rows left by an aborted insert included
+CREATE TABLE wl2 (id int, s text);
+CREATE INDEX wl2_i ON wl2 USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
+CREATE FUNCTION wl2_check() RETURNS TABLE (batch int, idx_ok boolean, seq_ok boolean) LANGUAGE plpgsql AS $$
+DECLARE a bigint[]; b bigint[]; w text;
+BEGIN
+	FOR i IN 1..12 LOOP
+		IF i % 4 = 0 THEN
+			BEGIN
+				INSERT INTO wl2 SELECT g, repeat(md5(g::text), 600) FROM generate_series(i * 100, i * 100 + 5) g;
+				RAISE EXCEPTION 'rollback';
+			EXCEPTION WHEN raise_exception THEN NULL;
+			END;
+		END IF;
+		INSERT INTO wl2 SELECT g, CASE WHEN g % 3 = 0 THEN repeat(md5(g::text), 600) ELSE 's' || g END FROM generate_series(i * 100, i * 100 + 20) g;
+		SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
+		SELECT array_agg(id ORDER BY id) INTO a FROM wl2 WHERE id = ANY (ARRAY[i * 100, i * 100 + 3, i * 100 + 20, 100, 500, 1200]) OR s = 's' || (i * 100 + 1) OR s = repeat(md5((i * 100 + 6)::text), 600);
+		SET LOCAL enable_seqscan = on; SET LOCAL sift.enable_col_scan = off; SET LOCAL enable_indexscan = off;
+		SELECT array_agg(id ORDER BY id) INTO b FROM wl2 WHERE id = ANY (ARRAY[i * 100, i * 100 + 3, i * 100 + 20, 100, 500, 1200]) OR s = 's' || (i * 100 + 1) OR s = repeat(md5((i * 100 + 6)::text), 600);
+		RESET enable_indexscan; RESET enable_seqscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET sift.enable_col_scan;
+		batch := i; idx_ok := a = b; seq_ok := cardinality(b) > 0;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT * FROM wl2_check() WHERE NOT (idx_ok AND seq_ok);
+SELECT count(*) AS batches FROM wl2_check();
+DROP TABLE wl2;
+DROP FUNCTION wl2_check();
+
 DROP TABLE wl CASCADE;
 DROP FUNCTION wl_idx(text);
 DROP FUNCTION wl_bmp(text);

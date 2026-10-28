@@ -511,6 +511,7 @@ sift_lane_iter_next(SiftLaneIter *it, Page dst, Size hdrsize)
 	if (!BlockNumberIsValid(blk))
 		return false;
 	sift_lane_copy_page(it->index, it->entry, blk, dst, hdrsize);
+	it->blk = blk;
 	it->nextblk = SiftLaneHead(dst)->next;
 	return true;
 }

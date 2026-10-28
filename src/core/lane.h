@@ -114,6 +114,7 @@ typedef struct SiftLaneIter
 	BlockNumber head[SIFT_LANES];
 	int			lane;			/* next lane to start */
 	BlockNumber nextblk;		/* next page of the current lane */
+	BlockNumber blk;			/* the page last copied */
 } SiftLaneIter;
 
 extern void sift_lane_iter_init(SiftLaneIter *it, Relation index, const SiftSegEntry *entry);
