@@ -10,5 +10,7 @@ ids() {
 	sed -n 's/^-- name: //p' test/plan/shapes.sql
 }
 bad=$({ ids | grep -vE '^([a-z]{5,}|[a-z][a-z0-9]*[_-][a-z0-9_-]+)$' || true; ids | grep -E '(^|[_-])[a-z]{1,2}[0-9]+([_-]|$)' || true; } | sort -u)
+labels=$(git grep -nE '^-- label: [^`]*\b(Q[0-9]+|[GS][1-9])\b' -- 'bench/cases/*.sql' 'bench/sql/*/queries/*.sql' || true)   # a suite's number belongs in the header comment
+[[ -z $labels ]] || { printf 'a label that starts with a code: %s\n' "$labels" >&2; exit 1; }
 [[ -z $bad ]] || { printf 'not a descriptive slug: %s\n' $bad >&2; exit 1; }
 echo "check-slugs: every query, case and shape id is a slug"
