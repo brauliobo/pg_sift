@@ -1,0 +1,120 @@
+-- key_cut by default for the start lane of a range or the node of a network: CREATE INDEX and REINDEX sample the heap and cut the
+-- units by the lane when a range of its values reads at least 8 times the units its rows fill (and 64 units), no other leaf follows the order of the table, and the index does
+-- not grow; a containment test then reads the few units whose lane meets it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET max_parallel_workers_per_gather = 0;
+-- 70 superblocks (fillfactor 10 keeps the rows few); ranges and addresses scattered over them, a range column in heap order, a sequential id
+CREATE TABLE kr (id int, r int4range, ordered int4range, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO kr SELECT (random() * 1000000)::int, int4range(a, a + 1 + (random() * 5000)::int), int4range(i * 4, i * 4 + 3),
+	('20.0.0.0'::inet + (random() * 16777215)::int), repeat('x', 100)
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 125000) i) s;
+VACUUM (FREEZE, ANALYZE) kr;
+CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = i AND o ~ '^key_cut'), 'none') $$;
+-- chosen: the start of the ranges is scattered over the units, nothing else follows the table
+CREATE INDEX kr_auto ON kr USING sift_col (id, r, ip);
+SELECT kopt('kr_auto');
+       kopt        
+-------------------
+ key_cut=auto: r#1
+(1 row)
+
+SELECT sift.col_verify('kr_auto', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- a range column that follows the heap keeps its zones: not chosen
+CREATE INDEX kr_ord ON kr USING sift_col (id, r, ordered, ip);
+SELECT kopt('kr_ord');
+ kopt 
+------
+ none
+(1 row)
+
+-- the switch and an explicit list
+CREATE INDEX kr_off ON kr USING sift_col (id, r, ip) WITH (key_cut = 'off');
+SELECT kopt('kr_off');
+    kopt     
+-------------
+ key_cut=off
+(1 row)
+
+CREATE INDEX kr_list ON kr USING sift_col (id, r, ip) WITH (key_cut = 'r#1');
+SELECT kopt('kr_list');
+    kopt     
+-------------
+ key_cut=r#1
+(1 row)
+
+SELECT leaf, decision FROM sift.key_cut_decision('kr_auto');
+ leaf | decision 
+------+----------
+ r#1  | cut
+(1 row)
+
+-- the answers are the table's, and the cut index reads fewer units than the one by superblock
+-- the units a containment test keeps, of all (the plan lists the kept and the pruned ones)
+CREATE FUNCTION kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
+DECLARE l text; kept numeric := 0; pruned numeric := 0;
+BEGIN
+	PERFORM set_config('sift.agg_force', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ '^ *Units: ' THEN kept := substring(l from '[0-9]+')::numeric; END IF;
+		IF l ~ 'Units Pruned: ' THEN pruned := substring(l from '[0-9]+')::numeric; END IF;
+	END LOOP;
+	RETURN round(kept / nullif(kept + pruned, 0), 1);
+END $$;
+CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true); EXECUTE q INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true); EXECUTE q INTO b;
+	RETURN a = b;
+END $$;
+SELECT same('SELECT count(*) FROM kr WHERE r @> 12121212'), same('SELECT count(*) FROM kr WHERE r && int4range(15000000, 15000100)'),
+       same('SELECT count(*) FROM kr WHERE r <@ int4range(15000000, 15002000)'), same('SELECT count(*) FROM kr WHERE ip <<= ''20.5.0.0/20'''),
+       same('SELECT count(*) FROM kr WHERE ip >>= ''20.5.7.9''');
+ same | same | same | same | same 
+------+------+------+------+------
+ t    | t    | t    | t    | t
+(1 row)
+
+SELECT sift.col_merge('kr_auto', true) >= 0;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT same('SELECT count(*) FROM kr WHERE r @> 12121212'), same('SELECT count(*) FROM kr WHERE r && int4range(15000000, 15000100)');
+ same | same 
+------+------
+ t    | t
+(1 row)
+
+DROP INDEX kr_off, kr_list, kr_ord;
+SELECT kept_share('SELECT count(*) FROM kr WHERE r @> 12121212') < 0.2, kept_share('SELECT count(*) FROM kr WHERE r && int4range(15000000, 15000100)') < 0.2;
+ ?column? | ?column? 
+----------+----------
+ t        | t
+(1 row)
+
+REINDEX INDEX kr_auto;
+SELECT kopt('kr_auto');
+       kopt        
+-------------------
+ key_cut=auto: r#1
+(1 row)
+
+DROP TABLE kr;
+DROP FUNCTION kopt(regclass), kept_share(text), same(text);
+DROP EXTENSION pg_sift;

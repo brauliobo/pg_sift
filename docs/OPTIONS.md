@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 108 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 109 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 18 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1184,6 +1184,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed.
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: key, date' and the NOTICE names both; key_cut = 'off', or a list of your own (say 'key, date' for an index whose cut you set before), is never changed. sift.key_cut_decision says what a REINDEX would decide.
 
+#### auto(key-cut-range-lane)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** When key_cut is chosen by default, the start of the set of a range column and the node of an inet or cidr column (their first lane, r#1 or ip#1) are candidates like a date: the units are cut by the lane, so @>, <@, &&, <<, >>, -|- of a range and <<=, >>= of a network read the few units whose lane meets the constant
+- **Gain:** 3,000,000 random int4range rows beside an address and a 128-character note, sift_col (r, ip): r @> x 27.9 M instructions without the cut, 3.2 M as built and 0.66 M after the merge (4.22 ms without the cut, 0.164 ms with it; a GiST 0.256 ms); r && range 27.9 M, 3.2 M as built; ip <<= net 25.6 M, 24.6 M (4%: the cut by the range lane does not help a network test)
+- **Formula:** S 8.80x saving 24700k instructions, G -11.0%, W 59.6%, R 0.5: B 22.3 against C 8.3, automatic
+- **Impact:** index size: -11.0% (3,000,000 rows: 68.8 to 61.2 MB after the merge and VACUUM); the sample predicts +2.9%; build, merge and writes: CREATE INDEX 20.4 to 32.6 G instructions (+59.6%, 3,000,000 rows, one process); inserts, promotion and merge of the cut as for any key_cut; other: The cut lists the TIDs of its rows (the cost every key_cut has) but the lanes of a unit sort and encode in fewer bytes: the index is 11.0% smaller at 3,000,000 rows (68.8 to 61.2 MB); CREATE INDEX +59.6% instructions (20.4 to 32.6 G, one process) for the sample and the sort
+- **When:** A CREATE INDEX or REINDEX on a table of 64 units or more, whose range or inet lane is scattered over the units (a range of it reads 8 times the units its rows fill) and whose other leaves are scattered too, when the sample predicts the index no more than 3% larger. Not with key_cut = 'off' or a list, order_columns or point_tid_columns.
+- **Default:** automatic — B = R*log2(S)/log2(1.05) = 0.5*log2(8.8)/log2(1.05) = 22.3 against C = G/3 + W/5 = -3.7 + 11.9 = 8.2: automatic; G is under the 25% ceiling and the saving is 24.7 M instructions a query as built (S = 42 after the merge). Rare columns (R 0.5).
+- **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
+- **Upgrade from 3.5:** An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them.
+- **Advice:** Leave on. The choice is written as key_cut = 'auto: r#1' and the NOTICE names it; key_cut = 'off', or a list of your own, is never changed. sift.key_cut_decision says what a REINDEX would decide. A range column in the order of the table, or another leaf that follows it (a sequential id), blocks the cut: the units stay by superblock.
+
 #### auto(top-n-per-group)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -2177,6 +2191,7 @@ No default changed since 3.5; new: `sift_col(array_lengths)`.
 | `sift.table_key_table` | on | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
 | `auto(col-append-batch)` | automatic | automatic |  | A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX. |
 | `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
+| `auto(key-cut-range-lane)` | automatic | automatic |  | An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them. |
 | `auto(json-build-object)` | automatic | automatic |  | Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |

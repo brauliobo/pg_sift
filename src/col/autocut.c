@@ -55,7 +55,7 @@
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
 #define AUTOCUT_GROWTH_PCT	3		/* the predicted growth of the index, at most (the 3.3 rule for a default) */
 #define AUTOCUT_SECOND_SLACK 1		/* percent the prediction may exceed the cut by the key alone for the date to be its second key: the sample does not see the runs and addresses a date order shrinks */
-#define AUTOCUT_QUICK_SLACK	4		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough */
+#define AUTOCUT_QUICK_SLACK	12		/* points over AUTOCUT_GROWTH_PCT that the first look still sends a time leaf to the sample: its prediction from a few superblocks is rough (the prediction for a range lane beside other leaves was 7 to 16 points over the sample's) */
 
 typedef struct Cell
 {
@@ -70,7 +70,9 @@ typedef struct Track
 	AttrNumber	hatt;
 	uint8		type;
 	bool		cand;			/* key-shaped: an equality on its values is tested */
-	bool		time;			/* a date or timestamp that is not a key: a range of its values is tested */
+	bool		time;			/* a date or timestamp that is not a key, or the start lane of a range or inet column: a range of its values is tested */
+	const SiftColDef *shape;	/* the head of the range or network whose lane this is (col/shape.c); NULL for a column's own value */
+	int			lane;			/* which lane of the head */
 	int64	   *v;				/* the value of each sampled row, 0 for a NULL */
 	bool	   *nl;
 	Cell	   *cells;
@@ -119,6 +121,13 @@ value_of(uint8 type, Datum d, int64 *v)
 			return true;
 	}
 	return false;
+}
+
+/* the name the option key_cut gives leaf c: the column, or its lane (r#1) */
+static const char *
+cut_name(Relation index, const SiftColSchema *sc, int c)
+{
+	return sc->cols[c].lane > 0 ? sc->cols[c].path : NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[c].attno - 1)->attname);
 }
 
 static bool
@@ -503,6 +512,14 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			ncand += tr[ntr].cand || tr[ntr].time;
 			ntr++;
 		}
+		else if (ntr < AUTOCUT_LEAVES && d->lane > 0 && sift_col_def_shape(&sc->cols[c - d->lane]) != 0 && hatt != 0)
+		{
+			/* the lanes of a range or a network are integer leaves of the index whose size the cut changes; the first (the start of the set, the node of a network) has values that
+			 * do not repeat, and a range of them is read like a range of dates */
+			tr[ntr] = (Track) {.c = c, .hatt = hatt, .type = SIFT_COLT_INT8, .time = d->lane == 1, .shape = &sc->cols[c - d->lane], .lane = d->lane};
+			ncand += d->lane == 1;
+			ntr++;
+		}
 		else
 			untracked++;
 	}
@@ -510,7 +527,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	full = (int) Min(Min(Min(AUTOCUT_SBS, nsb), Max(ceil(nsb / 4), AUTOCUT_MIN_SBS)), AUTOCUT_ROWS / Max(rows_per_unit, 1));	/* a quarter of the heap at most: the sample costs what a build of the share costs */
 	if (ncand == 0)
 	{
-		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date) and no date or timestamp column";
+		v->reason = "no key-shaped column (a foreign key or *_id, not unique, int2, int4, int8 or date) and no date, timestamp, range or inet column";
 		goto done;
 	}
 	if (full < AUTOCUT_MIN_SBS)
@@ -549,7 +566,15 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 
 				tr[t].v[samp->n] = 0;
 				tr[t].nl[samp->n] = isnull;
-				if (!isnull)
+				if (!isnull && tr[t].shape != NULL)
+				{
+					SiftColValue lane[SIFT_COL_MAX_LANES];
+
+					sift_col_datum_values(tr[t].shape, dat, false, lane);
+					tr[t].nl[samp->n] = lane[tr[t].lane].isnull;	/* a bound that does not fit a lane is a NULL there */
+					tr[t].v[samp->n] = lane[tr[t].lane].v.i;
+				}
+				else if (!isnull)
 					value_of(tr[t].type, dat, &tr[t].v[samp->n]);
 			}
 			samp->n++;
@@ -632,7 +657,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				fills[nfire++] = fill;
 			}
 		}
-	leaf = NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[nfire > 0 ? fire[0] : first].c].attno - 1)->attname);
+	leaf = cut_name(index, sc, tr[nfire > 0 ? fire[0] : first].c);
 	strlcpy(v->leaf, leaf, sizeof(v->leaf));
 	if (nfire == 0)
 	{
@@ -647,7 +672,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				blocked[i] = true;
 				if (i == 0)
 					v->reason = psprintf("the leaf \"%s\" follows the order of the table, and the cut would widen its zones",
-										 NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[t].c].attno - 1)->attname));
+										 cut_name(index, sc, tr[t].c));
 			}
 	for (first_open = 0; first_open < nfire && blocked[first_open];)
 		first_open++;
@@ -687,7 +712,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		 */
 		sec = -1;
 		for (int t = 0; t < ntr && !tr[pick].time && sec < 0; t++)
-			if (t != pick && time_type(tr[t].type))
+			if (t != pick && (time_type(tr[t].type) || (tr[t].shape != NULL && tr[t].lane == 1)))
 			{
 				double		row2 = layout_bytes(tr, ntr, samp, pick, t, nsb, nblocks, rows_per_unit) + untracked * AUTOCUT_LEAF_BYTES;
 
@@ -706,14 +731,14 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		}
 		if (growth <= AUTOCUT_GROWTH_PCT || v->res == SIFT_AUTOCUT_NONE)
 		{
-			strlcpy(v->leaf, NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[pick].c].attno - 1)->attname), sizeof(v->leaf));
+			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
 			v->reads = reads[i];
 			v->ideal = fills[i];
 			v->range = tr[pick].time;
 			v->growth = growth;
 			v->second[0] = '\0';
 			if (sec >= 0)
-				strlcpy(v->second, NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[tr[sec].c].attno - 1)->attname), sizeof(v->second));
+				strlcpy(v->second, cut_name(index, sc, tr[sec].c), sizeof(v->second));
 			v->reason = NULL;
 			v->res = growth <= AUTOCUT_GROWTH_PCT ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
 		}
