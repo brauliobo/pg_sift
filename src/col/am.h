@@ -83,6 +83,7 @@ extern void sift_col_auto_rows(Relation heap, Relation index);
 extern void sift_col_auto_arrlen(Relation index);
 /* Before a build with order_array_columns unset or 'auto': the columns that get the global order array, written to the option */
 extern void sift_col_auto_gorder(Relation heap, Relation index);
+extern void sift_col_auto_point(Relation heap, Relation index);
 extern void sift_col_set_option(Relation index, const char *name, const char *value);
 extern char *sift_col_suggest_spec(Relation heap, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups);
 extern const char *sift_col_options_paths_raw(Relation index);

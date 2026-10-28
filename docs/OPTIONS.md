@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 113 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 114 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
@@ -1226,6 +1226,20 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Upgrade from 3.5:** An index built before has the units by superblock; a REINDEX decides the cut.
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: d' and the NOTICE names it; key_cut = 'off' keeps the units by superblock. sift.key_cut_decision(index) says what a REINDEX would decide. A date that follows the table, another leaf that follows it, order_columns or point_tid_columns keep the cut off.
 
+#### auto(point-directory-columns)
+
+`sift_col` · default · since 3.6 · default automatic
+
+- **What it does:** When point_columns is not set, CREATE INDEX and REINDEX write to it, as 'auto: col', the integer columns of nearly unique values (distinct values at least half the rows) that do not follow the order of the table (correlation under 0.9), when the benefit of the directory is at least its cost: an equality on such a column reads every unit, because the keys of a unit span the whole range of the column, and the directory answers it in a flat 0.2 M instructions
+- **Gain:** an equality on a random unique int8 of a 7-column index, 400,000 rows: 1.9 M instructions without the directory and 0.2 M with it (a b-tree 0.2 M); one int8 column, 1,000,000 rows: 5.17 M and 0.20 M (b-tree 0.14 M), 3,000,000 rows about 15 M and 0.2 M; an IN list of 16 keys: 95.6 M, 0.74 M (b-tree 0.50 M) at 1,000,000 rows
+- **Formula:** S 9.50x saving 1700k instructions, G 96.0%, W 21.0%, R 1: B 46.1 against C 36.2, automatic
+- **Impact:** index size: +96% measured (6.50 to 12.74 MB; predicted +105%), 400,000 rows, 7 columns of 62, 10 and 10 bits; 16.5 bytes a row more for a column of 1,000,000 rows (8.3 to 25.4 MB for one int8 column, a b-tree 22.5 MB); build, merge and writes: CREATE INDEX +21% instructions (1,756 to 2,126 a row, one int8 column, 1,000,000 rows; 1,719 to 2,092 for an int4); the default parallel build +21%; a table without statistics gets no choice until a REINDEX after ANALYZE; other: 16.5 bytes a row for each column chosen (6.50 to 12.74 MB, +96%, for a 7-column index of 400,000 rows; the sample-free estimate said +105%); CREATE INDEX +21% instructions (1,756 to 2,126 a row for one int8 column, 1,000,000 rows)
+- **When:** A CREATE INDEX or REINDEX of an analyzed table whose integer column has nearly unique values, is not in heap order and whose benefit is at least its cost, when point_columns and point_tid_columns are unset (or 'auto'). Not with sift.col_format_minor under 15.
+- **Default:** automatic — B = R*log2(S)/log2(1.05) = 1*log2(9.5)/log2(1.05) = 46 against C = G/3 + W/5 = 32 + 4.2 = 36: automatic; the saving is 1.7 M instructions a lookup. S is (0.17 M + 5 instructions a row) over the 0.2 M of the directory; G is 16.5 bytes a row over the bytes a row of the index without it, estimated from the statistics.
+- **Turn off:** ALTER INDEX .. SET (point_columns = 'off') and REINDEX; the NOTICE names the choice.
+- **Upgrade from 3.5:** An index built before has no directory; a REINDEX decides.
+- **Advice:** Leave on. The choice is written as point_columns = 'auto: rid' and the NOTICE names it with the benefit and the cost; point_columns = 'off' keeps the index without a directory; a list you set is never changed. A column that follows the table, or has few values, or a table that is small for it, gets none (1,000,000 rows of one int8 column: B 66 against C 71, so a one-column index of that size stays without; 3,000,000 rows: B 88 against C 71, chosen).
+
 #### auto(top-n-per-group)
 
 `sift_col`, `sift_table` · default · since 3.4 · default automatic
@@ -2236,6 +2250,7 @@ Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift_col(array_len
 | `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
 | `auto(key-cut-range-lane)` | automatic | automatic |  | An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them. |
 | `auto(key-cut-date-growth)` | automatic | automatic |  | An index built before has the units by superblock; a REINDEX decides the cut. |
+| `auto(point-directory-columns)` | automatic | automatic |  | An index built before has no directory; a REINDEX decides. |
 | `auto(json-build-object)` | automatic | automatic |  | Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function. |
 | `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
 | `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
@@ -2276,6 +2291,7 @@ The library tells what an automatic choice did with a NOTICE; `SET client_min_me
 | NOTICE | sift_col index %s keeps the keys of %s in every unit | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s keeps the elements of the arrays %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s reads the jsonb paths %s | `src/col/keycols.c` | `paths` |
+| NOTICE | sift_col index "%s": point_columns includes "%s", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about %s M instructions against %s M with the directory; predicted index size %s%%, benefit %s against cost %s) | `src/col/keycols.c` | `point_columns` |
 | NOTICE | sift_col index %s gives the dimensions of its cube to the columns whose histograms fit: %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s keeps the lengths of the arrays %s | `src/col/keycols.c` |  |
 | NOTICE | sift_col index %s writes a rollup of the rows by %s | `src/col/keycols.c` | `rollup` |

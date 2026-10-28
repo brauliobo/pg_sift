@@ -49,15 +49,19 @@ FROM sift._test_col_counters('ga_auto', '1:ge:2000000;1:le:2004000', 24) p, sift
 
 -- off and a list are the user's
 CREATE INDEX ga_off ON ga USING sift_col (id, r, g, ts, pad) WITH (order_array_columns = off);
+NOTICE:  sift_col index "ga_off": point_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +62%, benefit 28 against cost 25)
+HINT:  ALTER INDEX ga_off SET (point_columns = 'off') and REINDEX keep the index without it.
 CREATE INDEX ga_list ON ga USING sift_col (id, r, g, ts, pad) WITH (order_columns = 'g', order_array_columns = 'g');
+NOTICE:  sift_col index "ga_list": point_columns includes "r", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.8 M instructions against 0.2 M with the directory; predicted index size +62%, benefit 28 against cost 25)
+HINT:  ALTER INDEX ga_list SET (point_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index "ga_list": order_array_columns adds the sorted keys and heap addresses to the sorted runs of 1 column
 DETAIL:  1.0 bytes a row for each column, 0.1 MB together; the segments are column format minor 30, which a library before 3.6 cannot read.
 HINT:  ORDER BY column LIMIT n reads n entries of the array and n rows of the heap, whatever the number of units, and a range of the column (up to 16,384 rows) hands the heap the addresses between its bounds without reading a unit. Drop the option, or set sift.col_format_minor to 14, to keep the sorted runs only.
 SELECT relname, reloptions FROM pg_class WHERE relname IN ('ga_off', 'ga_list') ORDER BY 1;
- relname |               reloptions                
----------+-----------------------------------------
- ga_list | {order_columns=g,order_array_columns=g}
- ga_off  | {order_array_columns=off}
+ relname |                           reloptions                            
+---------+-----------------------------------------------------------------
+ ga_list | {order_columns=g,order_array_columns=g,"point_columns=auto: r"}
+ ga_off  | {order_array_columns=off,"point_columns=auto: r"}
 (2 rows)
 
 -- the update list is for an option that names columns: off is not a gain to reindex for

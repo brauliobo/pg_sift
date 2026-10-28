@@ -14,16 +14,21 @@ leaf_ok(const SiftColSchema *s, const SiftColDef *d)
 	return d->parent < 0 && sift_cset_leaf_ok(s, d);
 }
 
+/* 'auto: a, b' is the choice of the build (col/keycols.c) and reads as the list 'a, b'; 'auto' is none */
 const char *
 sift_cpoint_spec_parse(const char *opt, const SiftColSchema *s, const char *const *names, bool *leaf)
 {
-	return sift_cpagg_leaf_list(opt, s, names, leaf, leaf_ok, "not a plain integer, text or uuid column of the top level");
+	bool		autolist;
+
+	return sift_cpagg_leaf_list(sift_cpagg_auto_list(opt, &autolist), s, names, leaf, leaf_ok, "not a plain integer, text or uuid column of the top level");
 }
 
 const char *
 sift_cpoint_syntax(const char *opt)
 {
-	return sift_cpagg_leaf_list(opt, NULL, NULL, NULL, NULL, NULL);
+	bool		autolist;
+
+	return sift_cpagg_leaf_list(sift_cpagg_auto_list(opt, &autolist), NULL, NULL, NULL, NULL, NULL);
 }
 
 uint64
