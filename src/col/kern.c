@@ -181,6 +181,14 @@ sift_colk_bits_to_flags_scalar(const uint64 *bits, uint32 n, uint8 *flags)
 	}
 }
 
+void
+sift_colk_anc_match_scalar(const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits)
+{
+	memset(bits, 0, SIFT_COLK_WORDS(n) * sizeof(uint64));
+	for (uint32 i = 0; i < n; i++)
+		bits[i >> 6] |= (uint64) sift_colk_anc_one(a[i], c, flip, bmin, bmax) << (i & 63);
+}
+
 static void
 expand_parents_scalar(const uint32 *end, uint32 np, uint32 *parent)
 {
@@ -242,6 +250,7 @@ const SiftColKernels sift_col_kernels_scalar = {
 	.bits_to_flags = sift_colk_bits_to_flags_scalar,
 	.expand_parents = expand_parents_scalar,
 	.str_contains = str_contains_scalar,
+	.anc_match = sift_colk_anc_match_scalar,
 };
 
 #if defined(SIFT_HAVE_NEON)
@@ -267,6 +276,7 @@ const SiftColKernels sift_col_kernels_neon = {
 	.bits_to_flags = sift_colk_bits_to_flags_neon,
 	.expand_parents = sift_colk_expand_parents_neon,
 	.str_contains = sift_colk_str_contains_neon,
+	.anc_match = sift_colk_anc_match_neon,
 };
 #endif
 

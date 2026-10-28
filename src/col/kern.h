@@ -126,6 +126,13 @@ typedef struct SiftColKernels
 	 * (the needle is in lower case already), so that ILIKE of an ASCII needle is the same pass.
 	 */
 	void		(*str_contains) (uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold);
+
+	/*
+	 * The nodes on the way to a network (col/shape.c): bit i of bits (SIFT_COLK_WORDS(n) words written, the bits past n zero) = a[i] is a node of that chain. With
+	 * x = a[i] ^ flip and b = x & -x (the lowest set bit, the size of the block), a[i] is in the chain when bmin <= b <= bmax and x == 2 * (c & -b) + b, that is
+	 * the node of the block of size b that holds the address c.
+	 */
+	void		(*anc_match) (const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits);
 } SiftColKernels;
 
 /* The active table (follows sift.simd), and a level's table for tests; never NULL, falls back downwards */

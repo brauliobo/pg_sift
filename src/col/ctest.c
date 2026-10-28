@@ -29,6 +29,8 @@ ctest_range(SiftCTest *t, int64 lo, int64 hi)
 	t->hi = hi;
 }
 
+static void ctest_chain(SiftCTest *t);
+
 /* Sorted distinct keys -> NONE/NONNULL (none), a range (one) or a set */
 static void
 ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
@@ -62,6 +64,9 @@ ctest_keys(SiftCTest *t, int64 *keys, uint32 n, bool negate)
 		t->nset = m;
 		t->lo = keys[0];
 		t->hi = keys[m - 1];
+		t->chain = false;
+		if (!negate)
+			ctest_chain(t);
 	}
 }
 
@@ -405,6 +410,57 @@ chunk_range(const SiftCChunk *c, int64 lo, int64 hi, uint64 *tmp)
 }
 
 /*
+ * Is the set the nodes on the way to a network (col/shape.c): for each size 2^h from a smallest to a greatest, the node 2 * first + 2^h of the block that holds one address?
+ * Then the chunk is tested by arithmetic on the keys (anc_match), 1 or 2 instructions a key, whatever the number of members. The keys of the IPv6 nodes are shifted below
+ * zero (flip). Any set of that form is exact: a key outside it differs from the node of its own size.
+ */
+static void
+ctest_chain(SiftCTest *t)
+{
+	const int64 *s = t->set;
+	uint32		n = t->nset;
+	uint64		flip = s[0] < 0 ? UINT64CONST(1) << 63 : 0,
+				bits = 0,
+				bmin = PG_UINT64_MAX,
+				bmax = 0,
+				c = 0;
+
+	t->chain = false;
+	if (n < 9 || (s[n - 1] < 0) != (s[0] < 0))
+		return;
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		x = (uint64) s[i] ^ flip,
+					b = x & (0 - x);
+
+		if (x == 0 || b > (UINT64CONST(1) << 62))
+			return;
+		bits |= b;
+		if (b < bmin)
+		{
+			bmin = b;
+			c = (x - b) >> 1;
+		}
+		bmax = Max(bmax, b);
+	}
+	if (pg_popcount64(bits) != n || bits != 2 * bmax - bmin)
+		return;
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		x = (uint64) s[i] ^ flip,
+					b = x & (0 - x);
+
+		if (x != ((c & (0 - b)) << 1) + b)
+			return;
+	}
+	t->chain = true;
+	t->chain_c = c;
+	t->chain_flip = flip;
+	t->chain_bmin = bmin;
+	t->chain_bmax = bmax;
+}
+
+/*
  * The members of a set of many keys in an open-addressing table, for a chunk that has about as many rows: a probe of the table costs a few instructions, a
  * bisection of the set one for each of its halvings (the 10,000 ids of an index-only scan: 260 instructions a row against 15). `empty` marks a free slot: a key not in the set.
  */
@@ -468,6 +524,18 @@ chunk_scalar(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 		for (uint32 i = 0; i < c->n; i++)
 			if (key_matches(t, key[i]))
 				tmp[i >> 6] |= UINT64CONST(1) << (i & 63);
+	pfree(key);
+}
+
+/* tmp = rows whose key is a node of the chain of t (ctest_chain) */
+static void
+chunk_chain(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
+{
+	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+
+	sift_cchunk_decode(c, key);
+	sift_colk->anc_match(key, c->n, t->chain_c, t->chain_flip, t->chain_bmin, t->chain_bmax, tmp);
+	memset(tmp + words_of(c->n), 0, (SIFT_COL_NWORDS(c->n) - words_of(c->n)) * sizeof(uint64));
 	pfree(key);
 }
 
@@ -853,7 +921,9 @@ sift_ctest_run(const SiftCTest *t, const SiftCChunk *c, uint64 *bits)
 	if (t->kind != SIFT_CT_STRS && sparse_run(t, c, bits))
 		return;
 	tmp = palloc(nw * sizeof(uint64));
-	if (t->kind == SIFT_CT_RANGE || t->kind == SIFT_CT_NRANGE)
+	if (t->kind == SIFT_CT_SET && t->chain)
+		chunk_chain(t, c, tmp);
+	else if (t->kind == SIFT_CT_RANGE || t->kind == SIFT_CT_NRANGE)
 		chunk_range(c, t->lo, t->hi, tmp);
 	else if (t->kind == SIFT_CT_LUT)
 		chunk_lut(t, c, tmp);

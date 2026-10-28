@@ -57,6 +57,7 @@ col/shred_int.h
 col/col.h
 col/kern.h
 col/kern_int.h
+col/kern_anc.h
 col/kern_vec.h
 col/enc.h
 col/enc_int.h

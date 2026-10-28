@@ -446,6 +446,11 @@ SIFT_VEC_PUSH
 #include "col/text_vec.h"
 SIFT_VEC_POP
 
+SIFT_VEC_PUSH
+#define AN_FN(x)	static void x##_avx512
+#include "col/kern_anc.h"
+SIFT_VEC_POP
+
 const SiftColKernels sift_col_kernels_avx512 = {
 	.range = {range_u8_avx512, range_u16_avx512, range_u32_avx512, range_u64_avx512},
 	.lut = {lut_u8_avx512, lut_u16_avx512, lut_u32_avx512},
@@ -466,6 +471,7 @@ const SiftColKernels sift_col_kernels_avx512 = {
 	.bits_to_flags = bits_to_flags_avx512,
 	.expand_parents = expand_parents_avx512,
 	.str_contains = str_contains_avx512,
+	.anc_match = anc_match_avx512,
 };
 
 #endif

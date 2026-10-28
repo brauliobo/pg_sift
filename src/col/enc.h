@@ -362,6 +362,11 @@ typedef struct SiftCTest
 	int64		hi;
 	const int64 *set;			/* palloc'd by sift_ctest_make */
 	uint32		nset;
+	bool		chain;			/* SET: the nodes on the way to a network (anc_match of col/kern.h with chain_c, chain_flip, chain_bmin, chain_bmax) */
+	uint64		chain_c;
+	uint64		chain_flip;
+	uint64		chain_bmin;
+	uint64		chain_bmax;
 	const uint64 *lut;			/* palloc'd by sift_ctest_make */
 	uint32		lutbits;
 	uint64		fold[4];		/* LUT / STR EQ: the bits (code & 255) the test can match, to compare with a zone's set */

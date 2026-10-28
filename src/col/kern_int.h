@@ -32,6 +32,7 @@ extern void sift_colk_for_i64_u64_neon(const void *a, uint32 n, int64 base, int6
 extern void sift_colk_f8_from_keys_neon(int64 *a, uint32 n);
 extern void sift_colk_zone_set_neon(const uint64 (*set)[4], uint32 n, const uint64 *probe, uint64 *keep);
 extern void sift_colk_expand_parents_neon(const uint32 *end, uint32 np, uint32 *parent);
+extern void sift_colk_anc_match_neon(const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits);
 extern void sift_colk_str_contains_neon(uint64 *out, const char *bytes, const uint32 *off, uint32 n, const char *needle, uint32 m, bool fold);
 #endif
 
@@ -123,5 +124,16 @@ extern void sift_colk_for_sel_u64_scalar(const void *a, const uint32 *idx, uint3
 extern void sift_colk_gather_u32_scalar(const uint32 *a, const uint32 *idx, uint32 n, uint32 *dst);
 extern void sift_colk_f8_from_keys_scalar(int64 *a, uint32 n);
 extern void sift_colk_bits_to_flags_scalar(const uint64 *bits, uint32 n, uint8 *flags);
+extern void sift_colk_anc_match_scalar(const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits);
+
+/* anc_match for one key: the specification, and the tail of the vector kernels */
+static inline bool
+sift_colk_anc_one(int64 key, uint64 c, uint64 flip, uint64 bmin, uint64 bmax)
+{
+	uint64		x = (uint64) key ^ flip,
+				b = x & (0 - x);
+
+	return b >= bmin && b <= bmax && x == ((c & (0 - b)) << 1) + b;
+}
 
 #endif							/* SIFT_COL_KERN_INT_H */

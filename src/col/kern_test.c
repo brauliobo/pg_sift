@@ -535,6 +535,60 @@ test_str_contains(Test *t)
 	mix(t, out, SIFT_COLK_WORDS(n) * sizeof(uint64));
 }
 
+/*
+ * Keys that are nodes of the chain of one address (some of every size, some of another address, a node of the other family, random ones, 0 and the smallest integer),
+ * checked against the nodes written out one by one: the node of the block of 2^h addresses that holds c is 2 * (c rounded down to 2^h) + 2^h.
+ */
+static void
+test_anc_match(Test *t)
+{
+	uint32		n = rnd(t, 3) ? rnd(t, 200) : pick_n(t) % 700,
+				w = rnd(t, 2) ? 32 : 62,
+				hmin = rnd(t, w + 1),
+				hmax = hmin + rnd(t, w - hmin + 1),
+				words = SIFT_COLK_WORDS(n);
+	uint64		flip = w == 62 ? UINT64CONST(1) << 63 : 0,
+				c = pg_prng_uint64(&t->rs) >> (64 - w),
+				c2 = pg_prng_uint64(&t->rs) >> (64 - w);
+	int64	   *keys = in_array(t, sizeof(int64), n);
+	uint64	   *out = out_array(t, sizeof(uint64), words);
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		int			h = rnd(t, w + 3);
+		uint64		x = 2 * ((rnd(t, 4) ? c : c2) & ~((UINT64CONST(1) << h) - 1)) + (UINT64CONST(1) << h);
+
+		switch (rnd(t, 8))
+		{
+			case 0:
+				keys[i] = (int64) pg_prng_uint64(&t->rs);
+				break;
+			case 1:
+				keys[i] = rnd(t, 2) ? 0 : PG_INT64_MIN;
+				break;
+			case 2:
+				keys[i] = (int64) (x ^ (flip ^ (UINT64CONST(1) << 63)));	/* the other family */
+				break;
+			default:
+				keys[i] = (int64) (x ^ flip);
+		}
+	}
+	t->k->anc_match(keys, n, c, flip, UINT64CONST(1) << hmin, UINT64CONST(1) << hmax, out);
+	for (uint32 i = 0; i < n; i++)
+	{
+		bool		want = false;
+
+		for (uint32 h = hmin; h <= hmax && !want; h++)
+			want = (uint64) keys[i] == ((2 * (c & ~((UINT64CONST(1) << h) - 1)) + (UINT64CONST(1) << h)) ^ flip);
+		if (sift_col_bit_test(out, i) != want)
+			elog(ERROR, "sift_col_kern: key %u of %u is %s the nodes of sizes 2^%u to 2^%u", i, n, want ? "not in" : "in", hmin, hmax);
+	}
+	for (uint32 s = n; s < words * 64; s++)
+		if (sift_col_bit_test(out, s))
+			elog(ERROR, "sift_col_kern: bit %u past the %u keys is set", s, n);
+	mix(t, out, words * sizeof(uint64));
+}
+
 static int64
 run_cases(const SiftColKernels *k, int32 seed)
 {
@@ -562,6 +616,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 		test_decode_lanes(&t);
 		test_expand_parents(&t);
 		test_str_contains(&t);
+		test_anc_match(&t);
 		MemoryContextReset(cx);
 		unmap_all(&t);
 	}
