@@ -10,7 +10,11 @@ INSERT INTO ordered SELECT i, i / 300, i % 7, repeat('x', 1000) FROM generate_se
 CREATE INDEX ordered_k ON ordered (k);
 CREATE INDEX ordered_col ON ordered USING sift_col (id, k, v);
 CLUSTER ordered USING ordered_k;
+-- the statistics of every row, not of a random sample: the cost of the normal plan moved by 15% from one ANALYZE to the next, and the refusals below
+-- are decided by a few percent. k < 6 sits 16% above the btree's price with the empty map and 20% below it after the VACUUM (k < 7 was 1% above).
+SET default_statistics_target = 1000;
 ANALYZE ordered;
+RESET default_statistics_target;
 
 CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
 	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
@@ -43,10 +47,10 @@ SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_co
 DROP TABLE page_costs;
 
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 -- the share of the pages is the table's, not the query's
 SELECT used, slug, reason ~ '^the normal plan is estimated cheaper than the scan \(the scan costs [0-9.]+, the normal plan [0-9.]+; 100% of the heap pages' AS pages_100
-FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 -- a scan that loses for another reason says nothing of the map: one key of a table the btree reads at once
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
@@ -86,7 +90,7 @@ SELECT k_below, c.empty_cost - (SELECT scan_cost FROM sift.explain_why(format('S
 FROM costs c;
 SELECT (SELECT charge FROM charges WHERE k_below = 20) > 0 AS charged,
 	(SELECT charge FROM charges WHERE k_below = 20) < 0.5 * (SELECT charge FROM charges WHERE k_below = 300) AS tenth_charges_less;
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
 SELECT used, slug, reason !~ 'all-visible' AS no_hint FROM sift.explain_why('SELECT count(*) FROM ordered WHERE k = 5');
 
 SELECT (SELECT c.empty_cost - (SELECT scan_cost FROM sift.explain_why(c.q)) FROM lcosts c WHERE q ~ 'JOIN lookup')
