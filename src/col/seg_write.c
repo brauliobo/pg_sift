@@ -1492,12 +1492,12 @@ write_zones(SiftColSegWriter *w, SiftSectionRef *sec)
 				za.any_ovf |= (flags[u] & SIFT_COLZ_OVERFLOW) != 0, za.any_inl |= (flags[u] & SIFT_COLZ_INLINE) != 0;
 			if (sift_lst_sampled(def))
 			{
-				Size		at = sizeof(LstHeader) + ncols * sizeof(LstLeaf);
+				Size		sat = sizeof(LstHeader) + ncols * sizeof(LstLeaf);
 
 				for (int k = 0; k < c; k++)
 					if (sift_lst_sampled(&w->schema->cols[k]))
-						at += 2 * (Size) lh->nsample * sizeof(int64);
-				lo = (int64 *) (w->lst + at);
+						sat += 2 * (Size) lh->nsample * sizeof(int64);
+				lo = (int64 *) (w->lst + sat);
 			}
 			sift_lst_leaf(def, w->format, w->nsb, &za, rec, lo, lo != NULL ? lo + lh->nsample : NULL);
 			if (lo != NULL)
