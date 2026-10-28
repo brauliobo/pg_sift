@@ -1511,9 +1511,11 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 				pagg_bytes = 0,
 				pagg_units = 0;
 	int			nwbuf = 0;
+	SiftDirSnapshot *plain = palloc(sizeof(SiftDirSnapshot));
 
 	sift_dir_read(index, snap);
 	fs = sift_store_free_stats(index);
+	plain->nsegs = 0;
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
@@ -1523,11 +1525,16 @@ sift_col_index_info(PG_FUNCTION_ARGS)
 			bytes += snap->segs[i].bytes;
 			pagg_bytes += sift_cseg_preagg_bytes(seg);
 			pagg_units += sift_cseg_preagg_units(seg);
+			/* the units of a key-cut segment are numbered from 0 in each segment: they are stored units, not superblocks that other segments share */
+			if (sift_cseg_keyed(&snap->segs[i]))
+				units += seg->nsb;
+			else
+				plain->segs[plain->nsegs++] = snap->segs[i];
 			sift_cseg_close(seg);
 		}
 		else
 			nwbuf++;
-	units = sift_cseg_dir_units(snap);
+	units += sift_cseg_dir_units(plain);
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(snap->meta.high_water);
 	v[2] = Int64GetDatum(fs.blocks);

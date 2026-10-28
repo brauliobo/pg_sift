@@ -1,0 +1,34 @@
+-- sift.col_index_info.units of a key-cut index: the units of a key-cut segment are numbered from 0 in each segment, so the segments of a parallel build
+-- share those numbers and are not superblocks that one segment covers once. units is the units stored, as the units of col_segments and the pre-aggregates count them.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+SET parallel_leader_participation = off;
+CREATE TABLE ku (id int, g int, v int, pad text) WITH (autovacuum_enabled = off);
+INSERT INTO ku SELECT i, i % 40, i % 1000, repeat('x', 200) FROM generate_series(1, 60000) i;
+VACUUM (FREEZE, ANALYZE) ku;
+CREATE FUNCTION ku_units(idx regclass) RETURNS TABLE (segments_ok bool, units_stored bool, preagg_within bool, advice_same bool) LANGUAGE sql AS $$
+	SELECT i.segments > 1, i.units = (SELECT sum(s.units) FROM sift.col_segments(idx) s WHERE s.kind = 'immutable'), i.preagg_units <= i.units,
+	       (SELECT a.units FROM sift.cluster_advice(idx::text::regclass, 1) a) IS NOT DISTINCT FROM i.units
+	FROM sift.col_index_info(idx) i $$;
+-- key cut, several segments
+CREATE INDEX ku_key ON ku USING sift_col (id, g, v) WITH (key_cut = 'g');
+SELECT * FROM ku_units('ku_key');
+ segments_ok | units_stored | preagg_within | advice_same 
+-------------+--------------+---------------+-------------
+ t           | t            | t             | t
+(1 row)
+
+-- not cut by a key: the superblocks are shared and counted once
+CREATE INDEX ku_plain ON ku USING sift_col (id, g, v) WITH (key_cut = 'off');
+SELECT segments > 1 AS segments_ok, units = (SELECT count(DISTINCT sb) FROM sift.col_unit_agg('ku_plain', 'g') WHERE segment IS NOT NULL) AS superblocks_once, preagg_units <= units AS preagg_within
+FROM sift.col_index_info('ku_plain');
+ segments_ok | superblocks_once | preagg_within 
+-------------+------------------+---------------
+ t           | t                | t
+(1 row)
+
+DROP TABLE ku;
+DROP FUNCTION ku_units(regclass);
+DROP EXTENSION pg_sift;
