@@ -52,7 +52,7 @@ TESTING_REGRESS += col_gorder_chunks col_point_lazy col_merge_keys col_vacuum_pa
 TESTING_REGRESS += col_census_sample col_unit_floor col_key_cut_auto agg_dict_blocks_lazy
 TESTING_REGRESS += col_preagg_super
 TESTING_REGRESS += col_alter_options
-TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow
+TESTING_REGRESS += agg_group_spill_limits agg_distinct_narrow agg_distinct_sort
 TESTING_REGRESS += agg_lookup_chain agg_par_partitions agg_partitions agg_partitions_many col_worker_failure col_range_count
 TESTING_REGRESS += col_ioss_columns
 ifdef SIFT_SB_SHIFT

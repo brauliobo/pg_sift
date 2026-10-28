@@ -85,9 +85,7 @@ struct Dist
 	DSet		ds;
 	uint64		maxn;
 	/* DD_SORT */
-	Tuplesortstate *sort;
-	TupleTableSlot *put;
-	TupleTableSlot *get;
+	Tuplesortstate *sort;		/* int8 datums: the number of the group above the value id */
 	uint32		nsid;
 	uint32		nsidcap;
 	uint32	   *sid;			/* per group: its sort id + 1 */

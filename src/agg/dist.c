@@ -307,7 +307,7 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	{
 		MemoryContext mc = MemoryContextSwitchTo(ex->cxt);
 
-		agg_pair_sort(2, TUPLESORT_RANDOMACCESS, &d->sort, &d->put, &d->get);
+		d->sort = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, work_mem, NULL, TUPLESORT_RANDOMACCESS);
 		MemoryContextSwitchTo(mc);
 		d->nsid = d->nsidcap = d->sidgroups = 0;
 		d->sid = NULL;
@@ -340,8 +340,6 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 static void
 dist_put_sort(Dist *d, uint32 g, uint32 v)
 {
-	TupleTableSlot *t = d->put;
-
 	if (g >= d->sidgroups)
 	{
 		uint32		n = Max(Max(g + 1, d->sidgroups * 2), 64);
@@ -357,12 +355,7 @@ dist_put_sort(Dist *d, uint32 g, uint32 v)
 	}
 	if (d->sid[g] == 0)
 		d->sid[g] = ++d->nsid;
-	ExecClearTuple(t);
-	t->tts_values[0] = Int32GetDatum((int32) (d->sid[g] - 1));
-	t->tts_values[1] = Int64GetDatum((int64) v);
-	t->tts_isnull[0] = t->tts_isnull[1] = false;
-	ExecStoreVirtualTuple(t);
-	tuplesort_puttupleslot(d->sort, t);
+	tuplesort_putdatum(d->sort, Int64GetDatum((int64) (d->sid[g] - 1) << 32 | v), false);
 }
 
 /* a bitmap chunk of 4096 zero bits */
@@ -1029,20 +1022,16 @@ dist_update(AggExec *ex, int ai, const uint64 *ok, int nsel, const uint32 *v)
 static void
 dist_sorted(Dist *d, void (*fn) (void *arg, int32 sid, int64 val), void *arg)
 {
+	Datum		x;
 	bool		isnull;
-	int32		prev_sid = -1;
-	int64		prev_val = 0;
+	int64		prev = -1;
 
 	tuplesort_rescan(d->sort);
-	while (tuplesort_gettupleslot(d->sort, true, false, d->get, NULL))
+	while (tuplesort_getdatum(d->sort, true, false, &x, &isnull, NULL))
 	{
-		int32		sid = DatumGetInt32(slot_getattr(d->get, 1, &isnull));
-		int64		val = DatumGetInt64(slot_getattr(d->get, 2, &isnull));
-
-		if (sid != prev_sid || val != prev_val)
-			fn(arg, sid, val);
-		prev_sid = sid;
-		prev_val = val;
+		if (DatumGetInt64(x) != prev)
+			fn(arg, (int32) (DatumGetInt64(x) >> 32), (uint32) DatumGetInt64(x));
+		prev = DatumGetInt64(x);
 	}
 }
 
