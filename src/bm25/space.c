@@ -13,6 +13,8 @@
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
 #include "postmaster/bgworker.h"
+#include "replication/walsender.h"
+#include "replication/walsender_private.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -87,6 +89,49 @@ sift_maint_orphan_sweep(Relation index)
 }
 
 /*
+ * A standby replays the lock record of an AccessExclusiveLock before it cuts the file, and waits for every query that holds the relation, up to
+ * max_standby_streaming_delay (then cancels it; hot_standby_feedback does not help): the replay stalls for as long as a long query on the standby runs. A b-tree
+ * is never cut, so the blocks stay free for the next rewrite while a physical standby streams.
+ */
+static bool
+standby_streams(void)
+{
+#ifdef SIFT_TESTING
+	if (sift_test_cut_with_standby)
+		return false;
+#endif
+	for (int i = 0; i < max_wal_senders; i++)
+	{
+		WalSnd	   *w = &WalSndCtl->walsnds[i];
+		bool		streams;
+
+		SpinLockAcquire(&w->mutex);
+		streams = w->pid != 0 && w->kind == REPLICATION_KIND_PHYSICAL && w->state != WALSNDSTATE_BACKUP;
+		SpinLockRelease(&w->mutex);
+		if (streams)
+			return true;
+	}
+	return false;
+}
+
+/* The AccessExclusiveLock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
+static bool
+lock_for_cut(Relation rel, const char *what, int elevel)
+{
+	if (standby_streams())
+	{
+		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
+		return false;
+	}
+	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
+	{
+		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
+		return false;
+	}
+	return true;
+}
+
+/*
  * Gives the free blocks at the end of the file back to the operating system, like VACUUM does for a
  * heap: when they are worth an exclusive lock, and only if AccessExclusiveLock on the index is free
  * right now (any scan, insert or step of the worker holds a lock on it), released as soon as the file
@@ -104,12 +149,8 @@ sift_maint_truncate(Relation index, int elevel)
 	tail = sift_store_tail_blocks(index);
 	if (tail == 0 || (tail < TRUNCATE_MIN_BLOCKS && tail < RelationGetNumberOfBlocks(index) / TRUNCATE_FRACTION))
 		return;
-	if (!ConditionalLockRelation(index, AccessExclusiveLock))
-	{
-		ereport(elevel, (errmsg("index \"%s\": stopping truncate due to conflicting lock request",
-								RelationGetRelationName(index))));
+	if (!lock_for_cut(index, "index", elevel))
 		return;
-	}
 	freed = sift_store_truncate(index);
 	UnlockRelation(index, AccessExclusiveLock);
 	if (freed > 0)
@@ -406,11 +447,8 @@ sift_maint_space_budget(Relation rel, SiftRelocatePage relocate_page, int elevel
 	if (!space_worth(sift_store_tail_blocks(rel), nblocks) &&
 		!(budget > 0 && (space_resume || space_worth(sift_store_free_stats(rel).blocks, nblocks))))
 		return 0;
-	if (!ConditionalLockRelation(rel, AccessExclusiveLock))
-	{
-		ereport(elevel, (errmsg("%s \"%s\": stopping truncate due to conflicting lock request", what, RelationGetRelationName(rel))));
+	if (!lock_for_cut(rel, what, elevel))
 		return 0;
-	}
 	PG_TRY();
 	{
 		sift_store_space_exclusive(rel, true);

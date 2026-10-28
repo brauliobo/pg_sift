@@ -25,6 +25,7 @@ sub count { return $_[0]->safe_psql('postgres', "SELECT count(*) FROM $_[1]") }
 
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', $conf);
+$primary->append_conf('postgresql.conf', 'sift.test_cut_with_standby = on');
 $primary->start;
 install_sift_test($primary, 'the table limit is a testing setting');
 # a slot keeps the WAL the standby has not replayed: with consistency checking it replays slower than the primary writes

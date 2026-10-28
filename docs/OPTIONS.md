@@ -166,7 +166,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** VACUUM gives the free blocks at the end of the file back to the operating system
 - **Gain:** -
-- **Impact:** index size: index after churn and VACUUM 8.1 MiB against 34.7 before the space step (1,000,000 rows); v2.0 example 722 to 83 blocks; build, merge and writes: a brief exclusive lock when it is free; a standby cancels queries that hold the index; other: a brief exclusive lock when it is free; a standby cancels queries that hold the index
+- **Impact:** index size: index after churn and VACUUM 8.1 MiB against 34.7 before the space step (1,000,000 rows); v2.0 example 722 to 83 blocks; build, merge and writes: a brief exclusive lock when it is free; none while a physical standby streams (a cut would stall its replay for as long as its longest query on the index runs), the free end then stays in the file for the next rewrite; other: a brief exclusive lock when it is free; none while a physical standby streams (a cut would stall its replay for as long as its longest query on the index runs), the free end then stays in the file for the next rewrite
 - **When:** VACUUM of a sift index when the free end is 1000 blocks or a 16th of the file and the exclusive lock is free at once. Not with VACUUM (PARALLEL n); free blocks inside the file are reused either way.
 - **Default:** true — On, like vacuum_truncate of a heap table: the index fell from 34.7 to 8.1 MiB after churn and VACUUM (1,000,000 rows); the lock is taken only if free and held for the cut.
 - **Turn off:** ALTER INDEX .. SET (vacuum_truncate = false); RESET returns it on; no REINDEX. Free blocks are then reused but not returned to the system, and a standby no longer replays the lock.
@@ -205,12 +205,12 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 
 - **What it does:** VACUUM gives the free blocks at the end of the file back to the operating system
 - **Gain:** Q02 after VACUUM 11.49 to 7.75 ms (median, 1,000,000 rows after update/delete churn)
-- **Impact:** index size: smaller: free MiB inside the column file after VACUUM 16.055 to 0.008; table and indexes 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: update/delete throughput medians unchanged; VACUUM takes a brief exclusive lock that it skips when busy; other: a brief exclusive lock when it is free; a standby cancels queries that hold the index
+- **Impact:** index size: smaller: free MiB inside the column file after VACUUM 16.055 to 0.008; table and indexes 200.3 to 154.5 MiB (1,000,000 rows after churn); build, merge and writes: update/delete throughput medians unchanged; VACUUM takes a brief exclusive lock that it skips when busy; other: a brief exclusive lock when it is free; none while a physical standby streams (a cut would stall its replay for as long as its longest query on the index runs), the free end then stays in the file for the next rewrite
 - **When:** VACUUM of a sift_col index: the exclusive lock only if free at once, tail segments copied into free runs, then the free end returned. A VACUUM that uses parallel index workers leaves it to the next one.
 - **Default:** true — On, as for a heap: table and indexes 200.3 to 154.5 MiB and Q02 11.49 to 7.75 ms after churn (1,000,000 rows); the lock is brief and skipped when busy, update/delete throughput unchanged.
 - **Turn off:** ALTER INDEX .. SET (vacuum_truncate = false), no REINDEX; RESET restores true. sift.vacuum_rewrite_limit = 0 only stops the copy of tail segments, not the truncation of a free end.
 - **Upgrade from 3.5:** unchanged
-- **Advice:** Leave on. Turn it off (ALTER INDEX SET vacuum_truncate = false) only if a standby cancelling queries that hold the index, or the brief exclusive lock, is not acceptable.
+- **Advice:** Leave on. Turn it off (ALTER INDEX SET vacuum_truncate = false) only if the brief exclusive lock is not acceptable; while a physical standby streams VACUUM cuts nothing anyway.
 
 #### sift_col(paths)
 

@@ -15,7 +15,7 @@ my $sum = 'SELECT count(*) || $$:$$ || sum(id) || $$:$$ || sum(length(note)) FRO
 
 my $primary = sift_node('primary', allows_streaming => 1);
 $primary->append_conf('postgresql.conf', "autovacuum_naptime = 1s\nautovacuum_vacuum_insert_threshold = 1000\nautovacuum_vacuum_insert_scale_factor = 0\n"
-	. "autovacuum_vacuum_threshold = 1000\nautovacuum_vacuum_scale_factor = 0");
+	. "autovacuum_vacuum_threshold = 1000\nautovacuum_vacuum_scale_factor = 0\nsift.test_cut_with_standby = on");
 $primary->start;
 install_sift($primary);
 $primary->backup('base');

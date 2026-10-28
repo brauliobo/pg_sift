@@ -11,7 +11,7 @@ use Test::More;
 my $cursor_settings = 'SET enable_seqscan = off; SET sift.enable_agg = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SET max_parallel_workers_per_gather = 0';
 my $standby;
 my $primary = sift_node('space_primary', allows_streaming => 1);
-$primary->append_conf('postgresql.conf', "sift.async_maintenance = off\nwal_consistency_checking = 'generic'\nmax_parallel_maintenance_workers = 0");
+$primary->append_conf('postgresql.conf', "sift.async_maintenance = off\nsift.test_cut_with_standby = on\nwal_consistency_checking = 'generic'\nmax_parallel_maintenance_workers = 0");
 $primary->start;
 install_sift_test($primary, 'space crash injection needs the testing build');
 

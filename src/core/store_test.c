@@ -85,6 +85,9 @@ sift_store_test_init(void)
 	DefineCustomBoolVariable("sift.test_crash_worker",
 							 "Testing: sift.test_crash_dir applies to background workers (on) or to the other processes (off).",
 							 NULL, &sift_test_crash_worker, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_cut_with_standby",
+							 "Testing: VACUUM cuts the file even while a standby streams.",
+							 NULL, &sift_test_cut_with_standby, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_max_extents",
 							"Testing: extents a segment may use (0 = what its header page holds).",
 							NULL, &sift_test_max_extents, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

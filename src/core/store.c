@@ -45,6 +45,7 @@ int			sift_test_max_extents = 0;
 bool		sift_test_run_gap = false;
 int			sift_test_crash_dir = 0;
 bool		sift_test_crash_worker = false;
+bool		sift_test_cut_with_standby = false;
 int			sift_test_dir_updates = 0;
 #endif
 

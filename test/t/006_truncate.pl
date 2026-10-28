@@ -51,7 +51,7 @@ sub healthy
 }
 
 my $primary = sift_node('trunc_primary', allows_streaming => 1);
-$primary->append_conf('postgresql.conf', "wal_consistency_checking = 'generic'");
+$primary->append_conf('postgresql.conf', "wal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on");
 $primary->start;
 install_sift($primary);
 # the full images wal_consistency_checking logs are many: a slot keeps the WAL the standby has not replayed
