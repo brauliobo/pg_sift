@@ -487,6 +487,7 @@ const SiftColKernels sift_col_kernels_avx2 = {
 	.expand_parents = expand_parents_avx2,
 	.str_contains = str_contains_avx2,
 	.anc_match = anc_match_avx2,
+	.anc_match32 = anc_match32_avx2,
 };
 
 #endif

@@ -31,3 +31,28 @@ AN_FN(anc_match)(const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, u
 	for (; i < n; i++)
 		bits[i >> 6] |= (uint64) sift_colk_anc_one(a[i], c, flip, bmin, bmax) << (i & 63);
 }
+
+typedef uint32 an_u32 __attribute__((vector_size(SIFT_V_BYTES), aligned(4), may_alias));
+
+AN_FN(anc_match32)(const uint32 *a, uint32 n, uint32 base, uint32 c, uint32 bmin, uint32 bmax, uint64 *bits)
+{
+	const uint32 L = SIFT_V_BYTES / 4;
+	const an_u32 vb = (an_u32) {} + base,
+				 vc = (an_u32) {} + c,
+				 vmin = (an_u32) {} + bmin,
+				 vmax = (an_u32) {} + bmax;
+	uint32		i = 0;
+
+	memset(bits, 0, SIFT_COLK_WORDS(n) * sizeof(uint64));
+	for (; i + L <= n; i += L)
+	{
+		const an_u32 x = *(const an_u32 *) (a + i) + vb,
+					 b = x & ((an_u32) {} - x),
+					 f = (x - b) >> 1;
+		const an_u32 m = (an_u32) (f == (vc & ((an_u32) {} - b))) & (an_u32) (b >= vmin) & (an_u32) (b <= vmax);
+
+		bits[i >> 6] |= SIFT_V_BITS32(m) << (i & 63);
+	}
+	for (; i < n; i++)
+		bits[i >> 6] |= (uint64) sift_colk_anc32_one(a[i], base, c, bmin, bmax) << (i & 63);
+}

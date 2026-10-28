@@ -589,6 +589,46 @@ test_anc_match(Test *t)
 	mix(t, out, words * sizeof(uint64));
 }
 
+/* The same for u32 offsets: the keys base + a[i] below 2^32, against the 64-bit specification of the chain */
+static void
+test_anc_match32(Test *t)
+{
+	uint32		n = rnd(t, 3) ? rnd(t, 200) : pick_n(t) % 700,
+				hmin = rnd(t, 32),
+				hmax = hmin + rnd(t, 32 - hmin),
+				words = SIFT_COLK_WORDS(n),
+				c = (uint32) pg_prng_uint64(&t->rs),
+				c2 = (uint32) pg_prng_uint64(&t->rs),
+				base = rnd(t, 3) ? (uint32) pg_prng_uint64(&t->rs) >> rnd(t, 32) : 0;
+	uint32	   *off = in_array(t, sizeof(uint32), n);
+	uint64	   *out = out_array(t, sizeof(uint64), words);
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		int			h = rnd(t, 32);
+		uint64		x = 2 * ((uint64) (rnd(t, 4) ? c : c2) & ~((UINT64CONST(1) << h) - 1)) + (UINT64CONST(1) << h);
+
+		/* the keys the offsets stand for stay below 2^32 and at or above the base; a node above that is replaced by a random key */
+		x = rnd(t, 6) == 0 || x >= UINT64CONST(1) << 32 || x < base ? (uint64) base + (pg_prng_uint32(&t->rs) >> rnd(t, 32)) % (UINT64CONST(1) << 32 > base ? (UINT64CONST(0x100000000) - base) : 1) : x;
+		off[i] = (uint32) (x - base);
+	}
+	t->k->anc_match32(off, n, base, c, 1U << hmin, 1U << hmax, out);
+	for (uint32 i = 0; i < n; i++)
+	{
+		uint64		key = (uint64) base + off[i];
+		bool		want = false;
+
+		for (uint32 h = hmin; h <= hmax && !want; h++)
+			want = key == 2 * ((uint64) c & ~((UINT64CONST(1) << h) - 1)) + (UINT64CONST(1) << h);
+		if (sift_col_bit_test(out, i) != want)
+			elog(ERROR, "sift_col_kern: offset %u of %u is %s the nodes of sizes 2^%u to 2^%u (u32)", i, n, want ? "not in" : "in", hmin, hmax);
+	}
+	for (uint32 s = n; s < words * 64; s++)
+		if (sift_col_bit_test(out, s))
+			elog(ERROR, "sift_col_kern: bit %u past the %u offsets is set", s, n);
+	mix(t, out, words * sizeof(uint64));
+}
+
 static int64
 run_cases(const SiftColKernels *k, int32 seed)
 {
@@ -617,6 +657,7 @@ run_cases(const SiftColKernels *k, int32 seed)
 		test_expand_parents(&t);
 		test_str_contains(&t);
 		test_anc_match(&t);
+		test_anc_match32(&t);
 		MemoryContextReset(cx);
 		unmap_all(&t);
 	}

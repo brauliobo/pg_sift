@@ -133,6 +133,13 @@ typedef struct SiftColKernels
 	 * the node of the block of size b that holds the address c.
 	 */
 	void		(*anc_match) (const int64 *a, uint32 n, uint64 c, uint64 flip, uint64 bmin, uint64 bmax, uint64 *bits);
+
+	/*
+	 * The same for keys below 2^32 held as the u32 offsets a[i] = key - base (the codec's, SIFT_CCF_OFF32), on twice the lanes and without the int64 pass: with x = base + a[i]
+	 * (u32, no wrap: the caller knows base + the greatest offset < 2^32), b = x & -x, a[i] is in the chain when bmin <= b <= bmax and ((x - b) >> 1) == (c & -b), c the
+	 * address (u32).
+	 */
+	void		(*anc_match32) (const uint32 *a, uint32 n, uint32 base, uint32 c, uint32 bmin, uint32 bmax, uint64 *bits);
 } SiftColKernels;
 
 /* The active table (follows sift.simd), and a level's table for tests; never NULL, falls back downwards */

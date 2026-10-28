@@ -531,8 +531,33 @@ chunk_scalar(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 static void
 chunk_chain(const SiftCTest *t, const SiftCChunk *c, uint64 *tmp)
 {
-	int64	   *key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
+	int64	   *key;
 
+	/* an IPv4 chain over a chunk whose keys are below 2^32 and held as u32 offsets (SIFT_CCF_OFF32): twice the lanes, no int64 pass */
+	if (c->enc == SIFT_COLENC_CC && t->chain_flip == 0 && t->chain_c < (UINT64CONST(1) << 32) && t->chain_bmin <= (UINT64CONST(1) << 31))
+	{
+		SiftCc	   *cc = cc_open(c, false);
+		uint32	   *off;
+		bool		done = false;
+
+		if (sift_cc_min(cc) >= 0 && sift_cc_max(cc) < (int64) (UINT64CONST(1) << 32))
+		{
+			off = palloc(SIFT_CC_CAP32(c->n) * sizeof(uint32));
+			if (sift_cc_decode_off32(cc, off))
+			{
+				sift_colk->anc_match32(off, c->n, (uint32) sift_cc_min(cc), (uint32) t->chain_c, (uint32) t->chain_bmin, (uint32) Min(t->chain_bmax, UINT64CONST(1) << 31), tmp);
+				done = true;
+			}
+			pfree(off);
+		}
+		sift_cc_close(cc);
+		if (done)
+		{
+			memset(tmp + words_of(c->n), 0, (SIFT_COL_NWORDS(c->n) - words_of(c->n)) * sizeof(uint64));
+			return;
+		}
+	}
+	key = palloc((c->n + SIFT_COL_PAD / sizeof(int64)) * sizeof(int64));
 	sift_cchunk_decode(c, key);
 	sift_colk->anc_match(key, c->n, t->chain_c, t->chain_flip, t->chain_bmin, t->chain_bmax, tmp);
 	memset(tmp + words_of(c->n), 0, (SIFT_COL_NWORDS(c->n) - words_of(c->n)) * sizeof(uint64));
