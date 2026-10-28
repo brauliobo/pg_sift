@@ -47,6 +47,8 @@
 # the source areas
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
 ^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
+# the column format constants (the minor a build writes): the upgrade tests state the formats they expect
+^src/col/col\.h$	^tap-shell-(extension_lifecycle|upgrade_check)$
 ^src/agg/	{agg}|{any}|gh:replication
 ^src/agg/	{col}|{tbl}|{ci}
 ^src/table/	{tbl}|{any}|gh:replication

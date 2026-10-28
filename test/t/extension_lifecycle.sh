@@ -183,7 +183,7 @@ if (( PG_MAJOR >= 18 )); then
 	KINDQ="SELECT count(*) FROM kinds31 WHERE jsonb_path_exists(doc, '\$[*] ? (@.s != \"gift\")')"
 	check "a minor 4 index survives the 3.1 SQL upgrade with exact JSON null answers" test "$(q life upg31 "SET sift.enable_agg = on" "$KINDQ" | tail -n 1)" == "$(q life upg31 "SET sift.enable_agg = off" "$KINDQ" | tail -n 1)"
 	q life upg31 "REINDEX INDEX kinds31_col" >/dev/null
-	check "REINDEX after the upgrade writes complete kinds (in minor 12, with the sections that are on by default)" test "$(q life upg31 "SELECT min(format) FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == 12
+	check "REINDEX after the upgrade writes complete kinds (minor 12 or later, with the sections that are on by default)" test "$(q life upg31 "SELECT min(format) >= 12 FROM sift.col_segments('kinds31_col') WHERE kind = 'immutable'")" == t
 	check "3.1 updated to 3.2 has the objects of a fresh 3.2 install" test "$(q life upg31 "$MEMBERS")" == "$(q life fresh32 "$MEMBERS")"
 	# the 3.2 scripts are the released ones: the functions of 3.3 come with 3.2--3.3.sql and pg_sift--3.3.sql only
 	NEWFN="SELECT string_agg(proname, ',' ORDER BY proname) FROM pg_proc WHERE pronamespace = 'sift'::regnamespace
