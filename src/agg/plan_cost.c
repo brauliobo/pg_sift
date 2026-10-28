@@ -484,11 +484,11 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 		/*
 		 * A test between leaves (a column compared with a column) is evaluated by PostgreSQL once per distinct combination of the leaves: a few for
 		 * dictionary and small integer leaves, which keep the price they had, one per row for two dates that vary (545 instructions a row measured,
-		 * 124 ms for 400,000 rows, against the 36 of a test on a constant)
+		 * 124 ms for 400,000 rows, against the 36 of a test on a constant); so is an expression of a key, for the values the groups have
 		 */
 		if (wide == 0 && !direct)
 		{
-			double		entries = filter && !lookup_ref && cb->nleaves > 1 ? combo_entries(c, s, cb, kept_rows, false) : 0;
+			double		entries = !lookup_ref && (filter ? cb->nleaves > 1 : cb->nleaves > 0) ? combo_entries(c, s, cb, filter ? kept_rows : agg_rows, false) : 0;
 
 			if (entries > AGG_KEY_IDS)
 				cost += entries * cb->nslots * AGG_EVAL_SLOT;
@@ -583,11 +583,12 @@ plain_credit(AggCtx *c, const SiftAggSpec *s, double agg_rows)
 
 		for (int i = 0; i < s->npred; i++)
 			ops += pred_num_ops(s->pred[i]);
-		for (int i = 0; i < s->nkeys; i++)
-			ops += num_ops(&s->key[i].num);
 		for (int i = 0; i < s->naggs; i++)
 			ops += num_ops(&s->agg[i].num) + pred_num_ops(s->agg[i].filter);
 		excess += ops * (AGG_REAL_NUMERIC - 2.0);
+		/* the key of an integer or float program is an fmgr call, not the allocation and digits of a numeric one */
+		for (int i = 0; i < s->nkeys; i++)
+			excess += num_ops(&s->key[i].num) * ((s->key[i].typid == NUMERICOID ? AGG_REAL_NUMERIC : AGG_REAL_CALL) - 2.0);
 	}
 	/* the transition of a numeric sum, average or extreme: PostgreSQL prices it as one operator, the executor allocates and adds digits */
 	for (int ai = 0; ai < s->naggs; ai++)
@@ -1909,6 +1910,7 @@ typedef struct CostAcc
 	double		arm_cost;		/* the tuples through the arms of a two level query, in operators (not in scan_cost: cost_parallel) */
 	double		child_cost;
 	double		zone_kept;
+	double		sparse;			/* of the rows of a unit that is read, the share whose dictionary entries are mapped: the kept rows when few pass (cost_read), else all */
 	double		key_share;		/* of the rows the filters keep, the share whose join key a lookup holds (join_key_zone) */
 	double		agg_rows;
 	double		scan_rows;
@@ -2201,8 +2203,8 @@ key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, doub
 		if (leaf < 0)
 			continue;
 		lf = &c->lay->leaf[leaf];
-		/* without statistics the values are not known to be many */
-		if (lf->vtype != SCV_CODE || lf->wide != (s->key[i].kind == SAK_COMBO))
+		/* without statistics the values are not known to be many; the combo of an integer column gives each value an id of the output table, as an entry of a dictionary does */
+		if (s->key[i].kind == SAK_COMBO ? !(lf->wide ? lf->vtype == SCV_CODE : lf->vtype == SCV_I32) : (lf->vtype != SCV_CODE || lf->wide))
 			continue;
 		frac = leaf_stat_frac(c, leaf, k->rows);
 		if (frac <= 0)
@@ -2213,10 +2215,10 @@ key_entries(AggCtx *c, const SiftAggSpec *s, const CostAcc *k, double *ids, doub
 			/* the units the column has, not a guess of 2,000 rows each */
 			double		wunits = c->stats.nunits > 0 ? c->stats.nunits : units;
 
-			entries = nd * -expm1(-k->rows / wunits / nd) * Max(k->zone_kept, 1.0 / wunits) * wunits;
+			entries = nd * -expm1(-k->rows / wunits * k->sparse / nd) * Max(k->zone_kept, 1.0 / wunits) * wunits;
 		}
 		else
-			entries = nd * -expm1(-k->rows / units / nd) * read;
+			entries = nd * -expm1(-k->rows / units * k->sparse / nd) * read;
 		total += entries;
 		if (lf->wide)
 			*ops += entries * AGG_KEY_WIDE * pow(Min(entries, nd) / 30000.0, 0.42);
@@ -2243,6 +2245,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	sparse = sparse <= AGG_SPARSE_MAX ? Min(sparse * AGG_SPARSE_LEAF, 1.0) : 1.0;
 	/* the rows the point directory lists are the only ones the filters read and test */
 	tested = point_narrows(c, s) ? sparse : 1.0;
+	k->sparse = sparse;
 	for (int i = 0; i < s->nleaves; i++)
 		k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
 			(leaf_filtered(s, s->leaves[i]) ? tested : sparse);

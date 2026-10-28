@@ -1,7 +1,7 @@
 -- A text key is read as dictionary codes, and the table of its ids is given every entry of the dictionary of each unit the scan reads, not only
--- the values of the rows that pass the filters (0.04 to 0.2 microseconds an entry as the table grows, and a walk of the table of ids each time it outgrows the memory of a
--- hash aggregate, work_mem times hash_mem_multiplier). A near-unique key under a selective filter costs the scan its units' entries for the few groups it
--- returns, so the normal plan, which hashes only the rows that pass, is kept; a key of a few values has few entries and costs what an integer key does.
+-- the values of the rows that pass the filters, unless few rows pass (0.04 to 0.2 microseconds an entry as the table grows, and a walk of the table of ids each time it outgrows the memory of a
+-- hash aggregate, work_mem times hash_mem_multiplier). A near-unique key under a filter that keeps most rows costs the scan its units' entries, so the normal plan
+-- is kept (a filter that keeps a few rows in a unit maps those only: agg_group_key_cost); a key of a few values has few entries and costs what an integer key does.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -27,13 +27,13 @@ END $$;
 
 -- the entries of the near-unique key cost the scan well over the integer key of the same groups; the 17 values of the other cost it the same
 SELECT key,
-       scan_cost(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part = 7 GROUP BY %s', g, g)) /
-       scan_cost('SELECT id, count(*) AS n, max(amount) AS s FROM items WHERE part = 7 GROUP BY id') > 5 AS entries_priced,
-       differences(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part = 7 GROUP BY %s', g, g)) AS differences
+       scan_cost(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) /
+       scan_cost('SELECT id, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY id') > 5 AS entries_priced,
+       differences(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS differences
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
 
 -- the near-unique key keeps the normal plan, the 17 values take the scan
-SELECT key, scan_used(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part = 7 GROUP BY %s', g, g)) AS scan
+SELECT key, scan_used(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS scan
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
 
 DROP FUNCTION scan_cost(text), scan_used(text), differences(text);
