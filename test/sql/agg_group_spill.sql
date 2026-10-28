@@ -41,7 +41,7 @@ BEGIN
 	PERFORM set_config('work_mem', mem, false), set_config('hash_mem_multiplier', '1', false), set_config('enable_hashagg', 'off', false), set_config('enable_sort', 'off', false);
 	EXECUTE 'CREATE TABLE got AS ' || q;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		sp := sp OR l ~ 'Group Table Spills: [1-9]';
+		sp := sp OR l ~ '[1-9][0-9]* group table spills';
 	END LOOP;
 	RESET work_mem; RESET hash_mem_multiplier; RESET enable_hashagg; RESET enable_sort;
 	SET sift.enable_agg = off;

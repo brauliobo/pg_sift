@@ -50,12 +50,11 @@ Eligibility is per unit: units the device cannot take (the write buffer, a delta
 Custom Scan (SiftAgg)
   Filters: quantity >= 2
   Group Keys: country
-  Filters In Source: 1
   GPU: units 364 / 364
   GPU Device: NVIDIA GeForce RTX 3090
   GPU Chunks: 1 resident, 1092 uploaded (31.1 MB), 2 jobs
   GPU Time: upload 1.238 ms, kernel 0.343 ms, readback 0.025 ms (wall 1.961 ms)
-  Units: 364
+  Units: 364 read
 ```
 
 (the first query of a backend, 10M rows: the device context made up most of its 234 ms).

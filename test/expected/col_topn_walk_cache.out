@@ -14,7 +14,9 @@ CREATE FUNCTION skipped(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Superblocks Skipped By Top-N: %' THEN r := trim(l); END IF; IF l LIKE '%Units: %' OR l LIKE '%Rows Scanned%' THEN r := r || ' ' || trim(l); END IF;
+		IF l LIKE '%superblocks skipped%' THEN r := 'skipped ' || substring(l from '(\d+) superblocks skipped'); END IF;
+		IF l LIKE '%Units: %' THEN r := r || ' units ' || substring(l from 'Units: (\d+)'); END IF;
+		IF l LIKE '%Rows: %' THEN r := r || ' rows ' || substring(l from 'Rows: (\d+) scanned'); END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -42,28 +44,28 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM run_all('built');
- after_step | n |                                              result                                              
-------------+---+--------------------------------------------------------------------------------------------------
- built      | 1 | same | Superblocks Skipped By Top-N: 52 Units: 8 Rows Scanned: 2048 | kept order skips the same
- built      | 2 | same | Superblocks Skipped By Top-N: 52 Units: 8 Rows Scanned: 2048 | kept order skips the same
- built      | 3 | same | Superblocks Skipped By Top-N: 40 Units: 20 Rows Scanned: 5120 | kept order skips the same
- built      | 4 | same | Superblocks Skipped By Top-N: 34 Units: 26 Rows Scanned: 6656 | kept order skips the same
- built      | 5 | same | Superblocks Skipped By Top-N: 0 Units: 60 Rows Scanned: 15360 | kept order skips the same
- built      | 6 | same | Superblocks Skipped By Top-N: 52 Units: 8 Rows Scanned: 2048 | kept order skips the same
+ after_step | n |                              result                              
+------------+---+------------------------------------------------------------------
+ built      | 1 | same | skipped 52 units 8 rows 2048 | kept order skips the same
+ built      | 2 | same | skipped 52 units 8 rows 2048 | kept order skips the same
+ built      | 3 | same | skipped 40 units 20 rows 5120 | kept order skips the same
+ built      | 4 | same | skipped 34 units 26 rows 6656 | kept order skips the same
+ built      | 5 | same | skipped 0 units 60 rows 15360 | kept order skips the same
+ built      | 6 | same | skipped 52 units 8 rows 2048 | kept order skips the same
 (6 rows)
 
 -- rows in the write buffer sort before and after every unit
 INSERT INTO zc SELECT 20000 + i, -i, i % 7, 'y' FROM generate_series(1, 5) i;
 INSERT INTO zc SELECT 30000 + i, 20000 + i, i % 7, 'y' FROM generate_series(1, 5) i;
 SELECT * FROM run_all('write buffer');
-  after_step  | n |                                              result                                              
---------------+---+--------------------------------------------------------------------------------------------------
- write buffer | 1 | same | Superblocks Skipped By Top-N: 55 Units: 6 Rows Scanned: 1290 | kept order skips the same
- write buffer | 2 | same | Superblocks Skipped By Top-N: 56 Units: 5 Rows Scanned: 1034 | kept order skips the same
- write buffer | 3 | same | Superblocks Skipped By Top-N: 43 Units: 18 Rows Scanned: 4362 | kept order skips the same
- write buffer | 4 | same | Superblocks Skipped By Top-N: 35 Units: 26 Rows Scanned: 6410 | kept order skips the same
- write buffer | 5 | same | Superblocks Skipped By Top-N: 1 Units: 61 Rows Scanned: 15370 | kept order skips the same
- write buffer | 6 | same | Superblocks Skipped By Top-N: 55 Units: 6 Rows Scanned: 1290 | kept order skips the same
+  after_step  | n |                              result                              
+--------------+---+------------------------------------------------------------------
+ write buffer | 1 | same | skipped 55 units 6 rows 1290 | kept order skips the same
+ write buffer | 2 | same | skipped 56 units 5 rows 1034 | kept order skips the same
+ write buffer | 3 | same | skipped 43 units 18 rows 4362 | kept order skips the same
+ write buffer | 4 | same | skipped 35 units 26 rows 6410 | kept order skips the same
+ write buffer | 5 | same | skipped 1 units 61 rows 15370 | kept order skips the same
+ write buffer | 6 | same | skipped 55 units 6 rows 1290 | kept order skips the same
 (6 rows)
 
 SELECT sift.col_promote('zc_idx') > 0 AS promoted;
@@ -73,27 +75,27 @@ SELECT sift.col_promote('zc_idx') > 0 AS promoted;
 (1 row)
 
 SELECT * FROM run_all('promoted');
- after_step | n |                                              result                                              
-------------+---+--------------------------------------------------------------------------------------------------
- promoted   | 1 | same | Superblocks Skipped By Top-N: 55 Units: 6 Rows Scanned: 1290 | kept order skips the same
- promoted   | 2 | same | Superblocks Skipped By Top-N: 56 Units: 5 Rows Scanned: 1034 | kept order skips the same
- promoted   | 3 | same | Superblocks Skipped By Top-N: 43 Units: 18 Rows Scanned: 4362 | kept order skips the same
- promoted   | 4 | same | Superblocks Skipped By Top-N: 35 Units: 26 Rows Scanned: 6410 | kept order skips the same
- promoted   | 5 | same | Superblocks Skipped By Top-N: 1 Units: 61 Rows Scanned: 15370 | kept order skips the same
- promoted   | 6 | same | Superblocks Skipped By Top-N: 55 Units: 6 Rows Scanned: 1290 | kept order skips the same
+ after_step | n |                              result                              
+------------+---+------------------------------------------------------------------
+ promoted   | 1 | same | skipped 55 units 6 rows 1290 | kept order skips the same
+ promoted   | 2 | same | skipped 56 units 5 rows 1034 | kept order skips the same
+ promoted   | 3 | same | skipped 43 units 18 rows 4362 | kept order skips the same
+ promoted   | 4 | same | skipped 35 units 26 rows 6410 | kept order skips the same
+ promoted   | 5 | same | skipped 1 units 61 rows 15370 | kept order skips the same
+ promoted   | 6 | same | skipped 55 units 6 rows 1290 | kept order skips the same
 (6 rows)
 
 DELETE FROM zc WHERE id % 11 = 0;
 UPDATE zc SET k = k + 100000 WHERE id % 13 = 0;
 SELECT * FROM run_all('deleted and updated');
-     after_step      | n |                                               result                                               
----------------------+---+----------------------------------------------------------------------------------------------------
- deleted and updated | 1 | same | Superblocks Skipped By Top-N: 99 Units: 121 Rows Scanned: 16445 | kept order skips the same
- deleted and updated | 2 | same | Superblocks Skipped By Top-N: 94 Units: 121 Rows Scanned: 16445 | kept order skips the same
- deleted and updated | 3 | same | Superblocks Skipped By Top-N: 75 Units: 121 Rows Scanned: 16445 | kept order skips the same
- deleted and updated | 4 | same | Superblocks Skipped By Top-N: 60 Units: 121 Rows Scanned: 16445 | kept order skips the same
- deleted and updated | 5 | same | Superblocks Skipped By Top-N: 1 Units: 121 Rows Scanned: 16445 | kept order skips the same
- deleted and updated | 6 | same | Superblocks Skipped By Top-N: 99 Units: 121 Rows Scanned: 16445 | kept order skips the same
+     after_step      | n |                               result                               
+---------------------+---+--------------------------------------------------------------------
+ deleted and updated | 1 | same | skipped 99 units 121 rows 16445 | kept order skips the same
+ deleted and updated | 2 | same | skipped 94 units 121 rows 16445 | kept order skips the same
+ deleted and updated | 3 | same | skipped 75 units 121 rows 16445 | kept order skips the same
+ deleted and updated | 4 | same | skipped 60 units 121 rows 16445 | kept order skips the same
+ deleted and updated | 5 | same | skipped 1 units 121 rows 16445 | kept order skips the same
+ deleted and updated | 6 | same | skipped 99 units 121 rows 16445 | kept order skips the same
 (6 rows)
 
 VACUUM zc;
@@ -104,14 +106,14 @@ SELECT sift.col_promote('zc_idx') >= 0 AS promoted_again;
 (1 row)
 
 SELECT * FROM run_all('vacuumed');
- after_step | n |                                              result                                              
-------------+---+--------------------------------------------------------------------------------------------------
- vacuumed   | 1 | same | Superblocks Skipped By Top-N: 60 Units: 7 Rows Scanned: 1315 | kept order skips the same
- vacuumed   | 2 | same | Superblocks Skipped By Top-N: 59 Units: 11 Rows Scanned: 2157 | kept order skips the same
- vacuumed   | 3 | same | Superblocks Skipped By Top-N: 47 Units: 22 Rows Scanned: 4571 | kept order skips the same
- vacuumed   | 4 | same | Superblocks Skipped By Top-N: 41 Units: 29 Rows Scanned: 6092 | kept order skips the same
- vacuumed   | 5 | same | Superblocks Skipped By Top-N: 1 Units: 66 Rows Scanned: 13975 | kept order skips the same
- vacuumed   | 6 | same | Superblocks Skipped By Top-N: 60 Units: 7 Rows Scanned: 1315 | kept order skips the same
+ after_step | n |                              result                              
+------------+---+------------------------------------------------------------------
+ vacuumed   | 1 | same | skipped 60 units 7 rows 1315 | kept order skips the same
+ vacuumed   | 2 | same | skipped 59 units 11 rows 2157 | kept order skips the same
+ vacuumed   | 3 | same | skipped 47 units 22 rows 4571 | kept order skips the same
+ vacuumed   | 4 | same | skipped 41 units 29 rows 6092 | kept order skips the same
+ vacuumed   | 5 | same | skipped 1 units 66 rows 13975 | kept order skips the same
+ vacuumed   | 6 | same | skipped 60 units 7 rows 1315 | kept order skips the same
 (6 rows)
 
 SELECT sift.col_merge('zc_idx', true) >= 0 AS merged;
@@ -121,26 +123,26 @@ SELECT sift.col_merge('zc_idx', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM run_all('merged');
- after_step | n |                                              result                                              
-------------+---+--------------------------------------------------------------------------------------------------
- merged     | 1 | same | Superblocks Skipped By Top-N: 55 Units: 5 Rows Scanned: 1173 | kept order skips the same
- merged     | 2 | same | Superblocks Skipped By Top-N: 50 Units: 10 Rows Scanned: 2340 | kept order skips the same
- merged     | 3 | same | Superblocks Skipped By Top-N: 42 Units: 18 Rows Scanned: 4198 | kept order skips the same
- merged     | 4 | same | Superblocks Skipped By Top-N: 36 Units: 24 Rows Scanned: 5595 | kept order skips the same
- merged     | 5 | same | Superblocks Skipped By Top-N: 0 Units: 60 Rows Scanned: 13974 | kept order skips the same
- merged     | 6 | same | Superblocks Skipped By Top-N: 55 Units: 5 Rows Scanned: 1173 | kept order skips the same
+ after_step | n |                              result                              
+------------+---+------------------------------------------------------------------
+ merged     | 1 | same | skipped 55 units 5 rows 1173 | kept order skips the same
+ merged     | 2 | same | skipped 50 units 10 rows 2340 | kept order skips the same
+ merged     | 3 | same | skipped 42 units 18 rows 4198 | kept order skips the same
+ merged     | 4 | same | skipped 36 units 24 rows 5595 | kept order skips the same
+ merged     | 5 | same | skipped 0 units 60 rows 13974 | kept order skips the same
+ merged     | 6 | same | skipped 55 units 5 rows 1173 | kept order skips the same
 (6 rows)
 
 REINDEX INDEX zc_idx;
 SELECT * FROM run_all('reindexed');
- after_step | n |                                              result                                              
-------------+---+--------------------------------------------------------------------------------------------------
- reindexed  | 1 | same | Superblocks Skipped By Top-N: 55 Units: 5 Rows Scanned: 1173 | kept order skips the same
- reindexed  | 2 | same | Superblocks Skipped By Top-N: 50 Units: 10 Rows Scanned: 2340 | kept order skips the same
- reindexed  | 3 | same | Superblocks Skipped By Top-N: 42 Units: 18 Rows Scanned: 4198 | kept order skips the same
- reindexed  | 4 | same | Superblocks Skipped By Top-N: 36 Units: 24 Rows Scanned: 5595 | kept order skips the same
- reindexed  | 5 | same | Superblocks Skipped By Top-N: 0 Units: 60 Rows Scanned: 13974 | kept order skips the same
- reindexed  | 6 | same | Superblocks Skipped By Top-N: 55 Units: 5 Rows Scanned: 1173 | kept order skips the same
+ after_step | n |                              result                              
+------------+---+------------------------------------------------------------------
+ reindexed  | 1 | same | skipped 55 units 5 rows 1173 | kept order skips the same
+ reindexed  | 2 | same | skipped 50 units 10 rows 2340 | kept order skips the same
+ reindexed  | 3 | same | skipped 42 units 18 rows 4198 | kept order skips the same
+ reindexed  | 4 | same | skipped 36 units 24 rows 5595 | kept order skips the same
+ reindexed  | 5 | same | skipped 0 units 60 rows 13974 | kept order skips the same
+ reindexed  | 6 | same | skipped 55 units 5 rows 1173 | kept order skips the same
 (6 rows)
 
 DROP FUNCTION run_all(text), chk(text), skipped(text);

@@ -98,7 +98,7 @@ CREATE FUNCTION node_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(SiftAggRows|Group Columns|Distinct Counts|Distinct Sets Spilled)' THEN RETURN NEXT regexp_replace(trim(l), ' \(actual.*\)$', ''); END IF;
+		IF l ~ '(SiftAggRows|Group Columns|Distinct Counts|Rows:)' THEN RETURN NEXT regexp_replace(trim(l), ' \(actual.*\)$', ''); END IF;
 	END LOOP;
 END $$;
 SET work_mem = '64kB';

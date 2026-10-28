@@ -55,7 +55,7 @@ DECLARE l text; u int; q text := format('SELECT id FROM rc WHERE (id, a) > (%s, 
 	got int[]; want int[];
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' THEN u := trim(split_part(l, ':', 2))::int; END IF;
+		IF l LIKE '%Units: %' THEN u := substring(l from 'Units: (\d+)')::int; END IF;
 	END LOOP;
 	EXECUTE 'SELECT array_agg(id ORDER BY id) FROM (' || q || ') x' INTO got;
 	SET LOCAL sift.enable_agg = off;

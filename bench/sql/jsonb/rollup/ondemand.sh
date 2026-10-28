@@ -9,7 +9,7 @@ n=0
 while :; do
 	out=$($P -c "SET max_parallel_workers_per_gather = 0" -c "SET seq_page_cost = 10000" -c "$Q")
 	t=$(date +%s.%N)
-	pre=$(grep -o 'Units From Pre-aggregates: [0-9]*' <<<"$out" | grep -o '[0-9]*$'); units=$(grep -oE '^ *Units: [0-9]+' <<<"$out" | grep -o '[0-9]*$')
+	pre=$(grep -oE '[0-9]+ from pre-aggregates' <<<"$out" | grep -oE '[0-9]+'); pre=${pre:-0}; units=$(grep -oE '^ *Units: [0-9]+' <<<"$out" | grep -oE '[0-9]+$')
 	n=$((n + 1))
 	[[ $n == 1 ]] && echo "first query after the ALTER: $(echo "$t - $t0" | bc) s, $pre of $units units from the rollups"
 	[[ $pre == "$units" ]] && { echo "first query answered by the rollups: $(echo "$t - $t0" | bc) s after the ALTER (query $n)"; break; }

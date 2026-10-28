@@ -20,7 +20,7 @@ CREATE FUNCTION rc_scanned(q text) RETURNS int LANGUAGE plpgsql SET sift.enable_
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '^ *Rows Scanned: ' THEN RETURN substr(l, position(':' IN l) + 2)::int; END IF;
+		IF l ~ 'Rows: (\d+) scanned' THEN RETURN substring(l from 'Rows: (\d+) scanned')::int; END IF;
 	END LOOP;
 	RETURN -1;
 END $$;

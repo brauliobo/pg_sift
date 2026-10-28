@@ -16,7 +16,9 @@ CREATE FUNCTION skipped(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Superblocks Skipped By Top-N: %' THEN r := trim(l); END IF; IF l LIKE '%Units: %' OR l LIKE '%Rows Scanned%' THEN r := r || ' ' || trim(l); END IF;
+		IF l LIKE '%superblocks skipped%' THEN r := 'skipped ' || substring(l from '(\d+) superblocks skipped'); END IF;
+		IF l LIKE '%Units: %' THEN r := r || ' units ' || substring(l from 'Units: (\d+)'); END IF;
+		IF l LIKE '%Rows: %' THEN r := r || ' rows ' || substring(l from 'Rows: (\d+) scanned'); END IF;
 	END LOOP;
 	RETURN r;
 END $$;

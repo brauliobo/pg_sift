@@ -24,7 +24,7 @@ CREATE FUNCTION pushed(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF l ~ 'Groups Dropped By Top-N: [1-9]' THEN r := 'dropped'; ELSIF l LIKE '%Custom Scan (SiftAgg)%' AND r = 'normal' THEN r := 'SiftAgg'; END IF;
+		IF l ~ '[1-9][0-9]* dropped by top-N' THEN r := 'dropped'; ELSIF l LIKE '%Custom Scan (SiftAgg)%' AND r = 'normal' THEN r := 'SiftAgg'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

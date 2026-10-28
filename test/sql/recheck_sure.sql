@@ -45,8 +45,8 @@ DECLARE
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT count(*) FROM s WHERE body @@> '
 		|| quote_literal(q) LOOP
-		IF l ~ 'Candidates: ' THEN
-			RETURN substring(l from 'Candidates: (\d+)');
+		IF l ~ '(\d+) candidates' THEN
+			RETURN substring(l from '(\d+) candidates');
 		END IF;
 	END LOOP;
 	RETURN 0;

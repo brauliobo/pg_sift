@@ -73,7 +73,7 @@ GONE="SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 
 check "the standby answers the soft-delete filter as the primary and the heap do" \
 	test "$(sql standby "SET seq_page_cost = 10000" "$GONE")" == "$(sql primary "SET sift.enable_agg = off" "$GONE")" -a "$(sql standby "SELECT gone_same()")" == t
 check "the standby answers units of the merged segment from the exceptions" \
-	grep -qE "Units Net Of Exceptions: [1-9]" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE")"
+	grep -qE "[1-9][0-9]* net of exceptions" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE")"
 APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_distinct(status) || ' ' || sift.approx_count_distinct(tenant_id) FROM orders"
 check "the standby merges the sketches of its units to the number the primary's heap gives" \
 	test "$(sql standby "SET sift.agg_force = on" "$APPROX")" == "$(sql primary "SET sift.enable_agg = off" "$APPROX")"

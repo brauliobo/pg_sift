@@ -25,8 +25,8 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		dims := coalesce(substring(l from 'Pre-aggregate Dims: (.*)$'), dims);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		dims := coalesce(substring(l from 'dims: ([^;]*)'), dims);
 		IF l ~ '^\s*(Units|Pre-aggregates|Rollup Refresh)' THEN c := c || ', ' || btrim(l); END IF;
 	END LOOP;
 	-- the counters of the node (units, those answered from the pre-aggregates, those scanned by cost or lacking their rollup, the reason the pre-aggregates were not used) go to the server log with the query, not to the output

@@ -124,13 +124,11 @@ RESET min_parallel_table_scan_size;
 
 -- the rows that are skipped by the OFFSET are not read from the heap
 CREATE FUNCTION cd_stat(q text, field text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE line text; v bigint;
+DECLARE j jsonb;
 BEGIN
 	PERFORM cd_mode(true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ ('^ *' || field || ': ') THEN v := regexp_replace(line, '^ *[A-Za-z -]+: ', '')::bigint; END IF;
-	END LOOP;
-	RETURN v;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN jsonb_path_query_first(j, format('$.**.%I', field)::jsonpath)::bigint;
 END $$;
 SELECT cd_stat($q$SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000$q$, 'Heap Fetches') AS fetches_plain_columns,
 	   cd_stat($q$SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000$q$, 'Top-N Sorted Rows') AS sorted_rows,

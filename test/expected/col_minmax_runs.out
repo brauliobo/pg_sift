@@ -20,7 +20,7 @@ DECLARE pl text; runs bool := false; agg bool := false;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL enable_seqscan = off;
 	FOR pl IN EXECUTE 'EXPLAIN (COSTS off, ANALYZE, TIMING off, SUMMARY off) ' || q LOOP
-		runs := runs OR pl LIKE '%Units Read By Sorted Run%';
+		runs := runs OR pl LIKE '%units read by sorted run%';
 		agg := agg OR pl LIKE '%Pushed Aggregates%';
 	END LOOP;
 	RETURN CASE WHEN runs THEN 'sorted runs' WHEN agg THEN 'aggregate' ELSE 'other' END;

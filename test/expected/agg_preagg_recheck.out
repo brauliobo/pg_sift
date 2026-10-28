@@ -22,7 +22,7 @@ DECLARE l text; n int := 0;
 BEGIN
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-    n := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, n);
+    n := coalesce(substring(l from '(\d+) from pre-aggregates')::int, n);
   END LOOP;
   RETURN n > 0;
 EXCEPTION WHEN OTHERS THEN RETURN NULL;

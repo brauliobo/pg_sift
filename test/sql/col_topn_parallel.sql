@@ -140,7 +140,7 @@ BEGIN
 	PERFORM pw_mode(true, workers);
 	PERFORM set_config('sift.topn_zone_keys', zk::text, true);
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ '^ *Units: ' THEN n := regexp_replace(line, '^ *Units: ', '')::int; END IF;
+		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
 	END LOOP;
 	RETURN n;
 END $$;

@@ -189,12 +189,12 @@ SELECT replace(rr_plan('EXPLAIN SELECT id FROM rr_a WHERE body @@> ''needle'' OR
 SELECT replace(rr_plan('EXPLAIN SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC'), 'rr_a', 'rr_x')
 	 = replace(rr_plan('EXPLAIN SELECT id FROM rr_b WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC'), 'rr_b', 'rr_x') AS same_plan_and_estimates_drained;
 SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC LIMIT 5')
-	~ '(Candidates|Superblocks|Blocks Scored|Heap Checks|Index Searches)' AS counters_of_the_index_shown;
+	~ '(candidates|superblocks|blocks scored|heap checks|index searches)' AS counters_of_the_index_shown;
 SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC LIMIT 5')
 	~ 'Order: score DESC' AS order_shown;
 RESET ROLE;
 SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC LIMIT 5')
-	~ 'Candidates' AS owner_sees_the_counters;
+	~ 'candidates' AS owner_sees_the_counters;
 
 -- 8. a partitioned table: a ranked scan per partition under the parent's policy, merged (the statistics are those of each partition)
 CREATE TABLE rr_pt (id int, tenant text, body text) PARTITION BY RANGE (id);

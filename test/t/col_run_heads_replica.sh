@@ -56,7 +56,7 @@ TOPN="SELECT string_agg(k::text, ',' ORDER BY pos) FROM (SELECT row_number() OVE
 check "the index verifies on the standby" test -z "$(sql standby "SELECT sift.col_verify('t_col', true)" 2>&1)"
 check "the standby's top-N answers are its heap's" test "$(sql standby "SELECT topn_same()")" == t
 check "and what the primary returns" test "$(sql standby "SET sift.enable_agg = on" "$TOPN")" == "$(sql primary "SET sift.enable_agg = on" "$TOPN")"
-check "the standby's top-N scan answers units from the heads" test "$(sql standby "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'Units Answered By Run Head')" == 1
+check "the standby's top-N scan answers units from the heads" test "$(sql standby "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'units answered by run head')" == 1
 check "and reads the global order of the key" test "$(sql standby "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 100" | grep -c 'Global Order')" == 1
 
 node_promote standby

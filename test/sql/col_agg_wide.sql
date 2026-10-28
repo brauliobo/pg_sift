@@ -53,7 +53,7 @@ CREATE FUNCTION wide_in_source(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Wide Filters In Source' THEN n := regexp_replace(l, '\D', '', 'g')::int; END IF;
+		IF l ~ '(\d+) wide filters in source' THEN n := substring(l from '(\d+) wide filters in source')::int; END IF;
 	END LOOP;
 	RETURN n;
 END $$;

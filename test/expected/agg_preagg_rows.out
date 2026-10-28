@@ -153,21 +153,16 @@ DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(Pre-aggregate|Units|Rows Scanned)' THEN RETURN NEXT trim(l); END IF;
+		IF l ~ '(Pre-aggregate|Units|Rows:)' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
 SELECT pa_explain FROM pa_explain('SELECT a, b, count(*), sum(v) FROM rc GROUP BY a, b');
-          pa_explain          
-------------------------------
- Units: 6
- Units From Pre-aggregates: 6
- Pre-aggregate Rollup: rows
- Pre-aggregate Dims: a, b
- Pre-aggregate Measures: v
- Units Without The Rollup: 0
- Units Pruned: 0
- Rows Scanned: 0
-(8 rows)
+                     pa_explain                      
+-----------------------------------------------------
+ Pre-aggregate Rollup: rows; dims: a, b; measures: v
+ Units: 6 read, 6 from pre-aggregates
+ Rows: 0 scanned, 0 aggregated, 45 groups
+(3 rows)
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE rc SET v = -(v / 2), c = c + 1 WHERE id BETWEEN 100 AND 200;

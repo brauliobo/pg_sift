@@ -17,7 +17,7 @@ CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := ''; a text; b text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units Read By Sorted Run: %' OR l LIKE '%Units Pruned: %' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
+		IF l LIKE '%units read by sorted run%' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO a;
 	SET LOCAL sift.enable_topn = off; SET LOCAL sift.enable_agg = off;

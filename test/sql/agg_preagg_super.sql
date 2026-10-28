@@ -31,8 +31,8 @@ BEGIN
 	PERFORM set_config('sift.agg_preagg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		sup := coalesce(substring(l from 'Superunits: (\d+)')::int, sup);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		sup := coalesce(substring(l from '(\d+) superunits')::int, sup);
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; sup := NULL;

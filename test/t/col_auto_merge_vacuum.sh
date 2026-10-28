@@ -21,7 +21,7 @@ sql av "CREATE EXTENSION pg_sift" "CREATE TABLE facts (id int, key int, kind tex
 vacuumed() { sql av "SELECT coalesce(extract(epoch FROM last_vacuum)::text, '-') FROM pg_stat_user_tables WHERE relname = 'facts'"; }
 # the scan the churn slows down; the rows it checked in the heap
 SCAN="SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind"
-vetted() { sql av "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.*Rows Vetted By Heap: //p'; }
+vetted() { sql av "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) $SCAN" | sed -n 's/.* \([0-9][0-9]*\) vetted by heap.*/\1/p' | grep . || echo 0; }
 # until a scan checks few rows: a VACUUM leaves a page not all-visible when it could not take its cleanup lock or the commit of its rows was not flushed yet
 # (the hint bits wait for it), and the scan that finds them asks for the next, a few naptimes later
 cheap() { for _ in $(seq 150); do [[ $(vetted) -lt 10000 ]] && return 0; sleep 0.2; done; return 1; }

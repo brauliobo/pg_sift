@@ -39,6 +39,7 @@
 #include "bm25/eval.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
+#include "core/explain.h"
 
 /* A hint larger than this makes the ranker keep more hits than it is likely to hand out: it grows its search past it */
 #define LIMIT_HINT_MAX	(1 << 20)
@@ -689,6 +690,7 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 	List	   *dctx = set_deparse_context_plan(es->deparse_cxt, node->ss.ps.plan, ancestors);
 	SiftTotals	t = ss->tot;
+	SiftExplainLine ln;
 
 	ExplainPropertyText("Index", RelationGetRelationName(ss->index), es);
 	ExplainPropertyText("Query", and_text(linitial_node(List, cs->custom_exprs), dctx), es);
@@ -721,28 +723,35 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		t.heap_checks += ss->vis_open ? ss->vis.heap_checks : 0;
 		t.heap_pages += ss->vis_open ? ss->vis.heap_pages : 0;
 	}
-	ExplainPropertyInteger("Index Searches", NULL, ss->nsearches, es);
-	if (ss->nkeys > 0)
-		ExplainPropertyInteger("Key Passes", NULL, ss->kpasses, es);
 	if (ss->bitmap)
 	{
 		t.filter_sbs += ss->filter ? ss->filter->nsb : 0;
 		t.filter_exact += ss->filter ? ss->filter->exact_pages : 0;
 		t.filter_lossy += ss->filter ? ss->filter->lossy_pages : 0;
-		ExplainPropertyInteger("Filter Superblocks", NULL, t.filter_sbs, es);
-		ExplainPropertyInteger("Filter Pages Exact", NULL, t.filter_exact, es);
-		ExplainPropertyInteger("Filter Pages Lossy", NULL, t.filter_lossy, es);
 	}
-	ExplainPropertyInteger("Superblocks", NULL, t.sb_scanned, es);
+	sift_explain_begin(&ln, es, "Scan");
+	sift_explain_int(&ln, "Index Searches", NULL, "index searches", ss->nsearches, SIFT_XI_KEEP);
+	if (ss->nkeys > 0)
+		sift_explain_int(&ln, "Key Passes", NULL, "key passes", ss->kpasses, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Superblocks", NULL, "superblocks", t.sb_scanned, SIFT_XI_KEEP);
 	if (ss->mode == SIFT_MODE_RANKED)
 	{
-		ExplainPropertyInteger("Blocks Scored", NULL, t.blocks_scored, es);
-		ExplainPropertyInteger("Blocks Skipped", NULL, t.blocks_skipped, es);
+		sift_explain_int(&ln, "Blocks Scored", NULL, "blocks scored", t.blocks_scored, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Blocks Skipped", NULL, "skipped", t.blocks_skipped, SIFT_XI_SUB | SIFT_XI_KEEP);
 	}
 	if (ss->mode != SIFT_MODE_COUNT || t.candidates > 0)
-		ExplainPropertyInteger("Candidates", NULL, t.candidates, es);
-	ExplainPropertyInteger("Heap Checks", NULL, t.heap_checks, es);
-	ExplainPropertyInteger("Heap Pages", NULL, t.heap_pages, es);
+		sift_explain_int(&ln, "Candidates", NULL, "candidates", t.candidates, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Heap Checks", NULL, "heap checks", t.heap_checks, 0);
+	sift_explain_int(&ln, "Heap Pages", NULL, "heap pages", t.heap_pages, 0);
+	sift_explain_end(&ln);
+	if (ss->bitmap)
+	{
+		sift_explain_begin(&ln, es, "Filter Mask");
+		sift_explain_int(&ln, "Filter Superblocks", NULL, "superblocks", t.filter_sbs, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Filter Pages Exact", NULL, "exact pages", t.filter_exact, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Filter Pages Lossy", NULL, "lossy pages", t.filter_lossy, SIFT_XI_KEEP);
+		sift_explain_end(&ln);
+	}
 }
 
 /* Superblocks of the heap as of now: what a snapshot taken before sees lies in them */

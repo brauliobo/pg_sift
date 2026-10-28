@@ -35,7 +35,7 @@ BEGIN
 	LOOP
 		q := r.qq; u := '';
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l LIKE '%Units: %' OR l LIKE '%Units Pruned: %' THEN u := u || ' ' || trim(l); END IF;
+			IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 		END LOOP;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO a;
 		SET LOCAL sift.enable_agg = off; SET LOCAL sift.enable_topn = off;
@@ -53,7 +53,7 @@ CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; u text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' OR l LIKE '%Units Pruned: %' THEN u := u || ' ' || trim(l); END IF;
+		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 	END LOOP;
 	RETURN trim(u);
 END $$;

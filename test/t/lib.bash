@@ -163,7 +163,7 @@ elem_groups() {
 	local run="SELECT coalesce(string_agg(x::text, ',' ORDER BY x::text), '') FROM ($ELEM_QUERY) x"
 	[[ ${3:-} == explain ]] && run="EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $ELEM_QUERY"
 	sql "$1" "LOAD 'pg_sift'" "SET sift.enable_agg = $2" "SET sift.agg_preagg = $2" "SET max_parallel_workers_per_gather = 0" \
-		"SET seq_page_cost = 10000" "$run" | tail -n +1 | grep -v '^$' | { [[ ${3:-} == explain ]] && grep -o 'Units From Pre-aggregates: [0-9]*' || cat; }
+		"SET seq_page_cost = 10000" "$run" | tail -n +1 | grep -v '^$' | { [[ ${3:-} == explain ]] && grep -oE '[0-9]+ from pre-aggregates' || cat; }
 }
 
 # kill -9 the postmaster and every child at once, as a power loss would; the postmaster is stopped

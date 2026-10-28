@@ -392,7 +392,7 @@ SELECT replace(rr_plan('EXPLAIN SELECT id FROM rr_a WHERE body @@> ''needle'' OR
 (1 row)
 
 SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC LIMIT 5')
-	~ '(Candidates|Superblocks|Blocks Scored|Heap Checks|Index Searches)' AS counters_of_the_index_shown;
+	~ '(candidates|superblocks|blocks scored|heap checks|index searches)' AS counters_of_the_index_shown;
  counters_of_the_index_shown 
 -----------------------------
  f
@@ -407,7 +407,7 @@ SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id 
 
 RESET ROLE;
 SELECT rr_plan('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rr_a WHERE body @@> ''needle'' ORDER BY sift.score(ctid) DESC LIMIT 5')
-	~ 'Candidates' AS owner_sees_the_counters;
+	~ 'candidates' AS owner_sees_the_counters;
  owner_sees_the_counters 
 -------------------------
  t

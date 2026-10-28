@@ -69,9 +69,9 @@ for i in $(seq "$ITERS"); do
 done
 sql crash "VACUUM (index_cleanup on, disable_page_skipping) orders" "SELECT sift.col_merge('o_col', true)" "SELECT sift.col_merge('o_col', true)" >/dev/null
 check "the element cubes of the merged segment answer the groups of the elements" test "$(elem_groups crash on)" == "$(elem_groups crash off)"
-check "the element cubes answer units of the merged segment" grep -qE "Units From Pre-aggregates: [1-9]" <<<"$(elem_groups crash on explain)"
+check "the element cubes answer units of the merged segment" grep -qE "[1-9][0-9]* from pre-aggregates" <<<"$(elem_groups crash on explain)"
 check "the soft-delete filter returns what the heap returns" test "$(sql crash "SELECT gone_same()")" == t
-check "and the exceptions of the merged segment answer its units" grep -qE "Units Net Of Exceptions: [1-9]" <<<"$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1")"
+check "and the exceptions of the merged segment answer its units" grep -qE "[1-9][0-9]* net of exceptions" <<<"$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT status, count(*), sum(qty) FROM orders WHERE gone IS NULL GROUP BY 1")"
 check "a final merge verifies" test -z "$(sql crash "SELECT sift.col_verify('o_col', true)" 2>&1)"
 check "and leaves one immutable segment" test "$(sql crash "SELECT count(*) FROM sift.col_segments('o_col') WHERE kind = 'immutable'")" == 1
 finish

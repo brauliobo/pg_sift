@@ -27,7 +27,7 @@ setup
 		PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 			units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-			pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+			pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
 		END LOOP;
 		RETURN CASE WHEN units IS NULL THEN 'no SiftAgg' WHEN pre IS NULL THEN 'scan' WHEN pre = 0 THEN 'none' WHEN pre = units THEN 'all' ELSE 'some' END;
 	END $f$;

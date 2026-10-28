@@ -40,7 +40,7 @@ $$;
 CREATE FUNCTION loaded(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := ''; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Lookup Rows Read|Lookup Index Scans' THEN r := r || trim(l) || '; '; END IF;
+		IF l ~ '^ *Lookup: ' THEN r := r || concat_ws('; ', substring(l from '\d+ rows read'), substring(l from '\d+ index scans')) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

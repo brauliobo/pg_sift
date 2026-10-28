@@ -107,7 +107,7 @@ DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(Pre-aggregate|Units|Rows Scanned)' THEN RETURN NEXT trim(l); END IF;
+		IF l ~ '(Pre-aggregate|Units|Rows:)' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
 SELECT pa_explain FROM pa_explain('SELECT a, b, count(*), sum(v) FROM rc GROUP BY a, b');

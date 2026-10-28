@@ -153,7 +153,7 @@ CREATE FUNCTION key_filters(cond text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text; r bigint := 0;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*), sum(f.amount) FROM facts f JOIN dims d ON %s WHERE d.label = ''e''', cond) LOOP
-		IF l ~ 'Join Key Filters:' THEN r := substring(l from '[0-9]+')::bigint; END IF;
+		IF l ~ '(\d+) key filters' THEN r := substring(l from '(\d+) key filters')::bigint; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

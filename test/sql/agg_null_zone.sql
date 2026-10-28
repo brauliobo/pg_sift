@@ -20,14 +20,14 @@ SELECT units FROM sift.col_segments('nz_idx') WHERE kind = 'immutable';
 
 -- the units a statement reads, prunes and answers from pre-aggregates ('normal' when SiftAgg does not run it), and whether its rows are those of the normal plan
 CREATE FUNCTION chk(q text) RETURNS TABLE (plan text, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-DECLARE l text; read text; pruned text; pre text;
+DECLARE l text; read text; pruned text := '0'; pre text;
 BEGIN
 	plan := 'normal';
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN plan := 'SiftAgg'; END IF;
-		IF l LIKE '%Units: %' THEN read := trim(split_part(l, ':', 2)); END IF;
-		IF l LIKE '%Units Pruned: %' THEN pruned := trim(split_part(l, ':', 2)); END IF;
-		IF l LIKE '%Units From Pre-aggregates: %' THEN pre := trim(split_part(l, ':', 2)); END IF;
+		IF l ~ 'Units: (\d+)' THEN read := substring(l from 'Units: (\d+)'); END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
+		IF l ~ '(\d+) from pre-aggregates' THEN pre := substring(l from '(\d+) from pre-aggregates'); END IF;
 	END LOOP;
 	IF plan = 'SiftAgg' THEN plan := format('SiftAgg read %s pruned %s pre-agg %s', read, pruned, pre); END IF;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);

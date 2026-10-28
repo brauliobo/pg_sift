@@ -79,7 +79,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_dense', dense::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Dense Chunks: [1-9]' THEN RETURN true; END IF;
+		IF l ~ '[1-9][0-9]* dense chunks' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;

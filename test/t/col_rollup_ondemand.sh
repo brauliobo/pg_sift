@@ -27,12 +27,12 @@ ok "standby streaming from a base backup"
 
 Q="SELECT e.a, e.b, count(*), sum(e.q) FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.doc->'items') e(a text, b text, q int) GROUP BY 1, 2"
 SETTINGS=("LOAD 'pg_sift'" "SET sift.col_rollup_worker = off" "SET max_parallel_workers_per_gather = 0" "SET seq_page_cost = 10000")
-# the plan of the query: its Units, Units From Pre-aggregates, Units Without The Rollup, Rollup Refresh Queued (0 when the line is absent)
+# the plan of the query: its units read, answered from the pre-aggregates, without the rollup and refreshes queued (0 when the count is absent)
 plan_of() {
 	local out
 	out=$(sql "$1" "${SETTINGS[@]}" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $Q")
-	for f in 'Units' 'Units From Pre-aggregates' 'Units Without The Rollup' 'Rollup Refresh Queued'; do
-		grep -E "^\s*$f: [0-9]+" <<<"$out" | grep -oE '[0-9]+$' || echo 0
+	for f in 'Units: ([0-9]+)' '([0-9]+) from pre-aggregates' '([0-9]+) without the rollup' '([0-9]+) refreshes queued'; do
+		[[ $out =~ $f ]] && echo "${BASH_REMATCH[1]}" || echo 0
 	done | paste -sd' ' -
 }
 answer() { sql "$1" "${SETTINGS[@]}" "SET sift.enable_agg = $2" "SELECT string_agg(x::text, ',' ORDER BY x::text) FROM ($Q) x" | tail -1; }

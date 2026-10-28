@@ -29,7 +29,7 @@ DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Lookup Rows Read:%' OR l LIKE '%Lookup Rows Loaded:%' OR l LIKE '%Lookup Index Scans:%' THEN r := r || ',' || trim(l); END IF;
+		IF l LIKE '%Lookup: %' THEN r := r || ',' || concat_ws(',', substring(l from '\d+ rows read'), substring(l from '\d+ rows loaded'), substring(l from '\d+ index scans')); END IF;
 	END LOOP;
 	RETURN r;
 END $$;

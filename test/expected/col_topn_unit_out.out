@@ -16,7 +16,7 @@ DECLARE n bigint; line text; fetches text := 'none'; res text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ 'Heap Fetches: ' THEN fetches := regexp_replace(line, '.*Heap Fetches: (\d+).*', '\1'); END IF;
+		IF line ~ '(\d+) heap fetches' THEN fetches := substring(line from '(\d+) heap fetches'); END IF;
 	END LOOP;
 	EXECUTE 'CREATE TEMP TABLE uo_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
 	SET LOCAL sift.enable_agg = off;

@@ -84,7 +84,7 @@ CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^ *(Units|Rows Scanned|Rows Vetted By Heap):' THEN RETURN NEXT trim(l); END IF;
+		IF l ~ '^ *(Units|Rows):' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
 SELECT * FROM reads($q$SELECT count(*) FROM ld WHERE doc @> '{"tags": ["zz"]}'$q$);

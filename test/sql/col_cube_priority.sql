@@ -31,8 +31,8 @@ BEGIN
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		scanned := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, scanned);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
 	END LOOP;
 END $$;
 CREATE FUNCTION cp_held(i regclass) RETURNS text LANGUAGE sql AS

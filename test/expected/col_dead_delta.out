@@ -20,7 +20,7 @@ CREATE FUNCTION dd_net(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Units Net Of Dead Rows: ' THEN n := substring(l from 'Rows: (\d+)')::int; END IF;
+		IF l ~ '(\d+) net of dead rows' THEN n := substring(l from '(\d+) net of dead rows')::int; END IF;
 	END LOOP;
 	RETURN n;
 END $$;

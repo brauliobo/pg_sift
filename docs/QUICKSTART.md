@@ -63,14 +63,12 @@ WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;
 --    Index: orders_col
 --    Group Keys: category
 --    Pushed Aggregates: count(*), sum(orders.amount)
---    Units: 4
---    Units Pruned: 1
---    Rows Scanned: 77918
---    Tuples Aggregated: 11611
+--    Units: 4 read, 1 pruned
+--    Rows: 77918 scanned, 11611 aggregated, 4 groups
 --    Buffers: shared hit=75
 ```
 
-The aggregate ran inside the column index (`Custom Scan (SiftAgg)`); `Units Pruned: 1` is a unit skipped unread. With the pushdown off the same query
+The aggregate ran inside the column index (`Custom Scan (SiftAgg)`); `1 pruned` is a unit skipped unread. With the pushdown off the same query
 takes the plain PostgreSQL plan and returns the same answer:
 
 ```sql

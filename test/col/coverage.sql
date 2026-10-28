@@ -118,7 +118,7 @@ BEGIN
 	PERFORM set_config('seq_page_cost', '10000', true), set_config('random_page_cost', '10000', true), set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
 	IF r NOT LIKE '%Custom Scan (SiftAgg)%' THEN RETURN -1; END IF;
-	RETURN coalesce((regexp_match(r, 'Units From Pre-aggregates: (\d+)'))[1]::int, 0);
+	RETURN coalesce((regexp_match(r, '(\d+) from pre-aggregates'))[1]::int, 0);
 END $$;
 
 -- the control query is answered from pre-aggregates and every query of qs is scanned by SiftAgg without a unit from them

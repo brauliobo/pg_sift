@@ -38,8 +38,8 @@ DECLARE l text;
 BEGIN
   spills := 0; sets_spilled := 0; workers := 0;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l LIKE '%Group Table Spills:%' THEN spills := spills + substring(l FROM 'Spills: (\d+)')::int; END IF;
-    IF l LIKE '%Distinct Sets Spilled:%' THEN sets_spilled := sets_spilled + substring(l FROM 'Spilled: (\d+)')::int; END IF;
+    IF l ~ '(\d+) group table spills' THEN spills := spills + substring(l FROM '(\d+) group table spills')::int; END IF;
+    IF l ~ '(\d+) distinct sets spilled' THEN sets_spilled := sets_spilled + substring(l FROM '(\d+) distinct sets spilled')::int; END IF;
     IF l LIKE '%Workers Launched:%' THEN workers := workers + substring(l FROM 'Launched: (\d+)')::int; END IF;
   END LOOP;
   RETURN NEXT;

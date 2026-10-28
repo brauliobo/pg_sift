@@ -46,13 +46,11 @@ BEGIN
 END $$;
 -- one number of the EXPLAIN ANALYZE of the pushed plan
 CREATE FUNCTION ct_stat(q text, field text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE line text; v bigint;
+DECLARE j jsonb;
 BEGIN
 	PERFORM ct_mode(true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ ('^ *' || field || ': ') THEN v := regexp_replace(line, '^ *[A-Za-z -]+: ', '')::bigint; END IF;
-	END LOOP;
-	RETURN v;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN jsonb_path_query_first(j, format('$.**.%I', field)::jsonpath)::bigint;
 END $$;
 CREATE TABLE ct_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO ct_q VALUES

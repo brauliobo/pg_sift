@@ -22,7 +22,7 @@ DECLARE l text; s bool := false;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		s := s OR l LIKE '%Filters In Source: %';
+		s := s OR l LIKE '%filters in source%';
 	END LOOP;
 	RETURN s;
 END $$;

@@ -208,7 +208,7 @@ BEGIN
 	PERFORM set_config('seq_page_cost', '1000', true);
 	PERFORM set_config('random_page_cost', '1000', true);
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF line ~ 'Units Read By Sorted Run' THEN RETURN true; END IF;
+		IF line ~ 'units read by sorted run' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END $$;

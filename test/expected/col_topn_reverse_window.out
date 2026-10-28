@@ -15,7 +15,7 @@ CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := ''; a text; b text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units Read By Sorted Run: %' OR l LIKE '%Units Pruned: %' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
+		IF l LIKE '%units read by sorted run%' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO a;
 	SET LOCAL sift.enable_topn = off; SET LOCAL sift.enable_agg = off;
@@ -31,15 +31,15 @@ SELECT n, chk(q) FROM (VALUES
 	(5, 'SELECT id, k FROM rw ORDER BY k DESC LIMIT 10'),
 	(6, 'SELECT id, k FROM rw WHERE k < 0 ORDER BY k DESC LIMIT 10'),
 	(7, 'SELECT id, k FROM rw WHERE k <= 7000 ORDER BY k DESC OFFSET 600 LIMIT 10')) v (n, q) ORDER BY n;
- n |                             chk                              
----+--------------------------------------------------------------
- 1 | same | Units Read By Sorted Run: 1 Units: 1 Units Pruned: 32
- 2 | same | Units: 1 Units Pruned: 32
- 3 | same | Units Read By Sorted Run: 3 Units: 3 Units Pruned: 43
- 4 | same | Units Read By Sorted Run: 1 Units: 1 Units Pruned: 59
- 5 | same | Units Read By Sorted Run: 1 Units: 1 Units Pruned: 0
- 6 | same | Units: 0 Units Pruned: 60
- 7 | same | Units Read By Sorted Run: 4 Units: 4 Units Pruned: 32
+ n |                                                                     chk                                                                      
+---+----------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | same | Top-N Run: 27 superblocks skipped, 1 units read by sorted run, 1 units read without filters, 10 heap fetches Units: 1 read, 32 pruned
+ 2 | same | Units: 1 read, 32 pruned
+ 3 | same | Top-N Run: 25 superblocks skipped, 3 units read by sorted run, 3 units read without filters, 88 heap fetches Units: 3 read, 43 pruned
+ 4 | same | Top-N Run: 0 superblocks skipped, 1 units read by sorted run, 1 units read without filters, 10 heap fetches Units: 1 read, 59 pruned
+ 5 | same | Top-N Run: 59 superblocks skipped, 1 units read by sorted run, 10 heap fetches Units: 1 read
+ 6 | same | Units: 0 read, 60 pruned
+ 7 | same | Top-N Run: 24 superblocks skipped, 4 units read by sorted run, 4 units read without filters, 10 heap fetches Units: 4 read, 32 pruned
 (7 rows)
 
 DROP FUNCTION chk(text);

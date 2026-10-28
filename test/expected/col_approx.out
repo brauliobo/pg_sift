@@ -174,36 +174,32 @@ DECLARE l text;
 BEGIN
   SET LOCAL sift.agg_force = on;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-    IF l ~ '^\s+(Units|Units Without The Sketch|Units From Pre-aggregates|Approximate Distinct|Rows Scanned):' THEN RETURN QUERY SELECT trim(l); END IF;
+    IF l ~ '^\s+(Units|Approximate Distinct|Rows):' THEN RETURN QUERY SELECT trim(l); END IF;
   END LOOP;
 END $$;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 34
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 0
- Units From Pre-aggregates: 34
- Rows Scanned: 0
-(5 rows)
+ Units: 34 read, 0 without the sketch, 34 from pre-aggregates
+ Rows: 0 scanned, 0 aggregated, 1 groups
+(3 rows)
 
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap_off');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 34
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 34
- Rows Scanned: 60000
-(4 rows)
+ Units: 34 read, 34 without the sketch
+ Rows: 60000 scanned, 60000 aggregated, 1 groups
+(3 rows)
 
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(id) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 34
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 34
- Rows Scanned: 60000
-(4 rows)
+ Units: 34 read, 34 without the sketch
+ Rows: 60000 scanned, 60000 aggregated, 1 groups
+(3 rows)
 
 SELECT slug FROM sift.explain_why('SELECT sift.approx_count_distinct(id) FROM ap') WHERE arm = 'single';
  slug 
@@ -225,23 +221,19 @@ SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 53
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 53
- Units From Pre-aggregates: 0
- Rows Scanned: 62602
-(5 rows)
+ Units: 53 read, 53 without the sketch, 0 from pre-aggregates
+ Rows: 62602 scanned, 59666 aggregated, 21771 vetted by heap, 3181 heap pages, 1 groups
+(3 rows)
 
 VACUUM ap;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 36
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 34
- Units From Pre-aggregates: 2
- Rows Scanned: 60000
-(5 rows)
+ Units: 36 read, 34 without the sketch, 2 from pre-aggregates
+ Rows: 60000 scanned, 57064 aggregated, 1 groups
+(3 rows)
 
 SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', true, true)
      = ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', false, true) AS vacuumed_same;
@@ -289,12 +281,10 @@ SELECT ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', tru
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(u) FROM ap_exc');
                                              line                                             
 ----------------------------------------------------------------------------------------------
- Units: 2
  Approximate Distinct: sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error
- Units Without The Sketch: 0
- Units From Pre-aggregates: 2
- Rows Scanned: 0
-(5 rows)
+ Units: 2 read, 0 without the sketch, 2 from pre-aggregates
+ Rows: 0 scanned, 0 aggregated, 1 groups
+(3 rows)
 
 -- the option checks: a column that cannot be hashed the way PostgreSQL does, a name that is not a column, a key_columns leaf
 CREATE TABLE ap_bad (id int, c char(5), nm name, f float8, j jsonb);

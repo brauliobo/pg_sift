@@ -22,9 +22,9 @@ DECLARE l text;
 BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', workers::text, false);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		launched := coalesce(substring(l from 'Workers Launched: (\d+)')::int, launched, 0);
+		launched := coalesce(substring(l from 'Workers Launched: (\d+)')::int, launched);
 		units := coalesce(substring(l from '^ +Units: (\d+)')::int, units);
-		pruned := coalesce(substring(l from 'Units Pruned: (\d+)')::int, pruned);
+		pruned := coalesce(substring(l from '(\d+) pruned')::int, pruned, 0);
 	END LOOP;
 END $$;
 -- rows that differ between the scan of the first setting (SiftAgg, no workers) and of the second, and the rows of the first

@@ -14,7 +14,7 @@ CREATE FUNCTION pdn_from_point(w text) RETURNS text LANGUAGE plpgsql
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT v, count(*) FROM pdn WHERE %s GROUP BY v', w) LOOP
-		IF l ~ 'Units From Point Directory' THEN RETURN 'directory'; END IF;
+		IF l ~ 'from point directory' THEN RETURN 'directory'; END IF;
 	END LOOP;
 	RETURN 'units';
 END $$;

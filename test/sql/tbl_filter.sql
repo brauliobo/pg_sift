@@ -16,7 +16,7 @@ DECLARE l text; r text := 'normal';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Filters In Source: %' THEN r := trim(split_part(l, ':', 2)); END IF;
+		IF l ~ '(\d+) filters in source' THEN r := substring(l from '(\d+) filters in source'); END IF;
 	END LOOP;
 	RETURN r;
 END $$;

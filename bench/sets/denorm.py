@@ -32,8 +32,8 @@ def add(*r):
 def prune(table, where):
 	out = psql("set max_parallel_workers_per_gather = 0;\nexplain (analyze, costs off, timing off, summary off, buffers off) "
 			   "select channel_id, count(*) from %s where deleted_at is null and %s group by 1" % (table, where))
-	f = lambda k: int(re.search(k + r': (\d+)', out).group(1))
-	return f('Units'), f('Units Pruned')
+	f = lambda k: int(m.group(1)) if (m := re.search(k, out)) else 0
+	return f(r'Units: (\d+)'), f(r'(\d+) pruned')
 
 
 add('measure', 'case', 'value', 'unit')

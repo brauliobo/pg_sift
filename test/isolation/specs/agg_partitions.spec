@@ -45,7 +45,7 @@ setup
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || stmt LOOP
 			IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
 			IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
-			IF l LIKE '%Partitions Removed:%' THEN removed := trim(split_part(l, ':', 2))::int; END IF;
+			IF l ~ '(\d+) partitions removed' THEN removed := substring(l from '(\d+) partitions removed')::int; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_pp_on AS ' || stmt;
 		PERFORM set_config('sift.enable_agg', 'off', true);

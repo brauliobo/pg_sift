@@ -71,8 +71,8 @@ BEGIN
 	by_set := 0;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pruned := coalesce(substring(l from 'Units Pruned: (\d+)')::int, pruned);
-		by_set := coalesce(substring(l from 'Units Pruned By Set Summary: (\d+)')::int, by_set);
+		pruned := coalesce(substring(l from '(\d+) pruned')::int, pruned, 0);
+		by_set := coalesce(substring(l from '(\d+) by set summary')::int, by_set);
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pruned := NULL; by_set := NULL;
@@ -171,7 +171,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from 'Units Pruned By Set Summary: (\d+)')::int, n);
+		n := coalesce(substring(l from '(\d+) by set summary')::int, n);
 	END LOOP;
 	RETURN n;
 END $$;

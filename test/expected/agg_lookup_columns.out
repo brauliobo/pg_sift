@@ -54,7 +54,7 @@ CREATE FUNCTION column_loads(sql text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; r int := 0; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Lookup Column Loads' THEN r := regexp_replace(l, '\D', '', 'g')::int; END IF;
+		IF l ~ '(\d+) column loads' THEN r := substring(l from '(\d+) column loads')::int; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

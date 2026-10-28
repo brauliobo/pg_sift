@@ -90,6 +90,7 @@
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/topn.h"
+#include "core/explain.h"
 #include "core/visibility.h"
 #include "core/popcount.h"
 #include "agg/agg_int.h"
@@ -1437,9 +1438,9 @@ pa_leaf_name(AggExec *ex, int leaf)
 	return att > 0 ? get_attname(ex->lay->heapoid, att, false) : lf->name;
 }
 
-/* the dims and measures of the rollup that answers the scan */
+/* the rollup that answers the scan: its dims and measures, one line in text */
 static void
-explain_pa_leaves(AggExec *ex, ExplainState *es)
+explain_pa_rollup(AggExec *ex, ExplainState *es)
 {
 	StringInfoData d,
 				m;
@@ -1450,10 +1451,29 @@ explain_pa_leaves(AggExec *ex, ExplainState *es)
 		appendStringInfo(&d, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rdim[i]));
 	for (int i = 0; i < ex->pa.nmeas; i++)
 		appendStringInfo(&m, "%s%s", i ? ", " : "", pa_leaf_name(ex, ex->pa.rmeas[i]));
-	if (d.len > 0)
-		ExplainPropertyText("Pre-aggregate Dims", d.data, es);
-	if (m.len > 0)
-		ExplainPropertyText("Pre-aggregate Measures", m.data, es);
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		StringInfoData t;
+
+		initStringInfo(&t);
+		if (ex->pa.rows)
+			appendStringInfoString(&t, "rows");
+		if (d.len > 0)
+			appendStringInfo(&t, "%sdims: %s", t.len ? "; " : "", d.data);
+		if (m.len > 0)
+			appendStringInfo(&t, "%smeasures: %s", t.len ? "; " : "", m.data);
+		ExplainPropertyText("Pre-aggregate Rollup", t.data, es);
+		pfree(t.data);
+	}
+	else
+	{
+		if (ex->pa.rows)
+			ExplainPropertyText("Pre-aggregate Rollup", "rows", es);
+		if (d.len > 0)
+			ExplainPropertyText("Pre-aggregate Dims", d.data, es);
+		if (m.len > 0)
+			ExplainPropertyText("Pre-aggregate Measures", m.data, es);
+	}
 	pfree(d.data);
 	pfree(m.data);
 }
@@ -1567,28 +1587,22 @@ explain_correlated(CustomScanState *node, int i, ExplainState *es)
 	ExplainCloseGroup(group, label, true, es);
 }
 
-/* The source's counters of the filters and lookup tables a run used */
+/* The lookup tables a run loaded and the key filters and semi tables it built from them */
 static void
-explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
+explain_lookup(AggExec *c, SiftAggSpec *s, ExplainState *es)
 {
-	if (c->nfilter > 0)
-		ExplainPropertyInteger("Filters In Source", NULL, c->nfilter, es);
-	if (c->ntype > 0)
-		ExplainPropertyInteger("Type Filters In Source", NULL, c->ntype, es);
-	if (c->nwide > 0)
-		ExplainPropertyInteger("Wide Filters In Source", NULL, c->nwide, es);
+	SiftExplainLine ln;
+
+	sift_explain_begin(&ln, es, "Lookup");
 	if (s->njoin > 0)
 	{
-		ExplainPropertyInteger("Lookup Rows Read", NULL, c->lookup_read, es);
-		ExplainPropertyInteger("Lookup Rows Loaded", NULL, c->lookup_loaded, es);
-		if (c->lookup_shared > 0)
-			ExplainPropertyInteger("Lookup Rows Shared", NULL, c->lookup_shared, es);
-		if (c->lookup_index > 0)
-			ExplainPropertyInteger("Lookup Index Scans", NULL, c->lookup_index, es);
-		if (c->lookup_cols > 0)
-			ExplainPropertyInteger("Lookup Column Loads", NULL, c->lookup_cols, es);
+		sift_explain_int(&ln, "Lookup Rows Read", NULL, "rows read", c->lookup_read, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Lookup Rows Loaded", NULL, "rows loaded", c->lookup_loaded, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Lookup Rows Shared", NULL, "rows shared", c->lookup_shared, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", c->lookup_index, SIFT_XI_OPT);
+		sift_explain_int(&ln, "Lookup Column Loads", NULL, "column loads", c->lookup_cols, SIFT_XI_OPT);
 		if (es->timing)
-			ExplainPropertyFloat("Lookup Load Time", "ms", c->lookup_us / 1000.0, 3, es);
+			sift_explain_ms(&ln, "Lookup Load Time", "to load", c->lookup_us / 1000.0, SIFT_XI_KEEP);
 	}
 	if (es->verbose)
 	{
@@ -1598,118 +1612,139 @@ explain_source_run(AggExec *c, SiftAggSpec *s, ExplainState *es)
 		if (hits + misses > 0)
 			ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, hits, misses), es);
 	}
-	if (c->njfilter > 0)
-		ExplainPropertyInteger("Join Key Filters", NULL, c->njfilter, es);
-	if (c->njpass > 0)
-		ExplainPropertyInteger("Join Key Passes", NULL, c->njpass, es);
-	if (c->nshared > 0)
-		ExplainPropertyInteger("Shared Lookup Tables", NULL, c->nshared, es);
-	if (c->ncached > 0)
-		ExplainPropertyInteger("Cached Lookup Tables", NULL, c->ncached, es);
-	if (c->nfirst > 0)
-		ExplainPropertyInteger("First Row Lookup Tables", NULL, c->nfirst, es);
+	sift_explain_int(&ln, "Join Key Filters", NULL, "key filters", c->njfilter, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Join Key Passes", NULL, "key passes", c->njpass, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Shared Lookup Tables", NULL, "shared tables", c->nshared, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Cached Lookup Tables", NULL, "cached tables", c->ncached, SIFT_XI_OPT);
+	sift_explain_int(&ln, "First Row Lookup Tables", NULL, "first row tables", c->nfirst, SIFT_XI_OPT);
 	if (c->first_hit > 0 || c->first_differ > 0)
 	{
-		ExplainPropertyInteger("First Row Lookups", NULL, c->first_hit, es);
-		ExplainPropertyInteger("First Row Keys Differ", NULL, c->first_differ, es);
+		sift_explain_int(&ln, "First Row Lookups", NULL, "first row lookups", c->first_hit, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "First Row Keys Differ", NULL, "first row keys differ", c->first_differ, SIFT_XI_KEEP);
 	}
 	if (c->nsemi > 0)
 	{
-		ExplainPropertyInteger("Semi Lookup Tables", NULL, c->nsemi, es);
-		ExplainPropertyInteger("Semi Lookup Table Size", "kB", (c->semi_bytes + 1023) / 1024, es);
+		sift_explain_int(&ln, "Semi Lookup Tables", NULL, "semi tables", c->nsemi, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Semi Lookup Table Size", "kB", NULL, (c->semi_bytes + 1023) / 1024, SIFT_XI_SUB | SIFT_XI_KEEP);
 	}
+	sift_explain_end(&ln);
 }
 
-/* The units a run read and how many came from the pre-aggregates */
+/* The units a run read, pruned, and answered from the pre-aggregates */
 static void
-explain_units(AggExec *ex, AggExec *c, ExplainState *es)
+explain_units(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 {
+	SiftExplainLine ln;
+
 	sift_aggbe_explain(c->be, c->be_state, es, c->n_units);
-	if (c->parts_pruned > 0)
-		ExplainPropertyInteger("Partitions Removed", NULL, c->parts_pruned, es);
-	ExplainPropertyInteger("Units", NULL, c->n_units, es);
+	sift_explain_begin(&ln, es, "Units");
+	sift_explain_int(&ln, "Units", NULL, "read", c->n_units, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Partitions Removed", NULL, "partitions removed", c->parts_pruned, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Units Pruned", NULL, "pruned", cc->units_pruned, 0);
+	sift_explain_int(&ln, "Units Pruned By Set Summary", NULL, "by set summary", cc->units_set_pruned, SIFT_XI_SUB | SIFT_XI_OPT);
+	if (cc->point_units > 0)
+	{
+		sift_explain_int(&ln, "Units From Point Directory", NULL, "from point directory", cc->point_units, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Rows From Point Directory", NULL, "rows", cc->point_rows, SIFT_XI_SUB | SIFT_XI_KEEP);
+	}
+	sift_explain_int(&ln, "Units Filtered By Sorted Run", NULL, "filtered by sorted run", cc->run_windows, SIFT_XI_OPT);
+	if (c->recheck)
+		sift_explain_int(&ln, "Units Read Again From The Heap", NULL, "read again from the heap", cc->recheck_units, SIFT_XI_KEEP);
 	for (int i = 0; i < ex->spec->naggs; i++)
 		if (ex->spec->agg[i].kind == SAA_GEN && ex->spec->agg[i].gen->hll >= 0)
 		{
 			ExplainPropertyText("Approximate Distinct", "sift.approx_count_distinct: HyperLogLog, 0.81% relative standard error", es);
-			ExplainPropertyInteger("Units Without The Sketch", NULL, c->n_units - c->n_pre_units, es);
+			sift_explain_int(&ln, "Units Without The Sketch", NULL, "without the sketch", c->n_units - c->n_pre_units, SIFT_XI_KEEP);
 			break;
 		}
 	if (!c->pa_on && es->verbose)
 		ExplainPropertyText("Pre-aggregates", sift_pawhy_name(c->pa_why), es);
-	if (!c->pa_on)
-		return;
-	ExplainPropertyInteger("Units From Pre-aggregates", NULL, c->n_pre_units, es);
-	if (c->n_exc_units > 0 || c->n_exc_scan > 0)
+	if (c->pa_on)
 	{
-		ExplainPropertyInteger("Units Net Of Exceptions", NULL, c->n_exc_units, es);
-		ExplainPropertyInteger("Units With Exceptions Scanned", NULL, c->n_exc_scan, es);
+		sift_explain_int(&ln, "Units From Pre-aggregates", NULL, "from pre-aggregates", c->n_pre_units, SIFT_XI_KEEP);
+		if (c->n_exc_units > 0 || c->n_exc_scan > 0)
+		{
+			sift_explain_int(&ln, "Units Net Of Exceptions", NULL, "net of exceptions", c->n_exc_units, SIFT_XI_KEEP);
+			sift_explain_int(&ln, "Units With Exceptions Scanned", NULL, "with exceptions scanned", c->n_exc_scan, SIFT_XI_KEEP);
+		}
+		if (c->n_dead_units > 0 || c->n_dead_scan > 0)
+		{
+			sift_explain_int(&ln, "Units Net Of Dead Rows", NULL, "net of dead rows", c->n_dead_units, SIFT_XI_KEEP);
+			sift_explain_int(&ln, "Units With Dead Rows Scanned", NULL, "with dead rows scanned", c->n_dead_scan, SIFT_XI_KEEP);
+		}
+		if (c->super_on)
+			sift_explain_int(&ln, "Superunits", NULL, "superunits", c->n_super, 0);
+		if (PA_ROLLUP(ex->pa))
+		{
+			explain_pa_rollup(ex, es);
+			sift_explain_int(&ln, "Units Without The Rollup", NULL, "without the rollup", c->n_rollup_miss, 0);
+			sift_explain_int(&ln, "Units Scanned By Cost", NULL, "scanned by cost", c->n_rollup_cost, SIFT_XI_OPT);
+			sift_explain_int(&ln, "Rollup Refresh Queued", NULL, "refreshes queued", c->n_rollup_queued, SIFT_XI_OPT);
+		}
 	}
-	if (c->n_dead_units > 0 || c->n_dead_scan > 0)
-	{
-		ExplainPropertyInteger("Units Net Of Dead Rows", NULL, c->n_dead_units, es);
-		ExplainPropertyInteger("Units With Dead Rows Scanned", NULL, c->n_dead_scan, es);
-	}
-	if (c->super_on)
-		ExplainPropertyInteger("Superunits", NULL, c->n_super, es);
-	if (!PA_ROLLUP(ex->pa))
-		return;
-	if (ex->pa.rows)
-		ExplainPropertyText("Pre-aggregate Rollup", "rows", es);
-	explain_pa_leaves(ex, es);
-	ExplainPropertyInteger("Units Without The Rollup", NULL, c->n_rollup_miss, es);
-	if (c->n_rollup_cost > 0)
-		ExplainPropertyInteger("Units Scanned By Cost", NULL, c->n_rollup_cost, es);
-	if (c->n_rollup_queued > 0)
-		ExplainPropertyInteger("Rollup Refresh Queued", NULL, c->n_rollup_queued, es);
+	sift_explain_end(&ln);
 }
 
 static void
 explain_rows(AggExec *ex, AggExec *c, SiftSrcCounters *cc, ExplainState *es)
 {
-	ExplainPropertyInteger("Units Pruned", NULL, cc->units_pruned, es);
-	if (cc->units_set_pruned > 0)
-		ExplainPropertyInteger("Units Pruned By Set Summary", NULL, cc->units_set_pruned, es);
-	if (cc->point_units > 0)
-	{
-		ExplainPropertyInteger("Units From Point Directory", NULL, cc->point_units, es);
-		ExplainPropertyInteger("Rows From Point Directory", NULL, cc->point_rows, es);
-	}
-	if (cc->run_windows > 0)
-		ExplainPropertyInteger("Units Filtered By Sorted Run", NULL, cc->run_windows, es);
-	ExplainPropertyInteger("Rows Scanned", NULL, c->n_rows, es);
-	ExplainPropertyInteger("Tuples Aggregated", NULL, c->n_tuples, es);
-	ExplainPropertyInteger("Dense Chunks", NULL, c->n_dense, es);
-	if (c->n_combo_trim > 0)
-		ExplainPropertyInteger("Combo Caches Restarted", NULL, c->n_combo_trim, es);
-	ExplainPropertyInteger("Rows Vetted By Heap", NULL, cc->rows_vetted, es);
-	ExplainPropertyInteger("Heap Pages", NULL, cc->heap_pages, es);
+	SiftExplainLine ln;
+
+	sift_explain_begin(&ln, es, "Rows");
+	sift_explain_int(&ln, "Rows Scanned", NULL, "scanned", c->n_rows, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Filters In Source", NULL, "filters in source", c->nfilter, SIFT_XI_SUB | SIFT_XI_OPT);
+	sift_explain_int(&ln, "Type Filters In Source", NULL, "type filters in source", c->ntype, SIFT_XI_SUB | SIFT_XI_OPT);
+	sift_explain_int(&ln, "Wide Filters In Source", NULL, "wide filters in source", c->nwide, SIFT_XI_SUB | SIFT_XI_OPT);
+	sift_explain_int(&ln, "Tuples Aggregated", NULL, "aggregated", c->n_tuples, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Dense Chunks", NULL, "dense chunks", c->n_dense, 0);
+	sift_explain_int(&ln, "Combo Caches Restarted", NULL, "combo caches restarted", c->n_combo_trim, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Rows Vetted By Heap", NULL, "vetted by heap", cc->rows_vetted, 0);
+	sift_explain_int(&ln, "Heap Pages", NULL, "heap pages", cc->heap_pages, 0);
 	if (c->recheck)
-	{
-		ExplainPropertyInteger("Units Read Again From The Heap", NULL, cc->recheck_units, es);
-		ExplainPropertyInteger("Rows Read Again From The Heap", NULL, cc->rechecked, es);
-	}
-	ExplainPropertyInteger("Groups", NULL, ex->n_groups, es);
+		sift_explain_int(&ln, "Rows Read Again From The Heap", NULL, "re-read from the heap", cc->rechecked, SIFT_XI_KEEP);
+	if (ex->spec->search)
+		sift_explain_int(&ln, "Search Matches", NULL, "search matches", (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Groups", NULL, "groups", ex->n_groups, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Group Order Keys", NULL, "order keys", ex->spec->nord, SIFT_XI_SUB | SIFT_XI_OPT);
 	if (ex->spec->gtopn_k > 0)
-		ExplainPropertyInteger("Groups Dropped By Top-N", NULL, ex->n_gpruned, es);
-	if (ex->spec->nord > 0)
-		ExplainPropertyInteger("Group Order Keys", NULL, ex->spec->nord, es);
+		sift_explain_int(&ln, "Groups Dropped By Top-N", NULL, "dropped by top-N", ex->n_gpruned, SIFT_XI_KEEP);
 	if (part_flush_on(ex))
 		ExplainPropertyText("Groups Finished", "per partition", es);
-	if (c->n_osa_spilled)
-		ExplainPropertyInteger("Ordered Sets Spilled", NULL, c->n_osa_spilled, es);
-	if (c->n_spills)
-		ExplainPropertyInteger("Group Table Spills", NULL, c->n_spills, es);
-	if (c->n_dist_spilled)
-		ExplainPropertyInteger("Distinct Sets Spilled", NULL, c->n_dist_spilled, es);
-	if (c->n_dist_chunks)
-		ExplainPropertyInteger("Distinct Chunks Merged", NULL, c->n_dist_chunks, es);
+	sift_explain_int(&ln, "Ordered Sets Spilled", NULL, "ordered sets spilled", c->n_osa_spilled, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Group Table Spills", NULL, "group table spills", c->n_spills, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Distinct Sets Spilled", NULL, "distinct sets spilled", c->n_dist_spilled, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Distinct Chunks Merged", NULL, "distinct chunks merged", c->n_dist_chunks, SIFT_XI_OPT);
 	if (c->ndsorder)
 	{
-		ExplainPropertyInteger("Distinct Stream Superblocks", NULL, c->ndsorder, es);
+		sift_explain_int(&ln, "Distinct Stream Superblocks", NULL, "distinct stream superblocks", c->ndsorder, SIFT_XI_KEEP);
 		if (c->dsabort)
 			ExplainPropertyBool("Distinct Stream Given Up", true, es);
 	}
+	sift_explain_end(&ln);
+}
+
+/* The top-N scan's skips and reads */
+static void
+explain_topn(AggExec *ex, ExplainState *es)
+{
+	SiftExplainLine ln;
+	const SiftTopN *t = ex->topn;
+
+	sift_explain_begin(&ln, es, "Top-N Run");
+	sift_explain_int(&ln, "Superblocks Skipped By Top-N", NULL, "superblocks skipped", sift_topn_skipped(t), SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Top-N Candidates", NULL, "candidates", sift_topn_candidates(t), SIFT_XI_OPT);
+	sift_explain_int(&ln, "Top-N Restarts", NULL, "restarts", ex->widen, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Units Read By Sorted Run", NULL, "units read by sorted run", sift_topn_runs_read(t), SIFT_XI_OPT);
+	sift_explain_int(&ln, "Units Read Without Filters", NULL, "units read without filters", sift_topn_runs_lazy(t), SIFT_XI_OPT);
+	sift_explain_int(&ln, "Units Answered By Run Head", NULL, "units answered by run head", sift_topn_heads_used(t), SIFT_XI_OPT);
+	if (sift_topn_ord_units(t, 0) + sift_topn_ord_units(t, 1) > 0)
+		ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(t, 0), sift_topn_ord_units(t, 1), sift_topn_ord_units(t, 2)), es);
+	if (sift_topn_gordered(t))
+		ExplainPropertyBool("Global Order", true, es);
+	sift_explain_int(&ln, "Heap Fetches", NULL, "heap fetches", sift_topn_fetched(t), SIFT_XI_KEEP);
+	if (sift_topn_sorted(t) >= 0)
+		sift_explain_int(&ln, "Top-N Sorted Rows", NULL, "sorted rows", sift_topn_sorted(t), SIFT_XI_KEEP);
+	sift_explain_end(&ln);
 }
 
 /* EXPLAIN ANALYZE: what the run did; the arms of a fused run report on its one pass */
@@ -1726,31 +1761,10 @@ explain_run(AggExec *ex, ExplainState *es)
 	ExplainPropertyText("SIMD", sift_simd_level_name(sift_cpu.active), es);
 	if (s->nworkers > 0)
 		ExplainPropertyInteger("Workers Launched", NULL, c->par ? c->par->nlaunched : 0, es);
-	if (s->search)
-		ExplainPropertyInteger("Search Matches", NULL, (c->search ? sift_search_matches(c->search) : 0) + (c->par ? c->par->matches : 0), es);
 	if (s->topn && ex->topn)
-	{
-		ExplainPropertyInteger("Superblocks Skipped By Top-N", NULL, sift_topn_skipped(ex->topn), es);
-		if (sift_topn_candidates(ex->topn) > 0)
-			ExplainPropertyInteger("Top-N Candidates", NULL, sift_topn_candidates(ex->topn), es);
-		if (ex->widen > 0)
-			ExplainPropertyInteger("Top-N Restarts", NULL, ex->widen, es);
-		if (sift_topn_runs_read(ex->topn) > 0)
-			ExplainPropertyInteger("Units Read By Sorted Run", NULL, sift_topn_runs_read(ex->topn), es);
-		if (sift_topn_runs_lazy(ex->topn) > 0)
-			ExplainPropertyInteger("Units Read Without Filters", NULL, sift_topn_runs_lazy(ex->topn), es);
-		if (sift_topn_heads_used(ex->topn) > 0)
-			ExplainPropertyInteger("Units Answered By Run Head", NULL, sift_topn_heads_used(ex->topn), es);
-		if (sift_topn_ord_units(ex->topn, 0) + sift_topn_ord_units(ex->topn, 1) > 0)
-			ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(ex->topn, 0), sift_topn_ord_units(ex->topn, 1), sift_topn_ord_units(ex->topn, 2)), es);
-		if (sift_topn_gordered(ex->topn))
-			ExplainPropertyBool("Global Order", true, es);
-		ExplainPropertyInteger("Heap Fetches", NULL, sift_topn_fetched(ex->topn), es);
-		if (sift_topn_sorted(ex->topn) >= 0)
-			ExplainPropertyInteger("Top-N Sorted Rows", NULL, sift_topn_sorted(ex->topn), es);
-	}
-	explain_source_run(c, s, es);
-	explain_units(ex, c, es);
+		explain_topn(ex, es);
+	explain_lookup(c, s, es);
+	explain_units(ex, c, &cc, es);
 	explain_rows(ex, c, &cc, es);
 }
 

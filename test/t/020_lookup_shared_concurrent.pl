@@ -24,7 +24,7 @@ CREATE FUNCTION cached(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; kept int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Cached Lookup Tables:%' THEN kept := kept + trim(split_part(l, ':', 2))::int; END IF;
+		IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
 	END LOOP;
 	RETURN kept;
 END $$;

@@ -34,7 +34,7 @@ BEGIN
 	EXECUTE 'CREATE TEMP TABLE cl_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
 	SELECT count(*) INTO n FROM ((SELECT pos, r FROM cl_a EXCEPT ALL SELECT pos, r FROM cl_b) UNION ALL (SELECT pos, r FROM cl_b EXCEPT ALL SELECT pos, r FROM cl_a)) d;
 	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END ||
-		   CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sorted' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
+		   CASE WHEN plan ~ ' sorted rows' THEN ' sorted' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
 END $$;
 CREATE TABLE cl_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO cl_q VALUES
@@ -110,7 +110,7 @@ BEGIN
 	PREPARE cl_g (bigint, bigint) AS SELECT id, ts FROM cl ORDER BY ts DESC, id LIMIT $1 OFFSET $2;
 	EXECUTE format('CREATE TEMP TABLE cl_b AS EXECUTE cl_g(%s, %s)', lim, off);
 	SELECT count(*) INTO n FROM ((SELECT * FROM cl_a EXCEPT ALL SELECT * FROM cl_b) UNION ALL (SELECT * FROM cl_b EXCEPT ALL SELECT * FROM cl_a)) d;
-	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sorted' ELSE ' heap' END || ' ' || (SELECT count(*) FROM cl_b);
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ ' sorted rows' THEN ' sorted' ELSE ' heap' END || ' ' || (SELECT count(*) FROM cl_b);
 END $$;
 SELECT v, cl_generic(l, o) FROM (VALUES (10, 0), (10, 1990), (10, 1991), (3000, 0), (5, 2500)) x(l, o), LATERAL (SELECT format('%s+%s', l, o) AS v) y ORDER BY l, o;
     v    |    cl_generic    

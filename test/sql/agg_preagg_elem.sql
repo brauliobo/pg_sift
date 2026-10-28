@@ -24,7 +24,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
 		workers := coalesce(substring(l from 'Workers Planned: (\d+)')::int, workers);
 		IF l ~ '^\s*(Units|Pre-aggregates|Rollup Refresh)' THEN c := c || ', ' || btrim(l); END IF;
 	END LOOP;
@@ -110,7 +110,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		siftagg := siftagg OR l LIKE '%Custom Scan (SiftAgg)%';
 		planned := coalesce(substring(l from '^\s*Units: (\d+)')::int, planned);
-		answered := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, answered);
+		answered := coalesce(substring(l from '(\d+) from pre-aggregates')::int, answered);
 	END LOOP;
 	used := (siftagg AND planned = stored AND answered = eligible) IS TRUE;
 	a := pa_rows(q, true, true);

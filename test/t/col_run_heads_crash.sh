@@ -16,7 +16,7 @@ node_start crash || bail "start failed"
 sql crash "CREATE EXTENSION pg_sift_test CASCADE" \
 	"${COL_TOPN_FIXTURE[@]}" >/dev/null || bail "setup failed"
 check "the segments carry the heads" test "$(sql crash "SELECT bool_and(format >= 21) AND count(DISTINCT format) = 1 FROM sift._test_col_formats('t_col')")" == t
-check "the top-N scan answers units from the heads" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'Units Answered By Run Head')" == 1
+check "the top-N scan answers units from the heads" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "SET sift.test_topn_gorder = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 10" | grep -c 'units answered by run head')" == 1
 check "and reads the global order of the key" test "$(sql crash "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT k FROM t ORDER BY k LIMIT 100" | grep -c 'Global Order')" == 1
 
 D=$(dir crash)

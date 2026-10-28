@@ -28,10 +28,10 @@ DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		miss := coalesce(substring(l from 'Units Without The Rollup: (\d+)')::int, miss);
-		queued := coalesce(substring(l from 'Rollup Refresh Queued: (\d+)')::int, queued);
-		dims := coalesce(substring(l from 'Pre-aggregate Dims: (.*)$'), dims);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		miss := coalesce(substring(l from '(\d+) without the rollup')::int, miss);
+		queued := coalesce(substring(l from '(\d+) refreshes queued')::int, queued);
+		dims := coalesce(substring(l from 'dims: ([^;]*)'), dims);
 	END LOOP;
 END $$;
 

@@ -41,7 +41,7 @@ BEGIN
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		IF l ~ '^ *Units: ' THEN kept := substring(l from '[0-9]+')::numeric; END IF;
-		IF l ~ 'Units Pruned: ' THEN pruned := substring(l from '[0-9]+')::numeric; END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned')::numeric; END IF;
 	END LOOP;
 	RETURN round(kept / nullif(kept + pruned, 0), 1);
 END $$;

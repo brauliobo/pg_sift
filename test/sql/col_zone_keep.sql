@@ -20,12 +20,12 @@ CREATE INDEX sm_k_idx ON sm_k USING sift_col (k sift.col_int4_ops, id sift.col_i
 VACUUM (FREEZE, ANALYZE) sm, sm_o, sm_k;
 
 CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal'; read text; pruned text;
+DECLARE l text; r text := 'normal'; read text; pruned text := '0';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Units: %' THEN read := trim(split_part(l, ':', 2)); END IF;
-		IF l LIKE '%Units Pruned: %' THEN pruned := trim(split_part(l, ':', 2)); END IF;
+		IF l ~ 'Units: (\d+)' THEN read := substring(l from 'Units: (\d+)'); END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
 	END LOOP;
 	RETURN CASE WHEN r = 'normal' THEN r ELSE format('%s read %s pruned %s', r, read, pruned) END;
 END $$;

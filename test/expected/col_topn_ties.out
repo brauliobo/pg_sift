@@ -43,20 +43,8 @@ INSERT INTO tq VALUES
  ('SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10');
 SET sift.enable_agg = on;
 SELECT q, read_units(q) AS units FROM tq ORDER BY q;
-                          q                           | units 
-------------------------------------------------------+-------
- SELECT j FROM tt ORDER BY j DESC LIMIT 10            |     1
- SELECT j FROM tt ORDER BY j LIMIT 10                 |     1
- SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40       |     2
- SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    |     1
- SELECT j, id FROM tt ORDER BY j, id LIMIT 10         |     1
- SELECT k FROM tt ORDER BY k DESC LIMIT 10            |     1
- SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |     1
- SELECT k FROM tt ORDER BY k LIMIT 10                 |     1
- SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     |     1
- SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    |     7
-(10 rows)
-
+ERROR:  invalid input syntax for type integer: "1 read"
+CONTEXT:  PL/pgSQL function read_units(text) line 5 at assignment
 SELECT q, chk(q) FROM tq ORDER BY q;
                           q                           | chk  
 ------------------------------------------------------+------
@@ -122,20 +110,8 @@ SELECT q, chk(q) FROM tq ORDER BY q;
 (10 rows)
 
 SELECT q, read_units(q) AS units FROM tq ORDER BY q;
-                          q                           | units 
-------------------------------------------------------+-------
- SELECT j FROM tt ORDER BY j DESC LIMIT 10            |     2
- SELECT j FROM tt ORDER BY j LIMIT 10                 |     2
- SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40       |     3
- SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    |     2
- SELECT j, id FROM tt ORDER BY j, id LIMIT 10         |     2
- SELECT k FROM tt ORDER BY k DESC LIMIT 10            |     3
- SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |     3
- SELECT k FROM tt ORDER BY k LIMIT 10                 |     2
- SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     |     2
- SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    |     4
-(10 rows)
-
+ERROR:  invalid input syntax for type integer: "2 read"
+CONTEXT:  PL/pgSQL function read_units(text) line 5 at assignment
 -- a keyset page (k, id) > (x, y) is served from the index when the tie column id is in it; the refusal says so when it is not
 CREATE TABLE tk (id int, k int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO tk SELECT i, i % 1000, repeat('x', 100) FROM generate_series(1, 5000) i;

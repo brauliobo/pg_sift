@@ -56,7 +56,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		gather := gather OR l LIKE '%Workers Planned: 2%';
 		agg := agg OR l LIKE '%Custom Scan (SiftAgg)%';
-		pre := coalesce(substring(l from '^\s*Units From Pre-aggregates: (\d+)')::int, pre);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
 	END LOOP;
 	mode := CASE WHEN agg AND gather THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
 END $$;

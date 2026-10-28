@@ -17,7 +17,7 @@ DECLARE l text; n bigint := 0;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Rows Read Again From The Heap' THEN n := regexp_replace(l, '\D', '', 'g')::bigint; END IF;
+		IF l ~ '(\d+) re-read from the heap' THEN n := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
 	END LOOP;
 	RETURN n;
 END $$;
@@ -98,7 +98,7 @@ DECLARE l text; n numeric := 0;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ pat THEN n := regexp_replace(l, '\D', '', 'g')::numeric; END IF;
+		IF l ~ pat THEN n := substring(l from pat)::numeric; END IF;
 	END LOOP;
 	RETURN n;
 END $$;
@@ -122,9 +122,9 @@ CREATE FUNCTION share_q(t text) RETURNS text LANGUAGE sql AS $$
 	SELECT format('SELECT o.c, count(*), avg(o.score) FROM %s, jsonb_to_recordset(doc -> ''parts'') AS o(c text, score float8) WHERE o.score > 3 GROUP BY o.c', t)
 $$;
 SELECT same(share_q('d_spread')) AS spread_same, same(share_q('d_few')) AS few_same;
-SELECT again(share_q('d_few'), 'Rows Read Again') AS few_rows, again(share_q('d_few'), 'Units Read Again') AS few_units,
-       again(share_q('d_spread'), 'Units Read Again') > again(share_q('d_few'), 'Units Read Again') AS spread_reads_more_units;
-SELECT again(share_q('d_spread'), 'Rows Read Again') AS spread_rows, again(share_q('d_spread'), 'Units Read Again') = again(share_q('d_spread'), '^ +Units:') / 2 AS every_unit;
+SELECT again(share_q('d_few'), '(\d+) re-read from the heap') AS few_rows, again(share_q('d_few'), '(\d+) read again from the heap') AS few_units,
+       again(share_q('d_spread'), '(\d+) read again from the heap') > again(share_q('d_few'), '(\d+) read again from the heap') AS spread_reads_more_units;
+SELECT again(share_q('d_spread'), '(\d+) re-read from the heap') AS spread_rows, again(share_q('d_spread'), '(\d+) read again from the heap') = again(share_q('d_spread'), 'Units: (\d+)') / 2 AS every_unit;
 SELECT plan_cost(share_q('d_few')) < plan_cost(share_q('d_spread')) AS few_flagged_units_cost_less;
 DROP FUNCTION share_q(text), plan_cost(text), again(text, text);
 DROP TABLE d_spread, d_few;

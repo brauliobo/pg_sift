@@ -28,7 +28,7 @@ DECLARE l text; u int; p int; q text := format('SELECT kind, count(*), sum(amoun
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		u := coalesce(substring(l from '^\s*Units: (\d+)')::int, u);
-		p := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, p);
+		p := coalesce(substring(l from '(\d+) from pre-aggregates')::int, p);
 	END LOOP;
 	SET LOCAL sift.agg_preagg = on;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;

@@ -20,7 +20,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
 		scan := scan OR l ~ 'Custom Scan \(SiftAgg\)';
 		gather := gather OR l ~ 'Workers Planned: [1-9]';
-		IF l ~ 'Rows Read Again From The Heap' THEN reread := regexp_replace(l, '\D', '', 'g')::bigint; END IF;
+		IF l ~ '(\d+) re-read from the heap' THEN reread := substring(l from '(\d+) re-read from the heap')::bigint; END IF;
 	END LOOP;
 EXCEPTION WHEN others THEN reread := -1;
 END $$;

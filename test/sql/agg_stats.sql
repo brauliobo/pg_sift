@@ -14,14 +14,11 @@ CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((
 
 -- the statement's EXPLAIN ANALYZE figures against the counters of a session that ran nothing else
 CREATE FUNCTION compare(q text) RETURNS TABLE (what text, same bool) LANGUAGE plpgsql AS $$
-DECLARE l text; e jsonb := '{}';
+DECLARE e jsonb;
 BEGIN
 	PERFORM sift.stats_reset();
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s*(Units|Units Pruned|Units Pruned By Set Summary|Units From Pre-aggregates|Rows Scanned|Workers Launched|Rows Vetted By Heap): ' THEN
-			e := e || jsonb_build_object(trim(split_part(l, ':', 1)), trim(split_part(l, ':', 2))::int);
-		END IF;
-	END LOOP;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO e;
+	e := jsonb_path_query_first(e, 'strict $.** ? (exists(@."Units"))');
 	RETURN QUERY VALUES
 		('scans', stat('scans') = 1),
 		('units', stat('units') = (e->>'Units')::int),

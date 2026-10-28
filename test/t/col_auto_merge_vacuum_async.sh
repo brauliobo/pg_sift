@@ -17,7 +17,7 @@ sql as "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_visibility" "CREATE TABLE
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) facts" "SELECT pg_logical_emit_message(true, 'sift', 'flush')" >/dev/null || bail "setup failed"
 
 vacuumed() { sql as "SELECT coalesce(extract(epoch FROM last_vacuum)::text, '-') FROM pg_stat_user_tables WHERE relname = 'facts'"; }
-vetted() { sql as "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind" | sed -n 's/.*Rows Vetted By Heap: //p'; }
+vetted() { sql as "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF) SELECT kind, count(*), sum(amount) FROM facts GROUP BY kind" | sed -n 's/.* \([0-9][0-9]*\) vetted by heap.*/\1/p' | grep . || echo 0; }
 # the pages that are not all-visible
 unclean() { sql as "SELECT relpages - all_visible FROM pg_visibility_map_summary('facts'), (SELECT relpages FROM pg_class WHERE relname = 'facts') c"; }
 await_vacuum() {

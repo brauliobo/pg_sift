@@ -51,7 +51,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
 	lanes := false;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP lanes := lanes OR l ~ 'Wide Filters In Source'; END LOOP;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP lanes := lanes OR l ~ 'wide filters in source'; END LOOP;
 	EXECUTE q INTO n_on;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE q INTO n_off;

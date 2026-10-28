@@ -75,7 +75,7 @@ BEGIN
   lookups := 0;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
     pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%';
-    IF l LIKE '%First Row Lookup Tables: %' THEN lookups := regexp_replace(l, '.*: ', '')::int; END IF;
+    IF l ~ '(\d+) first row tables' THEN lookups := substring(l from '(\d+) first row tables')::int; END IF;
   END LOOP;
   DROP TABLE r_off, r_on;
   RETURN NEXT;
@@ -264,7 +264,7 @@ CREATE FUNCTION explain_first(q text) RETURNS TABLE (shown text) LANGUAGE plpgsq
 DECLARE l text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l LIKE '%First Row Lookup%' OR l LIKE '%never executed%' OR l LIKE '%Limit%' THEN shown := trim(l); RETURN NEXT; END IF;
+    IF l LIKE '%first row tables%' OR l LIKE '%First Row Lookup%' OR l LIKE '%never executed%' OR l LIKE '%Limit%' THEN shown := trim(l); RETURN NEXT; END IF;
   END LOOP;
 END $$;
 SELECT * FROM explain_first($q$

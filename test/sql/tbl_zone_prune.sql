@@ -12,12 +12,12 @@ VACUUM (FREEZE, ANALYZE) zp;
 
 \ir test/agg_rows_helpers.sql
 CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal'; pruned text;
+DECLARE l text; r text := 'normal'; pruned text := '0';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Units Pruned: %' THEN pruned := trim(split_part(l, ':', 2)); END IF;
+		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
 	END LOOP;
 	RETURN CASE WHEN r = 'normal' THEN r WHEN pruned::int > 0 THEN 'SiftAgg, units pruned' ELSE 'SiftAgg, none pruned' END;
 END $$;

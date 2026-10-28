@@ -22,7 +22,7 @@ SELECT (SELECT sum(units) FROM sift.col_segments('nk_idx') WHERE kind = 'immutab
 CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; u text := ''; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' OR l LIKE '%Units From Pre-aggregates: %' THEN u := u || ' ' || trim(l); END IF;
+		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 	END LOOP;
 	RETURN u;
 END $$;
@@ -51,7 +51,7 @@ VACUUM nk; VACUUM nu;
 CREATE FUNCTION nvetted(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Rows Vetted By Heap: %' THEN RETURN trim(l); END IF;
+		IF l LIKE '%Rows: %' THEN RETURN trim(l); END IF;
 	END LOOP;
 	RETURN 'no agg';
 END $$;

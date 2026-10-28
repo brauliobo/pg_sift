@@ -44,7 +44,7 @@ DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Semi Lookup Tables:%' THEN r := r || ' semi tables ' || trim(split_part(l, ':', 2)); END IF;
+		IF l ~ '(\d+) semi tables' THEN r := r || ' semi tables ' || substring(l from '(\d+) semi tables'); END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
 	RETURN r;

@@ -58,7 +58,7 @@ BEGIN
 		shared := false;
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 			launched := launched OR l ~ 'Workers Launched: [1-9]';
-			shared := shared OR l ~ 'Lookup Rows Shared: [1-9]';
+			shared := shared OR l ~ '[1-9][0-9]* rows shared';
 		END LOOP;
 		IF launched AND shared THEN RETURN true; END IF;
 		PERFORM pg_sleep(0.2);

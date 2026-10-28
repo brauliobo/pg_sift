@@ -39,35 +39,35 @@ $$;
 CREATE FUNCTION loaded(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := ''; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Lookup Rows Read|Lookup Index Scans' THEN r := r || trim(l) || '; '; END IF;
+		IF l ~ '^ *Lookup: ' THEN r := r || concat_ws('; ', substring(l from '\d+ rows read'), substring(l from '\d+ index scans')) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
 -- three keys of two thousand: the three rows (and the few rows of the other lookups), one index scan
 SELECT loaded(request(1));
-                    loaded                    
-----------------------------------------------
- Lookup Rows Read: 6; Lookup Index Scans: 1; 
+            loaded            
+------------------------------
+ 6 rows read; 1 index scans; 
 (1 row)
 
 -- fourteen hundred keys: the table is read whole
 SELECT loaded(request(2));
-          loaded          
---------------------------
- Lookup Rows Read: 3400; 
+      loaded      
+------------------
+ 3400 rows read; 
 (1 row)
 
 -- three keys of twenty-five rows: seventy-five rows by probes; three hundred keys (seven thousand five hundred rows, the pages of the table): read whole
 SELECT loaded(grequest(1));
-                    loaded                     
------------------------------------------------
- Lookup Rows Read: 78; Lookup Index Scans: 1; 
+            loaded             
+-------------------------------
+ 78 rows read; 1 index scans; 
 (1 row)
 
 SELECT loaded(grequest(2));
-          loaded           
----------------------------
- Lookup Rows Read: 20300; 
+      loaded       
+-------------------
+ 20300 rows read; 
 (1 row)
 
 -- the answers: the same with the table read whole (the setting off), by tuple

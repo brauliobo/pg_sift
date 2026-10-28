@@ -40,7 +40,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from 'Rows Scanned: (\d+)')::int, n);
+		n := coalesce(substring(l from 'Rows: (\d+) scanned')::int, n);
 	END LOOP;
 	RETURN n;
 END $$;

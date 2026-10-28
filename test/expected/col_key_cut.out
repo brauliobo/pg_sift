@@ -47,7 +47,7 @@ BEGIN
 	LOOP
 		q := r.qq; u := '';
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l LIKE '%Units: %' OR l LIKE '%Units Pruned: %' THEN u := u || ' ' || trim(l); END IF;
+			IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 		END LOOP;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO a;
 		SET LOCAL sift.enable_agg = off; SET LOCAL sift.enable_topn = off;
@@ -59,14 +59,14 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM kchk('built');
- after_step |       shape        |            result             
-------------+--------------------+-------------------------------
- built      | one customer       | same Units: 1 Units Pruned: 7
- built      | customer and dates | same Units: 1 Units Pruned: 7
- built      | customer range     | same Units: 1 Units Pruned: 7
- built      | customer list      | same Units: 3 Units Pruned: 5
- built      | other column       | same Units: 8 Units Pruned: 0
- built      | top-N by key       | same Units: 8 Units Pruned: 0
+ after_step |       shape        |                       result                        
+------------+--------------------+-----------------------------------------------------
+ built      | one customer       | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ built      | customer and dates | same Units: 1 read, 7 pruned, 0 from pre-aggregates
+ built      | customer range     | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ built      | customer list      | same Units: 3 read, 5 pruned, 3 from pre-aggregates
+ built      | other column       | same Units: 8 read, 0 from pre-aggregates
+ built      | top-N by key       | same Units: 8 read
 (6 rows)
 
 -- the same customer in the index with superblock units: the random heap puts its rows in every unit
@@ -74,26 +74,26 @@ CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; u text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' OR l LIKE '%Units Pruned: %' THEN u := u || ' ' || trim(l); END IF;
+		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 	END LOOP;
 	RETURN trim(u);
 END $$;
 SELECT kunits('SELECT count(*), sum(amount) FROM kp WHERE cust = 42') AS superblock_units;
-     superblock_units     
---------------------------
- Units: 8 Units Pruned: 0
+           superblock_units           
+--------------------------------------
+ Units: 8 read, 0 from pre-aggregates
 (1 row)
 
 INSERT INTO kc SELECT 200000 + i, 42, date '2026-04-01', 7, 'y' FROM generate_series(1, 30) i;
 SELECT * FROM kchk('write buffer');
-  after_step  |       shape        |            result             
---------------+--------------------+-------------------------------
- write buffer | one customer       | same Units: 2 Units Pruned: 7
- write buffer | customer and dates | same Units: 2 Units Pruned: 7
- write buffer | customer range     | same Units: 2 Units Pruned: 7
- write buffer | customer list      | same Units: 4 Units Pruned: 5
- write buffer | other column       | same Units: 9 Units Pruned: 0
- write buffer | top-N by key       | same Units: 9 Units Pruned: 0
+  after_step  |       shape        |                                         result                                          
+--------------+--------------------+-----------------------------------------------------------------------------------------
+ write buffer | one customer       | same Units: 2 read, 7 pruned, 0 from pre-aggregates
+ write buffer | customer and dates | same Units: 2 read, 7 pruned, 0 from pre-aggregates
+ write buffer | customer range     | same Units: 2 read, 7 pruned, 0 from pre-aggregates
+ write buffer | customer list      | same Units: 4 read, 5 pruned, 1 from pre-aggregates
+ write buffer | other column       | same Units: 9 read, 0 from pre-aggregates, 0 net of dead rows, 7 with dead rows scanned
+ write buffer | top-N by key       | same Units: 9 read
 (6 rows)
 
 SELECT sift.col_promote('kc_idx') > 0 AS promoted;
@@ -103,39 +103,39 @@ SELECT sift.col_promote('kc_idx') > 0 AS promoted;
 (1 row)
 
 SELECT * FROM kchk('promoted');
- after_step |       shape        |            result             
-------------+--------------------+-------------------------------
- promoted   | one customer       | same Units: 2 Units Pruned: 7
- promoted   | customer and dates | same Units: 2 Units Pruned: 7
- promoted   | customer range     | same Units: 1 Units Pruned: 8
- promoted   | customer list      | same Units: 3 Units Pruned: 6
- promoted   | other column       | same Units: 8 Units Pruned: 1
- promoted   | top-N by key       | same Units: 9 Units Pruned: 0
+ after_step |       shape        |                                              result                                               
+------------+--------------------+---------------------------------------------------------------------------------------------------
+ promoted   | one customer       | same Units: 2 read, 7 pruned, 0 from pre-aggregates
+ promoted   | customer and dates | same Units: 2 read, 7 pruned, 0 from pre-aggregates
+ promoted   | customer range     | same Units: 1 read, 8 pruned, 0 from pre-aggregates
+ promoted   | customer list      | same Units: 3 read, 6 pruned, 1 from pre-aggregates
+ promoted   | other column       | same Units: 8 read, 1 pruned, 0 from pre-aggregates, 0 net of dead rows, 6 with dead rows scanned
+ promoted   | top-N by key       | same Units: 9 read
 (6 rows)
 
 DELETE FROM kc WHERE id % 7 = 0;
 UPDATE kc SET amount = amount + 1, cust = 42 WHERE id % 1009 = 0;
 SELECT * FROM kchk('deleted and updated');
-     after_step      |       shape        |             result             
----------------------+--------------------+--------------------------------
- deleted and updated | one customer       | same Units: 10 Units Pruned: 7
- deleted and updated | customer and dates | same Units: 10 Units Pruned: 7
- deleted and updated | customer range     | same Units: 9 Units Pruned: 8
- deleted and updated | customer list      | same Units: 11 Units Pruned: 6
- deleted and updated | other column       | same Units: 16 Units Pruned: 1
- deleted and updated | top-N by key       | same Units: 17 Units Pruned: 0
+     after_step      |       shape        |                                               result                                                
+---------------------+--------------------+-----------------------------------------------------------------------------------------------------
+ deleted and updated | one customer       | same Units: 10 read, 7 pruned, 0 from pre-aggregates
+ deleted and updated | customer and dates | same Units: 10 read, 7 pruned, 0 from pre-aggregates
+ deleted and updated | customer range     | same Units: 9 read, 8 pruned, 0 from pre-aggregates
+ deleted and updated | customer list      | same Units: 11 read, 6 pruned, 0 from pre-aggregates
+ deleted and updated | other column       | same Units: 16 read, 1 pruned, 0 from pre-aggregates, 0 net of dead rows, 16 with dead rows scanned
+ deleted and updated | top-N by key       | same Units: 17 read
 (6 rows)
 
 VACUUM kc;
 SELECT * FROM kchk('vacuumed');
- after_step |       shape        |             result             
-------------+--------------------+--------------------------------
- vacuumed   | one customer       | same Units: 10 Units Pruned: 6
- vacuumed   | customer and dates | same Units: 10 Units Pruned: 6
- vacuumed   | customer range     | same Units: 9 Units Pruned: 7
- vacuumed   | customer list      | same Units: 11 Units Pruned: 5
- vacuumed   | other column       | same Units: 15 Units Pruned: 1
- vacuumed   | top-N by key       | same Units: 16 Units Pruned: 0
+ after_step |       shape        |                                               result                                               
+------------+--------------------+----------------------------------------------------------------------------------------------------
+ vacuumed   | one customer       | same Units: 10 read, 6 pruned, 2 from pre-aggregates
+ vacuumed   | customer and dates | same Units: 10 read, 6 pruned, 1 from pre-aggregates
+ vacuumed   | customer range     | same Units: 9 read, 7 pruned, 1 from pre-aggregates
+ vacuumed   | customer list      | same Units: 11 read, 5 pruned, 3 from pre-aggregates
+ vacuumed   | other column       | same Units: 15 read, 1 pruned, 0 from pre-aggregates, 0 net of dead rows, 8 with dead rows scanned
+ vacuumed   | top-N by key       | same Units: 16 read
 (6 rows)
 
 SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
@@ -145,14 +145,14 @@ SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM kchk('merged');
- after_step |       shape        |            result             
-------------+--------------------+-------------------------------
- merged     | one customer       | same Units: 1 Units Pruned: 7
- merged     | customer and dates | same Units: 1 Units Pruned: 7
- merged     | customer range     | same Units: 1 Units Pruned: 7
- merged     | customer list      | same Units: 3 Units Pruned: 5
- merged     | other column       | same Units: 8 Units Pruned: 0
- merged     | top-N by key       | same Units: 8 Units Pruned: 0
+ after_step |       shape        |                       result                        
+------------+--------------------+-----------------------------------------------------
+ merged     | one customer       | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ merged     | customer and dates | same Units: 1 read, 7 pruned, 0 from pre-aggregates
+ merged     | customer range     | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ merged     | customer list      | same Units: 3 read, 5 pruned, 3 from pre-aggregates
+ merged     | other column       | same Units: 8 read, 0 from pre-aggregates
+ merged     | top-N by key       | same Units: 8 read
 (6 rows)
 
 SELECT count(*) >= 0 AS refreshed FROM sift.col_refresh('kc_idx');
@@ -162,26 +162,26 @@ SELECT count(*) >= 0 AS refreshed FROM sift.col_refresh('kc_idx');
 (1 row)
 
 SELECT * FROM kchk('refreshed');
- after_step |       shape        |            result             
-------------+--------------------+-------------------------------
- refreshed  | one customer       | same Units: 1 Units Pruned: 7
- refreshed  | customer and dates | same Units: 1 Units Pruned: 7
- refreshed  | customer range     | same Units: 1 Units Pruned: 7
- refreshed  | customer list      | same Units: 3 Units Pruned: 5
- refreshed  | other column       | same Units: 8 Units Pruned: 0
- refreshed  | top-N by key       | same Units: 8 Units Pruned: 0
+ after_step |       shape        |                       result                        
+------------+--------------------+-----------------------------------------------------
+ refreshed  | one customer       | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ refreshed  | customer and dates | same Units: 1 read, 7 pruned, 0 from pre-aggregates
+ refreshed  | customer range     | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ refreshed  | customer list      | same Units: 3 read, 5 pruned, 3 from pre-aggregates
+ refreshed  | other column       | same Units: 8 read, 0 from pre-aggregates
+ refreshed  | top-N by key       | same Units: 8 read
 (6 rows)
 
 REINDEX INDEX kc_idx;
 SELECT * FROM kchk('reindexed');
- after_step |       shape        |            result             
-------------+--------------------+-------------------------------
- reindexed  | one customer       | same Units: 1 Units Pruned: 7
- reindexed  | customer and dates | same Units: 1 Units Pruned: 7
- reindexed  | customer range     | same Units: 1 Units Pruned: 7
- reindexed  | customer list      | same Units: 3 Units Pruned: 5
- reindexed  | other column       | same Units: 8 Units Pruned: 0
- reindexed  | top-N by key       | same Units: 8 Units Pruned: 0
+ after_step |       shape        |                       result                        
+------------+--------------------+-----------------------------------------------------
+ reindexed  | one customer       | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ reindexed  | customer and dates | same Units: 1 read, 7 pruned, 0 from pre-aggregates
+ reindexed  | customer range     | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ reindexed  | customer list      | same Units: 3 read, 5 pruned, 3 from pre-aggregates
+ reindexed  | other column       | same Units: 8 read, 0 from pre-aggregates
+ reindexed  | top-N by key       | same Units: 8 read
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);
@@ -206,14 +206,14 @@ SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable'
 (1 row)
 
 SELECT * FROM kchk('lowered setting');
-   after_step    |       shape        |            result             
------------------+--------------------+-------------------------------
- lowered setting | one customer       | same Units: 8 Units Pruned: 0
- lowered setting | customer and dates | same Units: 8 Units Pruned: 0
- lowered setting | customer range     | same Units: 8 Units Pruned: 0
- lowered setting | customer list      | same Units: 8 Units Pruned: 0
- lowered setting | other column       | same Units: 8 Units Pruned: 0
- lowered setting | top-N by key       | same Units: 8 Units Pruned: 0
+   after_step    |       shape        |                  result                   
+-----------------+--------------------+-------------------------------------------
+ lowered setting | one customer       | same Units: 8 read, 0 from pre-aggregates
+ lowered setting | customer and dates | same Units: 8 read, 0 from pre-aggregates
+ lowered setting | customer range     | same Units: 8 read, 0 from pre-aggregates
+ lowered setting | customer list      | same Units: 8 read, 0 from pre-aggregates
+ lowered setting | other column       | same Units: 8 read, 0 from pre-aggregates
+ lowered setting | top-N by key       | same Units: 8 read
 (6 rows)
 
 RESET sift.col_format_minor;
@@ -236,14 +236,14 @@ SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_id
 (1 row)
 
 SELECT * FROM kchk('runs');
- after_step |       shape        |             result             
-------------+--------------------+--------------------------------
- runs       | one customer       | same Units: 8 Units Pruned: 7
- runs       | customer and dates | same Units: 8 Units Pruned: 7
- runs       | customer range     | same Units: 8 Units Pruned: 7
- runs       | customer list      | same Units: 15 Units Pruned: 0
- runs       | other column       | same Units: 8 Units Pruned: 7
- runs       | top-N by key       | same Units: 15 Units Pruned: 0
+ after_step |       shape        |                       result                        
+------------+--------------------+-----------------------------------------------------
+ runs       | one customer       | same Units: 8 read, 7 pruned, 0 from pre-aggregates
+ runs       | customer and dates | same Units: 8 read, 7 pruned, 0 from pre-aggregates
+ runs       | customer range     | same Units: 8 read, 7 pruned, 0 from pre-aggregates
+ runs       | customer list      | same Units: 15 read, 7 from pre-aggregates
+ runs       | other column       | same Units: 8 read, 7 pruned, 0 from pre-aggregates
+ runs       | top-N by key       | same Units: 15 read
 (6 rows)
 
 SET maintenance_work_mem = '1MB';
@@ -261,14 +261,14 @@ SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_id
 (1 row)
 
 SELECT * FROM kchk('runs merged');
- after_step  |       shape        |            result             
--------------+--------------------+-------------------------------
- runs merged | one customer       | same Units: 1 Units Pruned: 7
- runs merged | customer and dates | same Units: 1 Units Pruned: 7
- runs merged | customer range     | same Units: 1 Units Pruned: 7
- runs merged | customer list      | same Units: 3 Units Pruned: 5
- runs merged | other column       | same Units: 8 Units Pruned: 0
- runs merged | top-N by key       | same Units: 8 Units Pruned: 0
+ after_step  |       shape        |                       result                        
+-------------+--------------------+-----------------------------------------------------
+ runs merged | one customer       | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ runs merged | customer and dates | same Units: 1 read, 7 pruned, 0 from pre-aggregates
+ runs merged | customer range     | same Units: 1 read, 7 pruned, 1 from pre-aggregates
+ runs merged | customer list      | same Units: 3 read, 5 pruned, 3 from pre-aggregates
+ runs merged | other column       | same Units: 8 read, 0 from pre-aggregates
+ runs merged | top-N by key       | same Units: 8 read
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);

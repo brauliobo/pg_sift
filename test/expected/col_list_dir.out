@@ -240,16 +240,15 @@ CREATE FUNCTION reads(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF, ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^ *(Units|Rows Scanned|Rows Vetted By Heap):' THEN RETURN NEXT trim(l); END IF;
+		IF l ~ '^ *(Units|Rows):' THEN RETURN NEXT trim(l); END IF;
 	END LOOP;
 END $$;
 SELECT * FROM reads($q$SELECT count(*) FROM ld WHERE doc @> '{"tags": ["zz"]}'$q$);
-         reads          
-------------------------
- Units: 0
- Rows Scanned: 0
- Rows Vetted By Heap: 0
-(3 rows)
+                  reads                  
+-----------------------------------------
+ Units: 0 read, 3 pruned
+ Rows: 0 scanned, 0 aggregated, 1 groups
+(2 rows)
 
 DROP TABLE ld;
 DROP FUNCTION gen(int, int), chk(text), shapes(text, text), reads(text);

@@ -61,7 +61,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Wide Filters In Source' THEN n := regexp_replace(l, '\D', '', 'g')::int; END IF;
+		IF l ~ '(\d+) wide filters in source' THEN n := substring(l from '(\d+) wide filters in source')::int; END IF;
 	END LOOP;
 	RETURN n;
 END $$;

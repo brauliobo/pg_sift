@@ -25,10 +25,10 @@ DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from 'Units From Pre-aggregates: (\d+)')::int, pre);
-		miss := coalesce(substring(l from 'Units Without The Rollup: (\d+)')::int, miss);
-		queued := coalesce(substring(l from 'Rollup Refresh Queued: (\d+)')::int, queued);
-		dims := coalesce(substring(l from 'Pre-aggregate Dims: (.*)$'), dims);
+		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		miss := coalesce(substring(l from '(\d+) without the rollup')::int, miss);
+		queued := coalesce(substring(l from '(\d+) refreshes queued')::int, queued);
+		dims := coalesce(substring(l from 'dims: ([^;]*)'), dims);
 	END LOOP;
 END $$;
 -- the rows of a query from the rollups and from the plain plan
@@ -146,7 +146,7 @@ SELECT sift.col_verify('rr_i', true);
 SELECT pre = units AS all_from_rollups, miss AS missing, queued, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 1));
  all_from_rollups | missing | queued | dims 
 ------------------+---------+--------+------
- t                |       0 |        | a, b
+ t                |         |        | a, b
 (1 row)
 
 SELECT rr_same(q) AS same FROM rr_q WHERE n = 1;
@@ -197,7 +197,7 @@ SELECT sift.col_rollup_refresh('rr_i') > 0 AS refreshed;
 SELECT pre = units AS all_from_rollups, miss AS missing, dims FROM rr_plan((SELECT q FROM rr_q WHERE n = 2));
  all_from_rollups | missing |  dims   
 ------------------+---------+---------
- t                |       0 | a, b, c
+ t                |         | a, b, c
 (1 row)
 
 SELECT rr_same(q) AS same FROM rr_q ORDER BY n;
@@ -265,7 +265,7 @@ UPDATE rr SET lines = '[{"a": "a1", "b": "b1", "c": 1, "q": 5, "w": 1.5}]' WHERE
 SELECT pre > 0 AS some_from_rollups, pre < units AS some_scanned, miss AS missing, queued FROM rr_plan((SELECT q FROM rr_q WHERE n = 4));
  some_from_rollups | some_scanned | missing | queued 
 -------------------+--------------+---------+--------
- t                 | t            |       0 |       
+ t                 | t            |         |       
 (1 row)
 
 SELECT rr_same(q) AS same FROM rr_q ORDER BY n;

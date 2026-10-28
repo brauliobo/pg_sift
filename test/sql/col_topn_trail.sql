@@ -37,8 +37,8 @@ BEGIN
 	PERFORM tt_mode(false);
 	EXECUTE 'CREATE TEMP TABLE tt_b AS SELECT row_number() OVER () AS pos, row_to_json(tq)::text AS r FROM (' || q || ') tq';
 	SELECT count(*) INTO n FROM ((SELECT pos, r FROM tt_a EXCEPT ALL SELECT pos, r FROM tt_b) UNION ALL (SELECT pos, r FROM tt_b EXCEPT ALL SELECT pos, r FROM tt_a)) d;
-	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N Candidates' THEN '+ties' WHEN plan ~ 'Top-N Restarts' THEN '+all' ELSE '' END ||
-		coalesce((SELECT ' restarts ' || (regexp_match(plan, 'Top-N Restarts: (\d+)'))[1]), '') || ' ' || (SELECT count(*) FROM tt_b);
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ ' candidates' THEN '+ties' WHEN plan ~ ' restarts' THEN '+all' ELSE '' END ||
+		coalesce((SELECT ' restarts ' || (regexp_match(plan, '(\d+) restarts'))[1]), '') || ' ' || (SELECT count(*) FROM tt_b);
 END $$;
 
 CREATE TABLE tt_q (n serial, q text);

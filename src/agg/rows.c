@@ -38,6 +38,7 @@
 #include "agg/dist_int.h"
 #include "agg/rows.h"
 #include "core/compat.h"
+#include "core/explain.h"
 
 bool		sift_agg_rows = true;
 
@@ -690,10 +691,14 @@ rows_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyInteger("Distinct Counts", NULL, nd, es);
 	if (es->analyze && ex->started)
 	{
-		ExplainPropertyInteger("Rows Read", NULL, ex->nrows, es);
-		ExplainPropertyInteger("Groups", NULL, ex->ng, es);
-		ExplainPropertyInteger("Distinct Pairs", NULL, ex->npairs, es);
-		ExplainPropertyInteger("Distinct Sets Spilled", NULL, ex->nspilled, es);
+		SiftExplainLine ln;
+
+		sift_explain_begin(&ln, es, "Rows");
+		sift_explain_int(&ln, "Rows Read", NULL, "read", ex->nrows, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Groups", NULL, "groups", ex->ng, SIFT_XI_KEEP);
+		sift_explain_int(&ln, "Distinct Pairs", NULL, "distinct pairs", ex->npairs, 0);
+		sift_explain_int(&ln, "Distinct Sets Spilled", NULL, "distinct sets spilled", ex->nspilled, SIFT_XI_KEEP);
+		sift_explain_end(&ln);
 	}
 }
 

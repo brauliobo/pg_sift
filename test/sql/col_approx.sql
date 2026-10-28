@@ -95,7 +95,7 @@ DECLARE l text;
 BEGIN
   SET LOCAL sift.agg_force = on;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-    IF l ~ '^\s+(Units|Units Without The Sketch|Units From Pre-aggregates|Approximate Distinct|Rows Scanned):' THEN RETURN QUERY SELECT trim(l); END IF;
+    IF l ~ '^\s+(Units|Approximate Distinct|Rows):' THEN RETURN QUERY SELECT trim(l); END IF;
   END LOOP;
 END $$;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');

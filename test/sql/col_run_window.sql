@@ -37,7 +37,7 @@ CREATE FUNCTION rw_windows(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF l ~ 'Units Filtered By Sorted Run' THEN RETURN regexp_replace(l, '\D', '', 'g')::int; END IF;
+		IF l ~ '(\d+) filtered by sorted run' THEN RETURN substring(l from '(\d+) filtered by sorted run')::int; END IF;
 	END LOOP;
 	RETURN 0;
 END $$;

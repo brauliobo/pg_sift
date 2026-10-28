@@ -119,13 +119,14 @@ def run_case(name, c, args, rows, sizes_override):
                         failed = True
                     continue
                 pl, ex, plan, fb = r
-                g = lambda k: m.group(1) if (m := re.search(k + r': (\d+)', plan)) else ''
+                g = lambda k, none='': m.group(1) if (m := re.search(k, plan)) else none
+                units, pruned = g(r'Units: (\d+)'), g(r'(\d+) pruned', '0')
                 p, e = med(pl), med(ex)
                 if eng == 'sift' and q.needs_sift and 'sift' not in plan.lower() and 'SiftAgg' not in plan:
                     print(f'# {name}/{q.name}@{size}: the plan does not use sift ({node(plan)}): the time below is not the index', file=sys.stderr)
                     nosift.add((name, q.name))
                     failed = True
-                print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{g("Units")},{g("Units Pruned")},{node(plan)}', flush=True)
+                print(f'{name},{q.name},{eng},{size},{p:.3f},{e:.3f},{units},{pruned},{node(plan)}', flush=True)
                 rows.setdefault((name, q.name, eng, q.target), []).append((size, p + e))
                 if q.first_plan:
                     # the first plan of a fresh backend: folded from the segment's leaf statistics block (the shared table of the server is off for the session), and
@@ -135,8 +136,8 @@ def run_case(name, c, args, rows, sizes_override):
                         r1, _ = explain(q.sql(size), sets + extra, 0)
                         if r1 is not None and r1[3] is not None:
                             rows.setdefault((name, f'{q.name}[{label}]', eng, None if q.first_plan == 'info' else q.first_plan), []).append((size, r1[3]))
-                if q.units and g('Units'):
-                    rows.setdefault((name, q.name + '[units]', eng, None if q.units == 'info' else q.units), []).append((size, int(g('Units'))))
+                if q.units and units:
+                    rows.setdefault((name, q.name + '[units]', eng, None if q.units == 'info' else q.units), []).append((size, int(units)))
     if not args.keep:
         drop_schema(name)
     return failed

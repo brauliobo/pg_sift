@@ -32,7 +32,7 @@ DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg)%' THEN r := 'SiftAgg'; END IF;
-		IF l LIKE '%Units From Point Directory:%' THEN r := r || ' directory'; END IF;
+		IF l LIKE '%from point directory%' THEN r := r || ' directory'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

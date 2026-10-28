@@ -85,7 +85,7 @@ CREATE FUNCTION units_read(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s*Units: ' THEN n := trim(split_part(l, ':', 2))::int; END IF;
+		IF l ~ '^\s*Units: ' THEN n := substring(l from 'Units: (\d+)')::int; END IF;
 	END LOOP;
 	RETURN n;
 END $$;

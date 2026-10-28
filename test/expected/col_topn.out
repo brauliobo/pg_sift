@@ -48,13 +48,11 @@ BEGIN
 END $$;
 -- one number of the EXPLAIN ANALYZE of the pushed plan
 CREATE FUNCTION ct_stat(q text, field text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE line text; v bigint;
+DECLARE j jsonb;
 BEGIN
 	PERFORM ct_mode(true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ ('^ *' || field || ': ') THEN v := regexp_replace(line, '^ *[A-Za-z -]+: ', '')::bigint; END IF;
-	END LOOP;
-	RETURN v;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO j;
+	RETURN jsonb_path_query_first(j, format('$.**.%I', field)::jsonpath)::bigint;
 END $$;
 CREATE TABLE ct_q (tag text PRIMARY KEY, q text NOT NULL);
 INSERT INTO ct_q VALUES
@@ -125,7 +123,7 @@ BEGIN
 	SELECT count(*) INTO n FROM ((SELECT pos, r FROM ct_a EXCEPT ALL SELECT pos, r FROM ct_b) UNION ALL (SELECT pos, r FROM ct_b EXCEPT ALL SELECT pos, r FROM ct_a)) d;
 	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END;
 	RETURN res || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM ct_b) ||
-		CASE WHEN plan ~ 'Top-N: ' THEN CASE WHEN plan ~ 'Top-N Sorted Rows' THEN ' sort ' || (regexp_match(plan, 'Top-N Sorted Rows: (\d+)'))[1] ELSE ' heap' END ELSE '' END;
+		CASE WHEN plan ~ 'Top-N: ' THEN CASE WHEN plan ~ ' sorted rows' THEN ' sort ' || (regexp_match(plan, '(\d+) sorted rows'))[1] ELSE ' heap' END ELSE '' END;
 END $$;
 CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$
 	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;

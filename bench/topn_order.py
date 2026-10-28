@@ -61,8 +61,8 @@ def run(db, runs):
                         out = psql(db, "SET max_parallel_workers_per_gather = 0;\n" + script)
                         times = [float(m) for m in re.findall(r'Execution Time: ([0-9.]+) ms', out)][1:]
                         units = re.findall(r'^ *Units: (\d+)', out, re.M)
-                        skipped = re.findall(r'Superblocks Skipped By Top-N: (\d+)', out)
-                        scanned = re.findall(r'Rows Scanned: (\d+)', out)
+                        skipped = re.findall(r'(\d+) superblocks skipped', out)
+                        scanned = re.findall(r'Rows: (\d+) scanned', out)
                         if plan.startswith('topn') and 'Top-N:' not in out:
                             plan += '_not_used'
                         print('\t'.join((str(rows), key, order, str(limit), fname, plan, f'{statistics.median(times):.3f}', f'{min(times):.3f}', f'{max(times):.3f}',

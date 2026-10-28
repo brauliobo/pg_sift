@@ -28,8 +28,8 @@ answer() { sql primary "${SETTINGS[@]}" "SET sift.enable_agg = $1" "SELECT md5(s
 plan_of() {
 	local out
 	out=$(sql primary "${SETTINGS[@]}" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $Q")
-	for f in 'Units' 'Units From Pre-aggregates'; do
-		grep -E "^\s*$f: [0-9]+" <<<"$out" | grep -oE '[0-9]+$' || echo 0
+	for f in 'Units: ([0-9]+)' '([0-9]+) from pre-aggregates'; do
+		[[ $out =~ $f ]] && echo "${BASH_REMATCH[1]}" || echo 0
 	done | paste -sd' ' -
 }
 SEGS="SELECT string_agg(gen || ':' || coalesce(rows, 0), ' ' ORDER BY gen) FROM sift.col_segments('items_idx') WHERE kind = 'immutable'"

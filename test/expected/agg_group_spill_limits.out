@@ -20,7 +20,7 @@ CREATE FUNCTION spilled_rows(q text) RETURNS TABLE (spills int, rows_same bigint
 DECLARE l text; sp int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Group Table Spills: ' THEN sp := regexp_replace(l, '^.*Spills: ', '')::int; END IF;
+		IF l ~ '(\d+) group table spills' THEN sp := substring(l from '(\d+) group table spills')::int; END IF;
 	END LOOP;
 	EXECUTE 'CREATE TEMP TABLE got AS ' || q;
 	RETURN QUERY SELECT sp, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d);

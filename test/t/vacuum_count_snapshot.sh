@@ -73,7 +73,7 @@ sql vc "CREATE TABLE lane (id int, body text)" "CREATE INDEX lane_idx ON lane US
 check "write buffer: a VACUUM and a promotion under the scan" test "$(race "$(counter lane)" 1 "VACUUM lane" "SELECT sift.promote('lane_idx')")" == "$(seen lane)"
 
 # an undisturbed count keeps trusting the map: the page checks only follow a directory that moved
-heap_pages() { sql vc "SET enable_seqscan = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $1" | sed -n 's/^ *Heap Pages: //p'; }
+heap_pages() { sql vc "SET enable_seqscan = off" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $1" | sed -n 's/.* \([0-9][0-9]*\) heap pages.*/\1/p' | grep . || echo 0; }
 mk calm 20000 1
 sql vc "VACUUM calm" >/dev/null
 check "no directory change under the count: the map decides every page" test "$(heap_pages "$(counter calm)")" == 0
