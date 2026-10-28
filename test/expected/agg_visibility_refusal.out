@@ -12,7 +12,11 @@ NOTICE:  sift_col index ordered_col writes a rollup of the rows by k, v
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 42 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX ordered_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
 CLUSTER ordered USING ordered_k;
+-- the statistics of every row, not of a random sample: the cost of the normal plan moved by 15% from one ANALYZE to the next, and the refusals below
+-- are decided by a few percent. k < 6 sits 16% above the btree's price with the empty map and 20% below it after the VACUUM (k < 7 was 1% above).
+SET default_statistics_target = 1000;
 ANALYZE ordered;
+RESET default_statistics_target;
 CREATE FUNCTION why(q text) RETURNS TABLE (used bool, slug text, reason text) LANGUAGE sql AS $$
 	SELECT used, slug, regexp_replace(reason, '[0-9]+(\.[0-9]+)?', 'N', 'g') FROM sift.explain_why(q)
 $$;
@@ -45,7 +49,7 @@ SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_co
 
 DROP TABLE page_costs;
 -- empty map: refused for its cost, with the pages that are not all-visible and the way out
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug |                                                                                          reason                                                                                          
 ------+------+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  f    | cost | the normal plan is estimated cheaper than the scan (the scan costs N, the normal plan N; N% of the heap pages are not all-visible, which adds N to the scan: VACUUM (ANALYZE) the table)
@@ -53,7 +57,7 @@ SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY 
 
 -- the share of the pages is the table's, not the query's
 SELECT used, slug, reason ~ '^the normal plan is estimated cheaper than the scan \(the scan costs [0-9.]+, the normal plan [0-9.]+; 100% of the heap pages' AS pages_100
-FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+FROM sift.explain_why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug | pages_100 
 ------+------+-----------
  f    | cost | t
@@ -128,7 +132,7 @@ SELECT (SELECT charge FROM charges WHERE k_below = 20) > 0 AS charged,
  t       | t
 (1 row)
 
-SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 7 GROUP BY v');
+SELECT * FROM why('SELECT v, count(*), sum(k) FROM ordered WHERE k < 6 GROUP BY v');
  used | slug | reason 
 ------+------+--------
  t    |      | 

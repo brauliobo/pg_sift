@@ -35,7 +35,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 <!-- sift-cases:start -->
 | Class | Entries | Meaning |
 |---|---|---|
-| [default](#default) | 111 | on by default: automatic behaviour, or a knob whose default is the recommended value |
+| [default](#default) | 112 | on by default: automatic behaviour, or a knob whose default is the recommended value |
 | [opt-in](#opt-in) | 17 | off or empty by default; `why` names the term of the default formula it failed (or why the formula does not cover it) |
 | [diagnostic](#diagnostic) | 13 | to measure, compare or explain a plan; not for a deployed configuration |
 | [safety](#safety) | 18 | a limit or guard on memory, locks, I/O or replicas |
