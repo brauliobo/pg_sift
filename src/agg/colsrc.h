@@ -486,7 +486,8 @@ typedef enum SiftSrcFilterOp
 	SSF_GE,
 	SSF_IN,
 	SSF_NOTIN,
-	SSF_NOTNULL					/* a value is present */
+	SSF_NOTNULL,				/* a value is present */
+	SSF_RANGES					/* the union of ranges: set holds nset / 2 pairs (lo, hi), inclusive, PG_INT64_MIN / PG_INT64_MAX where a side is open */
 } SiftSrcFilterOp;
 
 typedef struct SiftSrcFilter
@@ -494,7 +495,7 @@ typedef struct SiftSrcFilter
 	int			leaf;
 	SiftSrcFilterOp op;
 	int64		val;			/* a comparison */
-	int			nset;			/* IN, NOTIN: the members */
+	int			nset;			/* IN, NOTIN: the members; RANGES: twice the number of ranges */
 	const int64 *set;
 } SiftSrcFilter;
 

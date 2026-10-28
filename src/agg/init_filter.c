@@ -394,6 +394,120 @@ int_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
 	}
 }
 
+/*
+ * The range [*lo, *hi] of one integer-valued leaf that a comparison, or an AND of them, keeps (an empty range has *lo > *hi); false for anything else: a <>, another
+ * leaf, a numeric (its NaN rows are the executor's), or a comparison the source cannot test
+ */
+static bool
+arm_range(AggExec *ex, SiftAggPred *p, int leaf, int64 *lo, int64 *hi)
+{
+	SiftSrcFilter f = {0};
+
+	if (p->level != 0 || p->late)
+		return false;
+	if (p->kind == SAP_AND)
+	{
+		for (int i = 0; i < p->nchild; i++)
+			if (!arm_range(ex, p->child[i], leaf, lo, hi))
+				return false;
+		return true;
+	}
+	if (p->kind != SAP_CMP || p->leaf != leaf || ex->lay->leaf[leaf].typid == NUMERICOID || !int_filter(ex, p, &f))
+		return false;
+	switch (f.op)
+	{
+		case SSF_EQ:
+			*lo = Max(*lo, f.val);
+			*hi = Min(*hi, f.val);
+			return true;
+		case SSF_LT:
+		case SSF_LE:
+			if (f.op == SSF_LT && f.val == PG_INT64_MIN)
+				*hi = PG_INT64_MIN, *lo = PG_INT64_MAX;
+			else
+				*hi = Min(*hi, f.op == SSF_LT ? f.val - 1 : f.val);
+			return true;
+		case SSF_GT:
+		case SSF_GE:
+			if (f.op == SSF_GT && f.val == PG_INT64_MAX)
+				*lo = PG_INT64_MAX, *hi = PG_INT64_MIN;
+			else
+				*lo = Max(*lo, f.op == SSF_GT ? f.val + 1 : f.val);
+			return true;
+		default:
+			return false;
+	}
+}
+
+#define RANGES_SHARE	8
+#define RANGES_SAMPLE	16
+
+/* The smallest and largest value of an integer leaf over RANGES_SAMPLE superblocks spread over the source (all of them when fewer): false when the source has no zones or the sample holds no value */
+static bool
+leaf_sample_range(AggExec *ex, int leaf, int64 *min, int64 *max)
+{
+	uint32		nsb = ex->src ? sift_colsrc_nsb(ex->src) : 0;
+	bool		any = false;
+
+	if (nsb == 0 || !sift_colsrc_has_zone_range(ex->src))
+		return false;
+	for (uint32 i = 0; i < Min(nsb, RANGES_SAMPLE); i++)
+	{
+		SiftSrcZone z;
+		uint32		sb = (uint64) i * nsb / Min(nsb, RANGES_SAMPLE);
+
+		if (sift_colsrc_zone_range(ex->src, sb, sb + 1, leaf, &z) <= 0 || z.nnull >= z.nvals)
+			continue;
+		*min = any ? Min(*min, z.min) : z.min;
+		*max = any ? Max(*max, z.max) : z.max;
+		any = true;
+	}
+	return any;
+}
+
+/* An OR whose arms are comparisons (or ANDs of them) of one integer-valued leaf with constants, as the union of the ranges they keep (the empty ones dropped) */
+static bool
+ranges_filter(AggExec *ex, SiftAggPred *p, SiftSrcFilter *f)
+{
+	SiftAggPred *c = p;
+	int64	   *set,
+				min,
+				max;
+	double		covered = 0;
+	int			n = 0;
+
+	while (c->kind == SAP_AND || c->kind == SAP_OR)
+		c = c->child[0];
+	if (c->kind != SAP_CMP || c->leaf >= ex->nbase || (ex->lay->leaf[c->leaf].vtype != SCV_I32 && ex->lay->leaf[c->leaf].vtype != SCV_I64))
+		return false;
+	set = palloc(2 * p->nchild * sizeof(int64));
+	for (int i = 0; i < p->nchild; i++)
+	{
+		int64		lo = PG_INT64_MIN,
+					hi = PG_INT64_MAX;
+
+		if (!arm_range(ex, p->child[i], c->leaf, &lo, &hi))
+			return false;
+		if (lo <= hi)
+		{
+			set[n++] = lo;
+			set[n++] = hi;
+		}
+	}
+	/* the source tests an arm by the sorted run of a unit, which answers a range of an eighth of the rows or less: a union that covers more of the values of the index (taken as even, from a sample of its superblocks) is cheaper in the executor, on the decoded leaf */
+	if (!leaf_sample_range(ex, c->leaf, &min, &max))
+		return false;
+	for (int a = 0; a < n; a += 2)
+		covered += (double) Min(set[a + 1], max) - (double) Max(set[a], min) + 1;
+	if (covered * RANGES_SHARE > (double) max - (double) min + 1)
+		return false;
+	f->leaf = c->leaf;
+	f->op = SSF_RANGES;
+	f->nset = n;
+	f->set = set;
+	return true;
+}
+
 void
 filter_init(AggExec *ex)
 {
@@ -409,10 +523,10 @@ filter_init(AggExec *ex)
 	{
 		SiftAggPred *p = s->pred[i];
 
-		if (p->level != 0 || p->late || p->leaf >= ex->nbase || (p->kind != SAP_CMP && p->kind != SAP_IN))
+		if (p->level != 0 || p->late || (p->kind != SAP_OR && (p->leaf >= ex->nbase || (p->kind != SAP_CMP && p->kind != SAP_IN))))
 			continue;
 		memset(&f[n], 0, sizeof(SiftSrcFilter));
-		if (int_filter(ex, p, &f[n]))
+		if (p->kind == SAP_OR ? ranges_filter(ex, p, &f[n]) : int_filter(ex, p, &f[n]))
 			at[n++] = i;
 	}
 	/* the source tests the stored rows of a unit, the rows of a match set may be renumbered: with a search the executor tests them */

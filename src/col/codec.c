@@ -412,21 +412,52 @@ sift_cc_decode_off32(const SiftCc *c, uint32 *dst)
 
 /* ---- random access ---- */
 
+/* A bit-packed lane: the 32-row group of a block starts at `a`, the width is W, sh is the bit offset in the word of the group, and mask keeps W bits */
+typedef struct ForbitGroup
+{
+	const uint32 *a;
+	uint32		l;				/* lane of the row in the group */
+	uint32		sh;
+	uint32		mask;
+	bool		spill;			/* the value goes on in the next words of the group */
+} ForbitGroup;
+
+static inline ForbitGroup
+forbit_group(const uint8 *words, uint32 W, uint32 i)
+{
+	uint32		j = i % 1024,
+				bp = (j / 32) * W;
+
+	return (ForbitGroup) {
+		.a = (const uint32 *) words + (size_t) (i / 1024) * 32 * W + (size_t) (bp >> 5) * 32,
+		.l = j % 32, .sh = bp & 31, .mask = W >= 32 ? 0xFFFFFFFFu : (1u << W) - 1, .spill = (bp & 31) + W > 32
+	};
+}
+
+/* spill is g->spill, passed so that a loop over a group tests it once (the callers inline it as a constant) */
+static pg_attribute_always_inline uint32
+forbit_lane(const ForbitGroup *g, uint32 l, bool spill)
+{
+	uint32		x = sift_cc_ld32(g->a + l) >> g->sh;
+
+	if (spill)
+		x |= sift_cc_ld32(g->a + 32 + l) << (32 - g->sh);
+	return x & g->mask;
+}
+
+static pg_attribute_always_inline void
+forbit_fill(const ForbitGroup *g, uint32 n, int64 base, bool spill, int64 *dst)
+{
+	for (uint32 k = 0; k < n; k++)
+		dst[k] = (int64) ((uint64) base + forbit_lane(g, g->l + k, spill));
+}
+
 static uint32
 forbit_at(const uint8 *words, uint32 W, uint32 i)
 {
-	uint32		blk = i / 1024,
-				j = i % 1024,
-				r = j / 32,
-				l = j % 32,
-				bp = r * W,
-				s = bp & 31;
-	const uint32 *a = (const uint32 *) words + (size_t) blk * 32 * W + (size_t) (bp >> 5) * 32;
-	uint32		x = sift_cc_ld32(a + l) >> s;
+	ForbitGroup g = forbit_group(words, W, i);
 
-	if (s + W > 32)
-		x |= sift_cc_ld32(a + 32 + l) << (32 - s);
-	return W >= 32 ? x : x & ((1u << W) - 1);
+	return forbit_lane(&g, g.l, g.spill);
 }
 
 static int64
@@ -511,6 +542,57 @@ nd_get(const CcNode *nd, uint32 i)
 	return 0;
 }
 
+/* The values of rows [s, s + len) of a node: a run costs a few instructions a value, where nd_get descends the tree for each row */
+static void
+nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
+{
+	switch (nd->tag)
+	{
+		case SIFT_CCN_FORBIT:
+			for (uint32 i = 0; i < len;)
+			{
+				ForbitGroup g = forbit_group(nd->words, nd->W, s + i);
+				uint32		take = Min(32 - g.l, len - i);
+
+				if (g.spill)
+					forbit_fill(&g, take, nd->base, true, dst + i);
+				else
+					forbit_fill(&g, take, nd->base, false, dst + i);
+				i += take;
+			}
+			return;
+		case SIFT_CCN_DICT:
+			{
+				int64		codes[64];
+
+				for (uint32 off = 0; off < len; off += 64)
+				{
+					uint32		w = Min(64, len - off);
+
+					nd_range(nd->b, s + off, w, codes);
+					for (uint32 i = 0; i < w; i++)
+					{
+						if (codes[i] < 0 || codes[i] >= (int64) nd->d)
+							CC_CORRUPT("dictionary code out of range");
+						dst[off + i] = nd->dict[codes[i]];
+					}
+				}
+				return;
+			}
+		case SIFT_CCN_SCALE:
+			nd_range(nd->a, s, len, dst);
+			for (uint32 i = 0; i < len; i++)
+				dst[i] = (int64) ((uint64) nd->base + (uint64) nd->mind * (uint64) dst[i]);
+			return;
+		case SIFT_CCN_WRAP:
+			nd_range(nd->a, s, len, dst);
+			return;
+		default:
+			for (uint32 i = 0; i < len; i++)
+				dst[i] = nd_get(nd, s + i);
+	}
+}
+
 int64
 sift_cc_get(const SiftCc *c, uint32 row)
 {
@@ -543,8 +625,19 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 		pfree(all);
 		return;
 	}
-	for (uint32 k = 0; k < m; k++)
-		dst[k] = sift_cc_get(c, idx[k]);
+	for (uint32 k = 0; k < m;)
+	{
+		uint32		e = k + 1;
+
+		while (e < m && idx[e] == idx[e - 1] + 1)
+			e++;
+		SIFT_INVARIANT(idx[e - 1] < c->n, "row %u is past the end of a column chunk of %u rows", idx[e - 1], c->n);
+		if (e - k > 1)
+			nd_range(c->root, idx[k], e - k, dst + k);
+		else
+			dst[k] = nd_get(c->root, idx[k]);
+		k = e;
+	}
 }
 
 /* ---- filters on the encoded form ---- */

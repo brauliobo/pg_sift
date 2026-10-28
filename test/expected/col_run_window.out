@@ -4,23 +4,26 @@
 -- identity or its reverse, NULL rows, ties, negative keys, an empty range, three bounds on one leaf; and the cases where the run is not used and the plain test
 -- runs: rows that overflowed (a numeric NaN), a window of more than an eighth of the unit (or a range of more than a quarter of the zone, which is not tried), one bound, a unit of fewer than 1,024 rows; and after deletes,
 -- updates and inserts (dead rows of the units, the write buffer).
+-- An OR of ranges on one leaf (a window now and the same one a year ago) takes the rows of the union from the run, one search for each arm; the arms overlap, touch, are
+-- empty or equalities (an arm with one bound is a plain comparison, tested row by row); an OR of ranges of two leaves, or of more than an eighth of the values of the index, is tested row by row (the executor).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
+SET TimeZone = 'America/New_York';
 -- ts: shuffled over two years; tsa ascends with id and tsd descends (the identity run and its reverse); kn: ties and NULLs; n: a numeric with NaN in every unit
--- (stored as an overflow); neg: negative keys; d: a date
-CREATE TABLE rw (id int, ts timestamp, tsa timestamp, tsd timestamp, kn int, n numeric(12, 2), neg int, d date, pad text) WITH (autovacuum_enabled = off);
+-- (stored as an overflow); neg: negative keys; d: a date; tz: a timestamp with time zone
+CREATE TABLE rw (id int, ts timestamp, tsa timestamp, tsd timestamp, kn int, n numeric(12, 2), neg int, d date, tz timestamptz, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE rw ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO rw
 SELECT g, timestamp '2024-01-01' + ((hashint4(g) & 2147483647) % 1051200) * interval '1 minute',
        timestamp '2024-01-01' + g * interval '10 minutes', timestamp '2030-01-01' - g * interval '10 minutes',
        CASE WHEN g % 7 = 0 THEN NULL ELSE (hashint4(g + 1) & 2147483647) % 400 END,
        CASE WHEN g % 97 = 0 THEN 'NaN'::numeric ELSE ((hashint4(g + 2) & 2147483647) % 100000) / 100.0 END,
-       (hashint4(g + 3) & 2147483647) % 100000 - 50000, date '2020-01-01' + (hashint4(g + 4) & 2147483647) % 2000, repeat('x', 200)
+       (hashint4(g + 3) & 2147483647) % 100000 - 50000, date '2020-01-01' + (hashint4(g + 4) & 2147483647) % 2000, timestamptz '2024-01-01 00:00 UTC' + ((hashint4(g + 5) & 2147483647) % 1051200) * interval '1 minute', repeat('x', 200)
 FROM generate_series(1, 40000) g;
-CREATE INDEX rw_col ON rw USING sift_col (id, ts, tsa, tsd, kn, n, neg, d)
-	WITH (order_columns = 'ts, tsa, tsd, kn, n, neg, d', cube_minmax = false, superunit = 0, calendar_columns = 'off');
+CREATE INDEX rw_col ON rw USING sift_col (id, ts, tsa, tsd, kn, n, neg, d, tz)
+	WITH (order_columns = 'ts, tsa, tsd, kn, n, neg, d, tz', cube_minmax = false, superunit = 0, calendar_columns = 'off');
 -- a table of one unit of 600 rows
 CREATE TABLE rs AS SELECT id, ts, kn FROM rw WHERE id <= 600;
 CREATE INDEX rs_col ON rs USING sift_col (id, ts, kn) WITH (order_columns = 'ts, kn', cube_minmax = false, superunit = 0, calendar_columns = 'off');
@@ -82,6 +85,26 @@ INSERT INTO rw_case (name, w) VALUES
 	('over a quarter',      'ts >= timestamp ''2024-01-01'' AND ts < timestamp ''2024-09-01'''),
 	('wide date',           'd >= date ''2020-01-01'' AND d < date ''2021-01-01'''),
 	('overflow rows',       'n >= 10 AND n < 10.5'),
+	('two windows',         '(ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-06'') OR (ts >= timestamp ''2025-06-01'' AND ts < timestamp ''2025-06-06'')'),
+	('overlapping windows', '(ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-08'') OR (ts >= timestamp ''2024-06-05'' AND ts < timestamp ''2024-06-12'') OR ts BETWEEN timestamp ''2024-06-03'' AND timestamp ''2024-06-04'''),
+	('adjacent windows',    '(ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-06'') OR (ts >= timestamp ''2024-06-06'' AND ts < timestamp ''2024-06-11'')'),
+	('empty arm',           '(ts >= timestamp ''2024-06-11'' AND ts < timestamp ''2024-06-01'') OR (ts >= timestamp ''2025-06-01'' AND ts < timestamp ''2025-06-06'')'),
+	('only empty arms',     '(ts >= timestamp ''2024-06-11'' AND ts < timestamp ''2024-06-01'') OR (ts > timestamp ''2025-06-06'' AND ts < timestamp ''2025-06-06'')'),
+	('windows and equality', 'ts = timestamp ''2024-06-05 12:00'' OR (ts >= timestamp ''2025-06-01'' AND ts < timestamp ''2025-06-06'') OR ts = timestamp ''2031-01-01'''),
+	('open arms',           'ts < timestamp ''2024-01-04'' OR ts >= timestamp ''2025-12-28'''),
+	('windows in order',    '(ts >= timestamp ''2025-06-01'' AND ts < timestamp ''2025-06-06'') OR (ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-06'')'),
+	('windows and a leaf',  '((ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-06'') OR (ts >= timestamp ''2025-06-01'' AND ts < timestamp ''2025-06-06'')) AND kn < 200'),
+	('identity windows',    '(tsa >= timestamp ''2024-03-01'' AND tsa < timestamp ''2024-03-05'') OR (tsa >= timestamp ''2024-09-01'' AND tsa < timestamp ''2024-09-05'')'),
+	('reverse windows',     '(tsd >= timestamp ''2029-06-01'' AND tsd < timestamp ''2029-06-04'') OR (tsd >= timestamp ''2029-01-01'' AND tsd < timestamp ''2029-01-04'')'),
+	('ties and NULLs',      '(kn >= 100 AND kn <= 102) OR kn = 5 OR kn = 399'),
+	('negative keys',       '(neg >= -100 AND neg < 100) OR (neg >= 40000 AND neg < 40100)'),
+	('date windows',        '(d >= date ''2022-02-01'' AND d < date ''2022-02-10'') OR (d >= date ''2023-02-01'' AND d < date ''2023-02-10'')'),
+	('across a DST change', '(tz >= timestamptz ''2024-03-10 00:00 America/New_York'' AND tz < timestamptz ''2024-03-11 00:00 America/New_York'') OR (tz >= timestamptz ''2024-11-03 00:00 America/New_York'' AND tz < timestamptz ''2024-11-04 00:00 America/New_York'')'),
+	('calendar days',       'date_trunc(''day'', ts) = timestamp ''2024-06-03'' OR ts::date = date ''2025-06-03'''),
+	('calendar days in a zone', 'date_trunc(''day'', tz) = timestamptz ''2024-03-10 00:00 America/New_York'' OR date_trunc(''day'', tz) = timestamptz ''2024-11-03 00:00 America/New_York'''),
+	('two leaves',          '(ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-06-06'') OR (d >= date ''2022-02-01'' AND d < date ''2022-02-10'')'),
+	('wide windows',        '(ts >= timestamp ''2024-01-01'' AND ts < timestamp ''2024-07-01'') OR (ts >= timestamp ''2025-01-01'' AND ts < timestamp ''2025-07-01'')'),
+	('overflow arms',       '(n >= 10 AND n < 10.5) OR (n >= 20 AND n < 20.5)'),
 	('one bound',           'ts < timestamp ''2024-01-06'''),
 	('one unit of 600',     'ts >= timestamp ''2024-06-01'' AND ts < timestamp ''2024-09-01''');
 UPDATE rw_case SET t = 'rs' WHERE name = 'one unit of 600';
@@ -97,64 +120,104 @@ BEGIN
 END $$;
 -- from_run: some units took their rows from the run; same: the answers of the pushdown, of the index scan and of the heap agree
 SELECT n, name, rw_count(w, t) AS rows, rw_windows('SELECT count(*) FROM ' || t || ' WHERE ' || w) > 0 AS from_run, rw_same(w, t) AS same FROM rw_case ORDER BY n;
- n  |        name         | rows  | from_run | same 
-----+---------------------+-------+----------+------
-  1 | ts start            |   276 | t        | t
-  2 | ts middle           |   544 | t        | t
-  3 | ts end              |   577 | t        | t
-  4 | ts between          |   168 | t        | t
-  5 | ts one second       |     0 | t        | t
-  6 | identity run        |   576 | t        | t
-  7 | reverse run         |   432 | t        | t
-  8 | NULLs and ties      |   274 | t        | t
-  9 | equality on ties    |    71 | t        | t
- 10 | negative keys       |    84 | t        | t
- 11 | date                |   195 | t        | t
- 12 | three bounds        |   493 | f        | t
- 13 | window and equality |   227 | t        | t
- 14 | empty range         |     0 | t        | t
- 15 | beyond the data     |     0 | f        | t
- 16 | below an eighth     |  4080 | t        | t
- 17 | above an eighth     |  6052 | f        | t
- 18 | over a quarter      | 13412 | f        | t
- 19 | wide date           |  7342 | f        | t
- 20 | overflow rows       |    15 | f        | t
- 21 | one bound           |   276 | f        | t
- 22 | one unit of 600     |    73 | f        | t
-(22 rows)
+ n  |          name           | rows  | from_run | same 
+----+-------------------------+-------+----------+------
+  1 | ts start                |   276 | t        | t
+  2 | ts middle               |   544 | t        | t
+  3 | ts end                  |   577 | t        | t
+  4 | ts between              |   168 | t        | t
+  5 | ts one second           |     0 | t        | t
+  6 | identity run            |   576 | t        | t
+  7 | reverse run             |   432 | t        | t
+  8 | NULLs and ties          |   274 | t        | t
+  9 | equality on ties        |    71 | t        | t
+ 10 | negative keys           |    84 | t        | t
+ 11 | date                    |   195 | t        | t
+ 12 | three bounds            |   493 | f        | t
+ 13 | window and equality     |   227 | t        | t
+ 14 | empty range             |     0 | t        | t
+ 15 | beyond the data         |     0 | f        | t
+ 16 | below an eighth         |  4080 | t        | t
+ 17 | above an eighth         |  6052 | f        | t
+ 18 | over a quarter          | 13412 | f        | t
+ 19 | wide date               |  7342 | f        | t
+ 20 | overflow rows           |    15 | f        | t
+ 21 | two windows             |   541 | t        | t
+ 22 | overlapping windows     |   594 | t        | t
+ 23 | adjacent windows        |   544 | t        | t
+ 24 | empty arm               |   269 | t        | t
+ 25 | only empty arms         |     0 | f        | t
+ 26 | windows and equality    |   269 | t        | t
+ 27 | open arms               |   323 | f        | t
+ 28 | windows in order        |   541 | t        | t
+ 29 | windows and a leaf      |   228 | t        | t
+ 30 | identity windows        |  1152 | t        | t
+ 31 | reverse windows         |   432 | t        | t
+ 32 | ties and NULLs          |   436 | t        | t
+ 33 | negative keys           |   109 | t        | t
+ 34 | date windows            |   377 | t        | t
+ 35 | across a DST change     |   117 | t        | t
+ 36 | calendar days           |   110 | t        | t
+ 37 | calendar days in a zone |   117 | t        | t
+ 38 | two leaves              |   467 | f        | t
+ 39 | wide windows            | 19947 | f        | t
+ 40 | overflow arms           |    37 | f        | t
+ 41 | one bound               |   276 | f        | t
+ 42 | one unit of 600         |    73 | f        | t
+(42 rows)
 
 -- the same after deletes (dead rows in the window), updates (rows that leave and enter it) and inserts (the write buffer)
 DELETE FROM rw WHERE id % 50 = 0;
 UPDATE rw SET ts = ts + interval '30 days' WHERE id % 61 = 0;
 UPDATE rw SET ts = timestamp '2024-06-05 12:00' WHERE id % 997 = 3;
 INSERT INTO rw SELECT g + 100000, timestamp '2024-06-02' + g * interval '1 hour', timestamp '2024-03-02' + g * interval '1 hour', timestamp '2029-06-02' + g * interval '1 hour',
-       g % 400, g, g - 150, date '2022-02-02', repeat('x', 200) FROM generate_series(1, 150) g;
+       g % 400, g, g - 150, date '2022-02-02', timestamptz '2024-06-02 00:00 UTC' + g * interval '1 hour', repeat('x', 200) FROM generate_series(1, 150) g;
 SELECT n, name, rw_count(w, t) AS rows, rw_windows('SELECT count(*) FROM ' || t || ' WHERE ' || w) > 0 AS from_run, rw_same(w, t) AS same FROM rw_case ORDER BY n;
- n  |        name         | rows  | from_run | same 
-----+---------------------+-------+----------+------
-  1 | ts start            |   267 | t        | t
-  2 | ts middle           |   727 | t        | t
-  3 | ts end              |   556 | t        | t
-  4 | ts between          |   165 | t        | t
-  5 | ts one second       |     0 | t        | t
-  6 | identity run        |   635 | t        | t
-  7 | reverse run         |   470 | t        | t
-  8 | NULLs and ties      |   273 | t        | t
-  9 | equality on ties    |    70 | t        | t
- 10 | negative keys       |   183 | t        | t
- 11 | date                |   339 | t        | t
- 12 | three bounds        |   677 | f        | t
- 13 | window and equality |   397 | t        | t
- 14 | empty range         |     0 | t        | t
- 15 | beyond the data     |     0 | f        | t
- 16 | below an eighth     |  3972 | t        | t
- 17 | above an eighth     |  5906 | f        | t
- 18 | over a quarter      | 13296 | f        | t
- 19 | wide date           |  7207 | f        | t
- 20 | overflow rows       |    16 | f        | t
- 21 | one bound           |   267 | f        | t
- 22 | one unit of 600     |    73 | f        | t
-(22 rows)
+ n  |          name           | rows  | from_run | same 
+----+-------------------------+-------+----------+------
+  1 | ts start                |   267 | t        | t
+  2 | ts middle               |   727 | t        | t
+  3 | ts end                  |   556 | t        | t
+  4 | ts between              |   165 | t        | t
+  5 | ts one second           |     0 | t        | t
+  6 | identity run            |   635 | t        | t
+  7 | reverse run             |   470 | t        | t
+  8 | NULLs and ties          |   273 | t        | t
+  9 | equality on ties        |    70 | t        | t
+ 10 | negative keys           |   183 | t        | t
+ 11 | date                    |   339 | t        | t
+ 12 | three bounds            |   677 | f        | t
+ 13 | window and equality     |   397 | t        | t
+ 14 | empty range             |     0 | t        | t
+ 15 | beyond the data         |     0 | f        | t
+ 16 | below an eighth         |  3972 | t        | t
+ 17 | above an eighth         |  5906 | f        | t
+ 18 | over a quarter          | 13296 | f        | t
+ 19 | wide date               |  7207 | f        | t
+ 20 | overflow rows           |    16 | f        | t
+ 21 | two windows             |   669 | t        | t
+ 22 | overlapping windows     |   775 | t        | t
+ 23 | adjacent windows        |   727 | t        | t
+ 24 | empty arm               |   264 | t        | t
+ 25 | only empty arms         |     0 | f        | t
+ 26 | windows and equality    |   305 | t        | t
+ 27 | open arms               |   347 | f        | t
+ 28 | windows in order        |   669 | t        | t
+ 29 | windows and a leaf      |   343 | t        | t
+ 30 | identity windows        |  1199 | t        | t
+ 31 | reverse windows         |   470 | t        | t
+ 32 | ties and NULLs          |   430 | t        | t
+ 33 | negative keys           |   208 | t        | t
+ 34 | date windows            |   517 | t        | t
+ 35 | across a DST change     |   117 | t        | t
+ 36 | calendar days           |   128 | t        | t
+ 37 | calendar days in a zone |   117 | t        | t
+ 38 | two leaves              |   648 | f        | t
+ 39 | wide windows            | 19703 | f        | t
+ 40 | overflow arms           |    38 | f        | t
+ 41 | one bound               |   267 | f        | t
+ 42 | one unit of 600         |    73 | f        | t
+(42 rows)
 
 -- the units merged again
 SELECT sift.col_merge('rw_col', true) IS NOT NULL AS merged;
@@ -164,31 +227,51 @@ SELECT sift.col_merge('rw_col', true) IS NOT NULL AS merged;
 (1 row)
 
 SELECT n, name, rw_count(w, t) AS rows, rw_windows('SELECT count(*) FROM ' || t || ' WHERE ' || w) > 0 AS from_run, rw_same(w, t) AS same FROM rw_case ORDER BY n;
- n  |        name         | rows  | from_run | same 
-----+---------------------+-------+----------+------
-  1 | ts start            |   267 | t        | t
-  2 | ts middle           |   727 | t        | t
-  3 | ts end              |   556 | t        | t
-  4 | ts between          |   165 | t        | t
-  5 | ts one second       |     0 | t        | t
-  6 | identity run        |   635 | t        | t
-  7 | reverse run         |   470 | t        | t
-  8 | NULLs and ties      |   273 | t        | t
-  9 | equality on ties    |    70 | t        | t
- 10 | negative keys       |   183 | t        | t
- 11 | date                |   339 | t        | t
- 12 | three bounds        |   677 | f        | t
- 13 | window and equality |   397 | t        | t
- 14 | empty range         |     0 | t        | t
- 15 | beyond the data     |     0 | f        | t
- 16 | below an eighth     |  3972 | t        | t
- 17 | above an eighth     |  5906 | f        | t
- 18 | over a quarter      | 13296 | f        | t
- 19 | wide date           |  7207 | f        | t
- 20 | overflow rows       |    16 | f        | t
- 21 | one bound           |   267 | f        | t
- 22 | one unit of 600     |    73 | f        | t
-(22 rows)
+ n  |          name           | rows  | from_run | same 
+----+-------------------------+-------+----------+------
+  1 | ts start                |   267 | t        | t
+  2 | ts middle               |   727 | t        | t
+  3 | ts end                  |   556 | t        | t
+  4 | ts between              |   165 | t        | t
+  5 | ts one second           |     0 | t        | t
+  6 | identity run            |   635 | t        | t
+  7 | reverse run             |   470 | t        | t
+  8 | NULLs and ties          |   273 | t        | t
+  9 | equality on ties        |    70 | t        | t
+ 10 | negative keys           |   183 | t        | t
+ 11 | date                    |   339 | t        | t
+ 12 | three bounds            |   677 | f        | t
+ 13 | window and equality     |   397 | t        | t
+ 14 | empty range             |     0 | t        | t
+ 15 | beyond the data         |     0 | f        | t
+ 16 | below an eighth         |  3972 | t        | t
+ 17 | above an eighth         |  5906 | f        | t
+ 18 | over a quarter          | 13296 | f        | t
+ 19 | wide date               |  7207 | f        | t
+ 20 | overflow rows           |    16 | f        | t
+ 21 | two windows             |   669 | t        | t
+ 22 | overlapping windows     |   775 | t        | t
+ 23 | adjacent windows        |   727 | t        | t
+ 24 | empty arm               |   264 | t        | t
+ 25 | only empty arms         |     0 | f        | t
+ 26 | windows and equality    |   305 | t        | t
+ 27 | open arms               |   347 | f        | t
+ 28 | windows in order        |   669 | t        | t
+ 29 | windows and a leaf      |   343 | t        | t
+ 30 | identity windows        |  1199 | t        | t
+ 31 | reverse windows         |   470 | t        | t
+ 32 | ties and NULLs          |   430 | t        | t
+ 33 | negative keys           |   208 | t        | t
+ 34 | date windows            |   517 | t        | t
+ 35 | across a DST change     |   117 | t        | t
+ 36 | calendar days           |   128 | t        | t
+ 37 | calendar days in a zone |   117 | t        | t
+ 38 | two leaves              |   648 | f        | t
+ 39 | wide windows            | 19703 | f        | t
+ 40 | overflow arms           |    38 | f        | t
+ 41 | one bound               |   267 | f        | t
+ 42 | one unit of 600         |    73 | f        | t
+(42 rows)
 
 DROP FUNCTION rw_windows(text), rw_answers(text, bool, bool), rw_same(text, text), rw_count(text, text);
 DROP TABLE rw_case, rs, rw;

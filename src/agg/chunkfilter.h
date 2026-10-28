@@ -11,11 +11,21 @@
 #include "agg/colsrc.h"
 
 /* The filters a source applies: the engine predicates, and the leaf of the source's layout each one tests */
+typedef struct SiftAggRanges
+{
+	int			col;
+	int			leaf;
+	int			narms;
+	const int64 *arm;			/* narms pairs (lo, hi), inclusive */
+} SiftAggRanges;
+
 typedef struct SiftAggFilters
 {
 	SiftColPred *pred;
 	int		   *leaf;
 	int			n;
+	SiftAggRanges *rng;			/* the unions of ranges (SSF_RANGES): each arm is run as a range, with the sorted run window, and the arms are ORed */
+	int			nrng;
 } SiftAggFilters;
 
 /* The text tests of one scan that join the zone pruning of a begin (the others are not used to skip units) */

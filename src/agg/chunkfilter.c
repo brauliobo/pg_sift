@@ -62,8 +62,16 @@ sift_aggfilt_add(SiftAggFilters *fl, MemoryContext cxt, int col, const SiftSrcFi
 {
 	bool		set = f->op == SSF_IN || f->op == SSF_NOTIN;
 	int			nvals = f->op == SSF_NOTNULL ? 0 : set ? f->nset : 1;
-	SiftColValue *vals = MemoryContextAllocZero(cxt, Max(nvals, 1) * sizeof(SiftColValue));
+	SiftColValue *vals;
 
+	if (f->op == SSF_RANGES)
+	{
+		if (fl->rng == NULL)
+			fl->rng = MemoryContextAlloc(cxt, SIFT_COLSRC_MAX_FILTERS * sizeof(SiftAggRanges));
+		fl->rng[fl->nrng++] = (SiftAggRanges) {col, f->leaf, f->nset / 2, f->set};
+		return;
+	}
+	vals = MemoryContextAllocZero(cxt, Max(nvals, 1) * sizeof(SiftColValue));
 	if (fl->pred == NULL)
 	{
 		fl->pred = MemoryContextAlloc(cxt, SIFT_COLSRC_MAX_FILTERS * sizeof(SiftColPred));
@@ -128,6 +136,42 @@ clear_nan_rows(const SiftColUnit *cu, const SiftColPred *p, SiftColSel *sel)
 }
 
 /*
+ * A union of ranges on one leaf: each arm narrows a copy of sel the way a single range does (two bounds, the sorted run window), and sel becomes the rows
+ * of any arm. An arm without a bound keeps the rows with a value.
+ */
+static void
+filter_ranges(const SiftColUnit *cu, const SiftAggRanges *r, SiftColSel *sel)
+{
+	uint64	   *from = palloc(sel->nwords * sizeof(uint64)),
+			   *any = palloc0(sel->nwords * sizeof(uint64));
+
+	memcpy(from, sel->bits, sel->nwords * sizeof(uint64));
+	for (int a = 0; a < r->narms; a++)
+	{
+		SiftColValue lo = {.v.i = r->arm[2 * a]},
+					hi = {.v.i = r->arm[2 * a + 1]};
+		SiftColPred	p[2];
+		int			np = 0;
+
+		if (lo.v.i != PG_INT64_MIN)
+			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_GE, 1, &lo};
+		if (hi.v.i != PG_INT64_MAX)
+			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_LE, 1, &hi};
+		if (np == 0)
+			p[np++] = (SiftColPred) {r->col, SIFT_COLOP_NOTNULL, 0, NULL};
+		memcpy(sel->bits, from, sel->nwords * sizeof(uint64));
+		sift_col_sel_count(sel);
+		if (sift_col_filter(cu, p, np, sel))
+			for (uint32 w = 0; w < sel->nwords; w++)
+				any[w] |= sel->bits[w];
+	}
+	memcpy(sel->bits, any, sel->nwords * sizeof(uint64));
+	pfree(from);
+	pfree(any);
+	sift_col_sel_count(sel);
+}
+
+/*
  * The filters of the source on the unit as stored, the most selective first. The two bounds of a range on one leaf are one filter, as selective as the
  * rows between them, and go to sift_col_filter together: a unit with a sorted run for the leaf takes the range from the run.
  */
@@ -180,5 +224,7 @@ sift_aggfilt_op(const SiftColUnit *cu, SiftColSel *sel, void *arg)
 			for (int k = 0; k < np[order[i]]; k++)
 				clear_nan_rows(cu, &p[k], sel);
 	}
+	for (int i = 0; i < fl->nrng && sel->count > 0; i++)
+		filter_ranges(cu, &fl->rng[i], sel);
 }
 

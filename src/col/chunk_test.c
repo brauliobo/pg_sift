@@ -205,6 +205,21 @@ check_decode(TCtx *t, const char *what, const SiftColDef *d, SiftCDict *segdict,
 	for (uint32 k = 0; k < m; k++)
 		bad_sel += sel[k] != got[idx[k]];
 	CHECK(t, bad_sel == 0, "%s: %u selected values decode wrongly", what, bad_sel);
+	/* a few short runs of consecutive rows: decoded as runs (a denser selection decodes the chunk) */
+	m = 0;
+	for (uint32 i = 0; i < ref->n; i++)
+		if (RAND(t, 150) == 0)
+		{
+			uint32		e = i + 1 + RAND(t, 40);
+
+			for (; i < e && i < ref->n; i++)
+				idx[m++] = i;
+		}
+	sift_cchunk_decode_sel(ch, idx, m, sel);
+	bad_sel = 0;
+	for (uint32 k = 0; k < m; k++)
+		bad_sel += sel[k] != got[idx[k]];
+	CHECK(t, bad_sel == 0, "%s: %u values of runs decode wrongly", what, bad_sel);
 	if (d->store == SIFT_COLS_VAR)
 		check_strs(t, what, ref, ch);
 }

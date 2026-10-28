@@ -348,8 +348,8 @@ check_overflow_elems(AggExec *ex, const uint64 *em)
 
 /* the leaves are read for the rows that still count when they are fewer than a SPARSE_RATIOth of the unit: above about 3% the gather costs more than the decode it saves (1M rows, 6% kept: 66% more instructions at an eighth) */
 #define SPARSE_RATIO	32
-/* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 3% (ten keys of 300 parents) it costs what it saves */
-#define NARROW_RATIO	32
+/* ... and the unit goes on as them alone only when they are fewer than a NARROW_RATIOth: above about 6% it costs what it saves (a 90-day window of 15 years, 3%: 157 against 113 million instructions; an eighth of the rows costs 1.5% more than a sixteenth) */
+#define NARROW_RATIO	16
 
 /* the rows whose value has one of the JSON types of each SAP_TYPE conjunct; false when none is left */
 static bool
