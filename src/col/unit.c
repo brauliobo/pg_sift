@@ -116,8 +116,33 @@ keyed_dir_bytes(uint32 nrows, uint32 np, const uint32 *bw)
 }
 
 /*
- * The bytes of a record from its start to the end of its chunk table, when it is a key-cut unit whose directory is longer than the bytes read (the 24-byte head
- * is enough to know it); 0 for any other record or when avail covers it.
+ * The bytes of a plain unit from its start to the end of its chunk table, as far as the bytes read tell: the arrays of its directory (the pages and rows of each),
+ * then, with those read, the bitmaps of its sparse pages and the table. 0 when the head is damaged (the parse refuses it).
+ */
+static uint64
+plain_dir_end(const uint8 *rec, uint32 avail, uint32 np, int ncols)
+{
+	uint64		pos = UNIT_HEAD + (uint64) (np + 1) * 4 + (uint64) np * 2;
+	const uint32 *rowstart = (const uint32 *) (rec + UNIT_HEAD);
+	const uint16 *maxoff = (const uint16 *) (rec + UNIT_HEAD + (uint64) (np + 1) * 4);
+
+	if (pos > avail)
+		return pos;
+	for (uint32 p = 0; p < np; p++)
+	{
+		uint32		cnt = rowstart[p + 1] - rowstart[p];
+
+		if (rowstart[p + 1] <= rowstart[p] || maxoff[p] < cnt || maxoff[p] > MaxHeapTuplesPerPage)
+			return 0;
+		pos += maxoff[p] == cnt ? 0 : (maxoff[p] + 7) / 8;
+	}
+	return ((pos + 3) & ~UINT64CONST(3)) + 8 * (uint64) ncols;
+}
+
+/*
+ * The bytes of a record from its start to the end of its chunk table, when more than the avail bytes read are needed to parse it: a key-cut unit whose directory is
+ * longer than the bytes read (the 24-byte head is enough to know it), or a plain unit whose directory and chunk table are (a step at a time: the sizes of its
+ * pages first, then its bitmaps); 0 for a record that avail covers or that is damaged.
  */
 uint32
 sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols)
@@ -129,6 +154,13 @@ sift_cunit_head_need(const uint8 *rec, uint32 avail, uint32 len, int ncols)
 	if (avail < 24 || ((uintptr_t) rec & 7) != 0)
 		return 0;
 	memcpy(head, rec, sizeof(head));
+	if (head[0] == COLU_MAGIC)
+	{
+		if (avail < UNIT_HEAD || head[2] > SIFT_SB_PAGES)
+			return 0;
+		need = plain_dir_end(rec, avail, head[2], ncols);
+		return need > avail && need <= len ? (uint32) need : 0;
+	}
 	if (head[0] != COLK_MAGIC)
 		return 0;
 	bw[0] = head[3] & 0xFF;

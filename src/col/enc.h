@@ -476,7 +476,7 @@ extern void sift_cunit_keyed_load(const SiftCUnitView *v);
  * SIFT_COL_UNIT_HEAD covers) are present, len is the full length; the chunks are not looked at. The caller makes the bytes of a chunk
  * present (v->chunk_off[col], v->chunk_len[col]) before sift_cunit_chunk(col).
  */
-#define SIFT_COL_UNIT_HEAD		(24 * 1024)
+#define SIFT_COL_UNIT_HEAD		(4 * 1024)
 extern bool sift_cunit_parse_head(const uint8 *rec, uint32 avail, uint32 len, const SiftColSchema *schema, SiftCUnitView *v);
 
 /* The chunk of leaf col; false when the unit has none (all values NULL) */
