@@ -2,6 +2,7 @@
 -- of small dictionary ids must spread over the entry table (they once piled up in a few slots, a probe walked thousands of entries): the rows are
 -- the same as the normal plan's, and the node is the aggregate scan.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

@@ -3,6 +3,7 @@
 -- any smallint when the constant is within 2^31 - 2^15 (or 65,535 for a product), so the program is the exact 128-bit one, and the sum a bigint as int4_sum gives it.
 -- A constant outside that range, a smallint constant (the operator is int2pl, which raises past smallint) and an integer column keep the generic aggregate. The rows are the normal plan's.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE w (id int PRIMARY KEY, g int NOT NULL, x int2, y int4);

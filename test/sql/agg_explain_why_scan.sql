@@ -1,6 +1,7 @@
 -- sift.explain_why for a statement with no aggregate: the row "index" says whether the plan reads a sift_col index (index, index-only or bitmap scan) and, if not, why:
 -- no_source (the table has none), where (no condition of the statement is one the index answers) or cost (the normal plan is estimated cheaper, with both costs).
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ew (id int, k int, grp int, note text);
 INSERT INTO ew SELECT i, (hashint4(i) & 1023), i % 10, 'n' || i FROM generate_series(1, 100000) i;

@@ -4,6 +4,7 @@
 -- (text, so the scale of the numeric sums): from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off).
 -- `pre` says how many units the first one answered from metadata.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

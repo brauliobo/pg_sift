@@ -3,6 +3,7 @@
 -- ranges of the windows of the leaf's span ("Filters In Source"), and the expression is tested again. The rows are those of the normal plan in the zones whose clocks jump, for operands
 -- that no row has (13 months, the 25th hour, a fraction), formats the text of which is not in order, infinite timestamps and NULL.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

@@ -2,6 +2,7 @@
 -- (sift.agg_join_filter; "Join Key Filters" of EXPLAIN ANALYZE): the units the keys' range misses are not read, the other rows are tested as a set.
 -- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows (and the errors) must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;

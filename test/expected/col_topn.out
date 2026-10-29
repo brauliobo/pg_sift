@@ -2,6 +2,7 @@
 -- columns are read from the units, the heap only for the n rows of the result. Every query runs twice, the plain plan as the reference
 -- (sift.enable_agg off) and the pushed one, and the rows are compared in order: after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 -- pad makes a page hold about 5 rows: 24000 rows are about 19 superblocks, more than a window of the visit order
 CREATE TABLE ct (id serial PRIMARY KEY, store int, status text, amount numeric(10,2), placed date, ts timestamp, seq int, f float8, memo text,

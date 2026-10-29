@@ -3,6 +3,7 @@
 -- agg_int2_sum_const); the digits of the expression prove that no row leaves the type here. An expression that can (smallint * 100000, an int4 column + 1) stays with
 -- PostgreSQL's own functions, and raises what they raise. The results, errors included, are those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

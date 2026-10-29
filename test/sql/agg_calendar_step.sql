@@ -2,6 +2,7 @@
 -- minute that the data holds (the step of the finest calendar function in it, "per day" in EXPLAIN) and not once for each distinct timestamp. The rows are those of the normal plan in the zones whose clocks jump,
 -- for operands that no row has, infinite timestamps, NULL, and a mix of steps; a text format has no step and keeps its expression evaluated for each value.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

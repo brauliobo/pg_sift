@@ -3,6 +3,7 @@
 -- ("invalid memory alloc request size 17179869248"). Such a key keeps its ids in a hash table, like a key of an integer column, and the rows are those of the normal plan.
 -- (the rows of the two infinities must fall in a unit of their own: the test needs more than one unit, 200,000 rows)
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dinf (id int, d date, v int);
 INSERT INTO dinf SELECT i, date '2020-01-01' + i % 400, i FROM generate_series(1, 200000) i;

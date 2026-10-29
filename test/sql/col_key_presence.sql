@@ -4,6 +4,7 @@
 -- option, or under a lower setting, writes; read back by the decoder that refuses a damaged bitmap; recomputed by sift.col_verify; kept by promotion, merge
 -- and VACUUM; the answers are the heap's.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

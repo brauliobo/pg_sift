@@ -2,6 +2,7 @@
 -- conditions share the rows the first one loaded (sift.agg_share_lookups; "Shared Lookup Tables" of EXPLAIN ANALYZE). The rows are the statement's snapshot,
 -- never kept for another statement. Every statement is run shared, with sift.agg_share_lookups = off and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;

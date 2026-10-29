@@ -2,6 +2,7 @@
 -- is read when any disjunct may match. An OR with a disjunct no zone can refuse (a text test, an arithmetic on the leaf) prunes nothing.
 -- Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- events in day order, and an owner that changes every 25000 events: both leaves have narrow zones; the padding makes a unit of about 8000 rows

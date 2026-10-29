@@ -3,6 +3,7 @@
 -- strings, accents, case and punctuation, both directions, NULLS FIRST and LAST, OFFSET, DML, a write buffer, a promotion, a merge and a REINDEX; a sort under another
 -- collation than the column's, a text that is a unit's inline string, and an expression of the column read the units.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

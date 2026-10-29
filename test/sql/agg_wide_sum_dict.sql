@@ -2,6 +2,7 @@
 -- entry are decoded once, a row adds them. Every statement is run with the scan forced and with sift.enable_agg = off and the results compared as text, so
 -- that the display scale (the largest scale of the rows added) is compared too.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 CREATE TABLE s (id serial, g int, k int, x numeric, w numeric(30,5)) WITH (autovacuum_enabled = false);

@@ -1,5 +1,6 @@
 -- A function or UNION that reads a joined row fans it out; the scan runs PostgreSQL's plan of the child for each distinct input.
 CREATE EXTENSION pg_sift;
+SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, labels text[], region text);
 INSERT INTO dim_a SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN ARRAY[]::text[] WHEN 2 THEN ARRAY['one', 'one', 'two'] WHEN 3 THEN ARRAY['two', NULL] ELSE ARRAY['three'] END,
