@@ -121,10 +121,8 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 SET sift.col_auto_merge_fragmentation = 1000;
-SET sift.test_col_gap_blocks = 0;
 CREATE INDEX ev_k_col ON ev_k USING sift_col (id, prop_id, day, items) WITH (paths = 'items[]{kind text, n int4}', key_cut = prop_id);
 RESET sift.col_auto_merge_fragmentation;
-RESET sift.test_col_gap_blocks;
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_table_scan_size;
 RESET parallel_setup_cost;

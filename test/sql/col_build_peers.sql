@@ -6,7 +6,6 @@ SET max_parallel_maintenance_workers = 4;
 SET sift.col_auto_merge_wal_pct = 5;
 -- the build merges its own peers (col_build_standby_space): not here, which is the state a build of 3.6.0 left
 SET sift.col_auto_merge_fragmentation = 1000;
-SET sift.test_col_gap_blocks = 0;
 
 CREATE TABLE nk (id int, cust int, amt int, q int) WITH (autovacuum_enabled = false);
 INSERT INTO nk SELECT i, ((i::bigint * 7919) % 20000)::int, ((i::bigint * 31) % 1000)::int, i % 100 FROM generate_series(1, 1000000) i;

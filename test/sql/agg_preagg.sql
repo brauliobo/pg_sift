@@ -85,11 +85,9 @@ INSERT INTO ao SELECT * FROM ap;
 CREATE INDEX ap_col ON ap USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096);
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 SET sift.col_auto_merge_fragmentation = 1000;
-SET sift.test_col_gap_blocks = 0;
 CREATE INDEX ac_col ON ac USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts)
 	WITH (write_buffer_limit = 4096, preagg = 'cube(grp: amt, qty, huge; cat: amt; d: amt; qty: amt)');
 RESET sift.col_auto_merge_fragmentation;
-RESET sift.test_col_gap_blocks;
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, cat, d, amt, qty, big, huge, f, ts) WITH (write_buffer_limit = 4096, preagg = 'off');
 CALL pa_settle();
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ap, ac, ao;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
@@ -137,10 +135,8 @@ SET max_parallel_maintenance_workers = 2;
 SET min_parallel_table_scan_size = 0;
 SET parallel_leader_participation = off;
 SET sift.col_auto_merge_fragmentation = 1000;
-SET sift.test_col_gap_blocks = 0;
 REINDEX INDEX ac_col;
 RESET sift.col_auto_merge_fragmentation;
-RESET sift.test_col_gap_blocks;
 RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('ac_col');
 -- the layout of a parallel build is not the same twice: its answers must be, the counts are for a serial rebuild
