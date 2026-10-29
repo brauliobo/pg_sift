@@ -1,0 +1,108 @@
+-- A lookup table that the scan answers from a byte table of its keys (a semi, anti or inner join by an int4 leaf, agg_semi_lut) is loaded without the dictionary of its
+-- keys and the chains of its rows: they are made by the first use that is a lookup of the table (a repeated key of an inner join, a span past the byte table, the
+-- cache of the next query, the workers' copy). Every statement is run with the scan (the table loaded, read again from the cache, shared with workers) and with
+-- sift.enable_agg = off: the rows must be the same.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE ev (id int PRIMARY KEY, k int, kind int2, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 101 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 6000 END, (i % 12)::int2, (i % 1000) / 10.0 FROM generate_series(1, 60000) i;
+CREATE INDEX ev_col ON ev USING sift_col (k, kind, amount);
+VACUUM (FREEZE, ANALYZE) ev;
+-- a membership table (a group, a soft delete, a repeated key), a dimension of one row a key, and one whose keys span more than the byte table holds
+CREATE TABLE member (grp int, k int, gone boolean, label text);
+INSERT INTO member SELECT g, 1 + (g * 331 + i * 13) % 6000, i % 9 = 0, 'l' || i % 7 FROM generate_series(1, 4) g, generate_series(1, 1500) i;
+INSERT INTO member VALUES (2, 77, false, 'dup'), (2, 77, false, 'dup2'), (2, NULL, false, 'none');
+CREATE TABLE dim (k int PRIMARY KEY, country int, active boolean);
+INSERT INTO dim SELECT i, i % 40, i % 5 <> 0 FROM generate_series(1, 6000) i;
+CREATE TABLE wide (k int);
+INSERT INTO wide SELECT generate_series(1, 3000) UNION ALL SELECT 2000000000;
+ANALYZE member; ANALYZE dim; ANALYZE wide;
+CREATE FUNCTION check_rows(q text) RETURNS TABLE (pushed bool, first_run bigint, cached bigint, with_workers bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.agg_force = on;
+	SET LOCAL sift.agg_lookup_cache_kb = 0;
+	SET LOCAL sift.agg_lookup_shared_kb = 0;
+	pushed := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
+	EXECUTE format('CREATE TEMP TABLE r_scan ON COMMIT DROP AS %s', q);
+	RESET sift.agg_lookup_cache_kb;
+	RESET sift.agg_lookup_shared_kb;
+	EXECUTE format('CREATE TEMP TABLE r_kept ON COMMIT DROP AS %s', q);
+	EXECUTE format('CREATE TEMP TABLE r_kept2 ON COMMIT DROP AS %s', q);
+	SET LOCAL parallel_setup_cost = 0;
+	SET LOCAL parallel_tuple_cost = 0;
+	SET LOCAL min_parallel_table_scan_size = 0;
+	SET LOCAL max_parallel_workers_per_gather = 2;
+	EXECUTE format('CREATE TEMP TABLE r_par ON COMMIT DROP AS %s', q);
+	RESET max_parallel_workers_per_gather;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
+	first_run := (SELECT count(*) FROM ((TABLE r_scan EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_scan)) d);
+	cached := (SELECT count(*) FROM ((TABLE r_kept2 EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_kept2) UNION ALL (TABLE r_kept EXCEPT TABLE r_off)) d);
+	with_workers := (SELECT count(*) FROM ((TABLE r_par EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_par)) d);
+	DROP TABLE r_scan, r_kept, r_kept2, r_par, r_off;
+	RETURN NEXT;
+END $$;
+-- semi and anti joins with the table's own conditions
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE k IN (SELECT k FROM member WHERE grp = 2 AND NOT gone) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM member m WHERE m.k = ev.k AND m.grp = 3) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM dim WHERE country < 5 AND active) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+-- an inner join by a key the table holds once, and by one it repeats (the dictionary and the chains are made and the rows of a key joined)
+SELECT * FROM check_rows($$SELECT d.country, count(*) AS n, sum(amount) AS s FROM ev JOIN dim d ON d.k = ev.k WHERE d.active GROUP BY d.country$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+SELECT * FROM check_rows($$SELECT m.label, count(*) AS n FROM ev JOIN member m ON m.k = ev.k AND m.grp = 2 GROUP BY m.label$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev JOIN member m ON m.k = ev.k AND m.grp = 2 GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+-- keys past the byte table: the table is looked up
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM wide) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev WHERE k NOT IN (SELECT k FROM wide) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+-- two tables of keys in one statement
+SELECT * FROM check_rows($$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM member WHERE grp = 1) AND k IN (SELECT k FROM dim WHERE active) GROUP BY kind$$);
+ pushed | first_run | cached | with_workers 
+--------+-----------+--------+--------------
+ t      |         0 |      0 |            0
+(1 row)
+
+DROP FUNCTION check_rows(text);
+DROP TABLE ev, member, dim, wide;
+DROP EXTENSION pg_sift;

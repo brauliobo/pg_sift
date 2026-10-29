@@ -49,6 +49,8 @@ typedef struct MapTab
 	uint32		cap;
 	KeyDict		kd[SIFT_AGG_MAX_JKEYS];
 	uint32	   *kid;			/* [row * nkey + k] */
+	bool		lazy;			/* rows are added as rkey only (map_ensure ends it) */
+	int64	   *rkey;			/* a table of one integer key and no columns read for a byte table of its keys (semi_lut_possible): the key of each row, and the columns, until map_ensure makes kid, kd and the chains */
 	MapCol	   *mcol;			/* [ncol] */
 	uint32	   *next;			/* row + 1 of the next row of the bucket */
 	uint32		nslot;
@@ -75,8 +77,11 @@ map_key_dead(const MapTab *m, const uint32 *kid)
 static inline int64
 map_kint(const MapTab *m, uint32 row, int k)
 {
-	uint32		id = m->kid[(size_t) row * m->nkey + k];
+	uint32		id;
 
+	if (m->rkey)
+		return m->rkey[row];
+	id = m->kid[(size_t) row * m->nkey + k];
 	return id == 0 ? 0 : m->kd[k].ival[id - 1];
 }
 
@@ -105,6 +110,8 @@ typedef struct MapShared
 	bool		knull[SIFT_AGG_MAX_JKEYS];
 	bool		filtered;
 	bool		keep;			/* the side is preserved: each participant keeps its own hit[] */
+	bool		lazy;
+	Size		rkey;			/* a table that is only its keys (MapTab.rkey): the one array, and 0 in the others */
 	Size		kid;			/* offsets from the start of the segment */
 	Size		next;
 	Size		head;
@@ -166,6 +173,8 @@ MapTab *map_load_first(AggExec *ex, int ci);
 MapTab *map_first_peek(AggExec *ex, int ci);
 int map_first_row(AggExec *ex, int ci, EState *estate);
 bool map_unique(const MapTab *m);
+void map_ensure(MapTab *m);
+bool semi_lut_possible(AggExec *ex, int ci);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 
 /* lookshare.c */

@@ -2,6 +2,10 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
+## Unreleased
+
+- Improved: pg_sift: a table that a semi, anti or inner join by an int4 column answers from a byte table of its keys (`k IN (SELECT ..)`, `EXISTS`, a join) is loaded without the dictionary of its keys and the chains of its rows, which the first use that looks the table up makes: 550,256 rows read and 500,000 loaded take 35 ms where they took 59 ms, and the scan of 1,000,000 rows that joins it takes 33 ms and 442 million instructions where it took 47 ms and 531 million (the lookup cache off, 40 MB read either way; from the cache 14 ms and 123 million instructions, as before).
+
 ## 3.6.0 - 2026-10-29
 
 - Added: pg_sift: `sift.col_dict_shared_cache_kb` sets the size of the ring of parsed dictionaries that backends share (a `sift_col` dictionary of 128 kB or more that one backend parsed is read in place by the others), and 0 turns the sharing off: no segment is made or attached and each backend parses and keeps its own dictionaries, with the same rows. It replaces the size taken from `shared_buffers` (64 MB to 512 MB with no setting): the default is 64 MB for every server, 4 GB at most, and with posix shared memory at most a quarter of `/dev/shm` (the log says when the size is cut). The size is recorded in the shared directory by the backend that makes it, so a backend with another setting uses the ring as it is, and a change takes effect at the next start of the server. The ring is made when the first dictionary is kept, not on the first read of one: a server with no dictionary to share takes a directory of about 50 kB. This memory is in addition to `shared_buffers`, is not reclaimable like the page cache, counts in `/dev/shm` and the shared memory of a container, and gets no huge pages.
