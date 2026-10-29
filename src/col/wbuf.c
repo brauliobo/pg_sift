@@ -482,7 +482,8 @@ sift_cwbuf_discard(Oid index)
 static void
 check_slots_in_use(Relation index, const char *rows, Size total)
 {
-	Relation	heap = relation_open(index->rd_index->indrelid, NoLock);
+	/* the transaction may not hold the heap (a swap of storage moved the rows under a table it never locked): the lock is kept to the end of the transaction */
+	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
 	Buffer		buf = InvalidBuffer;
 
 	for (const char *cur = rows; cur < rows + total;)
