@@ -900,6 +900,10 @@ done
 if (( failed )); then
 	find "$BASE" -path "$LOG" -prune -o -name '*.log' -print 2>/dev/null | xargs -r grep -hE -A1 'was terminated by signal|^TRAP:|PANIC:' 2>/dev/null | cut -c1-300 | head -n 30 |
 		{ read -r first && { echo "${red}server crashes (signal, statement, assertion):$off"; echo "$first"; cat; }; }
+	# the full tier runs on the ASan build: a backend that ASan aborts (signal 6) has no stack in the server log, its report is in the sanitizer directory of the lane
+	find "$BASE" -path "$LOG" -prune -o -path '*/sanitizer/*' -type f -print 2>/dev/null | head -n 5 | while read -r f; do
+		echo "${red}sanitizer report ${f#"$BASE"/}:$off"; grep -m1 -A9 -E 'ERROR: |runtime error' "$f" | cut -c1-240
+	done
 fi
 # the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
 if [[ -n ${STATS:-} ]]; then
