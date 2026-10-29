@@ -3,8 +3,8 @@
 
   scripts/ci-times.py RUN...              one table per run: every job (queue, run, test step, lanes, lane minutes, the longest
                                           tests) and the slowest tests of the full tier
-  scripts/ci-times.py --weights RUN...    scripts/weights-deep.tsv from the passing jobs of the runs (median of the lane seconds per
-                                          PostgreSQL major; a major that passed a job in no run gets the mean of its sibling slices)
+  scripts/ci-times.py --weights RUN...    scripts/weights-deep.tsv from the passing jobs of the runs (the newest run that passed a job wins:
+                                          name the runs oldest first; a major that passed a job in no run gets the mean of its sibling slices)
 
 The job logs come from `gh api` and are kept in --cache (default $TMPDIR/ci-times) so that a run is fetched once. The test times are the
 `ci: ID STATUS Ns lane L` lines scripts/ci.sh prints; a failed job is left out of the weights (--fail-fast ends it early).
@@ -100,17 +100,16 @@ def weights(runs, cache, floor):
             for test, status, secs in parse(job_log(run, j['databaseId'], cache))[0]:
                 if status == 'PASS':
                     per[17 if int(m[1]) == 17 else 18][test].append(secs)
-    print('# job\tPostgreSQL 17 lane seconds\tPostgreSQL 18 lane seconds: median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights); the shards are cut by these, the other jobs weigh 10')
+    print('# job\tPostgreSQL 17 lane seconds\tPostgreSQL 18 lane seconds: the newest passing job of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights); the shards are cut by these, the other jobs weigh 10')
     def seconds(test, major):
-        # the median of the passes on this major, else the mean of its sibling slices (difftest-col-8 of difftest-col-N), else the other major's time
+        # the time of the newest run that passed it on this major, else the mean of its sibling slices (difftest-col-8 of difftest-col-N), else the other major's time
         mine = per[major].get(test)
         if mine:
-            return int(statistics.median(mine))
+            return mine[-1]
         family = re.sub(r'-\d+$', '', test)
-        sib = [statistics.median(v) for t, v in per[major].items() if t != test and re.sub(r'-\d+$', '', t) == family]
+        sib = [v[-1] for t, v in per[major].items() if t != test and re.sub(r'-\d+$', '', t) == family]
         other = per[35 - major].get(test)
-        return int(statistics.mean(sib)) if sib else int(statistics.median(other)) if other else 10
-    rows = [(test, seconds(test, 17), seconds(test, 18)) for test in set(per[17]) | set(per[18])]
+        return int(statistics.mean(sib)) if sib else other[-1] if other else 10
     rows = [(test, seconds(test, 17), seconds(test, 18)) for test in set(per[17]) | set(per[18])]
     for test, a, b in sorted(rows, key=lambda r: (-max(r[1], r[2]), r[0])):
         if max(a, b) >= floor:
