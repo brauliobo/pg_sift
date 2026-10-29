@@ -10,6 +10,7 @@
 #              tree takes them over, ALTER EXTENSION UPDATE, verify, REINDEX; then the previous library reads what this one writes in the previous
 #              column format), package (make install DESTDIR, the files, packaging/smoke.sql from the first and from the last version)
 #   bump       CHANGELOG, sqlite/mariadb CHANGELOG and VERSION, PKGBUILD, README badge, install lines: one commit, after a check that every place agrees
+#   lint       scripts/lint.sh on the bumped tree, what the push CI of main runs on the release commit: a red one stops the release before the tag
 #   publish    push main and the tag, watch the workflow `release`, verify the assets (names, SHA256SUMS)
 # A step that passed is in $RELEASE_STATE/VERSION/manifest (default $XDG_STATE_HOME/pg_sift-release): --resume skips it. --dry-run does it all
 # on a scratch clone and pushes, tags and publishes nothing (the AUR is cloned over https, the diff shown); a failed run says what to run.
@@ -225,6 +226,12 @@ bump() {
 	g commit -q -m "release: $VERSION"
 }
 
+# ---------- lint of the release commit: what the push CI of main runs on it (a red lint there is a tag commit that fails by construction)
+lint_release() {
+	( cd "$R" && GITHUB_BASE_REF=main scripts/lint.sh ) >"$W/lint.log" 2>&1 || { grep -E '^(FAIL|[a-z-]+:)' "$W/lint.log" | head -20; echo "scripts/lint.sh fails on the bumped tree (the whole log: $W/lint.log, kept in $STATE/logs)"; return 1; }
+	echo "lint ok on $(g rev-parse --short HEAD)"
+}
+
 # ---------- publish
 publish() {
 	if [[ -n $DRY ]]; then g tag -f -a "$TAG" -m "pg_sift $VERSION"; echo "dry run: $(g rev-parse --short HEAD) would be pushed to main and tagged $TAG"; return 0; fi
@@ -268,6 +275,7 @@ ci_skipped() { cut -f1-2 "$MAN" 2>/dev/null | grep -qx $'ci\tskipped'; }
 [[ -z $RESUME ]] || ! ci_skipped || log "$CI_SKIPPED (recorded in the manifest)"
 step checks "$(g log -1 --format=%H -- "${GUARDED[@]}")" checks || exit 1
 step bump "$VERSION" bump || exit 1
+step lint "$VERSION" lint_release || exit 1
 step publish "$VERSION" publish || exit 1
 step workflow "$VERSION" workflow || exit 1
 step assets "$VERSION" assets || exit 1
