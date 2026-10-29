@@ -700,6 +700,7 @@ typedef struct CteVariants
 				inlined_cx;
 	ScanArms	scans;
 	double		plain_cost,
+				charged,		/* of plain_cost, what the unnesting aggregates are charged for the rows their estimate lost */
 				work,
 				read_rows;		/* the most rows the scans of the inline plan read (agg_read_rows) */
 } CteVariants;
@@ -755,6 +756,7 @@ plan_variants(SIFT_PLANNER_PARAMS, Query *inline_parse, List *names, CteVariants
 	v->work = shared_work_cost(v->plain, names, read_rows, lift, v->scans.n, &charged, &unnesting);
 	/* the shared plan really costs what its aggregates were charged: the totals are compared with it */
 	v->plain_cost += charged;
+	v->charged = charged;
 	elog(DEBUG1, "sift: shared CTE plain cost %.2f, inline cost %.2f, scans %.2f, shared work %.2f, %d scans, %.0f rows read, %d unnesting aggregates, charged %.2f",
 		 v->plain_cost, v->inlined->planTree->total_cost, v->scans.total, v->work, v->scans.n, read_rows, unnesting, charged);
 }
@@ -773,6 +775,14 @@ inline_wins(const CteVariants *v, double vet, double shared_vet)
 				plain_cost = v->plain_cost - shared_vet,
 				work = v->work - shared_vet;
 
+	/*
+	 * What the scans leave in the inline plan (the copies of the CTE bodies they do not replace, each reference one) is priced by PostgreSQL's own estimates, as the
+	 * shared plan is before its aggregates are charged: the charge makes up for the rows those aggregates lost, not for the rest. An inline plan whose rest costs more
+	 * than the whole shared plan uncharged (by the margin of a totals comparison) repeats work that the shared plan does once, and no charge on the aggregates
+	 * pays for it.
+	 */
+	if (!sift_agg_force && v->inlined->planTree->total_cost - v->scans.total > CTE_INLINE_TOTALS * (v->plain_cost - v->charged))
+		return false;
 	return v->scans.n > 0 && (sift_agg_force || (!plain_reader_stmt(v->inlined, 0) ? CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_ABOVE * plain_cost :
 							  (CTE_INLINE_MARGIN * scans < work && inline_cost < CTE_INLINE_TOTALS * plain_cost) ||
 							  scans < plain_cost - inline_cost));

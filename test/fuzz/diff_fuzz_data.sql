@@ -440,4 +440,14 @@ CREATE INDEX kl_ev_col ON kl_ev USING sift_col (id, dim_a_id, unit_id, foreign_i
 VACUUM (FREEZE, ANALYZE) kl_units, kl_origins, kl_links, kl_ev;
 -- @end
 
+-- the shared CTE copies: documents with a column index (their members are read by two aggregates) and a heavier table that a statement joins 1 to 3 times
+-- @heap
+CREATE TABLE cc_docs (id int PRIMARY KEY, grp int NOT NULL, v int NOT NULL, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO cc_docs SELECT i, i % 2000, i % 17, CASE WHEN fz.h(i, 190) % 15 = 0 THEN NULL ELSE jsonb_build_object('a', i % 9, 'b', i % 5, 'c', i % 3) END FROM generate_series(1, 8000) i;
+CREATE INDEX cc_docs_col ON cc_docs USING sift_col (id, grp, v, doc) WITH (paths = 'doc.* float8');
+CREATE TABLE cc_fat (id int PRIMARY KEY, grp int, w int) WITH (autovacuum_enabled = false);
+INSERT INTO cc_fat SELECT i, i % 50, i % 1000 FROM generate_series(1, 6000) i;
+VACUUM (FREEZE, ANALYZE) cc_docs, cc_fat;
+-- @end
+
 VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c, kcut_d;

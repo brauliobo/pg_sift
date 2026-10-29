@@ -49,6 +49,7 @@ TABLE_SKIP = {
     'dictcount': 'dcf is read through its sift_col index only',
     'flatkeys': 'the key tables are read through a sift_col index',
     'keylist': 'the facts are read through a sift_col index',
+    'ctecopies': 'the documents are read through a sift_col index',
     'arrlen': 'the lengths of an array are two lanes of the sift_col index (array_lengths); a sift_table keeps the image alone',
 }
 
@@ -1507,6 +1508,37 @@ def dml_keylist(r, ctx):
         f'UPDATE kl_units SET flag = NOT flag WHERE id % {m} = {k}', 'VACUUM kl_ev', 'VACUUM kl_links', "SELECT sift.col_merge('kl_ev_col', true)", "SELECT sift.col_promote('kl_ev_col')"])
 
 
+# ---------- shared CTE copies: two aggregates over a CTE of the rows of the keys a small CTE picks (read through a column index), joined to a heavy CTE that the statement reads 1 to 3 times (inlined: one copy each) ----------
+CC_KEYS = ['cf.id = 17', 'cf.id <= 3', 'cf.id <= 40', 'cf.id = 0', 'cf.id % 97 = 5', 'true']
+
+
+def gen_ctecopies(r, ctx):
+    return dict(copies=r.choice([1, 2, 2, 3, 3]), keys=r.choice(CC_KEYS), mat=r.choice(['', '', 'MATERIALIZED ', 'NOT MATERIALIZED ']), cut=r.randrange(2, 16), agg=r.choice(['sum({v})', 'count({v})', 'max({v})', 'sum({v}) FILTER (WHERE d.v % 2 = 0)']),
+                heavy=r.choice(['count(*) AS n, sum(w) AS sw', 'count(DISTINCT w) AS n, max(w) AS sw']), op=r.choice(['>=', '>', '<>']))
+
+
+def render_ctecopies(p):
+    val = 'x.value::float8'
+    agg = p['agg'].format(v=val)
+    arm = lambda cond: (f"SELECT d.grp, {agg} AS s FROM r d CROSS JOIN LATERAL jsonb_each_text(d.doc) x WHERE d.v {cond} GROUP BY d.grp")
+    joins = ''.join(f" JOIN heavy h{i} ON h{i}.grp = a{1 + i % 2}.grp AND h{i}.n {p['op']} h{i - 1}.n" if i > 1 else " JOIN heavy h1 ON h1.grp = a1.grp" for i in range(1, p['copies'] + 1))
+    cols = ', '.join(f'h{i}.n AS n{i}' for i in range(1, p['copies'] + 1))
+    return (f"WITH keys AS (SELECT cf.grp FROM cc_fat cf WHERE {p['keys']}), r AS {p['mat']}(SELECT cd.* FROM cc_docs cd JOIN keys USING (grp)), "
+            f"heavy AS (SELECT grp, {p['heavy']} FROM cc_fat GROUP BY grp, w % 97), a1 AS ({arm('< ' + str(p['cut']))}), a2 AS ({arm('>= ' + str(p['cut']))}) "
+            f"SELECT a1.grp AS k0, a1.s AS s1, a2.s AS s2, {cols} FROM a1 JOIN a2 USING (grp){joins} ORDER BY {', '.join(str(i) for i in range(1, 4 + p['copies']))}"), True
+
+
+def dml_ctecopies(r, ctx):
+    """Documents become NULL, empty or lose a member, rows move between groups, vanish or appear; the heavy table changes; the index is merged."""
+    m = r.choice([3, 7, 11, 19])
+    k = r.randrange(m)
+    return r.choice([
+        f'UPDATE cc_docs SET doc = NULL WHERE id % {m} = {k}', f"UPDATE cc_docs SET doc = '{{}}' WHERE id % {m} = {k}", f"UPDATE cc_docs SET doc = doc || '{{\"a\": null}}' WHERE id % {m} = {k} AND doc IS NOT NULL",
+        f'UPDATE cc_docs SET grp = (grp + {r.randrange(1, 5)}) % 2000 WHERE id % {m} = {k}', f'DELETE FROM cc_docs WHERE id % {m} = {k}',
+        f"INSERT INTO cc_docs SELECT 100000 + i, i % 2000, i % 17, jsonb_build_object('a', i % 4, 'b', i % 5) FROM generate_series({k}, {k + 300}) i WHERE i % {m} = 0 ON CONFLICT DO NOTHING",
+        f'UPDATE cc_fat SET w = w + 1 WHERE id % {m} = {k}', f'DELETE FROM cc_fat WHERE id % {m} = {k}', 'VACUUM cc_docs', 'VACUUM cc_fat', "SELECT sift.col_merge('cc_docs_col', true)", "SELECT sift.col_promote('cc_docs_col')"])
+
+
 # ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
 GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
 
@@ -1707,7 +1739,7 @@ FAMILIES = {
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
     'oneentity': (gen_oneentity, render_oneentity, 3),
     'listpage': (gen_listpage, render_listpage, 3),
-    'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'keylist': (gen_keylist, render_keylist, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
+    'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'ctecopies': (gen_ctecopies, render_ctecopies, 4), 'keylist': (gen_keylist, render_keylist, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -2070,6 +2102,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rg = random.Random(seed * 32452843 + 13)
     rb = random.Random(seed * 122949829 + 31)
     rf = random.Random(seed * 179424673 + 37)
+    rc = random.Random(seed * 217645177 + 43)
     rl = random.Random(seed * 198491317 + 41)
     done, eps = 0, []
     while done < nq:
@@ -2094,6 +2127,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_dictcount(rq2, ctx) for _ in range(rq2.randrange(dmls + 1))]
         if not TABLE and (not only or 'txnmix' in only):
             st += [dml_txn(rb, ctx) for _ in range(rb.randrange(dmls + 1))]
+        if not TABLE and (not only or 'ctecopies' in only):
+            st += [dml_ctecopies(rc, ctx) for _ in range(rc.randrange(dmls + 1))]
         if not TABLE and (not only or 'flatkeys' in only):
             st += [dml_flatkeys(rf, ctx) for _ in range(rf.randrange(dmls + 1))]
         if not TABLE and (not only or 'keylist' in only):
