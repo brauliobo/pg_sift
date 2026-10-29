@@ -65,7 +65,7 @@ META=(--meta "orders=$ROWS" --meta "postgresql=PostgreSQL $(pgv "$PORT") with pg
 if [[ -n $DOCS ]]; then OUT_FILE=$REPO/bench/results/duckdb.tsv; fi
 sift_version=$(git -C "$REPO" describe --tags --always)
 log "$ROWS orders, $CPUS CPUs and $MEMORY per server, median of $RUNS"
-LOCK=$LOCK_FILE locked python3 -I "$STEPS/duckdb.py" run --sift-port "$PORT" --duck-port $((PORT + 1)) --out "$OUT_FILE" --data "$DATA" --rows "$ROWS" --runs "$RUNS" --timeout "$TIMEOUT" \
+LOCK=$LOCK_FILE locked python3 -I "$STEPS/duckdb.py" run --sift-port "$PORT" --duck-port $((PORT + 1)) --sift-container "$NAME-sift" --duck-container "$NAME-duck" --out "$OUT_FILE" --data "$DATA" --rows "$ROWS" --runs "$RUNS" --timeout "$TIMEOUT" \
   --version "$sift_version" ${QUESTIONS:+--queries "$QUESTIONS"} "${META[@]}"
 if [[ -n $DOCS ]]; then
   python3 -I "$STEPS/extras.py" render

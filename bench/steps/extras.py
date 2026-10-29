@@ -391,24 +391,33 @@ def fold(summary, lines):
 DUCK_ARMS = [('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_heap', 'pg_duckdb heap'), ('duckdb_parquet', 'pg_duckdb Parquet')]
 
 
+def duck_fig(rows, case, arm, metric):
+    """(ms, cpu_ms, mb) of a lane from the rows of duckdb.tsv (metric warm_ms or cold_ms); a measure the run lacks is `NA`, with the lane's own reason when it gave one"""
+    t, pre = num(rows, case=case, arm=arm, metric=metric), metric[:-2]
+    got = lambda m: num(rows, case=case, arm=arm, metric=pre + m)  # noqa: E731
+    miss = lambda m: triple.NA(((get(rows, case=case, arm=arm, metric=pre + m) or {}).get('note') or triple.NOT_MEASURED))  # noqa: E731
+    return t, *(miss(m) if got(m) is None else got(m) for m in ('cpu_ms', 'read_mb'))
+
+
 def duck_cell(rows, case, arm, metric, best):
     r = get(rows, case=case, arm=arm, metric=metric)
     if r is None:
         return 'n/a'
     if r['value'] in ('NA', 'error'):
         return 'not supported' if r['value'] == 'NA' else 'error'
-    v, ref = float(r['value']), num(rows, case=case, arm='sift', metric=metric)   # pg_duckdb's run has the times only; the factors are against the pg_sift of the same run
-    text = triple.cell((v, *triple.UNMEASURED), None if arm == 'sift' or ref is None else (ref, *triple.UNMEASURED)) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
+    v = float(r['value'])   # the factors are against the pg_sift of the same run
+    text = triple.cell(duck_fig(rows, case, arm, metric), None if arm == 'sift' or num(rows, case=case, arm='sift', metric=metric) is None else duck_fig(rows, case, 'sift', metric)) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
     return '**%s**' % text if v <= best * 1.05 else text   # the fastest, and anything within 5% of it, in bold
 
 
 def duck_table(rows, cases, metric):
-    body = []
+    body, figs = [], []
     for c in cases:
         done = {a: x for a, _ in DUCK_ARMS if (x := num(rows, case=c, arm=a, metric=metric)) is not None}
         best = min(done, key=done.get) if done else None
+        figs += [duck_fig(rows, c, a, metric) for a in done]
         body.append([c] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
-    return table(['question'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---']) + [''] + triple.legend([(None, *triple.UNMEASURED)])
+    return table(['question'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---']) + [''] + triple.legend(figs, 'MB read (PostgreSQL, pg_sift and pg_duckdb on the heap: warm, what the statement hit and read in the PostgreSQL buffers, cold, what it read below them; the Parquet file: not counted warm, the container\'s disk reads cold)')
 
 
 def duck_summary(rows, cases, metric):

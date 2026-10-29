@@ -37,6 +37,22 @@ def key_of(obj, n=16):
     return hashlib.sha256(data.encode()).hexdigest()[:n]
 
 
+def cgroup_of(container):
+    """cgroup directory of a docker container (cgroup v2; the id does not change when the container restarts)"""
+    import subprocess
+    return '/sys/fs/cgroup/docker/' + subprocess.run(['docker', 'inspect', '-f', '{{.Id}}', container], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def cgroup_cpu(path):
+    """CPU seconds the cgroup has used so far, every process in it (a restarted container starts again at 0)"""
+    return float(open(path + '/cpu.stat').readline().split()[1]) / 1e6
+
+
+def cgroup_read(path):
+    """bytes the cgroup has read from block devices so far (io.stat, all devices)"""
+    return sum(int(f.split('=')[1]) for l in open(path + '/io.stat') for f in l.split() if f.startswith('rbytes='))
+
+
 def read_text(path):
     try:
         with open(path) as f:

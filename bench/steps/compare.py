@@ -77,7 +77,7 @@ def store_pairs(S, D, tier, e, qs):
     out = []
     for q in qs:
         theirs = bench_charts.fig(S, D, tier, e, q)
-        mine = (D.own(q, 'sift'), *triple.UNMEASURED) if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in MINE)
+        mine = D.fig(q, 'sift') if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in MINE)
         if theirs and mine and mine[0]:
             out.append((q, *triple.factors(theirs, mine)))
     return out
@@ -394,7 +394,7 @@ def numbers_block(results):
         fig = lambda e, q: bench_charts.fig(st, D, tier, e, q)  # noqa: E731
         mine = lambda q: triple.best(fig(e, q) for e in MINE)  # noqa: E731
         # pg_duckdb is its own run: its factors are against the pg_sift of that run (the time only; its run records no CPU and IO)
-        ref = lambda e, q: (D.own(q, 'sift'), *mine(q)[1:]) if e == 'duckdb' and D and D.own(q, 'sift') else mine(q)  # noqa: E731
+        ref = lambda e, q: D.fig(q, 'sift') if e == 'duckdb' and D and D.fig(q, 'sift') else mine(q)  # noqa: E731
         return triple.table(name, [(q, q) for q in qs], fig, ref)
 
     qs = list(S.queries)

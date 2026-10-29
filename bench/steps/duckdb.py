@@ -29,6 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import benchlib  # noqa: E402  (steps/benchlib.py)
 import extras  # noqa: E402
+import iolib  # noqa: E402  (the IO of a statement)
 import pgq  # noqa: E402  (steps/pgq.py)
 from store_lib import load_queries  # noqa: E402
 
@@ -122,50 +123,73 @@ def text(sql, n, table):
     return sql if table == 'orders' else re.sub(r'\borders\b', table, sql)
 
 
-def cell(session, q, arm, table, args):
-    """(timed ms of --runs runs, the rows, the note, the statement); the ms are empty for a question the lane cannot run, and the note says why"""
+def cell(session, q, arm, table, args, box):
+    """(timed ms of --runs runs, the rows, the note, the statement, the container's CPU ms of each run); the ms are empty for a question the lane cannot run, and the note says why"""
     sql = text(q.sec.get('sift' if arm == 'sift' else 'pg', q.sec['pg']), args.rows, table)
     note = ''
     if arm.startswith('duckdb'):
         while not any('DuckDBScan' in l for l in session.run('EXPLAIN ' + sql)[1]):
             reason = session.run(sql)[3] or 'it runs on the PostgreSQL executor'
             if note or 'duck' not in q.sec:
-                return [], None, 'not supported: ' + reason[:110], sql
+                return [], None, 'not supported: ' + reason[:110], sql, []
             sql, note = text(q.sec['duck'], args.rows, table), 'substring LIKE form (tsvector is not supported)'
     elif arm == 'sift':
         note = 'SiftAgg' if any('SiftAgg' in l for l in session.run('EXPLAIN ' + sql)[1]) else 'normal plan'
-    out, times, i = [], [], 0
+    out, times, cpus, i = [], [], [], 0
     # the first run is not timed; a cell whose runs spread by more than SPREAD of their median is run again, up to three times --runs (the harness's rule for noisy cells)
     while i <= args.runs or (len(times) < 3 * args.runs and max(times) - min(times) > SPREAD * statistics.median(times)):
+        cpu = benchlib.cgroup_cpu(box)
         ms, out, err, _ = session.run(sql)
+        cpu = (benchlib.cgroup_cpu(box) - cpu) * 1e3
         if err:
             what = 'timeout %d s' % args.timeout if 'timeout' in err else err[:110]
-            return [], None, ('not supported: ' if arm.startswith('duckdb') and 'timeout' not in err else 'error: ') + what, sql
+            return [], None, ('not supported: ' if arm.startswith('duckdb') and 'timeout' not in err else 'error: ') + what, sql, []
         if i:
             times.append(ms)
+            cpus.append(cpu)
         i += 1
-    return times, out, note, sql
+    return times, out, note, sql, cpus
 
 
-def measure(sessions, queries, args):
+NO_BYTES = 'pg_duckdb reads its Parquet file outside the PostgreSQL buffers: it counts no bytes per statement'
+
+
+def touched_mb(session, arm, sql, cold=False):
+    """MB the statement touched in one more run (cold: read below PostgreSQL's buffers, the session is new and the buffers empty): pg_stat_io's hits and read bytes, the client backends and the workers
+    (iolib.measure; pg_duckdb's scan of a heap table reads through the PostgreSQL buffers too); the text of the reason where nothing counts it"""
+    if arm == 'duckdb_parquet':
+        return NO_BYTES
+    d = iolib.measure(session, sql)
+    block = iolib.setup(session)[1]
+    return (d['stat_read_bytes'] if cold else d['stat_hits'] * block + d['stat_read_bytes']) / iolib.MB
+
+
+def row(args, q, arm, metric, note, st, noisy=''):
+    return dict(version=args.version, case=q, arm=arm, metric=metric, note=(note + noisy).strip(), load=open('/proc/loadavg').read().split()[0], **st)
+
+
+def measure(sessions, queries, args, boxes):
     rows, used = [], {}
     for q in queries:
         for attempt in range(3):
             quiet = wait_quiet()
-            cells = {arm: cell(sessions[arm], q, arm, table, args) for arm, _, table, _ in LANES}
+            cells = {arm: cell(sessions[arm], q, arm, table, args, boxes[srv]) for arm, srv, table, _ in LANES}
             noisy = not quiet or busy()
             if not noisy:
                 break
             log('%s: the host was busy, measuring again' % q.id)
         for arm, _, _, _ in LANES:
-            ms, out, note, used[q.id, arm] = cells[arm]
+            ms, out, note, used[q.id, arm], cpus = cells[arm]
             if ms and arm != 'pg' and cells['pg'][1] is not None:
                 if not same(out, cells['pg'][1]):
                     note += ' RESULT DIFFERS'
                 elif 'substring' in note:
                     note += ', same rows'
-            rows.append(dict(version=args.version, case=q.id, arm=arm, metric='warm_ms', note=(note + (' NOISY' if noisy else '')).strip(), load=open('/proc/loadavg').read().split()[0],
-                             **stats(ms, note)))
+            rows.append(row(args, q.id, arm, 'warm_ms', note, stats(ms, note), ' NOISY' if noisy else ''))
+            if ms:   # the CPU of the timed runs, and the MB one more run touches
+                rows.append(row(args, q.id, arm, 'warm_cpu_ms', 'the container\'s cgroup CPU', stats(cpus, '')))
+                mb = touched_mb(sessions[arm], arm, used[q.id, arm])
+                rows.append(row(args, q.id, arm, 'warm_read_mb', mb if isinstance(mb, str) else 'MB the statement hit and read in the PostgreSQL buffers (pg_stat_io)', dict(value='%.3f' % mb) if not isinstance(mb, str) else dict(value='NA')))
     return rows, used
 
 
@@ -175,21 +199,33 @@ def stats(ms, note):
     return dict(value='%.3f' % statistics.median(ms), min='%.3f' % min(ms), max='%.3f' % max(ms), n=len(ms))
 
 
-def cold(queries, ports, used, args, rows):
+def cold(queries, ports, used, args, rows, boxes):
     for q in queries:
         for arm, srv, table, setting in LANES:
             warm = next(r for r in rows if r['case'] == q.id and r['arm'] == arm and r['metric'] == 'warm_ms')
-            times = []
+            times, cpus, mbs = [], [], []
             if warm['value'] not in ('NA', 'error'):
                 for _ in range(args.runs):
                     wait_quiet()
                     if table == 'orders':
                         psql(ports[srv], 'bench', '-c', 'SELECT pg_buffercache_evict_all()')
                     s = Session(ports[srv], args.timeout, setting)
+                    cpu, disk = benchlib.cgroup_cpu(boxes[srv]), benchlib.cgroup_read(boxes[srv])
                     times.append(s.run(used[q.id, arm])[0])
+                    cpus.append((benchlib.cgroup_cpu(boxes[srv]) - cpu) * 1e3)
+                    disk = (benchlib.cgroup_read(boxes[srv]) - disk) / iolib.MB
                     s.close()
-            rows.append(dict(version=args.version, case=warm['case'], arm=arm, metric='cold_ms', note=warm['note'], load=open('/proc/loadavg').read().split()[0],
-                             **(stats(times, warm['note']) if times else dict(value=warm['value']))))
+                    if table == 'orders':   # one more first run after the emptying, for the bytes read below the buffers
+                        psql(ports[srv], 'bench', '-c', 'SELECT pg_buffercache_evict_all()')
+                        s = Session(ports[srv], args.timeout, setting)
+                        mbs.append(touched_mb(s, arm, used[q.id, arm], True))
+                        s.close()
+                    else:
+                        mbs.append(disk)
+            rows.append(row(args, warm['case'], arm, 'cold_ms', warm['note'], stats(times, warm['note']) if times else dict(value=warm['value'])))
+            if times:
+                rows.append(row(args, warm['case'], arm, 'cold_cpu_ms', 'the container\'s cgroup CPU', stats(cpus, '')))
+                rows.append(row(args, warm['case'], arm, 'cold_read_mb', 'MB read below the PostgreSQL buffers (pg_stat_io); the Parquet lane: the container\'s disk reads' if table == 'orders' else 'the container\'s disk reads (io.stat)', stats(mbs, '')))
 
 
 def load(port, ddl, label, csv, extension):
@@ -228,6 +264,8 @@ def main():
     ap.add_argument('cmd', choices=['run'])
     ap.add_argument('--sift-port', type=int, required=True)
     ap.add_argument('--duck-port', type=int, required=True)
+    ap.add_argument('--sift-container', required=True)
+    ap.add_argument('--duck-container', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--data', required=True)
     ap.add_argument('--rows', type=int, default=200000)
@@ -262,14 +300,15 @@ def main():
     engine = psql(args.duck_port, 'bench', '-c', "SELECT r['v'] FROM duckdb.query('SELECT version() AS v') r")
 
     queries = [q for q in load_queries() if not args.queries or q.id in args.queries.split(',')]
+    boxes = {'sift': benchlib.cgroup_of(args.sift_container), 'duck': benchlib.cgroup_of(args.duck_container)}
     sessions = {arm: Session(ports[srv], args.timeout, setting) for arm, srv, _, setting in LANES}
     log('warm: %d questions in %d lanes' % (len(queries), len(LANES)))
-    measured, used = measure(sessions, queries, args)
+    measured, used = measure(sessions, queries, args, boxes)
     rows += measured
     for s in sessions.values():
         s.close()
     log('cold')
-    cold(queries, ports, used, args, rows)
+    cold(queries, ports, used, args, rows, boxes)
 
     meta = dict(m.split('=', 1) for m in args.meta)
     meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings), host_load_before=load_before, host_load_after=extras.host_load())

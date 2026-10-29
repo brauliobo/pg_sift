@@ -14,6 +14,8 @@ What one run reports (`measure`; every figure is a difference over the run, None
     proc_read_bytes            read_bytes of /proc/PID/io of the backend and of the io workers (PostgreSQL 18 reads in them with io_method = worker): what the storage device
                                was asked for (Linux; None elsewhere or when not readable; parallel workers are other processes and not in it, so run with
                                max_parallel_workers_per_gather = 0 to compare; a data directory on tmpfs reads nothing from a device)
+    exec_ms, cpu_ms            the run's execution time (EXPLAIN's, planning not included) and the CPU the backend used in it (/proc/PID/schedstat, ns): parallel workers are other processes and not in it,
+                               so run with max_parallel_workers_per_gather = 0 for a CPU figure that is the statement's. A statement EXPLAIN cannot wrap has the CPU and no exec_ms
     wal_bytes                  WAL written in the run (pg_current_wal_lsn difference)
     size_bytes                 growth of the total size of the tables passed as `sized` (a build's files: bulk index builds bypass the write counters of pg_stat_io)
     cache, how                 `cold` after `cool` emptied the relations of TABLES, else `warm`; how says what was emptied
@@ -37,7 +39,7 @@ sys.path.insert(0, HERE)
 
 MB = 2 ** 20
 EXPLAINABLE = re.compile(r'\s*(select|with|insert|update|delete|merge|values|table)\b', re.I)
-EXPLAIN = 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) '
+EXPLAIN = 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY ON, FORMAT JSON) '
 STAT_FIELDS = ('reads', 'read_bytes', 'read_ms', 'writes', 'write_bytes', 'extends', 'extend_bytes', 'hits')
 STAT_WHERE = "backend_type IN ('client backend', 'background worker', 'parallel worker', 'io worker') AND object <> 'wal'"
 
@@ -74,6 +76,15 @@ def proc_read_bytes(pids):
         except (OSError, StopIteration):
             return None
     return total
+
+
+def backend_cpu_ns(pid):
+    """CPU nanoseconds the backend has used so far (/proc/PID/schedstat); None where it cannot be read"""
+    try:
+        with open('/proc/%s/schedstat' % pid) as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError):
+        return None
 
 
 def snapshot(s):
@@ -173,14 +184,15 @@ def cool(s, tables):
 
 
 def plan_blocks(s, sql):
-    """the top node's shared blocks of EXPLAIN (ANALYZE, BUFFERS) of the statement, which this runs once"""
+    """the top node's shared blocks of EXPLAIN (ANALYZE, BUFFERS) of the statement, which this runs once, and its execution time"""
     _, rows, err, _ = s.run(EXPLAIN + sql.rstrip().rstrip(';'))
     try:
-        top = json.loads('\n'.join(rows))[0]['Plan']
+        doc = json.loads('\n'.join(rows))[0]
+        top = doc['Plan']
     except ValueError:   # the server's error text, in its language: the session only recognizes English
         raise RuntimeError(err or ' '.join(rows)[:200])
     return dict(hit=top['Shared Hit Blocks'], read=top['Shared Read Blocks'], dirtied=top['Shared Dirtied Blocks'], written=top['Shared Written Blocks'],
-                temp_read=top['Temp Read Blocks'], temp_written=top['Temp Written Blocks'], read_ms=top.get('Shared I/O Read Time', top.get('I/O Read Time')))
+                temp_read=top['Temp Read Blocks'], temp_written=top['Temp Written Blocks'], read_ms=top.get('Shared I/O Read Time', top.get('I/O Read Time')), exec_ms=doc.get('Execution Time'))
 
 
 def explainable(sql):
@@ -199,20 +211,22 @@ def measure(s, sql, tables=None, sized=None):
     try:
         size = total_size(s, sized) if sized else None
         before = snapshot(s)
+        cpu = backend_cpu_ns(setup(s)[0])
         plan = plan_blocks(s, sql) if explainable(sql) else None
         if plan is None:
             err = s.run(sql)[2]
             if err:
                 raise RuntimeError(err)
+        cpu = None if cpu is None else (backend_cpu_ns(setup(s)[0]) - cpu) / 1e6
         d = delta(before, snapshot(s))
         d['size_bytes'] = total_size(s, sized) - size if sized else None
     finally:
         s.run('RESET track_io_timing')
     _, block, _ = setup(s)
     if plan is None:   # no plan to read the blocks from: the counters of pg_stat_io are in bytes
-        plan = dict(hit=d['stat_hits'], read=None if d['stat_read_bytes'] is None else d['stat_read_bytes'] / block, dirtied=None, written=None, temp_read=None, temp_written=None, read_ms=d['stat_read_ms'])
+        plan = dict(hit=d['stat_hits'], read=None if d['stat_read_bytes'] is None else d['stat_read_bytes'] / block, dirtied=None, written=None, temp_read=None, temp_written=None, read_ms=d['stat_read_ms'], exec_ms=None)
     hit, read = plan['hit'], plan['read']
-    d.update(plan, cache='cold' if how.startswith('evict') else 'warm', how=how,
+    d.update(plan, cpu_ms=cpu, cache='cold' if how.startswith('evict') else 'warm', how=how,
              hit_pct=100.0 * hit / (hit + read) if hit is not None and read is not None and hit + read else None,
              read_bytes=read * block if read is not None else None)   # the plan's blocks; pg_stat_io's own bytes stay in stat_read_bytes
     return d
@@ -225,10 +239,10 @@ def metrics(io):
     _device_mb (the backend's /proc read_bytes) and _read_ms; absent where the figure is None"""
     c = 'io_' + io['cache'] + '_'
     mb = lambda b: None if b is None else b / MB  # noqa: E731
-    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct']}
+    out = {c + 'read_blocks': io['read'], c + 'hit_pct': io['hit_pct'], c + 'ms': io.get('exec_ms'), c + 'cpu_ms': io.get('cpu_ms')}
     if io['cache'] == 'cold':
         out.update({c + 'read_mb': mb(io['read_bytes']), c + 'device_mb': mb(io['proc_read_bytes']), c + 'read_ms': io['read_ms']})
-    return {k: ('%d' % v if k.endswith('blocks') else '%.2f' % v) for k, v in out.items() if v is not None}
+    return {k: ('%d' % v if k.endswith('blocks') else '%.3f' % v if k in (c + 'ms', c + 'cpu_ms') else '%.2f' % v) for k, v in out.items() if v is not None}
 
 
 def load_metrics(d):

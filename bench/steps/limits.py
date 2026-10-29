@@ -49,7 +49,7 @@ def store_losses(results):
         for e in ('pg', 'ch', 'es', 'citus', 'duckdb'):
             for q in S.queries + list(store_charts.SEARCH):
                 theirs = bench_charts.fig(S, D, tier, e, q)
-                mine = (D.own(q, 'sift'), *triple.UNMEASURED) if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in compare.MINE)
+                mine = D.fig(q, 'sift') if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in compare.MINE)
                 if theirs and mine and mine[0] and theirs[0] / mine[0] <= 1 - TIE:
                     out.append((mine[0] / theirs[0], '%s at %s orders' % (q, format(size, ',')), LABEL[e], mine, theirs))
     return out

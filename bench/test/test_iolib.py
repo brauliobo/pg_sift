@@ -64,6 +64,8 @@ class Pure(unittest.TestCase):
         warm = dict(cache='warm', read=0, hit_pct=100.0, read_bytes=0, proc_read_bytes=0, read_ms=None)
         self.assertEqual(iolib.metrics(cold), {'io_cold_read_blocks': '277', 'io_cold_hit_pct': '0.00', 'io_cold_read_mb': '2.00', 'io_cold_read_ms': '1.50'})
         self.assertEqual(iolib.metrics(warm), {'io_warm_read_blocks': '0', 'io_warm_hit_pct': '100.00'})
+        timed = dict(warm, exec_ms=0.4567, cpu_ms=0.5)
+        self.assertEqual(iolib.metrics(timed), {'io_warm_read_blocks': '0', 'io_warm_hit_pct': '100.00', 'io_warm_ms': '0.457', 'io_warm_cpu_ms': '0.500'})   # the time and the CPU of the run
 
     def test_load_metrics(self):
         self.assertEqual(iolib.load_metrics(dict(stat_extend_bytes=3 * iolib.MB, stat_write_bytes=None)), {'io_extend_mb': 3.0})
@@ -151,6 +153,8 @@ class Live(unittest.TestCase):
         io = iolib.measure(self.s, 'INSERT INTO t SELECT i, md5(i::text) FROM generate_series(1, 20000) i')
         self.assertGreater(io['dirtied'], 0)
         self.assertGreater(io['wal_bytes'], 0)
+        self.assertGreater(io['cpu_ms'], 0)   # the backend's CPU of the run; a statement EXPLAIN can wrap also has its execution time
+        self.assertGreater(io['exec_ms'], 0)
 
     def test_a_script_reports_its_wal_and_size(self):
         io = iolib.measure(self.s, 'CREATE INDEX t_s ON t (s); DROP INDEX t_s', None, ['public.t'])

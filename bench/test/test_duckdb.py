@@ -52,5 +52,14 @@ class Render(unittest.TestCase):
                 self.assertLessEqual(line.count('|') - 1, 7, line)    # at most 7 columns: GitHub scrolls wider tables sideways
 
 
+    def test_cpu_and_read_of_the_run_are_in_the_cells(self):
+        extra = [dict(version='v', case='orders-per-country', arm=a, metric='warm_cpu_ms', value=str(c), note='') for a, c in (('pg', 20), ('sift', 2), ('duckdb_heap', 6))]
+        extra += [dict(version='v', case='orders-per-country', arm=a, metric='warm_read_mb', value=v, note=n) for a, v, n in (('pg', '40', ''), ('sift', '4', ''), ('duckdb_parquet', 'NA', 'no bytes counted'))]
+        text = '\n'.join(extras.duck_table(rows() + extra, ['orders-per-country'], 'warm_ms'))
+        self.assertIn('5.00 · 20.0 · 40.0 (5.0x · 10x · 10x)', text)    # PostgreSQL over pg_sift of the same run
+        self.assertIn('3.00 · n/a · n/a (3.0x · n/a · n/a)', text)      # Parquet: no CPU recorded, the read has its own reason
+        self.assertIn('`n/a`: no bytes counted', text)
+
+
 if __name__ == '__main__':
     unittest.main()

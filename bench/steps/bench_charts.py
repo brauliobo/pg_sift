@@ -101,17 +101,31 @@ class Duck:
 
     def __init__(self, path):
         self.meta, self.rows = sc.read_tsv(path)
-        self.v = {}
+        self.v, self.note = {}, {}
         for r in self.rows:
+            k = (r['case'].split(' ')[0], r['arm'], r['metric'])
             if r['value'] not in ('NA', 'error', ''):
-                self.v[(r['case'].split(' ')[0], r['arm'], r['metric'])] = float(r['value'])
+                self.v[k] = float(r['value'])
+            elif r['value'] == 'NA':   # a measure the lane cannot give: the note says why
+                self.note[k] = r['note']
+
+    def arm(self, q, metric='warm_ms'):
+        """the faster of pg_duckdb's two modes on a question, None when neither ran it"""
+        have = [a for a in ('duckdb_heap', 'duckdb_parquet') if (q, a, metric) in self.v]
+        return min(have, key=lambda a: self.v[q, a, metric]) if have else None
 
     def best(self, q, metric='warm_ms'):
-        vals = [self.v[(q, a, metric)] for a in ('duckdb_heap', 'duckdb_parquet') if (q, a, metric) in self.v]
-        return min(vals) if vals else None
+        a = self.arm(q, metric)
+        return self.v[q, a, metric] if a else None
 
     def own(self, q, arm, metric='warm_ms'):
         return self.v.get((q, arm, metric))
+
+    def fig(self, q, arm, variant='warm'):
+        """(ms, cpu_ms, mb) of a lane of the run on a question (steps/triple.py); a measure the run lacks is `NA` with the lane's own reason when it gave one"""
+        t = self.v.get((q, arm, variant + '_ms'))
+        miss = lambda m: triple.NA(self.note.get((q, arm, variant + '_' + m)) or triple.NOT_MEASURED)  # noqa: E731
+        return t and (t, *(self.v.get((q, arm, variant + '_' + m), miss(m)) for m in ('cpu_ms', 'read_mb')))
 
 
 def load(results):
@@ -144,8 +158,8 @@ def lat(S, D, tier, e, q, variant='warm'):
 def fig(S, D, tier, e, q, variant='warm'):
     """(ms, cpu_ms, mb) of a system on a question (steps/triple.py); pg_duckdb: the faster of its two modes, whose runs record the time only"""
     if e == 'duckdb':
-        v = lat(S, D, tier, e, q, variant)
-        return v and (v[0], *triple.UNMEASURED)
+        a = D.arm(q, variant + '_ms') if D else None
+        return a and D.fig(q, a, variant)
     return triple.fig(lambda m: S.get(tier, e, q, variant, m))
 
 

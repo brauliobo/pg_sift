@@ -582,6 +582,8 @@ def run_point(args, cases, rows, engines, results, failed):
                     ios, names, size = io_load(lanes[lane], c, lane, expand(c.statement(lane), c), texts.get(lane, ''), args.io)
                     for io in ios if args.io != 'off' else []:   # off: the rows of before the IO measure (buffers, index_bytes) only
                         for metric, value in iolib.metrics(io).items():
+                            if metric.endswith('_cpu_ms') and os.environ.get('CASES_WORKERS', '2') != '0':   # the backend's CPU is the statement's only without parallel workers
+                                continue
                             point.append(dict(case=c.id, arm=lane, metric=metric, value=value, note=io['how'] or 'warm', load=load))
                     if ios:
                         warm = ios[-1]
