@@ -9,7 +9,7 @@ import time
 from store_common import difference, host_fp, max_rel, percentile, rotated, tolerance, write
 from store_data import Rows, effective, servers
 from stats import summary
-from store_engine import Client, Window, ask, docker, gate, psql_value, restart
+from store_engine import Client, Window, ask, docker, gate, io_read, psql_value, restart
 from store_lib import NOISY, PG_ENGINES, container, is_ch, load_queries, log
 
 
@@ -17,6 +17,7 @@ def measure_query(q, clients, args, rows):
     """the cell of one question on every engine, in a window whose external noise is recorded; (the results that differ, why the window was NOISY)"""
     for c in clients.values():
         c.busy = c.cpu = 0.0
+        c.cpus = []
     with Window() as w:
         stop = run_query(q, clients, args, rows)
     for e, c in clients.items():   # the cores the container used while this client's requests ran: its CPU over the wall time of those requests (not the window: the other engines are asked in it)
@@ -29,6 +30,12 @@ def measure_query(q, clients, args, rows):
     return stop, w.record(rows, q.id, 'warm', w.judge({container(e) for e in clients}, io=True))
 
 
+def sample(c, st, times):
+    """one timed request: its milliseconds go to times, the container's CPU milliseconds of it to c.cpus"""
+    times.append(c.run(st)[0])
+    c.cpus.append(c.cpu_ms)
+
+
 def one_container(lanes, stmts, clients, args, times):
     """the untimed warm-ups, then the timed runs of the lanes of one container, the first lane rotating every run (the lanes of one container share its CPUs, so they never run together)"""
     for _ in range(args.warmups - 1):
@@ -36,7 +43,7 @@ def one_container(lanes, stmts, clients, args, times):
             clients[e].run(stmts[e])
     for i in range(args.runs):
         for e in rotated(lanes, i):
-            times[e].append(clients[e].run(stmts[e])[0])
+            sample(clients[e], stmts[e], times[e])
 
 
 def time_cell(live, stmts, clients, args):
@@ -50,7 +57,7 @@ def time_cell(live, stmts, clients, args):
                 clients[e].run(stmts[e])
         for i in range(args.runs):
             for e in rotated(live, i):
-                times[e].append(clients[e].run(stmts[e])[0])
+                sample(clients[e], stmts[e], times[e])
         return times
     cores = physical_cores()
     n = min(args.parallel, benchlib.max_parallel(cores, args.cpus))
@@ -128,6 +135,9 @@ def run_query(q, clients, args, rows):
     times = time_cell(live, stmts, clients, args)
     for e in live:
         rows.add(e, q.id, 'warm', 'latency_ms', 'ms', st=summary(times[e]))
+        rows.add(e, q.id, 'warm', 'cpu_ms', 'ms', st=summary(clients[e].cpus))
+        mb = clients[e].read_mb(stmts[e])
+        rows.add(e, q.id, 'warm', 'read_mb', 'MB', **({'value': mb} if isinstance(mb, str) else {'st': summary([mb])}))
     log(f'{q.id}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
     return stop
 
@@ -187,23 +197,34 @@ def evict(e):
 
 def cold_cell(e, q, stmt, args, how='evict'):
     """the first run of a question after the server's memory was emptied (`evict`: its caches and buffers, `--cold-runs` times; `restart`: the container, `--restart-runs` times:
-    a restart takes seconds, so it has a count of its own), each on a new connection: (the times, the windows of the runs added up); no times when the engine fails"""
-    ts, w = [], Window()
+    a restart takes seconds, so it has a count of its own), each on a new connection: (the times, the windows of the runs added up, the container's CPU milliseconds of each run and the MB read
+    past the engine's caches); no times when the engine fails. The MB: one more first run after the emptying (Client.read_mb), or the container's disk reads of the run itself after a restart"""
+    ts, w, cpus, mbs = [], Window(), [], []
     for _ in range(args.restart_runs if how == 'restart' else args.cold_runs):
         c = None
         try:
             with Window() as x:   # the emptying and the first run: the request alone is a few milliseconds, too short for the host's counters
                 restart(e) if how == 'restart' else evict(e)
                 c = Client(e)
+                disk = io_read(c.cg)
                 ts.append(c.run(stmt)[0])
+                cpus.append(c.cpu_ms)
+                disk = (io_read(c.cg) - disk) / 2**20
             w.add(x)
+            if how == 'restart':
+                mbs.append(disk)
+            else:
+                evict(e)
+                c.close()
+                c = Client(e)
+                mbs.append(c.read_mb(stmt, cold=True))
         except RuntimeError as err:   # an error is a result, as in the warm run
             log(f'cold {e} {q.id}: {err}')
-            return None, w
+            return None, w, [], []
         finally:
             if c:
                 c.close()
-    return ts, w
+    return ts, w, cpus, mbs
 
 
 def med(xs):
@@ -219,7 +240,7 @@ def cold_check(e, q, stmt, how, args, rows, cache):
     if hit:
         rows.rows += hit['rows']
         return med([r for r in hit['rows'] if r['metric'] == 'latency_ms'][0]['values']), hit['date']
-    ts, _ = cold_cell(e, q, stmt, args, other)
+    ts = cold_cell(e, q, stmt, args, other)[0]
     if not ts:
         return None, None
     mine = Rows(args.tier)
@@ -259,13 +280,15 @@ def cmd_cold(args):
             got[e, q.id] = cold_cell(e, q, stmts[q.id, e], args, how[e])
             again.append(f'{e} {q.id}')
     for e, q in cells:
-        ts, w = got[e, q.id]
+        ts, w, cpus, mbs = got[e, q.id]
         if not ts:
             continue
         why = w.record(rows, q.id, f'cold-{e}', w.judge({container(e)}))
         if why:
             NOISY.append(f'cold {e} {q.id}: {why}')
         rows.add(e, q.id, 'cold', 'latency_ms', 'ms', st=summary(ts))
+        rows.add(e, q.id, 'cold', 'cpu_ms', 'ms', st=summary(cpus))
+        rows.add(e, q.id, 'cold', 'read_mb', 'MB', st=summary(mbs))
     checked = {}
     for q in [q for q in queries if q.id in args.cold_check]:
         for e in engines:

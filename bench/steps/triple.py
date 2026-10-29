@@ -41,7 +41,7 @@ def times(v, ref):
 def fig(get):
     """(ms, cpu_ms, mb) of a system on a question from a lookup get(metric) -> result row or None; None when it did not answer, `NA` for a measure the run did not record"""
     t = get('latency_ms')
-    return t and (t['value'], *((r['value'] if (r := get(m)) else NA(NOT_MEASURED)) for m in ('cpu_ms', 'read_mb')))
+    return t and (t['value'], *((NA(r['value']) if isinstance(r['value'], str) else r['value']) if (r := get(m)) else NA(NOT_MEASURED) for m in ('cpu_ms', 'read_mb')))
 
 
 def best(figs):

@@ -66,6 +66,14 @@ def container_cgroup(eid):
     return f'/sys/fs/cgroup/docker/{docker("inspect", "-f", "{{.Id}}", container(eid)).strip()}'
 
 
+NA_ES = 'Elasticsearch counts no bytes read per request'   # a warm figure it cannot give: the reason is the cell (steps/triple.py)
+
+
+def io_read(path):
+    """bytes the container's cgroup has read from block devices so far (a restarted container starts again at 0)"""
+    return sum(int(f.split('=')[1]) for l in open(path + '/io.stat') for f in l.split() if f.startswith('rbytes='))
+
+
 def cgroup_usage(path):
     """CPU seconds the container has used so far (a restarted container starts again at 0)"""
     return float(open(path + '/cpu.stat').readline().split()[1]) / 1e6
@@ -75,6 +83,7 @@ class Client:
     """one engine: run(statement, capture) -> (milliseconds, text or None)"""
     def __init__(self, eid):
         self.eid, self.busy, self.cpu = eid, 0.0, 0.0   # busy, cpu: wall seconds and container CPU seconds spent in this client's requests since the last reset
+        self.cpu_ms, self.cpus = 0.0, []   # the container's CPU milliseconds of the last request, and of each timed request since the last reset (store_run.sample)
         self.cg = container_cgroup(eid)
         self.psql = Psql(eid) if eid in PG_ENGINES else None
         self.http = None if self.psql else Http(eid, CH_AUTH if is_ch(eid) else {'Content-Type': 'application/json'})
@@ -94,7 +103,23 @@ class Client:
             return (time.perf_counter() - t0) * 1e3, es_text(data, spec) if capture else None
         finally:
             self.busy += time.perf_counter() - t0
-            self.cpu += cgroup_usage(self.cg) - u0
+            self.cpu_ms = (cgroup_usage(self.cg) - u0) * 1e3
+            self.cpu += self.cpu_ms / 1e3
+
+    def read_mb(self, st, cold=False):
+        """(MB the engine read for the statement in one more request, the reason it cannot say: str). Warm, the data it touched: PostgreSQL and its extensions the buffers hit and read of EXPLAIN (ANALYZE, BUFFERS), ClickHouse
+        the bytes its query log counts as read (decompressed); cold, past the engine's own caches: the shared reads, the bytes read from files. Elasticsearch counts neither per request: its cold cells use the container's disk reads (io_read)"""
+        if self.psql:
+            top = json.loads('\n'.join(self.psql.run('EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' + st, capture=True)))[0]['Plan']
+            return (top['Shared Read Blocks'] if cold else top['Shared Hit Blocks'] + top['Shared Read Blocks']) * 8192 / 2**20
+        if is_ch(self.eid):
+            qid = f'{NAME}-{time.time_ns()}'
+            self.http.request('POST', f'/?database=store&default_format=TSV&query_id={qid}', st.encode())
+            self.http.request('POST', '/', b'SYSTEM FLUSH LOGS')
+            got = self.http.request('POST', '/?default_format=TSV', f"SELECT read_bytes, ProfileEvents['ReadBufferFromFileDescriptorReadBytes'] FROM system.query_log WHERE query_id = '{qid}' AND type = 'QueryFinish'".encode())
+            warm, files = map(int, got.split())
+            return (files if cold else warm) / 2**20
+        return NA_ES
 
     def explain(self, st):
         if not self.psql:

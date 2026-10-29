@@ -84,12 +84,16 @@ def bench_table(R, tier, engines, labels, variant='warm', search=False):
     return head, body
 
 
-def triple_table(R, tier, engines, labels, search=False):
+READ = {'warm': 'MB read (the data a request touched: PostgreSQL, pg_sift and Citus the buffers it hit and read, ClickHouse the bytes its query log counts as read)',
+        'cold': 'MB read (past the engine\'s own caches: PostgreSQL, pg_sift and Citus the shared reads, ClickHouse the bytes read from files, Elasticsearch the disk reads of its container; the operating system\'s page cache stays, so these are not device reads)'}
+
+
+def triple_table(R, tier, engines, labels, search=False, variant='warm'):
     """the questions of a result set as cells of time, CPU and IO (steps/triple.py), then what each slug stands for"""
     qs = R.queries(tier, search)
-    fig = lambda e, q: triple.fig(lambda m: R.get(tier, e, q, 'warm', m))  # noqa: E731
+    fig = lambda e, q: triple.fig(lambda m: R.get(tier, e, q, variant, m))  # noqa: E731
     mine = lambda q: triple.best(fig(e, q) for e in triple.MINE if e in engines)  # noqa: E731
-    return triple.table({labels[e]: e for e in engines}, [(q, q) for q in qs], fig, lambda e, q: mine(q)) + ['', 'The questions: ' + '; '.join(f'`{q}` = {QUERY_TITLES[q]}' for q in qs) + '.']
+    return triple.table({labels[e]: e for e in engines}, [(q, q) for q in qs], fig, lambda e, q: mine(q), read=READ[variant]) + ['', 'The questions: ' + '; '.join(f'`{q}` = {QUERY_TITLES[q]}' for q in qs) + '.']
 
 
 HEAP = ('pg', 'sift')   # the systems whose table is a heap; the others hold the rows in their own format
@@ -408,7 +412,11 @@ def benchmarks_block(R):
                                                                    picture('agg-speedup', 'How many times faster than PostgreSQL each system is on each question, warm and cold', 'img/'), '', '**Caveats**', '']
     out += ['- ' + c for c in caveat_lines(R, tier, engines, labels)]
     out += ['', '#### Search with filters', '', 'The three full-text questions of the same set, a text search with filters on the same rows (the search benchmarks proper are in the [README](../README.md#search)); they are not part of the aggregates above.', '']
-    out += triple_table(R, tier, engines, dagger(R, tier, labels), search=True) + ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
+    out += triple_table(R, tier, engines, dagger(R, tier, labels), search=True)
+    if any(R.get(tier, e, q, 'cold', 'latency_ms') for e in engines for q in R.queries(tier)):
+        out += ['', '#### Cold', '', 'The first run of every question after the server\'s memory was emptied ([method](#configuration)), the same three measures; the aggregate questions, then the searches.', ''] + triple_table(
+            R, tier, engines, dagger(R, tier, labels), variant='cold') + [''] + triple_table(R, tier, engines, dagger(R, tier, labels), search=True, variant='cold')
+    out += ['', 'Raw results: [results/store.json](results/store.json); the charts and the scale benchmarks: [perf/AGGREGATES.md](perf/AGGREGATES.md).', '']
     last = R.tiers[-1]
     t = R.meta['tiers'][last]
     s = t['servers']
@@ -432,7 +440,11 @@ def benchmarks_block(R):
             'each shard merged to one segment after the load; aggregations of the search API with `size: 0`; the shard request cache off (`request_cache=false`) except in the table that says otherwise; distinct counts are `cardinality` (HyperLogLog++, `precision_threshold` 40000), the only approximate result.',
             f'- ClickHouse {s["ch"]}: `MergeTree`, `PARTITION BY` month, `ORDER BY (country, created_at, id)` (`status` and `amount` stay out of the key so that they can be updated), `LowCardinality` strings, `Decimal(10, 2)` for the amount, a text index on the title, a Bloom filter on the id, the settings lightweight updates need; {ch_threads}; optimized to one part per partition after the load.',
             '- pg_sift: `sift_col` over the columns the reports read plus the month of the order, a `sift` BM25 index on the title; `sift_table` is the table itself in column format with a `sift` index on the title and the primary key. PostgreSQL: primary key, btree on the date and on country and status, GIN on `to_tsvector(\'simple\', title)`.',
-            f'- Method: every engine has {cpu_name(quota)} for its server, the budget of the search tables; one client, one request at a time, wall time from this process to the end of the response over a persistent local connection; the engines are timed in turn within each run so a drift of the host load hits all of them; one untimed run per engine first (its result is checked against PostgreSQL\'s), then the timed runs. The numbers of one table are comparable with each other, not with another host.']
+            f'- Method: every engine has {cpu_name(quota)} for its server, the budget of the search tables; one client, one request at a time, wall time from this process to the end of the response over a persistent local connection; the engines are timed in turn within each run so a drift of the host load hits all of them; one untimed run per engine first (its result is checked against PostgreSQL\'s), then the timed runs. The numbers of one table are comparable with each other, not with another host.',
+            '- CPU and IO: the CPU of a request is the CPU time the container\'s cgroup (`cpu.stat`) used between its first byte sent and the end of the response, every process of the server included (parallel workers, the JVM\'s background threads, ClickHouse\'s merges); median of the timed runs. '
+            'MB read, warm, is what the engine says the request touched: PostgreSQL, pg_sift and Citus the buffers hit and read of one more `EXPLAIN (ANALYZE, BUFFERS)` run (a page read twice counts twice), ClickHouse `read_bytes` of its query log (decompressed); Elasticsearch has no per-request counter (`n/a`). '
+            'MB read, cold, is read past the engine\'s own caches in the first run after they were emptied: the shared reads (PostgreSQL family), the bytes ClickHouse read from files, and for Elasticsearch (restarted, not emptied) the container\'s disk reads (`io.stat`). '
+            'The operating system\'s page cache stays in every cold run (dropping it needs root), so a cold figure is not a device read; it tells how much each engine must fetch from below its own cache.']
     return out
 
 

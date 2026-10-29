@@ -29,7 +29,7 @@ from store_engine import Client, Http, Utilization, restart  # noqa: E402
 from store_lib import CH_AUTH, DEFAULT_ENGINES, UPDATE_ENGINES, container, die, load_queries, log  # noqa: E402
 from store_plan import cmd_cache_save, cmd_merge, cmd_noisy, cmd_patch, cmd_plan, cmd_planget, cmd_stable  # noqa: E402
 from store_render import cmd_compare, cmd_gap, cmd_render, cmd_table  # noqa: E402
-from store_run import cmd_cold, cmd_interference, cmd_run, cold_cell, evict, one_container, run_query, time_cell, time_wave  # noqa: E402
+from store_run import cmd_cold, cmd_interference, cmd_run, cold_cell, evict, one_container, run_query, sample, time_cell, time_wave  # noqa: E402
 from store_section import cmd_section, cmd_section_merge  # noqa: E402
 from store_updates import Writer, churn, cmd_updates, cmd_verify, read_after_write, read_latency, update_engine, with_load  # noqa: E402
 
@@ -166,8 +166,8 @@ def main():
     c.add_argument('b')
     args = ap.parse_args()
     store_common.LOAD_CODE = benchlib.key_of([inspect.getsource(f) for f in (load_pg, build_indexes, copy_chunks, load_ch, load_es, bulk_docs)], 12)
-    store_common.MEASURE_CODE = benchlib.key_of([store_common.LOAD_CODE] + [inspect.getsource(f) for f in (run_query, time_cell, time_wave, one_container, cold_cell, evict, restart, update_engine, with_load, churn, read_latency,
-                                                                                   read_after_write, Client.run, Writer.bulk, Writer.probe_set)], 12)
+    store_common.MEASURE_CODE = benchlib.key_of([store_common.LOAD_CODE] + [inspect.getsource(f) for f in (run_query, time_cell, time_wave, one_container, sample, cold_cell, evict, restart, update_engine, with_load, churn, read_latency,
+                                                                                   read_after_write, Client.run, Client.read_mb, Writer.bulk, Writer.probe_set)], 12)
     if args.cmd in ('gen', 'load', 'run', 'cold', 'updates', 'section', 'verify', 'plan', 'datakey', 'interference') and not args.engines:
         args.engines = UPDATE_ENGINES if args.cmd == 'updates' else DEFAULT_ENGINES
     args.cell = 0
