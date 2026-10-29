@@ -85,7 +85,17 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	{
 		(void) sift_tbl_inserted_visible(snapshot, &rv, &dead);
 		if (all_dead)
+		{
+			SiftTblDel	del;
+
+			/* a version deleted or updated by a transaction that no snapshot can still see as running is dead for every snapshot: the b-tree marks its entry, and does not fetch it again */
+			if (!dead)
+			{
+				sift_tbl_del_state(st, rv.key, &del);
+				dead = (del.state == SIFT_TBL_DEL_DELETED || del.state == SIFT_TBL_DEL_UPDATED) && GlobalVisCheckRemovableXid(rel, del.xid);
+			}
 			*all_dead = dead;
+		}
 		sift_tbl_free_row(&rv);
 		return false;
 	}
