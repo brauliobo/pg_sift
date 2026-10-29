@@ -847,6 +847,33 @@ static bool planning_second;
 static bool verdict_replan;
 
 /*
+ * The total of the plan the planner makes without the library: the alternative to every plan of the statement that uses it, which the cte_inline row of
+ * explain_why prices it against (the shared plan after its aggregates were charged is the price of a plan nobody runs).
+ */
+static double
+planner_total(SIFT_PLANNER_PARAMS)
+{
+	bool		outer = sift_enable_agg,
+				quiet = agg_quiet_reports(true);
+	MemoryContext cx;
+	double		total;
+
+	PG_TRY();
+	{
+		sift_enable_agg = false;
+		total = plan_in_own_context(SIFT_PLANNER_ARGS(parse), &cx)->planTree->total_cost;
+	}
+	PG_FINALLY();
+	{
+		sift_enable_agg = outer;
+		agg_quiet_reports(quiet);
+	}
+	PG_END_TRY();
+	discard_plan(cx);
+	return total;
+}
+
+/*
  * The statement planned as the verdict kept for it says (verdict.c): the inline plan when the scans won, else the plan that keeps the shared CTEs.
  * The totals are those of the plan in full that made the verdict, a statement of other constants: the cte_inline row reports no costs, since
  * those would be the other statement's (the verdict_cached row says why).
@@ -887,7 +914,8 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 {
 	Query	   *inline_parse,
 			   *pristine = NULL,
-			   *pristine_inline = NULL;
+			   *pristine_inline = NULL,
+			   *bare = NULL;
 	CteVariants v;
 	SharedCteWalk walk = {true, NIL};
 	CteVerdict	vd;
@@ -932,6 +960,9 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		pristine = copyObject(parse);
 		pristine_inline = copyObject(inline_parse);
 	}
+	if (sift_explain_refusals)
+		bare = copyObject(parse);
+	agg_variant_hold();
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
 	same = planning_second && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
 		first_plan.scans == v.scans.total && first_plan.work == v.work;
@@ -950,12 +981,15 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	}
 	if (won)
 	{
-		agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, v.inlined->planTree->total_cost, v.plain_cost);
+		agg_variant_settle(true, NULL);
+		if (bare != NULL)
+			agg_report("cte_inline", AGG_REFUSE_NONE, NULL, true, v.inlined->planTree->total_cost, planner_total(SIFT_PLANNER_ARGS(bare)));
 		inline_won = true;
 		discard_plan(v.plain_cx);
 		*cx = v.inlined_cx;
 		return v.inlined;
 	}
+	agg_variant_settle(false, "the arm is in the plan with the CTE inlined, which lost: see cte_inline");
 	if (sift_explain_refusals && v.scans.n > 0)
 	{
 		ScanArms	shared = {0};
@@ -966,7 +1000,7 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		/* the heap check decided it when the scans would have won without it, in both plans (a rewrite leaves the visibility map empty) */
 		if (v.scans.vet > 0 && inline_wins(&v, v.scans.vet, shared.vet))
 			detail = psprintf("%s; %.0f%% of the heap pages are not all-visible, which adds %.2f to the scans: VACUUM (ANALYZE) the table", detail, v.scans.vet_pct, v.scans.vet);
-		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false, v.inlined->planTree->total_cost, v.plain_cost);
+		agg_report("cte_inline", AGG_REFUSE_CTE_COST, detail, false, v.inlined->planTree->total_cost, planner_total(SIFT_PLANNER_ARGS(bare)));
 	}
 	discard_plan(v.inlined_cx);
 	*cx = v.plain_cx;

@@ -66,6 +66,23 @@ SELECT cte_rows(held_query('events')) > 20 AS lifted, verdict(series_query('even
  t      | true
 (1 row)
 
+-- the cte_inline row prices the scans against the plan the planner makes without the library, not against the shared plan charged for the rows its aggregates lost
+CREATE FUNCTION plain_total(q text) RETURNS float8 LANGUAGE plpgsql SET sift.enable_agg = off AS $$
+DECLARE j jsonb;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN (j->0->'Plan'->>'Total Cost')::float8;
+END $$;
+SET sift.agg_verdict_cache = off;
+SELECT used, round(normal_cost::numeric, 2) = round(plain_total(series_query('events'))::numeric, 2) AS against_plain
+FROM sift.explain_why(series_query('events')) WHERE arm = 'cte_inline';
+ used | against_plain 
+------+---------------
+ t    | t
+(1 row)
+
+RESET sift.agg_verdict_cache;
+DROP FUNCTION plain_total(text);
 DROP FUNCTION verdict, cte_rows, held_query, series_query;
 DROP TABLE events, plain_events, kinds;
 DROP EXTENSION pg_sift;

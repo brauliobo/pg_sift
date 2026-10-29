@@ -299,6 +299,8 @@ agg_arm_end(void)
 }
 
 static bool quiet_reports = false;
+static MemoryContext hold_cx;	/* set while the used arms of the inline variant are held (agg_variant_hold) */
+static List *held;
 
 /* the plans of a statement at another size (cte.c) report nothing: the arms of the statement are those of the plan at its own */
 bool
@@ -311,16 +313,12 @@ agg_quiet_reports(bool quiet)
 }
 
 static void
-report(const ArmNote *a)
+emit(const ArmNote *a)
 {
 	const char *slug = refusals[a->why].slug;
 	const char *reason = a->why == AGG_REFUSE_NONE ? NULL :
 		a->detail ? psprintf("%s (%s)", refusals[a->why].text, a->detail) : refusals[a->why].text;
 
-	if (quiet_reports)
-		return;
-	if (!a->used && a->why != AGG_REFUSE_NONE)
-		sift_stats_refusal(slug, a->limit);
 	if (why_store != NULL)
 	{
 		Datum		v[6];
@@ -336,6 +334,56 @@ report(const ArmNote *a)
 	}
 	else if (!a->used && notice_refusals)
 		ereport(NOTICE, (errmsg("SiftAgg not used: %s: %s", slug, reason), errdetail("arm: %s", a->name)));
+}
+
+static void
+report(const ArmNote *a)
+{
+	if (quiet_reports)
+		return;
+	if (!a->used && a->why != AGG_REFUSE_NONE)
+		sift_stats_refusal(refusals[a->why].slug, a->limit);
+	if (hold_cx != NULL && a->used && agg_variant != NULL && why_store != NULL)
+	{
+		ArmNote    *h = MemoryContextAlloc(hold_cx, sizeof(ArmNote));
+
+		*h = *a;
+		h->name = MemoryContextStrdup(hold_cx, a->name);
+		h->paths = NIL;
+		held = lappend(held, h);
+		return;
+	}
+	emit(a);
+}
+
+/*
+ * The arms of the plan with the CTE inlined that it used wait for the choice between that plan and the shared one (agg_variant_settle): where the shared
+ * plan is chosen they are not in the plan of the statement, whatever the plan of their own variant said.
+ */
+void
+agg_variant_hold(void)
+{
+	if (sift_explain_refusals)
+		hold_cx = CurrentMemoryContext;
+}
+
+void
+agg_variant_settle(bool kept, const char *detail)
+{
+	List	   *arms = held;
+
+	held = NIL;
+	hold_cx = NULL;
+	foreach_ptr(ArmNote, a, arms)
+	{
+		if (!kept)
+		{
+			a->used = false;
+			a->why = AGG_REFUSE_CTE_COST;
+			a->detail = detail;
+		}
+		emit(a);
+	}
 }
 
 /* a decision outside the arms of the planner hook (the plan of the statement as a whole) */
@@ -379,6 +427,8 @@ forget_arms(void)
 	agg_vet_forget();
 	agg_variant = NULL;
 	quiet_reports = false;
+	held = NIL;
+	hold_cx = NULL;
 	stage_level = 0;
 	stage_volatile = false;
 }

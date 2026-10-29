@@ -86,6 +86,8 @@ extern void agg_arm_end(void);
 extern void agg_report(const char *name, AggRefusal why, const char *detail, bool used, double scan, double normal);
 extern const char *agg_variant_push(const char *v);
 extern bool agg_quiet_reports(bool quiet);
+extern void agg_variant_hold(void);
+extern void agg_variant_settle(bool kept, const char *detail);
 
 /* the arms of one call of the planner hook: the refusals of the picks of its column indexes are one */
 typedef struct AggStage
