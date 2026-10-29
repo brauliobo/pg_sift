@@ -843,7 +843,7 @@ jsonb_int_mutator(Node *n, AggCtx *c)
 	return n == NULL ? NULL : expression_tree_mutator(n, jsonb_int_mutator, c);
 }
 
-/* the RTE_GROUP of the grouping sets of the query, 0 when there are none */
+/* the RTE_GROUP of the grouping step of the query, 0 when there is none (PostgreSQL before 18 has none) */
 static Index
 group_rti(AggCtx *c)
 {
@@ -851,6 +851,20 @@ group_rti(AggCtx *c)
 	return c->root->group_rtindex;
 #else
 	return 0;
+#endif
+}
+
+/*
+ * Does the grouping step hand its expressions over as placeholders that it does not null itself? From PostgreSQL 18 every grouped query has the RTE_GROUP that
+ * marks them; before, the expressions of grouping sets are wrapped in placeholders with no nulling of their own (a Var inside keeps the nulling of the joins).
+ */
+static bool
+group_wraps(AggCtx *c)
+{
+#if PG_VERSION_NUM >= 180000
+	return group_rti(c) > 0;
+#else
+	return c->root->parse->groupingSets != NIL;
 #endif
 }
 
@@ -889,10 +903,11 @@ placeholder_nulling(AggCtx *c, PlaceHolderVar *ph)
 {
 	Relids		own = ph->phnullingrels;
 
-	if (group_rti(c) == 0)
+	if (!group_wraps(c))
 		return own;
 	/* the grouping step marks the expression as nulled too */
-	own = bms_del_member(bms_copy(own), group_rti(c));
+	if (group_rti(c) > 0)
+		own = bms_del_member(bms_copy(own), group_rti(c));
 	if (bms_is_empty(own) && !reads_preserved_only(c, (Node *) ph->phexpr))
 		return c->nulling;
 	return own;
@@ -970,7 +985,7 @@ nullable_expr_mutator(Node *n, AggCtx *c)
 			return (Node *) out;
 		}
 		/* a group expression of the preserved side is its expression */
-		if (ph->phlevelsup == 0 && bms_is_empty(nulling) && group_rti(c) > 0)
+		if (ph->phlevelsup == 0 && bms_is_empty(nulling) && group_wraps(c))
 			return nullable_expr_mutator((Node *) ph->phexpr, c);
 	}
 	return expression_tree_mutator(n, nullable_expr_mutator, c);
