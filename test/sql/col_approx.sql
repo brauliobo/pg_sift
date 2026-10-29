@@ -42,7 +42,8 @@ CREATE INDEX ap_i ON ap USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WI
 CREATE INDEX ap_o ON ap_off USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WITH (write_buffer_limit = 4096, superunit = 0, dict_lookup = 'off');
 SELECT 'on' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('ap_i')
 UNION ALL SELECT 'off', array_agg(DISTINCT format) FROM sift._test_col_formats('ap_o') ORDER BY 1;
-VACUUM ap, ap_off;
+-- FREEZE: a plain VACUUM skips a page another backend has pinned, its unit is then read by its rows ("some vetted by heap") and the line below moves
+VACUUM (FREEZE) ap, ap_off;
 SELECT sift.col_verify('ap_i', true), sift.col_verify('ap_o', true);
 SELECT count(*) FILTER (WHERE section = 'sketches') > 0 AS has_sketches FROM sift.col_sections('ap_i');
 SELECT count(*) FILTER (WHERE section = 'sketches') AS off_has_none FROM sift.col_sections('ap_o');
@@ -116,7 +117,7 @@ INSERT INTO ap SELECT g + 100000, g % 900, g % 77777, 't' || g % 3, date '2021-0
 SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', true, true)
      = ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', false, true) AS dirty_same;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
-VACUUM ap;
+VACUUM (FREEZE) ap;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
 SELECT ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', true, true)
      = ap_rows('SELECT sift.approx_count_distinct(b), sift.approx_count_distinct(t), count(DISTINCT b) FROM ap', false, true) AS vacuumed_same;
@@ -135,7 +136,7 @@ RESET max_parallel_workers_per_gather;
 CREATE TABLE ap_exc (id int, u int, soft int) WITH (autovacuum_enabled = off);
 INSERT INTO ap_exc SELECT g, (hashint4(g) & 2147483647) % 5000, CASE WHEN g % 997 = 0 THEN 1 END FROM generate_series(1, 60000) g;
 CREATE INDEX ap_exc_i ON ap_exc USING sift_col (id, u, soft) WITH (hll_columns = 'u');
-VACUUM ap_exc;
+VACUUM (FREEZE) ap_exc;
 SELECT sift.col_verify('ap_exc_i', true);
 SELECT ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', true, true) = ap_rows('SELECT sift.approx_count_distinct(u), count(*) FROM ap_exc', false, true) AS exceptions_same;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(u) FROM ap_exc');

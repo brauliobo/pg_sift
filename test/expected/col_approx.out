@@ -75,7 +75,8 @@ UNION ALL SELECT 'off', array_agg(DISTINCT format) FROM sift._test_col_formats('
  on  | {25}
 (2 rows)
 
-VACUUM ap, ap_off;
+-- FREEZE: a plain VACUUM skips a page another backend has pinned, its unit is then read by its rows ("some vetted by heap") and the line below moves
+VACUUM (FREEZE) ap, ap_off;
 SELECT sift.col_verify('ap_i', true), sift.col_verify('ap_o', true);
  col_verify | col_verify 
 ------------+------------
@@ -232,7 +233,7 @@ SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
  Rows: 62602 scanned, 59666 aggregated, some vetted by heap, some heap pages, 1 groups
 (3 rows)
 
-VACUUM ap;
+VACUUM (FREEZE) ap;
 SELECT * FROM ap_explain('SELECT sift.approx_count_distinct(b) FROM ap');
                                              line                                             
 ----------------------------------------------------------------------------------------------
@@ -271,7 +272,7 @@ RESET max_parallel_workers_per_gather;
 CREATE TABLE ap_exc (id int, u int, soft int) WITH (autovacuum_enabled = off);
 INSERT INTO ap_exc SELECT g, (hashint4(g) & 2147483647) % 5000, CASE WHEN g % 997 = 0 THEN 1 END FROM generate_series(1, 60000) g;
 CREATE INDEX ap_exc_i ON ap_exc USING sift_col (id, u, soft) WITH (hll_columns = 'u');
-VACUUM ap_exc;
+VACUUM (FREEZE) ap_exc;
 SELECT sift.col_verify('ap_exc_i', true);
  col_verify 
 ------------
