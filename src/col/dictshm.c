@@ -66,6 +66,7 @@ typedef struct DshmEnt
 {
 	uint8		state;
 	uint32		asks;			/* times it was read, by all backends: a dictionary asked often is worth its hash table and sorted order (dict.c) */
+	uint64		orows;			/* rows of top-N scans compared with its strings, by all backends and statements (SiftCDict.orows): the sorted order is worth making at DICT_ORDER_ROWS times its entries */
 	int32		pins;			/* backends reading the record in place: its bytes are not overwritten while there are any */
 	DictKey		key;
 	Size		off,
@@ -240,6 +241,8 @@ typedef struct ShmPin
 	MemoryContextCallback cb;
 	dlist_node	node;
 	int			slot;			/* -1: given back */
+	SiftCDict  *d;				/* the dictionary read in place: the rows its top-N scans compared go back to the entry */
+	uint64		orows;			/* those the entry had when it was pinned */
 }			ShmPin;
 
 static dlist_head pins = DLIST_STATIC_INIT(pins);
@@ -256,6 +259,8 @@ unpin(void *arg)
 	e = &dshm->dir[p->slot];
 	dlist_delete(&p->node);
 	SpinLockAcquire(&dshm->mutex);
+	if (p->d != NULL && p->d->orows > p->orows)
+		e->orows += p->d->orows - p->orows;
 	if (--e->pins == 0 && e->state == E_STALE)
 		e->state = E_FREE;
 	SpinLockRelease(&dshm->mutex);
@@ -279,6 +284,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	Size		off = 0,
 				len = 0;
 	uint32		asks = 0;
+	uint64		orows = 0;
 	bool		bad = true;
 	DshmHdr		h;
 	Layout		l;
@@ -296,6 +302,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 		{
 			b[i].pins++;
 			asks = ++b[i].asks;
+			orows = b[i].orows;
 			b[i].tick = ++s->tick;
 			s->found++;
 			at = (int) (b - s->dir) + i;
@@ -334,6 +341,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	d->bytescap = h.nbytes;
 	d->bytes = (char *) rec + l.bytes_at;
 	d->finds = d->tests = asks;
+	d->orows = orows;
 	d->blocked = (h.flags & F_BLOCKED) != 0;
 	if (h.flags & F_SLOTS)
 	{
@@ -347,6 +355,8 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	}
 	p = MemoryContextAlloc(cx, sizeof(ShmPin));
 	p->slot = at;
+	p->d = d;
+	p->orows = orows;
 	p->cb = (MemoryContextCallback) {unpin, p, NULL};
 	if (!exit_hooked)
 	{
@@ -416,6 +426,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	DshmHdr		h = {.magic = DSHM_MAGIC, .key = *k, .n = d->n, .nbytes = d->nbytes, .flags = flags, .nslots = (flags & F_SLOTS) ? d->nslots : 0};
 	char	   *rec;
 	uint32		asks = 0;
+	uint64		orows = 0;
 	int			slot = -1,
 				flight;
 
@@ -457,6 +468,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0)
 		{
 			asks = b[i].asks;
+			orows = b[i].orows;
 			b[i].state = b[i].pins > 0 ? E_STALE : E_FREE;
 		}
 	for (int i = 0; i < DSHM_WAYS && slot < 0; i++)
@@ -470,7 +482,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		s->thrown++;
 	}
 	if (slot >= 0)
-		b[slot] = (DshmEnt) {.state = E_LIVE, .key = *k, .off = off, .len = l.total, .asks = asks, .tick = ++s->tick};
+		b[slot] = (DshmEnt) {.state = E_LIVE, .key = *k, .off = off, .len = l.total, .asks = asks, .orows = orows, .tick = ++s->tick};
 	if (++s->writes >= DSHM_WINDOW)
 	{
 		if (s->thrown > s->found)
