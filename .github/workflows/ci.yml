@@ -388,6 +388,8 @@ jobs:
         run: |
           git branch -f macos-ci HEAD
           brew tap-new --no-git local/ci
+          # Homebrew refuses to load a formula from a tap it was not told to trust (brew audit and brew install fail with "untrusted tap")
+          brew trust local/ci
           mkdir -p "$(brew --repository local/ci)/Formula"
           cp Formula/pg_sift.rb "$(brew --repository local/ci)/Formula/pg_sift.rb"
           brew style local/ci/pg_sift
