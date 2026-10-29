@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """bench/steps/iolib.py: the pure parts (the pg_stat_io query of PostgreSQL 17 and 18, the rows of a results file, the eviction list), then a live test on a tiny table in a
-throwaway cluster under /var/tmp (about 10 s; skipped without initdb). It checks the cold run reads, the warm run after it does not, that EXPLAIN's blocks and pg_stat_io's
+throwaway cluster under /var/tmp (about 10 s; skipped without initdb or pg_buffercache). It checks the cold run reads, the warm run after it does not, that EXPLAIN's blocks and pg_stat_io's
 bytes agree, and that a script EXPLAIN cannot wrap still reports its WAL and size.
 
     python3 -I bench/test/test_iolib.py
@@ -99,6 +99,9 @@ class Live(unittest.TestCase):
         subprocess.run([which('pg_ctl'), '-D', data, '-w', '-l', os.path.join(cls.dir, 'log'), '-o', "-p %d -k %s -c listen_addresses='' -c shared_buffers=32MB -c fsync=off" % (cls.port, cls.dir), 'start'],
                        check=True, capture_output=True)
         cls.s = Session(cls.port, 60, None, db='postgres', host=cls.dir)
+        if cls.s.run("SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_buffercache'")[1] == ['0']:   # a server without its contrib package (the lint runner's) cannot evict
+            cls.tearDownClass()
+            raise unittest.SkipTest('needs the pg_buffercache extension')
         for sql in ('CREATE TABLE t AS SELECT i, md5(i::text) AS s FROM generate_series(1, 50000) i', 'CREATE INDEX ON t (i)', 'VACUUM (ANALYZE, FREEZE) t', 'SET max_parallel_workers_per_gather = 0'):
             assert not cls.s.run(sql)[2], sql
         cls.major = int(iolib.one(cls.s, "SELECT current_setting('server_version_num')::int / 10000")[0])
