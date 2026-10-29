@@ -42,6 +42,7 @@ int			sift_test_col_workers = 0;
 int			sift_test_col_fail_sb = 0;
 int			sift_test_col_segment_kb = 0;
 int			sift_test_col_max_segments = 0;
+int			sift_test_col_gap_blocks = -1;
 #endif
 
 struct ColBuild
@@ -1026,7 +1027,6 @@ sift_col_ambuild(Relation heap, Relation index, IndexInfo *info)
 		res = sift_colp_build(heap, index, info);
 	if (res == NULL)
 		res = serial_build(heap, index, info);
-	sift_col_build_settle(index);
 	notice_key_overflow(index);
 	notice_point_tid(index);
 	notice_order_array(index);
