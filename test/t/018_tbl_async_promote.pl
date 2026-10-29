@@ -37,11 +37,26 @@ subtest 'the worker promotes what the writers closed, with no VACUUM' => sub {
 	my $offset = -s $node->logfile;
 	$node->command_ok([ @bench, '-t', $txns, 'postgres' ], 'writers commit one row at a time');
 	ok($node->wait_for_log($worker, $offset), 'a worker ran');
-	# a request within the naptime of the last one is not made: one more close, after it, settles whatever is left
+	# a request within the naptime of the last one is not made: one more close, after it, settles whatever is left. The request of the writer that closes the buffer
+	# can reach the worker before the writer commits, with the rows not final, and the worker is gone when they are: the batch is made again until nothing waits
 	sleep 3;
-	$node->safe_psql('postgres', 'INSERT INTO s SELECT -g, repeat(chr(97 + ((-g) % 26)), 300 + ((-g) % 400)) FROM generate_series(-6000, -1) g');
-	$node->safe_psql('postgres', 'INSERT INTO h SELECT -g, repeat(chr(97 + ((-g) % 26)), 300 + ((-g) % 400)) FROM generate_series(-6000, -1) g');
-	ok($node->poll_query_until('postgres', "SELECT count(*) = 0 FROM sift.table_segments('s') WHERE kind = 'sealed buffer'"), 'no closed write buffer waits');
+	my $settled = 0;
+	for my $round (1 .. 4)
+	{
+		my ($lo, $hi) = (6000 * ($round - 1) + 1, 6000 * $round);
+		for my $t ('s', 'h')
+		{
+			$node->safe_psql('postgres', "INSERT INTO $t SELECT i, repeat(chr(97 + (i % 26)), 300 + (i % 400)) FROM generate_series($lo, $hi) i");
+		}
+		for (1 .. 40)
+		{
+			$settled = $node->safe_psql('postgres', "SELECT count(*) = 0 FROM sift.table_segments('s') WHERE kind = 'sealed buffer'") eq 't';
+			last if $settled;
+			select(undef, undef, undef, 0.25);
+		}
+		last if $settled;
+	}
+	ok($settled, 'no closed write buffer waits');
 	cmp_ok(segs('columns'), '>', 0, 'column segments exist');
 	is(digest('s'), digest('h'), 'the rows are the heap twin\'s, every one with its bytes');
 };
