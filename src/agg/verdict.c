@@ -65,8 +65,10 @@ typedef struct VerdictEntry
 	uint64		key;
 	dlist_node	lru;
 	bool		won;
-	uint8		streak;
-	uint32		age;
+	uint8		streak,
+				ncand;
+	uint32		age,
+				mask;
 	double		scans,
 				shared,
 				size,
@@ -91,9 +93,11 @@ typedef struct VerdictShmEnt
 				size,
 				isize;
 	uint32		age,
-				tick;
+				tick,
+				mask;
 	bool		won;
-	uint8		streak;
+	uint8		streak,
+				ncand;
 } VerdictShmEnt;
 
 typedef struct VerdictShm
@@ -105,7 +109,7 @@ typedef struct VerdictShm
 } VerdictShm;
 
 /* the name carries the layout: a library of another one, loaded by new backends while old ones run, meets a segment it does not know as a size or a name that does not match */
-#define VSHM_NAME		"sift_agg_verdicts_4"
+#define VSHM_NAME		"sift_agg_verdicts_5"
 
 static VerdictShm *vshm;
 
@@ -179,6 +183,8 @@ vshm_read(uint64 key, CteVerdict *vd)
 				vd->size = set[i].size;
 				vd->isize = set[i].isize;
 				vd->streak = set[i].streak;
+				vd->mask = set[i].mask;
+				vd->ncand = set[i].ncand;
 				found = true;
 			}
 			else
@@ -186,6 +192,8 @@ vshm_read(uint64 key, CteVerdict *vd)
 				vd->prior_seen = true;
 				vd->prior_won = set[i].won;
 				vd->streak = set[i].streak;
+				vd->mask = set[i].mask;
+				vd->ncand = set[i].ncand;
 			}
 			break;
 		}
@@ -224,6 +232,8 @@ vshm_write(uint64 key, const CteVerdict *vd)
 	e->shared = vd->shared;
 	e->size = vd->size;
 	e->isize = vd->isize;
+	e->mask = vd->mask;
+	e->ncand = vd->ncand;
 	SpinLockRelease(&s->mutex);
 }
 
@@ -425,6 +435,8 @@ local_enter(uint64 key, const CteVerdict *vd, bool count_flips)
 	e->shared = vd->shared;
 	e->size = vd->size;
 	e->isize = vd->isize;
+	e->mask = vd->mask;
+	e->ncand = vd->ncand;
 }
 
 /* the verdict kept under key, in this backend or in the table of all of them (then it is kept here too): into vd; an entry is read VERDICT_RECHECK - 1 times, the next read is a miss */
@@ -440,6 +452,8 @@ entry_read(uint64 key, CteVerdict *vd)
 			vd->prior_seen = true;
 			vd->prior_won = e->won;
 			vd->streak = e->streak;
+			vd->mask = e->mask;
+			vd->ncand = e->ncand;
 			return false;
 		}
 		e->age++;
@@ -450,6 +464,8 @@ entry_read(uint64 key, CteVerdict *vd)
 		vd->size = e->size;
 		vd->isize = e->isize;
 		vd->streak = e->streak;
+		vd->mask = e->mask;
+		vd->ncand = e->ncand;
 		vd->from_shared = false;
 		return true;
 	}

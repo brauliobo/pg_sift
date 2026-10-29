@@ -519,6 +519,8 @@ typedef struct CteVerdict
 				prior_seen,		/* the plan in full that follows a read that ended an entry's checks: the choice that entry had (prior_won) and how often the plans in full confirmed it (streak) */
 				prior_won;
 	int			streak;
+	uint32		mask;			/* of the ncand shared CTEs of the statement (in the order of the walk of cte.c), those the inline plan writes NOT MATERIALIZED; ncand 0: all of them */
+	int			ncand;
 	double		scans,
 				shared,
 				size,			/* the rows PostgreSQL expects of the largest scan of an indexed table of the plan with the shared CTEs, as it was planned in full; 0: not known */

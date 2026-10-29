@@ -145,24 +145,25 @@ has_column_source(Oid relid)
 
 /*
  * does the query select from a table that has a column index, itself, through a sub-select or through a CTE of the same WITH (which PostgreSQL
- * inlines when one query reads it)? level: how many query levels the query is below the WITH
+ * inlines when one query reads it)? level: how many query levels the query is below the WITH; only: the tables of that kind it must read (NIL: any)
  */
 static bool
-reads_indexed_table(Query *q, List *siblings, int depth, int level)
+reads_indexed_table(Query *q, List *siblings, int depth, int level, const List *only)
 {
 	foreach_node(RangeTblEntry, rte, q->rtable)
 	{
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
+		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid) &&
+			(only == NIL || list_member_oid(only, rte->relid)))
 			return true;
 		if (depth <= 0)
 			continue;
-		if (rte->rtekind == RTE_SUBQUERY && reads_indexed_table(rte->subquery, siblings, depth - 1, level + 1))
+		if (rte->rtekind == RTE_SUBQUERY && reads_indexed_table(rte->subquery, siblings, depth - 1, level + 1, only))
 			return true;
 		if (rte->rtekind != RTE_CTE || rte->ctelevelsup != level)
 			continue;
 		foreach_node(CommonTableExpr, sib, siblings)
 			if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query) &&
-				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1, 1))
+				reads_indexed_table(castNode(Query, sib->ctequery), siblings, depth - 1, 1, only))
 				return true;
 	}
 	return false;
@@ -176,7 +177,7 @@ shared_cte_over_column_index(CommonTableExpr *cte, List *siblings)
 
 	if (cte->cterecursive || cte->cterefcount < 2 || cte->ctematerialized == CTEMaterializeNever || q->commandType != CMD_SELECT)
 		return false;
-	return reads_indexed_table(q, siblings, 4, 1);
+	return reads_indexed_table(q, siblings, 4, 1, NIL);
 }
 
 /* does the query hold a Var of a level above the sub-select it is walked as? depth: the sub-selects below it */
@@ -283,58 +284,25 @@ hoist_sublinks(Node *quals, List **hoisted, int *nhoist)
 	}
 }
 
-/* what the walk below finds: with inline_them the shared CTEs are all written NOT MATERIALIZED, and their names are kept in *names */
+/*
+ * What the walk below finds: with inline_them the shared CTEs (the first 32 of the statement in the order of the walk, or those of only) are written NOT
+ * MATERIALIZED, and their names are kept in *names. pos counts the shared CTEs the walk met. With survey the walk changes nothing and sets in reading the bits
+ * of those that read a table of reads.
+ */
 typedef struct SharedCteWalk
 {
-	bool		inline_them;
+	bool		inline_them,
+				survey;
 	List	   *names;
 	int			hoisted;
-	bool		bounded;		/* the copies of the table's reads would pass INLINE_READS_MAX: only the CTEs that read it themselves are copied */
+	int			pos;
+	uint32		only,
+				reading;
+	const List *reads;
 } SharedCteWalk;
 
-/*
- * PostgreSQL copies an inlined CTE into every query that reads it, so a chain of CTEs that read each other, each read several times, multiplies the reads of the
- * table: a statement of the corpus (the price-series) with nine of them inlines to a plan of many times the lines of the shared one, which costs
- * as many times the instructions to plan and to start, for the same scans. Above this many reads, only the CTEs that read the table themselves (or through a CTE read once,
- * which PostgreSQL inlines anyway) are copied; the ones above them are computed once, as written.
- */
-#define INLINE_READS_MAX	8
-
-/* the reads of tables with a column index in the query once every CTE it reads is copied into its readers (saturates) */
-static double
-inlined_reads(Query *q, List *siblings, int depth, int level)
-{
-	double		n = 0;
-
-	foreach_node(RangeTblEntry, rte, q->rtable)
-	{
-		if (rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && has_column_source(rte->relid))
-			n++;
-		if (depth <= 0)
-			continue;
-		if (rte->rtekind == RTE_SUBQUERY)
-			n += inlined_reads(rte->subquery, siblings, depth - 1, level + 1);
-		else if (rte->rtekind == RTE_CTE && rte->ctelevelsup == level)
-			foreach_node(CommonTableExpr, sib, siblings)
-				if (strcmp(sib->ctename, rte->ctename) == 0 && !sib->cterecursive && IsA(sib->ctequery, Query))
-					n += inlined_reads(castNode(Query, sib->ctequery), siblings, depth - 1, 1);
-		if (n > 1e6)
-			return n;
-	}
-	return n;
-}
-
-/* the CTEs of a WITH that one query reads: PostgreSQL inlines them, so they add no copy */
-static List *
-single_readers(List *ctes)
-{
-	List	   *single = NIL;
-
-	foreach_node(CommonTableExpr, cte, ctes)
-		if (cte->cterefcount < 2)
-			single = lappend(single, cte);
-	return single;
-}
+#define SHARED_CTE_BIT(pos)	((pos) < 32 ? (uint32) 1 << (pos) : 0)
+#define SHARED_CTES(n)		((n) < 32 ? ((uint32) 1 << (n)) - 1 : ~(uint32) 0)
 
 /* does the query, or a sub-select or CTE of it, hold a shared CTE over a column index? With inline_them the walk goes on (it is of a copy of the query) */
 static bool
@@ -352,18 +320,23 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 
 		if (shared_cte_over_column_index(cte, ((Query *) n)->cteList))
 		{
-			if (!w->inline_them)
-				return true;
-			if (w->bounded && !reads_indexed_table(body, single_readers(((Query *) n)->cteList), 4, 1))
+			uint32		bit = SHARED_CTE_BIT(w->pos++);
+
+			if (w->survey)
 			{
-				ctes = lappend(ctes, cte);
-				continue;
+				if (reads_indexed_table(body, ((Query *) n)->cteList, 4, 1, w->reads))
+					w->reading |= bit;
 			}
-			cte->ctematerialized = CTEMaterializeNever;
-			w->names = lappend(w->names, cte->ctename);
-			/* ahead of the CTE: the WITH is read in order */
-			if (body->cteList == NIL && body->jointree != NULL)
-				hoist_sublinks(body->jointree->quals, &ctes, &w->hoisted);
+			else if (!w->inline_them)
+				return true;
+			else if (bit == 0 || (w->only & bit))
+			{
+				cte->ctematerialized = CTEMaterializeNever;
+				w->names = lappend(w->names, cte->ctename);
+				/* ahead of the CTE: the WITH is read in order */
+				if (body->cteList == NIL && body->jointree != NULL)
+					hoist_sublinks(body->jointree->quals, &ctes, &w->hoisted);
+			}
 		}
 		ctes = lappend(ctes, cte);
 	}
@@ -372,18 +345,10 @@ shared_cte_walker(Node *n, SharedCteWalk *w)
 	return query_tree_walker((Query *) n, shared_cte_walker, w, 0);
 }
 
-/* the shared CTEs of the query written NOT MATERIALIZED (a copy of the statement), their names in w->names */
-static void
-inline_shared_ctes(Query *q, SharedCteWalk *w)
-{
-	w->bounded = inlined_reads(q, q->cteList, 8, 0) > INLINE_READS_MAX;
-	shared_cte_walker((Node *) q, w);
-}
-
 static bool
 has_shared_cte(Query *parse)
 {
-	SharedCteWalk w = {false, NIL};
+	SharedCteWalk w = {0};
 
 	return parse->commandType == CMD_SELECT && parse->rowMarks == NIL && shared_cte_walker((Node *) parse, &w);
 }
@@ -481,6 +446,28 @@ any_sift_agg(List *plans)
 
 	sift_agg_arms_list(plans, &a);
 	return a.n > 0;
+}
+
+/* the tables the scans of a plan read: the table of the index and those of the lookups its joins make */
+static void
+arm_tables(Plan *plan, List **oids)
+{
+	if (plan == NULL)
+		return;
+	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
+	{
+		SiftAggSpec *spec = sift_aggspec_unpack(((CustomScan *) plan)->custom_private);
+
+		*oids = list_append_unique_oid(*oids, spec->heapoid);
+		for (int i = 0; i < spec->njoin; i++)
+			if (OidIsValid(spec->join[i].relid))
+				*oids = list_append_unique_oid(*oids, spec->join[i].relid);
+		return;
+	}
+	foreach_ptr(Plan, p, child_plans(plan))
+		arm_tables(p, oids);
+	arm_tables(plan->lefttree, oids);
+	arm_tables(plan->righttree, oids);
 }
 
 /* the plans (their ids among the subplans of the statement) the expressions of a node run: its InitPlans (scalar subqueries) and the SubPlans of its target list and quals; not the CTEs, which a CteScan names */
@@ -1017,8 +1004,14 @@ plan_cached(SIFT_PLANNER_PARAMS, const CteVerdict *vd, MemoryContext *cx)
 	{
 		const char *outer_variant = agg_variant_push("inline");
 		Query	   *inline_parse = copyObject(parse);
+		SharedCteWalk survey = {.survey = true},
+					walk = {.inline_them = true, .only = ~(uint32) 0};
 
-		inline_shared_ctes(inline_parse, &(SharedCteWalk) {true, NIL});
+		/* the verdict names the shared CTEs it inlined by their place in the walk: a statement that has another number of them is inlined whole */
+		shared_cte_walker((Node *) parse, &survey);
+		if (vd->ncand > 0 && vd->ncand == survey.pos)
+			walk.only = vd->mask;
+		shared_cte_walker((Node *) inline_parse, &walk);
 
 		stmt = plan_in_own_context(SIFT_PLANNER_ARGS(inline_parse), cx);
 		agg_variant = outer_variant;
@@ -1047,9 +1040,13 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 			   *pristine_inline = NULL,
 			   *bare = NULL;
 	CteVariants v;
-	SharedCteWalk walk = {true, NIL};
+	SharedCteWalk walk = {.inline_them = true, .only = ~(uint32) 0},
+				survey = {.survey = true};
 	CteVerdict	vd;
+	Query	   *whole = NULL;
 	PlannedStmt *priced;
+	bool		choosing,
+				quiet;
 	bool		same,
 				won,
 				replan = verdict_replan;
@@ -1084,8 +1081,19 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 		verdict_replan = true;
 		return plan_cte(SIFT_PLANNER_ARGS(again), cx);
 	}
+	shared_cte_walker((Node *) parse, &survey);
+	/*
+	 * Inlining a shared CTE copies its body at each reference, and PostgreSQL plans (and copies again, level by level) each of the copies; the scans use the
+	 * tables of a few of them. A plan in full inlines all, then plans again with those that read a table a scan reads (the plan that follows from the verdict
+	 * inlines them only: 5 scans of a statement of 6 shared CTEs in 25 ms where the whole inline plan takes 700). The set that a verdict kept is not made
+	 * again by the plan in full that checks it.
+	 */
+	if (vd.prior_seen && vd.ncand > 0 && vd.ncand == survey.pos)
+		walk.only = vd.mask;
+	else if (survey.pos > 1)
+		whole = copyObject(parse);
 	inline_parse = copyObject(parse);
-	inline_shared_ctes(inline_parse, &walk);
+	shared_cte_walker((Node *) inline_parse, &walk);
 	if (sift_agg_scale_horizon > 1.0)
 	{
 		pristine = copyObject(parse);
@@ -1094,12 +1102,61 @@ plan_cte(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 	if (sift_explain_refusals)
 		bare = copyObject(parse);
 	agg_variant_hold();
+	/* explain_why reports the arms of the plan that stays: the plans that choose the set report nothing, that plan is made again (explain only) */
+	choosing = whole != NULL && sift_explain_refusals;
+	quiet = choosing ? agg_quiet_reports(true) : false;
 	plan_variants(SIFT_PLANNER_ARGS(parse), inline_parse, walk.names, &v);
+	if (whole != NULL && v.scans.n > 0)
+	{
+		SharedCteWalk used = {.survey = true};
+		SharedCteWalk subset = {.inline_them = true};
+		List	   *tables = NIL;
+		Query	   *sub = copyObject(whole);
+		CteVariants part;
+
+		arm_tables(v.inlined->planTree, &tables);
+		foreach_ptr(Plan, p, v.inlined->subplans)
+			arm_tables(p, &tables);
+		used.reads = tables;
+		shared_cte_walker((Node *) whole, &used);
+		if (used.reading != 0 && used.reading != SHARED_CTES(survey.pos))
+		{
+			subset.only = used.reading;
+			shared_cte_walker((Node *) sub, &subset);
+			plan_variants(SIFT_PLANNER_ARGS(copyObject(whole)), sub, subset.names, &part);
+			if (inline_wins(&part, 0, 0) && part.inlined->planTree->total_cost <= CTE_INLINE_TOTALS * v.inlined->planTree->total_cost)
+			{
+				discard_plan(v.plain_cx);
+				discard_plan(v.inlined_cx);
+				v = part;
+				walk.names = subset.names;
+				walk.only = subset.only;
+			}
+			else
+			{
+				discard_plan(part.plain_cx);
+				discard_plan(part.inlined_cx);
+			}
+		}
+	}
+	if (choosing)
+	{
+		SharedCteWalk again = {.inline_them = true, .only = walk.only};
+		Query	   *again_inline = copyObject(whole);
+
+		agg_quiet_reports(quiet);
+		shared_cte_walker((Node *) again_inline, &again);
+		discard_plan(v.plain_cx);
+		discard_plan(v.inlined_cx);
+		plan_variants(SIFT_PLANNER_ARGS(copyObject(whole)), again_inline, again.names, &v);
+	}
 	same = planning_second && first_plan.set && first_plan.plain == v.plain_cost && first_plan.inlined == v.inlined->planTree->total_cost &&
 		first_plan.scans == v.scans.total && first_plan.work == v.work;
 	won = inline_wins(&v, 0, 0);
 	if (!won && pristine != NULL && v.scans.n > 0 && v.scans.total < v.work && CTE_INLINE_MARGIN * v.scans.total >= v.work)
 		won = same ? first_plan.won : inline_wins_at_scale(SIFT_PLANNER_ARGS(pristine), pristine_inline, walk.names);
+	vd.mask = walk.only;
+	vd.ncand = survey.pos;
 	priced = v.plain;
 	if (!won && v.lifted)
 	{
