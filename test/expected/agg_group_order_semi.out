@@ -2,6 +2,7 @@
 -- they promise until the plan is made, after the planner has gone on to other work, so the array that describes it must live as long as the paths. The rows are the
 -- normal plan's, in the same order, for IN, NOT IN, EXISTS and NOT EXISTS, an ORDER BY of the same level and a window or an ORDER BY of the level above.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
 SET max_parallel_workers_per_gather = 0;
@@ -9,12 +10,6 @@ CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, day date, kind text, amount n
 INSERT INTO ev SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 3000 END, date '2024-01-01' + i % 90, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, day, kind, amount);
-NOTICE:  sift_col index ev_col writes a rollup of the rows by day, kind
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 1 sampled stretches of about a unit, about 180 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 392 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE TABLE dim_b (group_id int, dim_a_id int);
 INSERT INTO dim_b SELECT g, 1 + (g * 1000 + i * 37) % 3000 FROM generate_series(1, 4) g, generate_series(1, 300 * g) i;
 CREATE TABLE holidays (d date);

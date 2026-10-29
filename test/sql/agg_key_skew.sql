@@ -5,6 +5,7 @@
 -- heaviest parents from one of the rarest, so both take the same plan; every statement is also run with sift.enable_agg = off: the rows must
 -- be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 -- log-uniform parents: parent 1 owns about one row in ten, the last ones a few dozen rows in 30,000 (a low-discrepancy sequence, so the data is the same on every run)

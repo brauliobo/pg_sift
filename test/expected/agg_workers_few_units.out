@@ -4,6 +4,7 @@
 -- of fewer rows than sift.agg_par_min_rows keeps one process when it starts, whatever the plan asked for. sift.plan_scale plans the table at
 -- a size where the scan is long enough for the workers to pay.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE TABLE props (id int PRIMARY KEY, grp int, kind text);
 INSERT INTO props SELECT i, i % 7, 'k' || i % 5 FROM generate_series(1, 300) i;
 CREATE TABLE ev (id int PRIMARY KEY, prop_id int, day date, items jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
@@ -11,9 +12,6 @@ INSERT INTO ev SELECT i, 1 + i % 300, '2026-01-01'::date + i % 90,
        (SELECT jsonb_agg(jsonb_build_object('kind', 'c' || ((i + k) % 11), 'n', (i * k) % 9)) FROM generate_series(1, 1 + i % 6) k)
 FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, prop_id, day, items) WITH (paths = 'items[]{kind text, n int4}');
-NOTICE:  sift_col index ev_col keeps the keys of prop_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 762 bytes together, which a count(DISTINCT) of one reads instead of its rows. prop_id: where no list fits, a bloom filter of what the share has left (3 to 10 bits a key, within 5% of a unit with the lists) makes an equality or IN skip the units that lack the key; it serves no count(DISTINCT). point_tid_columns = 'prop_id' lists the rows of each key, so that an equality reads one unit, for about 0.2 MB more (a b-tree is about as large).
-HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM ANALYZE ev;
 ANALYZE props;
 SET max_parallel_workers_per_gather = 2;

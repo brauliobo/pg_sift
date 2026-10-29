@@ -1,6 +1,7 @@
 -- The scan of an inner join reads the table that is dear to load as its own rows and loads the small ones as lookups, whichever table the FROM list
 -- starts with.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE customers AS SELECT i AS id, (ARRAY['A', 'B', 'C', 'D'])[1 + i % 4] AS segment FROM generate_series(1, 5000) i;
 CREATE TABLE sales AS

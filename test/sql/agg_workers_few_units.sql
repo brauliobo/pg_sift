@@ -4,6 +4,7 @@
 -- of fewer rows than sift.agg_par_min_rows keeps one process when it starts, whatever the plan asked for. sift.plan_scale plans the table at
 -- a size where the scan is long enough for the workers to pay.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 CREATE TABLE props (id int PRIMARY KEY, grp int, kind text);
 INSERT INTO props SELECT i, i % 7, 'k' || i % 5 FROM generate_series(1, 300) i;

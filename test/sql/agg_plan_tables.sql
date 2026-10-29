@@ -2,6 +2,7 @@
 -- function. Its rows are those of PostgreSQL's own plan of it, run once when the scan starts, so the result is the one of the normal plan
 -- (docs/AGG.md, "Joins"). Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the table is small: page costs that keep the btree and bitmap plans from looking cheap as well
 SET seq_page_cost = 10000; SET random_page_cost = 10000;

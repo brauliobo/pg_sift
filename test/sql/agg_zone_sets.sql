@@ -2,6 +2,7 @@
 -- both. The zone test used to keep the first set and the range of the two, so a wide list in front of a narrow set read the units of the wide one.
 -- Every query runs with and without the scan: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

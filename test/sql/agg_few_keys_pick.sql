@@ -6,6 +6,7 @@
 -- the rows must be the same. A CTE of ids that PostgreSQL takes through a join estimates at a fraction of the smaller of the lists it joins (ten ids semi-joined
 -- to forty: one) is not a request for one parent: the normal plan then reads the rows of ten of them and the scan is taken.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE fk_facts (id int PRIMARY KEY, parent_id int NOT NULL, ts date NOT NULL, deleted_at timestamptz, metrics_a jsonb NOT NULL) WITH (autovacuum_enabled = false);

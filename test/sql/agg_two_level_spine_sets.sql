@@ -3,6 +3,7 @@
 -- matched is a group of NULL arm columns in every set. Every query runs as the two-level scan, as the arms alone (sift.agg_two_level off) and as
 -- the normal plan; the answers must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

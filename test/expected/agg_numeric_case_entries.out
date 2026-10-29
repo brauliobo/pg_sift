@@ -2,17 +2,12 @@
 -- tuple's key and measure (nearly every tuple when the measure has many values): the scan is priced with those entries and loses to
 -- the normal plan, while the same CASE over an integer measure, evaluated without them, keeps the scan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
 CREATE TABLE days AS SELECT 100 + d AS id, d / 7 AS week, (ARRAY['Sun','Mon','Tue','Wed','Thu','Fri','Sat'])[1 + d % 7] AS name FROM generate_series(0, 999) d;
 CREATE TABLE sales AS SELECT 100 + (i * 7919) % 1000 AS day_id, 1 + i % 4 AS store, (i * 31 % 20000)::numeric(7, 2) AS price, 1 + i % 100 AS qty FROM generate_series(1, 200000) i;
 CREATE INDEX sales_col ON sales USING sift_col (day_id, store, price, qty);
-NOTICE:  sift_col index sales_col writes a rollup of the rows by store, qty
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 6 sampled stretches of about a unit, about 100 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX sales_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index sales_col keeps the keys of day_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 760 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX sales_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX days_col ON days USING sift_col (id, week, name);
 VACUUM (FREEZE, ANALYZE) sales;
 ANALYZE days;

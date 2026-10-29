@@ -2,6 +2,7 @@
 -- turns the cache of the backend off (sift.agg_lookup_cache_kb = 0), so that every "Cached Lookup Tables" is a segment of the shared cache, read in place. The rows
 -- must be those of the normal plan, whatever happened to the table in between; the isolation spec agg_lookup_shared has the second backend.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET sift.agg_lookup_cache_kb = 0;

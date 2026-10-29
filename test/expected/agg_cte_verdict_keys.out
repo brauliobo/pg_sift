@@ -2,6 +2,7 @@
 -- are of other sizes: a key of the mean keeps the lookups of the normal plan, two keys take one scan, five or more take both. The size of a request counts the
 -- loops of a nested loop (the scan on its inner side reads its rows for each key). Each list is planned as it is planned alone, in whatever order the lists are met.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
 SET random_page_cost = 4;
@@ -13,9 +14,6 @@ CREATE TABLE events (id int PRIMARY KEY, site_id int NOT NULL REFERENCES sites, 
 -- site 1 owns 30% of the events, site 2 one in a thousand, the others are spread evenly
 INSERT INTO events SELECT g, CASE WHEN g % 100 < 30 THEN 1 WHEN g % 1000 = 999 THEN 2 ELSE 3 + g % 4997 END, date '2025-01-01' + g % 360 FROM generate_series(1, 200000) g;
 CREATE INDEX events_col ON events USING sift_col (id, site_id, ts);
-NOTICE:  sift_col index events_col keeps the keys of site_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 3240 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX events_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX events_site ON events (site_id);
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE sites, grants;

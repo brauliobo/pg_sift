@@ -62,8 +62,8 @@ SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country < 30 AND d.tier >= 2 AND d.active AND day >= ''2025-01-01'' GROUP BY kind');
 SELECT * FROM same('SELECT count(*) AS n, min(day) AS d0 FROM ev JOIN dims d ON d.id = ev.dim_a_id AND d.country = 7');
 SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = 999');
--- two dimensions, one of them only filters
-SELECT * FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id JOIN dims d2 ON d2.id = ev.dim_a_id WHERE d.country < 5 GROUP BY d2.country');
+-- two dimensions, one of them only filters (PostgreSQL 17 plans one semi table more than 18: the label is not printed)
+SELECT plan LIKE 'SiftAgg%' AS pushed, result_rows, vs_no_table, vs_normal_plan FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id JOIN dims d2 ON d2.id = ev.dim_a_id WHERE d.country < 5 GROUP BY d2.country');
 -- a repeated key repeats the tuple: the generic join
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.dim_a_id WHERE d.country = 11 GROUP BY kind');
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev JOIN dims_dup d ON d.id = ev.dim_a_id WHERE d.country = 14 GROUP BY kind');

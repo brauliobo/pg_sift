@@ -2,6 +2,7 @@
 -- planner, which assumes 10 elements and prices an index or bitmap scan for them. The scan of Custom Scan (SiftAgg) reads the whole array into a
 -- table when it starts, so the generic plan takes it by default (sift.agg_param_set_size), and the answers are those of the normal plan for every array.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, big_id int8, kind text, amount numeric(10, 2), day date, ref int) WITH (autovacuum_enabled = false);

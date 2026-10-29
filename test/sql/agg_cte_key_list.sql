@@ -2,6 +2,7 @@
 -- hundred keys joined to a hundred come out as one, and the plan that keeps the CTE is priced for one key whatever the keys own. The CTE is estimated at
 -- the keys its list is worth for the table with a column index it is joined to (the statistics of the key column), never fewer rows than PostgreSQL's own.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sites (id int PRIMARY KEY);
 INSERT INTO sites SELECT g FROM generate_series(1, 2000) g;

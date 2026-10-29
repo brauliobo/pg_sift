@@ -82,11 +82,11 @@ SELECT * FROM same('SELECT count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_
  SiftAgg,1 key filters,1 semi tables |           1 |           0 |              0
 (1 row)
 
--- two dimensions, one of them only filters
-SELECT * FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id JOIN dims d2 ON d2.id = ev.dim_a_id WHERE d.country < 5 GROUP BY d2.country');
-         plan          | result_rows | vs_no_table | vs_normal_plan 
------------------------+-------------+-------------+----------------
- SiftAgg,1 key filters |           5 |           0 |              0
+-- two dimensions, one of them only filters (PostgreSQL 17 plans one semi table more than 18: the label is not printed)
+SELECT plan LIKE 'SiftAgg%' AS pushed, result_rows, vs_no_table, vs_normal_plan FROM same('SELECT d2.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id JOIN dims d2 ON d2.id = ev.dim_a_id WHERE d.country < 5 GROUP BY d2.country');
+ pushed | result_rows | vs_no_table | vs_normal_plan 
+--------+-------------+-------------+----------------
+ t      |           5 |           0 |              0
 (1 row)
 
 -- a repeated key repeats the tuple: the generic join

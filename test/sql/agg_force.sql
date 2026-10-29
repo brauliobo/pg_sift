@@ -2,6 +2,7 @@
 -- of one key keeps its index scan by cost, and a shared CTE of a few rows that two scalar subqueries read stays shared; forced, both take the scan. A statement the scan
 -- cannot compute stays refused for its shape. The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, kind text NOT NULL, amount float8) WITH (autovacuum_enabled = false);

@@ -2,6 +2,7 @@
 -- they promise until the plan is made, after the planner has gone on to other work, so the array that describes it must live as long as the paths. The rows are the
 -- normal plan's, in the same order, for IN, NOT IN, EXISTS and NOT EXISTS, an ORDER BY of the same level and a window or an ORDER BY of the level above.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

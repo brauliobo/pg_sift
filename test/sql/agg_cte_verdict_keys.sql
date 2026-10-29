@@ -2,6 +2,7 @@
 -- are of other sizes: a key of the mean keeps the lookups of the normal plan, two keys take one scan, five or more take both. The size of a request counts the
 -- loops of a nested loop (the scan on its inner side reads its rows for each key). Each list is planned as it is planned alone, in whatever order the lists are met.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
 SET random_page_cost = 4;

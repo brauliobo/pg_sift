@@ -2,6 +2,7 @@
 -- outer query: the scan runs the grouping once where the normal plan looks up the group of each outer row. The answers are the normal plan's: an outer row whose
 -- key has no row gets NULL (0 for a count), a NULL key has none, an outer row that repeats gets its group each time. A few outer rows keep the lookups.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE key_sets (id int PRIMARY KEY, grp int, k int, k2 int, name text) WITH (autovacuum_enabled = false);

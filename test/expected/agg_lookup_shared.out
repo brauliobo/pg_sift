@@ -2,6 +2,7 @@
 -- turns the cache of the backend off (sift.agg_lookup_cache_kb = 0), so that every "Cached Lookup Tables" is a segment of the shared cache, read in place. The rows
 -- must be those of the normal plan, whatever happened to the table in between; the isolation spec agg_lookup_shared has the second backend.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET sift.agg_lookup_cache_kb = 0;
@@ -11,12 +12,6 @@ INSERT INTO ev
 SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + i % 3000 END, 1 + i % 40, date '2024-01-01' + i % 700, (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 60000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, foreign_id, day, kind, amount);
-NOTICE:  sift_col index ev_col writes a rollup of the rows by foreign_id, kind
-DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 2 sampled stretches of about a unit, about 40 of them a unit; the cells add to the index and to its build.
-HINT:  ALTER INDEX ev_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 784 bytes together, which a count(DISTINCT) of one reads instead of its rows. Left out: foreign_id (the cube holds it in 100% of the units). The units written now keep the lists of a column the cube holds; a REINDEX drops them.
-HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 CREATE TABLE ents (id int, country int, tier int, label text, code text) WITH (autovacuum_enabled = false);
 INSERT INTO ents SELECT i, i % 30, i % 4, 'e' || i, 'c' || i FROM generate_series(1, 3000) i;

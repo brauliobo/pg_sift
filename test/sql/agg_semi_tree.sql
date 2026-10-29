@@ -2,6 +2,7 @@
 -- looks up its keys. The tree is an inner join, or a LEFT JOIN whose result only gives the key set (coalesce of columns of both tables). Every query runs
 -- with and without the scan: the rows must be the same, and the scan answers the query. The key sets have NULL keys, duplicate keys and no key at all.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

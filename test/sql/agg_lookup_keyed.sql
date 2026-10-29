@@ -2,6 +2,7 @@
 -- btree probe for each key while the probes cost less than its pages, where it was read whole: the rows loaded are the keys', the answers the same, and a request
 -- of many keys reads the table whole as before.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

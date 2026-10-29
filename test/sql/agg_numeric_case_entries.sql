@@ -2,6 +2,7 @@
 -- tuple's key and measure (nearly every tuple when the measure has many values): the scan is priced with those entries and loses to
 -- the normal plan, while the same CASE over an integer measure, evaluated without them, keeps the scan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
 

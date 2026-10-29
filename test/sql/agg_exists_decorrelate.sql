@@ -3,6 +3,7 @@
 -- group (EXISTS is false, NOT EXISTS true), nor has a key of an empty table, a key that repeats in the outer query gets its answer each time. An EXISTS that the WHERE ANDs
 -- stays a semi join (a NOT EXISTS an anti join), which the scan has arms for. A few outer rows keep the lookups.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE key_sets (id int PRIMARY KEY, grp int, k int, k2 int, tx text, dd date, k8 bigint) WITH (autovacuum_enabled = false);

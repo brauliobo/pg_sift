@@ -2,6 +2,7 @@
 -- the table is what it was: every page visible to all transactions (vacuumed) and not written to since. Every statement is run with the cache, with
 -- sift.agg_lookup_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the table in between.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

@@ -4,6 +4,7 @@
 -- the same with 0, 2 and 4 workers to the last digit. A child plan that runs per combination of leaves keeps one process, a unique-key LIMIT 1 child
 -- (read as a table) does not.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

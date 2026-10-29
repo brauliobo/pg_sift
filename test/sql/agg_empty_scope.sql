@@ -3,6 +3,7 @@
 -- of the inner join, so a lookup whose filter matches nothing ends the scan without a unit read. A condition that reads the spine stays in the match.
 -- The result must be the normal plan's (the spine's rows without a match are still there); the units read are printed for the empty scopes.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dims (id int PRIMARY KEY, slug text NOT NULL, mode text NOT NULL, enabled bool NOT NULL);
 INSERT INTO dims SELECT i, 'd' || i, (ARRAY['all', 'some', 'none'])[i % 3 + 1], i % 10 <> 0 FROM generate_series(1, 300) i;

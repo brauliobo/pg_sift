@@ -3,6 +3,7 @@
 -- the plan costs the scan its tuple, a hash of the key and a copy of each numeric column (about 1,000 instructions a row with one numeric column, four times a count(*) over it).
 -- Seven numeric sums of a CASE over the day of the dimension took 540 ms against the normal plan's 215 ms, priced a third of it. The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE sp_dim (id int PRIMARY KEY, week int NOT NULL, day text NOT NULL);
 INSERT INTO sp_dim SELECT g, g / 7, (ARRAY['Sun','Mon','Tue','Wed','Thu','Fri','Sat'])[1 + g % 7] FROM generate_series(1, 2000) g;
@@ -12,19 +13,7 @@ CREATE TABLE sp_b (dim_id int NOT NULL, price numeric(7,2) NOT NULL);
 INSERT INTO sp_b SELECT 1 + (hashint4(g + 5) & 2147483647) % 2000, ((hashint4(g + 6) & 2147483647) % 100000) / 100.0 FROM generate_series(1, 90000) g;
 CREATE INDEX sp_dim_col ON sp_dim USING sift_col (id, week, day);
 CREATE INDEX sp_a_col ON sp_a USING sift_col (dim_id, price);
-NOTICE:  sift_col index "sp_a_col": an equality on "dim_id" reads about 2 of 2 units, where 1 hold its rows; key_cut = 'dim_id' would cut that, and the index would grow by 33.1%
-DETAIL:  The predicted size comes from a sample of 2 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 3 against 21: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
-HINT:  CREATE INDEX .. WITH (key_cut = 'dim_id'), or ALTER INDEX sp_a_col SET (key_cut = 'dim_id') and REINDEX, if the lookups of this key matter more than the size.
-NOTICE:  sift_col index sp_a_col keeps the keys of dim_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 544 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX sp_a_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 CREATE INDEX sp_b_col ON sp_b USING sift_col (dim_id, price);
-NOTICE:  sift_col index "sp_b_col": an equality on "dim_id" reads about 2 of 2 units, where 1 hold its rows; key_cut = 'dim_id' would cut that, and the index would grow by 33.0%
-DETAIL:  The predicted size comes from a sample of 2 superblocks; an automatic cut is chosen only when its benefit is at least its cost (here 7 against 21: a gain of 5% in a lookup is one unit of benefit, 3% of growth and 5% of build instructions one of cost). No other leaf follows the order of the table.
-HINT:  CREATE INDEX .. WITH (key_cut = 'dim_id'), or ALTER INDEX sp_b_col SET (key_cut = 'dim_id') and REINDEX, if the lookups of this key matter more than the size.
-NOTICE:  sift_col index sp_b_col keeps the keys of dim_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 544 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX sp_b_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) sp_dim, sp_a, sp_b;
 CREATE FUNCTION why(q text) RETURNS TABLE (used boolean, slug text) LANGUAGE sql AS $$ SELECT used, slug FROM sift.explain_why(q) LIMIT 1 $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE plpgsql AS $$

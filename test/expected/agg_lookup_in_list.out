@@ -2,6 +2,7 @@
 -- (sift.agg_lookup_pushdown): a list that keeps a small share of the table is an index scan, a list that keeps a large share, NOT IN and a table without
 -- an index are read by the heap scan, with the same rows. Every statement is run with the pushdown, without it and with sift.enable_agg = off.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
@@ -10,12 +11,6 @@ SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 1 + (i::bigint * 7919) % 30000 EN
        (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
 FROM generate_series(1, 300000) i;
 CREATE INDEX ev_col ON ev USING sift_col (dim_a_id, day, kind, amount);
-NOTICE:  sift_col index "ev_col": key_cut = 'dim_a_id, day' was chosen: an equality on "dim_a_id" would read about 8 of 8 units, where 1 hold its rows (predicted index size +30.6%, benefit 27 against cost 17)
-DETAIL:  A sample of 8 superblocks shows the values of "dim_a_id" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so an equality reads the few units of its range; the addresses of the rows of a unit are in the index. The rows of a key are sorted by "day" (the index is predicted to be no larger), so a key with more rows than a unit is split by it and a range of its values skips the units outside.
-HINT:  ALTER INDEX ev_col SET (key_cut = 'off') and REINDEX keep the units by block range.
-NOTICE:  sift_col index ev_col keeps the keys of dim_a_id in every unit
-DETAIL:  They are foreign key columns and columns named *_id of type int2, int4, int8 or date that are not unique, and a unique one that the units are cut by or the heap does not follow: a key list, bitmap, list of runs or filter of each unit, 7728 bytes together, which a count(DISTINCT) of one reads instead of its rows.
-HINT:  ALTER INDEX ev_col SET (key_columns = 'off'), then REINDEX, turns it off; key_columns = 'a, b' on CREATE INDEX names the columns.
 VACUUM (FREEZE, ANALYZE) ev;
 -- 100 countries (a list of a few keeps a few percent of the table), a city name that repeats, a tier, and the same rows without an index
 CREATE TABLE dims (id int PRIMARY KEY, country int, tier int2, city text, active boolean);

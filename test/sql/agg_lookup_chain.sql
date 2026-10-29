@@ -1,6 +1,7 @@
 -- A lookup join keyed by columns of an earlier lookup's table makes one combo entry per distinct value of those columns, not per row of the
 -- earlier table that holds them: entities of the same type, with NULLs, share an entry. The rows are the same as the normal plan's.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

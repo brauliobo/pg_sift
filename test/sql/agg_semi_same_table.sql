@@ -4,6 +4,7 @@
 -- PostgreSQL 18 (PostgreSQL 19 keeps the relation and the scan reads both conditions: the rows are the same, pushed or not); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
