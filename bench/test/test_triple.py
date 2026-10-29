@@ -47,6 +47,18 @@ class Factors(unittest.TestCase):
         self.assertEqual(compare.cell([]), 'n/a')
 
 
+class CaseFig(unittest.TestCase):
+    ROWS = [dict(case='c', arm='sift', metric='cpu_ms', value='5'), dict(case='c', arm='sift', metric='buffers', value='128')]
+
+    def test_cpu_and_buffers_of_a_lane(self):
+        import cases_render
+        self.assertEqual(cases_render.case_fig(self.ROWS, 'c', 'sift', 2.0), (2.0, 5.0, 1.0))   # 128 blocks of 8 kB are 1 MB
+        got = cases_render.case_fig(self.ROWS, 'c', 'native', 2.0)
+        self.assertEqual(got[0], 2.0)
+        self.assertIsInstance(got[1], NA)
+        self.assertIsInstance(got[2], NA)
+
+
 class Table(unittest.TestCase):
     FIGS = {('sift', 'q'): (1.0, 2.0, 3.0), ('pg', 'q'): (10.0, 20.0, 30.0), ('es', 'q'): (1.02, MISSING, MISSING)}
 

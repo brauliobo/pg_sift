@@ -25,16 +25,6 @@ TIE = compare.TIE
 LABEL = compare.LABEL
 
 
-BLOCK = 8192 / 2**20   # MB of a buffer: the IO of a case is the blocks its run hit or read (EXPLAIN (BUFFERS))
-NO_CPU = triple.NA('no CPU figure for this case in the results')
-
-
-def case_fig(rows, case, arm, ms):
-    """(ms, CPU ms, MB of buffers) of one lane of a case of bench/results/cases.tsv; the CPU only where the case records it (the load cases)"""
-    cpu, blocks = (extras.get(rows, case=case, arm=arm, metric=m) for m in ('cpu_ms', 'buffers'))
-    return ms, float(cpu['value']) if cpu else NO_CPU, float(blocks['value']) * BLOCK if blocks else triple.NA(triple.NOT_MEASURED)
-
-
 def case_losses(results):
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
@@ -45,7 +35,7 @@ def case_losses(results):
         if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of docs/BENCHMARKS.md
             c = f['case'].id
             time = lambda arm: (ms[c, 'ms'][arm] if (c, 'ms') in ms else f[arm])   # noqa: E731  (the time of the case beside a loss in another measure)
-            out.append((f['sift'] / f['native'], '`%s` %s' % (c, cases_render.UNIT[f['metric']]), 'PostgreSQL', case_fig(rows, c, 'sift', time('sift')), case_fig(rows, c, 'native', time('native'))))
+            out.append((f['sift'] / f['native'], '`%s` %s' % (c, cases_render.UNIT[f['metric']]), 'PostgreSQL', cases_render.case_fig(rows, c, 'sift', time('sift')), cases_render.case_fig(rows, c, 'native', time('native'))))
     return out
 
 
