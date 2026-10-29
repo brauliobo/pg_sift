@@ -2,7 +2,7 @@
 
 This file is the changelog of the PostgreSQL extension. The SQLite extension (`sift` for SQLite, artifact `sift-sqlite`) has its own: [sqlite/CHANGELOG.md](sqlite/CHANGELOG.md).
 
-## Unreleased
+## 3.6.1 - 2026-10-29
 
 - Fixed: pg_sift: a statement with a flattened lateral and shared CTEs that the verdict cache holds for another size of request no longer ends the backend: after the plan of the form that won was checked against the verdict of its size band, the planner discarded the context of the form the band's verdict named, which is never planned when the band names the other form (a wild pointer in `plan_flat`, found by the differential corpus of the analytic statements; SIGSEGV in the planner hook on `MemoryContextDelete`).
 - Fixed: pg_sift: an out-of-bounds read of four bytes in 3.6.0 when an element predicate that tests two keys is pushed down (`EXISTS` over the elements of an array column, `@>`): the element test indexed the leaves of the layout with the leaf number -1 of an `AND` child that has none (`sift_aggspec_elem_test`, found by the sanitizer run of the deep nightly tier as a heap-buffer-overflow); no wrong result was found, and the test now declines such a predicate. Test `agg_elem_test_leaf`.
