@@ -635,7 +635,7 @@ intersect_tids(SiftColSource *src, ColCursor *c, uint64 *keep, const SiftKey *ti
 /*
  * A range on a leaf with a global order is a seek in the sorted keys of the segment: the addresses of the rows between the bounds go to the heap as a
  * point directory's do, and the units that hold them but are read stay kept. Not past SIFT_CORDER_MAX_ROWS rows (the addresses are sorted by address), not for a scan that
- * wants values. After another list of addresses answered the scan (a key and a range, two ranges) the range narrows that list when it is not much longer, as a bitmap AND does.
+ * wants values, not in a key-cut segment (an address names no unit there, emit_tids would keep the wrong ones). After another list of addresses answered the scan (a key and a range, two ranges) the range narrows that list when it is not much longer, as a bitmap AND does.
  */
 static bool
 prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int64 hi, uint64 *keep)
@@ -644,7 +644,7 @@ prune_range_tids(SiftColSource *src, ColCursor *c, int i, int col, int64 lo, int
 	uint32		n,
 				limit = SIFT_CORDER_MAX_ROWS;
 
-	if (c->prow != NULL || c->ps != NULL || !(src->flags & SIFT_COLO_POINT_TIDS) || (src->flags & SIFT_COLO_POINT_ROWS))
+	if (c->prow != NULL || c->ps != NULL || !(src->flags & SIFT_COLO_POINT_TIDS) || (src->flags & SIFT_COLO_POINT_ROWS) || sift_cseg_keyed(&c->seg->entry))
 		return false;
 	if (c->ptids)
 		limit = Min(limit, Max(256, 8 * (src->nptid - c->prun)));
