@@ -724,6 +724,39 @@ def render_topn(p):
     return sql, True
 
 
+# ---------- a page of a list endpoint: a literal list of parents, a since date, a cursor, lateral lookups into JSON objects, newest first, LIMIT/OFFSET ----------
+def gen_listpage(r, ctx):
+    n = r.choice([0, 1, 1, 5, 30, 200, 600])
+    ids = [r.randrange(0, 620) for _ in range(n)]  # parents past the 600 there are match nothing
+    if ids and r.random() < 0.2:
+        ids[r.randrange(len(ids))] = None  # a NULL in the list matches nothing and must not drop the others
+    return dict(ids=ids, since=r.choice([None, '2025-03-01', '2025-09-15', '2026-01-20', '2027-01-01']), cursor=r.choice([None, None, 50, ctx['rows'] // 2]),
+                live=r.random() < 0.4, vers=r.random() < 0.7, dims2=r.random() < 0.7, limit=r.choice([1, 10, 50, 500]), offset=r.choice([0, 0, 0, 7, 120]),
+                order=r.choice(['e.ts DESC NULLS LAST', 'e.ts DESC', 'e.ts', 'e.amount DESC NULLS LAST', 'e.id DESC']), keys=[], aggs=[], having=[], ordered=True)
+
+
+def render_listpage(p):
+    lst = ', '.join('NULL' if i is None else str(i) for i in p['ids'])
+    cond = [f'e.parent_id IN ({lst})' if p['ids'] else "e.parent_id = ANY ('{}'::int[])"]
+    if p['since']:
+        cond.append(f"e.ts >= DATE '{p['since']}'")
+    if p['cursor'] is not None:
+        cond.append(f"e.id > {p['cursor']}")
+    if p['live']:
+        cond.append('e.flag IS NOT TRUE')
+    cols, lat = ['e.id', 'e.parent_id', 'e.kind', 'e.ts', 'e.amount'], ''
+    if p['dims2']:
+        lat += ' LEFT JOIN LATERAL (SELECT dims2.* FROM dims2 WHERE dims2.id = e.grp) x ON true'
+        cols.append("(CASE WHEN x IS NULL THEN NULL ELSE jsonb_build_object('id', x.id, 'tag', x.tag, 'w', x.w) END) AS inner_x")
+    if p['vers']:
+        lat += (' LEFT JOIN LATERAL (SELECT vers.* FROM vers WHERE vers.a = e.a AND vers.b = e.b ORDER BY vers.ts DESC NULLS LAST, vers.id LIMIT 1) v ON true')
+        cols.append("(CASE WHEN v IS NULL THEN NULL ELSE jsonb_build_object('id', v.id, 'ts', v.ts, 'label', v.label) END) AS inner_v")
+    sql = (f"SELECT {', '.join(cols)} FROM events e{lat} WHERE {' AND '.join(cond)} "
+           f"ORDER BY {p['order']}, e.id LIMIT {p['limit']} OFFSET {p['offset']}")
+    return sql, True
+
+
+
 # ---------- trailing sort keys (TOPN_TIES): ORDER BY leaves, then columns the index does not hold, the Sort above the scan puts the ties in order ----------
 TR_LEAD = ['k', 'd', 't']
 TR_TAIL = ['w', 'x', 's', 'w % 7', 'w * 3 - k', 'length(s)', 'x * w']
@@ -1599,6 +1632,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
+    'listpage': (gen_listpage, render_listpage, 3),
     'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF

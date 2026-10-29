@@ -1332,7 +1332,7 @@ sets_kept(PlannerInfo *root, IndexPath *path, Relation irel)
 
 			if (!OidIsValid(opno) || get_op_opfamily_strategy(opno, index->opfamily[ic->indexcol]) != BTEqualStrategyNumber)
 				continue;
-			held = 1.0 - exp(-clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * l->set_keys / l->set_units);
+			held = 1.0 - exp(-clause_selectivity(root, (Node *) ri, index->rel->relid, JOIN_INNER, NULL) * l->set_keys / l->set_units);
 			if (held < COL_SCAN_SET_USEFUL)
 				kept = Min(kept, 1.0 - cover + cover * held);
 		}
@@ -1393,7 +1393,7 @@ point_kept(PlannerInfo *root, IndexPath *path, Relation irel, double units, int 
 				continue;
 			if (IsA(ri->clause, ScalarArrayOpExpr))
 				nkeys = estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
-			rows = clause_selectivity(root, (Node *) ri->clause, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
+			rows = clause_selectivity(root, (Node *) ri, index->rel->relid, JOIN_INNER, NULL) * index->rel->tuples;
 			/* a prefix names the keys of the dictionary that start with it: the directory probes one key each (the rows the directory lists per key say how many) */
 			if (strategy != BTEqualStrategyNumber)
 				nkeys = Max(1.0, ceil(rows * (l->point_rows > 0 ? l->point_keys / l->point_rows : 1.0)));

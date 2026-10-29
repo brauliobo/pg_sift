@@ -17,6 +17,7 @@
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/numeric.h"
+#include "utils/selfuncs.h"
 #include "utils/timestamp.h"
 #include "utils/uuid.h"
 #include "utils/float.h"
@@ -43,6 +44,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_zones);
 PG_FUNCTION_INFO_V1(sift_test_col_types);
 PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
+PG_FUNCTION_INFO_V1(sift_test_eq_sel);
+PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
@@ -1861,6 +1864,28 @@ sift_test_col_gorder(PG_FUNCTION_ARGS)
 	}
 	index_close(index, AccessShareLock);
 	return (Datum) 0;
+}
+
+
+/* the restriction estimator of the operator sift._test_eq (= with a count): scalararraysel calls it once for each element each time it estimates the clause */
+static int64 eq_sel_calls;
+
+Datum
+sift_test_eq_sel(PG_FUNCTION_ARGS)
+{
+	eq_sel_calls++;
+	return DirectFunctionCall4Coll(eqsel, PG_GET_COLLATION(), PG_GETARG_DATUM(0), PG_GETARG_DATUM(1), PG_GETARG_DATUM(2), PG_GETARG_DATUM(3));
+}
+
+/* the calls since the last read; the argument true resets the count */
+Datum
+sift_test_eq_sel_calls(PG_FUNCTION_ARGS)
+{
+	int64		n = eq_sel_calls;
+
+	if (PG_GETARG_BOOL(0))
+		eq_sel_calls = 0;
+	PG_RETURN_INT64(n);
 }
 
 #endif							/* SIFT_TESTING */

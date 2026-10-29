@@ -403,3 +403,13 @@ CREATE FUNCTION sift._test_relcache_burn(slots int4) RETURNS void
 
 CREATE FUNCTION sift._test_col_dict_shared_stale() RETURNS text
 	AS 'MODULE_PATHNAME', 'sift_test_col_dict_shared_stale' LANGUAGE C;
+
+-- sift.=== is int4 = float4 (a pair the family of the default class has no operator for) with a restriction estimator that counts its calls: planning a clause
+-- on it shows how often the estimate is made
+CREATE FUNCTION sift._test_eq(int4, float4) RETURNS bool AS 'SELECT $1 = $2::int4' LANGUAGE SQL IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION sift._test_eq_sel(internal, oid, internal, int4) RETURNS float8
+	AS 'MODULE_PATHNAME', 'sift_test_eq_sel' LANGUAGE C STABLE STRICT;
+CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_eq_sel_calls' LANGUAGE C STRICT;
+CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
+ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD OPERATOR 3 sift.=== (int4, float4);
