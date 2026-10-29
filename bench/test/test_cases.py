@@ -36,6 +36,70 @@ class Ranking(unittest.TestCase):
         self.assertEqual(disc.rank([r], set(), 2.0), [])
 
 
+# id|amount|created_at|total|revenue, ordered by created_at (column 3) descending, the window totals on every row
+ORDERING = ['9|5.00|2025-01-05|8|40.00', '7|6.00|2025-01-04|8|40.00', '3|1.50|2025-01-04|8|40.00', '8|2.50|2025-01-04|8|40.00', '5|9.00|2025-01-03|8|40.00',
+            '2|3.00|2025-01-03|8|40.00', '4|7.00|2025-01-02|8|40.00', '6|5.00|2025-01-01|8|40.00']
+KEYS = cases.tie_keys('ties 3')
+
+
+def full(values):
+    """the rows of ORDERING with the key value of the row, as the `--@ ties` statement returns them"""
+    return [r for r in ORDERING if r.split('|')[2] == values[2]]
+
+
+class Ties(unittest.TestCase):
+    """`-- ordered: ties N`: the comparison of a page of an ordering whose ties may come in any order"""
+
+    def equal(self, ref, got):
+        return cases.equal_ties(ref, got, KEYS, full)
+
+    def test_keys(self):
+        self.assertEqual((cases.tie_keys('ties 3'), cases.tie_keys('ties 3 2'), cases.tie_keys('yes'), cases.tie_keys('no')), ([2], [2, 1], None, None))
+
+    def test_the_same_page(self):
+        self.assertTrue(self.equal(ORDERING[1:6], ORDERING[1:6]))
+
+    def test_tied_rows_in_another_order_pass(self):
+        ref = ORDERING[0:6]
+        got = [ref[0], ref[3], ref[1], ref[2], ref[5], ref[4]]
+        self.assertTrue(self.equal(ref, got))
+
+    def test_a_tie_cut_by_the_page_may_have_other_rows(self):
+        # LIMIT 2 OFFSET 1 of the ordering: native keeps 7 and 3 of the three rows tied at 2025-01-04, pg_sift 8 and 3
+        self.assertTrue(self.equal(ORDERING[1:3], [ORDERING[3], ORDERING[2]]))
+
+    def test_a_tie_cut_at_the_start_of_the_page(self):
+        self.assertTrue(self.equal(ORDERING[3:6], [ORDERING[1]] + ORDERING[4:6]))
+
+    def test_a_row_that_is_not_in_the_ordering_fails(self):
+        self.assertFalse(self.equal(ORDERING[1:3], [ORDERING[3], '99|1.00|2025-01-04|8|40.00']))
+
+    def test_a_row_of_the_key_with_another_value_fails(self):
+        self.assertFalse(self.equal(ORDERING[1:3], [ORDERING[3], '3|1.50|2025-01-04|8|99.00']))
+
+    def test_a_wrong_window_total_fails(self):
+        got = [r.replace('|8|40.00', '|7|40.00') for r in ORDERING[0:2]]
+        self.assertFalse(self.equal(ORDERING[0:2], got))
+
+    def test_a_row_taken_twice_fails(self):
+        self.assertFalse(self.equal(ORDERING[1:3], [ORDERING[3], ORDERING[3]]))
+
+    def test_another_key_order_fails(self):
+        self.assertFalse(self.equal(ORDERING[0:3], [ORDERING[1], ORDERING[0], ORDERING[2]]))
+
+    def test_another_number_of_rows_fails(self):
+        self.assertFalse(self.equal(ORDERING[0:3], ORDERING[0:2]))
+
+    def test_a_group_inside_the_page_must_have_the_same_rows(self):
+        # the three rows tied at 2025-01-04 are all in the page: a row of another key in their place fails even if the key columns match
+        ref = ORDERING[0:6]
+        got = ref[:3] + ['1|1.00|2025-01-04|8|40.00'] + ref[4:]
+        self.assertFalse(self.equal(ref, got))
+
+    def test_numbers_to_the_tolerance_of_the_harness(self):
+        self.assertTrue(self.equal(ORDERING[0:1], ['9|5.0000000000001|2025-01-05|8|40.00']))
+
+
 if __name__ == '__main__':
     unittest.main()
 

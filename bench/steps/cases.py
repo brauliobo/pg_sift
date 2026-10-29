@@ -7,7 +7,7 @@
 
 A case is a row of the registry (the feature, the CHANGELOG sentence it measures, the dataset and index, the plan the scan must show, the
 baselines, the README block it feeds) and a SQL file in the layout of bench/sql/store/queries (`--@ pg` the statement every lane runs, `--@ sift`
-or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- base: sift.col_format_minor = 14` a lane `base` over a second copy of the tables built under those settings (what an older default would have written), `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load). `run` builds
+or `--@ duck` replace it for that lane, `--@ setup` DDL after the index, `-- set: a = 1; b = 2` settings of every lane, `-- base: sift.col_format_minor = 14` a lane `base` over a second copy of the tables built under those settings (what an older default would have written), `-- fresh: yes` a new backend for every timed statement (the first statement of a backend; a variant named warm.. keeps its backend), `--@ prepare` / `--@ load` for a case that times a load, `-- ordered: yes` the rows come in the order of the statement, `-- ordered: ties 3` ordered by the third column with the ties in any order: the page may differ in the rows of a tie, and `--@ ties` is the statement of all the rows with the key value of a row, `{3}`). `run` builds
 each case's table in a schema of its own on the server named by PGHOST / PGPORT (steps/cases.sh starts it), asserts the plan of the sift lane from
 EXPLAIN (a case that falls back to the normal plan fails), then times the lanes interleaved in rounds and compares every answer with the native one:
 
@@ -27,12 +27,13 @@ import statistics
 import subprocess
 import sys
 import time
+from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import benchlib  # noqa: E402  (steps/benchlib.py)
 import iolib  # noqa: E402  (the IO load of a statement)
-from duckdb import Session, same, wait_quiet, busy  # noqa: E402  (a persistent psql session, the comparison of rows, the quiet gate)
+from duckdb import Session, same, key as row_key, wait_quiet, busy  # noqa: E402  (a persistent psql session, the comparison of rows, the quiet gate)
 from store_lib import sections  # noqa: E402  (`--@ name` sections)
 
 BENCH = os.path.dirname(HERE)
@@ -285,6 +286,37 @@ def equal(a, b, ordered):
     return len(a) == len(b) and (all(same([x], [y]) for x, y in zip(a, b)) if ordered else same(a, b))
 
 
+def tie_keys(ordered):
+    """`ties 3` or `ties 3 2` of `-- ordered:` -> [2, 1], the 0-based result columns the statement orders by; None for yes and no"""
+    kind, *cols = ordered.split()
+    return [int(c) - 1 for c in cols] if kind == 'ties' else None
+
+
+def equal_ties(ref, got, keys, full):
+    """the same page of an ordering whose ties may come in any order. The rows of `ref` and `got` (psql lines) have equal values in the key columns `keys`, row by row. A group of rows
+    with one key value inside the page is the same rows in any order; the first and the last group may be cut at the edge of the page (LIMIT, OFFSET), so each of their rows must be one of
+    `full(key values)`, all the rows of the ordering with that key value, each counted once: the columns that are not the key (the totals of a window among them) are those of the ordering"""
+    if len(ref) != len(got):
+        return False
+    kv = lambda r: '|'.join(r.split('|')[k] for k in keys)  # noqa: E731
+    if not all(same([kv(x)], [kv(y)]) for x, y in zip(ref, got)):
+        return False
+    groups, lo = [], 0
+    for i in range(1, len(ref) + 1):
+        if i == len(ref) or kv(ref[i]) != kv(ref[lo]):
+            groups.append((lo, i))
+            lo = i
+    for n, (lo, hi) in enumerate(groups):
+        if n in (0, len(groups) - 1):
+            left = Counter(map(row_key, full(ref[lo].split('|'))))
+            left.subtract(map(row_key, got[lo:hi]))
+            if any(v < 0 for v in left.values()):
+                return False
+        elif not same(ref[lo:hi], got[lo:hi]):
+            return False
+    return True
+
+
 IDS = {}
 
 
@@ -298,10 +330,19 @@ def expand(sql, case):
     return re.sub(r'\{ids:(\w+):(\d+)\}', ids, sql)
 
 
+def tie_rows(case, native):
+    """the rows of the ordering with the key values of a row (`--@ ties`, `{3}` the value of the third column of the row), from the lane of PostgreSQL's plan"""
+    def rows(values):
+        sql = re.sub(r'\{(\d+)\}', lambda m: values[int(m.group(1)) - 1].replace("'", "''"), case.sec['ties'])
+        return native.run(sql)[1]
+    return rows
+
+
 def measure_query(case, lanes, rounds, runs, keep_plan=True):
     """rows of results: per lane the timed runs of the interleaved rounds, the answer of the warm-up compared with the native one; a plan other than the case's is an error
     unless keep_plan is false (the scale points: the planner's choice at each size is what the curve shows)"""
-    ordered = case.opt.get('ordered', 'no') == 'yes'
+    ordered = case.opt.get('ordered', 'no')
+    ties = tie_keys(ordered)
     sql = {lane: expand(case.statement(lane), case) for lane in lanes}
     notes, answers, times, errors, texts = {}, {}, {lane: [] for lane in lanes}, {}, {}
     for lane, s in lanes.items():
@@ -331,7 +372,7 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
         notes['sift'] += ' (a different plan below it)'   # the first scan is the same: a block must not call two different plans "the same plan"
     ref = answers.get('native')
     for lane in lanes:
-        if lane not in errors and lane != 'native' and ref is not None and not equal(ref, answers[lane], ordered):
+        if lane not in errors and lane != 'native' and ref is not None and not (equal_ties(ref, answers[lane], ties, tie_rows(case, lanes['native'])) if ties else equal(ref, answers[lane], ordered == 'yes')):
             errors[lane] = 'RESULT DIFFERS from native (%d rows against %d)' % (len(answers[lane]), len(ref))
     for r in range(rounds):
         order = [l for l in lanes if l not in errors]
