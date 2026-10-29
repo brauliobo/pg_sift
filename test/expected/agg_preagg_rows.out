@@ -77,7 +77,12 @@ INSERT INTO ro SELECT * FROM rw;
 INSERT INTO rf SELECT * FROM rw;
 INSERT INTO rx SELECT * FROM rw;
 DROP TABLE rw;
+-- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
+SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_gap_blocks = 0;
 CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, d: v, w, c');
+RESET sift.col_auto_merge_fragmentation;
+RESET sift.test_col_gap_blocks;
 CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'a, b, c');
 CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_dims = 'id, a: v');
 CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
@@ -465,7 +470,11 @@ SELECT * FROM pa_sum('rx');
 SET max_parallel_maintenance_workers = 2;
 SET min_parallel_table_scan_size = 0;
 SET parallel_leader_participation = off;
+SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_gap_blocks = 0;
 REINDEX INDEX rc_col;
+RESET sift.col_auto_merge_fragmentation;
+RESET sift.test_col_gap_blocks;
 RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('rc_col');
  parallel_segments 

@@ -1244,22 +1244,31 @@ static const SiftMaintOps col_ops = {
 };
 
 /*
- * After a build while a standby streams. The segments of a parallel build overlap, so the first VACUUM rewrites them, and the rewrite leaves the
- * index twice its size in the file: the segments it replaced are the free blocks in front of the new ones. VACUUM does not cut the file while a standby
- * streams (a cut stalls its replay on a long query), so the file stayed at twice the index for good. The file of a build is the one that no query of a
- * standby can hold before the commit: the rewrite and the cut are made here, where they cost the standby nothing.
+ * After a parallel build. The segments of its participants overlap (each holds some rows of every key and of every superblock), so the first VACUUM
+ * rewrote them, and the rewrite left the index twice its size in the file: its output goes after the segments it replaced, and the free blocks in front of it
+ * stay there for good while a standby streams (VACUUM does not cut the file then). The build reserved a gap in front of the segments (gap, gapn blocks,
+ * released here): the merge writes into it, the segments it replaces are the free end, and the cut takes them. The file of a build is the one no query of
+ * a standby can hold before the commit, so the cut waits for none. A gap too small leaves the rest of the output above the free blocks: the space step
+ * brings it down.
  */
 void
-sift_col_build_settle(Relation index)
+sift_col_build_merge(Relation index, BlockNumber gap, uint32 gapn)
 {
-	if (!sift_maint_standby_streams() || !sift_maint_file_is_new(index) || sift_mops_rewrite(&col_ops, index, false) <= 0)
-		return;
-	sift_maint_lock(index, true);
-	sift_recycle(index);
-	sift_maint_orphan_sweep(index);
-	if (vacuum_truncates(index))
-		sift_maint_space_rounds(index, NULL, DEBUG1, (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ);
-	sift_maint_unlock(index);
+	if (gapn > 0)
+	{
+		SiftExtent	ext = {gap, gapn};
+
+		sift_dir_update(index, &(SiftDirChange) {.release = &ext,.nrelease = 1,.immediate = true,.extra = InvalidBuffer});
+	}
+	if (sift_mops_rewrite(&col_ops, index, false) > 0 || gapn > 0)
+	{
+		sift_maint_lock(index, true);
+		sift_recycle(index);
+		sift_maint_orphan_sweep(index);
+		if (vacuum_truncates(index))
+			sift_maint_space_rounds(index, NULL, DEBUG1, (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ);
+		sift_maint_unlock(index);
+	}
 }
 
 void

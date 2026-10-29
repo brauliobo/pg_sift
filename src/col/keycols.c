@@ -775,6 +775,44 @@ point_base_bytes(Relation heap, Relation index, const SiftColSchema *schema)
 	return bytes;
 }
 
+/* the entries of a comma separated list, 'auto: ' prefix and all (NULL or empty: none) */
+static int
+list_len(const char *list)
+{
+	int			n = 0;
+
+	if (list == NULL || list[0] == '\0')
+		return 0;
+	for (const char *p = list; *p != '\0'; p++)
+		n += *p == ',';
+	return n + 1;
+}
+
+/*
+ * The blocks a parallel build reserves in front of the segments of its participants (col/build_par.c): the segments they leave overlap, and the merge
+ * that follows the build writes their rows once more, into this gap, where the file is cut behind it. About the bytes a row of the index takes by the
+ * statistics (the point directories 16.5 bytes a row each, the order arrays 5), a tenth over; 0 without key_cut (the segments of the participants do not overlap,
+ * there is nothing to merge) and when the table has no row estimate. A gap that is too small
+ * puts the rest of the merge above the segments it replaces (the space step brings it down), one too large is cut with them.
+ */
+BlockNumber
+sift_col_build_gap(Relation heap, Relation index)
+{
+	BlockNumber pages;
+	double		tuples,
+				allvis,
+				row;
+
+	if (!sift_col_key_cut(sift_col_rel(index)))
+		return 0;
+	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvis);
+	if (tuples < 1)
+		return 0;
+	row = point_base_bytes(heap, index, sift_col_rel_private(index, CurrentMemoryContext)->schema);
+	row += POINT_AUTO_DIR_BYTES * list_len(sift_col_options_point_tid_columns(index)) + 5.0 * list_len(sift_col_options_order_array_columns(index));
+	return (BlockNumber) Min(tuples * row * 1.1 / BLCKSZ, (double) MaxBlockNumber / 2);
+}
+
 /* whether the comma separated list names the leaf ('a, b'; 'auto: a, b' as written by a build) */
 static bool
 in_list(const char *list, const char *name)

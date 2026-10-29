@@ -37,6 +37,8 @@ typedef struct ColShared
 	int			maxsegs;		/* segments of a participant */
 	int			nslots;			/* participants planned (the leader included): the size of the parts */
 	int			nlaunched;		/* workers launched, set before ready */
+	BlockNumber gap;			/* the blocks reserved in front of the segments for the merge of the leader, gapn of them */
+	uint32		gapn;
 	pg_atomic_uint32 ready;		/* the metapage is written */
 	ConditionVariable readycv;
 	pg_atomic_uint32 next;		/* the next superblock nobody has claimed */
@@ -111,9 +113,16 @@ participate(ColShared *sh, char *parts, int slot, Relation heap, Relation index,
 
 /* The workers need the metapage and the superblocks to share before they allocate a block */
 static void
-open_gate(ColShared *sh, Relation index, int nlaunched)
+open_gate(ColShared *sh, Relation heap, Relation index, int nlaunched)
 {
 	sift_colb_init_meta(index);
+	sh->gapn = nlaunched > 0 ? sift_col_build_gap(heap, index) : 0;	/* the leader alone leaves no peers */
+#ifdef SIFT_TESTING
+	if (sift_test_col_gap_blocks >= 0)
+		sh->gapn = sift_test_col_gap_blocks;
+#endif
+	if (sh->gapn > 0)
+		sh->gap = sift_alloc_extent(index, sh->gapn, SIFT_PT_FREE, 0, NULL);
 	sh->nlaunched = nlaunched;
 	sh->budget = sift_colb_budget(nlaunched + 1);	/* fewer participants than planned share the memory between fewer */
 	pg_atomic_write_u32(&sh->next, nlaunched + 1);
@@ -159,7 +168,7 @@ begin_parallel(Relation heap, Relation index, IndexInfo *info)
 	init_shared(sh, heap, index, info, nworkers + 1);
 	if (!sift_par_launch(ldr, "sift_col", index, nworkers))
 		return NULL;
-	open_gate(sh, index, ldr->pcxt->nworkers_launched);
+	open_gate(sh, heap, index, ldr->pcxt->nworkers_launched);
 	return ldr;
 }
 
@@ -189,6 +198,8 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	ColShared  *sh;
 	SiftSegEntry *segs;
 	int			nsegs;
+	BlockNumber gap;
+	uint32		gapn;
 
 	if (ldr == NULL)
 		return NULL;
@@ -211,8 +222,11 @@ sift_colp_build(Relation heap, Relation index, IndexInfo *info)
 	sift_test_col_workers = sh->nlaunched;
 #endif
 	segs = collect_segments(ldr, &nsegs);
+	gap = sh->gap;
+	gapn = sh->gapn;
 	sift_par_end(ldr);
 	sift_colb_publish(index, segs, nsegs);
+	sift_col_build_merge(index, gap, gapn);
 	return res;
 }
 

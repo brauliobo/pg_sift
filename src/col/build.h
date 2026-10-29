@@ -70,6 +70,7 @@ extern PGDLLIMPORT int sift_test_col_workers;
 extern PGDLLIMPORT int sift_test_col_fail_sb;
 extern PGDLLIMPORT int sift_test_col_segment_kb;
 extern PGDLLIMPORT int sift_test_col_max_segments;
+extern PGDLLIMPORT int sift_test_col_gap_blocks;	/* blocks a parallel build reserves for the merge (-1 = by the statistics, 0 = none) */
 #endif
 
 #endif							/* SIFT_COL_BUILD_H */

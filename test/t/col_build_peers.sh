@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The peers a parallel build leaves (several segments over the same superblocks) are rewritten by the server's own worker on a table that nothing changes and
+# (The build merges its own peers, col_build_standby_space; here it is told not to, the state a build of 3.6.0 left.) The peers a parallel build leaves (several segments over the same superblocks) are rewritten by the server's own worker on a table that nothing changes and
 # nothing VACUUMs, whatever sift.col_auto_merge_wal_pct says: the scans of the index ask for it, once per sift.maintenance_naptime. A table that opted out of
 # autovacuum is left alone, as the rewrite after a VACUUM is.
 . "$(dirname "$0")/lib.bash"
@@ -16,6 +16,7 @@ sql pe "CREATE EXTENSION pg_sift" \
 	"INSERT INTO nk SELECT i, ((i::bigint * 7919) % 20000)::int, ((i::bigint * 31) % 1000)::int, i % 100 FROM generate_series(1, 1000000) i" \
 	"CREATE TABLE ko (LIKE nk) WITH (autovacuum_enabled = false)" "INSERT INTO ko SELECT * FROM nk" \
 	"VACUUM (FREEZE, ANALYZE) nk" "VACUUM (FREEZE, ANALYZE) ko" \
+	"SET sift.col_auto_merge_fragmentation = 1000" "SET sift.test_col_gap_blocks = 0" \
 	"CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust')" \
 	"CREATE INDEX ko_idx ON ko USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust')" >/dev/null || bail "setup failed"
 

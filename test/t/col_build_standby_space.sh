@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# A parallel build leaves the segments of its participants over the same rows, so the first VACUUM rewrites them, and the rewrite leaves the file twice the
-# index (the segments it replaced are the free blocks in front of the new ones). VACUUM does not cut the file while a standby streams, so it stayed that way.
-# While a standby streams, CREATE INDEX and REINDEX do the rewrite and the cut themselves, in the file no query of the standby can hold before the commit.
+# A parallel build leaves the segments of its participants over the same rows and keys, so a rewrite follows (3.6.0: the first VACUUM), and the rewrite wrote its
+# output after the segments it replaced: the file was twice the index, and VACUUM does not cut it while a standby streams.
+# The build now reserves a gap in front of the segments of its participants, merges them into it and cuts the file behind it, in the file no query of a standby can
+# hold before the commit: the file is the index right after CREATE INDEX and REINDEX, and nothing is left for the first VACUUM. Gap sizes: by the statistics (the
+# default), none (the space step brings the merge down), and one block-sized sliver (the output lands mostly above the segments it replaces).
 . "$(dirname "$0")/lib.bash"
 
 ROWS=$(knob SIFT_BSS_ROWS 1000000 500000)
-plan 9
+plan 15
 node_init primary 2 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
@@ -38,6 +40,12 @@ sql primary "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex f
 check "REINDEX: the file is at most 1.1 times its live bytes" tight
 sql primary "SELECT sift.col_maintain('t_idx')" "VACUUM t" >/dev/null || bail "rewrite failed"
 check "... and the rewrite of the first VACUUM does not grow it" tight
+for gap in 0 8; do
+	sql primary "SET sift.test_col_gap_blocks = $gap" "$OPTS" "$SMALL" "REINDEX INDEX t_idx" >/dev/null || bail "reindex with gap $gap failed"
+	check "a gap of $gap blocks: nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift.col_maintenance_due('t_idx', false), 'none')")" == none
+	check "... the file is at most 1.1 times its live bytes" tight
+	check "... the index counts as the table" test "$(sql primary "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")" == "$(sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")"
+done
 check "the index counts as the table" test "$(sql primary "SET enable_seqscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")" == "$(sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(amount) FROM t WHERE grp = 7")"
 catchup primary standby
 check "the standby counts as the primary" test "$(sql standby "SELECT count(*), sum(amount) FROM t")" == "$(sql primary "SELECT count(*), sum(amount) FROM t")"
