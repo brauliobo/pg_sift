@@ -1,4 +1,4 @@
--- the rows of a top-N scan come from the units that gave them when every output column is a leaf of the index, where each was fetched from the heap
+-- a top-N scan whose output columns are all leaves of the index: the order array answers it (`Global Order` in EXPLAIN) and the rows are fetched from the heap in the order of the array
 -- label: `SELECT created_at, customer_id ORDER BY created_at DESC, customer_id DESC LIMIT 5000` after `CLUSTER` on `created_at`, no btree on it
 -- ordered: yes
 --@ setup
