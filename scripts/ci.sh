@@ -908,6 +908,10 @@ if (( failed )); then
 	find "$BASE" -path "$LOG" -prune -o -path '*/sanitizer/*' -type f -print 2>/dev/null | head -n 5 | while read -r f; do
 		echo "${red}sanitizer report ${f#"$BASE"/}:$off"; grep -m1 -A9 -E 'ERROR: |runtime error' "$f" | cut -c1-240
 	done
+	# UBSan does not write to that directory: its runtime error and stack are in the server log (runs 40852955112: shards 18-3 and 18-7 had only these)
+	find "$BASE" -path "$LOG" -prune -o -name postgres.log -print 2>/dev/null | head -n 20 | while read -r f; do
+		grep -q 'runtime error' "$f" 2>/dev/null && { echo "${red}UBSan ${f#"$BASE"/}:$off"; grep -m1 -A9 'runtime error' "$f" | cut -c1-240; }
+	done
 fi
 # the sampler is reaped within 20 s whatever it does: a run must not outlive its summary (arm64 shard of run 40152868204)
 if [[ -n ${STATS:-} ]]; then
