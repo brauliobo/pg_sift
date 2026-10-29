@@ -49,6 +49,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
+PG_FUNCTION_INFO_V1(sift_test_source_lookups);
 PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
@@ -1913,6 +1914,17 @@ sift_test_agg_outer_walks(PG_FUNCTION_ARGS)
 	if (PG_GETARG_BOOL(0))
 		sift_agg_outer_asks = sift_agg_outer_walks = 0;
 	PG_RETURN_ARRAYTYPE_P(a);
+}
+
+/* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */
+Datum
+sift_test_source_lookups(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_source_lookups;
+
+	if (PG_GETARG_BOOL(0))
+		sift_source_lookups = 0;
+	PG_RETURN_INT64(n);
 }
 
 #endif							/* SIFT_TESTING */

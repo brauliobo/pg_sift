@@ -29,6 +29,7 @@
 #include "rewrite/rewriteManip.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
+#include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/plancache.h"
 #include "utils/rel.h"
@@ -77,16 +78,66 @@ static bool late_checked;
 /* set by plan_cte: it returned the inline plan, because its scans cost less than the shared plan's work */
 static bool inline_won;
 
+/*
+ * The planner asks it for the same table many times in one planning (a walk of the query for each decision, and the hook plans a statement up to four times:
+ * about 2,000 asks for a statement of 20 CTEs), and each ask opens the table and looks up the access method of every index. The answer holds until the table's
+ * relcache entry is invalidated (CREATE or DROP INDEX, a change of the table's access method), so it is kept per table and all of it dropped on any relcache invalidation.
+ */
+typedef struct SourceEntry
+{
+	Oid			relid;
+	bool		found;
+} SourceEntry;
+
+static HTAB *source_cache;
+
+#ifdef SIFT_TESTING
+int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
+#endif
+
+static void
+source_cache_inval(Datum arg, Oid relid)
+{
+	if (source_cache != NULL)
+	{
+		hash_destroy(source_cache);
+		source_cache = NULL;
+	}
+}
+
 /* a table the aggregate scan reads: a sift_table, or a heap table with a column index */
 bool
 has_column_source(Oid relid)
 {
-	Relation	rel = relation_open(relid, AccessShareLock);
-	bool		found = sift_colsrc_is_table(rel->rd_rel->relam);
+	SourceEntry *e;
+	Relation	rel;
+	bool		found,
+				seen;
 
+	if (source_cache != NULL && (e = hash_search(source_cache, &relid, HASH_FIND, NULL)) != NULL)
+		return e->found;
+#ifdef SIFT_TESTING
+	sift_source_lookups++;
+#endif
+	rel = relation_open(relid, AccessShareLock);
+	found = sift_colsrc_is_table(rel->rd_rel->relam);
 	foreach_oid(ix, RelationGetIndexList(rel))
 		found |= sift_colsrc_is_index(get_rel_relam(ix));
 	relation_close(rel, AccessShareLock);
+	if (source_cache == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(SourceEntry), .hcxt = TopMemoryContext};
+		static bool registered;
+
+		if (!registered)
+		{
+			CacheRegisterRelcacheCallback(source_cache_inval, (Datum) 0);
+			registered = true;
+		}
+		source_cache = hash_create("sift cache column sources", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = hash_search(source_cache, &relid, HASH_ENTER, &seen);
+	e->found = found;
 	return found;
 }
 
