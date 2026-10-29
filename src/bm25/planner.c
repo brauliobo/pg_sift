@@ -504,28 +504,15 @@ sorted_gather_of_ranked(Path *path)
 		DatumGetInt32(lsecond_node(Const, ((CustomPath *) sub)->custom_private)->constvalue) == SIFT_MODE_RANKED;
 }
 
+/* a bare count of a search is a path of its own, offered before the aggregate scan so that the scan's report (sift.explain_why) weighs it as a rival */
 static void
-sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
-				 void *extra)
+count_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	Query	   *parse = root->parse;
 	ScanCand	c;
 	CustomPath *cp;
 	RangeTblEntry *rte;
 
-	if (prev_upper_hook)
-		prev_upper_hook(root, stage, input_rel, output_rel, extra);
-	sift_agg_upper_paths(root, stage, input_rel, output_rel, extra);
-	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
-	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
-		carry_join_scores(root, input_rel);
-	else if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_BASEREL &&
-			 planner_rt_fetch(input_rel->relid, root)->inh)
-		carry_parent_scores(root, input_rel);
-	if (stage == UPPERREL_ORDERED)
-		foreach_ptr(Path, p, list_copy(output_rel->pathlist))
-			if (sorted_gather_of_ranked(p))
-				output_rel->pathlist = list_delete_ptr(output_rel->pathlist, p);
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_count || sift_catalog()->am == InvalidOid ||
 		!parse->hasAggs || parse->groupClause != NIL || parse->groupingSets != NIL || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->havingQual != NULL || parse->commandType != CMD_SELECT ||
@@ -543,6 +530,26 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	cp = count_path(root, input_rel, output_rel, &c, rte->relid, 0);
 	add_path(output_rel, &cp->path);
 	add_parallel_count(root, input_rel, output_rel, &c, rte->relid);
+}
+
+static void
+sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
+				 void *extra)
+{
+	if (prev_upper_hook)
+		prev_upper_hook(root, stage, input_rel, output_rel, extra);
+	count_upper_paths(root, stage, input_rel, output_rel);
+	sift_agg_upper_paths(root, stage, input_rel, output_rel, extra);
+	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
+	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
+		carry_join_scores(root, input_rel);
+	else if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_BASEREL &&
+			 planner_rt_fetch(input_rel->relid, root)->inh)
+		carry_parent_scores(root, input_rel);
+	if (stage == UPPERREL_ORDERED)
+		foreach_ptr(Path, p, list_copy(output_rel->pathlist))
+			if (sorted_gather_of_ranked(p))
+				output_rel->pathlist = list_delete_ptr(output_rel->pathlist, p);
 }
 
 static bool

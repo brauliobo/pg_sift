@@ -109,6 +109,16 @@ is_siftagg(const Path *p)
 	return IsA(p, CustomPath) && strncmp(((const CustomPath *) p)->methods->CustomName, "SiftAgg", 7) == 0;
 }
 
+/* is p in the list as it is, or under the (incremental) Sort a top-N puts over a scan that orders only the first of its keys? */
+static bool
+path_listed(const List *paths, const Path *p)
+{
+	foreach_ptr(Path, o, paths)
+		if (o == p || ((IsA(o, SortPath) || IsA(o, IncrementalSortPath)) && ((SortPath *) o)->subpath == p))
+			return true;
+	return false;
+}
+
 bool
 agg_refuse_note(AggRefusal why, const char *detail)
 {
@@ -262,7 +272,7 @@ agg_arm_end(void)
 	if (a->paths != NIL)
 	{
 		foreach_ptr(Path, p, a->paths)
-			a->used |= list_member_ptr(a->rel->pathlist, p);
+			a->used |= path_listed(a->rel->pathlist, p);
 		a->used &= a->cheaper || sift_agg_force;
 		if (!a->used)
 		{
