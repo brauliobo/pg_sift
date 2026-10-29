@@ -53,7 +53,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** sift (BM25) indexes; scales the score of every ranked query. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
 - **Default:** 1.2 — 1.2: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter. ALTER INDEX .. RESET (k1) returns 1.2 but the index fails queries and inserts until REINDEX; build a new index with CREATE INDEX CONCURRENTLY and drop the old one.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 1.2. Higher lets repeated words keep raising the score, lower flattens that. Changing it needs REINDEX; the index size does not change.
 
 #### sift(b)
@@ -66,7 +66,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** sift (BM25) indexes; scales the length normalization of every ranked score. A match, its rows and count(*) do not depend on it. Not an option of sift_col or sift_table.
 - **Default:** 0.75 — 0.75: the value of the ranked top-10 kernel benchmarks; no size or write effect (gain, growth, write are -), so the default carries no cost.
 - **Turn off:** n/a: a score parameter (0 ignores document length). ALTER INDEX .. RESET (b) returns 0.75 but the index fails until REINDEX; prefer CREATE INDEX CONCURRENTLY with the new value, then drop the old one.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 0.75. 0 ignores document length, 1 normalizes fully by length. Changing it needs REINDEX; the index size does not change.
 
 #### sift(case_folding)
@@ -79,7 +79,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every text index: terms and queries are lower-cased the same way. Turn it off only when 'Word' and 'word' must be different terms; the keyword analyzer indexes whole values.
 - **Default:** true — On since 1.0 so that case does not decide a match. Measured: 0.0% size, insert -2.1% (noise), build +9.0% (446 to 486 ms, 100,000 documents).
 - **Turn off:** CREATE INDEX .. WITH (case_folding = false). On an existing index ALTER INDEX .. SET (case_folding = false) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY and swap.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off only when 'Word' and 'word' must be different terms. Needs REINDEX.
 
 #### sift(accent_folding)
@@ -92,7 +92,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every text index: accents are stripped from terms and queries (resume = resume). Turn it off only when accented and plain letters must differ.
 - **Default:** true — On since 1.0 so that accents do not decide a match. Measured: 0.0% size, build -3.8% and insert -5.6% (noise, 100,000 documents).
 - **Turn off:** CREATE INDEX .. WITH (accent_folding = false). On an existing index ALTER INDEX .. SET (accent_folding = false) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY and swap.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off only when accented and plain letters must be different terms. Needs REINDEX.
 
 #### sift(positions)
@@ -105,7 +105,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Phrase queries ("two words"). Word, AND, OR queries are unchanged. Phrases are rechecked in the heap for rows without positions: positions = off, rows inserted since an old build, phrases under NOT.
 - **Default:** true — On: phrases 4.1x and phrase counts 7.3x faster (>= 5% on a relevant class) although the index is 2.5x larger and the build about 30% slower, over the 3% and 5% limits; on since 1.2.
 - **Turn off:** CREATE INDEX .. WITH (positions = off): smaller index, phrases rechecked in the heap. Existing index: ALTER INDEX .. SET (positions = off) then REINDEX; units written before keep their positions until then.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on so phrases are decided by the index. Set positions = off when phrases are rare and index size matters; phrases are then rechecked in the heap. Needs REINDEX.
 
 #### sift(write_buffer_limit)
@@ -118,7 +118,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** sift indexes: size at which the open write buffer is sealed; it is also where the merge tiers start. sift_col has the same option; a sift_table uses sift.table_write_buffer_limit.
 - **Default:** 4096 — 4096 kB: 1024 made queries on the grown index faster (top-10 OR 12.5 to 4.1 ms) but the index 37% larger and 16-client INSERT -18%, INSERT..SELECT -17%, COPY -47%, over the 3% and 5% limits.
 - **Turn off:** n/a: a size, not a switch (64 to 1048576 kB). ALTER INDEX .. RESET (write_buffer_limit) returns 4096 from the next seal; no REINDEX; segments already sealed stay.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 4096. Lower trades writer throughput and index size for faster queries on the grown index; it is also where the merge tiers start. ALTER INDEX applies from the next seal, no REINDEX.
 
 #### sift(vacuum_segments)
@@ -131,7 +131,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM, autovacuum and the worker's merges of a sift index: the directory entries they leave. A segment more than merge_fanin times larger than the others is left alone; dead_rewrite_pct still applies.
 - **Default:** 2 — 2: fastest queries of the measured values (count(*) 0.08 ms against 0.35 at 16, top-10 0.18 against 0.33) for a VACUUM 0.09 s longer (0.19 against 0.10 s; 60 segments of 50,000 documents).
 - **Turn off:** n/a: a target (1 to 128). ALTER INDEX .. SET (vacuum_segments = 128) merges least; RESET returns 2; applies at the next VACUUM, no REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 2. Raise it for a shorter VACUUM of an index with many segments, at the price of slower queries. A segment far larger than the rest is left alone. ALTER INDEX applies at the next VACUUM.
 
 #### sift(merge_fanin)
@@ -144,7 +144,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Merges chosen by the worker, by inserters needing room and by sift.merge(): segments of one size tier (a factor of merge_fanin, from write_buffer_limit). Range 2 to 32. VACUUM follows vacuum_segments.
 - **Default:** 8 — 8: against 2, 20 inserts of 2,000 documents took 703 against 844 ms (-16.7%), the index was 3.2% smaller and queries equal (1.40 against 1.49 ms); the directory is kept under greatest(32, 2*merge_fanin) entries.
 - **Turn off:** n/a: a tuning value (2 to 32). ALTER INDEX .. RESET (merge_fanin) returns 8 at the next merge; no REINDEX. No value turns merging off; async_maintenance = off moves it to inserters and VACUUM.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 8. Lower merges sooner (more write work, fewer segments to query); higher merges less and keeps up to merge_fanin - 1 segments per size tier. ALTER INDEX applies at the next merge.
 
 #### sift(dead_rewrite_pct)
@@ -157,7 +157,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A lone segment of a sift index (one no merge picks) whose dead documents exceed this percent at VACUUM or a worker step. sift_col has the same option with default 10; sift_table uses sift.table_dead_rewrite_pct.
 - **Default:** 50 — 50: 5 rewrote at every round and cost VACUUM 1.9x (updates) and 6.9x (deletes), WAL 5.3x on deletes and a 1.3-1.4x larger file for faster queries only after deletes (400,000 documents).
 - **Turn off:** SET (dead_rewrite_pct = 100) never rewrites a segment on its own; dead postings are still cleared by VACUUM. ALTER INDEX .. RESET returns 50; applies at the next VACUUM or worker step, no REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 50. Lower it only for delete-heavy tables whose queries must be fast right after VACUUM; it costs VACUUM time, WAL and file size. 100 never rewrites. ALTER INDEX, no REINDEX.
 
 #### sift(vacuum_truncate)
@@ -170,7 +170,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM of a sift index when the free end is 1000 blocks or a 16th of the file and the exclusive lock is free at once. Not with VACUUM (PARALLEL n); free blocks inside the file are reused either way.
 - **Default:** true — On, like vacuum_truncate of a heap table: the index fell from 34.7 to 8.1 MiB after churn and VACUUM (1,000,000 rows); the lock is taken only if free and held for the cut.
 - **Turn off:** ALTER INDEX .. SET (vacuum_truncate = false); RESET returns it on; no REINDEX. Free blocks are then reused but not returned to the system, and a standby no longer replays the lock.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Set false when a hot standby must not cancel queries at replay of the lock or VACUUM must never take it; free blocks are then reused but not returned. ALTER INDEX, no REINDEX.
 
 #### sift_col(write_buffer_limit)
@@ -183,7 +183,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Rows written after CREATE INDEX wait in the write buffer of a sift_col index until it is sealed at this size; it is also the base of the merge tiers (fan-in 8). Sealed segments are not changed.
 - **Default:** 4096 — 4096 kB: 1024 promotes 3.7x as often, 16-client INSERT 107k to 87k rows/s, COPY 261k to 137k, index +37% (sift text index, no sift_col run), so writers pay more than reads gain.
 - **Turn off:** n/a: a size, not a switch. ALTER INDEX .. SET (write_buffer_limit = N) applies from the next seal; RESET returns to 4096 kB; no REINDEX. Range 64 to 1048576 kB.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 4096 kB. A smaller buffer is promoted more often (more write work, a larger index) for faster reads of recent rows. ALTER INDEX applies it from the next seal; no REINDEX.
 
 #### sift_col(dead_rewrite_pct)
@@ -196,7 +196,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM rewrites a lone segment of a sift_col index when half of it is dead or, with 0, when 100 scans of its dirty units (about 430 instructions a dead row up to 45 a row of a unit a tenth dead) cost more than the rewrite of its live rows (900 + 463 * bytes of a row); with a percent, above that share of dead rows. The tier merge and sift.col_auto_merge handle the rest. A segment below it keeps its dirty units, which answer from their pre-aggregates net of the dead rows. The BM25 index keeps 50.
 - **Default:** 0 — 0, by cost: a rewrite re-encodes 900 + 463 * bytes instructions a live row, a query pays 430 a dead row of a dirty unit up to 45 a row, so 100 scans between two VACUUMs break even at about 9% dead rows in every unit of a 7 bytes a row segment and never below half for 75. 300,000 rows, 13% dead: VACUUM 1,356 against 1,354 Minstr at 7 bytes a row (unchanged), 292 against 9,528 at 75 bytes a row (6 array columns), where a grouped sum costs 17.2 against 0.5 Minstr until the rewrite.
 - **Turn off:** ALTER INDEX .. SET (dead_rewrite_pct = 100) never rewrites a segment for dead rows; a percent from 1 fixes it; RESET returns to 0; no REINDEX. sift.col_auto_merge can still rewrite the index.
-- **Upgrade from 3.5:** the default is 0 (by cost) instead of 10: a narrow segment with dead rows in every unit is rewritten at about the same 9 to 10% of dead rows, a wide one, or one with the dead rows in a few units, later (half dead at most); no REINDEX, no format change; ALTER INDEX .. SET (dead_rewrite_pct = 10) keeps the old rule
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 0: a segment is rewritten when half of it is dead, or when the scans of its dirty units cost more than the rewrite (dead rows in every unit of a narrow segment from about 9%, a wide one not before half). Set a percent to rewrite earlier or later (WAL); 100 never rewrites. ALTER INDEX, no REINDEX.
 
 #### sift_col(vacuum_truncate)
@@ -209,7 +209,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM of a sift_col index: the exclusive lock only if free at once, tail segments copied into free runs, then the free end returned. A VACUUM that uses parallel index workers leaves it to the next one.
 - **Default:** true — On, as for a heap: table and indexes 200.3 to 154.5 MiB and orders-per-country 11.49 to 7.75 ms after churn (1,000,000 rows); the lock is brief and skipped when busy, update/delete throughput unchanged.
 - **Turn off:** ALTER INDEX .. SET (vacuum_truncate = false), no REINDEX; RESET restores true. sift.vacuum_rewrite_limit = 0 only stops the copy of tail segments, not the truncation of a free end.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off (ALTER INDEX SET vacuum_truncate = false) only if the brief exclusive lock is not acceptable; while a physical standby streams VACUUM cuts nothing anyway.
 
 #### sift_col(paths)
@@ -222,7 +222,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_col index with a jsonb column: its leaves are stored as typed columns. Other columns are untouched; paths written by hand are never changed; a table with no qualifying key still refuses the jsonb column.
 - **Default:** '' — Empty or auto so that a jsonb column needs no declaration: GROUP BY of an array element key 192 to 4.9 ms and an index of 2.3 MB against 6.2 MB for a GIN (100,000 documents).
 - **Turn off:** n/a: the layout of a jsonb column; leave the column out of the index to shred nothing. SET (paths = 'auto') or RESET (paths) re-reads the sample; any change needs REINDEX at once, writes fail until then.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave empty or auto for a jsonb column: paths come from a sample at CREATE INDEX and REINDEX keeps them. Declare them by hand to choose leaves and types; SET paths = 'auto' re-reads the sample.
 
 #### sift_col(compression)
@@ -235,7 +235,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every chunk of the columns of a sift_col index when a segment is written; per column with 'auto; col=zstd:9'. Segments already written keep their chunks until REINDEX.
 - **Default:** '' — auto adds LZ4 or zstd only where the cost rule says the saved bytes pay (LZ4 needs 25% on hot streams, zstd 70%). zstd:3 is -7.0% but builds 17% slower and scans 1.4x slower, over the limits.
 - **Turn off:** SET (compression = 'none') stores plain chunks (index +111.6%, fastest scans); 'auto' or RESET (compression) is the default. REINDEX applies it to segments already written.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at auto: it adds a general-purpose layer only where it pays. Set zstd on a column for a smaller index at slower scans and builds; none for the fastest scans. REINDEX to apply.
 
 #### sift_col(preagg)
@@ -248,7 +248,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** GROUP BY, sums and counts answered from whole units of a sift_col index; the cube holds up to 16 dimensions. A unit with a dead row or a page not all-visible is answered from its rows. Segments written afterwards.
 - **Default:** '' — The cube of a unit takes at most 40% of its encoded bytes as built (at least 8 kB), a decision for 3.4 that the index size does not bind the cube: GROUP BY a dimension 1.92 to 0.32 ms at 16 columns of 50 values, +8.9% of the index, at most +41% (32 columns of 200 values); the store index is unchanged. auto adds +5.7% to +9.0%, over the 3% limit: opt-in.
 - **Turn off:** SET (preagg = 'off') keeps leaf sums only (index -8.0% on a 13-column index); RESET returns to default. Segments written afterwards; sift.col_refresh(index) or REINDEX rewrite the older ones.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at default. With more than 16 plain columns try auto (ranks them by data, +6% to +9% of the index); off keeps leaf sums only; cube(dim: measure) names the dims.
 
 #### sift_col(rollup)
@@ -261,7 +261,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Array elements and map values of shredded jsonb paths (lists) of a sift_col index: the rollup groups them by their low-cardinality leaves, up to 4096 tuples a unit. Scalar columns use rollup_dims.
 - **Default:** '' — The automatic rule has a 2% byte budget a list: +2.0% of the index, +3.4% to +4.2% build instructions (1,000,000 documents), GROUP BY of an array key 1,888 to 2.0 ms: inside the 3% and 5% limits.
 - **Turn off:** SET (rollup = 'off') removes the rollups and keeps the cube; 'default' or RESET returns to the automatic rule. Segments written afterwards; older units change at a merge, REINDEX or sift.col_refresh(index).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at default: the rollups of array elements and map values are chosen by a 2% byte budget. Name the leaves (leaf, leaf) to answer more groupings, up to 4096 tuples a unit; off removes them.
 
 #### sift_col(rollup_on_demand)
@@ -274,7 +274,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A SiftAgg scan of exact units that lack their rollup (other dims, a missing measure). Not asked for: dirty units, minor 3 segments, units over the 4096-tuple cap; a hot standby never queues a request.
 - **Default:** true — On: the only way old units get rollups without REINDEX or a merge: all answer from them 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents); the query writes nothing, a worker rewrites 8 MB in 0.7 s.
 - **Turn off:** ALTER INDEX .. SET (rollup_on_demand = false) for one index; SET sift.col_rollup_on_demand = off for a session; sift.col_rollup_worker = off keeps requests queued for sift.col_rollup_refresh(index).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: a scan that lacks rollups queues a background rewrite. Turn it off to keep units as they are until a merge or REINDEX, or to refresh on a schedule with sift.col_rollup_refresh.
 
 #### sift_col(dict_lookup)
@@ -288,7 +288,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The order of the strings of a dictionary of 1,024 strings or more (text, varchar, uuid) for equality, IN and prefix tests, in segments written at sift.col_format_minor >= 14. Smaller dictionaries stay compact.
 - **Default:** auto — auto: the order is 4 bytes a string (+10% to +70% of a one-column index), so only point_columns, key_columns and return_columns get it; their first lookups of a backend 12.1 to 0.43 ms (uuid, 300,000 rows).
 - **Turn off:** SET (dict_lookup = off) stores no order (a lookup parses the dictionary whole; blocks still where they add <= 3%); sift.col_format_minor <= 13 writes neither. REINDEX changes older segments.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at auto: strings are searched in place and the lookup order is stored for the columns named in point_columns, key_columns and return_columns. on for every column; off for none. REINDEX to apply.
 
 #### sift_col(cube_minmax)
@@ -302,7 +302,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** min() and max() of an integer or numeric(p,s) measure per GROUP BY group, from the cube of units written afterwards. Float and text have none; a unit with a dead row is scanned.
 - **Default:** true — On: min/max GROUP BY 5.5 to 0.34 ms for +0.17% of the index (+1.5% with superunit 16), write CPU in the noise; the cost is column format minor 7, which a 3.2 library refuses.
 - **Turn off:** SET (cube_minmax = false) writes what 3.2 wrote; RESET restores true. Units written afterwards; sift.col_refresh(index) or REINDEX rewrite older ones; sift.col_format_minor <= 6 also writes none.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off (WITH cube_minmax = false) only to write segments a 3.2 library can read or to save the extra bytes when no query takes min or max of an integer per group.
 
 #### sift_col(array_lengths)
@@ -316,7 +316,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** cardinality(x), array_length(x, 1), x IS [NOT] NULL and the same in FILTER, CASE, GROUP BY and aggregates, for int[], text[], numeric[] and any other array column of the index. Not array_length(x, 2) or higher, array_ndims, @>, &&, <@, = ANY or unnest: those still read the arrays. A range, inet or other image has no lengths.
 - **Default:** auto — Automatic: S 97 on the presence and length tests against G 10.2% and W 12.0% pass the default formula (B 94 against C 5.8) for every array column, so no sample is needed; the NOTICE at CREATE INDEX names the columns and the off switch. The images cost a hash, an interning and a decompression for every row of an almost unique array column (4,100 instructions a row for 30-element arrays against 11 for the lane).
 - **Turn off:** ALTER INDEX .. SET (array_lengths = off), then REINDEX (or array_lengths = off on CREATE INDEX): the index keeps the images alone, as before 3.6. No column format minor: the leaves are ordinary integer leaves of the schema.
-- **Upgrade from 3.5:** An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout").
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave it. CREATE INDEX keeps the lengths of every array column and says so; array_lengths = off drops them (ALTER INDEX .. SET (array_lengths = off), then REINDEX).
 
 #### sift_col(rollup_dims)
@@ -330,7 +330,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** GROUP BY of two or more dims, or a key plus a filter on another dim, over 2 to 6 boolean, integer, date, numeric(p,s) or text columns; auto takes the pair with the fewest combinations that fits the cells of a unit (a tenth of its rows, at most 4,096) in 90% of 8 sampled stretches. Not float, count(DISTINCT) or a non-dim filter; too many cells in a unit: none.
 - **Default:** '' — Automatic: S 1.50 on the GROUP BY of the pair against G 5.7% and W 1.6% pass the default formula (B 8.3 against C 2.2), for the pair a statistic of the table picks (sampled stretches); a point filter on both values of the pair reads more. The NOTICE at CREATE INDEX names the columns and the off switch, not the MB: the size of the cells is known only after the build (sift.col_sections).
 - **Turn off:** ALTER INDEX .. SET (rollup_dims = 'off'), then REINDEX (or rollup_dims = 'off' on CREATE INDEX): no rollup of rows in new units; older units keep theirs until a merge or REINDEX. Column format minor 9.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave it. CREATE INDEX picks the pair when two columns of a unit have combinations that fit its cells and tells which; rollup_dims = 'off' writes none, a list of columns names the pair.
 
 #### sift_col(calendar_columns)
@@ -344,7 +344,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** date, timestamp, timestamptz columns: GROUP BY date_trunc, extract or a cast, and ranges, from calendar cells. The cube holds 16 dimensions, cells first. A timestamptz key in the session zone is scanned.
 - **Default:** '' — all: +1.0% of the index for one column, +1.8% for two, build and merge CPU in the noise, GROUP BY month 2.4 to 0.54 ms. Beside jsonb paths +9.3% to +12.1%, so only when named.
 - **Turn off:** SET (calendar_columns = 'off') or a list of the columns you group by; RESET returns to all. Units written afterwards; older units keep their cells until a merge or REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at default (every date and timestamp column; not with jsonb paths or a hand-made cube). List the grouped columns, or off, to save bytes; the cube holds at most 16 dimensions.
 
 #### sift_col(key_columns)
@@ -358,7 +358,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count(DISTINCT col) over whole exact units without GROUP BY, and equality or IN tests that skip units lacking the key, on non-unique int2, int4, date foreign keys and *_id. A dead row or a cut zone: scanned.
 - **Default:** '' — auto: lists only within 3% of a unit: +1.1% to +1.4% of the index, build in the noise, count(DISTINCT) of foreign keys 2.0x to 8.6x. A named filter column of random keys adds no bytes or gain. Minors 10 and 15.
 - **Turn off:** SET (key_columns = 'off') then REINDEX (the build NOTICE names it); RESET returns to auto. ALTER INDEX alone applies to units written afterwards; older units are scanned.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at auto: non-unique foreign key and *_id columns of int2, int4 and date get a key list or bitmap within 3% of a unit. Name columns for equality filters; off removes it. REINDEX to apply.
 
 #### sift_col(key_table)
@@ -371,7 +371,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** WHERE a key_columns leaf (int2, int4, date) = x, IN, a range or GROUP BY, nothing else tested, count/sum/avg/min/max of the numeric, time and integer leaves the table keeps; every unit of the segment exact. A dead row, an IS NULL or another leaf: read from the units.
 - **Default:** true — The rule of 3.3: over 5% on the relevant class (4x to 22x), growth at most 3% of a segment by construction, write cost under 5% on every path measured; a table that does not fit is not written.
 - **Turn off:** ALTER INDEX .. SET (key_table = off), then REINDEX or the next merge; segments written before keep theirs and are still read.
-- **Upgrade from 3.5:** A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Set off for an index that is written far more than it is read by key, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
 
 #### sift_col(count_columns)
@@ -385,7 +385,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count(*) and nothing else, one test of the column (a prefix, an equality or a range in the C collation), a text leaf whose dictionary is read in place, every unit of the segment exact (clean, all pages all-visible, the directory current), a segment with superunit summaries. A dead row, a second test, another aggregate or inline strings (a string over 255 bytes in a unit): read from the units; the rows of the write buffer are always read.
 - **Default:** '' — The formula of DEFAULT-FORMULA.md: speedup 38x (count of a prefix 5.3 to 0.14 ms, 3.2 M instructions saved), growth 0.17%, write +0.44%: benefit 107 units against a cost of 0.14.
 - **Turn off:** ALTER INDEX .. SET (count_columns = 'off'), then REINDEX or the next merge; segments written before keep theirs and are still read.
-- **Upgrade from 3.5:** A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Set off for an index that is written far more than it is counted by prefix or range, or to keep the segments readable by 3.4. ALTER INDEX applies to the segments written afterwards.
 
 #### sift_col(key_cut)
@@ -399,7 +399,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** CREATE INDEX or REINDEX of an index with no key_cut (or key_cut = 'auto') on a table of at least 64 superblocks (16,384 pages): the first key-shaped column (foreign key or *_id, not unique) of the index whose equality would read at least 8 times the units its rows fill and at least 64 units, when no other leaf follows the heap order (a cut would widen its zones), the index has no order_columns or point_tid_columns, and the predicted size of the index grows by at most 3%. When no key qualifies, the first date or timestamp column whose range holding the rows of one unit reads at least 8 times the units those rows fill and at least 64 units, under the same guards, and cut by or left alone, never advised (3,000,000 rows, ts scattered: a day 9.05 to 0.23 ms, 30 days 11.1 to 0.38, a key and a time window 6 to 12 times faster; the rows of one key 12.6 to 28.4 ms). Not chosen: a small table, a key already clustered, a predicted growth above 3% (advised).
 - **Default:** '' — Default since 3.4: where it applies an equality on the key reads 5 to 15 times less (the busiest key 4.53 to 0.31 ms) and the 3.3 rule holds: the index is predicted, from a sample, to grow by at most 3% (it shrank 5 to 13% on the measured table); a build 41% longer and a promotion 21% longer pay for it. The narrow, heap-ordered, order_columns and growing cases it loses on are left out by the rule.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') then REINDEX (or CREATE INDEX .. WITH (key_cut = 'off')); the choice is written as 'auto: col' and the NOTICE names it. ALTER INDEX .. RESET (key_cut) and a REINDEX decide again.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave it automatic: CREATE INDEX writes key_cut = 'auto: col' and says what it measured and predicted; where it would grow the index it prints the command instead. sift.key_cut_decision(index) says what a REINDEX would decide. Set key_cut = 'off' on an index that also sorts or ranges by another column without the key (an unkeyed ORDER BY .. LIMIT 0.30 against 0.91 ms at 200,000 rows), or name the columns yourself. Segments are format minor 17; RESET and REINDEX roll back.
 
 #### sift_col(key_cut_rows)
@@ -412,7 +412,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Read only with key_cut: the rows a key-cut unit aims at in a build, promotion or merge. 0 is the rows of an average superblock (reltuples / relpages * 256, 1,024 when never analyzed); 64 to 32,768.
 - **Default:** 0 — 0 keeps the number of units and the planner's per-unit costs of the superblock cut; at 100,000 rows 256 rows is +69.0% of the index, 4,096 -9.4%, with no query gain (0.20 against 0.22 ms).
 - **Turn off:** n/a: a size, not a switch. RESET (key_cut_rows) or 0 returns to superblock-sized units; it has no effect without key_cut. Applies to units written afterwards.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 0: units aim at the rows of an average superblock. Fewer rows make more units, more rows a coarser key range per unit. Only used with key_cut.
 
 #### sift_col(order_array_columns)
@@ -426,7 +426,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A range of a scattered column up to 16,384 rows, and ORDER BY col LIMIT n over one integer, date or timestamp key of order_columns with no join or aggregate; any other shape reads the units (a unit with a dead row is read).
 - **Default:** '' — Default on by the formula of benefit B = log2(S)/log2(1.05) = 33 for S = 5 (narrow ranges, 18.4M to 2.4M instructions) against cost G/3 + W/5 = 7.0 + 4.4 = 11.4 for G = 21% and W = 22%; G is under the 25% ceiling and the saving is 16M instructions a query. Built only where it pays: 100,000 rows or more, 1,000 or more distinct values, correlation under 0.99, not a column that cuts the units, each array within 25% of the index; a time column first. A date or timestamp has no ceiling: B = log2(25)/log2(1.05) = 66 (ts >= x ORDER BY ts LIMIT, 9.4M to 0.38M) against C = G/3 + W/5 = 121/3 + 34.5/5 = 47 for the array alone (4.6 bytes a row over a one-column index of 3.7; the sorted run it used to bring, +2.1 bytes and +18% build, is not written, since the array answers what the run did for the same shapes), the index staying under half of the b-tree it replaces. A text or varchar column (strings up to 64 bytes) by the same formula: S = 300 at the 100,000-row floor (82.8M to 0.27M instructions), B = 117 against C = G / 3 + W / 5 with G the array in the share of the index and W 62% of the build of 4 columns under the C collation and 420% under a locale, scaled by 4 / the columns: the 9-column lab index (500,000 rows) C = 48 (G 31%, W 187%), a 4-column index under a locale 110, 3 columns or fewer over B; a narrow index under a locale gets none (the sort of the strings is a larger share of a smaller build), and the build says so once in a NOTICE that names the column, B and C and the explicit order_array_columns = 'col' that builds it
 - **Turn off:** SET (order_array_columns = 'off') then REINDEX (the build NOTICE names the columns and the MB); RESET returns to auto, decided again at the next REINDEX. New segments only; older ones keep their arrays until a merge or REINDEX, and the scan of the units answers meanwhile.
-- **Upgrade from 3.5:** The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 30, which 3.5 and older refuse (SET (order_array_columns = 'off') and REINDEX first).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at auto: a column of 1,000 or more distinct values whose correlation with the heap order is under 0.99, on a table of 100,000 rows or more, gets the array: a date or timestamp column when the default formula pays (whatever the width of the index: B = 66 against C = 47 for a one-column timestamp index of 3.7 bytes a row), an integer column when it is within 25% of the index (at most two columns, a date or timestamp before an integer one). The choice is made at CREATE INDEX and REINDEX from the statistics the table has then, and a table of 100,000 rows or more that has none is analyzed first (a NOTICE says so; an ANALYZE afterwards changes nothing until the next REINDEX). Name the columns of order_columns for ORDER BY .. LIMIT on a smaller table or a column the rule leaves out; off removes it. REINDEX to apply.
 
 #### sift_col(order_array_group)
@@ -440,7 +440,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** WHERE group = constant or IN (up to 16 constants) [AND range or page after a key on the column] ORDER BY column [, ids] LIMIT n, and min/max of the column with the group pinned, over an index with a second order, and a write buffer of at most 4,096 rows of the group (or 8 times n); any other shape reads the plain order or the units.
 - **Default:** '' — It is on: a group of 400 values costs +13.2% of the index and +5.7% of the build, and the group shapes go from 12x to 44x a b-tree (500,000 to 3,000,000 rows) to 1.5x to 2x; no table with fewer than 100 values in the column, or fewer than 64 rows apiece, gets one.
 - **Turn off:** order_array_group = 'off', then REINDEX: new segments have the plain order only; older ones keep theirs until a merge or REINDEX, and the plain order answers meanwhile.
-- **Upgrade from 3.5:** An index of 3.5 keeps its option as it was set; segments with the second order are minor 31, which 3.5 and older refuse (SET (order_array_group = 'off') or RESET (order_array_columns), then REINDEX, first).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave it on. The build picks the integer column of most values (at least 100 values and 64 rows apiece, scattered in the heap) when an array of a date or timestamp is built; set order_array_group = 'off' and REINDEX to drop the second order, or name a column to group every array.
 
 #### sift_col(superunit)
@@ -454,7 +454,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Whole-table aggregates and ranges covering a group of exact units (count, sum, GROUP BY); a predicate cutting a group, a float sum or count(DISTINCT) falls back to the units. Segments written afterwards; 2 to 256.
 - **Default:** 16 — 16: +1.0% of the index (groups of 64 +0.8% but ranges fall back more; 4 to 8 +1.3% to +1.5%), whole-table count/sum 0.26-0.37 to 0.05-0.08 ms, write CPU in the noise; a 2-unit range 0.10 to 0.13-0.15 ms.
 - **Turn off:** SET (superunit = 0) writes the bytes 3.2 wrote (no minor 12); RESET restores 16. Older segments keep summaries until a merge or REINDEX; SET sift.agg_super = off ignores them in a session.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 16. 0 turns summaries off (the 3.2 bytes); 2 to 256 sets the units a summary covers. Larger groups cost fewer bytes and answer fewer ranges whole. REINDEX or merge applies it to new units.
 
 #### sift.prefix_cache_size
@@ -467,7 +467,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Broad prefixes (h*, ab*) of a sift index: a backend keeps their postings for later queries; only broad prefixes are cached. The memory is per backend, so size it by the pool. Superuser setting.
 - **Default:** 8192 kB — 8192 kB: 10-15 ms for a one-letter prefix of a million short rows on the first call in a backend, under 1 ms from the cache; the memory is the only cost, bounded by the setting.
 - **Turn off:** SET sift.prefix_cache_size = 0 keeps no cache (superuser: postgresql.conf, ALTER SYSTEM, ALTER DATABASE / ROLE .. SET); every broad prefix then gathers its postings again.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 8192 kB. Raise it when many broad prefixes repeat in one backend; 0 keeps no cache. The memory is per backend. Superuser setting.
 
 #### sift.filter_pushdown
@@ -480,7 +480,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Ranked scans with other quals that have a btree, BRIN or GIN index; the bitmap is built where the planner costs it cheaper. A loose filter (a tenth of the rows or more) stays after the ranker. Not unranked scans.
 - **Default:** on — on: the planner costs both plans and picks by cost: a 0.1% filter went from 23.6 to 0.22 ms (clustered) and 15.0 to 0.86 ms (scattered); a loose filter keeps the post-filter plan.
 - **Turn off:** SET sift.filter_pushdown = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf) keeps the post-filter plan; force pushes down whenever a bitmap path exists; RESET returns on. Prepared plans keep their choice.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on (the planner costs both plans). force pushes the bitmap down whenever one exists, to test a plan; off keeps the post-filter plan. A filter keeping a tenth of the rows stays after the ranker.
 
 #### sift.prefetch
@@ -493,7 +493,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Unordered sift scans of a heap table: reads ahead the heap pages about to be visited. Not ranked scans, not a sift_table. A cold heap gains; a warm cache does not (4.41 ms off, 4.49 ms on).
 - **Default:** on — On: the read-ahead is for a cold heap, which the benchmark host cannot make (page cache cannot be dropped); with a warm cache it measured no difference, so the default rests on design, not on a figure.
 - **Turn off:** SET sift.prefetch = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf), only to compare plans; RESET returns on.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Reads ahead the heap pages an unordered scan is about to visit; set off only to compare plans.
 
 #### sift.async_maintenance
@@ -506,7 +506,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Promotion of write buffers and merges of sift and sift_col indexes in a dynamic background worker (needs a worker slot). Also required by table_auto_defrag, table_async_promote and col_auto_merge. Superuser setting.
 - **Default:** on — On: 20 inserts of 2,000 documents into a text index sealing every 64 kB took 385 ms with the worker against 696 ms with the writer merging (-44.7%); after a bulk load it promotes the tail seals (1.3 ms against 8-16 ms).
 - **Turn off:** SET sift.async_maintenance = off (superuser: postgresql.conf, ALTER SYSTEM, ALTER DATABASE .. SET): promotions and merges are left to VACUUM, sift.merge() and inserting sessions.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. A background worker promotes write buffers and merges segments so writers do not; off leaves them to VACUUM and inserting sessions. It needs a worker slot (max_worker_processes).
 
 #### sift.maintenance_naptime
@@ -519,7 +519,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The maintenance worker of sift and sift_col indexes (and sift_table passes) stays this long after it starts, holding a worker slot, and asks again at most once per naptime. Range 200 to 60000 ms; reload (SIGHUP).
 - **Default:** 2000 ms — 2000 ms: after a bulk load the worker still promotes the seals of the rest of the window (queries 1.3 ms instead of 8-16 ms on unpromoted segments); the value itself was not compared with others.
 - **Turn off:** n/a: a period (200 to 60000 ms). Maintenance itself is turned off with sift.async_maintenance = off. Change it in postgresql.conf and reload.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 2000 ms. The worker stays this long after it starts and holds a worker slot; table passes ask at most once per naptime. Range 200 to 60000; reload to change.
 
 #### sift.enable_col_scan
@@ -532,7 +532,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Planner paths on a sift_col index with the sift.col_*_ops classes: bitmap scan, Index Scan and Index Only Scan of rows (point lookups, IN, ranges, top-N), chosen by cost. SiftAgg aggregate scans do not depend on it.
 - **Default:** on — On: a few count(*) shapes that SiftAgg answered take the bitmap scan by cost, up to 0.16 ms slower (1,000,000 rows, count(*) WHERE k = x 1.08 / 1.24 ms).
 - **Turn off:** SET sift.enable_col_scan = off (session, ALTER ROLE/DATABASE, postgresql.conf): the planner builds no bitmap path on a sift_col index. Nothing stored changes.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: with the b-trees the planner keeps them; without them a point, range or IN lookup reads the index instead of the table. Turn it off to keep the planner from bitmap scans of a sift_col index.
 
 #### sift.vis_page_cache
@@ -545,7 +545,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Scans of an index with key_cut, whose units list rows of the same heap page: the visibility of a page read twice is kept for the rest of the scan. Other scans read each page once.
 - **Default:** on — On: it costs about 48 bytes for each heap page visited (at most 1,048,576 pages) and writes nothing; at 100,000 rows a key-cut range query showed 0.20 ms off, 0.23 ms on (within noise).
 - **Turn off:** SET sift.vis_page_cache = off (session, ALTER ROLE/DATABASE, postgresql.conf): the page is checked again each time. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: a heap page the scan reads twice (the units of a key-cut index list rows of one page) is checked for visibility once. Turn it off only to compare.
 
 #### sift.col_rollup_on_demand
@@ -558,7 +558,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A SiftAgg scan of exact units that lack their rollup, in this session. Not asked for: dirty units, minor 3 segments, units over the 4096-tuple cap, a hot standby; the index option rollup_on_demand switches one index.
 - **Default:** on — On: every unit answers from the rollups 1.9 to 3.1 s after ALTER INDEX SET rollup (1,000,000 documents, 276 units); the query writes nothing, the worker rewrites about 0.7 s for an 8 MB segment.
 - **Turn off:** SET sift.col_rollup_on_demand = off (session, ALTER ROLE/DATABASE, postgresql.conf): units stay as they are until a merge or REINDEX. Per index: rollup_on_demand = false.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on, per session; the index option rollup_on_demand switches one index. Off leaves units as they are until a merge or REINDEX. Members: col_rollup_worker.
 
 #### sift.col_rollup_worker
@@ -571,7 +571,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A queued rollup refresh request (see col_rollup_on_demand) starts the background worker, one per database, that rewrites the segment. With it off the requests wait in the queue.
 - **Default:** on — On so that a request is served without a call: the first query after ALTER INDEX SET rollup is fully answered from rollups 1.9 to 3.1 s later; off keeps the queue for sift.col_rollup_refresh(index) in your session.
 - **Turn off:** SET sift.col_rollup_worker = off (session, ALTER ROLE/DATABASE, postgresql.conf): requests stay queued until sift.col_rollup_refresh(index) serves them, e.g. on a schedule.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: a rollup refresh request starts the background worker. Off keeps requests queued until sift.col_rollup_refresh(index) serves them in your session, for a scheduled refresh.
 
 #### sift.col_format_minor
@@ -584,7 +584,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every segment a sift_col index or sift_table writes (build, promotion, merge, refresh, worker); options needing a higher minor are ignored; segments already written keep theirs. Wide leaves force their own minor.
 - **Default:** 15 — 15, the newest minor 3.3 writes (3.2: 6), so cube_minmax, superunit, calendar cells, dictionaries read in place and key lists are on by default; a 3.2 library refuses minors above 6.
 - **Turn off:** SET sift.col_format_minor = 6 (3.2), 4 (3.1) or 3 (3.0) before writing. It is superuser-only and workers follow only the server or database value (ALTER SYSTEM, ALTER DATABASE); see docs/UPGRADING.md section 4.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at the default (15; point_tid_columns and key_cut stamp 16 and 17 themselves). Lower to 6 before creating indexes a 3.2 library must read; options needing a higher minor are ignored.
 
 #### sift.col_auto_merge
@@ -597,7 +597,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A scan or insert on a table whose changed rows reach a thousandth of it (50 to 100,000 rows) asks the worker. Needs sift.async_maintenance; not a DELETE alone, autovacuum_enabled = false, a standby.
 - **Default:** on — On since 3.3 (3.2: off): units answered from pre-aggregates 32% to 51% (wide rows) and 33% to 83% (mixed), a grouped sum 10.8 to 0.24 ms, for +0.9% to +1.9% total WAL, within the budget of col_auto_merge_wal_pct.
 - **Turn off:** Server or database only, the worker reads no session value: ALTER SYSTEM SET sift.col_auto_merge = off and reload, or ALTER DATABASE .. SET. sift.col_maintain(index) still applies the rule from a job.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on (set for the server or database). Off stops the background vacuums and rewrites. Tuning: _dirty_pct, _fragmentation, _buffer_pct, _wal_pct, _max_active, _partition_kb, _max_workers.
 
 #### sift.col_auto_merge_dirty_pct
@@ -610,7 +610,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** One reason of the rewrite rule: units of a sift_col index holding a dead row; such a unit answers from rows, not pre-aggregates, however few rows are dead. sift.col_maintain(index) uses it too. 1 to 100.
 - **Default:** 30 — 30, with the fragmentation and buffer reasons: a 1% churn spread over the table left 0 of 50 units answering from pre-aggregates, the rewrite 25 of 25 (200,000 rows,).
 - **Turn off:** n/a: a threshold. 100 never fires this reason (it is 'above'); the other reasons stay, and sift.col_auto_merge = off stops the worker. Server or database level.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 30: the rewrite runs when more than this percent of the units hold a dead row (such a unit answers from rows, not pre-aggregates). Lower it to rewrite sooner, at more WAL.
 
 #### sift.col_auto_merge_fragmentation
@@ -623,7 +623,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** One reason of the rewrite rule: units listed per superblock they cover; each promotion of the write buffer adds a segment over the superblocks the churn touched. 1.1 to 1000.
 - **Default:** 2 — 2.0, with the dirty and buffer reasons: promotions pile up overlay segments over the same superblocks and nothing was rewritten; the rule took 0 of 50 units to 25 of 25 from pre-aggregates ().
 - **Turn off:** n/a: a threshold. Raise it (up to 1000) to rewrite later; sift.col_auto_merge = off stops the worker. Server or database level.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 2.0: the rewrite runs when the units listed reach this many times the superblocks they cover (each promotion adds a segment over the same superblocks). Lower it to rewrite sooner.
 
 #### sift.col_auto_merge_buffer_pct
@@ -636,7 +636,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** One reason of the rewrite rule: percent of the index's rows in the write buffer, read as one in-memory unit per superblock on every query until promoted. 0.01 to 100.
 - **Default:** 1 — 1.0: when the buffer is the only reason only the buffer is promoted (insert-only 2% per cycle, 12 cycles, 200,000 rows: 33.4 to 4.6 MB written, same query times), so firing early is cheap.
 - **Turn off:** n/a: a threshold. 100 never fires it; lower it to promote the buffer sooner. sift.col_auto_merge = off stops the worker. Server or database level.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 1.0: the write buffer holding more than this percent of the rows is promoted (alone, without a whole-index rewrite when it is the only reason). Lower it to keep the buffer smaller.
 
 #### sift.col_unit_floor
@@ -649,7 +649,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A plain sift_col index over a table of 16 superblocks (4,096 pages) or more whose promotions reach 16 superblocks or more with under half a unit's rows in each, and the tier merges of such overlays. Not a key_cut index, not a sift_table, not a rewrite of a partition, and not once a merge holds half a unit's rows in every superblock.
 - **Default:** 2048 — It passes the 3.3 rule on the classes it is for (a grouped sum 2.0 to 2.6 times faster in the dirty state, a float sum 1.9 to 2.6 times, a key lookup 3.5 to 6.0 times, all over the 5%), grows no index (smaller while dirty, within 0.3% after a merge, under the 3%) and writes less WAL, not more; the one class it costs, the newest rows by an ORDER BY .. LIMIT, costs 0.1 to 0.4 ms
 - **Turn off:** SET sift.col_unit_floor = 0 (or ALTER SYSTEM / ALTER DATABASE for the maintenance worker): a promotion writes a unit for each superblock it reaches, as 3.3 does.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 2048. Raise it for fewer, larger overlay units on a table whose churn is spread over the whole heap; 0 writes a unit for each superblock a promotion reaches, as 3.3 does.
 
 #### sift.enable_agg
@@ -662,7 +662,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** GROUP BY and aggregate queries (and top-N, which needs it) on tables with a sift_col index; a query shape the node cannot take keeps the normal plan whatever this says.
 - **Default:** on — On: totals of 1,000,000 rows go from 60.6 to 0.11 ms; the planner still compares costs and keeps the normal plan where it is cheaper.
 - **Turn off:** SET sift.enable_agg = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; effective at once, no REINDEX. It also stops sift.enable_topn.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off gives the plan PostgreSQL has without sift (to compare, or to isolate a wrong result); it also stops the top-N scan. Set it per statement, role or session.
 
 #### sift.agg_left_lateral
@@ -675,7 +675,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** LEFT JOIN LATERAL over jsonb_to_recordset or jsonb_array_elements of a list of the scanned row; a WHERE above the join that sees the NULL element tuple, or a lateral condition that may raise, keeps the normal plan.
 - **Default:** on — On: lateral part 2.7x to 4.9x faster on three captured queries (27.1 to 10.1, 33.4 to 6.8, 30.9 to 6.8 ms); the pushdown is checked by test agg_left_lateral.
 - **Turn off:** SET sift.agg_left_lateral = off (session), ALTER ROLE/DATABASE .. SET, or postgresql.conf; the statement then keeps the normal plan. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off keeps the normal plan for a LEFT JOIN LATERAL over a row's list (to compare, or to isolate a wrong result). A WHERE that sees the NULL element tuple keeps the normal plan anyway.
 
 #### sift.agg_preagg
@@ -688,7 +688,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Units of a sift_col index whose rows are all visible, for count/sum/min/max, and groups of units through their superunit summary; units with invisible rows are scanned, and an index built with preagg = 'off' has no cube.
 - **Default:** on — On by the 3.3 rule: min/max per group 7.4 to 0.20 ms (over 5%) at +1.1% to +1.2% of the index (under 3%) and +3.9% serial build CPU (under 5%).
 - **Turn off:** SET sift.agg_preagg = off (session, role, database or postgresql.conf): every unit is scanned, the stored cube stays. ALTER INDEX .. SET (preagg = 'off') plus REINDEX stops storing it.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off scans every unit (comparison). The scan skips the rollup read after 3 units whose rollups do not pay. The reloption preagg = 'off' stops storing the cube.
 
 #### sift.agg_preagg_distinct
@@ -701,7 +701,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count(DISTINCT col) of a 32-bit or text column with a cube histogram, over units whose rows are all visible (others are scanned into the same set); needs sift.agg_preagg. Tens of thousands of values gain nothing.
 - **Default:** on — On since 3.3: 8-value column 0.25-1.47 to 0.10-0.52 ms; the measured exception is a 40,000-value key (6.6 ms against 4.8 ms with preagg off), named in bench case count_distinct_hist.
 - **Turn off:** SET sift.agg_preagg_distinct = off (session, role, database or postgresql.conf): distinct values are counted from the rows of every unit. No REINDEX; the stored histograms stay.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off counts distinct values from the rows of every unit. A key with tens of thousands of values gains nothing from the histograms (see the bench case); measure it with agg_preagg off.
 
 #### sift.agg_dead_delta
@@ -714,7 +714,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_col index with pre-aggregates (sift.agg_preagg), a unit with a dead row whose heap pages are all-visible and no more dead rows than the limit, for count, sum and avg of integer and numeric columns (grouped, ranged and by calendar cell). Not a minimum, a maximum, a distinct count, a float sum, a unit with exceptions, a superunit, a sift_table or the write buffer.
 - **Default:** 15 — It passes the 3.3 rule on the class it is for (the grouped sum of a churned table, 8% to 38% faster in time and 24% to 59% in instructions, and the window over the newest days 7% to 20%), grows no index (0%) and writes nothing (0 bytes of WAL, under the 5%); the statements it cannot help run the same instructions or +1.3%
 - **Turn off:** SET sift.agg_dead_delta = 0 (or ALTER SYSTEM / ALTER DATABASE): a dirty unit is read by its rows, as 3.3 does.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 15. Raise it only for a table whose dead rows are few and spread evenly; above about 17% dead a unit is cheaper to scan. 0 scans every dirty unit, as 3.3 does. A lone segment above dead_rewrite_pct (10) dead is rewritten by VACUUM before it gets there.
 
 #### sift.agg_super
@@ -727,7 +727,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Groups of exact units that have a superunit summary, which only units written with reloption superunit > 0 (default 16 since 3.3) have; older units and groups cut by a predicate read each unit.
 - **Default:** on — On: 400,000 rows grouped by a 20-value key 3.09 to 0.22 ms at +1.0% of the index (under 3%) and insert, merge and VACUUM CPU inside the noise: the 3.3 rule.
 - **Turn off:** SET sift.agg_super = off (session, role, database or postgresql.conf) reads each unit's own pre-aggregate. ALTER INDEX .. SET (superunit = 0) stops writing summaries; a merge or REINDEX applies it to older units.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off reads each unit's own pre-aggregate. Summaries exist only for units written with the reloption superunit > 0 (default 16 since 3.3); REINDEX or a merge writes them for older units.
 
 #### sift.enable_topn
@@ -740,7 +740,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** ORDER BY .. LIMIT n (with a search, or the page of rows with totals) from sift_col units; needs sift.enable_agg. The planner compares it with an ordered b-tree by cost, so the b-tree stays where it is cheaper.
 - **Default:** on — On: top-10 with a search 7.1 to 2.4 ms (1M rows) and 191 to 19.5 ms (10M); page with totals 85.1 to 4.4 ms; the cost comparison leaves other cases to the normal plan.
 - **Turn off:** SET sift.enable_topn = off (session, role, database or postgresql.conf): ORDER BY .. LIMIT n gets the normal plan, aggregates keep SiftAgg. sift.enable_agg = off stops both. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; the planner compares it with an ordered btree by cost. Off gives the normal plan for ORDER BY .. LIMIT n. Needs sift.enable_agg.
 
 #### sift.topn_walk
@@ -753,7 +753,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Top-N without a search whose sort column does not follow the table (blocks of values in no order, random). A column that follows the table (clustered, serial id) is not walked by zones, it stops early on them.
 - **Default:** on — On: 2.3x to 6.4x on keys in blocks of 3,000-12,000 rows (3,996,000 rows) and 3.1x to 3.4x on a random key; a key that follows the table or has many ties reads the same units, so nothing is lost.
 - **Turn off:** SET sift.topn_walk = off (session, role, database or postgresql.conf): the units are visited in table order. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. A key that follows the table, or has many ties and NULLs, reads the same units either way. Off visits the units in table order (comparison).
 
 #### sift.topn_zone_keys
@@ -766,7 +766,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Top-N walk with several sort keys where the first key ties between units (few distinct values, ORDER BY status, id LIMIT 10), decided by the next integer key's zone; a first key that separates units is unaffected.
 - **Default:** on — On: units read fall from 20-157 to 1-2 (25,000-200,000 rows) with no index or write cost; at 1,000,000 rows with 5 statuses there is no time gain (5.7 against 5.5 ms off).
 - **Turn off:** SET sift.topn_zone_keys = off (session, role, database or postgresql.conf): only the first key bounds the units, every unit that ties with the n-th row is read. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. It decides a tie of the first sort key between units by the zones of the later keys (a few distinct values in the first key). Off to compare.
 
 #### sift.topn_runs
@@ -779,7 +779,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** ORDER BY k LIMIT n where k is in the order_columns reloption, on units written after it was set; n up to a few thousand (b-tree 5x-14x faster at 1000). A removing WHERE and write buffers are read as before.
 - **Default:** on — On, and costs nothing without the option: it acts only on an index with order_columns (default none; the opt-in costs the bytes). With it, LIMIT 100 on 1,000,000 rows 3.5 to 1.4 ms.
 - **Turn off:** SET sift.topn_runs = off (session, role, database or postgresql.conf): whole units are read, the stored runs stay. ALTER INDEX .. RESET (order_columns) plus REINDEX drops them.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; it acts only on an index with the reloption order_columns (default none). Name only columns sorted with LIMIT: an unordered column costs 2 bytes a row. Off reads whole units.
 
 #### sift.agg_lookup_pushdown
@@ -792,7 +792,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Joined lookup tables (IN (SELECT ..), attribute tables) with own column = value conditions served by a b-tree prefix or a selective condition; a set that is most of the table gains nothing (30.4 vs 31.3 ms).
 - **Default:** on — On: group of 1,000 keys over 3,000,000 rows, generic lookup join 70.8 to 22.9 ms and byte table 24.8 to 5.5 ms; the worst case is a tie (100,000 keys 30.4 against 31.3 ms).
 - **Turn off:** SET sift.agg_lookup_pushdown = off (session, role, database or postgresql.conf): the whole joined table is loaded. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off loads the whole joined table. Gains need a btree on the table's equality columns or a selective condition; a set that is most of the table gains nothing (100,000 keys: 30.4 vs 31.3 ms).
 
 #### sift.agg_lookup_columns
@@ -805,7 +805,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A joined table with a sift_col index that holds its join columns (integer, date, timestamp, text, numeric of up to 18 digits) and no value its leaves cannot store; the first query after a write to the table, or any query when the lookup cache is off. A table cached from an earlier query is not loaded again.
 - **Default:** on — On: the heap is read a tuple at a time (about 160 ns a row read); the leaves are decoded a unit at a time, and the conditions `column <op> constant` of the table are tested on them before a tuple is made. The result is the same rows.
 - **Turn off:** SET sift.agg_lookup_columns = off (session, role, database or postgresql.conf): the heap is read. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off to load every lookup table from the heap.
 
 #### sift.verdict_cache_kb
@@ -818,7 +818,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Statements that the auto(shared-cte-choice) choice helps, planned by a backend that has not seen the shape but another backend of the database has: a pool that resets its sessions, a new connection. The first backend after a start of the server plans in full; a table that was changed since (ANALYZE, a rewrite, a REINDEX) moves the key and is planned in full once.
 - **Default:** 256 kB — On: 256 kB of shared memory, allocated by the first backend that needs it; a wrong verdict is a plan of the other variant of the same query, never other rows, and the plan of the variant must cost within a factor of 4 of the one the verdict was made from. The 3.3 rule needs no more (no index growth, no write cost).
 - **Turn off:** SET sift.verdict_cache_kb = 0 (superuser; postgresql.conf for all backends): each backend then plans every statement in full once.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at the default. 0 turns the sharing off (each backend then plans every statement in full once); more room helps only a server with more than about 2,000 statements that read a shared CTE.
 
 #### sift.agg_share_lookups
@@ -831,7 +831,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** UNION ALL arms of one statement that join the same table with the same columns and conditions; arms with other tables or conditions load their own, and nothing is kept between statements (that is agg_lookup_cache_kb).
 - **Default:** on — On: the table loads once instead of once per arm, and nothing outlives the statement; the switch alone has no timing recorded (case cte_series_arms).
 - **Turn off:** SET sift.agg_share_lookups = off (session, role, database or postgresql.conf): each arm loads the table itself. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. UNION ALL arms of one statement that join the same table with the same columns and conditions load it once; nothing is kept between statements. Off loads it per arm.
 
 #### sift.agg_semi_lut
@@ -844,7 +844,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Semi and anti joins (IN, EXISTS, NOT EXISTS) on an integer or date leaf whose key range fits sift.agg_semi_lut_size; NOT IN (SELECT ..) stays on the hashed subplan, other key types use the generic lookup join.
 - **Default:** on — On: 1,000 keys over 3,000,000 rows 6.0 ms against 27.0 (generic lookup join) and 66.0 (normal plan); NOT EXISTS 85.2 to 10.4 ms; no index growth or write cost.
 - **Turn off:** SET sift.agg_semi_lut = off (session, role, database or postgresql.conf): the generic lookup join runs, 3.5x-4.5x slower for 100-5,000 keys. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off uses the generic lookup join, 3.5x to 4.5x slower for groups of 100 to 5,000 keys. It applies to integer or date join keys whose range fits sift.agg_semi_lut_size.
 
 #### sift.agg_param_set_size
@@ -857,7 +857,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Planning of col = ANY($1) with an array parameter in a generic plan, for a query that can run as SiftAgg; custom plans (they see the array), literal lists and other queries are costed as before.
 - **Default:** 1000 — 1000 lies above the crossover of 100 to 1,000 members: at 1,000-5,000 the generic plan is 2.1x-5.5x faster; at 100 members it is 2.0 ms slower (5.0 against 3.0 ms).
 - **Turn off:** SET sift.agg_param_set_size = 0 gives back the planner's own guess of 10 elements (the bitmap scan is kept); 10 suits sets of about 100 keys. Session, role, database or postgresql.conf.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 1000. A set of about 100 keys is 2.3 ms slower on the scan: use a custom plan or SET sift.agg_param_set_size = 10. 0 gives the planner's own guess (10) back.
 
 #### sift.agg_par_min_rows
@@ -870,7 +870,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Only a scan whose path with workers was priced for the rows it reads (the lookups are a CTE or sub-select of ids PostgreSQL has no statistics for, and the price of the scan with its join rows is a few milliseconds); the workers of every other scan start as they did.
 - **Default:** 80000 — 65,000 rows (60 units kept) the workers were 1.5x slower (40 against 58 ms), 101,000 rows of unnested documents 1.15x faster (990 against 870 ms), 300,000 rows (276 units) 1.5x faster (493 against 328 ms).
 - **Turn off:** SET sift.agg_par_min_rows = 0 starts the workers of those scans for any number of rows. Session, role, database or postgresql.conf.
-- **Upgrade from 3.5:** new in 3.5
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 80,000 rows. 0 starts the workers for any scan the plan asks them for.
 
 #### sift.agg_key_skew
@@ -883,7 +883,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Normal-plan pricing of lookup joins PostgreSQL can count (IN (SELECT ..), join on a list table) when the column is more than twice as uneven as a flat one; flat columns are priced by the mean. Planning only.
 - **Default:** on — On: 5 heavy keys holding a third of 200,000 rows run 8.6 ms on the scan against 34 ms; the measured cost is a rare list that takes the scan and is 5 to 8 ms slower.
 - **Turn off:** SET sift.agg_key_skew = off (session, role, database or postgresql.conf): probes are priced by the mean rows of a key. Planning only, no REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. It prices the normal plan by the most common keys when the column is more than twice as uneven as a flat one. Off prices by the mean rows of a key.
 
 #### sift.agg_rollup_cost
@@ -896,7 +896,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Units that have a rollup (GROUP BY an element or map key): per unit, the rollup is read only when its tuples cost less than scanning the elements; units without a rollup are unaffected.
 - **Default:** 1 — 1 prices a rollup tuple as one element scan: rollups of a tenth of the elements were slower than the scan (14.6M against 7.0M instructions for GROUP BY kind), so always-from-rollup was dropped.
 - **Turn off:** SET sift.agg_rollup_cost = 0 answers every unit from its rollup (the older behavior, used by tests); a large value never does. Session, role, database or postgresql.conf; no REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 1 (the cost of a rollup tuple against an element scan). 0 always answers from the rollup (tests), large values never do. EXPLAIN ANALYZE shows Units Scanned By Cost.
 
 #### sift.agg_dense
@@ -909,7 +909,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count, sum and avg (with or without FILTER, ungrouped or grouped by text columns) of integer or float columns or of array-of-object elements; other aggregates and shapes take the tuple path.
 - **Default:** on — On: 34.0M to 10.9M instructions (count FILTER per flag, 387,593 elements) and 41.1M to 26.9M (count and avg); sums add in the same order, so rows do not change.
 - **Turn off:** SET sift.agg_dense = off (session, role, database or postgresql.conf): the tuple path runs with the same rows. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; the sums add in the same order, so the rows do not change. Off runs the tuple path (to compare, or to isolate a wrong result). EXPLAIN ANALYZE shows Dense Chunks.
 
 #### sift.agg_two_level
@@ -922,7 +922,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** An aggregate over per-row aggregates (UNION ALL arms grouped by a row id), also with joined VALUES lists, sub-selects or LIMIT 1 lookups; other statements are unaffected.
 - **Default:** on — On: 1,000,000 rows 428 ms normal plan to 90 ms with the scan (case two_level_spend); the switch alone is not isolated.
 - **Turn off:** SET sift.agg_two_level = off (session, role, database or postgresql.conf): each arm keeps its own scan and the outer aggregate runs above them. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The arms and the outer aggregate run in one scan of the index. Off keeps each arm's own scan (to compare, or to isolate a wrong result).
 
 #### sift.agg_dist_stream
@@ -935,7 +935,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count(DISTINCT x) of an integer column whose superblocks hold little-overlapping ranges of x, on a source that gives zones; otherwise, or when the group table would spill, the plain scan runs.
 - **Default:** on — On: the answer is the same, the sets stay within hash_mem where the plain scan would spill or sort, and a scan that does not pay costs one pass over the zone arrays; no timing recorded.
 - **Turn off:** SET sift.agg_dist_stream = off (session, role, database or postgresql.conf) restores the plain scan. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; the scan decides at run time from the zones, else it is the plain scan after one pass over the zone arrays. Off restores the plain scan (comparison, or a way out).
 
 #### sift.agg_fuse
@@ -948,7 +948,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** UNION ALL arms that read the same rows and join the same lookup table, also with different WHERE or aggregates; arms that join no lookup, or that the pre-aggregates answer, stay apart.
 - **Default:** on — On: three arms over a lookup join, 100,000 rows, 18.7 ms arm by arm against 8.6 ms in one pass (2.2x); results are the same.
 - **Turn off:** SET sift.agg_fuse = off (session, role, database or postgresql.conf): each arm runs alone. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Arms that read the same rows run in one pass; arms that join no lookup, or that the pre-aggregates answer, stay apart. Off runs each arm alone.
 
 #### sift.agg_join_filter
@@ -961,7 +961,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Inner and semi lookup joins on an integer or date key leaf; other key types are not tested against the loaded keys before tuples are made.
 - **Default:** on — On: units outside the keys' range are not read and the other rows are tested as a set, not through the combo cache (case keys_join_500k); no figure recorded for the switch.
 - **Turn off:** SET sift.agg_join_filter = off (session, role, database or postgresql.conf): the join resolves through the combo cache (no Join Key Filters in EXPLAIN ANALYZE). No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. An inner or semi lookup join on an integer or date key tests the key against the loaded table's keys before tuples are made (zone pruning). Off to compare.
 
 #### sift.agg_rows
@@ -974,7 +974,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A grouped plan that reads SiftAgg nodes with an exact count(DISTINCT) of integers (outer count(DISTINCT id) over per-row aggregates joined to a spine); no GROUP BY, DISTINCT ON or aggregates: not used.
 - **Default:** on — On: 109,000 rows at work_mem 4MB 753 to 444 ms; the set spills to a sort of narrow tuples past hash_mem. Float sum and avg add in arrival order.
 - **Turn off:** SET sift.agg_rows = off (session, role, database or postgresql.conf) restores PostgreSQL's sort and GroupAggregate. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. It counts distinct integers of a SiftAgg plan's rows in a node of its own, spilling to a sort of narrow tuples past hash_mem. Off restores the sort; float sums add in arrival order.
 
 #### sift.table_write_buffer_limit
@@ -987,7 +987,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Writes of a sift_table: size of the row-format write buffer before it is closed and promoted; whole 2 MB superblocks, range 2048 to 8192 kB. A row must fit one unless table_wide_rows is on. Segments written afterwards.
 - **Default:** 4096 kB — 4096 kB: the middle of the range and the write_buffer_limit of a sift index; 100,000 rows loaded in 20 statements: 8 MB against 2 MB was 41.9% smaller and 20.8% faster to load, queries equal (1.24 ms).
 - **Turn off:** n/a: a size, not a switch. RESET sift.table_write_buffer_limit returns 4096; 2048 kB is the smallest. Buffers already written keep their size.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 4096 kB (2048 to 8192, rounded down to 2 MB). A row has to fit one buffer unless table_wide_rows is on; a larger buffer means fewer, larger promotions. Applies to segments written afterwards.
 
 #### sift.table_wide_rows
@@ -1000,7 +1000,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Rows of a sift_table larger than one write buffer (up to 1 GB). Rows that fit keep the old layout and are not affected; the buffer taking a wide row is directory format 11.
 - **Default:** on — On, new in 3.3: a row up to 1 GB is accepted instead of refused with 'row of sift_table is too large'; 5 / 50 / 200 MB rows insert in 45 / 403 / 1376 ms. Format 11 appears only in tables that take one.
 - **Turn off:** SET sift.table_wide_rows = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): such rows are refused again. Buffers already marked format 11 stay, and older builds still refuse to write to them.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: a row above the write buffer (up to 1 GB) is accepted. Rows that fit keep the old layout; the buffer that takes a wide row is format 11, which older builds refuse. Off refuses such rows.
 
 #### sift.table_inline_promote
@@ -1013,7 +1013,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Writers of a sift_table: the session that closes a write buffer promotes it into columns while inserting. VACUUM and autovacuum always promote. Not affected: reads of already promoted segments.
 - **Default:** on — On since 3.0 so closed buffers become columns as rows arrive; this run measured no query gain (1.29 off, 1.42 ms on, noise) and a 25-31 ms promotion in the statement that closes a buffer.
 - **Turn off:** SET sift.table_inline_promote = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): promotion is left to VACUUM and autovacuum. Autovacuum reads the server or database setting, not the writer's.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on so the writer promotes closed buffers as it inserts. Off leaves them to VACUUM and autovacuum; table_async_promote moves the work to a worker instead.
 
 #### sift.table_dict_lookup
@@ -1027,7 +1027,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Column segments of a sift_table written from now on, for a text or uuid column with a dictionary of 1,024 strings or more: string tests (equality, IN, prefix, range) read it in place. Column format minor 14.
 - **Default:** on — Automatic where the orders of a segment (4 bytes a string) take 25% of it at most, which holds the growth under the ceiling of the default formula: S 20.9 on the first statement of a backend (every backend of a pool or a dashboard pays it), G 22.9%, W 3.0%, B 62 against C 8.2. At steady state the form costs the same as the compact one.
 - **Turn off:** SET sift.table_dict_lookup = off (session): new segments return to the compact form; segments already written keep the order until a merge or VACUUM FULL rewrites them. No NOTICE: a sift_table writes its segments in promotion and VACUUM, not in a statement that could report them; sift.table_segments(table) gives their bytes and format.
-- **Upgrade from 3.5:** After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Set off for a table whose segments are written far more than their strings are tested, or to keep them at 4 bytes a string less; new segments only.
 
 #### sift.table_key_table
@@ -1040,7 +1040,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** WHERE a foreign key or *_id column (int2, int4, date) = x, IN, a range or GROUP BY, nothing else tested, count/sum/avg/min/max of the numeric, time and integer leaves the table keeps; every superblock of the segment plain (no tombstone, no write buffer row, no uncommitted row) and no dead row. Else the units are read.
 - **Default:** on — The rule of 3.3: over 5% on the relevant class (0.58 to 0.07 ms at 900,000 rows), growth at most 3% of a segment by construction, write cost under 5% on every path measured; a table that does not fit is not written.
 - **Turn off:** SET sift.table_key_table = off (or in postgresql.conf), then VACUUM FULL or the next merge; segments written before keep theirs and are still read.
-- **Upgrade from 3.5:** A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Set off for a table that is written far more than it is read by key, or to keep the segments readable by 3.4. The setting applies to the segments written afterwards.
 
 #### sift.table_bulk_groups
@@ -1053,7 +1053,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** COPY, CREATE TABLE AS, REFRESH MATERIALIZED VIEW and ALTER TABLE .. SET ACCESS METHOD into a sift_table. A table with a unique or exclusion index, trigger or foreign key, or a published table keeps write buffers.
 - **Default:** on — On since 3.3: COPY of 200,000 rows CPU 0.52 to 0.39 s and WAL 44.2 to 1.1 MB, relation size equal (>= 5% gain, no growth); no format change, but a 3.0 library refuses tables with unfrozen groups.
 - **Turn off:** SET sift.table_bulk_groups = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf): loads go through write buffers again. Groups already written stay.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write groups directly; a table with a trigger, foreign key, unique or exclusion index, or publication keeps write buffers. Off keeps them.
 
 #### sift.table_compression
@@ -1066,7 +1066,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Column segments a sift_table writes from now on (promotion, merge, bulk load): auto, none, lz4[:N], zstd[:N], encodings; per column 'auto; col=zstd:9'. Autovacuum uses the server setting. Not sift_col.
 - **Default:** '' — Unset (auto): encodings plus lz4 or zstd only where the cost rule says the bytes repay the decode; none was 2x the bytes (30 against 13 MiB) and zstd:3 4.7% smaller with equal load time and query (100,000 rows).
 - **Turn off:** SET sift.table_compression = 'none' for no compression (scans fastest at 2x bytes); RESET returns auto. Segments already written keep their codec until a merge or rewrite.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave unset (auto: encodings, plus lz4 or zstd only where the cost rule says the bytes repay the decode time). none scans fastest at 2x the bytes. Per column: 'auto; col=zstd:9'. New segments only.
 
 #### sift.table_dead_rewrite_pct
@@ -1079,7 +1079,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM, table_maintain and the auto defrag pass of a sift_table: a column segment alone is rewritten above n percent dead rows. A sift_col index has its own dead_rewrite_pct (10).
 - **Default:** 30 — 30: the file stays near 1.4x the live rows instead of up to 2x (30 against 50, scattered deletes and updates) for about 15-20% more VACUUM time; a table keeps its segments until a third is dead.
 - **Turn off:** SET sift.table_dead_rewrite_pct = 100 never rewrites a lone segment (session, ALTER ROLE / DATABASE .. SET, postgresql.conf); merges still drop dead rows they rewrite. RESET returns 30.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 30. Lower rewrites segments sooner (smaller file, more VACUUM work); 100 never rewrites. The auto defrag pass rewrites segments above this percent too.
 
 #### sift.table_auto_defrag
@@ -1092,7 +1092,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table that deletes, updates or reads past table_auto_defrag_dead_pct tombstones, or holds table_auto_defrag_free_pct free blocks; needs sift.async_maintenance. An append-only table starts no pass.
 - **Default:** on — On since 3.3 (off in 3.2 as an opt-in until run on real workloads): 200,000 rows 7,536 against 5,092 tx/s, read p99 16.8 against 34.2 ms, file 10.7 against 18.1 MB, for about 60% more WAL on that mix.
 - **Turn off:** SET sift.table_auto_defrag = off (server or database; postgresql.conf, ALTER DATABASE .. SET) restores the 3.2 VACUUM-only behaviour.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on (needs sift.async_maintenance). A worker clears dead rows and returns free space without VACUUM; off restores VACUUM-only (3.2). Bound it with budget, delay, wal_rate and max_active.
 
 #### sift.table_auto_defrag_indexes
@@ -1105,7 +1105,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The background pass of a sift_table asked for by dead rows: a whole table VACUUM with index cleanup. A free-space request runs table_maintain, which clears no index entry.
 - **Default:** on — On: without the index cleanup the tombstone log (which every scan reads and which holds the file above the live rows) cannot shrink; the log stays until a VACUUM when it is off.
 - **Turn off:** SET sift.table_auto_defrag_indexes = off (server or database): the pass is table_maintain - dead rows cleared, space returned, tombstones and index entries wait for a VACUUM.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: the pass is a whole VACUUM, index cleanup included, so the tombstone log shrinks. Off: it only clears dead rows and returns space; tombstones and index entries wait for a VACUUM.
 
 #### sift.table_auto_defrag_free_pct
@@ -1118,7 +1118,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table with a file whose free blocks are n percent or more and that VACUUM's lock rule accepts (1000 blocks or a 16th of the file); the pass then runs table_maintain. Skipped while the table is being written.
 - **Default:** 25 — 25: a quarter of the file, the 3.2 value; it is the second trigger beside dead_pct, tested only as a part of the pass (test 017_tbl_autodefrag), no other value measured.
 - **Turn off:** n/a: a threshold (1 to 100). table_auto_defrag = off stops the whole pass; RESET returns 25.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 25. The pass also starts when this percent of the file is free blocks (and VACUUM's lock rule holds: 1000 blocks or a 16th of the file). Lower returns space sooner.
 
 #### sift.table_auto_defrag_dead_pct
@@ -1131,7 +1131,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Backends of a sift_table asking for a pass when n percent of its rows are tombstones older than every snapshot (a long transaction makes it wait). The pass rewrites segments above table_dead_rewrite_pct.
 - **Default:** 5 — 5, was 20 in 3.2 (autovacuum's factor): a read after 16% churn took 35.8 ms at 20, 7.6 at 5 and 6.7 at 2 (0.5 fresh); mix 3,206 against 3,452 tx/s and WAL 164 against 157 MB, churn WAL doubled (11.8 to 24 MB).
 - **Turn off:** SET sift.table_auto_defrag_dead_pct = 100 never asks for dead rows (the free-space trigger remains); table_auto_defrag = off stops the pass. RESET returns 5. Server or database level.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 5. The pass is asked for when this percent of rows are tombstones older than every snapshot; 100 never asks. Lower starts sooner (more WAL); higher leaves reads slow until VACUUM.
 
 #### sift.table_auto_defrag_coalesce
@@ -1144,7 +1144,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The pass of a sift_table: the small column groups next to a rewritten one are merged into one group. The gain fades after about 12 cycles of churn.
 - **Default:** on — On: after 6 cycles of churn 2 groups against 4, aggregate 20-21 against 28-32 ms, file 8.7 against 10.1 MB, for WAL 50.3 against 49.3 MB (200,000 rows).
 - **Turn off:** SET sift.table_auto_defrag_coalesce = off (server or database): the pass rewrites only the segments above the threshold and leaves their neighbours as they are.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The pass merges the small groups next to the one it rewrites, so fewer groups remain; the gain fades after about 12 cycles of churn.
 
 #### sift.agg_scale_horizon
@@ -1155,7 +1155,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Impact:** index size: -; build, merge and writes: -; other: none at 1; two more plans of the statement where the scans cost less than the shared work but not by the margin
 - **When:** Only an inline shared CTE that is a close call (scans cost less than the shared work, not by the margin); it is planned again at the square root of the horizon and at the horizon times the rows.
 - **Turn off:** SET sift.agg_scale_horizon = 1 (minimum; session, role, database or postgresql.conf) keeps the choice at the size the table has, with no further planning.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 100: a close call between an inline and a shared CTE must also hold at 10 and at 100 times the rows. 1 keeps the choice at the current size; values around the default change few plans.
 
 #### auto(col-append-batch)
@@ -1168,7 +1168,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every transaction that inserts more than one row into a sift_col index (COPY, INSERT with many rows or SELECT, many statements in a transaction). Not a transaction of one row, an ON CONFLICT statement, or a row of more than a page.
 - **Default:** automatic — The WAL of the index is the largest cost of a bulk load on a server with a standby: the standby replays one record a page, not one a row (-45% of its replay instructions for COPY), with the rows of a transaction visible to its own reads and a savepoint that rolls back writing nothing; measured at 1,000,000 rows (the PR).
 - **Turn off:** n/a: no setting; the rows of a one-row transaction, an ON CONFLICT statement and a row of more than a page are written at once, the others wait for the commit, a read of the index or a savepoint.
-- **Upgrade from 3.5:** A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave as is; there is nothing to set. Load with COPY or statements of many rows to write the fewest records; one row a transaction writes what it did.
 
 #### auto(lateral-decorrelation)
@@ -1181,7 +1181,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A LATERAL or scalar sub-select of count, sum, avg, min, max, array_agg, bool_and, bool_or or string_agg (optional GROUP BY and HAVING) over one table with a column index, tied to the outer query by equalities of the same type, with many outer rows. Not with LIMIT, ORDER BY, grouping sets, joins inside, inequalities, a HAVING without GROUP BY or an outer column in a group: the sub-select stays as written.
 - **Default:** automatic — Cost-based: the grouped form is kept only when it runs in the scan and the planner costs it below the lookups of the plain plan, so a few outer rows keep the index lookups. Same rows as the sub-select (fuzz family decor: 0 divergent).
 - **Turn off:** SET sift.enable_agg = off (the whole aggregate scan; the query is planned as written). There is no setting for this rewrite alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. With few outer rows (19 in one test) the lookups stay. sift.explain_why shows the rewrite as the arm used; write the tie as equalities of one column on each side.
 
 #### auto(key-cut-second-key)
@@ -1195,7 +1195,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A CREATE INDEX or REINDEX where key_cut is chosen (or advised) for a leaf that is not a time leaf, on an index that has a date or timestamp leaf, when the sample predicts the index no more than 1% larger than the cut by the key alone. Not with a time leaf as the key, key_cut = 'off' or a list, order_columns or point_tid_columns.
 - **Default:** automatic — The sorted order costs nothing the 3.3 rule counts: the index shrinks and the build pays 11% (W 11 gives C = -20.9/3 + 11/5 = -4.8 against B = 1.4). Float8 sums add a key's units in another order, as a parallel plan adds rows; integers and numeric are exact.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'key') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'key'); the NOTICE names the choice.
-- **Upgrade from 3.5:** Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: key, date' and the NOTICE names both; key_cut = 'off', or a list of your own (say 'key, date' for an index whose cut you set before), is never changed. sift.key_cut_decision says what a REINDEX would decide.
 
 #### auto(key-cut-range-lane)
@@ -1209,7 +1209,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A CREATE INDEX or REINDEX on a table of 64 units or more, whose range or inet lane is scattered over the units (a range of it reads 8 times the units its rows fill), whose other leaves are scattered too (their zones keep all the units for an equality: a leaf that follows the table, or whose zones skip units, blocks the cut), when the sample predicts the index no more than 3% larger. Not with key_cut = 'off' or a list, order_columns or point_tid_columns.
 - **Default:** automatic — B = R*log2(S)/log2(1.05) = 0.5*log2(42)/log2(1.05) = 38.3 against C = G/3 + W/5 = -2.0 + 11.8 = 9.8: automatic; G is under the 25% ceiling and the saving is 27.2 M instructions a query. Rare columns (R 0.5).
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
-- **Upgrade from 3.5:** An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: r#1' and the NOTICE names it; key_cut = 'off', or a list of your own, is never changed. sift.key_cut_decision says what a REINDEX would decide. A range column in the order of the table, or another leaf that follows it (a sequential id) or whose zones skip units (a date that drifts over the table), blocks the cut: the units stay by superblock.
 
 #### auto(key-cut-date-growth)
@@ -1223,7 +1223,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A CREATE INDEX or REINDEX whose date, timestamp or lane is scattered over the units (a range of it reads more units than its rows fill, and the cut saves 100,000 instructions or more a query), whose other leaves are scattered too, when the benefit of the cut is at least its cost. Not with key_cut = 'off' or a list, order_columns or point_tid_columns.
 - **Default:** automatic — B = R*log2(S)/log2(1.05) = 1*log2(34)/log2(1.05) = 72 against C = G/3 + W/5 = 14.8 + 13.4 = 28: automatic (3,000,000 rows of 56 bytes, G predicted +44.5%); the saving is 24.7 M instructions a query.
 - **Turn off:** ALTER INDEX .. SET (key_cut = 'off') and REINDEX, or CREATE INDEX .. WITH (key_cut = 'off'); the NOTICE names the choice.
-- **Upgrade from 3.5:** An index built before has the units by superblock; a REINDEX decides the cut.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The choice is written as key_cut = 'auto: d' and the NOTICE names it; key_cut = 'off' keeps the units by superblock. sift.key_cut_decision(index) says what a REINDEX would decide. A date that follows the table, another leaf that follows it, order_columns or point_tid_columns keep the cut off.
 
 #### auto(point-directory-columns)
@@ -1237,7 +1237,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A CREATE INDEX or REINDEX of an analyzed table whose integer column has nearly unique values, is not in heap order and whose benefit is at least its cost, when point_columns and point_tid_columns are unset (or 'auto'). Not with sift.col_format_minor under 15.
 - **Default:** automatic — B = R*log2(S)/log2(1.05) = 1*log2(9.5)/log2(1.05) = 46 against C = G/3 + W/5 = 32 + 4.2 = 36: automatic; the saving is 1.7 M instructions a lookup. S is (0.17 M + 5 instructions a row) over the 0.2 M of the directory; G is 16.5 bytes a row over the bytes a row of the index without it, estimated from the statistics.
 - **Turn off:** ALTER INDEX .. SET (point_tid_columns = 'off') and REINDEX; the NOTICE names the choice.
-- **Upgrade from 3.5:** An index built before has no directory; a REINDEX decides.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The choice is written as point_tid_columns = 'auto: rid' and the NOTICE names it with the benefit and the cost; point_tid_columns = 'off' keeps the index without a directory; a list you set is never changed. A column that follows the table, or has few values, or a table that is small for it, gets none (1,000,000 rows of one int8 column: B 66 against C 71, so a one-column index of that size stays without; 3,000,000 rows: B 88 against C 71, chosen).
 
 #### auto(top-n-per-group)
@@ -1250,7 +1250,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** row_number() OVER (PARTITION BY .. ORDER BY ..) as the only window function, kept by rn <= N, rn < N + 1 or N >= rn with N > 1, over a table with a column index (no sublinks, array or row columns, at least one non-key column). Groups that do not fit hash memory keep the window. N = 1 is the DISTINCT ON rewrite.
 - **Default:** automatic — Cost-based: both plans are built and the cheaper kept (the window when the scan is dearer or a small work_mem). Same rows as the window, ties arbitrary as in row_number() (fuzz families latest and decor: 0 divergent).
 - **Turn off:** SET sift.enable_agg = off (the whole aggregate scan). There is no setting for this rewrite alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; the window is kept when the scan costs more. The cost model rates the scan too dear for a year of rows (4-5x faster in a test): SET sift.agg_force = on shows it. sift.explain_why names window_first for a window left as written.
 
 #### auto(ordered-groups)
@@ -1263,7 +1263,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** An ORDER BY or window whose leading keys are group keys, a sub-select or inlined CTE read by a window or ORDER BY (constant columns and COALESCE(key, constant) allowed). Not grouping sets, DISTINCT ON, ORDER BY an aggregate LIMIT, or a group table over hash memory.
 - **Default:** automatic — Cost-based: the ordered path competes with the unordered one plus the Sort (or Incremental Sort) and wins when cheaper.
 - **Turn off:** SET sift.enable_agg = off (the whole aggregate scan). There is no setting for the order alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The node costs the sort by the groups (n log n integer compares), below the Sort it replaces; the unordered path is still planned, so a statement that wants no order keeps its plan.
 
 #### auto(shared-cte-choice)
@@ -1276,7 +1276,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Statements with a CTE that two or more aggregates read, or flattenable laterals, over a table with a column index, planned again by a backend that has seen the shape, or by a new one when another backend saw it (other constants are the same shape). A first plan, a CTE read once (auto(cte-preinline)) and statements without a shared CTE are not helped. The pricing of lookup tables read whole and of the heap check holds for every scan.
 - **Default:** automatic — Both variants are plans of the same query, so a wrong verdict costs plan quality at worst, never rows. It removes up to four planner runs for a repeated statement; the 3.3 rule needs no more (no index growth, no write cost, planning -23%).
 - **Turn off:** SET sift.enable_agg = off (no CTE or lateral planning by the hook). sift.verdict_cache_kb = 0 turns the shared table off. The cache of a backend has no setting: it drops its entries when a planner setting, work_mem, hash_mem_multiplier, max_parallel_workers_per_gather or a sift.* setting changes.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. sift.explain_why shows a verdict_cached row for a statement planned from the cache and sift.stats() counts verdict_cache_hits, verdict_cache_misses and verdict_cache_flips.
 
 #### auto(cte-preinline)
@@ -1289,7 +1289,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A statement planned through the hook (sift.enable_agg on) that reads a table with a column index and has a CTE read once. A MATERIALIZED, volatile, writing or recursive CTE stays as written.
 - **Default:** automatic — The same query goes to every plan, so plans are the same (text and costs equal on 786 plans) and planning takes 23% fewer instructions: nothing to choose.
 - **Turn off:** SET sift.enable_agg = off (the hook plans nothing). There is no setting for it alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; it changes no plan or row. Only statements with a CTE read once gain.
 
 #### auto(json-build-object)
@@ -1302,7 +1302,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A statement planned through the hook (sift.enable_agg on) that reads a table with a column index and calls json_build_object with at least one argument, for a role that may execute sift.json_build_object. jsonb_build_object and a call with no argument stay.
 - **Default:** automatic — The same bytes are written either way and the call site looks its types up once: nothing to choose.
 - **Turn off:** SET sift.enable_agg = off (the hook plans nothing). There is no setting for it alone.
-- **Upgrade from 3.5:** Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; the text is the core function's. Only statements that build objects gain.
 
 #### auto(point-directory-aggregate)
@@ -1315,7 +1315,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** An index with point_columns or point_tid_columns and an IN list of up to 65,536 keys, an equality, a short range or lookup-join keys on that column. The directory is read only while keys x rows listed / distinct keys of the segment is at most 4,096 or a 64th of its rows.
 - **Default:** automatic — Costed: the planner prices the units the directory leaves, and the guard keeps it off where it costs more than the zones. No format change, no index growth, no write cost: the 3.3 rule is met (3x or more on the few-key class).
 - **Turn off:** No setting for the guard. ALTER INDEX .. RESET (point_columns) and RESET (point_tid_columns) with a REINDEX drop the directory; SET sift.enable_agg = off turns off the aggregate scan.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. EXPLAIN ANALYZE shows Units From Point Directory and Rows From Point Directory. It needs point_columns or point_tid_columns on the key; a key with many rows each (a status, a tenant) does not use it.
 
 #### auto(run-heads)
@@ -1329,7 +1329,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** An index with order_columns, ORDER BY one sort key LIMIT n of at most min(32, rows / 128) of a unit, no filter, join or aggregate, a unit alone in its superblock with every page all-visible and clean, no write buffer rows. Not for LIMIT above 32, a filtered LIMIT or a leaf with NULL.
 - **Default:** automatic — Meets the 3.3 rule: 2-3x on unfiltered ORDER BY .. LIMIT <= 32 (limit 5%), growth 0.6% to 2.4% (limit 3%), write cost inside noise (limit 5%). It follows order_columns, so no second opt-in.
 - **Turn off:** SET sift.col_format_minor = 14 (runs are written without heads; units already written keep them until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off (no top-N scan).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on for an index with order_columns; EXPLAIN shows Units Answered By Run Head. A b-tree is still 3-5x faster for LIMIT 10, and heads do not apply to LIMIT above 32 or to a filter.
 
 #### auto(table-cube-minmax)
@@ -1343,7 +1343,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table with a low-cardinality key (a store, a status, a kind) and integer or numeric measures, units clean and all-visible. Not a float measure, a calendar cell or a unit with a dead row.
 - **Default:** automatic — Meets the 3.3 rule: 20x at 50 groups (limit 5%), growth 0.7% to 3.1% (limit 3%; the 4-column table is a narrow one with nothing else in the unit), write cost 0.0% to 0.2% of the writer's instructions (limit 5%). It is the default of cube_minmax for an index since 3.3.
 - **Turn off:** No per-table switch: SET sift.col_format_minor = 6 writes no min or max (groups already written keep theirs until rewritten), and it also stops every later feature of the writer (calendar cells, key lists and run heads of a table, column format minors 8 to 18; it is the 3.2 format); SET sift.agg_preagg = off reads none of the pre-aggregates.
-- **Upgrade from 3.5:** No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A min or max of a float column, of a month of a timestamp, or by a column that is not a dim of the cube reads the rows.
 
 #### auto(table-rollup)
@@ -1356,7 +1356,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table with a jsonb column whose list paths are declared (sift.table_set_paths), GROUP BY over jsonb_to_recordset / unnest of it by element leaves of few values, units clean and all-visible. Not a grouping by a leaf of many values, a filter on the row or a unit with a dead row.
 - **Default:** automatic — Meets the 3.3 rule: 140x at 500,000 rows (limit 5%), growth 0% (limit 3%), write cost 0% (limit 5%): the rollups were written already and nothing read them.
 - **Turn off:** SET sift.agg_rollup_cost = 1000 (no unit is answered from a rollup).
-- **Upgrade from 3.5:** No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A grouping by a leaf the rollup does not hold, a filter on a column of the row, or a unit with a dead or buffered row reads the elements.
 
 #### auto(table-key-lists)
@@ -1370,7 +1370,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table with an int2, int4, int8 or date column that is a foreign key or ends in _id and is not unique, a layout with no jsonb path, units clean and all-visible, count(DISTINCT col) over whole units.
 - **Default:** automatic — Meets the 3.3 rule: 40x in instructions on count(DISTINCT fk) (limit 5%), growth under 0.6% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The columns are the default of key_columns for an index, so there is no second choice to make.
 - **Turn off:** SET sift.col_format_minor = 14 (no list is written; groups already written keep theirs until rewritten) or SET sift.agg_preagg = off (no unit is answered from pre-aggregates).
-- **Upgrade from 3.5:** No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units From Pre-aggregates. A column that is not a foreign key or named *_id has no list; a sift_col index takes key_columns for the others.
 
 #### auto(table-run-heads)
@@ -1384,7 +1384,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_table timestamp or timestamptz column loaded in order (created_at), ORDER BY it LIMIT up to 32 with no filter, join or aggregate, units clean and all-visible with no NULL in the column. Not a column the rows do not follow, a filtered LIMIT or LIMIT above 32.
 - **Default:** automatic — Meets the 3.3 rule: 3.7x at LIMIT 10 DESC (limit 5%), growth 0.55% to 1.42% (limit 3%), write cost 0.0% to 1.6% of the writer's instructions (limit 5%). The column is the one whose run fits 3% of a unit, so there is no second choice to make.
 - **Turn off:** SET sift.col_format_minor = 12 (no run is written; groups already written keep theirs until rewritten), SET sift.topn_runs = off (runs and heads are not read) or SET sift.enable_topn = off.
-- **Upgrade from 3.5:** No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can).
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units Answered By Run Head. A b-tree on the column is still faster for LIMIT 10; heads do not apply to LIMIT above 32 or to a filtered LIMIT.
 
 #### auto(top-n-zone-probe)
@@ -1397,7 +1397,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every ORDER BY .. LIMIT scan over a sift_col index whose walk visits superblocks, before the walk; the saving is largest for a small LIMIT, where the probe is most of the statement.
 - **Default:** automatic — The same zones read from the headers: 15% fewer instructions with the same plan and rows, so there is nothing to choose.
 - **Turn off:** SET sift.enable_topn = off turns off the top-N scan; the probe has no setting of its own.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; plan and rows are unchanged (Units Answered By Run Head: 7, Superblocks Skipped By Top-N: 16 in the test).
 
 #### auto(parallel-aggregate-scan)
@@ -1410,7 +1410,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Workers as PostgreSQL gives a parallel seq scan of the table (compute_parallel_worker: table size, the parallel_workers reloption, max_parallel_workers_per_gather), when the query and the functions the scan evaluates are parallel safe and the priced scan is cheaper. Ordered aggregates, hypothetical sets, min, max and numeric sums of the nullable side stay serial.
 - **Default:** automatic — Cost-based: worker start and the pairs the leader adds are priced, so a small scan stays serial; rows are equal at every worker count (float sums add in lane order).
 - **Turn off:** SET max_parallel_workers_per_gather = 0 (PostgreSQL's setting; sift.parallel_scan governs the BM25 scans only).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. A small scan stays in one process (100,000 rows with 8 workers took 16.7 against 14.7 ms). Workers cut the latency of heavy requests when cores are spare; Workers Planned in EXPLAIN shows them.
 
 #### auto(preagg-exceptions)
@@ -1424,7 +1424,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A sift_col unit with exactly one top-level integer leaf, no overflowed value and at most 1 row in 100 not NULL (the fewest, the first of equals), a filter leaf IS NULL or IS NOT NULL beside conjuncts the pre-aggregates decide, and units clean and all-visible. A date range with the filter decides only the units it covers.
 - **Default:** automatic — No option: the unit's own data decides (one integer leaf NULL in 99% of its rows). Growth 1.4% and a write cost under 1% meet the default formula at 4.1x on the class.
 - **Turn off:** SET sift.agg_preagg = off (no unit is answered from pre-aggregates) or SET sift.col_format_minor = 14 (no exceptions are written; units already written keep them until rewritten).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on; EXPLAIN ANALYZE shows Units Net Of Exceptions. A leaf with 1% or more non-NULL rows has no exceptions and the filter scans the unit.
 
 #### auto(index-pick)
@@ -1437,7 +1437,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A table with two or more sift_col indexes that both give a plan (a key_cut next to a page-cut one, a full next to a partial one). A table with one index plans as before; on a clustered copy both tie within noise.
 - **Default:** automatic — Cost-based: add_path keeps the cheapest of the priced paths, and the price of a pre-aggregate scan follows the units the zones keep. Planning costs 0.05 to 0.1 ms per extra index.
 - **Turn off:** No setting for the pick. Dropping the extra index leaves one index, planned as before; SET sift.enable_agg = off turns off the aggregate scan.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Keep one sift_col index per table unless two layouts serve different queries; each extra index adds 0.05-0.1 ms to planning.
 
 #### auto(distinct-bigint)
@@ -1450,7 +1450,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** count(DISTINCT x) of a bigint column (NULLs, FILTER, int8 extremes and expressions covered) in an aggregate scan over a table with a column index. With 2 workers the time did not drop at these sizes (worker start costs as much); the gain is the aggregate now runs in the workers.
 - **Default:** automatic — Exact and identical to the normal plan (agg_distinct_parallel at 0, 2, 4 workers), 4-7x faster, no storage change: the 3.3 rule.
 - **Turn off:** SET sift.enable_agg = off. There is no setting for this path alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. count(DISTINCT) stays exact whatever the settings say; the approximate sift.approx_count_distinct is a separate opt-in.
 
 #### auto(histogram-aggregates)
@@ -1463,7 +1463,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** percentile_cont and percentile_disc over float, integer or date; percentile_disc also over a decimal of up to 18 digits, timestamp, timestamptz or bigint; mode() over float, integer, date, timestamp or decimal of up to 18 digits, in an aggregate scan. Other types keep the generic path.
 - **Default:** automatic — Same answers as the normal plan (agg_ordered_set, 0 rows differ) and 2.4x to 5.6x faster on the class, no index growth, no write cost: the 3.3 rule.
 - **Turn off:** SET sift.enable_agg = off. There is no setting for these aggregates alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The answers are the final functions' (ties, NULLs, NaN, DESC, spilled histograms, workers); EXPLAIN shows the aggregates among Pushed Aggregates.
 
 #### auto(order-by-aggregate-limit)
@@ -1476,7 +1476,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The first sort key is count, sum of an integer, decimal or float8, or avg of a float8 column, over a plain GROUP BY; no HAVING, window, DISTINCT, grouping sets or WITH TIES. Gains grow with the number of groups (100,000 groups: 23.2 to 4.4 ms).
 - **Default:** automatic — Same rows as the normal plan (agg_group_topn: ASC and DESC, NULLS, OFFSET, NaN, ties, workers) and 1.4x to 6.6x faster on the class; no index growth, no write cost: the 3.3 rule.
 - **Turn off:** SET sift.enable_agg = off. There is no setting for it alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. EXPLAIN shows Groups Dropped By Top-N. HAVING, a group key as first sort key, an expression of aggregates and ROLLUP keep the old path.
 
 #### auto(exists-decorrelation)
@@ -1489,7 +1489,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** An equality tie of the table's column and an outer one of the same type, a table with a column index, many outer rows. Not for IN or NOT IN, inequalities, LIMIT, a join or sub-select inside, or an outer query that groups: those stay as written.
 - **Default:** automatic — Cost-based: kept only when the planner costs it below the lookups; EXISTS is never NULL in either form (fuzz family exists: 960 queries, 0 divergent).
 - **Turn off:** SET sift.enable_agg = off. There is no setting for this rewrite alone.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. An EXISTS that the WHERE ANDs stays the semi join (NOT EXISTS the anti join) PostgreSQL makes of it. sift.explain_why shows the arm used.
 
 #### auto(top-n-run-probes)
@@ -1502,7 +1502,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A top-N scan whose first key is a leaf with a run (an index with order_columns) and a unit of at least 2 x (limit + 1) rows passing.
 - **Default:** automatic — Same rows and units read, less work per scan; no format change, no growth, no write cost.
 - **Turn off:** SET sift.topn_runs = off (units are tested row by row) or SET sift.enable_topn = off.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. A b-tree is still faster on the same queries (15 us and 140 us against 82 us and 1.05 ms).
 
 #### sift.col_leaf_cache_kb
@@ -1515,7 +1515,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Servers whose clients connect often (a pool that resets its sessions, an application that opens a connection for each request) and read large sift_col indexes: the planning of the first statement of each connection. The first backend after a start of the server, and after a merge, a rewrite or a REINDEX of the index, folds the statistics as before.
 - **Default:** 4096 kB — On: 4 MB of shared memory, allocated by the first backend that needs it, and a copy of a record (0.2 ms for an index of six leaves) in place of the fold; the statistics are the same numbers, so the plans do not change.
 - **Turn off:** SET sift.col_leaf_cache_kb = 0 (superuser; postgresql.conf for all backends): each backend then folds the statistics of every index it plans over once.
-- **Upgrade from 3.5:** new in 3.5
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at the default. 0 turns the sharing off (each backend then folds the statistics of an index once, as before); more room helps only a server with indexes of many integer leaves (a record is 33 kB for each).
 
 #### sift.col_dict_shared_cache_kb
@@ -1528,7 +1528,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Servers whose clients connect often (a pool that resets its sessions, an application that opens a connection for each request) or run parallel queries over large sift_col indexes with text columns of many distinct values: the first statement of each connection parses the dictionaries of the columns it reads.
 - **Default:** 65536 kB — On: 64 MB of shared memory, allocated by the first backend that keeps a dictionary of 128 kB or more, and a read in place (a few instructions) in place of the parse; the rows are those of the segment, so nothing else changes. 64 MB holds the dictionaries of about 1,000,000 distinct values with their hash tables; more room is a choice of the DBA, not the default.
 - **Turn off:** SET sift.col_dict_shared_cache_kb = 0 (superuser; postgresql.conf for all backends): no segment is made or attached by the backend, and each backend parses and keeps its own dictionaries.
-- **Upgrade from 3.5:** new in 3.6
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at the default on a server with a few hundred MB of shared memory to spare. 0 turns the sharing off (each backend then parses and keeps its own dictionaries, up to the dict_cache_kb of the index); raise it for dictionaries of more than about 1,000,000 distinct values with their hash tables (a ring of 256 MB held the dictionaries of 1,000,000, 2,000,000 and 3,000,000 rows of the measurement); lower it on a small server or a container, whose /dev/shm is 64 MB.
 
 #### auto(dict-tsig)
@@ -1542,7 +1542,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A text leaf with substring tests (LIKE '%part%', ILIKE, regular expressions with a literal of 3 bytes or more) whose segment dictionary is over half of dict_cache_kb, or whose dictionaries of the whole index together exceed it. Not for a leaf that fits (it is parsed once and kept), a part under 3 bytes or a part in most blocks.
 - **Default:** automatic — Weighted formula: B 3.6 (S 1.42, R 0.5) to 7.2 against C 0.3 (6 columns) to 3.9 (the URL column alone, the worst real case); the size of the dictionary against the cache is the signal that the filter is needed, and growth follows the entropy of the strings, so no selectivity test.
 - **Turn off:** SET sift.col_format_minor = 14 (leaves are written without the signature; the index stays readable by a 3.5 library)
-- **Upgrade from 3.5:** Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. The leaves that fit the cache are not signed. To opt out set sift.col_format_minor to 14 before building or rebuilding the index.
 
 #### auto(text-lz4)
@@ -1556,7 +1556,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A text leaf with inline units whose strings compress to 0.3 to 0.6 of their bytes under zstd (prose, long text); not a leaf kept in the dictionary, not text that LZ4 cannot shrink (hex), not text that compresses so well that the extra bytes cost more than the unwrap saves.
 - **Default:** automatic — Weighted formula per chunk: B = log2(S) / log2(1.05) with S from 1.8 + the unwrap (zstd 45 instructions a compressed byte, LZ4 0.5 a byte + 5.5 a compressed byte), against C = G / 3 for the growth of the strings: sentences B 25.2 against C 18.0 take LZ4, titles B 9.6 against 32 keep what they have.
 - **Turn off:** compression = 'auto; col=zstd' (the NOTICE at CREATE INDEX gives the line), then REINDEX; sift.col_format_minor = 14 writes no LZ4 dictionary blocks
-- **Upgrade from 3.5:** Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice.
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. To keep the footprint of a column: compression = 'auto; col=zstd' and REINDEX; the NOTICE at CREATE INDEX lists the columns that took LZ4 (and the ones that came close) with their numbers.
 
 ### opt-in
@@ -1572,7 +1572,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** text — text: a keyword index answers whole values only. Opt-in for result: broad facet counts 1.9-4.5x faster than GROUP BY, selective queries or thousands of distinct values lose.
 - **Why not the default:** changes results or semantics
 - **Turn off:** Leave the default text: CREATE INDEX without analyzer. On an existing index ALTER INDEX .. RESET (analyzer) makes it unusable until REINDEX; build a text index with CREATE INDEX CONCURRENTLY and drop the keyword one.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at text. Set keyword on a separate index of a column used for exact keys and facet counts (sift.facets): it indexes each whole value as one term. Needs REINDEX.
 
 #### sift(stemmer)
@@ -1586,7 +1586,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Unset (no stemming): it changes results, and en costs insert +74.7% (95 to 165 ms) and build +22.3% for -3.1% size (100,000 documents).
 - **Why not the default:** changes results or semantics
 - **Turn off:** Leave unset or stemmer = 'none' at CREATE INDEX. On an existing index ALTER INDEX .. RESET (stemmer) then REINDEX; until then queries and inserts fail. Prefer CREATE INDEX CONCURRENTLY and swap.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave unset. Set en to match English word forms (running finds runs); it changes what matches, so build it with CREATE INDEX CONCURRENTLY and swap. There is no stopword list.
 
 #### sift(prefix_index)
@@ -1601,7 +1601,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 0 — 0 (off): grows the index 2 to 4x (17 to 34 to 73 MB on a million rows), over the 25% ceiling, build 2-4x and insert 3.7-8x; broad prefixes already work from the per-backend cache (sift.prefix_cache_size).
 - **Why not the default:** the index grows over 25% (retired: growth is a term of C, the cost), the benefit B does not reach the cost C
 - **Turn off:** Default 0. ALTER INDEX .. RESET (prefix_index) or SET (prefix_index = 0) then REINDEX; queries and inserts fail until then, so prefer CREATE INDEX CONCURRENTLY without it and drop the old index.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0: broad prefixes work without it (cached per backend). Set n to the longest prefix that must be sub-millisecond on first use; it grows the index. Needs REINDEX.
 
 #### sift(fields)
@@ -1615,7 +1615,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Unset: named sections add 88% to the index (15.6 against 8.3 MB on a million rows) and insert 107 to 340 ms with three fields, and a colon is plain text without it.
 - **Why not the default:** changes results or semantics, the index grows over 25% (retired: growth is a term of C, the cost)
 - **Turn off:** Default '' (no sections). ALTER INDEX .. RESET (fields) then REINDEX; queries and inserts fail until then. Prefer CREATE INDEX CONCURRENTLY without fields and drop the old index.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave unset. Set it with sift.sections() to weight or restrict a query to named leading sections (name:word, name^3); pair with prefix_index for autocomplete. Needs REINDEX.
 
 #### sift_col(point_columns)
@@ -1630,7 +1630,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Opt-in: an equality on a unique id reads 1.58 M instructions with the key filter and 0.78 M with the directory (2.03x), for +58% of the index and +3.4% of the build: the benefit (14.5) is under the cost (20.0) and the growth is over 25%. A lookup stays 3x slower than a b-tree (0.020 against 0.006 ms).
 - **Why not the default:** the index grows over 25% (retired: growth is a term of C, the cost), the benefit B does not reach the cost C
 - **Turn off:** RESET (point_columns): new segments get no directory; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 13 writes none. No directory, no format change to undo.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Opt-in: set it only where the b-tree on the column can go and a lookup 3x slower is fine. Prefer point_tid_columns, which reads no unit. Larger index; REINDEX to apply.
 
 #### sift_col(point_tid_columns)
@@ -1645,7 +1645,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Opt-in: an equality on a unique id reads 1.67 M instructions with the key filter and 0.66 M with the addresses (2.51x), for +57.6% of the index and +3.6% of the build: the benefit (18.8) is under the cost (19.9) and the growth is over 25%; minor 16 is read by 3.3 and later only.
 - **Why not the default:** the index grows over 25% (retired: growth is a term of C, the cost), the benefit B does not reach the cost C
 - **Turn off:** RESET (point_tid_columns); a leaf kept in point_columns then has the rows form. New segments only; REINDEX rewrites older ones; sift.col_format_minor <= 14 writes no addresses.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Opt-in where the b-tree on an id or key can go: lookups of up to 64 keys read no unit. Not for index-only scans; a unit with a dead row is read. Larger index; REINDEX to apply.
 
 #### sift_col(order_columns)
@@ -1660,7 +1660,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Opt-in: an ORDER BY a date LIMIT 100 reads 18.3 M instructions without the runs and 16.9 M with them (1.08x), for +8.3% of the index and +2.5% of the build: the benefit (1.6) is under the cost (3.3); an integer column with few distinct values gains 1.04x. ORDER BY an integer LIMIT 100: 3.5 to 1.4 ms (37.9 ms normal plan).
 - **Why not the default:** the benefit B does not reach the cost C
 - **Turn off:** RESET (order_columns): new units get no run; older ones keep theirs until a merge or REINDEX. sift.col_format_minor <= 12 writes no runs; 13 to 14 writes runs without heads.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Opt-in for ORDER BY .. LIMIT n over a column spread over every unit; keep a b-tree for LIMIT of over 1000. Grows the index by 1 to 4 bytes a row per column. Applies to units written afterwards.
 
 #### sift_col(hll_columns)
@@ -1674,7 +1674,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Opt-in: +23% of the index for four columns of a million rows and build +70% (169 B to 12.3 kB a unit and column), over the 3% and 5% limits; 5.4 against 63 ms; minor 20 is refused by 3.3 and older.
 - **Why not the default:** changes results or semantics
 - **Turn off:** RESET (hll_columns): new units get no sketch; older units keep theirs until a merge or REINDEX, and approx_count_distinct reads rows of units without one. sift.col_format_minor <= 14 writes none.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave unset unless a dashboard needs an approximate distinct count of a high-cardinality column: sift.approx_count_distinct(col) is the same number in every plan and count(DISTINCT) stays exact; list only the columns that ask for it, each costs up to 12 kB a unit.
 
 #### sift_col(return_columns)
@@ -1688,7 +1688,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Opt-in: with the heap in memory it is slower (SELECT id of 100 rows 0.066 to 0.158 ms, 300,000 rows) because the executor asks for every returnable column; meant for tables much larger than memory, not measured on disk.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, not run on real workloads
 - **Turn off:** RESET (return_columns) or 'off': no format change, no REINDEX; a query that needs one of these columns reads the heap again.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Opt-in: an index-only scan returns text, varchar and uuid columns from the index. Use it for tables much larger than memory, where heap fetches are disk reads; otherwise the heap is faster.
 
 #### sift.parallel_scan
@@ -1702,7 +1702,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** off — off: a Gather costs milliseconds before any work; on 218,058 articles only an unordered scan with a heavy residual qual gained (1.8x), other shapes lost, so the speedup is under 1.05 on most relevant classes.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** Already off. SET sift.parallel_scan = on to try it; RESET (or off) returns the serial plans; read at planning time.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave off. Try on much larger tables or expensive quals: a ranked scan needs a LIMIT and one table, never with a pushed-down filter or partitions. Rows, scores and ties equal the serial plan.
 
 #### sift.rls_scores
@@ -1716,7 +1716,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** off — off for result: the scores use document frequencies and lengths of the whole index, hidden rows included, so a score depends on rows the role cannot see. On, the ranked top-10 took 0.15 to 0.9 ms against 5 to 31 ms.
 - **Why not the default:** changes results or semantics
 - **Turn off:** Already off: the role gets no ranked scan and sift.score() raises an error. Turn on with ALTER ROLE app SET sift.rls_scores = on (superuser); RESET returns off; a prepared plan keeps its choice.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave off. Set per role (superuser) only when a role under row-level security needs ranked scans; scores then use whole-index statistics, hidden rows included, so they depend on unseen rows.
 
 #### sift.col_auto_merge_partition_kb
@@ -1730,7 +1730,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 0 — Opt-in (gain): same WAL as the whole-index rewrite (15.3 against 15.05 MB uniform) and an index over sift.vacuum_rewrite_limit is already partitioned; it pays for churn in one place (a hot tail) of a large index.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** 0 (the default) rewrites the index whole, in partitions of the vacuum_rewrite_limit size above it or of a third of maintenance_work_mem where that is less (at least 4 MB, at most 48 for an index): SET sift.col_auto_merge_partition_kb = 0 or RESET at server or database level, and a size above the index puts back the one segment. Segments already cut stay.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 0 rewrites the index whole (partitions of the vacuum_rewrite_limit size above it, or of a third of maintenance_work_mem where that is less). Set a size to keep the index as segments of that size and rewrite only the ones churn touched.
 
 #### sift.gpu
@@ -1744,7 +1744,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** off — Off: the 3.2.0 pass found 0.77x-1.07x of one CPU core at 1M rows and 0.99x-1.00x at 10M (speedup under 1.05), at 0.2 s and about 100 MB per backend context; packages are built without Vulkan.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, needs hardware, not run on real workloads
 - **Turn off:** Default off. SET sift.gpu = off (superuser setting; ALTER ROLE/DATABASE .. SET or postgresql.conf). Without a VULKAN=1 build the CPU runs whatever it says; a failing device is dropped for the session.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave off. Needs make VULKAN=1 and a Vulkan device, and persistent connections (0.2 s and about 100 MB of context per backend). Measure first: the 3.2.0 pass shows no gain over the CPU path.
 
 #### sift.gpu_min_rows
@@ -1758,7 +1758,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 5000000 — 5,000,000: where auto starts; the 3.2.0 pass at 1M and 10M rows found no gain at either, so no value is shown to pay and the device stays off by default. Why exactly 5M is not argued.
 - **Why not the default:** needs hardware, not run on real workloads
 - **Turn off:** n/a: a threshold (0 to INT_MAX); sift.gpu = off is the switch. 0 lets auto take every eligible grouped aggregate.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 5,000,000: the index rows above which sift.gpu = auto uses the device for a grouped aggregate; an ungrouped one runs there only with sift.gpu = on.
 
 #### sift.gpu_device
@@ -1772,7 +1772,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** '' — Empty: the best device is picked by that rank, so no configuration is needed; set an index or part of a name only to choose another.
 - **Why not the default:** needs hardware, not run on real workloads
 - **Turn off:** n/a: it chooses a device. RESET sift.gpu_device (superuser) gives the best-device rule back; sift.gpu = off stops any use.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Empty picks the best device (discrete before integrated before virtual before software); set an index or part of a name to choose one. Superuser.
 
 #### sift.table_async_promote
@@ -1786,7 +1786,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** off — off: the statements that close a buffer drop from 25-31 ms to at most 2.8 ms, but the median, p99 and tps are equal within noise (single-row INSERTs, 4 clients): the speedup of the relevant class is under 1.05.
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query
 - **Turn off:** Already off. SET sift.table_async_promote = on to use it; off or RESET returns the writer promoting itself. Session or role setting; pair with the worker settings.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave off. Set on when statements that close a write buffer must not stall for the promotion; needs sift.async_maintenance and table_inline_promote; past half the directory the writer promotes.
 
 #### sift.table_backpressure
@@ -1800,7 +1800,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 0 — 0: opt-in for risk - it only adds a wait, and it acts only when the directory is nearly full, which a focused run reaches only with the test setting sift.table_max_segments; no gain figure exists.
 - **Why not the default:** not run on real workloads
 - **Turn off:** Already 0 (a writer waits only when the directory is nearly full). SET sift.table_backpressure = 0 or RESET returns it; session or role setting.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0 (a writer waits only when the directory is nearly full). Set a percent above 50 for steady heavy writers so they merge before the directory fills, at the cost of the wait.
 
 ### diagnostic
@@ -1815,7 +1815,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** CREATE INDEX and REINDEX only: N forced segments and a serial build; 0 writes one per build participant. Up to 64. Used by tests of VACUUM and merges.
 - **Default:** 0 — 0: a diagnostic switch; N > 0 turns the parallel build off (a serial build is its only effect), so it is never a default.
 - **Turn off:** Leave 0 or ALTER INDEX .. RESET (build_segments); it only acts at the next CREATE INDEX or REINDEX, which then builds in parallel again.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0. A test and measurement switch: CREATE INDEX writes N forced segments (a many-segment index for VACUUM and merge tests) and runs serially. Needs REINDEX to change.
 
 #### sift_col(cluster_advice)
@@ -1828,7 +1828,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** sift.cluster_advice() and the CREATE INDEX / REINDEX notice for this index. Advice only: it names a repack order or key_cut and performs nothing; a small table (under 16 units) or an ordered one gets not recommended.
 - **Default:** true — On: it stores nothing (maintenance only, not part of the format), so there is no growth or write cost to weigh and no behavior changes; it is a diagnostic.
 - **Turn off:** ALTER INDEX .. SET (cluster_advice = off) silences it for this index; nothing stored changes, no REINDEX. SET sift.cluster_advice = off does it for a session, role or database.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: it only lets sift.cluster_advice() and the CREATE INDEX notice recommend a physical order or key_cut. Turn it off per index to silence the advice; nothing stored changes.
 
 #### sift.enable_scan
@@ -1841,7 +1841,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Planning of a statement on a table with a sift index: the ranked and unordered sift scan. Off, the plan is PostgreSQL's own (bitmap or sequential scan); sift.score() needs the scan. Not sift_col scans.
 - **Default:** on — On: it is the point of the index. The setting is a diagnostic to compare against the plan PostgreSQL has without sift, and the regression tests use it for the sequential reference.
 - **Turn off:** SET sift.enable_scan = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf); RESET returns on. Read when a statement is planned, so a prepared plan keeps its choice.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. enable_scan, enable_count, filter_pushdown and prefetch switch the ranked scan, the count(*) pushdown, the bitmap of other quals and the read-ahead; off compares with PostgreSQL's own plan.
 
 #### sift.enable_count
@@ -1854,7 +1854,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** SELECT count(*) of a sift-matched table: pushed into the index. Off, count(*) is planned without the pushdown; ranked and unordered scans are not affected.
 - **Default:** on — On: the count answers from the index; the setting is a diagnostic to compare plans.
 - **Turn off:** SET sift.enable_count = off (session, ALTER ROLE / DATABASE .. SET, postgresql.conf); RESET returns on.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Off plans count(*) without the index pushdown, to compare plans; see sift.enable_scan.
 
 #### sift.log_min_duration
@@ -1867,7 +1867,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Promotions, merges and maintenance worker runs of any index kind that last at least n ms; each is one log line. Superuser setting; -1 logs none, 0 logs all.
 - **Default:** 1000 ms — 1000 ms: only steps of a second or more are logged; a diagnostic with no gain, growth or write cost.
 - **Turn off:** SET sift.log_min_duration = -1 (superuser: postgresql.conf, ALTER SYSTEM, ALTER DATABASE .. SET); RESET returns 1000.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 1000 ms. Logs promotions, merges and worker runs that take at least that long; lower it to see short ones, -1 logs none.
 
 #### sift.simd
@@ -1880,7 +1880,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every kernel (BM25 scoring, column filters, aggregation, codec) on x86-64 (scalar, avx2, avx512) and AArch64 (scalar, neon); a level of the other architecture caps nothing. Results are bit for bit equal at every level.
 - **Default:** avx512 — auto (the best level of the CPU, shown as avx512 or neon): column reduction kernels 4x to 27x faster than scalar (x86-64, 4096-row vectors); a lower level only slows them. Written data never depends on the level.
 - **Turn off:** SET sift.simd = scalar to run the specification (session, ALTER ROLE / DATABASE .. SET, postgresql.conf); avx2 caps AVX-512 hosts; auto restores the best level.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave the default (the best level of the CPU; every level returns the same results and written data never depends on it). Lower it only to compare levels; scalar is the specification.
 
 #### sift.enable_col
@@ -1893,7 +1893,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Column scans (SiftAgg) over sift_col indexes in the session; off gives the plan PostgreSQL has without them. It changes nothing stored.
 - **Default:** on — On: against the normal plan (1,000,000 rows) count/sum 60.6 to 0.11 ms, GROUP BY month 320 to 0.74 ms, count(DISTINCT) 108 to 0.38 ms; it has no storage or write cost of its own.
 - **Turn off:** SET sift.enable_col = off for a session (ALTER ROLE/DATABASE or postgresql.conf for more); used to compare plans and answers. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. SET it off for one statement to see the plan PostgreSQL has without sift_col indexes, or to compare answers and times.
 
 #### sift.cluster_advice
@@ -1906,7 +1906,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** sift.cluster_advice() and the CREATE INDEX / REINDEX notice for every sift_col index in the session. Advice only: nothing is rewritten. The index option cluster_advice switches one index.
 - **Default:** on — On: it stores nothing (maintenance only), so there is no growth or write cost to weigh and no behavior changes; it is a diagnostic.
 - **Turn off:** SET sift.cluster_advice = off (session, ALTER ROLE/DATABASE, postgresql.conf): the function answers not recommended and CREATE INDEX does not suggest key_cut. Nothing stored changes.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on: sift.cluster_advice() recommends a physical order or key_cut and CREATE INDEX may print the advice. Off answers not recommended and prints nothing; the index option switches one index.
 
 #### sift.agg_verdict_cache
@@ -1919,7 +1919,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Statements that read a shared CTE several times or a lateral aggregate that can be flattened; no other statement consults the cache.
 - **Default:** on — the planning of the choice is 4 to 6 times cheaper from a verdict (verdict.c) and an entry is planned in full only at its eighth read and then every 16th, 32nd and 64th; the plan is the same except for a statement whose two variants cost about the same, and the rows are the same either way
 - **Turn off:** SET sift.agg_verdict_cache = off (session, role, database or postgresql.conf).
-- **Upgrade from 3.5:** new in 3.5
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. Turn it off to get the same plan for a statement whatever ran before it (a support case, a benchmark, a comparison of two plans); it costs the planning of the choice for every statement.
 
 #### sift.explain_refusals
@@ -1932,7 +1932,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** A statement with a candidate SiftAgg path that kept the normal plan: one notice with the slug and the first reason each path gave up for; a statement that used SiftAgg gives none.
 - **Default:** off — Off: a diagnostic that sends a NOTICE to the client; with it off there is no plan change and no cost.
 - **Turn off:** Default off. SET sift.explain_refusals = off or RESET (session, role, database or postgresql.conf); sift.explain_why(query) asks without running. sift.count_refusals counts on its own.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Set it in a session to see why a query kept the normal plan (a notice with the slug and reason); the plans are the same on or off. sift.explain_why(query) asks without running it.
 
 #### sift.count_refusals
@@ -1945,7 +1945,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Queries that reach a candidate SiftAgg path and keep the normal plan: counted per session in sift.stats() as refused.<slug> and limit.<id>, without the notice.
 - **Default:** off — Off: a diagnostic that costs a few microseconds a query that reaches a candidate path, so it is kept for those who read sift.stats().
 - **Turn off:** Default off. SET sift.count_refusals = off or RESET (session, role, database or postgresql.conf); the notice is sift.explain_refusals.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Set it to count why queries kept the normal plan in sift.stats() (refused.<slug>, limit.<id>) without the notice; leave off otherwise.
 
 #### sift.plan_scale
@@ -1958,7 +1958,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Planning only, tables with a sift_col index: pages and rows are multiplied; other tables and column statistics stay. Compare EXPLAIN or sift.explain_why at 10 and 100. It does not change the data a query reads.
 - **Default:** 1 — 1 plans the table as it is: a diagnostic that nothing sets for you, so a plan never changes unless you ask. Range 1 to 1,000,000.
 - **Turn off:** SET sift.plan_scale = 1 (or RESET) in the session; planning only, nothing to rebuild.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Set 10 or 100 in a session and compare EXPLAIN or sift.explain_why to see the planner's choice at a larger size without the data. 1 plans the table as it is.
 
 #### sift.agg_force
@@ -1971,7 +1971,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Statements where a scan can be built but the cost model keeps the normal plan (refusals cost, cte_cost); an arm refused for its shape stays refused; requests of 15-120 ms get slower.
 - **Default:** off — Off: 27 nested-list statements, 31.7M rows: 136.8 s plain, 117.4 s planner's choice, 6.3 s forced, but small requests get slower, so it is a diagnostic; SET LOCAL per statement.
 - **Turn off:** Default off. SET sift.agg_force = off or RESET; ALTER ROLE .. RESET sift.agg_force undoes a role setting. The cost-based choice returns at the next plan.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** A diagnostic first: it takes the scan whatever the cost model says, to time a refused plan. Set it for a role only if its requests are large; SET LOCAL it per statement. Small requests get slower.
 
 ### safety
@@ -1986,7 +1986,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Wildcard, regex, fuzzy and prefix leaves of a sift index: above n terms the leaf still matches every word but scores as one term. Below it a prefix scores as the best of its terms. Superuser setting.
 - **Default:** 512 — 512: a safety bound on terms scored one by one; above it a leaf matches all words and scores as one term instead of failing (*ing on 100,000 documents: 90-170 ms). No other value is measured.
 - **Turn off:** n/a: a limit (1 to 1000000). Raise it (postgresql.conf, ALTER SYSTEM, ALTER DATABASE / ROLE .. SET; superuser) to score more terms individually; RESET returns 512.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 512. Terms a wildcard, regex, fuzzy or prefix leaf scores one by one; above it the leaf still matches every word but scores as one term (*ing on 100,000 documents: 90-170 ms). Superuser.
 
 #### sift.standby_conflicts
@@ -1999,7 +1999,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Primary side, any index kind, when a merge's freed blocks are reused and a standby runs without hot_standby_feedback; with feedback or no standby nothing changes. Superuser setting.
 - **Default:** on — On since 3.3 (off in 3.2 and earlier) so a standby query waits up to max_standby_streaming_delay, then is cancelled as for a heap, not failed at once with a retryable error; costs only replay waits.
 - **Turn off:** SET sift.standby_conflicts = off (superuser: postgresql.conf, ALTER SYSTEM): a standby query reading reused blocks fails at once, retryable ('segment recycled during scan'). hot_standby_feedback = on avoids both.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave on. A standby without hot_standby_feedback waits (up to max_standby_streaming_delay) or cancels a query that may read reused blocks, as for a heap; off fails it at once with a retryable error.
 
 #### sift.maintenance_cost_delay
@@ -2012,7 +2012,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Merges of the background worker (not its promotions, not VACUUM, sift.merge() or inserters' merges), per database; also the rewrites of sift_col partitions. Sleeps n ms per 16 pages (128 kB).
 - **Default:** 0 — 0: no throttle, as before the setting existed; a merge of a 10 MB index took 0.27 s at 0 and 5.3 s at 20 ms. Opt in only where merges compete with queries for I/O.
 - **Turn off:** Already 0 (no sleep). Set a few ms (superuser: ALTER DATABASE .. SET or postgresql.conf) to throttle; RESET returns 0.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0 unless merges compete with queries for I/O; then set a few ms per 128 kB (per database). It slows only the worker, not VACUUM, sift.merge() or the merges inserters do for room.
 
 #### sift.maintenance_wal_rate
@@ -2025,7 +2025,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Merges of the background worker (not VACUUM, sift.merge() or inserters' merges): a merge waits before the page that would pass n kB/s of WAL; adds to maintenance_cost_delay. Superuser setting.
 - **Default:** 0 — 0 (no limit) keeps the earlier behaviour; set it to bound the WAL so replicas can replay it. No gain, growth or write figure is measured.
 - **Turn off:** Already 0 (no limit). Set kB/s (superuser: postgresql.conf, ALTER DATABASE .. SET) to cap; RESET returns 0.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0 (no limit). Set kB/s to cap the WAL the worker's merges write so replicas can replay it; a merge waits before the page that would pass the rate, and it adds to maintenance_cost_delay.
 
 #### sift.vacuum_rewrite_limit
@@ -2038,7 +2038,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** VACUUM of sift_col and sift_table: merge work past the first step, and a separate allowance, for each of up to 64 rounds, to copy tail segments, or the highest runs of a segment larger than it, into free blocks before truncation. col_auto_merge rewrites an index over it in steps of that size.
 - **Default:** 128 MB — 128 MB (about 6 million rows of index) bounds the rewrite and the exclusive-lock copy of one VACUUM; the first merge always runs; with truncation, table and indexes 200.3 to 154.5 MiB after churn (1,000,000 rows).
 - **Turn off:** SET sift.vacuum_rewrite_limit = 0 (session, ALTER ROLE/DATABASE, postgresql.conf): one merge step and no file move; the free end is still truncated unless vacuum_truncate = false.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 128. Raise it for a faster return of space after heavy churn; set 0 to forbid the file move and long locks. An index over it is rewritten in steps of that size by col_auto_merge.
 
 #### sift.col_auto_merge_wal_pct
@@ -2051,7 +2051,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Gate of the whole-index rewrite: it waits until the server wrote 100 / pct times the bytes of the index since it was last written. Not applied to promoting the buffer or to sift.col_maintain(index). 0 to 100.
 - **Default:** 5 — 5 bounds the rewrites at a twentieth of the server WAL: +0.9% to +1.9% total WAL with full-page images, +0.0% without, against +12% to +28% rewriting at every VACUUM (1,000,000 rows).
 - **Turn off:** SET sift.col_auto_merge_wal_pct = 0 (ALTER SYSTEM or ALTER DATABASE) removes the wait: a rewrite at every VACUUM that finds the index due, +12% to +28% WAL. sift.col_maintain already ignores it.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at 5: the whole-index rewrite waits until the server wrote 100 / 5 times the bytes of the index since it was last written. Raise it for sooner rewrites; 0 does not wait. col_maintain ignores it.
 
 #### sift.col_auto_merge_max_active
@@ -2064,7 +2064,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The rewrite worker waits (naptime, doubling, 8 tries) while more than N client backends of the database run a statement; the next VACUUM asks again. 0 to 10000.
 - **Default:** 0 — 0: never waits, the behavior before. A bound for servers where rewrites must stay off busy moments; it has no measurement of its own.
 - **Turn off:** 0 (the default) never waits: SET sift.col_auto_merge_max_active = 0 or RESET at server or database level (ALTER SYSTEM, ALTER DATABASE).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 0 never waits. Set N to make the rewrite worker wait (with a backoff, 8 tries) while more than N client backends of the database run a statement, to keep rewrites off busy moments.
 
 #### sift.col_auto_merge_max_workers
@@ -2077,7 +2077,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Caps the rewrite workers of sift_col indexes running at once in a database; a worker above the cap looks again after sift.maintenance_naptime, doubling, 8 times; the next VACUUM asks again. 0 to 64.
 - **Default:** 0 — 0: no limit, the behavior before. A bound to cap the workers of a database that run at once; it has no measurement of its own.
 - **Turn off:** 0 (the default) is no limit: SET sift.col_auto_merge_max_workers = 0 or RESET at server or database level (ALTER SYSTEM, ALTER DATABASE).
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 0 is no limit. Set N to cap the rewrite workers of a database that run at once; a worker above the cap looks again after the naptime, doubling, 8 times.
 
 #### sift.agg_lookup_cache_kb
@@ -2090,7 +2090,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Lookup tables a SiftAgg scan loaded, while the table is unchanged and fully vacuumed (all pages visible, same LSNs); a written, rolled back or unvacuumed table is loaded again, as is one needing over half the limit.
 - **Default:** 262144 kB — 256 MB a backend caps what a session keeps: an unchanged 200,000-row table costs 27 ms to load, 0.47 ms to check; 12 MB per 500,000-row table. The value 256 itself is not argued in a source.
 - **Turn off:** SET sift.agg_lookup_cache_kb = 0 (session, role, database or postgresql.conf): nothing is kept between queries and, with sift.agg_lookup_shared_kb = -1, nothing is shared. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 256 MB a backend; 0 turns the per-backend cache off. Lower it on a server with many backends; a table that needs over half of it is loaded for every query.
 
 #### sift.agg_lookup_shared_kb
@@ -2103,7 +2103,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Several backends joining the same unchanged table (pools of short connections, concurrent sessions); same-query backends wait up to 30 s for the loader; with no room in shared memory a backend loads its own table.
 - **Default:** -1 — -1 (the smaller of agg_lookup_cache_kb and 5% of shared_buffers): 32 sessions on a 200,000-row table use 254 MB private against 88 MB shared; a fresh backend 35.6 to 17.0 ms; the writer pays +16 ms once.
 - **Turn off:** SET sift.agg_lookup_shared_kb = 0 (superuser; ALTER ROLE/DATABASE .. SET or postgresql.conf): each backend loads its own tables, no restart. Dynamic shared memory is returned as entries go.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default -1 (the smaller of agg_lookup_cache_kb and 5% of shared_buffers), 0 turns sharing off, superuser. With posix shared memory keep it below /dev/shm. Helps pools of short connections.
 
 #### sift.agg_lookup_max_kb
@@ -2116,7 +2116,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Rows of a sub-select, VALUES list, function or spine joined to the scan, and the keys of a semi or anti join, sized as rows times (width + 64 bytes) by the planner's estimate; a larger one keeps the normal join.
 - **Default:** 262144 kB — 256 MB replaced a fixed limit of 10,000 spine rows: spines of 1,000 / 10,000 / 100,000 rows run 10.6 / 17 / 130 ms, where 100,000 rows was refused (693 ms).
 - **Turn off:** n/a: a memory limit, not a switch; raise it to admit larger sets. A non-negative sift.agg_lookup_max_rows replaces it.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 256 MB (rows times width plus 64 bytes a row, as estimated). Raise it for a larger sub-select, VALUES list, function or spine; a larger one keeps the normal join.
 
 #### sift.agg_semi_lut_size
@@ -2129,7 +2129,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The byte table (one byte per key value) of a semi or anti join on an integer or date leaf, per scan and per worker; a key range wider than size x 1024 values keeps the generic lookup join.
 - **Default:** 4096 kB — 4096 kB covers key ranges up to 4,194,304 values per scan and worker and bounds the memory; wider keys fall back to the generic join. The choice of 4096 is not argued in a source.
 - **Turn off:** n/a: a memory limit; lower it to cap memory. 0 sends every semi or anti join with a key to the generic join; sift.agg_semi_lut = off is the switch.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 4096 kB per scan and per worker (one byte per value of the key range). Raise it when keys span more (a wider range keeps the generic join); lower it to cap memory.
 
 #### sift.agg_combo_cache
@@ -2142,7 +2142,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Expressions PostgreSQL evaluates for the aggregate scan, kept per distinct value combination (a volatile one is evaluated once per combination); combos with a lookup join or a dictionary leaf are never dropped.
 - **Default:** 1048576 — 1,048,576 entries bounds the memory: past it the cache starts again and a value that comes back is evaluated again; the figure has no benchmark in a source.
 - **Turn off:** n/a: a bound on the cache, not a switch (16 to 16,777,216); a small value only makes it restart often.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 1,048,576 entries (16 to 16,777,216). More keeps more value combinations of an expression before the cache restarts; memory grows with it. Lookup-join and dictionary combos are never dropped.
 
 #### sift.gpu_cache_mb
@@ -2156,7 +2156,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **Default:** 256 MB — n/a: no source records why 256 MB; the pinned cache is sized for the GPU memory of the host
 - **Why not the default:** the speedup S is under 1.05, or saves under 100k instructions a query, needs hardware, not run on real workloads
 - **Turn off:** n/a: a memory cap (16 MB minimum, plus 32 MB staging); sift.gpu = off uses no device memory.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Default 256 MB of device memory per backend for the compressed chunks kept between queries (at least 16), plus 32 MB of staging. A cold backend uploads again. Superuser.
 
 #### sift.table_auto_defrag_delay
@@ -2169,7 +2169,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Every background pass of a sift_table: sleeps n ms (at most four times) when its page accesses add up to vacuum_cost_limit, and after each segment it rewrites. Range 0 to 100 ms.
 - **Default:** 10 ms — 10 ms: a safety throttle on I/O, as an autovacuum worker sleeps; no throughput figure is measured. Bounded to 100, the most vacuum_cost_delay allows.
 - **Turn off:** SET sift.table_auto_defrag_delay = 0: the pass never waits (full speed). RESET returns 10.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 10 ms. The pass sleeps this long when its page accesses add up to vacuum_cost_limit and after each segment, as an autovacuum worker does; 0 never waits, at most 100.
 
 #### sift.table_auto_defrag_max_active
@@ -2182,7 +2182,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The pass of a sift_table (also between its merges): waits for a quieter moment when more than n client backends of the database run a statement; looks again after the naptime, 8 times, then a later request asks again.
 - **Default:** 0 — 0 (never waits): 3 rounds (200,000 rows, 4 clients) showed no throughput gain beyond the run-to-run spread (10-30%), so no waiting is imposed; set n where the pass must yield to busy clients.
 - **Turn off:** Already 0 (never waits). SET sift.table_auto_defrag_max_active = n to wait; RESET returns 0.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0 (never waits). Set to the number of busy clients above which the pass waits for a quieter moment (it looks again after the naptime, 8 times, and between its merges).
 
 #### sift.table_auto_defrag_wal_rate
@@ -2195,7 +2195,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** The pass of a sift_table: after a step ahead of n kB/s of average WAL the worker sleeps; it also bounds how often readers reload dictionaries after a rewritten segment.
 - **Default:** 0 — 0 (no limit): 3 rounds (200,000 rows, 4 clients) showed no gain beyond the run-to-run spread (10-30%); a 5.2 MB pass took 368 ms unlimited, 1.6 s at 2 MB/s, so a cap is the user's choice.
 - **Turn off:** Already 0 (no limit). SET sift.table_auto_defrag_wal_rate = n kB/s to cap; RESET returns 0.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 0 (no limit). Set kB/s to cap the pass's average WAL; it also bounds how often readers reload dictionaries after a rewritten segment.
 
 #### sift.table_auto_defrag_budget
@@ -2208,7 +2208,7 @@ Bench is a case of `bench/cases.tsv` or a file of stored results.
 - **When:** Each pass of a sift_table: the merge steps rewrite at most n MB of segments (the most dead first); the worker passes again while the budget stopped the last one. 0 is no limit.
 - **Default:** 128 MB — 128 MB: bounds the WAL and I/O of one pass; the table VACUUM has no such cap. The same value as sift.vacuum_rewrite_limit; no measurement of other values is in a source.
 - **Turn off:** n/a: a bound; 0 removes the cap. The pass itself is off with sift.table_auto_defrag = off. RESET returns 128.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave 128 MB. The most segment data one pass rewrites (the most dead first); the worker passes again while the budget stopped the last one. 0 is no limit.
 
 ### deprecated
@@ -2223,7 +2223,7 @@ all · deprecated · since 1.0 · default 4096
 - **When:** A sift index created by 1.x or 2.0 that still carries the old spelling; the new name wins when both are set. Applies to sift indexes only (sift_col is new in 3.0).
 - **Default:** 4096 — Kept accepted forever for compatibility, with the bounds, lock mode and ALTER INDEX behaviour of write_buffer_limit, so old dumps and scripts restore; no measurement.
 - **Turn off:** ALTER INDEX .. RESET (mutable_limit), and use SET (write_buffer_limit = n); scripts/upgrade-check.sh lists indexes that still carry it. No REINDEX.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Old spelling of write_buffer_limit, still accepted (the new name wins when both are set). Use write_buffer_limit; scripts/upgrade-check.sh lists indexes that still carry it.
 
 #### sift.agg_lookup_max_rows
@@ -2236,43 +2236,16 @@ all · deprecated · since 1.0 · default 4096
 - **When:** The same joins as sift.agg_lookup_max_kb, limited by the estimated rows whatever their width; used only when set to 0 or more, and then it replaces the memory limit.
 - **Default:** -1 — -1 hands the decision to sift.agg_lookup_max_kb, the limit by memory that replaced the row count; the setting is kept so a configuration of the older form keeps working.
 - **Turn off:** SET sift.agg_lookup_max_rows = -1 (or RESET) returns to the memory limit; the setting itself is deprecated and cannot be removed.
-- **Upgrade from 3.5:** unchanged
+- **Upgrade from 3.6:** unchanged
 - **Advice:** Leave at -1 (the memory limit decides); use sift.agg_lookup_max_kb. When set it still limits the rows alone, whatever their width.
 <!-- sift-cases:end -->
 
-## Upgrading from 3.4
+## Upgrading from 3.6
 
-After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.4 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.4 reads; each of them has a line. The upgrade from 3.3 is in [the 3.4.0 release notes](releases/v3.4.0.md).
+After `ALTER EXTENSION pg_sift UPDATE` the new library reads every index of 3.6 as it is and starts with the next backend (a database that preloads the library, `session_preload_libraries`, after a reconnect; a restart for `shared_preload_libraries`). An index keeps the units it holds until a merge or a `REINDEX` rewrites them, and `sift.upgrade_commands()` lists the `REINDEX` that gives older units a section the options ask for. The block below is generated from the `upgrade` cell of the options that are new, have another default or write a newer column format minor than 3.6 reads; each of them has a line. The upgrade from 3.5 is in [the 3.6.0 release notes](releases/v3.6.0.md), and the ones before in the notes of their release.
 
 <!-- sift-upgrade:start -->
-Defaults changed: sift_col(dead_rewrite_pct) since 3.5; new: `sift.col_dict_shared_cache_kb`, `sift_col(array_lengths)`.
-
-| Option | 3.5 | 3.6 | Column format | What a 3.5 user gets after the update |
-|---|---|---|---|---|
-| `sift_col(dead_rewrite_pct)` | 10 | 0 |  | the default is 0 (by cost) instead of 10: a narrow segment with dead rows in every unit is rewritten at about the same 9 to 10% of dead rows, a wide one, or one with the dead rows in a few units, later (half dead at most); no REINDEX, no format change; ALTER INDEX .. SET (dead_rewrite_pct = 10) keeps the old rule |
-| `sift_col(array_lengths)` | new | auto |  | An index built before 3.6 keeps the images alone (array_lengths reads auto and nothing changes); a REINDEX adds the lengths (or ALTER INDEX .. SET (array_lengths = on) then REINDEX). No ALTER EXTENSION step; a library before 3.6 refuses the index of an array that keeps lengths ("does not match its column layout"). |
-| `sift_col(key_table)` | true | true | minor 22 | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or REINDEX. A segment with a table is column format minor 22, which 3.4 does not read. |
-| `sift_col(count_columns)` | '' | '' | minor 24 | A 3.4 library refuses a segment of column format minor 24 (the REINDEX hint says so); `sift.upgrade_check('3.4')` lists the index with the advice `ALTER INDEX x SET (count_columns = 'off')` and REINDEX. Segments written before have no counts and are read from their units; the counts come with the next merge, VACUUM rewrite or REINDEX. |
-| `sift_col(order_array_columns)` | '' | '' | minor 30, unreadable by 3.5 | The default is a choice by the build, written to the option as 'auto: col' and kept by a REINDEX only until it decides again. An index of 3.4 keeps its option as it was set; segments are minor 30, which 3.5 and older refuse (SET (order_array_columns = 'off') and REINDEX first). |
-| `sift_col(order_array_group)` | '' | '' | minor 31, unreadable by 3.5 | An index of 3.5 keeps its option as it was set; segments with the second order are minor 31, which 3.5 and older refuse (SET (order_array_group = 'off') or RESET (order_array_columns), then REINDEX, first). |
-| `sift.agg_verdict_cache` | on | on |  | new in 3.5 |
-| `sift.agg_par_min_rows` | 80000 | 80000 |  | new in 3.5 |
-| `sift.table_dict_lookup` | on | on |  | After ALTER EXTENSION UPDATE new segments of a sift_table (promotion, merge, VACUUM) store the order of the strings of a dictionary of 1,024 strings or more where it takes a quarter of the segment at most; segments written before keep the compact form until a merge rewrites them, no REINDEX. Column format minor 14, read by 3.3 and 3.4. |
-| `sift.table_key_table` | on | on |  | A 3.4 segment has no table and is read from its units; the table comes with the next merge, VACUUM rewrite or VACUUM FULL. A segment with a table is column format minor 22, which 3.4 does not read. |
-| `auto(col-append-batch)` | automatic | automatic |  | A server on this release writes the batched records at once, from its first transaction; the index format and the indexes of the last release are unchanged: no REINDEX. |
-| `auto(key-cut-second-key)` | automatic | automatic |  | Nothing to run after ALTER EXTENSION UPDATE: an index built before keeps its units. A REINDEX of an index whose key_cut was chosen by default decides again and adds the date leaf as the second key; an index with a key_cut of its own is not changed. |
-| `auto(key-cut-range-lane)` | automatic | automatic |  | An index built before has no lanes (it asks for a REINDEX as for the lanes themselves); a REINDEX decides the cut with them. |
-| `auto(key-cut-date-growth)` | automatic | automatic |  | An index built before has the units by superblock; a REINDEX decides the cut. |
-| `auto(point-directory-columns)` | automatic | automatic |  | An index built before has no directory; a REINDEX decides. |
-| `auto(json-build-object)` | automatic | automatic |  | Nothing to run and no REINDEX: the library uses sift.json_build_object, which ALTER EXTENSION UPDATE to 3.5 added; a database still at 3.4 keeps the core function. |
-| `auto(table-cube-minmax)` | automatic | automatic | minor 7 | No REINDEX: groups written before keep a cube without min and max (their units are read for them); new and rewritten groups carry them (column format minor 7, which a 3.2 library cannot read; a 3.3 library can). |
-| `auto(table-rollup)` | automatic | automatic |  | No rewrite: groups written by 3.3.0 and 3.4.1 carry the rollups of the lists whose paths were declared when they were written (read back by a library with this change, 300,000 rows: 5 of 5 units), and so do the groups written from now on; groups written before the paths were declared are rewritten by VACUUM FULL (sift.table_set_paths says so). |
-| `auto(table-key-lists)` | automatic | automatic | minor 15 | No REINDEX: groups written before are read as before and keep no lists; new and rewritten groups carry them (column format minor 15, readable by 3.3). |
-| `auto(table-run-heads)` | automatic | automatic | minor 18 | No REINDEX: groups written before keep no runs; new and rewritten groups carry them (column format minor 18, which a 3.3 library cannot read; a 3.4 library can). |
-| `sift.col_leaf_cache_kb` | 4096 kB | 4096 kB |  | new in 3.5 |
-| `sift.col_dict_shared_cache_kb` | new | 65536 kB |  | new in 3.6 |
-| `auto(dict-tsig)` | automatic | automatic | minor 29, unreadable by 3.5 | Nothing changes for a segment already written; a REINDEX (or a merge of segments) writes the signature for the leaves that outgrow the cache. A 3.5 library refuses a segment of minor 29: sift.upgrade_check('3.5') lists the index. |
-| `auto(text-lz4)` | automatic | automatic |  | Segments already written keep their wrapper (readers handle both); a REINDEX, a merge or a rewrite of the units writes the new choice. |
+No default changed since 3.6; new: none.
 <!-- sift-upgrade:end -->
 
 ## NOTICE and WARNING texts
