@@ -35,6 +35,18 @@ class Cell(unittest.TestCase):
         self.assertEqual(triple.cell((1.0, 1.0, 1.0), bold=True), '**1.00 · 1.00 · 1.00**')
 
 
+class Factors(unittest.TestCase):
+    def test_a_missing_or_zero_reference_has_no_factor(self):
+        self.assertEqual(triple.factors((10.0, MISSING, 4.0), (2.0, 3.0, 0)), (5.0, None, None))
+
+    def test_glance_cell_counts_the_time_and_ranges_the_measures(self):
+        import compare
+        pairs = [('a', 2.0, 3.0, None), ('b', 20.0, 0.5, None), ('c', 1.0, None, None), ('d', 0.5, 1.0, None)]
+        self.assertEqual(compare.cell(pairs), '2 of 4 (2.0x to 20x · 0.5x to 3.0x · n/a), 1 tie; **slower on d 2.0x**')
+        self.assertEqual(compare.cell([('a', 3.0)]), '1 of 1 (3.0x · n/a · n/a)')
+        self.assertEqual(compare.cell([]), 'n/a')
+
+
 class Table(unittest.TestCase):
     FIGS = {('sift', 'q'): (1.0, 2.0, 3.0), ('pg', 'q'): (10.0, 20.0, 30.0), ('es', 'q'): (1.02, MISSING, MISSING)}
 

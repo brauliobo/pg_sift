@@ -145,7 +145,7 @@ def fig(S, D, tier, e, q, variant='warm'):
     """(ms, cpu_ms, mb) of a system on a question (steps/triple.py); pg_duckdb: the faster of its two modes, whose runs record the time only"""
     if e == 'duckdb':
         v = lat(S, D, tier, e, q, variant)
-        return v and (v[0], triple.NA(triple.NOT_MEASURED), triple.NA(triple.NOT_MEASURED))
+        return v and (v[0], *triple.UNMEASURED)
     return triple.fig(lambda m: S.get(tier, e, q, variant, m))
 
 

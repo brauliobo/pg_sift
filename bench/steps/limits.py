@@ -10,6 +10,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import aggregates_page  # noqa: E402
 import bench_charts  # noqa: E402
 import cases as cases_mod  # noqa: E402
 import cases_render  # noqa: E402
@@ -17,24 +18,34 @@ import compare  # noqa: E402
 import extras  # noqa: E402
 import readme  # noqa: E402
 import store_charts  # noqa: E402
+import triple  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = compare.TIE
 LABEL = compare.LABEL
 
 
-def ms(v):
-    return '%.1f ms' % v if v < 100 else '{:,.0f} ms'.format(v)
+BLOCK = 8192 / 2**20   # MB of a buffer: the IO of a case is the blocks its run hit or read (EXPLAIN (BUFFERS))
+NO_CPU = triple.NA('no CPU figure for this case in the results')
+
+
+def case_fig(rows, case, arm, ms):
+    """(ms, CPU ms, MB of buffers) of one lane of a case of bench/results/cases.tsv; the CPU only where the case records it (the load cases)"""
+    cpu, blocks = (extras.get(rows, case=case, arm=arm, metric=m) for m in ('cpu_ms', 'buffers'))
+    return ms, float(cpu['value']) if cpu else NO_CPU, float(blocks['value']) * BLOCK if blocks else triple.NA(triple.NOT_MEASURED)
 
 
 def case_losses(results):
     path = os.path.join(results, 'cases.tsv')
     if not os.path.exists(path):
         return []
-    out = []
-    for f in cases_render.collect(extras.read(path)[1], cases_mod.read_registry()):
+    rows, out = extras.read(path)[1], []
+    ms = {(f['case'].id, f['metric']): f for f in cases_render.collect(rows, cases_mod.read_registry())}
+    for f in ms.values():
         if not f['kept'] and f['native'] and f['sift'] and f['native'] / f['sift'] <= 1 - TIE:   # a case that runs PostgreSQL's plan has no ratio: the gap table of docs/BENCHMARKS.md
-            out.append((f['sift'] / f['native'], '`%s` %s' % (f['case'].id, cases_render.UNIT[f['metric']]), 'PostgreSQL', ms(f['sift']), ms(f['native'])))
+            c = f['case'].id
+            time = lambda arm: (ms[c, 'ms'][arm] if (c, 'ms') in ms else f[arm])   # noqa: E731  (the time of the case beside a loss in another measure)
+            out.append((f['sift'] / f['native'], '`%s` %s' % (c, cases_render.UNIT[f['metric']]), 'PostgreSQL', case_fig(rows, c, 'sift', time('sift')), case_fig(rows, c, 'native', time('native'))))
     return out
 
 
@@ -47,23 +58,19 @@ def store_losses(results):
             continue
         for e in ('pg', 'ch', 'es', 'citus', 'duckdb'):
             for q in S.queries + list(store_charts.SEARCH):
-                if e == 'duckdb':
-                    theirs, mine = (D.best(q) if D else None), (D.own(q, 'sift') if D else None)
-                else:
-                    r = S.lat(tier, e, q, 'warm')
-                    theirs, mine = (r['value'] if r else None), compare.best_mine(S, tier, q)
-                if theirs and mine and theirs / mine <= 1 - TIE:
-                    out.append((mine / theirs, '%s at %s orders' % (q, format(size, ',')), LABEL[e], ms(mine), ms(theirs)))
+                theirs = bench_charts.fig(S, D, tier, e, q)
+                mine = (D.own(q, 'sift'), *triple.UNMEASURED) if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in compare.MINE)
+                if theirs and mine and mine[0] and theirs[0] / mine[0] <= 1 - TIE:
+                    out.append((mine[0] / theirs[0], '%s at %s orders' % (q, format(size, ',')), LABEL[e], mine, theirs))
     return out
 
 
 def shape_losses(results):
     out = []
-    for what, noun in (('whole', 'whole-table report'), ('set', 'report of a set of tenants')):
-        for e, pairs in compare.shape_pairs(results, what).items():
-            for name, r in pairs:
-                if r <= 1 - TIE:
-                    out.append((1 / r, '%s, %s' % (name, noun), LABEL[e], None, None))
+    for q, v, t in aggregates_page.shape_figs(results)[1] if aggregates_page.shape_figs(results) else []:
+        for e, key in (('pg', 'heap'), ('ch', 'ch')):
+            if t['col'] and t[key] and t[key][0] / t['col'][0] <= 1 - TIE:
+                out.append((t['col'][0] / t[key][0], '%s, %s' % (q if v == '-' else f'{q} {v.replace("K", "")} tenants', 'whole-table report' if v == '-' else 'report of a set of tenants'), LABEL[e], t['col'], t[key]))
     return out
 
 
@@ -73,16 +80,18 @@ def rate_losses(results):
     tier = S.tier_of(1_000_000, 3)
     others = {'pg': ['pg'], 'ch': ['ch', 'ch_mut', 'ch_rmt'], 'es': ['es'], 'citus': ['citus']}
     out = []
-    for name, variant, metric, inv in (('update 10% of the rows (rows per second)', 'update 10%', 'phase_rows_s', False), ('delete 5% of the rows (rows per second)', 'delete 5%', 'phase_rows_s', False),
-                                       ('load of 1,000,000 orders (seconds)', '-', 'load_s', True)):
+    for name, variant, metric, inv, unit in (('update 10% of the rows (rows per second)', 'update 10%', 'phase_rows_s', False, ' rows/s'), ('delete 5% of the rows (rows per second)', 'delete 5%', 'phase_rows_s', False, ' rows/s'),
+                                             ('load of 1,000,000 orders (seconds)', '-', 'load_s', True, ' s')):
         for e, pairs in compare.rate_pairs(S, tier, others, variant, metric, inv).items():
-            if pairs[0][1] <= 1 - TIE:
-                out.append((1 / pairs[0][1], name, LABEL[e], None, None))
+            _, ratio, mine, theirs = pairs[0]
+            fmt = ',.1f' if unit == ' s' else ',.0f'
+            if ratio <= 1 - TIE:
+                out.append((1 / ratio, name, LABEL[e], f'{mine:{fmt}}{unit}{compare.MISSING}', f'{theirs:{fmt}}{unit}{compare.MISSING}'))
     mine = min(v for e in compare.MINE if (v := store_charts.sizes(S, tier, e)[2]))
     for e in ('pg', 'ch', 'es', 'citus'):
         s = store_charts.sizes(S, tier, e)[2] if e in S.engines(tier) else None
         if s and s / mine <= 1 - TIE:
-            out.append((mine / s, 'size on disk, table and indexes (`sift_table`, the smaller layout)', LABEL[e], None, None))
+            out.append((mine / s, 'size on disk, table and indexes (`sift_table`, the smaller layout)', LABEL[e], f'{mine:,.0f} MiB', f'{s:,.0f} MiB'))
     return out
 
 
@@ -92,9 +101,12 @@ def block(results):
             'Warm medians; the layout of pg_sift is the faster of its two. Writes, the load, the disk and the shapes of a query the scan does not help are the usual places.', '']
     if not rows:
         return head + ['No number of bench/results is slower.']
+    cell = lambda f, ref=None: f if isinstance(f, str) else triple.cell(f, ref)   # noqa: E731  (a rate, a load time or a size is text)
     body = ['| what | against | slower by | pg_sift | the other |', '|---|---|---:|---:|---:|']
-    body += ['| %s | %s | %s | %s | %s |' % (w, a, compare.x(r), mine or '-', theirs or '-') for r, w, a, mine, theirs in rows]
-    return head + body
+    body += ['| %s | %s | %s | %s | %s |' % (w, a, compare.x(r), cell(mine), cell(theirs, mine)) for r, w, a, mine, theirs in rows]
+    figs = [f for r in rows for f in r[3:] if not isinstance(f, str)]
+    return head + body + [''] + triple.legend(figs, 'MB read (the cases: MB of buffers hit and read; the application shapes: not recorded)') + [
+        'The shapes are the application shapes of the 3.6 results (their CPU is the backend\'s). The rows of a write rate, a load and the disk carry their own unit and the CPU and IO of the write: `n/a`: not measured under 3.7 yet.']
 
 
 def render(results, readme_path):

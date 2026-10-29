@@ -19,6 +19,9 @@ class NA(str):
     """a figure that is not there, with the reason"""
 
 
+UNMEASURED = (NA(NOT_MEASURED),) * 2   # the CPU and the IO of a result that records the time only
+
+
 def num(v):
     return 'n/a' if v is None or isinstance(v, NA) else '<0.01' if 0 < v < 0.005 else mdtable.ms(v)
 
@@ -44,6 +47,11 @@ def fig(get):
 def best(figs):
     """the figure with the least time (pg_sift's faster layout), None when there is none"""
     return min((f for f in figs if f), key=lambda f: f[0], default=None)
+
+
+def factors(fig, ref):
+    """(time, cpu, read) of a system over pg_sift's from two figures; None for a measure either side lacks (or pg_sift has zero of)"""
+    return tuple(None if isinstance(v, NA) or isinstance(r, NA) or not r else v / r for v, r in zip(fig, ref))
 
 
 def cell(fig, ref=None, bold=False):

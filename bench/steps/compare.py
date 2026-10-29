@@ -29,6 +29,7 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 TIE = 0.05
 MINE = ('sift', 'sift_table')
 NOT = 'n/a'
+MISSING = ' · n/a · n/a'
 LABEL = {'pg': 'PostgreSQL', 'ch': 'ClickHouse', 'es': 'Elasticsearch', 'citus': 'Citus columnar', 'duckdb': 'pg_duckdb'}
 
 
@@ -36,14 +37,23 @@ def x(v):
     return f'{v:.0f}x' if v >= 9.5 else f'{v:.1f}x'
 
 
-def cell(pairs, noun='faster'):
-    """pairs [(name, other / pg_sift)]: '5 of 7 (1.8x to 21x); slower on revenue (1.2x)'; a tie (within 5%) is neither"""
+def span(rs):
+    """'1.8x to 21x' over the factors that exist, `-` when there are none"""
+    rs = [r for r in rs if r is not None]
+    lo, hi = (x(min(rs)), x(max(rs))) if rs else ('', '')
+    return '-' if not rs else lo if lo == hi else f'{lo} to {hi}'
+
+
+def cell(pairs):
+    """pairs [(name, time, cpu, read)], each the system over pg_sift (cpu and read None where not measured; two-element pairs are time only):
+    '5 of 7 (1.8x to 21x · 1.2x to 9x · n/a); slower on revenue (1.2x)': the count and the first range are the questions where it is faster (a tie, within 5%, is neither), the others the range of all"""
     if not pairs:
         return NOT
-    faster = [r for _, r in pairs if r >= 1 + TIE]
-    slower = sorted(((n, 1 / r) for n, r in pairs if r <= 1 - TIE), key=lambda t: -t[1])
+    pairs = [(n, r, *rest, *(None,) * (2 - len(rest))) for n, r, *rest in pairs]
+    faster = [r for _, r, _, _ in pairs if r >= 1 + TIE]
+    slower = sorted(((n, 1 / r) for n, r, _, _ in pairs if r <= 1 - TIE), key=lambda t: -t[1])
     ties = len(pairs) - len(faster) - len(slower)
-    out = f'{len(faster)} of {len(pairs)}' + (f' ({x(min(faster))} to {x(max(faster))})' if len(faster) > 1 and x(min(faster)) != x(max(faster)) else f' ({x(faster[0])})' if faster else '')
+    out = f'{len(faster)} of {len(pairs)} (' + ' · '.join([span(faster)] + [span([p[i] for p in pairs]) if any(p[i] is not None for p in pairs) else NOT for i in (2, 3)]) + ')'
     if ties:
         out += f', {ties} tie'
     if slower:
@@ -53,7 +63,7 @@ def cell(pairs, noun='faster'):
 
 
 def single(ratio, better, worse):
-    """one measure (a rate, a load time, a size): '3.4x smaller', '**1.2x larger**' or 'tie'"""
+    """one measure (a rate, a load time, a size): '3.4x smaller', '**1.2x larger**' or 'tie'; with `cells` the rate and the load time carry the CPU and IO measures of the write (n/a: not measured)"""
     return f'{x(ratio)} {better}' if ratio >= 1 + TIE else f'**{x(1 / ratio)} {worse}**' if ratio <= 1 - TIE else 'tie'
 
 
@@ -63,32 +73,29 @@ def best_mine(S, tier, q):
 
 
 def store_pairs(S, D, tier, e, qs):
-    """[(question, other / pg_sift)] on the questions the system answered; pg_duckdb against the pg_sift of its own run (its own client and PostgreSQL build)"""
+    """[(question, time, cpu, read)] of the system over pg_sift on the questions it answered; pg_duckdb against the pg_sift of its own run (its own client and PostgreSQL build, the time only)"""
     out = []
     for q in qs:
-        if e == 'duckdb':
-            theirs, mine = (D.best(q) if D else None), (D.own(q, 'sift') if D else None)
-        else:
-            r = S.lat(tier, e, q, 'warm')
-            theirs, mine = (r['value'] if r else None), best_mine(S, tier, q)
-        if theirs and mine:
-            out.append((q, theirs / mine))
+        theirs = bench_charts.fig(S, D, tier, e, q)
+        mine = (D.own(q, 'sift'), *triple.UNMEASURED) if e == 'duckdb' and D and D.own(q, 'sift') else triple.best(bench_charts.fig(S, D, tier, m, q) for m in MINE)
+        if theirs and mine and mine[0]:
+            out.append((q, *triple.factors(theirs, mine)))
     return out
 
 
 def shape_pairs(results, what):
-    found = aggregates_page.shape_cases(results)
+    """{system: [(shape, time, cpu, read)]} of the system over pg_sift's sift_col arm for the whole-table shapes or the sets of tenants"""
+    found = aggregates_page.shape_figs(results)
     if not found:
         return {}
-    cases = found[1]
     out = {'pg': [], 'ch': []}
-    for q, v, t in cases:
+    for q, v, t in found[1]:
         if what == 'whole' and v != '-' or what == 'set' and v == '-':
             continue
         name = q if v == '-' else f'{q} {v.replace("K", "")} tenants'
         for e, key in (('pg', 'heap'), ('ch', 'ch')):
             if t['col'] and t[key]:
-                out[e].append((name, t[key] / t['col']))
+                out[e].append((name, *triple.factors(t[key], t['col'])))
     return out
 
 
@@ -139,7 +146,7 @@ def rate_pairs(S, tier, others, variant, metric, inverse=False):
         vals = [v for e in es if (v := S.v(tier, e, '-', variant, metric))]
         if vals:
             theirs = pick(vals)
-            out[label] = [(variant, mine / theirs if not inverse else theirs / mine)]
+            out[label] = [(variant, mine / theirs if not inverse else theirs / mine, mine, theirs)]
     return out
 
 
@@ -188,7 +195,7 @@ def rows_of(results):
                                              ('delete 5%', 'rows per second of a delete of 5% of the rows', 'delete 5%', 'phase_rows_s', False),
                                              ('load 1M rows', 'the load of the 1,000,000 rows (data, indexes, merge)', '-', 'load_s', True)):
         r = rate_pairs(S, tier, others, variant, metric, inv)
-        row = {e: single(r[e][0][1], 'faster', 'slower') if e in r else NOT for e in est}
+        row = {e: single(r[e][0][1], 'faster', 'slower') + MISSING if e in r else NOT for e in est}   # the CPU and IO of a write are not in the results yet
         if metric == 'phase_rows_s':
             row['citus'] = NOT
         rows.append((slug, what, row))
@@ -230,7 +237,7 @@ def sources(results):
         duck_pg = (re.search(r"(PostgreSQL [\d.]+)[^,]*with pg_duckdb", d.get("postgresql", "")) or [None, "?"])[1]
         lines.append(f'| pg_duckdb | {d.get("pg_duckdb", "?").split(",")[0]} (DuckDB {d.get("duckdb", "?").split(" ")[1] if " " in d.get("duckdb", "") else "?"}) | 1,000,000 and 10,000,000 orders, the same CSV as the others | its own run: {d.get("cpu", "?").replace(" 8-Core Processor", "")}; a different PostgreSQL build ({duck_pg}); `psql` client; the better of its heap and Parquet modes | warm: median of 3; cold: first run in a new session | {d.get("date", "?")} | [duckdb.tsv](bench/results/duckdb.tsv), [duckdb-10000000.tsv](bench/results/duckdb-10000000.tsv) |')
     if an:
-        lines.append(f'| PostgreSQL heap and flat tables, ClickHouse (the application shapes) | PostgreSQL {sv["pg"].split()[0]}, pg_sift {sv["sift_sift"]}; ClickHouse: a throwaway server, version not recorded in the results | {an.get("tier", "?")} orders of an analytics corpus | one backend, no parallel workers; ClickHouse one thread | warm: median of {an.get("runs", "?")} runs | {an.get("date", "?")[:10]} | [analytics.json](bench/results/analytics.json) |')
+        lines.append(f'| PostgreSQL heap and flat tables, ClickHouse (the application shapes) | PostgreSQL {sv["pg"].split()[0]}, pg_sift {sv["sift_sift"]}; ClickHouse: a throwaway server, version not recorded in the results | {an.get("tier", "?")} orders of an analytics corpus | one backend, no parallel workers (CPU: the backend\'s, from /proc/PID/schedstat); ClickHouse one thread | warm: median of {an.get("runs", "?")} runs | {an.get("date", "?")[:10]} | [analytics.json](bench/results/analytics.json) |')
     return lines
 
 
@@ -313,8 +320,9 @@ def compare_block(results):
     cells = {(slug, e): c.replace(' (', '<br>(', 1).partition('; ') for slug, _, cs in rows for e, c in cs.items()}   # (cell, '; ', notes): the losses and the plans the planner kept go under the table
     shown = {(LABEL[e], k): f'**{c[0]}**' if 'slower' in c[2] else c[0] for (k, e), c in cells.items()}   # 'N of M (a to b)' breaks after the count
     desc = {slug: what for slug, what, _ in rows}
-    out = ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. '
-           f'Losses are in bold and named under their table; `{NOT}` is a comparison no result file holds. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
+    out = ['On how many questions of a workload pg_sift is faster than each system, and by how much: the faster of its two layouts against the system, warm medians, a tie is within 5%. A cell is `faster of total (time · CPU · MB read)`: '
+           'the time range is over the questions where pg_sift is faster, the CPU (of the whole server) and MB read ranges over all the questions, each the system over pg_sift (above 1x it uses more); the rates and times of the writes are one factor, then the same two measures. '
+           f'Losses are in bold and named under their table. `{NOT}` alone is a comparison no result file holds; inside the parentheses `{NOT}`: a measure not measured under 3.7 yet. The conditions of every number (engine and version, data size, host, settings, date) are under the tables.']
     for title, slugs in GLANCE:
         slugs = [k for k in slugs if k in desc]
         out += ['', f'{title}: ' + '; '.join(f'{k} = {desc[k]}' for k in slugs) + '.', ''] + mdtable.tables([LABEL[e] for e in est], [('', [(k, k) for k in slugs])], lambda r, k: shown[r, k])
@@ -344,6 +352,7 @@ def generic_block(results):
     return ['The 35 queries of the generic suites (TPC-H-like, ClickBench-like, time series, and the headline cases on the orders table that only read it) on every engine of `bench/engines.tsv` that runs analytic queries, from bench/results/generic.tsv: one engine at a time, the answers compared with '
             'PostgreSQL\'s before any time is taken, the same statement (the case\'s `--@ pg`, or the section of the engine\'s dialect). A case an engine does not run is listed with the reason it gave; it is never a ratio against anything. '
             'pg_sift\'s number is that of bench/results/cases.tsv (the planner\'s own choice; a case where it keeps PostgreSQL\'s plan is in the gap table above). '
+            'The third column reads `faster of total (time · CPU · MB read)` as in the README\'s At a glance table; `n/a`: a measure not measured under 3.7 yet. '
             'The TPC-H-like cases are queries of TPC-H by number: `tpch_pricing_summary` Q1, `tpch_forecast_revenue` Q6, `tpch_shipping_priority` Q3, `tpch_returned_items` Q10, `tpch_shipping_modes` Q12; a ClickBench-like case names its ClickBench query in its SQL file.', ''] + head + body
 
 

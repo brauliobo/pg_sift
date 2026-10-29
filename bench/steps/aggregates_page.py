@@ -24,6 +24,7 @@ import bench_charts  # noqa: E402  (scale_takeaway)
 import extras  # noqa: E402,F401  (read, duck_table: the pg_duckdb tables)
 import readme  # noqa: E402  (replace_block)
 import store_charts  # noqa: E402
+import triple  # noqa: E402
 from store_charts import SYSTEMS, picture  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -217,18 +218,25 @@ ANALYTICS_QUERIES = os.path.join(REPO, 'bench', 'sql', 'analytics', 'queries')
 SHAPES_CMD = 'bench/bench analytics run --engines heap,col,flat,ch --flat --clickhouse --docs'
 
 
-def shape_cases(results):
-    """(meta, [(query, set, {engine: wall ms})]) of bench/results/analytics.json; None when the file or its sift_col arm is missing"""
+def shape_figs(results):
+    """(meta, [(query, set, {engine: (wall ms, cpu ms, read MB)})]) of bench/results/analytics.json (steps/triple.py: the CPU is the backend's from /proc/PID/schedstat, the read is not recorded); None when the file or its sift_col arm is missing"""
     path = maybe(results, 'analytics.json')
     if not path:
         return None
     d = json.load(open(path))
-    rows = {(r['engine'], r['class'], r['variant']): r['value'] for r in d['rows'] if r['metric'] == 'wall_ms'}
-    if not any(k[0] == 'col' for k in rows):
+    wall, cpu = ({(r['engine'], r['class'], r['variant']): r['value'] for r in d['rows'] if r['metric'] == m} for m in ('wall_ms', 'cpu_ms'))
+    if not any(k[0] == 'col' for k in wall):
         return None
     order = {f[:-4]: int(re.search(r'(?m)^-- order: (\d+)', open(os.path.join(ANALYTICS_QUERIES, f)).read()).group(1)) for f in os.listdir(ANALYTICS_QUERIES)}
-    cases = sorted({(k[1], k[2]) for k in rows}, key=lambda c: (c[1] != '-', order[c[0]], c[1]))   # the whole-table shapes first, each group in the order of its query files
-    return d['meta'], [(q, v, {e: rows.get((e, q, v)) for e in ('heap', 'col', 'flat', 'ch')}) for q, v in cases]
+    cases = sorted({(k[1], k[2]) for k in wall}, key=lambda c: (c[1] != '-', order[c[0]], c[1]))   # the whole-table shapes first, each group in the order of its query files
+    fig = lambda e, q, v: (wall[e, q, v], cpu.get((e, q, v), triple.NA(triple.NOT_MEASURED)), triple.NA(triple.NOT_MEASURED)) if wall.get((e, q, v)) is not None else None  # noqa: E731
+    return d['meta'], [(q, v, {e: fig(e, q, v) for e in ('heap', 'col', 'flat', 'ch')}) for q, v in cases]
+
+
+def shape_cases(results):
+    """(meta, [(query, set, {engine: wall ms})]) of bench/results/analytics.json; None when the file or its sift_col arm is missing"""
+    found = shape_figs(results)
+    return found and (found[0], [(q, v, {e: f and f[0] for e, f in t.items()}) for q, v, t in found[1]])
 
 
 def shapes_lines(results):

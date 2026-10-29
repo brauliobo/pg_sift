@@ -388,7 +388,6 @@ def fold(summary, lines):
     return ['<details><summary>%s</summary>' % summary, ''] + lines + ['', '</details>']
 
 
-UNMEASURED = (triple.NA(triple.NOT_MEASURED),) * 2
 DUCK_ARMS = [('pg', 'PostgreSQL'), ('sift', 'pg_sift'), ('duckdb_heap', 'pg_duckdb heap'), ('duckdb_parquet', 'pg_duckdb Parquet')]
 
 
@@ -399,7 +398,7 @@ def duck_cell(rows, case, arm, metric, best):
     if r['value'] in ('NA', 'error'):
         return 'not supported' if r['value'] == 'NA' else 'error'
     v, ref = float(r['value']), num(rows, case=case, arm='sift', metric=metric)   # pg_duckdb's run has the times only; the factors are against the pg_sift of the same run
-    text = triple.cell((v, *UNMEASURED), None if arm == 'sift' or ref is None else (ref, *UNMEASURED)) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
+    text = triple.cell((v, *triple.UNMEASURED), None if arm == 'sift' or ref is None else (ref, *triple.UNMEASURED)) + (' †' if 'substring' in r['note'] else '') + ('!' if 'RESULT DIFFERS' in r['note'] else '')
     return '**%s**' % text if v <= best * 1.05 else text   # the fastest, and anything within 5% of it, in bold
 
 
@@ -409,7 +408,7 @@ def duck_table(rows, cases, metric):
         done = {a: x for a, _ in DUCK_ARMS if (x := num(rows, case=c, arm=a, metric=metric)) is not None}
         best = min(done, key=done.get) if done else None
         body.append([c] + [duck_cell(rows, c, a, metric, done[best] if best else 0) for a, _ in DUCK_ARMS] + [dict(DUCK_ARMS).get(best, 'n/a').replace(' heap', '').replace(' Parquet', '')])
-    return table(['question'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---']) + [''] + triple.legend([(None, *UNMEASURED)])
+    return table(['question'] + [n for _, n in DUCK_ARMS] + ['fastest'], body, ['---'] + ['---:'] * len(DUCK_ARMS) + ['---']) + [''] + triple.legend([(None, *triple.UNMEASURED)])
 
 
 def duck_summary(rows, cases, metric):
