@@ -1563,16 +1563,23 @@ double
 lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 {
 	double		f = 1.0;
+	int			nseen = 0;
+	AttrNumber *seen;
+	double	   *seen_f;
 
 	if (!sift_agg_join_filter || s->topn || sift_agg_param_set_size <= 0)
 		return f;
+	seen = palloc(list_length(c->joins) * sizeof(AttrNumber));
+	seen_f = palloc(list_length(c->joins) * sizeof(double));
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
 		const SiftAggJoin *j = &s->join[cb->join];
 		double		keys = lookup_rows(c, jc),
-					nd = 0;
+					nd = 0,
+					g = 1.0;
 		Var		   *key = NULL;
+		int			at;
 
 		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
 			continue;
@@ -1595,11 +1602,23 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 		if (lookup_counted(c, jc))
 		{
 			if (sift_agg_key_skew && !groups)
-				f *= sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
+				g = sqrt(Max(column_skew(c, key) / AGG_KEY_SKEW_FLOOR, 1.0));
 		}
 		else if (nd > keys)
-			f *= groups ? nd / keys : sqrt(nd / keys);
+			g = groups ? nd / keys : sqrt(nd / keys);
+		/* lookups on one column (a CTE of ids joined and again in an IN list) restrict the same keys: the normal plan reads them once */
+		for (at = 0; at < nseen && seen[at] != key->varattno; at++)
+			;
+		if (at == nseen)
+		{
+			seen[nseen] = key->varattno;
+			seen_f[nseen++] = g;
+		}
+		else
+			seen_f[at] = Max(seen_f[at], g);
 	}
+	for (int i = 0; i < nseen; i++)
+		f *= seen_f[i];
 	/* the normal plan reads no more than the rows the table's own filters keep, whatever the keys */
 	return Min(f, Max(c->rel->rows / Max(input_rel->rows, 1.0), 1.0));
 }
