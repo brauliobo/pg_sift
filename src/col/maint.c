@@ -1243,6 +1243,25 @@ static const SiftMaintOps col_ops = {
 	.vacuum_done = rewrite_request,
 };
 
+/*
+ * After a build while a standby streams. The segments of a parallel build overlap, so the first VACUUM rewrites them, and the rewrite leaves the
+ * index twice its size in the file: the segments it replaced are the free blocks in front of the new ones. VACUUM does not cut the file while a standby
+ * streams (a cut stalls its replay on a long query), so the file stayed at twice the index for good. The file of a build is the one that no query of a
+ * standby can hold before the commit: the rewrite and the cut are made here, where they cost the standby nothing.
+ */
+void
+sift_col_build_settle(Relation index)
+{
+	if (!sift_maint_standby_streams() || !sift_maint_file_is_new(index) || sift_mops_rewrite(&col_ops, index, false) <= 0)
+		return;
+	sift_maint_lock(index, true);
+	sift_recycle(index);
+	sift_maint_orphan_sweep(index);
+	if (vacuum_truncates(index))
+		sift_maint_space_rounds(index, NULL, DEBUG1, (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ);
+	sift_maint_unlock(index);
+}
+
 void
 sift_col_maint_after_seal(Relation index)
 {

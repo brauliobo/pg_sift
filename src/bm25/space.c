@@ -93,8 +93,8 @@ sift_maint_orphan_sweep(Relation index)
  * max_standby_streaming_delay (then cancels it; hot_standby_feedback does not help): the replay stalls for as long as a long query on the standby runs. A b-tree
  * is never cut, so the blocks stay free for the next rewrite while a physical standby streams.
  */
-static bool
-standby_streams(void)
+bool
+sift_maint_standby_streams(void)
 {
 #ifdef SIFT_TESTING
 	if (sift_test_cut_with_standby)
@@ -114,11 +114,18 @@ standby_streams(void)
 	return false;
 }
 
+/* The file of this relation was made by this transaction (CREATE INDEX, REINDEX): no query of a standby can hold it before the commit */
+bool
+sift_maint_file_is_new(Relation rel)
+{
+	return rel->rd_createSubid != InvalidSubTransactionId || rel->rd_firstRelfilelocatorSubid != InvalidSubTransactionId;
+}
+
 /* The AccessExclusiveLock of a cut of the file, only if it is free right now (any scan, insert or step of the worker holds a lock on it) and no standby would stall on it */
 static bool
 lock_for_cut(Relation rel, const char *what, int elevel)
 {
-	if (standby_streams())
+	if (!sift_maint_file_is_new(rel) && sift_maint_standby_streams())
 	{
 		ereport(elevel, (errmsg("%s \"%s\": not truncating while a standby streams", what, RelationGetRelationName(rel))));
 		return false;
