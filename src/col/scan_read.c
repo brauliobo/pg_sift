@@ -192,6 +192,15 @@ group_sel_elems(ColUnit *cu, ColGroup *g, const uint32 *idx, uint32 m)
 	}
 }
 
+int
+sift_col_key_order(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCChunk	c;
+
+	return cu->src->schema->cols[col].parent < 0 && unit_chunk(cu, col, &c) ? sift_cchunk_order(&c) : 0;
+}
+
 void
 sift_col_read_idx(const SiftColUnit *unit, int col, const uint32 *idx, uint32 m, SiftColVec *vec)
 {

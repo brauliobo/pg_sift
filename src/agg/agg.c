@@ -1786,6 +1786,7 @@ explain_topn(AggExec *ex, ExplainState *es)
 	sift_explain_int(&ln, "Units Read By Sorted Run", NULL, "units read by sorted run", sift_topn_runs_read(t), SIFT_XI_OPT);
 	sift_explain_int(&ln, "Units Read Without Filters", NULL, "units read without filters", sift_topn_runs_lazy(t), SIFT_XI_OPT);
 	sift_explain_int(&ln, "Units Answered By Run Head", NULL, "units answered by run head", sift_topn_heads_used(t), SIFT_XI_OPT);
+	sift_explain_int(&ln, "Units Read From Their Ends", NULL, "units read from their ends", sift_topn_mono_used(t), SIFT_XI_OPT);
 	if (sift_topn_ord_units(t, 0) + sift_topn_ord_units(t, 1) > 0)
 		ExplainPropertyText("Top-N Units By Order Code", psprintf("exact " INT64_FORMAT ", prefix " INT64_FORMAT ", bytes " INT64_FORMAT, sift_topn_ord_units(t, 0), sift_topn_ord_units(t, 1), sift_topn_ord_units(t, 2)), es);
 	if (sift_topn_gordered(t))

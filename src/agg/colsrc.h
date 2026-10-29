@@ -692,6 +692,12 @@ typedef struct SiftSrcProvider
 	 * value the leaf cannot store, ascending. run_read gives the rows at positions [pos, pos + cnt) of that run. id names the unit within the scan. walk: the
 	 * caller will read the rows of the run (not only its head); a source may refuse a run that is the rows in their own order, which reads no faster than the unit.
 	 */
+	/*
+	 * Optional: the keys of the leaf in the unit never decrease (1) or never increase (-1) in row order, so the best rows of a one-key top-N are the first (or last) rows;
+	 * 2: the order is not known but read_rows of a run of rows costs by the rows it reads, not by the unit; 0: neither, or the unit is not the stored one (a match set,
+	 * narrowed, read again from the heap)
+	 */
+	int			(*key_order) (void *impl, const SiftSrcUnit *unit, int leaf);
 	bool		(*run_info) (void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
 	void		(*run_read) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 	/*
@@ -893,6 +899,8 @@ extern void sift_colsrc_read_rows(SiftSrcSource *src, const SiftSrcUnit *unit, i
 extern bool sift_colsrc_run_info(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
 /* The head of the run (SiftSrcProvider.run_heads): its H, 0 when there is none */
 extern bool sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
+/* The order of the keys of a leaf in the unit (SiftSrcProvider.key_order) */
+extern int	sift_colsrc_key_order(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf);
 extern int	sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi);
 extern int sift_colsrc_gorder_open(SiftSrcSource *src, int leaf, int rows, int npin, const int *pinleaf, const int64 *pinval, int *grouped, uint32 collid);
 extern const char *sift_colsrc_gorder_str(SiftSrcSource *src, int i, int leaf, int64 key, uint32 *len);

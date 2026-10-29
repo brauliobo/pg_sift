@@ -175,6 +175,11 @@ extern void sift_cc_decode_f8(const SiftCc *c, double *dst);
 /* dst[k] = key of row idx[k], k < m (idx ascending or not, all < n) */
 extern void sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
 extern int64 sift_cc_get(const SiftCc *c, uint32 row);
+/*
+ * 1 when the keys never decrease in row order, -1 when they never increase (a delta chunk whose smallest step says so; the slots of NULL rows hold a filler that keeps it),
+ * 2 when neither is known but a run of rows decodes in time of its rows (a delta or bit-packed chunk), 0 for any other chunk
+ */
+extern int	sift_cc_order(const SiftCc *c);
 /* The offsets key - min as u32 when SIFT_CCF_OFF32 (returns false otherwise, dst untouched); dst needs SIFT_CC_CAP32(n) slots. */
 extern bool sift_cc_decode_off32(const SiftCc *c, uint32 *dst);
 /* An upper bound of the offsets that writes, from the root node alone (what the blob holds is not read); UINT32_MAX when the nodes do not tell */

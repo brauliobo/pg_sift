@@ -939,6 +939,8 @@ typedef struct SiftCHeadEnt
 extern bool sift_col_sb_heads(SiftColSource *src, uint32 sb, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
 extern int	sift_col_run_heads(const SiftColUnit *unit, int col, SiftCHeadEnt *out, uint32 *nlo, uint32 *nhi);
 extern bool sift_col_run_info(const SiftColUnit *unit, int col, uint32 *nvals, uint32 *nnull, uint64 *id);
+/* The order of the keys of leaf col in this unit in row order (sift_cc_order): 1 never decrease, -1 never increase, 2 unknown but a run of rows is cheap to decode, 0 neither. The NULL rows hold a filler that keeps the order */
+extern int	sift_col_key_order(const SiftColUnit *unit, int col);
 /* ... and whether that run is the rows in their own order (no entries stored) */
 extern bool sift_col_run_identity(const SiftColUnit *unit, int col);
 extern void sift_col_run_read(const SiftColUnit *unit, int col, uint32 pos, uint32 cnt, uint32 *ords);

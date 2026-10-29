@@ -429,6 +429,7 @@ Both engines share the column format, the writer and the aggregate scan; what di
 | Sorted runs and run heads (`order_columns`) | works | works | a table writes the run of its timestamp columns where the run takes at most 3% of a unit (a column loaded in order: its rows are the run, and a unit keeps the first and last keys); `ORDER BY .. LIMIT 32` of such a column reads no unit |
 | Run heads of a superblock, read without opening its unit | works | missing | a superblock of a table may hold write buffer rows and tombstones that its page masks do not show, so the unit is opened |
 | Global order of a leaf (`order_array_columns`) | works | missing | the sorted `(key, heap address)` entries of every row of a segment; the top-N walks the zones of the units instead |
+| Units read from their end (a key that follows the row order) | works | missing | ORDER BY key [DESC] LIMIT n over a delta key chunk reads 1,024 rows at a time from the end the sort wants; a sift_table has no chunk that says the order of its keys |
 | Aggregates of a unit net of its dead rows | works | missing | a unit with a dead row is read as its rows; the counts and integer sums of the unit stay unused |
 | Top-N from the zones of the units | works | works |  |
 | Cache of the top-N walk | works | missing | the walk is made again by every statement |

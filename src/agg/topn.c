@@ -393,6 +393,7 @@ struct SiftTopN
 	int64		nrun;			/* units read through their sorted run */
 	int64		nlazy;			/* ... of them with no filter run (sift_topn_lazy) */
 	int64		nrhead;			/* units answered from the head of their sorted run */
+	int64		nmono;			/* units whose best rows were read from an end of a key chunk that follows the row order (mono_unit) */
 	bool		wkeep;			/* the write buffers' superblocks are known (whead): a superblock outside them has no row in memory */
 	int64		fetched;
 	GBox		kbox;			/* the range of the first key that the conditions on it keep (sift_topn_key_range): a sorted run is read from its first entry in it */
@@ -2997,6 +2998,123 @@ unit_reset(SiftTopN *t)
 	}
 }
 
+#define MONO_WIN	1024			/* the rows a delta chunk decodes in one block */
+#define MONO_WINS	4				/* blocks the walk is expected to read at most, else the unit is read whole */
+
+/*
+ * A unit whose first key never decreases (or increases) in row order, as a delta chunk says, has its best rows at one end: they are the first (last) rows that pass, so a
+ * block of 1024 rows at a time is read from that end and the unit is not decoded whole. When the NULL rows sort first the best rows are the first NULL rows that pass, in
+ * any chunk that reads a run of rows cheaply. One key and no condition on it (a bound of it is tested later, not in rmask). The walk is chosen before it reads, from
+ * the rows that pass and the rows that can win (it expects them within MONO_WINS blocks), because it cannot give the unit back: its reads reuse the buffer of the leaf
+ * that the executor's vector of the leaf stands on, which a filter on the same column may have filled. Once started it goes on to the limit, the bar or the end of
+ * the unit. Rows tied with the limit-th win nothing on one key.
+ */
+static bool
+mono_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
+{
+	const TopKey *k0 = &t->key[0];
+	SiftSrcZone z;
+	Rank		bar;
+	bool		barred,
+				front,
+				nulls,
+				stop = false,
+				barstop = false;
+	uint32		rows[MONO_WIN],
+				nblk = ((uint32) nrow + MONO_WIN - 1) / MONO_WIN,
+				npass = 0;
+	int			dir,
+				m = 0;
+	double		cands;
+
+	if (!(sift_topn_runs && t->nkey == 1 && t->nexpr == 0 && !t->all && !t->sort && !t->revisit && k0->xk == TXK_NONE && k0->leaf >= 0 && !k0->blob && !k0->nenum &&
+		  (k0->vtype == SCV_I32 || k0->vtype == SCV_I64) && t->limit > 0 && nblk > MONO_WINS) || t->kbox.has_lo || t->kbox.has_hi)
+		return false;
+	dir = sift_colsrc_key_order(src, unit, k0->leaf);
+	if (dir == 0)
+		return false;
+	sift_colsrc_zone(src, unit, k0->leaf, &z);
+	/* the rows the leaf cannot store read as NULL: they are not the NULL rows of the query */
+	if (z.inexact)
+		return false;
+	nulls = k0->nulls_first && z.nnull > 0;
+	if (dir == 2 && !nulls)
+		return false;
+	for (int i = 0; i < (nrow + 63) / 64; i++)
+		npass += pg_popcount64(rmask[i]);
+	/* the rows that can win, among the rows that pass, if the two do not go together */
+	cands = (nulls ? z.nnull : (double) (nrow - z.nnull)) / nrow * ((double) npass / nrow) * nrow;
+	if (cands < 2 * t->limit || (double) t->limit * nrow / cands > (double) MONO_WINS * MONO_WIN / 2)
+		return false;
+	front = nulls || (dir > 0) != k0->desc;
+	barred = bar_rank(t, &bar);
+	/* the n-th row so far is a NULL row: the NULL rows of the unit only tie with it, and a tie wins nothing on one key */
+	if (nulls && barred && !rank_after(bar, rank_of(k0, true, 0)))
+	{
+		t->nmono++;
+		return true;
+	}
+	grow_unit_buffers(t, Min(nrow, t->limit));
+	for (uint32 w = 0; w < nblk && !stop; w++)
+	{
+		uint32		blk = front ? w : nblk - 1 - w,
+					from = blk * MONO_WIN,
+					cnt = Min((uint32) nrow - from, MONO_WIN);
+		SiftSrcVec	v;
+
+		for (uint32 i = 0; i < cnt; i++)
+			rows[i] = from + i;
+		sift_colsrc_read_rows(src, unit, k0->leaf, rows, cnt, &v);
+		for (uint32 i = 0; i < cnt && !stop; i++)
+		{
+			uint32		k = front ? i : cnt - 1 - i,
+						row = from + k;
+			int64		key = 0;
+			bool		isnull;
+
+			if (!(rmask[row >> 6] >> (row & 63) & 1))
+				continue;
+			isnull = !row_key(k0, &v, k, &key);
+			if (isnull != nulls)
+				continue;
+			if (barred && rank_after(rank_of(k0, isnull, key), bar))
+			{
+				stop = barstop = true;
+				break;
+			}
+			t->crow[m] = row;
+			t->ck[m++] = key;
+			stop = m == t->limit;
+		}
+	}
+	if (!barstop && m < t->limit)
+	{
+		/* the rows of the other class (the values, or the NULL rows) fill the rest: the unit is read whole after all, which first puts the leaf's buffer back as the executor's vector has it */
+		uint32	   *all = palloc(Max(nrow, 1) * sizeof(uint32));
+		SiftSrcVec	v;
+
+		for (int i = 0; i < nrow; i++)
+			all[i] = i;
+		sift_colsrc_read_rows(src, unit, k0->leaf, all, nrow, &v);
+		pfree(all);
+		return false;
+	}
+	for (int q = 0; q < m; q++)
+	{
+		int			x = front ? q : m - 1 - q;
+		TopEnt	   *e = &t->ce[q];
+
+		memset(e, 0, sizeof(TopEnt));
+		e->k[0] = t->ck[x];
+		e->nul = nulls;
+		e->row = e->tie = t->cand[q] = t->crow[x];
+	}
+	t->nmono++;
+	if (m > 0)
+		finish_unit(t, src, unit, m);
+	return true;
+}
+
 /* The unit from its sorted run with no filter run: false when the walk finds the conditions fail for too many rows (the unit goes on to its filters) */
 bool
 sift_topn_unit_lazy(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const uint64 *rmask, int nrow)
@@ -3051,6 +3169,8 @@ sift_topn_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const S
 	if (key0 == NULL && head_unit(t, src, unit, rmask, nrow))
 		return;
 	if (run_unit(t, src, unit, key0, rmask, nrow, false))
+		return;
+	if (key0 == NULL && mono_unit(t, src, unit, rmask, nrow))
 		return;
 	if (key0 == NULL && k0->leaf >= 0)
 		key0 = leaf(ctx, k0->leaf);
@@ -4239,6 +4359,12 @@ int64
 sift_topn_heads_used(const SiftTopN *t)
 {
 	return t->nrhead;
+}
+
+int64
+sift_topn_mono_used(const SiftTopN *t)
+{
+	return t->nmono;
 }
 
 int64

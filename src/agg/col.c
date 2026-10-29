@@ -641,6 +641,14 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *n
 	return !(src->rck && src->rck->active) && !col_wide(src, leaf) && sift_aggpre_run_info(&src->sel, unit, &src->unit, leaf, nvals, nnull, id);
 }
 
+static int
+col_key_order(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	ColSource  *src = impl;
+
+	return src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows ? 0 : sift_col_key_order(&src->unit, leaf);
+}
+
 static bool
 col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
 {
@@ -882,6 +890,7 @@ static const SiftSrcProvider col_provider = {
 	.overflow = col_overflow,
 	.run_info = col_run_info,
 	.run_heads = col_run_heads,
+	.key_order = col_key_order,
 	.sb_heads = col_sb_heads,
 	.run_read = col_run_read,
 	.gorder_open = col_gorder_open,

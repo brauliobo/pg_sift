@@ -561,6 +561,53 @@ nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
 				i += take;
 			}
 			return;
+		case SIFT_CCN_DELTA:
+			/* a block of 1024 rows from its checkpoint: the rows of the range, not the prefix sums from the first row of the chunk */
+			for (uint32 i = 0; i < len;)
+			{
+				uint32		b = (s + i) / 1024,
+							lo = (s + i) % 1024,
+							upto = Min(Min(1024, nd->n - b * 1024), lo + len - i);
+				uint32		tmp[1024 + SIFT_COL_PAD / 4];
+				int64		run[1024 + SIFT_COL_PAD / 8];
+
+				sift_cck->unpack32((const uint32 *) nd->words + (size_t) b * 32 * nd->W, nd->W, rows_for(upto), 0, tmp);
+				sift_cck->prefix64(tmp, upto, run, b ? (int64) get64(nd->chk + 8 * (size_t) (b - 1)) : nd->base, nd->mind);
+				memcpy(dst + i, run + lo, (upto - lo) * sizeof(int64));
+				i += upto - lo;
+			}
+			return;
+		case SIFT_CCN_RLE:
+			{
+				uint32		lo = 0,
+							hi = nd->nruns,
+							r0,
+							r1;
+				int64	   *rv;
+
+				while (hi - lo > 1)
+				{
+					uint32		m = (lo + hi) / 2;
+
+					if (nd->rstart[m] <= s)
+						lo = m;
+					else
+						hi = m;
+				}
+				r0 = lo;
+				for (r1 = r0; r1 + 1 < nd->nruns && nd->rstart[r1 + 1] < s + len; r1++)
+					;
+				rv = palloc(sizeof(int64) * (r1 - r0 + 1 + SIFT_COL_PAD / 8));
+				nd_range(nd->a, r0, r1 - r0 + 1, rv);
+				for (uint32 i = 0, r = r0; i < len; i++)
+				{
+					while (nd->rstart[r + 1] <= s + i)
+						r++;
+					dst[i] = rv[r - r0];
+				}
+				pfree(rv);
+				return;
+			}
 		case SIFT_CCN_DICT:
 			{
 				int64		codes[64];
@@ -607,11 +654,45 @@ nd_has_delta(const CcNode *nd)
 	return nd != NULL && (nd->tag == SIFT_CCN_DELTA || nd_has_delta(nd->a) || nd_has_delta(nd->b));
 }
 
+/* Does nd_range cost by the rows it asks for: the nodes it decodes in blocks or runs, not row by row from the start of the chunk */
+static bool
+nd_range_cheap(const CcNode *nd)
+{
+	switch (nd->tag)
+	{
+		case SIFT_CCN_FORBIT:
+		case SIFT_CCN_DELTA:
+			return true;
+		case SIFT_CCN_WRAP:
+		case SIFT_CCN_SCALE:
+		case SIFT_CCN_RLE:
+			return nd_range_cheap(nd->a);
+		case SIFT_CCN_DICT:
+			return nd_range_cheap(nd->b);
+		default:
+			return false;
+	}
+}
+
 void
 sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 {
 	if (m == 0)
 		return;
+	/* one run of consecutive rows costs by the rows it asks for, however many: no decode of the whole chunk is cheaper */
+	if (m > 1 && idx[m - 1] - idx[0] == m - 1 && nd_range_cheap(c->root))
+	{
+		uint32		k = 1;
+
+		while (k < m && idx[k] == idx[0] + k)
+			k++;
+		if (k == m)
+		{
+			SIFT_INVARIANT(idx[m - 1] < c->n, "row %u is past the end of a column chunk of %u rows", idx[m - 1], c->n);
+			nd_range(c->root, idx[0], m, dst);
+			return;
+		}
+	}
 	if ((uint64) m * (nd_has_delta(c->root) ? 256 : 8) > c->n)
 	{
 		int64	   *all = palloc(sizeof(int64) * ((size_t) c->n + SIFT_COL_PAD / 8));
@@ -638,6 +719,44 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 			dst[k] = nd_get(c->root, idx[k]);
 		k = e;
 	}
+}
+
+/* The order of the values of a node in row order (sift_cc_order); the nodes that map the values of a child one to one and in order, or its runs, keep it */
+static int
+nd_order(const CcNode *nd)
+{
+	int			o;
+
+	switch (nd->tag)
+	{
+		case SIFT_CCN_FORBIT:
+			return 2;
+		case SIFT_CCN_DELTA:
+			if (nd->mind >= 0)
+				return 1;
+			/* the packed residuals are at most 2^W - 1 above the smallest step */
+			return nd->W < 32 && nd->mind + (int64) ((UINT64CONST(1) << nd->W) - 1) <= 0 ? -1 : 2;
+		case SIFT_CCN_WRAP:
+		case SIFT_CCN_RLE:
+			return nd_order(nd->a);
+		case SIFT_CCN_DICT:
+			/* a sorted dictionary: the codes order as the values do */
+			return nd_order(nd->b);
+		case SIFT_CCN_SCALE:
+			o = nd_order(nd->a);
+			return nd->mind > 0 || o == 2 || o == 0 ? o : -o;
+		default:
+			return 0;
+	}
+}
+
+int
+sift_cc_order(const SiftCc *c)
+{
+	int			o = nd_order(c->root);
+
+	/* the steps wrap in 64 bits: they say the order only when the keys span less than the signed range */
+	return (o == 1 || o == -1) && (uint64) c->max - (uint64) c->min > (uint64) PG_INT64_MAX ? 2 : o;
 }
 
 /* ---- filters on the encoded form ---- */

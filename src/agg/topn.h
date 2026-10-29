@@ -200,6 +200,7 @@ extern void sift_topn_add_skipped(SiftTopN *t, int64 n, int64 runs, int64 lazy);
 extern int64 sift_topn_ord_units(const SiftTopN *t, int how);	/* units compared with the bar by an exact order code (0), a prefix (1), as bytes (2): text under C, uuid and bytea keys */
 extern bool sift_topn_sb_head(SiftTopN *t, SiftSrcSource *src, uint32 sb);
 extern int64 sift_topn_heads_used(const SiftTopN *t);	/* units answered from the head of their sorted run */
+extern int64 sift_topn_mono_used(const SiftTopN *t);	/* units whose best rows were read from an end of a key chunk that follows the row order */
 extern int64 sift_topn_runs_read(const SiftTopN *t);	/* units read through their sorted run */
 extern int64 sift_topn_runs_lazy(const SiftTopN *t);	/* ... of them with no filter run */
 extern void sift_topn_export(const SiftTopN *t, StringInfo b);

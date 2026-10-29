@@ -426,6 +426,20 @@ sift_cchunk_decode_u32(const SiftCChunk *c, uint32 *dst)
 	ZERO_NULLS(c->nulls, c->n, dst);
 }
 
+int
+sift_cchunk_order(const SiftCChunk *c)
+{
+	SiftCc	   *cc;
+	int			dir;
+
+	if (c->enc != SIFT_COLENC_CC)
+		return 0;
+	cc = cc_open(c, false);
+	dir = sift_cc_order(cc);
+	sift_cc_close(cc);
+	return dir;
+}
+
 /* the codes of a dictionary of ndict values, whose NULL code is ndict: the tables the executor indexes by them have ndict + 1 entries */
 void
 sift_cchunk_decode_codes(const SiftCChunk *c, uint32 ndict, uint32 *dst)

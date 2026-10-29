@@ -336,6 +336,8 @@ extern void sift_ccodes_below(const uint32 *codes, uint32 n, uint32 limit);
 /* VAR and inline STR chunks (enc STRS, ISTR): the value offsets (n + 1) and the bytes of all values, palloc'd in mcxt; the values are exact, the bytes at NULL slots are none */
 extern void sift_cchunk_strs(const SiftCChunk *c, MemoryContext mcxt, uint32 **off, char **bytes);
 extern void sift_cchunk_decode_sel(const SiftCChunk *c, const uint32 *idx, uint32 m, int64 *dst);
+/* The order of the keys of the chunk in row order (sift_cc_order): 1 never decrease, -1 never increase, 2 unknown but a run of rows is cheap to decode, 0 neither */
+extern int	sift_cchunk_order(const SiftCChunk *c);
 
 /*
  * An inline STR chunk (enc ISTR) as the dictionary-coded chunk the readers and tests work on: *dict is a dictionary of the chunk's own

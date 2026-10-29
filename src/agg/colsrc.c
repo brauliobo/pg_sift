@@ -329,6 +329,12 @@ sift_colsrc_sb_heads(SiftSrcSource *src, uint32 sb, int leaf, SiftSrcHead *lo, u
 }
 
 int
+sift_colsrc_key_order(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
+{
+	return src->prov->key_order ? src->prov->key_order(src->impl, unit, leaf) : 0;
+}
+
+int
 sift_colsrc_run_heads(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
 {
 	return src->prov->run_heads ? src->prov->run_heads(src->impl, unit, leaf, lo, nlo, hi, nhi) : 0;
