@@ -93,16 +93,16 @@ Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgr
 <details>
 <summary>macOS with Homebrew</summary>
 
-The [formula](Formula/pg_sift.rb) builds `main` (HEAD-only) for Homebrew PostgreSQL 17 and 18 on macOS arm64:
+The [formula](Formula/pg_sift.rb) builds the latest release (`brew install --HEAD` builds `main`) for Homebrew PostgreSQL 17 and 18 on macOS arm64:
 
 ```sh
 brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
-brew install --HEAD brauliobo/pg_sift/pg_sift
+brew install brauliobo/pg_sift/pg_sift          # --HEAD for main
 brew test brauliobo/pg_sift/pg_sift
 "$(brew --prefix postgresql@18)/bin/psql" -d mydb -c 'CREATE EXTENSION pg_sift;'   # a running server, as a superuser; postgresql@17 for 17
 ```
 
-CI builds it and runs `brew test` (a BM25 smoke, an extension upgrade and a `sift_col` aggregate) on macOS arm64 with PostgreSQL 17 and 18, and runs a few regression tests there and the quick tier on Linux arm64; it was also tried by hand on Apple Silicon with 17.11 and 18.6.
+CI builds the stable formula and the HEAD one, runs `brew style`, `brew audit --strict --online` and `brew test` (a BM25 smoke, an extension upgrade and a `sift_col` aggregate) on macOS arm64 with PostgreSQL 17 and 18, and runs a few regression tests there and the quick tier on Linux arm64; it was also tried by hand on Apple Silicon with 17.11 and 18.6.
 `make check` needs bash 4 or newer (`brew install bash`; the stock bash 3.2 stops with a message). A stage the host cannot run (the Perl TAP tests, which need the server's `src/test/perl`; the compatibility tests that build releases older than 3.2.0; the Python 3.12 benchmark generators) is skipped with a message.
 
 </details>

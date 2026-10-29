@@ -1,13 +1,15 @@
 class PgSift < Formula
   desc "Full-text BM25 search and column analytics for PostgreSQL"
   homepage "https://github.com/brauliobo/pg_sift"
+  url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v3.6.0.tar.gz"
+  sha256 "c5440207262ce064fc97cdfbdbc62e6425f5f49f04be72c51ae477a6f83c060c"
   license "PostgreSQL"
   head "https://github.com/brauliobo/pg_sift.git", branch: "main"
 
   depends_on "postgresql@17" => [:build, :test]
   depends_on "postgresql@18" => [:build, :test]
-  # utils/pg_locale.h, which src/core/compat.h includes, includes unicode/ucol.h; icu4c is keg-only, and Homebrew puts the include directory of a
-  # declared dependency on the compiler's path
+  # utils/pg_locale.h, which src/core/compat.h includes, includes unicode/ucol.h; icu4c is keg-only, and Homebrew puts
+  # the include directory of a declared dependency on the compiler's path
   depends_on "icu4c"
   depends_on "lz4"
   depends_on "zstd"
@@ -32,8 +34,7 @@ class PgSift < Formula
     <<~EOS
       In each PostgreSQL database, enable pg_sift with:
         CREATE EXTENSION pg_sift;
-      This HEAD formula builds the main branch.
-      A stable formula will follow a release supporting macOS arm64.
+      The stable formula builds the release tag; `brew install --HEAD` builds the main branch.
     EOS
   end
 

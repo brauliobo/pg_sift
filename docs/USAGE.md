@@ -29,11 +29,11 @@ The install grants `USAGE` on schema `sift` to `PUBLIC` (since 3.3): any role ca
 
 ```sh
 brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
-brew install --HEAD brauliobo/pg_sift/pg_sift
+brew install brauliobo/pg_sift/pg_sift          # the latest release; --HEAD builds main
 brew test brauliobo/pg_sift/pg_sift
 ```
 
-The formula is HEAD-only (builds `main`), for macOS arm64 and Homebrew PostgreSQL 17 and 18 (no PostgreSQL 19 formula yet), with LZ4 and zstd, and links extension files through Homebrew's versioned directories. CI builds it and runs `brew test` on PostgreSQL 17 and 18 (temporary clusters, BM25 queries, an extension upgrade, a `sift_col` aggregate). For aggregate pushdown in a new session run `LOAD 'pg_sift';` first. Remove with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
+The formula builds the latest release (`--HEAD`: `main`), for macOS arm64 and Homebrew PostgreSQL 17 and 18 (no PostgreSQL 19 formula yet), with LZ4 and zstd, and links extension files through Homebrew's versioned directories. CI builds it and runs `brew test` on PostgreSQL 17 and 18 (temporary clusters, BM25 queries, an extension upgrade, a `sift_col` aggregate). For aggregate pushdown in a new session run `LOAD 'pg_sift';` first. Remove with `brew uninstall pg_sift && brew untap brauliobo/pg_sift`; PostgreSQL installations and databases are managed separately.
 
 ## Queries
 
