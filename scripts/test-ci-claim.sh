@@ -6,9 +6,11 @@ set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 bad=0
 fail() { echo "FAIL: $*"; bad=1; }
-# one claim in a fresh $BASE, in a subshell with a time limit ($2 seconds, default 10): $1 prepares it, the output is "rc CLAIMED lock=state"
+# one claim in a fresh $BASE, in a subshell that a watcher kills after $2 seconds (default 10; no timeout(1) on macOS): $1 prepares it, the output is "rc CLAIMED lock=state"
 claim_once() {
-	timeout "${2:-10}" bash -c '
+	local out pid watcher
+	out=$(mktemp)
+	"$BASH" -c '
 		set -uo pipefail
 		eval "$(sed -n "/^claim() {/,/^# run_job/p" "$1/scripts/ci.sh" | sed "\$d")"
 		BASE=$(mktemp -d); mkdir -p "$BASE/claims" "$BASE/running"; LANE=lane1
@@ -16,7 +18,13 @@ claim_once() {
 		eval "$2"
 		claim && rc=0 || rc=$?
 		echo "$rc ${CLAIMED:-} lock=$([[ -d $BASE/claim.lock ]] && echo held || echo free)"
-		rm -rf "$BASE"' _ "$REPO" "$1" 2>&1
+		rm -rf "$BASE"' _ "$REPO" "$1" >"$out" 2>&1 &
+	pid=$!
+	( exec >/dev/null 2>&1; sleep "${2:-10}"; kill "$pid" ) &
+	watcher=$!
+	wait "$pid" 2>/dev/null
+	kill "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+	cat "$out"; rm -f "$out"
 }
 # a running/ entry that cannot be read (removed between the glob and the read, here a dangling link) or is empty counts for nothing
 out=$(claim_once 'ln -s "$BASE/gone" "$BASE/running/x"; : >"$BASE/running/y"')
@@ -29,6 +37,6 @@ out=$(claim_once 'echo 70 >"$BASE/running/x"')
 out=$(claim_once 'mkdir "$BASE/claim.lock"; ( exit 0 ) & wait $!; echo $! >"$BASE/claim.lock/pid"')
 [[ $out == *'removes the claim lock'*'0 a lock=free' ]] || fail "the lock of a dead lane is not removed: $out"
 # the lock of a live lane is respected: the claim waits (here until the time limit)
-out=$(claim_once 'mkdir "$BASE/claim.lock"; echo $$ >"$BASE/claim.lock/pid"; sleep 3 & echo $! >"$BASE/claim.lock/pid"' 2 || true)
+out=$(claim_once 'mkdir "$BASE/claim.lock"; echo $$ >"$BASE/claim.lock/pid"; sleep 3 & echo $! >"$BASE/claim.lock/pid"' 2)
 [[ -z $out ]] || fail "the lock of a live lane was taken: $out"
 exit $bad
