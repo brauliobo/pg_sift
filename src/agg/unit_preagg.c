@@ -176,6 +176,17 @@ preagg_count(AggExec *ex, int64 rows)
 	preagg_fold(ex, 0, rows, v);
 }
 
+/* a dim of the rollup of the rows: its tests run on the tuples, not on the zone of the unit */
+static bool
+rollup_dim_leaf(const AggExec *ex, int leaf)
+{
+	if (ex->pa.rows)
+		for (int d = 0; d < ex->pa.ndims; d++)
+			if (ex->pa.rdim[d] == leaf)
+				return true;
+	return false;
+}
+
 /* the unit's zone of every leaf the conjuncts compare lies inside the comparison, and holds no NULL: they hold for all the rows */
 static bool
 preagg_zones(AggExec *ex)
@@ -185,6 +196,9 @@ preagg_zones(AggExec *ex)
 	{
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
+
+		if (rollup_dim_leaf(ex, z->leaf))
+			continue;
 
 		/*
 		 * a test of the NULLs holds for all the rows of the unit when its zone counts none (IS NOT NULL) or only NULLs (IS NULL), and no NaN stands in for one. A
@@ -218,14 +232,14 @@ preagg_zones(AggExec *ex)
 static bool
 preagg_zone_bounds(AggExec *ex)
 {
-	if (ex->pa.rows || ex->pa.hdim >= 0)
+	if (ex->pa.hdim >= 0)
 		return true;
 	for (int k = 0; k < ex->nprune; k++)
 	{
 		const SiftSrcPrune *z = &ex->prune[k];
 		SiftSrcUnitAgg a;
 
-		if (!z->nulltest && z->leaf != ex->pa.dim &&
+		if (!z->nulltest && z->leaf != ex->pa.dim && !rollup_dim_leaf(ex, z->leaf) &&
 			sift_colsrc_unit_agg(ex->src, &ex->unit, z->leaf, &a) && (!a.has_minmax || a.min < z->lo || a.max > z->hi))
 			return false;
 	}
@@ -1166,9 +1180,12 @@ preagg_unit_exact(AggExec *ex)
 		return false;
 	if (preagg_null_count(ex))
 		return true;
-	/* the rollup of the rows tests the comparisons on its tuples, so the unit need not lie inside them; a unit without it waits for a merge, nothing is asked for */
+	/* the rollup of the rows tests the comparisons of its dims on its tuples, so the unit need not lie inside them; the others (a range of a date) the unit lies inside, or it scans;
+	 * a unit without the rollup waits for a merge, nothing is asked for */
 	if (ex->pa.rows)
 	{
+		if (!preagg_zones(ex))
+			return false;
 		if (preagg_rollup(ex))
 			return true;
 		ex->n_rollup_miss += ex->pa_miss;

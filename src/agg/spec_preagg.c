@@ -472,7 +472,8 @@ preagg_rollup(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbase, const S
 	{
 		int			l = group < 0 ? -2 : sift_aggspec_pred_leaf(s->pred[i], lay, nbase, -1);
 
-		if (l != -2 ? (l >= 0 && !list_member_ptr(cmps, s->pred[i])) : !pred_dims(s->pred[i], lay, nbase, group, dims, &nd))
+		/* the rows: a test of dims, or a zone comparison (a range of a date): the units inside it are answered by their rollup, the others scan */
+		if (l != -2 ? (l >= 0 && !list_member_ptr(cmps, s->pred[i])) : !(pred_dims(s->pred[i], lay, nbase, group, dims, &nd) || list_member_ptr(cmps, s->pred[i])))
 			return SPW_PRED;
 	}
 	for (int i = 0; i < s->naggs; i++)

@@ -43,16 +43,17 @@ INSERT INTO pa_q VALUES
 	(21, 'measure of a dim',   'SELECT a, b, sum(c), max(c) FROM %s GROUP BY a, b'),
 	(22, 'one key: the cube',  'SELECT a, count(*), sum(v) FROM %s GROUP BY a'),
 	(23, 'no rows',            'SELECT a, b, count(*), sum(v) FROM %s WHERE a = 99 GROUP BY a, b'),
-	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c');
+	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c'),
+	(25, 'dims, range of date','SELECT a, b, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' AND d < date ''2024-06-01'' GROUP BY a, b');
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
 	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
 	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
 $$;
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
 	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
 $$;
@@ -115,7 +116,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | all  | t
  13 | date and a           | all  | t
  14 | test of date         | all  | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | all  | t
@@ -125,30 +126,31 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | all  | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | all  | t
+(25 rows)
 
 SELECT * FROM pa_sum('rd');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |      15 |        0 |      2
+      25 |      0 |      15 |        0 |      3
 (1 row)
 
 SELECT * FROM pa_sum('rh');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      4
+      25 |      0 |       1 |        0 |      4
 (1 row)
 
 SELECT * FROM pa_sum('ro');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      4
+      25 |      0 |       1 |        0 |      4
 (1 row)
 
 SELECT * FROM pa_sum('rf');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |     14
+      25 |      0 |       1 |        0 |     15
 (1 row)
 
 -- EXPLAIN says it: the rollup, its dims and measures, the units it answered
@@ -190,7 +192,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | some | t
  13 | date and a           | some | t
  14 | test of date         | some | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | some | t
@@ -200,12 +202,13 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | some | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | some | t
+(25 rows)
 
 SELECT * FROM pa_sum('rd');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       0 |       15 |      2
+      25 |      0 |       0 |       15 |      3
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -227,7 +230,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | some | t
  13 | date and a           | some | t
  14 | test of date         | some | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | some | t
@@ -237,7 +240,8 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | some | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | some | t
+(25 rows)
 
 -- 4. rows in the write buffer, then sealed
 INSERT INTO rc SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', CASE WHEN g % 6 = 3 THEN NULL ELSE 4611686018427387904 + g END, g / 7.0, g / 3.0, repeat('p', 200)
@@ -259,7 +263,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | some | t
  13 | date and a           | some | t
  14 | test of date         | some | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | some | t
@@ -269,7 +273,8 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | some | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | some | t
+(25 rows)
 
 SELECT sift.col_promote('rc_col') >= 0 AS promoted;
  promoted 
@@ -295,7 +300,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | some | t
  13 | date and a           | some | t
  14 | test of date         | some | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | some | t
@@ -305,7 +310,8 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | some | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | some | t
+(25 rows)
 
 -- 5. merged: the dead rows are gone and every unit is stored with its cells again
 SELECT sift.col_merge('rc_col', true) >= 0 AS merged;
@@ -338,7 +344,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | all  | t
  13 | date and a           | all  | t
  14 | test of date         | all  | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | all  | t
@@ -348,14 +354,15 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | all  | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | all  | t
+(25 rows)
 
 -- 6. the option comes after the build: the segments written before have no cells (their units scan), the ones written after have them, and a merge of both
 -- writes them for every unit. Under the setting 8 the option is ignored
 SELECT * FROM pa_sum('rx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      4
+      25 |      0 |       1 |        0 |      4
 (1 row)
 
 ALTER INDEX rx_col SET (rollup_dims = 'a, b');
@@ -384,7 +391,7 @@ SELECT * FROM pa_check('rx');
  12 | having, limit        | some | t
  13 | date and a           | -    | t
  14 | test of date         | none | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | some | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | some | t
@@ -394,7 +401,8 @@ SELECT * FROM pa_check('rx');
  22 | one key: the cube    | all  | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | -    | t
+(25 rows)
 
 SELECT sift.col_verify('rx_col', true);
  col_verify 
@@ -418,7 +426,7 @@ SELECT sift.col_verify('rx_col', true);
 SELECT * FROM pa_sum('rx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |      13 |        0 |      2
+      25 |      0 |      13 |        1 |      2
 (1 row)
 
 SET sift.col_format_minor = 8;
@@ -440,7 +448,7 @@ SELECT sift.col_verify('rf_col', true);
 SELECT * FROM pa_sum('rf');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |     14
+      25 |      0 |       1 |        0 |     15
 (1 row)
 
 -- the option off again: a merge of the units that hold cells writes none
@@ -461,7 +469,7 @@ SELECT sift.col_verify('rx_col', true);
 SELECT * FROM pa_sum('rx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       1 |        0 |      4
+      25 |      0 |       1 |        0 |      4
 (1 row)
 
 -- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
@@ -510,7 +518,7 @@ SELECT * FROM pa_check('rc');
  12 | having, limit        | all  | t
  13 | date and a           | all  | t
  14 | test of date         | all  | t
- 15 | other test: scan     | -    | t
+ 15 | other test: scan     | none | t
  16 | float: scan          | -    | t
  17 | distinct: scan       | -    | t
  18 | expression: scan     | all  | t
@@ -520,7 +528,8 @@ SELECT * FROM pa_check('rc');
  22 | one key: the cube    | all  | t
  23 | no rows              | none | t
  24 | OR of two dims       | -    | t
-(24 rows)
+ 25 | dims, range of date  | all  | t
+(25 rows)
 
 -- the default key_cut is d here: a date no row has lies between the zones of the units, and nothing is read
 SELECT * FROM pa_units('SELECT a, count(*), sum(v) FROM rc WHERE d = date ''2024-05-01'' GROUP BY a');
@@ -536,7 +545,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('rc');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |      15 |        0 |      1
+      25 |      0 |      16 |        0 |      2
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -548,14 +557,14 @@ DELETE FROM rd WHERE id BETWEEN 1 AND 100;
 SELECT * FROM pa_sum('rd');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       0 |       15 |      2
+      25 |      0 |       0 |       15 |      3
 (1 row)
 
 ROLLBACK;
 SELECT * FROM pa_sum('rd');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      24 |      0 |       0 |       15 |      2
+      25 |      0 |       0 |       15 |      3
 (1 row)
 
 -- the switch

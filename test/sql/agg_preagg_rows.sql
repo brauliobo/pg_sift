@@ -44,10 +44,11 @@ INSERT INTO pa_q VALUES
 	(21, 'measure of a dim',   'SELECT a, b, sum(c), max(c) FROM %s GROUP BY a, b'),
 	(22, 'one key: the cube',  'SELECT a, count(*), sum(v) FROM %s GROUP BY a'),
 	(23, 'no rows',            'SELECT a, b, count(*), sum(v) FROM %s WHERE a = 99 GROUP BY a, b'),
-	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c');
+	(24, 'OR of two dims',     'SELECT c, count(*), sum(w) FROM %s WHERE a = 2 OR b = ''b04'' GROUP BY c'),
+	(25, 'dims, range of date','SELECT a, b, count(*), sum(w) FROM %s WHERE d >= date ''2024-03-01'' AND d < date ''2024-06-01'' GROUP BY a, b');
 
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
 	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND
 	       pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
@@ -55,7 +56,7 @@ CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS 
 $$;
 
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 24) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 25) RETURNS TABLE (queries bigint, differ bigint, all_pre bigint, some_pre bigint, no_pre bigint) LANGUAGE sql AS $$
 	SELECT count(*), count(*) FILTER (WHERE NOT same), count(*) FILTER (WHERE pre = 'all'), count(*) FILTER (WHERE pre = 'some'),
 	       count(*) FILTER (WHERE pre = 'none') FROM pa_check(tbl, lo, hi)
 $$;
