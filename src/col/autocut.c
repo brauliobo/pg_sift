@@ -900,7 +900,7 @@ sift_col_auto_cut(Relation heap, Relation index)
 				 errdetail("A sample of %.0f superblocks shows the values of \"%s\" spread over the units, and no other leaf of the index follows the order of the table. The units are cut by the leaf, so %s reads the few units of its range; the addresses of the rows of a unit are in the index.%s%s",
 						   v.sampled, v.leaf, v.range ? "a range" : "an equality",
 						   v.range ? " Reading all the rows of one key of another leaf takes more units." : "",
-						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to be no larger), so a key with more rows than a unit is split by it and a range of its values skips the units outside.", v.second) : ""),
+						   v.second[0] ? psprintf(" The rows of a key are sorted by \"%s\" (the index is predicted to be no larger with units of the rows of a superblock), so a key with more rows than a unit is split by it and a range of its values skips the units outside; a key of 8,192 rows or more is cut into units of 4,096 rows, which makes a narrow index larger.", v.second) : ""),
 				 errhint("ALTER INDEX %s SET (key_cut = 'off') and REINDEX keep the units by block range.", quote_identifier(RelationGetRelationName(index)))));
 	}
 	else

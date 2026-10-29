@@ -165,9 +165,15 @@ CREATE TABLE kcut_c (LIKE kcut_a) WITH (autovacuum_enabled = false);
 INSERT INTO kcut_a SELECT * FROM fz.gen_kcut(1, @ROWS@, 0);
 INSERT INTO kcut_b SELECT * FROM fz.gen_kcut(1, @ROWS@, 20);
 INSERT INTO kcut_c SELECT * FROM fz.gen_kcut(1, @ROWS@, 40);
+-- keys of 8,192 rows or more under a second key, which a unit of 16,384 rows aims at: the units of a key are cut at 4,096 rows
+CREATE TABLE kcut_d (LIKE kcut_a) WITH (autovacuum_enabled = false);
+INSERT INTO kcut_d SELECT id, ki % 3, kd, kt, kn, kf, amount, val, kind, pad FROM fz.gen_kcut(1, @ROWS@ * 20, 60);
 CREATE INDEX kcut_a_idx ON kcut_a USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd', key_cut_rows = 64);
 CREATE INDEX kcut_b_idx ON kcut_b USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kt, kn', key_cut_rows = 64);
 CREATE INDEX kcut_c_idx ON kcut_c USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'kf, ki', key_cut_rows = 64);
+SET max_parallel_maintenance_workers = 0;	-- one segment, so that a key keeps its rows together
+CREATE INDEX kcut_d_idx ON kcut_d USING sift_col (id, ki, kd, kt, kn, kf, amount, val, kind) WITH (key_cut = 'ki, kd', key_cut_rows = 16384);
+RESET max_parallel_maintenance_workers;
 
 -- a plain index over rows of 3 kB (two to a page, so a table of a few thousand rows has a dozen superblocks): the promotions that churn leaves are cut by TID range into units of the
 -- floor
@@ -434,4 +440,4 @@ CREATE INDEX kl_ev_col ON kl_ev USING sift_col (id, dim_a_id, unit_id, foreign_i
 VACUUM (FREEZE, ANALYZE) kl_units, kl_origins, kl_links, kl_ev;
 -- @end
 
-VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;
+VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c, kcut_d;

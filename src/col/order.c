@@ -18,6 +18,7 @@
 #include "col/seg.h"
 
 #define ORDER_DEFAULT_ROWS	1024
+#define ORDER_SECOND_ROWS	4096		/* the rows of a unit of a key that fills at least two such units and is sorted by a second leaf (below ~2,000 the per-unit bytes outgrow what a narrower zone saves) */
 #define ORDER_MAX_ROWS		32768		/* the most rows of a unit (key_cut_rows); the directory of a unit is read with the head of its record (seg.c sift_cseg_unit_head) */
 
 typedef struct RowRef
@@ -218,15 +219,68 @@ sort_refs(RowRef *refs, uint64 n, const OrderCtx *ctx)
 #define ST_DEFINE
 #include "lib/sort_template.h"
 
+/* the rows of refs[0, avail) that have the first leaf of refs[0] (the rows are in the order of the key) */
+static uint64
+key_run(const OrderCtx *ctx, const RowRef *refs, uint64 avail)
+{
+	uint64		lo = 1,
+				hi = avail;
+
+	while (lo < hi)
+	{
+		uint64		mid = lo + (hi - lo) / 2;
+
+		if (key_cmp(&refs[0], &refs[mid], ctx, 1) == 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/* the first row of refs[0, end] that has the first leaf of refs[end] */
+static uint64
+key_start(const OrderCtx *ctx, const RowRef *refs, uint64 end)
+{
+	uint64		lo = 0,
+				hi = end;
+
+	while (lo < hi)
+	{
+		uint64		mid = lo + (hi - lo) / 2;
+
+		if (key_cmp(&refs[mid], &refs[end], ctx, 1) == 0)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	return lo;
+}
+
 /*
  * Where a window of avail rows refs[0, avail) in the order of the key is cut: after unit_rows of them, or a little earlier or later where the first leaf changes
- * (within slack rows), so that one value of the leading leaf is in as few units as it can be.
+ * (within slack rows), so that one value of the leading leaf is in as few units as it can be. A key of at least 2 * ORDER_SECOND_ROWS rows is sorted by the second leaf
+ * and cut into units of ORDER_SECOND_ROWS, the last one ending with the key (*split: the cut before this one was one of these), and starts its own unit: a unit of the
+ * whole aim spans most of the key's range, and a window of the second leaf could skip none.
  */
 static uint64
-cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, uint64 slack)
+cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, uint64 slack, bool *split)
 {
 	uint64		end = Min(avail, unit_rows);
+	bool		second = ctx->nleaf > 1 && unit_rows >= 2 * ORDER_SECOND_ROWS;
 
+	if (second)
+	{
+		uint64		run = key_run(ctx, refs, Min(avail, 2 * ORDER_SECOND_ROWS));
+		bool		more = run == 2 * ORDER_SECOND_ROWS;
+
+		if (more || *split)
+		{
+			*split = more;
+			return more ? ORDER_SECOND_ROWS : run;
+		}
+	}
+	*split = false;
 	if (end < avail && ctx->nleaf > 0)
 	{
 		uint64		best = 0;
@@ -240,6 +294,13 @@ cut_at(const OrderCtx *ctx, const RowRef *refs, uint64 avail, uint64 unit_rows, 
 		}
 		if (best > 0)
 			end = best;
+	}
+	if (second && end < avail && key_cmp(&refs[end - 1], &refs[end], ctx, 1) == 0)
+	{
+		uint64		start = key_start(ctx, refs, end);
+
+		if (start > 0 && key_run(ctx, refs + start, Min(avail - start, 2 * ORDER_SECOND_ROWS)) == 2 * ORDER_SECOND_ROWS)
+			end = start;
 	}
 	return end;
 }
@@ -262,7 +323,8 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 				pos = 0;
 	uint32		seq = 0,
 				num = 0;
-	bool		eof = false;
+	bool		eof = false,
+				split = false;
 
 	for (;;)
 	{
@@ -287,7 +349,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		}
 		if (avail == 0)
 			break;
-		end = cut_at(ctx, u, avail, unit_rows, slack);
+		end = cut_at(ctx, u, avail, unit_rows, slack, &split);
 		sort_by_tid(u, end);
 		/*
 		 * The number of a unit is the sequence of the cut by a key. Without a key the units are in the order of the TIDs and take the superblock of their first

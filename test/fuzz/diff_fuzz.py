@@ -1108,7 +1108,7 @@ KCUT_AGGS = ['count(*)', 'count({e}.ki)', 'sum({e}.amount)', 'avg({e}.amount)', 
 
 
 def gen_keycut(r, ctx):
-    t = r.choice(['kcut_a', 'kcut_b', 'kcut_c'])
+    t = r.choice(['kcut_a', 'kcut_b', 'kcut_c', 'kcut_d'])
     form = r.choice(['agg', 'agg', 'agg', 'topn', 'rows'])
     where_ = [kcut_pred(r, 'e') for _ in range(r.randrange(0, 4))]
     if len(where_) > 1 and r.random() < 0.25:
@@ -1840,13 +1840,13 @@ def dml_table(r, ctx, t, ids):
 KCUT_COLS = {'ki': ['ki + 1', 'NULL', '39 - ki', '7'], 'kd': ["kd + {d}", "'infinity'", "'-infinity'", 'NULL', "date '2025-03-01'"],
              'kt': ["kt + interval '{d} days'", "'infinity'", 'NULL', "timestamp '2025-02-02 02:02:02'"], 'kn': ['kn * 2', "'NaN'", 'NULL', '1.5'],
              'kf': ['kf + 1', "'-0'", "'NaN'", 'NULL', "'Infinity'"]}
-KCUT_KEY_OF = {'a': 'ki, kd', 'b': 'kt, kn', 'c': 'kf, ki'}
+KCUT_KEY_OF = {'a': 'ki, kd', 'b': 'kt, kn', 'c': 'kf, ki', 'd': 'ki, kd'}
 
 
 def dml_kcut(r, ctx):
     """Statements on the key-cut tables: churn of the keys (rows move between units), deletes, inserts, VACUUM, and every way the units are written again: a promotion of the write
     buffer, a merge, a refresh, a REINDEX, and a merge of units written before the key was declared (a key that is not in the order of the segments it merges)."""
-    x = r.choice('abc')
+    x = r.choice('abcd')
     t, idx = f'kcut_{x}', f'kcut_{x}_idx'
     m = r.choice([13, 40, 97, 211])
     ids = f'id % {m} = {r.randrange(m)}'

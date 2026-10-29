@@ -214,3 +214,4 @@ hits_regex_count	`LIKE '%suffix'`, `starts_with(col, 'abc')`	hits	-	Pushed Aggre
 contain_union	a containment that holds in two ways (`&&`, `<<`, `-|-`) prunes the units	orders	(id)	Custom Scan \(SiftAgg\)	native	gist:search_path = contain_union_gist	ms	faster33	no
 lookup_key_list_twice	counts the restriction of one column once	orders	default	fallback:Bitmap Index Scan on orders_customer_created	native	-	ms	faster33	no
 flat_lateral_key_lookup	stays in the scan when the query also reads another table with a column index only through the key lookups of a CTE	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no
+keycut_second_window	cut into units of 4,096 rows	events	-	[1-9][0-9]* pruned	native	-	ms	faster33	no
