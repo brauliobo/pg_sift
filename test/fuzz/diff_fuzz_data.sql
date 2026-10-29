@@ -414,4 +414,24 @@ INSERT INTO fk_map SELECT s, 'm' || k, CASE WHEN fz.h(s * 4 + k, 164) % 4 = 0 TH
 VACUUM (FREEZE, ANALYZE) fk_members, fk_links, fk_assign, fk_map;
 -- @end
 
+-- the key lists: facts with a column index and a btree, the entities of a scope listed in a links table (scopes of 0, 1, 5, 60, 200 and all 300 entities; one lists an entity twice and a NULL one),
+-- a small table of units with a NULL flag and one of origins
+-- @heap
+CREATE TABLE kl_units (id int PRIMARY KEY, flag bool) WITH (autovacuum_enabled = false);
+INSERT INTO kl_units SELECT i, CASE WHEN i % 9 = 0 THEN true WHEN i % 11 = 0 THEN NULL ELSE false END FROM generate_series(1, 60) i;
+CREATE TABLE kl_origins (id int PRIMARY KEY, slug text) WITH (autovacuum_enabled = false);
+INSERT INTO kl_origins SELECT i, 'o' || i FROM generate_series(1, 8) i;
+CREATE TABLE kl_links (grp int, dim_a_id int) WITH (autovacuum_enabled = false);
+INSERT INTO kl_links SELECT g - 1, (i * 7) % 300 FROM unnest(ARRAY[0, 1, 5, 60, 200, 300]) WITH ORDINALITY s(n, g), generate_series(0, 299) i WHERE i < n
+UNION ALL SELECT 6, 3 UNION ALL SELECT 6, 3 UNION ALL SELECT 6, 4 UNION ALL SELECT 6, NULL;
+CREATE TABLE kl_ev (id int PRIMARY KEY, dim_a_id int, unit_id int, foreign_id int, day date, price float8, latest bool, ccy text) WITH (autovacuum_enabled = false);
+INSERT INTO kl_ev SELECT i, CASE WHEN fz.h(i, 170) % 40 = 0 THEN NULL WHEN fz.h(i, 171) % 3 = 0 THEN fz.h(i, 172) % 20 ELSE fz.h(i, 173) % 290 END,
+       CASE WHEN fz.h(i, 174) % 30 = 0 THEN NULL ELSE 1 + fz.h(i, 175) % 60 END, 1 + fz.h(i, 176) % 8, date '2025-01-01' + fz.h(i, 177) % 450,
+       CASE WHEN fz.h(i, 178) % 20 = 0 THEN NULL ELSE 10 + fz.h(i, 179) % 90 END, fz.h(i, 180) % 4 <> 0, CASE fz.h(i, 181) % 5 WHEN 0 THEN NULL WHEN 1 THEN 'eur' ELSE 'usd' END
+FROM generate_series(1, 6000) i;
+CREATE INDEX kl_ev_entity_day ON kl_ev (dim_a_id, day);
+CREATE INDEX kl_ev_col ON kl_ev USING sift_col (id, dim_a_id, unit_id, foreign_id, day, price, latest, ccy);
+VACUUM (FREEZE, ANALYZE) kl_units, kl_origins, kl_links, kl_ev;
+-- @end
+
 VACUUM (FREEZE, ANALYZE) dcf, items, events, ok_kind, ok_big, ok_val, ok_grp, ok_ts, ev_part, kc, dims, vers, dims2, lookup, lookup_dup, buckets, dims_dup, nzf, arf, exf, trf, gof, gog, zkf, ktf, kcut_a, kcut_b, kcut_c;

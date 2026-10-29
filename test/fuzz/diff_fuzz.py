@@ -48,6 +48,7 @@ TABLE_SKIP = {
     'keytable': 'ktf is read through its sift_col index only',
     'dictcount': 'dcf is read through its sift_col index only',
     'flatkeys': 'the key tables are read through a sift_col index',
+    'keylist': 'the facts are read through a sift_col index',
     'arrlen': 'the lengths of an array are two lanes of the sift_col index (array_lengths); a sift_table keeps the image alone',
 }
 
@@ -1454,6 +1455,58 @@ def dml_flatkeys(r, ctx):
         'VACUUM fk_members', 'VACUUM fk_links, fk_assign, fk_map', "SELECT sift.col_merge('fk_members_col', true)", "SELECT sift.col_promote('fk_members_col')"])
 
 
+# ---------- key lists: the rows of the entities a CTE of ids lists, joined and again in an IN sub-select of the same column (scopes of 0, 1, 5, 60, 200 and all entities, a duplicate and a NULL one) ----------
+KL_KEYS = ['e.dim_a_id', "date_trunc('month', e.day)::date", 'e.unit_id', 'e.ccy']
+KL_AGGS = ['count(*)', 'count(DISTINCT e.id)', 'count(e.price)', 'round(avg(e.price)::numeric, 6)', 'round(sum(e.price)::numeric, 6)', 'max(e.price)', 'min(e.day)']
+
+
+def gen_keylist(r, ctx):
+    return dict(form=r.choice(['twice', 'twice', 'once', 'periods', 'total']), groups=sorted({r.randrange(7) for _ in range(r.choice([1, 1, 2]))}), mat=r.choice(['MATERIALIZED ', '', 'NOT MATERIALIZED ']),
+                dim_c=r.choice(['', '', "'o1', 'o2', 'o3'", "'o4'", "'o9', 'none'"]), units=r.random() < 0.5,
+                latest=r.random() < 0.5, lo=r.randrange(380), width=r.choice([0, 20, 90, 400]), keys=sorted(r.sample(range(4), r.choice([0, 1, 2, 3]))),
+                aggs=['count(*)'] + r.sample(KL_AGGS[1:], r.randrange(1, 4)), cmp=r.choice(['IN', 'IN', '= ANY']))
+
+
+def render_keylist(p):
+    scope = f"s AS {p['mat']}(SELECT dim_a_id AS id FROM kl_links WHERE grp IN ({', '.join(map(str, p['groups']))}))"
+    day = lambda n: f"date '2025-01-01' + {n}"
+    where = [f"e.day >= {day(p['lo'])} AND e.day <= {day(p['lo'] + p['width'])}"]
+    if p['latest']:
+        where.append('e.latest')
+    sub = '= ANY (SELECT id FROM s)' if p['cmp'] == '= ANY' else 'IN (SELECT id FROM s GROUP BY id)'
+    if p['form'] != 'once':
+        where.append(f'e.dim_a_id {sub}')
+    label_c = f"JOIN kl_origins o ON o.id = e.foreign_id AND o.slug IN ({p['dim_c']}) " if p['dim_c'] else ''
+    units = 'LEFT JOIN kl_units u ON u.id = e.unit_id ' if p['units'] else ''
+    if p['units']:
+        where.append('u.flag IS NOT TRUE')
+    cond = ' AND '.join(where)
+    fill = lambda x: ', '.join(f'{a} AS a{i}' for i, a in enumerate(x))
+    if p['form'] == 'periods':
+        periods = f"('p0', daterange({day(p['lo'])}, {day(p['lo'] + p['width'])}, '[]')), ('p1', daterange({day(p['lo'] + 400)}, {day(p['lo'] + 440)}, '[]'))"
+        return (f"WITH {scope}, periods AS (SELECT * FROM (VALUES {periods}) q(period, range)), "
+                f"parsed AS (SELECT e.id, e.dim_a_id, e.price, e.day, q.period FROM kl_ev e JOIN periods q ON e.day <@ q.range JOIN s ON s.id = e.dim_a_id WHERE e.dim_a_id {sub}) "
+                f"SELECT d.period AS k0, count(x.id) AS a0, count(DISTINCT x.dim_a_id) AS a1, count(x.price) AS a2, round(sum(x.price)::numeric, 6) AS a3 FROM periods d LEFT JOIN parsed x ON x.period = d.period "
+                f"GROUP BY 1 ORDER BY 1"), True
+    keys = [KL_KEYS[k] for k in p['keys']] if p['form'] != 'total' else []
+    head = ''.join(f'{k} AS k{i}, ' for i, k in enumerate(keys))
+    tail = f" GROUP BY {', '.join(str(i + 1) for i in range(len(keys)))} ORDER BY {', '.join(str(i + 1) for i in range(len(keys)))}" if keys else ''
+    return (f"WITH {scope} SELECT {head}{fill(p['aggs'])} FROM kl_ev e JOIN s ON s.id = e.dim_a_id {label_c}{units} WHERE {cond}{tail}"), True
+
+
+def dml_keylist(r, ctx):
+    """The scopes and the rows change between runs: a scope grows, shrinks, loses its dim_a, gets a duplicate or a NULL one; rows move, vanish, lose their price or entity; the index is merged."""
+    g, m = r.randrange(7), r.choice([3, 7, 13, 50])
+    k = r.randrange(m)
+    return r.choice([
+        f'DELETE FROM kl_links WHERE grp = {g} AND dim_a_id % {m} = {k}', f'INSERT INTO kl_links SELECT {g}, i FROM generate_series({k}, {k + r.choice([0, 4, 40, 200])}) i',
+        f'INSERT INTO kl_links VALUES ({g}, NULL), ({g}, {k}), ({g}, {k})', f'DELETE FROM kl_links WHERE grp = {g}',
+        f'UPDATE kl_ev SET day = day + {r.randrange(1, 90)} WHERE id % {m} = {k}', f'DELETE FROM kl_ev WHERE id % {m} = {k}', f'UPDATE kl_ev SET price = NULL WHERE id % {m} = {k}',
+        f'UPDATE kl_ev SET dim_a_id = NULL WHERE id % {m} = {k}', f'UPDATE kl_ev SET latest = NOT latest WHERE id % {m} = {k}',
+        f"INSERT INTO kl_ev SELECT 100000 + i, i % 300, 1 + i % 60, 1 + i % 8, date '2025-01-01' + i % 400, 10 + i % 90, true, 'usd' FROM generate_series({k}, {k + 300}) i WHERE i % {m} = 0 ON CONFLICT DO NOTHING",
+        f'UPDATE kl_units SET flag = NOT flag WHERE id % {m} = {k}', 'VACUUM kl_ev', 'VACUUM kl_links', "SELECT sift.col_merge('kl_ev_col', true)", "SELECT sift.col_promote('kl_ev_col')"])
+
+
 # ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
 GO_COLS = ['id', 'a', 'b', 'c', 'd', 't', 'z']
 
@@ -1654,7 +1707,7 @@ FAMILIES = {
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
     'oneentity': (gen_oneentity, render_oneentity, 3),
     'listpage': (gen_listpage, render_listpage, 3),
-    'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
+    'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'keylist': (gen_keylist, render_keylist, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }
 # the variants of the pushdown (settings after BASE); the reference is REF
 LEADER = ['on', 'off']
@@ -2017,6 +2070,7 @@ def episodes(seed, nq, ctx, only, dmls=4):
     rg = random.Random(seed * 32452843 + 13)
     rb = random.Random(seed * 122949829 + 31)
     rf = random.Random(seed * 179424673 + 37)
+    rl = random.Random(seed * 198491317 + 41)
     done, eps = 0, []
     while done < nq:
         st = [dml(r, ctx) for _ in range(r.randrange(dmls + 1))]
@@ -2042,6 +2096,8 @@ def episodes(seed, nq, ctx, only, dmls=4):
             st += [dml_txn(rb, ctx) for _ in range(rb.randrange(dmls + 1))]
         if not TABLE and (not only or 'flatkeys' in only):
             st += [dml_flatkeys(rf, ctx) for _ in range(rf.randrange(dmls + 1))]
+        if not TABLE and (not only or 'keylist' in only):
+            st += [dml_keylist(rl, ctx) for _ in range(rl.randrange(dmls + 1))]
         if not only or 'floor' in only:
             st += [q for _ in range(ru.randrange(dmls + 1)) for q in dml_floor(ru, ctx)]
         if not only or 'dead' in only:
