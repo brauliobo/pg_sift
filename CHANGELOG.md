@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Improved: pg_sift: a table that a semi, anti or inner join by an int4 column answers from a byte table of its keys (`k IN (SELECT ..)`, `EXISTS`, a join) is loaded without the dictionary of its keys and the chains of its rows, which the first use that looks the table up makes: 550,256 rows read and 500,000 loaded take 35 ms where they took 59 ms, and the scan of 1,000,000 rows that joins it takes 33 ms and 442 million instructions where it took 47 ms and 531 million (the lookup cache off, 40 MB read either way; from the cache 14 ms and 123 million instructions, as before).
 - Fixed: pg_sift: the default `point_tid_columns` of `CREATE INDEX` and `REINDEX` no longer lists a date or a timestamp column (an equality on one is rare, its reads are ranges and an order) and predicts the growth of the index from the values it stores, not from the width of the documents of a jsonb column: a 13-column index with paths of a table of 1,000,000 rows said +12% and +11% for two columns and grew 3.0 times (16 to 48 MB, 3.5.3 to 3.6.0), it now lists the id alone and says +44% (33 MB, the id's 13.8 MB); 400,000 rows of three columns, the directory of a nearly unique timestamp and an int8 said +10% and +9%, grew the index 4.7 to 18.8 MB, and now lists the int8 and says +106% (measured +180%); a `REINDEX` decides again, `ALTER INDEX .. SET (point_tid_columns = 'rid')` names a column by hand
 
 ## 3.6.0 - 2026-10-29

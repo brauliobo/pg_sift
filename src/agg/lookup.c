@@ -209,7 +209,10 @@ map_grow(MapTab *m)
 {
 	uint32		cap = Max(m->cap * 2, 256);
 
-	m->kid = m->kid ? repalloc(m->kid, (size_t) cap * m->nkey * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * m->nkey * sizeof(uint32));
+	if (m->lazy)
+		m->rkey = m->rkey ? repalloc(m->rkey, (size_t) cap * sizeof(int64)) : MemoryContextAlloc(m->cxt, (size_t) cap * sizeof(int64));
+	else
+		m->kid = m->kid ? repalloc(m->kid, (size_t) cap * m->nkey * sizeof(uint32)) : MemoryContextAlloc(m->cxt, (size_t) cap * m->nkey * sizeof(uint32));
 	for (int c = 0; c < m->ncol; c++)
 	{
 		MapCol	   *mc = &m->mcol[c];
@@ -299,7 +302,7 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 	if (m->nrow == m->cap)
 		map_grow(m);
 	kb = (size_t) m->nrow * m->nkey;
-	for (int k = 0; k < m->nkey; k++)
+	for (int k = 0; k < m->nkey && !m->lazy; k++)
 	{
 		if (knull[k])
 			m->kid[kb + k] = 0;
@@ -314,6 +317,8 @@ map_add(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j)
 		else
 			m->kid[kb + k] = kd_int(&m->kd[k], sift_aggspec_operand_int(j->keytype[k], kv[k]), m->cxt);
 	}
+	if (m->lazy)
+		m->rkey[m->nrow] = sift_aggspec_operand_int(j->keytype[0], kv[0]);
 	if (m->kcx)
 		ResetExprContext(m->kcx);
 	for (int c = 0; c < m->ncol; c++)
@@ -457,6 +462,7 @@ map_new(const SiftAggJoin *j, bool filtered, MemoryContext cxt)
 bool
 map_unique(const MapTab *m)
 {
+	map_ensure((MapTab *) m);
 	return m->kd[0].n == m->nrow;
 }
 
@@ -634,26 +640,32 @@ map_keep_agreeing(MapTab *m)
 static void
 map_index_rows(MapTab *m)
 {
-	m->nslot = 64;
-	while (m->nslot < m->nrow)
-		m->nslot *= 2;
-	m->head = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(uint32));
-	m->next = MemoryContextAlloc(m->cxt, Max(m->nrow, 1) * sizeof(uint32));
 	m->hit = m->keep ? MemoryContextAllocZero(m->cxt, Max(m->nrow, 1)) : NULL;
-	for (uint32 r = m->nrow; r-- > 0;)
+	if (!m->lazy)
 	{
-		const uint32 *kid = m->kid + (size_t) r * m->nkey;
-		uint32		h;
+		m->nslot = 64;
+		while (m->nslot < m->nrow)
+			m->nslot *= 2;
+		m->head = MemoryContextAllocZero(m->cxt, m->nslot * sizeof(uint32));
+		m->next = MemoryContextAlloc(m->cxt, Max(m->nrow, 1) * sizeof(uint32));
+		for (uint32 r = m->nrow; r-- > 0;)
+		{
+			const uint32 *kid = m->kid + (size_t) r * m->nkey;
+			uint32		h;
 
-		if (map_key_dead(m, kid))
-			continue;
-		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
-		m->next[r] = m->head[h];
-		m->head[h] = r + 1;
+			if (map_key_dead(m, kid))
+				continue;
+			h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
+			m->next[r] = m->head[h];
+			m->head[h] = r + 1;
+		}
 	}
 	if (m->cap > m->nrow && m->nrow > 0)
 	{
-		m->kid = repalloc(m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
+		if (m->lazy)
+			m->rkey = repalloc(m->rkey, (size_t) m->nrow * sizeof(int64));
+		else
+			m->kid = repalloc(m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
 		for (int c = 0; c < m->ncol; c++)
 		{
 			MapCol	   *mc = &m->mcol[c];
@@ -685,6 +697,23 @@ map_index_rows(MapTab *m)
 	}
 }
 
+/* the dictionary of the keys, the ids of the rows and their chains of a table that was loaded as its keys alone (MapTab.rkey): what every use of the table but the byte table of its keys needs */
+void
+map_ensure(MapTab *m)
+{
+	int64	   *rkey = m->rkey;
+
+	if (!m->lazy)
+		return;
+	m->rkey = NULL;
+	m->lazy = false;
+	m->kid = MemoryContextAlloc(m->cxt, Max(m->nrow, 1) * sizeof(uint32));
+	for (uint32 r = 0; r < m->nrow; r++)
+		m->kid[r] = kd_int(&m->kd[0], rkey[r], m->cxt);
+	m->cap = m->nrow;
+	map_index_rows(m);
+}
+
 static inline bool
 map_ids_eq(const MapTab *m, uint32 row, const uint32 *kid)
 {
@@ -700,10 +729,12 @@ map_ids_eq(const MapTab *m, uint32 row, const uint32 *kid)
 int
 map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows)
 {
-	uint32		h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
-	uint32		first[8];
+	uint32		h,
+				first[8];
 	int			n = 0;
 
+	map_ensure((MapTab *) m);
+	h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
 	*rows = NULL;
 	/* the first matches are collected on the stack: a key has a row or a few */
 	for (uint32 r = m->head[h]; r != 0; r = m->next[r - 1])
@@ -734,6 +765,7 @@ map_key_id(const MapTab *m, int k, const char *ptr, uint32 len, int64 iv)
 {
 	uint32		at;
 
+	map_ensure((MapTab *) m);
 	return m->ktext[k] ? kd_text_find(&m->kd[k], ptr, len, hash_bytes((const unsigned char *) ptr, len), &at) : kd_int_find(&m->kd[k], iv, &at);
 }
 
@@ -765,6 +797,7 @@ map_loaded(AggExec *ex, int nrows, instr_time t0)
 }
 
 static char *shared_map_key(AggExec *ex, int ci, bool cols);
+static bool map_keys_only(AggExec *ex, int ci);
 
 /*
  * A table is kept when the scan only reads it and what narrows its load is the same for every query: the table's own columns (the Params after
@@ -964,6 +997,7 @@ map_keyed_dependent(AggExec *ex, int ci, int *att, Oid *typ)
 			ex->cs[cd].map = map_load(ex, cd);
 		if (ex->cs[cd].map->ktext[0])
 			continue;
+		map_ensure(ex->cs[cd].map);
 		if (best < 0 || ex->cs[cd].map->kd[0].n < nbest)
 		{
 			best = cd;
@@ -1109,6 +1143,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, own != NULL, kept.cx);
+	m->lazy = kept.cols.n == 0 && map_keys_only(ex, ci);
 	/* the key expressions live for the load, not in the context a cache keeps */
 	MemoryContextSwitchTo(old);
 	for (int k = 0; k < j->nkey; k++)
@@ -1239,6 +1274,21 @@ shared_map_forget(void *arg)
 }
 
 /* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
+/*
+ * Is the table kept without the dictionary of its keys? The join is answered from a byte table of the keys of the table (semi_lut_build), which asks for the key of
+ * each row and its columns: the ids of the keys and the chains of the rows (a hash insert of each key that misses the cache) are made by the first use that needs
+ * them (map_ensure), which is a use of the table as a lookup.
+ */
+static bool
+map_keys_only(AggExec *ex, int ci)
+{
+	const SiftAggCombo *cb = &ex->spec->combo[ci];
+	const SiftAggJoin *j = &ex->spec->join[cb->join];
+
+	return semi_lut_possible(ex, ci) && ex->lay->leaf[cb->leaf[0]].vtype == SCV_I32 && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
+		j->first.nord == 0;
+}
+
 static char *
 shared_map_key(AggExec *ex, int ci, bool cols)
 {
@@ -1260,6 +1310,8 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	}
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
+	if (map_keys_only(ex, ci))
+		appendStringInfoString(&k, "|keys");
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));
 	if (j->first.hybrid)

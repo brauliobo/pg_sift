@@ -42,10 +42,16 @@ map_share_size(const MapTab *m, const SiftAggJoin *j, MapShared *l)
 	l->keep = m->keep;
 	memcpy(l->ktext, m->ktext, sizeof(l->ktext));
 	memcpy(l->knull, m->knull, sizeof(l->knull));
-	l->kid = share_array(&off, (size_t) m->nrow * m->nkey, sizeof(uint32));
-	l->next = share_array(&off, m->nrow, sizeof(uint32));
-	l->head = share_array(&off, m->nslot, sizeof(uint32));
-	for (int k = 0; k < m->nkey; k++)
+	l->lazy = m->lazy;
+	if (m->lazy)
+		l->rkey = share_array(&off, m->nrow, sizeof(int64));
+	else
+	{
+		l->kid = share_array(&off, (size_t) m->nrow * m->nkey, sizeof(uint32));
+		l->next = share_array(&off, m->nrow, sizeof(uint32));
+		l->head = share_array(&off, m->nslot, sizeof(uint32));
+	}
+	for (int k = 0; k < m->nkey && !m->lazy; k++)
 	{
 		const KeyDict *d = &m->kd[k];
 
@@ -102,10 +108,15 @@ map_share_write(const MapTab *m, const SiftAggJoin *j, const MapShared *l, char 
 	Size		at = l->data;
 
 	memcpy(dst, l, sizeof(MapShared));
-	put_array(dst + l->kid, m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
-	put_array(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
-	put_array(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
-	for (int k = 0; k < m->nkey; k++)
+	if (l->lazy)
+		put_array(dst + l->rkey, m->rkey, (size_t) m->nrow * sizeof(int64));
+	else
+	{
+		put_array(dst + l->kid, m->kid, (size_t) m->nrow * m->nkey * sizeof(uint32));
+		put_array(dst + l->next, m->next, (size_t) m->nrow * sizeof(uint32));
+		put_array(dst + l->head, m->head, (size_t) m->nslot * sizeof(uint32));
+	}
+	for (int k = 0; k < m->nkey && !l->lazy; k++)
 	{
 		const KeyDict *d = &m->kd[k];
 
@@ -172,10 +183,16 @@ map_share_attach(const char *src, const SiftAggJoin *j, MemoryContext cxt)
 	m->hit = l->keep ? MemoryContextAllocZero(cxt, Max(l->nrow, 1)) : NULL;
 	memcpy(m->ktext, l->ktext, sizeof(m->ktext));
 	memcpy(m->knull, l->knull, sizeof(m->knull));
-	m->kid = (uint32 *) (src + l->kid);
-	m->next = (uint32 *) (src + l->next);
-	m->head = (uint32 *) (src + l->head);
-	for (int k = 0; k < m->nkey; k++)
+	m->lazy = l->lazy;
+	if (l->lazy)
+		m->rkey = l->nrow > 0 ? (int64 *) (src + l->rkey) : NULL;
+	else
+	{
+		m->kid = (uint32 *) (src + l->kid);
+		m->next = (uint32 *) (src + l->next);
+		m->head = (uint32 *) (src + l->head);
+	}
+	for (int k = 0; k < m->nkey && !l->lazy; k++)
 	{
 		KeyDict    *d = &m->kd[k];
 
