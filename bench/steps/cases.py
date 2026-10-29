@@ -101,7 +101,17 @@ class Case:
         return '(%s)%s' % (', '.join([INDEX_COLUMNS] + [c[1:] for c in re.findall(r'\+\w+', m.group(1))]), m.group(2)) if m else self.index
 
 
+_REGISTRY = {}
+
+
 def read_registry(root=REPO):
+    """the cases of bench/cases.tsv, read once per root (a renderer asks for them a few dozen times); the list is the caller's own, the cases are shared"""
+    if root not in _REGISTRY:
+        _REGISTRY[root] = _read_registry(root)
+    return list(_REGISTRY[root])
+
+
+def _read_registry(root):
     rows = [l.rstrip('\n').split('\t') for l in open(os.path.join(root, 'bench', 'cases.tsv')) if l.strip() and not l.startswith('#')]
     cases = []
     for r in rows:

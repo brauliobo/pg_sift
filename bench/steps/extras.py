@@ -49,8 +49,19 @@ def write(path, title, meta, rows):
             f.write('\t'.join(str(r.get(c, '')) for c in COLUMNS) + '\n')
 
 
+_READ = {}
+
+
 def read(path):
-    """(meta, rows) of a results file"""
+    """(meta, rows) of a results file; a file is parsed once while it does not change (the renderers ask for the same few dozen times), and the rows are shared, so none writes to them"""
+    st = os.stat(path)
+    key = (os.path.abspath(path), st.st_mtime_ns, st.st_size)
+    if key not in _READ:
+        _READ[key] = _read(path)
+    return _READ[key]
+
+
+def _read(path):
     meta, lines = {}, []
     for line in open(path):
         if line.startswith('#'):
@@ -68,11 +79,19 @@ def replace_block(path, name, lines):
     _replace_block(path, name, lines)
 
 
+_INDEX = {}
+
+
 def get(rows, **kw):
-    for r in rows:
-        if all(r[k] == v for k, v in kw.items()):
-            return r
-    return None
+    """the first row whose columns equal kw; the rows are indexed once per list and set of columns (a renderer asks for tens of thousands, each a scan of every row before)"""
+    names = tuple(sorted(kw))
+    held, n, index = _INDEX.get((id(rows), names), (None, 0, None))
+    if held is not rows or n != len(rows):
+        index = {}
+        for r in rows:
+            index.setdefault(tuple(r[k] for k in names), r)
+        _INDEX[(id(rows), names)] = (rows, len(rows), index)   # holding rows keeps its id from being reused
+    return index.get(tuple(kw[k] for k in names))
 
 
 def num(rows, **kw):
