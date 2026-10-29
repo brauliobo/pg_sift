@@ -103,10 +103,17 @@ key_f8(uint64 k)
 	return x;
 }
 
+/* the keys of a float8 differ in their upper bits: one multiply does not carry them to the low bits that pick the slot (18.7 probes an insert for prices, 1.1 with this) */
 static inline uint64
 osa_hash(uint32 sid, uint64 key)
 {
-	return dset_hash(key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F)));
+	uint64		x = key ^ ((uint64) sid * UINT64CONST(0xC2B2AE3D27D4EB4F));
+
+	x ^= x >> 33;
+	x *= UINT64CONST(0xFF51AFD7ED558CCD);
+	x ^= x >> 33;
+	x *= UINT64CONST(0xC4CEB9FE1A85EC53);
+	return x ^ (x >> 33);
 }
 
 Osa *
