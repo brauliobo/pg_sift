@@ -1,0 +1,28 @@
+-- the dictionaries a chunk uses keep their slots until the chunk is done: a wide leaf (numeric beyond 64 bits, interval, money) read for the selected rows of a unit makes a
+-- dictionary of its own for every unit, and the round robin of the eight slots gave a slot whose key map was in use to such a dictionary: rows went to other groups, or the backend crashed
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE ds (id int, org int, kind text, n numeric, iv interval, m money) WITH (autovacuum_enabled = false);
+INSERT INTO ds SELECT i, i % 500, 'k' || i % 5,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE (i % 9)::numeric * 1e25 + 0.5 END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE (i % 7 || ' days')::interval END,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE (i % 4)::money END
+FROM generate_series(1, 200000) i;
+CREATE INDEX ds_col ON ds USING sift_col (id, org, kind, n, iv, m);
+VACUUM (FREEZE, ANALYZE) ds;
+SET sift.enable_agg = on;
+CREATE TEMP TABLE r_on AS SELECT kind, (n > 3e25) AS a, (iv > '3 days') AS b, (m > 1::money) AS c, count(*) AS cnt FROM ds WHERE org < 20 AND id % 7 = 0 GROUP BY 1, 2, 3, 4;
+CREATE TEMP TABLE s_on AS SELECT kind, (n > 3e25) AS a, (iv > '3 days') AS b, count(*) AS cnt FROM ds WHERE n IS NULL AND org = 11 GROUP BY 1, 2, 3;
+SET sift.enable_agg = off;
+CREATE TEMP TABLE r_off AS SELECT kind, (n > 3e25) AS a, (iv > '3 days') AS b, (m > 1::money) AS c, count(*) AS cnt FROM ds WHERE org < 20 AND id % 7 = 0 GROUP BY 1, 2, 3, 4;
+CREATE TEMP TABLE s_off AS SELECT kind, (n > 3e25) AS a, (iv > '3 days') AS b, count(*) AS cnt FROM ds WHERE n IS NULL AND org = 11 GROUP BY 1, 2, 3;
+SELECT (SELECT count(*) FROM (SELECT * FROM r_on EXCEPT ALL SELECT * FROM r_off) x) AS r_only_on, (SELECT count(*) FROM (SELECT * FROM r_off EXCEPT ALL SELECT * FROM r_on) x) AS r_only_off, (SELECT count(*) FROM r_off) AS r_groups,
+	(SELECT count(*) FROM (SELECT * FROM s_on EXCEPT ALL SELECT * FROM s_off) x) AS s_only_on, (SELECT count(*) FROM (SELECT * FROM s_off EXCEPT ALL SELECT * FROM s_on) x) AS s_only_off, (SELECT count(*) FROM s_off) AS s_groups;
+ r_only_on | r_only_off | r_groups | s_only_on | s_only_off | s_groups 
+-----------+------------+----------+-----------+------------+----------
+         0 |          0 |       25 |         0 |          0 |        1
+(1 row)
+
+DROP TABLE ds;
+DROP EXTENSION pg_sift;
