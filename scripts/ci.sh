@@ -56,7 +56,7 @@ MODE=${1:-quick}
 # seconds (client plus server processes), lane, status
 # --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
 if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 10 || echo 9; else echo 4; fi
+	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 4; fi
 	exit
 fi
 if [[ $MODE == --times ]]; then
@@ -347,8 +347,7 @@ if [[ $MODE == --selftest ]]; then
 		got=$(for (( k = 1; k <= ns; k++ )); do env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full | awk '{print $1}'; done | sort)
 		[[ $all == "$got" ]] || { echo "FAIL: the $ns shards of the full tier on PostgreSQL $pg ${deep:+deep }are not the plan, each job once"; bad=1; }
 		lo='' hi=0
-		pool=$ns; (( pg < 18 )) && [[ -n $deep ]] && pool=$(( ns - 1 ))   # the deep tier on 17 ends with a shard of the jobs that install a flavor
-		for (( k = 1; k <= pool; k++ )); do
+		for (( k = 1; k <= ns; k++ )); do
 			l=0
 			while read -r j _; do l=$(( l + $(weight_of "$j" "$deep" "$pg") )); done < <(env SIFT_CI_SHARD=$k/$ns SIFT_CI_DEEP=$deep SIFT_CI_PG_MAJOR=$pg "$0" --plan full)
 			(( l > hi )) && hi=$l
@@ -563,9 +562,9 @@ if [[ $MODE == full ]]; then
 		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 	elif (( PG_MAJOR >= 18 )); then
-		for k in 1 2; do
-			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
-			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 6 - 5 ))-$(( k * 6 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+		for k in 1 2 3 4; do
+			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 		done
 	fi
 	job coverage coverage 1 "$S/coverage.sh" --check
@@ -661,6 +660,7 @@ shard_loads() {
 	local pool=$1 line id k i
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && LOAD[pool - 1]=$(( LOAD[pool - 1] + $(weight_of "$id" "${SIFT_CI_DEEP:-}") )); done
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
@@ -671,7 +671,8 @@ SHARD=1
 if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	SHARD=${BASH_REMATCH[1]} NSHARDS=${BASH_REMATCH[2]} KEEP_IDS=() SUITES=() n=0
 	POOL=$NSHARDS
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done   # the last shard is the one of the jobs that run after the pool
+	# the quick tier gives the jobs that run after the pool (flavor installs, serial: minutes long) a shard of their own; in the full tier they are a few lane minutes and end the last shard
+	[[ $MODE == full ]] || for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && (( NSHARDS > 1 )) && { POOL=$(( NSHARDS - 1 )); break; }; done
 	[[ $MODE == full && $NSHARDS -gt 1 ]] && shard_loads "$POOL"
 	for id in "${J_ID[@]}"; do
 		if [[ -v J_AFTER[$id] ]]; then (( NSHARDS > 1 && SHARD == NSHARDS )) || (( NSHARDS == 1 )) || continue
