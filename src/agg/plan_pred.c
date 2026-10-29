@@ -59,6 +59,7 @@
 #include "agg/part.h"
 #include "agg/topn.h"
 #include "agg/spec.h"
+#include "agg/stats.h"
 #include "agg/colsrc.h"
 #include "agg/search.h"
 #include "agg/plan_int.h"
@@ -384,6 +385,20 @@ compile_elem_row(AggCtx *c, int cmp, Node *l, Node *r, Oid lt, Oid rt)
 }
 
 /*
+ * The selectivity of a condition of the scanned table. The planner has estimated it for the table's rows and kept the result in the condition's
+ * RestrictInfo; an IN list takes a pass over its elements against the statistics, so a second estimate would double the planning time of a long list.
+ */
+static double
+qual_sel(AggCtx *c, Node *clause)
+{
+	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
+		if (equal(ri->clause, clause))
+			return clause_selectivity(c->root, (Node *) ri, c->relid, JOIN_INNER, NULL);
+	sift_stat_add(SIFT_STAT_QUAL_ESTIMATED, 1);
+	return clause_selectivity(c->root, clause, c->relid, JOIN_INNER, NULL);
+}
+
+/*
  * `column op column` of the row: two scalar leaves of one type class stored in the same vector type (an int4 against an int2 or a date against a date; an
  * int4 against an int8 or a numeric column is the generic expression's), compared by the cmp2 kernels. The 64-bit float order and the NULL rule are those of
  * the comparison with a constant.
@@ -405,7 +420,7 @@ compile_leaf_cmp(AggCtx *c, int cmp, Node *op, Node *l, Node *r, Oid lt, Oid rt)
 	use_leaf(c, b);
 	p->op = cmp;
 	p->desc = psprintf("%s %s %s", leaf_name(c, a), cmp_text(cmp), leaf_name(c, b));
-	p->sel = clause_selectivity(c->root, op, c->relid, JOIN_INNER, NULL);
+	p->sel = qual_sel(c, (Node *) op);
 	return p;
 }
 
@@ -452,24 +467,11 @@ compile_cmp(AggCtx *c, OpExpr *op)
 	p->expr = r;
 	p->argtype = exprType(r);
 	p->desc = psprintf("%s %s %s", leaf_name(c, leaf), cmp_text(cmp), expr_text(c, r));
-	p->sel = clause_selectivity(c->root, (Node *) op, c->relid, JOIN_INNER, NULL);
+	p->sel = qual_sel(c, (Node *) op);
 	return p;
 }
 
 #define AGG_MAX_NUM_IN		64		/* constants of a numeric IN list that are one comparison each: a longer list is a hash set */
-
-/*
- * The selectivity of a condition of the scanned table. The planner has estimated it for the table's rows and kept the result in the condition's
- * RestrictInfo; an IN list takes a pass over its elements against the statistics, so a second estimate would double the planning time of a long list.
- */
-static double
-qual_sel(AggCtx *c, Node *clause)
-{
-	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
-		if (equal(ri->clause, clause))
-			return clause_selectivity(c->root, (Node *) ri, c->relid, JOIN_INNER, NULL);
-	return clause_selectivity(c->root, clause, c->relid, JOIN_INNER, NULL);
-}
 
 /* numeric leaf IN (constants) is the OR of its equalities, NOT IN the AND of its inequalities: every operand is scaled like a comparison's */
 static SiftAggPred *
