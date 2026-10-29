@@ -414,4 +414,9 @@ CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
-ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD OPERATOR 3 sift.=== (int4, float4);
+-- sift_col exists from pg_sift 3.0 on; extension_lifecycle creates this extension on 1.0
+DO $$ BEGIN
+	IF EXISTS (SELECT 1 FROM pg_am WHERE amname = 'sift_col') THEN
+		ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD OPERATOR 3 sift.=== (int4, float4);
+	END IF;
+END $$;
