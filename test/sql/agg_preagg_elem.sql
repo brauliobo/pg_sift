@@ -79,8 +79,9 @@ BEGIN
 	       count(*) FILTER (WHERE pre = 'none'), string_agg(n || ':' || pre, ' ' ORDER BY n)
 	INTO queries, differ, all_pre, some_pre, no_pre, state FROM pa_check(tbl, lo, hi);
 	-- the state of the run goes to the server log (kept by CI), not to the output: a count that differs from the expected one can be read there
-	RAISE LOG 'pa_sum %: % | heap all-visible % | units exact % | queue % | snapshots %', tbl, state,
+	RAISE LOG 'pa_sum %: % | heap all-visible % (map now %) | units exact % | queue % | snapshots %', tbl, state,
 		(SELECT relallvisible || '/' || relpages FROM pg_class WHERE oid = tbl::regclass),
+		(SELECT round(allvisible_frac::numeric, 4) FROM sift._test_col_leaf_stats((tbl || '_col')::regclass) LIMIT 1),
 		(SELECT string_agg(segment || '.' || sb || '=' || exact::int, ' ' ORDER BY segment, sb) FROM sift.col_unit_agg((tbl || '_col')::regclass, 'id')),
 		(SELECT count(*) FROM sift.col_rollup_queue()),
 		(SELECT string_agg(backend_type || ' ' || backend_xmin, ', ') FROM pg_stat_activity
