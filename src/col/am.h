@@ -305,5 +305,9 @@ extern void sift_col_jitter(void);
 /* the planner hook opens a planning, within which the statistics of an index are validated once (col/am.c leaf_cache_entry); true when this call opened it */
 extern bool sift_col_plan_begin(void);
 extern void sift_col_plan_end(bool started);
+extern MemoryContext sift_col_plan_memo(uint64 *plan);
+#ifdef SIFT_TESTING
+extern int64 sift_col_key_sorts;	/* the sorts of an IN list by the cost estimates */
+#endif
 
 #endif							/* SIFT_COL_AM_H */

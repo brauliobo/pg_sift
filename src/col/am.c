@@ -985,6 +985,7 @@ static HTAB *leaf_cache;
  */
 static uint64 leaf_plan;
 static uint64 leaf_plan_seq;
+static MemoryContext plan_memo;
 
 bool
 sift_col_plan_begin(void)
@@ -998,8 +999,23 @@ sift_col_plan_begin(void)
 void
 sift_col_plan_end(bool started)
 {
-	if (started)
-		leaf_plan = 0;
+	if (!started)
+		return;
+	leaf_plan = 0;
+	if (plan_memo != NULL)
+		MemoryContextReset(plan_memo);
+}
+
+/* memory that lives as long as the planning that is open (NULL outside one), and the number of that planning: what a caller keeps in it is stale when the number changes */
+MemoryContext
+sift_col_plan_memo(uint64 *plan)
+{
+	if (leaf_plan == 0)
+		return NULL;
+	if (plan_memo == NULL)
+		plan_memo = AllocSetContextCreate(TopMemoryContext, "sift planning memo", ALLOCSET_DEFAULT_SIZES);
+	*plan = leaf_plan;
+	return plan_memo;
 }
 
 uint32

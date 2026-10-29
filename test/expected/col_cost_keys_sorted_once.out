@@ -1,0 +1,45 @@
+-- The cost estimates of a sift_col index sort the constants of an IN list once for a planning, however many index paths the joins and sub-selects build
+-- (and however many times the planner hook plans the statement): a list of thousands costs more to sort than the rest of the estimate. sift._test_key_sorts counts the sorts.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+CREATE TABLE ks_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ks_fact SELECT i, i % 3000, i % 7 FROM generate_series(1, 30000) i;
+CREATE TABLE ks_dim (id int PRIMARY KEY, n int);
+INSERT INTO ks_dim SELECT i, i FROM generate_series(0, 6) i;
+CREATE INDEX ks_fact_col ON ks_fact USING sift_col (id, k, v) WITH (key_cut = k, point_columns = 'k', rollup_dims = 'off');
+ANALYZE ks_fact;
+ANALYZE ks_dim;
+-- one table, joins, a lateral sub-select that carries the list again, and with the aggregate planner off (the hook plans the statement once then)
+SELECT format($$SELECT f.id FROM ks_fact f JOIN ks_dim d ON d.id = f.v JOIN ks_dim e ON e.id = f.v
+   LEFT JOIN LATERAL (SELECT g.id FROM ks_fact g WHERE g.k = f.k AND g.k = ANY (%1$L::int[]) LIMIT 1) l ON true
+   WHERE f.k = ANY (%1$L::int[]) ORDER BY f.id LIMIT 10$$, (SELECT array_agg(g) FROM generate_series(1, 100) g)) AS q \gset
+SELECT sift._test_key_sorts(true) AS discard \gset
+\o /dev/null
+EXPLAIN (COSTS OFF) :q;
+\o
+SELECT sift._test_key_sorts(true) = 1 AS sorted_once_agg_on;
+ sorted_once_agg_on 
+--------------------
+ t
+(1 row)
+
+SET sift.enable_agg = off;
+\o /dev/null
+EXPLAIN (COSTS OFF) :q;
+\o
+SELECT sift._test_key_sorts(true) = 1 AS sorted_once_agg_off;
+ sorted_once_agg_off 
+---------------------
+ t
+(1 row)
+
+RESET sift.enable_agg;
+-- the same keys, whatever the order of the list
+SELECT sum(r) AS rows_equal FROM (SELECT count(*) AS r FROM ks_fact WHERE k = ANY (ARRAY[5, 2999, 17, 17, NULL, 0]) UNION ALL SELECT -count(*) FROM ks_fact WHERE k = 5 OR k = 2999 OR k = 17 OR k = 0) s;
+ rows_equal 
+------------
+          0
+(1 row)
+
+DROP TABLE ks_fact, ks_dim;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

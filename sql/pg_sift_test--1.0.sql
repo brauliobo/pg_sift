@@ -411,5 +411,7 @@ CREATE FUNCTION sift._test_eq_sel(internal, oid, internal, int4) RETURNS float8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel' LANGUAGE C STABLE STRICT;
 CREATE FUNCTION sift._test_eq_sel_calls(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_eq_sel_calls' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
+	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
 ALTER OPERATOR FAMILY sift.col_ops USING sift_col ADD OPERATOR 3 sift.=== (int4, float4);

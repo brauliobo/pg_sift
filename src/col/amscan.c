@@ -1149,6 +1149,76 @@ sift_col_amgettuple(IndexScanDesc scan, ScanDirection dir)
 
 /* ---- the cost ---- */
 
+/*
+ * The sorted keys of an integer-like array. The estimates of one planning (one per path, and the planner hook plans a statement more than once) read the same
+ * literal list, and for a list of thousands sorting it costs more than the rest of the estimate: the first estimate keeps the keys, in the memory of the
+ * planning, and the next ones with the same array take them. A caller does not change them.
+ */
+#ifdef SIFT_TESTING
+int64		sift_col_key_sorts;
+#endif
+
+typedef struct SetMemo
+{
+	ArrayType  *arr;
+	int64	   *keys;
+	int			nkeys;
+} SetMemo;
+
+#define SET_MEMO_SLOTS	4
+
+static int64 *
+sorted_keys(ArrayType *arr, Oid et, int *nkeys)
+{
+	static SetMemo memo[SET_MEMO_SLOTS];
+	static int	used;
+	static uint64 memo_plan;
+	uint64		plan;
+	MemoryContext cx = sift_col_plan_memo(&plan);
+	int16		len;
+	bool		byval;
+	char		align;
+	Datum	   *el;
+	bool	   *nl;
+	int			n,
+				m = 0;
+	int64	   *vals;
+
+	if (cx != NULL)
+	{
+		if (plan != memo_plan)
+		{
+			used = 0;
+			memo_plan = plan;
+		}
+		for (int i = 0; i < used; i++)
+			if (VARSIZE(memo[i].arr) == VARSIZE(arr) && memcmp(memo[i].arr, arr, VARSIZE(arr)) == 0)
+			{
+				*nkeys = memo[i].nkeys;
+				return memo[i].keys;
+			}
+	}
+	get_typlenbyvalalign(et, &len, &byval, &align);
+	deconstruct_array(arr, et, len, byval, align, &el, &nl, &n);
+	vals = MemoryContextAlloc(cx != NULL ? cx : CurrentMemoryContext, Max(n, 1) * sizeof(int64));
+	for (int j = 0; j < n; j++)
+		if (!nl[j])
+			vals[m++] = et == INT2OID ? DatumGetInt16(el[j]) : et == INT4OID || et == DATEOID ? DatumGetInt32(el[j]) : DatumGetInt64(el[j]);
+	sift_sort_i64(vals, m);
+#ifdef SIFT_TESTING
+	sift_col_key_sorts++;
+#endif
+	if (cx != NULL && used < SET_MEMO_SLOTS)
+	{
+		memo[used].arr = MemoryContextAlloc(cx, VARSIZE(arr));
+		memcpy(memo[used].arr, arr, VARSIZE(arr));
+		memo[used].keys = vals;
+		memo[used++].nkeys = m;
+	}
+	*nkeys = m;
+	return vals;
+}
+
 /* The range of key values a clause keeps when its operand is a constant of an integer-like type (false: it is not, or the clause is not a comparison) */
 static bool
 clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi, int64 **set, int *nset)
@@ -1227,26 +1297,10 @@ clause_range(PlannerInfo *root, Oid opfamily, Node *clause, int64 *lo, int64 *hi
 	{
 		ArrayType  *arr = DatumGetArrayTypeP(c->constvalue);
 		Oid			et = ARR_ELEMTYPE(arr);
-		int16		len;
-		bool		byval;
-		char		align;
-		Datum	   *el;
-		bool	   *nl;
-		int			n,
-					m = 0;
-		int64	   *vals;
 
 		if (strat != BTEqualStrategyNumber || (et != INT2OID && et != INT4OID && et != INT8OID && et != DATEOID && et != TIMESTAMPOID && et != TIMESTAMPTZOID))
 			return false;
-		get_typlenbyvalalign(et, &len, &byval, &align);
-		deconstruct_array(arr, et, len, byval, align, &el, &nl, &n);
-		vals = palloc(Max(n, 1) * sizeof(int64));
-		for (int j = 0; j < n; j++)
-			if (!nl[j])
-				vals[m++] = et == INT2OID ? DatumGetInt16(el[j]) : et == INT4OID || et == DATEOID ? DatumGetInt32(el[j]) : DatumGetInt64(el[j]);
-		sift_sort_i64(vals, m);
-		*set = vals;
-		*nset = m;
+		*set = sorted_keys(arr, et, nset);
 		return true;
 	}
 }

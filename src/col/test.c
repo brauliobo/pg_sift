@@ -46,6 +46,7 @@ PG_FUNCTION_INFO_V1(sift_test_col_formats);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_count);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel);
 PG_FUNCTION_INFO_V1(sift_test_eq_sel_calls);
+PG_FUNCTION_INFO_V1(sift_test_key_sorts);
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 PG_FUNCTION_INFO_V1(sift_test_col_counters);
 PG_FUNCTION_INFO_V1(sift_test_col_leaf_stats);
@@ -1885,6 +1886,17 @@ sift_test_eq_sel_calls(PG_FUNCTION_ARGS)
 
 	if (PG_GETARG_BOOL(0))
 		eq_sel_calls = 0;
+	PG_RETURN_INT64(n);
+}
+
+/* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
+Datum
+sift_test_key_sorts(PG_FUNCTION_ARGS)
+{
+	int64		n = sift_col_key_sorts;
+
+	if (PG_GETARG_BOOL(0))
+		sift_col_key_sorts = 0;
 	PG_RETURN_INT64(n);
 }
 
