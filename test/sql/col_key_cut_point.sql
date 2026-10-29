@@ -72,6 +72,11 @@ SELECT * FROM kp_check('reindexed');
 SELECT sift.col_verify('kpt_idx', true);
 SELECT DISTINCT format FROM sift.col_segments('kpt_idx') WHERE kind = 'immutable';
 
+-- 'off' lists nothing: no notice about the rows of a key-cut segment
+CREATE INDEX kpt_off ON kpt USING sift_col (id, cust) WITH (key_cut = 'cust', point_tid_columns = 'off');
+REINDEX INDEX kpt_off;
+DROP INDEX kpt_off;
+
 DROP FUNCTION kp_run(text, text, text), kp_check(text);
 DROP TABLE kpt;
 DROP EXTENSION pg_sift;
