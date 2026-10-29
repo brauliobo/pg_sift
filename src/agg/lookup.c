@@ -797,7 +797,6 @@ map_loaded(AggExec *ex, int nrows, instr_time t0)
 }
 
 static char *shared_map_key(AggExec *ex, int ci, bool cols);
-static bool map_keys_only(AggExec *ex, int ci);
 
 /*
  * A table is kept when the scan only reads it and what narrows its load is the same for every query: the table's own columns (the Params after
@@ -1143,7 +1142,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, own != NULL, kept.cx);
-	m->lazy = kept.cols.n == 0 && map_keys_only(ex, ci);
+	m->lazy = kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase);
 	/* the key expressions live for the load, not in the context a cache keeps */
 	MemoryContextSwitchTo(old);
 	for (int k = 0; k < j->nkey; k++)
@@ -1273,22 +1272,22 @@ shared_map_forget(void *arg)
 	shared_maps = list_delete_ptr(shared_maps, arg);
 }
 
-/* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
 /*
  * Is the table kept without the dictionary of its keys? The join is answered from a byte table of the keys of the table (semi_lut_build), which asks for the key of
  * each row and its columns: the ids of the keys and the chains of the rows (a hash insert of each key that misses the cache) are made by the first use that needs
- * them (map_ensure), which is a use of the table as a lookup.
+ * them (map_ensure), which is a use of the table as a lookup. The planner prices the load by the same test.
  */
-static bool
-map_keys_only(AggExec *ex, int ci)
+bool
+lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nbase)
 {
-	const SiftAggCombo *cb = &ex->spec->combo[ci];
-	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
 
-	return semi_lut_possible(ex, ci) && ex->lay->leaf[cb->leaf[0]].vtype == SCV_I32 && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
+	return semi_lut_possible(s, ci, nbase) && lay->leaf[cb->leaf[0]].vtype == SCV_I32 && j->params == NIL && j->child < 0 && j->first.qual == NIL && !j->first.hybrid &&
 		j->first.nord == 0;
 }
 
+/* what decides the rows of a table: the relation, its key and (cols) output columns and the conditions that narrow the load */
 static char *
 shared_map_key(AggExec *ex, int ci, bool cols)
 {
@@ -1310,7 +1309,7 @@ shared_map_key(AggExec *ex, int ci, bool cols)
 	}
 	if (own)
 		appendStringInfo(&k, "|%s", nodeToString(cb->slot[j->fslot].expr));
-	if (map_keys_only(ex, ci))
+	if (lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase))
 		appendStringInfoString(&k, "|keys");
 	if (j->first.qual != NIL)
 		appendStringInfo(&k, "|first %s", nodeToString(j->first.qual));

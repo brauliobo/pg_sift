@@ -174,7 +174,8 @@ MapTab *map_first_peek(AggExec *ex, int ci);
 int map_first_row(AggExec *ex, int ci, EState *estate);
 bool map_unique(const MapTab *m);
 void map_ensure(MapTab *m);
-bool semi_lut_possible(AggExec *ex, int ci);
+bool semi_lut_possible(const SiftAggSpec *s, int ci, int nbase);
+bool lookup_keys_only(const SiftAggSpec *s, const SiftSrcLayout *lay, int ci, int nbase);
 bool slot_reads_leaf(const SiftAggCombo *cb, int sl);
 
 /* lookshare.c */
