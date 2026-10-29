@@ -161,7 +161,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  replace         | same+topn 25
  reverse         | same+topn 25
  round_numeric   | same+topn 25
- six_keys        | same+topn+sorted 30
+ six_keys        | same+topn 30
  sqrt_abs        | same+topn 25
  substr          | same+topn 25
  translate       | same+topn 25
@@ -175,8 +175,8 @@ NOTICE:  table "tb_b" does not exist, skipping
 
 -- workers: each keeps a heap of the keys it saw, the leader merges them
 SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('concat_lower', 'nested_lu', 'left', 'md5', 'case_text_func', 'round_numeric', 'date_trunc', 'user_function', 'two_funcs', 'six_keys') ORDER BY tag COLLATE "C";
-      tag       |      tb_check       
-----------------+---------------------
+      tag       |     tb_check     
+----------------+------------------
  case_text_func | same+topn+par 25
  concat_lower   | same+topn+par 25
  date_trunc     | same+topn+par 25
@@ -184,7 +184,7 @@ SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('concat_lower', 'nested_lu', 
  md5            | same+topn+par 25
  nested_lu      | same+topn+par 25
  round_numeric  | same+topn+par 25
- six_keys       | same+topn+sorted 30
+ six_keys       | same+topn+par 30
  two_funcs      | same+topn+par 30
  user_function  | same+topn+par 25
 (10 rows)

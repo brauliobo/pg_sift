@@ -83,7 +83,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  term_tf              | SIFT_MAX_TF                     |        255 | t         | f
  text_prune           | COL_MAX_STR_PRUNE               |         16 | t         | f
  topn_code_entries    | ORD_MAX_ENTRIES                 |    1048576 | t         | t
- topn_keys            | SIFT_TOPN_MAX_KEYS              |          4 | t         | t
+ topn_keys            | SIFT_TOPN_MAX_KEYS              |          8 | t         | t
  topn_rows            | SIFT_TOPN_MAX_ROWS              |     100000 | t         | t
  unit_bytes           | SIFT_COL_UNIT_MAX_BYTES         | 1073741823 | t         | t
  unit_rows            | SIFT_COL_UNIT_MAX_ROWS          |      74496 | t         | f

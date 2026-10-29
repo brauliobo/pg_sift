@@ -81,7 +81,7 @@ NOTICE:  table "tx_b" does not exist, skipping
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
  deep_page        | same+topn 20
- five_keys        | same+topn+sorted 30
+ five_keys        | same+topn 30
  inet_asc         | same+topn 25
  inet_desc        | same+topn 25
  int_then_text    | same+topn 30

@@ -154,7 +154,7 @@ NOTICE:  table "ta_b" does not exist, skipping
  numeric_sum       | same+topn 25
  numeric_times     | same+topn 25
  past_the_heap     | same+topn+sorted 22800
- six_keys          | same+topn+sorted 30
+ six_keys          | same+topn 30
  smallint_minus    | same+topn 25
  smallint_widen    | same+topn 25
  string_then_expr  | same+topn 30
@@ -172,15 +172,15 @@ NOTICE:  table "ta_b" does not exist, skipping
 
 -- workers: each keeps a heap of the keys it saw, the leader merges them
 SELECT tag, ta_check(q, 2) FROM ta_q WHERE tag IN ('int_plus', 'int_plus_desc', 'int_ties', 'two_columns', 'float_times', 'numeric_times', 'cast_to_text', 'timestamp_plus', 'two_exprs', 'six_keys') ORDER BY tag COLLATE "C";
-      tag       |      ta_check       
-----------------+---------------------
+      tag       |   ta_check   
+----------------+--------------
  cast_to_text   | same+topn 25
  float_times    | same+topn 25
  int_plus       | same+topn 25
  int_plus_desc  | same+topn 25
  int_ties       | same+topn 40
  numeric_times  | same+topn 25
- six_keys       | same+topn+sorted 30
+ six_keys       | same+topn 30
  timestamp_plus | same+topn 25
  two_columns    | same+topn 25
  two_exprs      | same+topn 30

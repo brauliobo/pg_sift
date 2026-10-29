@@ -22,7 +22,7 @@
 #include "core/limits.h"
 
 /* Sort keys and rows the heap holds (fixed-size entries); more of either, or no bound at all, and every row that passes goes to a sort */
-#define SIFT_TOPN_MAX_KEYS	4
+#define SIFT_TOPN_MAX_KEYS	8
 #define SIFT_TOPN_MAX_ROWS	100000
 
 

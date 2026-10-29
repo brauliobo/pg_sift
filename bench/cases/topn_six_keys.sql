@@ -1,4 +1,4 @@
--- a top-N that sorts every row that passes: each key past the first is read at every row, and the plan charges it
+-- a top-N on 6 sort columns: the heap of the scan holds up to 8 keys, and the keys past the first are compared only for the rows that tie
 -- label: `ORDER BY` 6 columns `LIMIT 10`, no usable btree
 -- ordered: yes
 --@ pg

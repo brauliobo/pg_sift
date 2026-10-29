@@ -124,7 +124,7 @@ NOTICE:  table "tc_b" does not exist, skipping
  lower_offset      | same+topn 20
  lower_then_int    | same+topn 30
  past_the_heap     | same+topn+sorted 30000
- six_keys          | same+topn+sorted 30
+ six_keys          | same+topn 30
  smallint          | same+topn 25
  three_keys        | same+topn 30
  timestamp         | same+topn 25
@@ -138,8 +138,8 @@ NOTICE:  table "tc_b" does not exist, skipping
 
 -- workers: each keeps a heap of the keys it saw, the leader merges them
 SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'bigint_asc', 'date_desc', 'lower', 'upper_desc', 'lower_locale', 'three_keys', 'int_then_lower', 'six_keys') ORDER BY tag COLLATE "C";
-      tag       |      tc_check       
-----------------+---------------------
+      tag       |   tc_check   
+----------------+--------------
  bigint_asc     | same+topn 25
  date_desc      | same+topn 25
  int_asc        | same+topn 25
@@ -147,7 +147,7 @@ SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'bigin
  int_then_lower | same+topn 30
  lower          | same+topn 25
  lower_locale   | same+topn 25
- six_keys       | same+topn+sorted 30
+ six_keys       | same+topn 30
  three_keys     | same+topn 30
  upper_desc     | same+topn 25
 (10 rows)

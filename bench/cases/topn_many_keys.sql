@@ -1,4 +1,4 @@
--- more than 4 sort columns: the planner prices the sort and keeps the normal plan while that is cheaper
+-- 5 sort columns, past the 4 the heap held before: the top-N scan keeps them all
 -- label: `ORDER BY` 5 columns `LIMIT 10`, no usable btree
 -- ordered: yes
 --@ pg

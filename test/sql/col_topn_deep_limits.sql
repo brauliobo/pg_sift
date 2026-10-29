@@ -50,13 +50,15 @@ INSERT INTO cl_q VALUES
 	('ties',         $q$SELECT id, a FROM cl ORDER BY a, id LIMIT 20 OFFSET 700$q$),
 	('three_keys',   $q$SELECT id, a, b, c FROM cl ORDER BY a DESC, b, c DESC, id LIMIT 40 OFFSET 55$q$),
 	('past_rows',    $q$SELECT id FROM cl WHERE a = 3 ORDER BY ts, id LIMIT 10 OFFSET 5000$q$),
-	('expression',   $q$SELECT id, ts, amount * 2 AS a2 FROM cl ORDER BY ts, id LIMIT 10 OFFSET 80$q$);
+	('expression',   $q$SELECT id, ts, amount * 2 AS a2 FROM cl ORDER BY ts, id LIMIT 10 OFFSET 80$q$),
+	('five_keys',    $q$SELECT id, a, b, c, ts FROM cl ORDER BY a DESC, b, c DESC, ts, id LIMIT 10 OFFSET 20$q$),
+	('seven_keys',   $q$SELECT id FROM cl ORDER BY a, b DESC, c, f NULLS FIRST, amount DESC, ts, id LIMIT 10 OFFSET 30$q$);
 
 SET sift.test_limits = 'topn_rows=50';
 SELECT tag, cl_check(q) FROM cl_q ORDER BY tag COLLATE "C";
 -- more keys than the heap holds (one), whatever the rows
 SET sift.test_limits = 'topn_keys=1';
-SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'desc_nulls', 'ties', 'three_keys', 'expression') ORDER BY tag COLLATE "C";
+SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'desc_nulls', 'ties', 'three_keys', 'expression', 'five_keys') ORDER BY tag COLLATE "C";
 SET sift.test_limits = 'topn_rows=50, topn_keys=2';
 SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'over_cap', 'three_keys') ORDER BY tag COLLATE "C";
 RESET sift.test_limits;

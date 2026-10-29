@@ -133,7 +133,7 @@ SELECT cd_choice('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000')
 	   cd_choice('SELECT id, a, b, c, d, e, f, amount, ts, kind FROM cd ORDER BY a, b, c, d, e, f, id LIMIT 30 OFFSET 150000') AS six_keys_wide;
  two_keys_deep | six_keys | six_keys_deep | six_keys_wide 
 ---------------+----------+---------------+---------------
- top-n         | native   | native        | native
+ top-n         | top-n    | native        | native
 (1 row)
 
 -- workers allowed: a top-N that sorts every row that passes is one process (the heaps of the workers are what the leader merges)

@@ -137,7 +137,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  least_date        | same+topn 25
  nullif_int        | same+topn 40
  nullif_text       | same+topn 25
- six_keys          | same+topn+sorted 30
+ six_keys          | same+topn 30
  string_compare    | same+topn 40
  string_length     | same+topn 25
  string_strpos     | same+topn 25
@@ -147,8 +147,8 @@ NOTICE:  table "tb_b" does not exist, skipping
 
 -- workers: each keeps a heap of the keys it saw, the leader merges them
 SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('case_null_zero', 'case_simple', 'case_text', 'coalesce_ints', 'coalesce_texts', 'nullif_int', 'greatest', 'bool_or_null', 'in_list_text', 'six_keys') ORDER BY tag COLLATE "C";
-      tag       |      tb_check       
-----------------+---------------------
+      tag       |   tb_check   
+----------------+--------------
  bool_or_null   | same+topn 40
  case_null_zero | same+topn 25
  case_simple    | same+topn 40
@@ -158,7 +158,7 @@ SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('case_null_zero', 'case_simpl
  greatest       | same+topn 25
  in_list_text   | same+topn 25
  nullif_int     | same+topn 40
- six_keys       | same+topn+sorted 30
+ six_keys       | same+topn 30
 (10 rows)
 
 -- the sort of every row that passes spills (work_mem), and a deep page
