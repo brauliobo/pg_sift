@@ -21,7 +21,8 @@ my $copy_rows = knob('SIFT_COPY_ROWS', 30000, 20000);
 my $clients = 8;
 my $limit = knob('SIFT_MAX_SEGMENTS', 16, 16);
 my $conf = "sift.table_max_segments = $limit\nsift.table_write_buffer_limit = 2048";
-my $primary_conf = "$conf\nwal_consistency_checking = 'generic'";
+# VACUUM does not cut the file while a standby streams (43e42dc9c): the test of the returned space needs the testing setting, as 006, 008, 013 and 015
+my $primary_conf = "$conf\nwal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on";
 # order independent, so that the rows (a kilobyte each) need no sort
 my $digest = 'SELECT count(*) || $$:$$ || coalesce(sum(id), 0) || $$:$$ || coalesce(sum(hashtextextended(id || v, 0)::numeric), 0) FROM %s';
 # rows lo..hi, one INSERT of one row per command
