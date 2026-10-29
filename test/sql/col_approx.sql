@@ -90,11 +90,17 @@ FROM (SELECT 'b' AS c, sift.approx_count_distinct(b) AS a, count(DISTINCT b) AS 
       UNION ALL SELECT 'k', sift.approx_count_distinct(k), count(DISTINCT k), (SELECT count(DISTINCT k) FROM ap_off) FROM ap) z ORDER BY c;
 
 -- EXPLAIN says it: the sketches answer the units, the aggregate says it is approximate; an index without the option scans rows
+-- the rows vetted by the heap and its pages are those of the pages a write left not all-visible, which depends on how the major version places the new row versions
+-- (3 rows and a page apart on PostgreSQL 19): the line says that some of the rows were vetted, not how many
 CREATE FUNCTION ap_explain(q text) RETURNS TABLE (line text) LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE l text; m text[];
 BEGIN
   SET LOCAL sift.agg_force = on;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+    m := regexp_match(l, 'Rows: (\d+) scanned, (\d+) aggregated, (\d+) vetted by heap, (\d+) heap pages, (.*)$');
+    IF m IS NOT NULL AND m[3]::bigint > 0 AND m[3]::bigint < m[1]::bigint AND m[4]::bigint > 0 THEN
+      l := regexp_replace(l, '\d+ vetted by heap, \d+ heap pages', 'some vetted by heap, some heap pages');
+    END IF;
     IF l ~ '^\s+(Units|Approximate Distinct|Rows):' THEN RETURN QUERY SELECT trim(l); END IF;
   END LOOP;
 END $$;
