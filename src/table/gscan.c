@@ -58,8 +58,10 @@ typedef struct UnitTids
 	int			src;
 	uint32		ordinal;
 	uint32		n;				/* live rows */
-	ItemPointerData *tid;		/* of the live rows, ascending */
+	ItemPointerData *tid;		/* of the live rows, ascending; NULL in a fetch scan, which bisects ix (a key-cut unit has no ix and is decoded) */
 	uint32	   *ord;			/* of tid: the row index in the vectors of the unit, taken together with tid (VACUUM clears live bits in place) */
+	SiftColUnitIndex *ix;		/* where the rows of the unit are, from its page directory */
+	uint64	   *live;			/* the live rows of the unit by row index */
 	uint32	   *xmin;			/* the versions of every row of the unit by that index; NULL when none is unfrozen */
 	uint32	   *cmin;
 } UnitTids;
@@ -129,6 +131,7 @@ struct SiftTblGroupScan
 	/* readers of the current unit that outlive the call that found the row: a slot holds a reference and its token */
 	int			refs;
 	bool		ended;
+	bool		point;			/* the fetch scan: a superblock's cache is the page directories of its units, not the TIDs of their rows (sift_col_unit_index) */
 	Bitmapset  *want;			/* the attributes a reader asks for (offset by FirstLowInvalidHeapAttributeNumber, as pull_varattnos makes them); NULL: all; the others come back NULL */
 	bool		park_fill;		/* the fetch scan: the pages a fill pinned are released at once (nothing ends it before the transaction does) */
 	uint32		token;		/* changes whenever another unit becomes the current one: vec, ord and unit are then not the slot's */
@@ -618,8 +621,13 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 	{
 		for (int k = 0; k < g->ncu; k++)
 		{
-			pfree(g->cu[k].tid);
-			pfree(g->cu[k].ord);
+			if (g->cu[k].tid)
+			{
+				pfree(g->cu[k].tid);
+				pfree(g->cu[k].ord);
+			}
+			if (g->cu[k].ix)
+				pfree(g->cu[k].live);
 			if (g->cu[k].xmin)
 			{
 				pfree(g->cu[k].xmin);
@@ -650,9 +658,20 @@ cache_superblock(SiftTblGroupScan *g, uint32 sb)
 				g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));
 			u = &g->cu[g->ncu++];
 			sift_col_sel_all(&unit, &sel);
-			*u = (UnitTids) {s, ordinal++, sel.count, palloc(Max(sel.count, 1) * sizeof(ItemPointerData)), palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32))};
-			sift_col_tids(&unit, &sel, u->tid);
-			sift_col_sel_idx(&sel, u->ord);
+			*u = (UnitTids) {.src = s,.ordinal = ordinal++,.n = sel.count};
+			if (g->point)
+				u->ix = sift_col_unit_index(&unit);
+			if (u->ix)
+			{
+				u->live = memcpy(palloc(sel.nwords * sizeof(uint64)), sel.bits, sel.nwords * sizeof(uint64));
+			}
+			else
+			{
+				u->tid = palloc(Max(sel.count, 1) * sizeof(ItemPointerData));
+				u->ord = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
+				sift_col_tids(&unit, &sel, u->tid);
+				sift_col_sel_idx(&sel, u->ord);
+			}
 			if (sift_col_unit_ref(&unit, &seg, &useg))
 			{
 				sift_cseg_ver_sum(seg, useg, &sum);
@@ -810,6 +829,7 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 			sift_tbl_gscan_end(c->fetch[pick]);
 		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, &st->dir, NULL);
 		c->fetch[pick]->park_fill = true;
+		c->fetch[pick]->point = true;
 		c->fetch_version = st->dir.version;
 		c->fetch_xmin = TransactionXmin;
 		MemoryContextSwitchTo(old);
@@ -818,17 +838,31 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 	return c->fetch[pick];
 }
 
-/* Where tid is among the cached units of its superblock: unit k, position j of its TIDs */
+/* Where tid is among the cached units of its superblock: unit k, the row index pos in its vectors */
 static bool
-gscan_find(SiftTblGroupScan *g, ItemPointer tid, int *k, uint32 *j)
+gscan_find(SiftTblGroupScan *g, ItemPointer tid, int *k, uint32 *pos)
 {
 	BlockNumber vblock = ItemPointerGetBlockNumberNoCheck(tid);
 
 	cache_superblock(g, vblock / SIFT_SB_PAGES);
 	for (*k = 0; *k < g->ncu; (*k)++)
-		for (*j = block_start(&g->cu[*k], vblock); *j < g->cu[*k].n && ItemPointerGetBlockNumberNoCheck(&g->cu[*k].tid[*j]) == vblock; (*j)++)
-			if (ItemPointerEquals(&g->cu[*k].tid[*j], tid))
+	{
+		const UnitTids *u = &g->cu[*k];
+
+		if (u->ix)
+		{
+			*pos = sift_col_unit_index_find(u->ix, vblock / SIFT_SB_PAGES, sift_key_from_tid(tid));
+			if (*pos != PG_UINT32_MAX && sift_col_bit_test(u->live, *pos))
 				return true;
+			continue;
+		}
+		for (uint32 j = block_start(u, vblock); j < u->n && ItemPointerGetBlockNumberNoCheck(&u->tid[j]) == vblock; j++)
+			if (ItemPointerEquals(&u->tid[j], tid))
+			{
+				*pos = u->ord[j];
+				return true;
+			}
+	}
 	return false;
 }
 
@@ -836,18 +870,16 @@ bool
 sift_tbl_group_locate(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblGroupScan **g, uint32 *token, uint32 *pos)
 {
 	int			k;
-	uint32		j;
 
 	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
 		return false;
 	*g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
-	if (!gscan_find(*g, tid, &k, &j))
+	if (!gscan_find(*g, tid, &k, pos))
 	{
 		gscan_park(*g);
 		return false;
 	}
 	unit_load(*g, k, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
-	*pos = (*g)->cu[k].ord[j];
 	*token = (*g)->token;
 	gscan_park(*g);
 	return true;
@@ -857,35 +889,28 @@ bool
 sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy)
 {
 	SiftTblGroupScan *g;
-	uint64		offmask[SIFT_OFFMASK_WORDS] = {0};
-	HeapTuple	row[SIFT_TBL_MAX_OFF];
-	TransactionId xmin[SIFT_TBL_MAX_OFF];
-	CommandId	cmin[SIFT_TBL_MAX_OFF];
-	int			found;
+	int			k;
+	uint32		pos;
+	bool		has;
 
 	if (!st->initialized || ItemPointerGetBlockNumberNoCheck(tid) >= SIFT_TBL_NEXT_VBLOCK(&st->dir.meta))
 		return false;
 	g = fetch_scan(rel, st, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
-	if (lazy)
+	has = gscan_find(g, tid, &k, &pos);
+	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false};
+	if (has)
 	{
-		int			k;
-		uint32		j;
-		bool		has = gscan_find(g, tid, &k, &j);
-
-		*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false};
-		if (has && g->cu[k].xmin)
+		if (g->cu[k].xmin)
 		{
-			rv->xmin = g->cu[k].xmin[g->cu[k].ord[j]];
-			rv->cmin = g->cu[k].cmin[g->cu[k].ord[j]];
+			rv->xmin = g->cu[k].xmin[pos];
+			rv->cmin = g->cu[k].cmin[pos];
 		}
-		gscan_park(g);
-		return has;
+		if (!lazy)
+		{
+			unit_load(g, k, ItemPointerGetBlockNumberNoCheck(tid) / SIFT_SB_PAGES);
+			rv->tuple = row_tuple(g, pos, tid);
+		}
 	}
-	sift_col_bit_set(offmask, ItemPointerGetOffsetNumberNoCheck(tid) - 1);
-	found = sift_tbl_gscan_block(g, ItemPointerGetBlockNumberNoCheck(tid), offmask, row, xmin, cmin);
 	gscan_park(g);
-	if (found == 0)
-		return false;
-	*rv = (SiftTblRowVer) {.key = sift_key_from_tid(tid),.wbuf = false,.xmin = xmin[0],.cmin = cmin[0],.tuple = row[0]};
-	return true;
+	return has;
 }

@@ -528,6 +528,38 @@ sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *t
 	FOREACH_BIT(sel->bits, (sel->n + 63) / 64, r, { sift_key_to_tid(keys[r], &tids[k++]); });
 }
 
+struct SiftColUnitIndex
+{
+	SiftCUnitView v;
+};
+
+SiftColUnitIndex *
+sift_col_unit_index(const SiftColUnit *unit)
+{
+	const SiftCUnitView *v = &((const ColUnit *) unit->priv)->v;
+	SiftColUnitIndex *ix;
+	Size		sparse = 0;
+
+	if (v->keyed)
+		return NULL;
+	for (uint32 p = 0; p < v->npages; p++)
+		sparse += sift_cunit_page_sparse_len(v, p);
+	ix = palloc(sizeof(SiftColUnitIndex));
+	ix->v = *v;
+	ix->v.rowstart = memcpy(palloc((v->npages + 1) * sizeof(uint32)), v->rowstart, (v->npages + 1) * sizeof(uint32));
+	ix->v.maxoff = memcpy(palloc(v->npages * sizeof(uint16)), v->maxoff, v->npages * sizeof(uint16));
+	ix->v.sparse = memcpy(palloc(Max(sparse, 1)), v->sparse, sparse);
+	return ix;
+}
+
+uint32
+sift_col_unit_index_find(const SiftColUnitIndex *ix, uint32 sb, SiftKey key)
+{
+	uint32		row;
+
+	return sift_cunit_find_rows(&ix->v, sb, &key, 1, &row) ? row : PG_UINT32_MAX;
+}
+
 /* The TIDs of the rows ords (ascending ordinals of the unit as stored), without the keys of the others */
 void
 sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint32 n, ItemPointerData *tids)

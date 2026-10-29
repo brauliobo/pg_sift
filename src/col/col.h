@@ -922,6 +922,14 @@ extern void sift_col_group_parents(const SiftColUnit *unit, int group, const uin
 
 /* The TIDs of the rows of sel (room for sel->count), in row order */
 extern void sift_col_tids(const SiftColUnit *unit, const SiftColSel *sel, ItemPointerData *tids);
+/*
+ * Where the rows of a unit that is not key-cut sit, without their keys: a copy of the unit's page directory (some 20 bytes a page), kept after the
+ * unit is left, in which a TID is bisected to the ordinal of its row. NULL for a key-cut unit (its rows have to be decoded).
+ */
+typedef struct SiftColUnitIndex SiftColUnitIndex;
+extern SiftColUnitIndex *sift_col_unit_index(const SiftColUnit *unit);
+/* The ordinal of the row at key in the unit of superblock sb, PG_UINT32_MAX when the unit holds no row there (liveness is not looked at) */
+extern uint32 sift_col_unit_index_find(const SiftColUnitIndex *ix, uint32 sb, SiftKey key);
 /* The same for the rows ords (ascending ordinals of the unit), n of them: without decoding the keys of the other rows */
 extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint32 n, ItemPointerData *tids);
 
