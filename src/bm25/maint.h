@@ -178,6 +178,8 @@ extern int64 sift_maint_orphan_sweep(Relation index);
  * Reports at elevel what it did.
  */
 extern void sift_maint_truncate(Relation index, int elevel);
+extern bool sift_maint_standby_streams(void);
+extern bool sift_maint_file_is_new(Relation rel);
 
 /*
  * VACUUM's space step (core/store.h P7): the free blocks of the relation are worth giving back (a heap's thresholds), AccessExclusiveLock is
