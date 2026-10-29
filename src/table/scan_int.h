@@ -66,6 +66,8 @@ typedef struct SiftTblScan
 	uint64	   *an_ranges;		/* [an_nranges][2] vblocks [from, to) of the groups */
 	int			an_nranges;
 	uint64		an_v;			/* vblocks of the groups */
+	uint32		an_keep;		/* a group vblock gives one row of this many: the sample needs far fewer rows than the table has */
+	uint64		an_mask[(SIFT_TBL_MAX_OFF + 63) / 64];	/* the offsets kept in the vblock read */
 	HeapTuple	arows[SIFT_TBL_MAX_OFF];	/* the rows of the group vblock read, with the weight of each in the estimate */
 	TransactionId axmin[SIFT_TBL_MAX_OFF];	/* and the version of each */
 	CommandId	acmin[SIFT_TBL_MAX_OFF];

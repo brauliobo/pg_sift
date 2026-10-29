@@ -37,6 +37,9 @@
  * (liverows and deadrows are weighted); when M = P, every vblock is read: the counts are exact, as a heap's. Either way
  * liverows / M * P estimates the rows of the table whatever the layout.
  */
+/* rows the sampler is given for each row it keeps at most (targrows): enough that thinning does not show in the statistics */
+#define ANALYZE_ROWS_PER_TARGET 4
+
 static void
 analyze_start(SiftTblScan *s)
 {
@@ -65,6 +68,12 @@ analyze_start(SiftTblScan *s)
 		if (i < s->nseg)
 			at = s->seg[i].vbase + s->seg[i].vcap;
 	}
+	/* a row of a column group costs about 3,000 instructions to materialize and the sampler keeps targrows of the rows it is given: thinning them
+	 * (independently of their values) leaves a uniform sample of the table, with each row kept standing for an_keep, in the counts */
+	if (s->an_v > 0)
+		s->an_keep = Max(1, (uint64) ((double) s->dir->meta.ndocs / s->an_v * Min(s->an_v, s->an_m) / (ANALYZE_ROWS_PER_TARGET * s->an_m)));
+	else
+		s->an_keep = 1;
 }
 
 /* The vblock number of the n-th vblock of the groups */
@@ -109,10 +118,21 @@ analyze_group_block(SiftTblScan *s, uint64 c)
 static void
 analyze_load_vblock(SiftTblScan *s)
 {
+	BlockNumber vblock = analyze_group_vblock(s, s->an_cur++);
+	const uint64 *keep = NULL;
+
 	if (s->g == NULL)
 		s->g = scan_gscan(s, SnapshotSelf);
+	if (s->an_keep > 1)
+	{
+		memset(s->an_mask, 0, sizeof(s->an_mask));
+		for (uint32 o = 0; o < SIFT_TBL_MAX_OFF; o++)
+			if ((((o + 1) * UINT64CONST(2654435761) + vblock * UINT64CONST(40503)) * UINT64CONST(0x9E3779B97F4A7C15) >> 40) % s->an_keep == 0)
+				sift_col_bit_set(s->an_mask, o);
+		keep = s->an_mask;
+	}
 	s->ari = 0;
-	s->narows = sift_tbl_gscan_block(s->g, analyze_group_vblock(s, s->an_cur++), NULL, s->arows, s->axmin, s->acmin);
+	s->narows = sift_tbl_gscan_block(s->g, vblock, keep, s->arows, s->axmin, s->acmin);
 }
 
 bool
@@ -199,12 +219,12 @@ sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN doubl
 		s->ari++;
 		if (!sift_tbl_visible(rel, s->st, SnapshotSelf, &rv))
 		{
-			*deadrows += s->aweight;
+			*deadrows += s->aweight * s->an_keep;
 			heap_freetuple(tup);
 			continue;
 		}
 		sift_tbl_store(slot, tup);
-		*liverows += s->aweight;
+		*liverows += s->aweight * s->an_keep;
 		return true;
 	}
 	return false;
