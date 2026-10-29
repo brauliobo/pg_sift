@@ -142,11 +142,11 @@ extend_layout(AggExec *ex)
 
 /* does a combo take a column of the rows combo ci matched (a lookup key or expression over an earlier lookup's output)? */
 static bool
-combo_read(AggExec *ex, int ci)
+combo_read(const SiftAggSpec *s, int ci)
 {
-	for (int o = 0; o < ex->spec->ncombo; o++)
-		for (int p = 0; p < ex->spec->combo[o].nleaves; p++)
-			if (o != ci && ex->spec->combo[o].leaf[p] < 0 && ex->spec->combo[o].refcombo[p] == ci)
+	for (int o = 0; o < s->ncombo; o++)
+		for (int p = 0; p < s->combo[o].nleaves; p++)
+			if (o != ci && s->combo[o].leaf[p] < 0 && s->combo[o].refcombo[p] == ci)
 				return true;
 	return false;
 }
@@ -169,13 +169,13 @@ semi_pass(AggExec *ex, int ci)
  * key of an int4 leaf of the rows, whose combo gives nothing but the rest of the ON clause (a condition of the table's own, which the load tests).
  */
 bool
-semi_lut_possible(AggExec *ex, int ci)
+semi_lut_possible(const SiftAggSpec *s, int ci, int nbase)
 {
-	const SiftAggCombo *cb = &ex->spec->combo[ci];
-	const SiftAggJoin *j = &ex->spec->join[cb->join];
+	const SiftAggCombo *cb = &s->combo[ci];
+	const SiftAggJoin *j = &s->join[cb->join];
 
 	return (j->kind == SJ_SEMI || j->kind == SJ_ANTI || j->kind == SJ_INNER) && j->nkey == 1 && j->keypos[0] >= 0 && !j->keynull[0] && cb->nleaves == 1 &&
-		j->keytype[0] != TEXTOID && j->keytype[0] != VARCHAROID && cb->leaf[0] >= 0 && cb->leaf[0] < ex->nbase && sift_agg_semi_lut && !combo_read(ex, ci) &&
+		j->keytype[0] != TEXTOID && j->keytype[0] != VARCHAROID && cb->leaf[0] >= 0 && cb->leaf[0] < nbase && sift_agg_semi_lut && !combo_read(s, ci) &&
 		cb->nslots == (j->fslot >= 0 ? 1 : 0) && !(j->fslot >= 0 && slot_reads_leaf(cb, j->fslot));
 }
 
@@ -190,7 +190,7 @@ semi_lut_build(AggExec *ex, int ci)
 				hi = PG_INT32_MIN;
 	bool	   *keep;
 
-	if (!semi_lut_possible(ex, ci))
+	if (!semi_lut_possible(ex->spec, ci, ex->nbase))
 		return;
 	if (ex->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
 	{

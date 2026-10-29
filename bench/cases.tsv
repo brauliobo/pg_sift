@@ -53,7 +53,7 @@ keys_in_narrow_500k	the selectivity of the list is the one the planner kept for 
 keys_subq_500k	the rows a lookup join loads (`IN (SELECT ..)`, `EXISTS`, a join) are read by the heap scan	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 keys_exists_500k	when an equality of the joined table keeps a third of it or more	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 keys_join_500k	as an `IN` list of the table already was	keys	-	Custom Scan \(SiftAgg	native	-	ms	faster33	no
-keys_semi_load_first	a table that a semi, anti or inner join by an int4 column answers from a byte table of its keys	keys	-	fallback:Seq Scan on events_u	native	first_forced:sift.agg_force = on;sift.agg_lookup_cache_kb = 0;sift.agg_lookup_shared_kb = 0	ms	faster33	no
+keys_semi_load_first	a table that a semi, anti or inner join by an int4 column answers from a byte table of its keys	keys	-	Custom Scan \(SiftAgg	native	first:sift.agg_lookup_cache_kb = 0;sift.agg_lookup_shared_kb = 0	ms	faster33	no
 keys_in_few_256	a list of 256 keys over a range of a million values added about 2 ms to a scan that read two units	keys	-	fallback:Bitmap Heap Scan on events_u	native	-	ms	faster33	no
 count_distinct_spill	a group table that spills writes each `count(DISTINCT)` set	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no
 text_key_filtered	a near-unique text key under a filter made a table of ids as large as the rows read	orders	default+title	Group Keys: title	native	-	ms	faster33	no

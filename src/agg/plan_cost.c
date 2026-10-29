@@ -91,6 +91,7 @@
 #define AGG_VLEAF_ELEM		0.6		/* an element of an object looked up by key (a metric of a free key object), per row and key: 1, 2 and 4 keys of an object of 12 elements took 4.7 ms, 7.3 ms and 12.5 ms more than the group alone over 1,000,000 rows (0.55 ns an element) */
 #define AGG_EVAL_SLOT		60.0	/* PostgreSQL evaluating an expression for a value combination it has not seen: the datums, a few operators, the id or the copy of the result */
 #define AGG_JOIN_PROBE		58.0	/* a tuple's probe of a lookup table of 250,000 rows by its join key: the key's hash and the rows it finds, in the operators AGG_SCAN_SPEED scales (35 ns measured); it grows with the square root of the rows, as the table leaves the cache */
+#define AGG_JOIN_LUT		5.0		/* ... of a table answered from a byte table of its keys (semi_lut_build, in the cache of a core): 40 instructions a tuple measured on 985,000 tuples of a 550,000-key table */
 #define AGG_ENTRY_ROW		70.0	/* a new entry of a combo of a join that reads values beyond its key (a CASE of a lookup column and a measure): the hash insert and the id of its value, 215 ns measured with 2.8 million entries (2,040 instructions with one expression, 5,450 with seven) */
 #define AGG_ENTRY_SLOT		30.0	/* ... and each expression of the combo evaluated for it: 88 ns measured, 570 instructions of a numeric CASE */
 #define AGG_FAN_ROW			120.0	/* a joined tuple beyond the rows the scan reads (a lookup table with many rows for a key: a fact table joined from a date scan), for a lookup table past what the cache holds: the columns of the row bound and the ids of its values (1,330 instructions measured at 720,000 rows and at 2.9 million, 910 at 290,000); it grows with the square root of the rows past the cache up to AGG_FAN_CAP times */
@@ -444,6 +445,35 @@ on_tests_tuple(const SiftAggSpec *s, int ci)
 }
 
 /*
+ * Does the executor test a tuple against the keys of this join by a byte of a table (semi_lut_build, init.c) rather than by a hash probe? An inner join by a key the
+ * table holds about once does; a repeated key falls back to the hash.
+ */
+static bool
+join_lut(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc)
+{
+	const SiftAggCombo *cb = &s->combo[jc->combo];
+	const SiftAggJoin *j = &s->join[cb->join];
+	double		rpk;
+
+	if (!semi_lut_possible(s, jc->combo, c->lay->nleaves - c->nvleaf) || c->lay->leaf[cb->leaf[0]].vtype != SCV_I32)
+		return false;
+	if (j->kind != SJ_INNER)
+		return true;
+	rpk = OidIsValid(j->relid) && j->tkey[0] == NULL ? sift_agg_rows_per_key(j->relid, j->keyatt[0], c->root->simple_rel_array[jc->rti]->tuples) : 0;
+	return rpk > 0 && rpk <= 2.0;
+}
+
+/* is the table loaded as keys alone (lookup_keys_only), the columns its filter reads evaluated at the load? */
+static bool
+join_keys_only(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc)
+{
+	const SiftAggJoin *j = &s->join[s->combo[jc->combo].join];
+
+	return jc->cpath == NULL && join_lut(c, s, jc) && lookup_keys_only(s, c->lay, jc->combo, c->lay->nleaves - c->nvleaf) &&
+		(j->ncol == 0 || (sift_agg_lookup_pushdown && j->fslot >= 0));
+}
+
+/*
  * The evaluation PostgreSQL does for the combos with a 64-bit leaf or a direct slot: a hash probe per tuple for the id of each wide
  * leaf, and the expressions once per distinct combination of the leaves (every tuple when the column has as many values). Combos of
  * dictionary and small integer leaves have few combinations and keep the price they had.
@@ -481,7 +511,7 @@ combo_eval_cost(AggCtx *c, const SiftAggSpec *s, double rows, double agg_rows, d
 				for (int p = 0; p < cb->nleaves; p++)
 					if (cb->leaf[p] < 0)
 						probes = Min(alive, sqrt(alive * Max(agg_rows, 1.0)));
-				cost += probes * AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0);
+				cost += probes * (join_lut(c, s, jc) ? AGG_JOIN_LUT : AGG_JOIN_PROBE * sqrt(Max(c->root->simple_rel_array[jc->rti]->rows, 1.0) / 250000.0));
 				/* the rest of the ON clause is PostgreSQL's expression, for each entry; the executor's evaluation does not get AGG_SCAN_SPEED's share (110 ns an entry measured, 36 counted) */
 				if (on_tests_tuple(s, ci) && !combo_wsum_only(s, ci))
 				{
@@ -2535,7 +2565,7 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 
 		relation_close(rel, NoLock);
 		/* the pages of the heap are not read by a load from the leaves, whose bytes are in the price of the row */
-		*row_cost = cols ? AGG_LOAD_ROW_COLS * pow(Max(tuples / AGG_LOAD_BIG, 1.0), 0.4) + nnum * AGG_LOAD_NUMERIC : AGG_LOAD_ROW + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
+		*row_cost = cols ? AGG_LOAD_ROW_COLS * pow(Max(tuples / AGG_LOAD_BIG, 1.0), 0.4) + nnum * AGG_LOAD_NUMERIC : (join_keys_only(c, s, jc) ? AGG_LOAD_KEY : AGG_LOAD_ROW) + jrel->pages * Min(seq_page_cost, random_page_cost) / (tuples * cpu_operator_cost);
 	}
 	return tuples;
 }
