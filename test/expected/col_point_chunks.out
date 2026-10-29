@@ -12,7 +12,7 @@ SELECT i, (i * 7919) % 3000, CASE WHEN i % 61 = 0 THEN NULL ELSE 'p' || to_char(
 FROM generate_series(1, 8000) i;
 CREATE INDEX lz_t ON lz USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, s sift.col_text_ops, t sift.col_text_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'id, k, s, t', cube_minmax = false);
 NOTICE:  sift_col index "lz_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT sift.col_promote('lz_t'::regclass) >= 0 AS promoted;
  promoted 
@@ -390,7 +390,7 @@ ALTER TABLE lzc ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO lzc (id, k) SELECT ks.k % 1000 * 100 + i, ks.k FROM (SELECT unnest(ARRAY[2077, 4082] || ARRAY(SELECT generate_series(2100, 2167))) AS k) ks, generate_series(1, 20) i;
 CREATE INDEX lzc_t ON lzc USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops) WITH (write_buffer_limit = 256, point_tid_columns = 'k', cube_minmax = false);
 NOTICE:  sift_col index "lzc_t": point_tid_columns lists the heap addresses of the rows
-DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 16 (a library before 3.3 cannot read them) and the build takes about 65% longer than without a directory.
+DETAIL:  A lookup of the access method returns the addresses without reading a unit, except for a unit with a dead row; the segments are column format minor 33 (a library before 3.7 cannot read them) and the build takes about 65% longer than without a directory.
 HINT:  Drop the option, or set sift.col_format_minor to 14, to list the rows of the segment instead.
 SELECT sift.col_promote('lzc_t'::regclass) >= 0 AS promoted;
  promoted 

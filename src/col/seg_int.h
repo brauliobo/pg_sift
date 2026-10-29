@@ -327,6 +327,7 @@ typedef struct PointLeaf
 	uint32		words;
 	bool		tids;			/* the slots list heap addresses (column format minor 16), not rows of the segment */
 	bool		zrows;			/* the lists of rows are coded as those of addresses (SIFT_CPOINT_MODE_ZROWS) */
+	bool		exact;			/* the slot count is not a power of two (SIFT_CPOINT_EXACT) */
 	uint32		ndense;			/* the keys that have no list (SIFT_CPOINT_DENSE), counted by sift_cseg_verify_points */
 } PointLeaf;
 

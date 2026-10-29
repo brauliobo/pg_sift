@@ -37,7 +37,7 @@ VACUUM (ANALYZE) dh;
 SELECT count(*) > 1 AS segments, max(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  segments | format 
 ----------+--------
- t        |     25
+ t        |     33
 (1 row)
 
 SELECT sift.col_verify('dh_idx', true);
@@ -122,7 +122,7 @@ REINDEX INDEX dh_idx;
 SELECT min(format) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 
 --------
-     25
+     33
 (1 row)
 
 SELECT sift.col_verify('dh_idx', true);

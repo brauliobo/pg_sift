@@ -32,6 +32,8 @@ out=$(SIFT_TMP="$TAPDIR/old-lib" SIFT_PORT=$((SIFT_PORT + 15)) "$REPO/scripts/ol
 rc=$?
 if ((rc != 77)); then # and the other way: the groups the older library tags under pressure are read, frozen or dropped
 	out+=$'\n'$(SIFT_TMP="$TAPDIR/old-lib-up" SIFT_PORT=$((SIFT_PORT + 16)) "$REPO/scripts/old-lib-check.sh" upgrade 2>&1)
+	# and the point directories of 3.6 (a power of two of slots) beside the exact count of this tree, in its own cached build of 3.6.0
+	out+=$'\n'$(env -u SIFT_OLD_DIR SIFT_OLD_REF=v3.6.0 SIFT_TMP="$TAPDIR/old-lib-pt" SIFT_PORT=$((SIFT_PORT + 17)) "$REPO/scripts/old-lib-check.sh" points 2>&1)
 fi
 if ((rc == 77)); then
 	echo "1..0 # SKIP $(grep -h '^SKIP ' <<<"$out" | head -1 | sed 's/^SKIP //')"

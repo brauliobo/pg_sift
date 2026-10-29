@@ -8,6 +8,9 @@
 #   scripts/old-lib-check.sh check DATADIR PORT SOCKDIR the checks against the data directory of a stopped cluster (tables ctl, unf, unf_v,
 #                                                       unf_f of `run`) with a server that loads the older library
 #   scripts/old-lib-check.sh run                        the whole of it: a cluster of this tree writes the tables, then `check`
+#   scripts/old-lib-check.sh points                     point directories: the older library (SIFT_OLD_REF, default v3.6.0) writes an index with them, this tree reads the same
+#                                                       files as it reads its own (answers, verify, writes, a merge that writes column format 33), and the older
+#                                                       library refuses the merged index with the format error, and reads it again after a REINDEX at the setting 14
 #   scripts/old-lib-check.sh upgrade                    the other way: the older library writes a table with the groups it tags under pressure (a
 #                                                       committed load and a rolled back one), this tree reads them as it reads its own and VACUUM
 #                                                       freezes and drops them
@@ -193,10 +196,64 @@ upgrade() {
 	"$PG" stop >/dev/null
 }
 
+# a point directory of the older library (a power of two of slots), then this tree on the same files
+points() {
+	local root log sql new_md5 old_md5 w
+	OLD_REF=${SIFT_OLD_REF:-v3.6.0}
+	export SIFT_TMP=${SIFT_TMP:-${XDG_CACHE_HOME:-$HOME/.cache}/sift/old-lib-points}
+	export SIFT_PORT=${SIFT_PORT:-56140}
+	root=$(build) || exit $?
+	[[ -f ${SIFT_ROOT:-$SIFT_TMP/root}/.flavor ]] || "$PG" install >/dev/null 2>&1 || { echo "FAIL building the tree under test" >&2; exit 1; }
+	[[ -n ${KEEP:-} ]] || trap '"$PG" destroy >/dev/null 2>&1' EXIT
+	"$PG" start >/dev/null && "$PG" stop >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
+	log=$SIFT_TMP/old-lib-points.log
+	# the shapes of the point lookups: a key present, absent, a list, two columns, and a text key
+	w="k = 777 OR k IN (1, 2, 3, 99999, 100002) OR s = 's5' OR s IN ('s1', 'none') OR id = 4242"
+	sql="SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) FROM pk WHERE $w"
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts"; return; }
+	"${OLD_PSQL[@]}" -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE pk AS SELECT g AS id, (g * 7919) % 100003 AS k, 's' || (g * 31) % 6000 AS s FROM generate_series(1, 60000) g" \
+		-c "CREATE INDEX pk_i ON pk USING sift_col (id, k, s) WITH (key_cut = 'off', point_columns = 'id', point_tid_columns = 'k, s')" >/dev/null ||
+		{ fail "the older library writes the index"; pg_ctl -D "$SIFT_TMP/data" -m immediate stop >/dev/null 2>&1; return; }
+	old_md5=$("${OLD_PSQL[@]}" -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
+	[[ $("${OLD_PSQL[@]}" -c "SELECT min(format) >= 16 AND max(format) < 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] && pass "the older library wrote column format 16 or more, below 33" ||
+		fail "the older library wrote column format 16 or more, below 33"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts on the files of the older library"; return; }
+	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
+	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
+	[[ $new_md5 == "$old_md5" ]] && pass "this tree reads the point directories of the older library with its answers" || fail "this tree reads the point directories of the older library (got [$new_md5], want [$old_md5])"
+	[[ $(psql_new -c "SET enable_indexscan = off" -c "SET enable_bitmapscan = off" -c "SET sift.enable_col_scan = off" -c "$sql" | tail -1) == "$old_md5" ]] &&
+		pass "... and with the heap's" || fail "... and with the heap's"
+	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('pk_i', true)) z") == 1 ]] && pass "sift.col_verify finds the tables sound" || fail "sift.col_verify finds the tables sound"
+	psql_new -c "INSERT INTO pk SELECT g, (g * 7919) % 100003, 's' || (g * 31) % 6000 FROM generate_series(60001, 90000) g" -c "SELECT sift.col_promote('pk_i'::regclass)" >/dev/null
+	[[ $(psql_new -c "SELECT min(format) < 33 AND max(format) = 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] &&
+		pass "a new segment is column format 33 beside the older one" || fail "a new segment is column format 33 beside the older one"
+	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
+	old_md5=$(psql_new -c "SET enable_indexscan = off" -c "SET enable_bitmapscan = off" -c "SET sift.enable_col_scan = off" -c "$sql" | tail -1)
+	[[ $new_md5 == "$old_md5" ]] && pass "both layouts answer as the heap" || fail "both layouts answer as the heap (got [$new_md5], want [$old_md5])"
+	psql_new -c "SELECT sift.col_merge('pk_i'::regclass, true)" >/dev/null
+	[[ $(psql_new -c "SELECT min(format) = 33 AND max(format) = 33 FROM sift.col_segments('pk_i') WHERE kind = 'immutable'") == t ]] && pass "a merge writes column format 33" || fail "a merge writes column format 33"
+	[[ $(psql_new -c "SELECT count(*) FROM (SELECT sift.col_verify('pk_i', true)) z") == 1 ]] && pass "sift.col_verify finds the merged tables sound" || fail "sift.col_verify finds the merged tables sound"
+	new_md5=$(psql_new -c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "$sql" | tail -1)
+	[[ $new_md5 == "$old_md5" ]] && pass "the merged index answers as the heap" || fail "the merged index answers as the heap"
+	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
+	FORMAT_ERROR='column format 1\.33'
+	expect_refused "the older library refuses column format 33 with the format error" "SET enable_seqscan = off; SELECT count(*) FROM pk WHERE k = 777"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
+	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX pk_i" >/dev/null
+	"$PG" stop >/dev/null
+	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the REINDEX"; return; }
+	expect_rows "the older library reads the index again after REINDEX at the setting 14, with the answers of the heap" "SET enable_seqscan = off; SET enable_bitmapscan = off; $sql" "$old_md5"
+	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
+}
+
 case ${1:-} in
 	build) build ;;
 	check) shift; check "$@"; exit $FAILED ;;
 	run) run; exit $FAILED ;;
 	upgrade) upgrade; exit $FAILED ;;
+	points) points; exit $FAILED ;;
 	*) sed -n '2,12p' "$0"; exit 2 ;;
 esac

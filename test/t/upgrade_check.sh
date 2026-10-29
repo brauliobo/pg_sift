@@ -11,7 +11,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 68
+plan 71
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -129,6 +129,13 @@ q clean "CREATE INDEX facts_cnt ON key_facts USING sift_col (id, k, pad) WITH (c
 check "an index with row counts and a hash is column format 25" grep -q -E '^ok +facts_cnt +index +format 1\.[0-9]+, column format 25' <<<"$(uc clean)"
 check "to 3.4: an index with a hash is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_cnt .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_cnt" <<<"$(uc --to 3.4 clean)"
 q clean "DROP INDEX facts_cnt" >/dev/null
+# a point directory has the exact number of slots: column format 33, which 3.6 refuses; the setting 14 writes the power of two
+q clean "CREATE INDEX facts_exact ON key_facts USING sift_col (id, k) WITH (cube_minmax = false, key_columns = 'off', point_columns = 'id')" >/dev/null
+check "an index with a point directory is column format 33" grep -q -E '^ok +facts_exact +index +format 1\.[0-9]+, column format 33' <<<"$(uc clean)"
+check "to 3.6: an index with a point directory is a blocker that says to write the setting 14" grep -q -E "^blocker +facts_exact .*SET sift.col_format_minor = 14, then REINDEX INDEX facts_exact" <<<"$(uc --to 3.6 clean)"
+q clean "SET sift.col_format_minor = 14" "REINDEX INDEX facts_exact" >/dev/null
+check "to 3.6: the advice makes the index readable" test -z "$(row "$(uc --to 3.6 clean)" blocker facts_exact)"
+q clean "DROP INDEX facts_exact" >/dev/null
 q clean "DROP TABLE key_facts" >/dev/null
 # keys that spread over the range get a summary from the REINDEX, so the index leaves the list
 q clean "CREATE INDEX scat_late ON scat USING sift_col (id, k, g, n) WITH (cube_minmax = false, superunit = 0)" "ALTER INDEX scat_late SET (key_columns = 'k')" >/dev/null

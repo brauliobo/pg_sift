@@ -697,14 +697,14 @@ analyze_if_unknown(Relation heap, Relation index)
  * reads every unit, whatever the zones and the key lists: the keys are spread over the whole range of each unit. The directory of heap addresses (option point_tid_columns: an equality or
  * an IN list returns the addresses with no unit read) answers it in a flat 0.2 M instructions, and a 16-key IN list in 0.49 M (a b-tree 0.50 M; the directory of
  * rows, point_columns, reads a unit for each key: 0.74 M). Measured on 200,000 to 1,000,000 random unique int4, int8 rows, one column: the equality 1.17 M and 5.17 M instructions without it (about
- * 0.17 M + 5 instructions a row), 0.2 M with it (a b-tree 0.14 M); the index 16.5 bytes a row larger (8.3 to 25.4 MB at 1,000,000 int8 rows, a b-tree 22.5 MB); CREATE INDEX
+ * 0.17 M + 5 instructions a row), 0.2 M with it (a b-tree 0.14 M); the index 16.5 bytes a row larger with the table sized to a power of two (8.3 to 25.4 MB at 1,000,000 int8 rows, a b-tree 22.5 MB), 10.9 to 12.2 with the exact slot count (column format minor 33; 400,000 rows of 1.0, 0.75 and 0.5 distinct values a row: 10.9, 12.2 and 11.1); CREATE INDEX
  * +21% instructions (1,756 to 2,126 a row, 1,719 to 2,092 for int4). B = log2(S) / log2(1.05) against C = G / 3 + W / 5.
  */
 #define POINT_AUTO_FIXED		170000.0	/* instructions of an equality that reads the units, whatever the rows */
 #define POINT_AUTO_ROW			5.0			/* ... and for each row of the table */
 #define POINT_AUTO_LOOKUP		200000.0	/* instructions of an equality through the directory */
 #define POINT_AUTO_MIN_SAVED	100000.0
-#define POINT_AUTO_DIR_BYTES	16.5
+#define POINT_AUTO_DIR_BYTES	11.5
 #define POINT_AUTO_BUILD_PCT	21.0
 #define POINT_AUTO_OVERHEAD		0.4			/* the bytes a row of an index beyond its values: units, zones, headers */
 #define POINT_AUTO_UNIQUE		0.5			/* the distinct values of the column over the rows of the table: nearly unique */

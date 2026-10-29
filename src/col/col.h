@@ -52,7 +52,8 @@ struct SiftCGOrdBuf;
 #define SIFT_COL_FORMAT_FINEORD	30		/* 3.6: the global order of a leaf (minor 21) is in chunks of 512 entries, not 1024: a seek and a cursor decode half of the entries; written for every global order under sift.col_format_minor 15 or more */
 #define SIFT_COL_FORMAT_GROUPORD 31		/* 3.6: the segment has, besides the global order of a date or timestamp leaf, a second block of it sorted by (group, key) in the slot ncols + leaf: WHERE group = x ORDER BY key LIMIT n reads the entries of x; written for the group the build chose (order_array_group 'auto: g') */
 #define SIFT_COL_FORMAT_TEXTORD	32		/* 3.6: the global order of a text leaf: the keys are the ranks of the segment's strings under the leaf's collation, and the strings end the block (order_array_columns names the text column) */
-#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_TEXTORD	/* the newest minor this build reads */
+#define SIFT_COL_FORMAT_EXACTSLOT	33	/* 3.7: the tables of the point directories (minor 14, 16) have ceil(keys * 4 / 3) slots, not the next power of two: 30% less for a directory; written under sift.col_format_minor 15 or more */
+#define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_EXACTSLOT	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */

@@ -49,6 +49,7 @@ typedef struct PointAcc
 	uint32		gcap;
 	OrdBlock	ob[2];			/* its blocks once built: the plain order, and (the group of the build's choice) the order sorted by group, which is the second slot of the leaf */
 	uint32		nslots;			/* the block, once built at the end of the segment (0: none) */
+	bool		exact;			/* ... with the slot count of SIFT_CPOINT_EXACT */
 	uint32		nkeys;
 	uint32		words;
 	StringInfoData tab;
@@ -953,14 +954,15 @@ build_points(SiftColSegWriter *w)
 
 			initStringInfo(&a->tab);
 			MemoryContextSwitchTo(old);
+			a->exact = w->setting >= SIFT_COL_FORMAT_PRESENCE;
 			if (a->tids)
 			{
-				sift_cpoint_build_tids(a->key, a->tid, a->n, &a->tab, &a->nslots, &a->nkeys, &a->words);
+				sift_cpoint_build_tids(a->key, a->tid, a->n, a->exact, &a->tab, &a->nslots, &a->nkeys, &a->words);
 				w->anytids = true;
 			}
 			else
 			{
-				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_DENSE_ROWS, (uint32) w->rows / SIFT_CPOINT_DENSE_SHARE) : 0, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
+				sift_cpoint_build(a->key, a->row, a->n, elem_point(w, c) ? Max(SIFT_CPOINT_DENSE_ROWS, (uint32) w->rows / SIFT_CPOINT_DENSE_SHARE) : 0, a->exact, &a->tab, &a->nslots, &a->nkeys, &a->words, &a->n);
 				w->anytids |= a->nslots > 0 && elem_point(w, c);
 			}
 			w->anypoints |= a->nslots > 0;
@@ -1025,7 +1027,7 @@ write_points(SiftColSegWriter *w, SiftSectionRef *sec)
 	for (int c = 0; c < ncols; c++)
 	{
 		const PointAcc *a = &w->pt[c];
-		uint32		rec[6] = {c, a->nslots, a->n, a->nkeys, a->words, a->tids ? SIFT_CPOINT_MODE_TIDS : elem_point(w, c) ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS};
+		uint32		rec[6] = {c, a->nslots, a->n, a->nkeys, a->words, (a->tids ? SIFT_CPOINT_MODE_TIDS : elem_point(w, c) ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) | (a->exact ? SIFT_CPOINT_EXACT : 0)};
 
 		if (a->nslots == 0)
 			continue;
@@ -1645,7 +1647,7 @@ sift_colw_finish(SiftColSegWriter *w, SiftSegEntry *entry)
 		w->format = Max(w->format, SIFT_COL_FORMAT_HLL);
 	build_points(w);
 	if (w->anypoints)
-		w->format = Max(w->format, w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
+		w->format = Max(w->format, w->setting >= SIFT_COL_FORMAT_PRESENCE ? SIFT_COL_FORMAT_EXACTSLOT : w->anytids ? SIFT_COL_FORMAT_POINTTID : SIFT_COL_FORMAT_DICTIDX);
 	if (w->anyord)
 		w->format = Max(w->format, sift_cgord_rows() == SIFT_CGORD_ROWS_FINE ? SIFT_COL_FORMAT_FINEORD : SIFT_COL_FORMAT_GORDER);
 	if (w->anydual)

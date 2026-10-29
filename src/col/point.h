@@ -19,6 +19,7 @@
 #define SIFT_CPOINT_MODE_ORDER	2		/* ... or the record is the global order block of the leaf (col/gorder.h): chunks, entries, values, 0, words of 8 bytes */
 #define SIFT_CPOINT_MODE_TIDS	1		/* ... or the heap addresses of the rows */
 #define SIFT_CPOINT_MODE_ZROWS	3		/* ... or the slots list rows as the table of addresses lists them: a list is {u32 count, u32 bytes, the first row then the differences in LEB128} (the values of a list) */
+#define SIFT_CPOINT_EXACT	0x100		/* in record word 5 with a mode: the table has ceil(keys * 4 / 3) slots, not a power of two, and a key starts at the position the high 32 bits of its hash scale to (column format minor 33) */
 #define SIFT_CPOINT_TID_LIST	UINT64CONST(0x8000)	/* in a table of addresses, in the low 16 bits of a slot's payload: the high 32 are the word offset of a list, not a block (no offset number has this bit) */
 #define SIFT_CPOINT_TID_MAXOFF	512		/* an offset number of the address codes below this, which every heap page of 8 kB does (MaxHeapTuplesPerPage is 291) */
 #define SIFT_CPOINT_EMPTY	UINT64_MAX
@@ -43,14 +44,21 @@ extern const char *sift_cpoint_syntax(const char *opt);
 
 extern uint64 sift_cpoint_hash(int64 key);
 
-/* The slots of a table of n keys: a power of two, at most 3/4 full */
-extern uint32 sift_cpoint_slots(uint32 n);
+/* The slots of a table of n keys, at most 3/4 full: exactly enough (exact), or the next power of two */
+extern uint32 sift_cpoint_slots(uint32 n, bool exact);
 
 /* A slot is the fingerprint (the low 32 bits of the hash) over the row of a key with one row, or SIFT_CPOINT_LIST and the word offset of its list; it starts at the position the high 32 bits give */
 static inline uint32
-sift_cpoint_pos(uint64 hash, uint32 nslots)
+sift_cpoint_pos(uint64 hash, uint32 nslots, bool exact)
 {
-	return (uint32) (hash >> 32) & (nslots - 1);
+	return exact ? (uint32) (((hash >> 32) * nslots) >> 32) : (uint32) (hash >> 32) & (nslots - 1);
+}
+
+/* The slot after p, wrapping at the end of the table */
+static inline uint32
+sift_cpoint_next(uint32 p, uint32 nslots)
+{
+	return p + 1 == nslots ? 0 : p + 1;
 }
 
 static inline bool
@@ -86,7 +94,7 @@ sift_cpoint_tid_key(uint64 code)
  * Appends the leaf's block for the n entries (key, address) to out, addresses ascending in each key (sift_cpoint_build for the table of heap addresses; the
  * numbers it returns are the same: words counts the words of the lists, each padded to a word).
  */
-extern void sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words);
+extern void sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, bool exact, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words);
 
 /*
  * Appends the leaf's block for the n entries (key, row) to out, rows ascending in each key: the table (nslots * 8 bytes), then the lists, each {u32 count (2 or
@@ -94,6 +102,6 @@ extern void sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n
  * (0: no limit) has the payload SIFT_CPOINT_DENSE and no list; nrows is the rows the lists hold, a dense key counting one. With dense > 0 the table is of the
  * values of a list (SIFT_CPOINT_MODE_ZROWS): the lists are those of the table of addresses, and the rows of each key are listed once.
  */
-extern void sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows);
+extern void sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, bool exact, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows);
 
 #endif

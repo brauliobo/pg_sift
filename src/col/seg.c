@@ -399,7 +399,9 @@ points_read(SiftColSegment *seg)
 	seg_read(seg, s->off + foot[0] + sizeof(hdr), (hdr[2] + hdr[3]) * SIFT_CPOINT_RECLEN, recs);
 	for (uint32 i = 0; i < hdr[2] + hdr[3]; i++)
 	{
-		uint32		rec[6];
+		uint32		rec[6],
+					mode;
+		bool		exact;
 		uint64		at;
 		uint64		size;
 
@@ -421,15 +423,17 @@ points_read(SiftColSegment *seg)
 			continue;
 		}
 		size = ALIGN8((uint64) rec[1] * sizeof(uint64) + (uint64) rec[4] * sizeof(uint32));
-		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || rec[5] > (hdr[1] == SIFT_CPOINT_VERSION || hdr[1] == SIFT_CPOINT_VERSION_ORD ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) ||
-			rec[1] < 16 || (rec[1] & (rec[1] - 1)) != 0 || rec[3] == 0 ||
-			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (rec[5] == SIFT_CPOINT_MODE_TIDS || rec[5] == SIFT_CPOINT_MODE_ZROWS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
+		mode = rec[5] & ~SIFT_CPOINT_EXACT;
+		exact = (rec[5] & SIFT_CPOINT_EXACT) != 0;
+		if (rec[0] >= (uint32) seg->schema->ncols || (int64) rec[0] <= prev || mode > (hdr[1] == SIFT_CPOINT_VERSION || hdr[1] == SIFT_CPOINT_VERSION_ORD ? SIFT_CPOINT_MODE_ZROWS : SIFT_CPOINT_MODE_ROWS) ||
+			rec[1] < 16 || (!exact && (rec[1] & (rec[1] - 1)) != 0) || rec[3] == 0 ||
+			rec[3] > rec[1] || rec[2] < rec[3] || rec[2] >= SIFT_CPOINT_SEG_ROWS || (uint64) rec[4] > (mode == SIFT_CPOINT_MODE_TIDS || mode == SIFT_CPOINT_MODE_ZROWS ? 3 * (uint64) rec[2] : (uint64) rec[2] + rec[3]) ||
 			at != next || size > s->len - sizeof(foot) - next)
 			corrupt(seg, "The point directory %u of the DICT section is malformed.", i);
 		/* the units of a key-cut segment are not block ranges: an address names no unit, so such a segment lists rows */
-		if (rec[5] == SIFT_CPOINT_MODE_TIDS && sift_cseg_keyed(&seg->entry))
+		if (mode == SIFT_CPOINT_MODE_TIDS && sift_cseg_keyed(&seg->entry))
 			corrupt(seg, "The point directory of leaf %u lists heap addresses, which a key-cut segment cannot; REINDEX the index.", rec[0]);
-		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4], rec[5] == SIFT_CPOINT_MODE_TIDS, rec[5] == SIFT_CPOINT_MODE_ZROWS};
+		pv->pt[rec[0]] = (PointLeaf) {s->off + at, rec[1], rec[3], rec[2], rec[4], mode == SIFT_CPOINT_MODE_TIDS, mode == SIFT_CPOINT_MODE_ZROWS, exact};
 		prev = rec[0];
 		next += size;
 	}
@@ -3051,7 +3055,7 @@ point_list_count(SiftColSegment *seg, int col, const PointLeaf *pl, uint32 off)
 static void
 point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*fn) (void *, uint64, uint32), void *arg)
 {
-	uint32		p = sift_cpoint_pos(h, pl->nslots);
+	uint32		p = sift_cpoint_pos(h, pl->nslots, pl->exact);
 
 	for (uint32 steps = 0;; steps++)
 	{
@@ -3067,7 +3071,7 @@ point_probe(SiftColSegment *seg, int col, const PointLeaf *pl, uint64 h, void (*
 				fn(arg, win[j], p + j);
 		if (j < m)
 			break;
-		p = (p + m) & (pl->nslots - 1);
+		p = p + m == pl->nslots ? 0 : p + m;
 	}
 }
 
@@ -4292,6 +4296,8 @@ sift_cseg_verify_points(SiftColSegment *seg)
 
 		if (pl[c].nslots == 0)
 			continue;
+		if (pl[c].exact && seg->entry.format < SIFT_COL_FORMAT_EXACTSLOT)
+			corrupt(seg, "The point directory of leaf %d has an exact slot count in a segment of column format 1.%d.", c, seg->entry.format);
 		((PointLeaf *) pl)[c].ndense = 0;
 		for (uint32 p = 0; p < pl[c].nslots; p += lengthof(win))
 		{

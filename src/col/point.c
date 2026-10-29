@@ -45,10 +45,12 @@ sift_cpoint_hash(int64 key)
 }
 
 uint32
-sift_cpoint_slots(uint32 n)
+sift_cpoint_slots(uint32 n, bool exact)
 {
 	uint64		s = 16;
 
+	if (exact)
+		return (uint32) Max(((uint64) n * 4 + 2) / 3, s);
 	while (s * 3 < (uint64) n * 4)
 		s *= 2;
 	return (uint32) s;
@@ -142,7 +144,7 @@ delta_list(StringInfo lists, const PointEnt *e, uint32 cnt, bool tid)
  * the rows the lists hold, a dense key counting one.
  */
 static void
-point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
+point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, uint32 dense, bool exact, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
 	PointEnt   *e = palloc(n * sizeof(PointEnt));
 	uint32		nk = 0,
@@ -192,7 +194,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 			return;
 		}
 	}
-	*nslots = sift_cpoint_slots(nk);
+	*nslots = sift_cpoint_slots(nk, exact);
 	*nkeys = nk;
 	*nrows = nr;
 	t = palloc(*nslots * sizeof(uint64));
@@ -201,7 +203,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 	for (uint32 i = 0, j; i < n; i = j)
 	{
 		uint64		h = sift_cpoint_hash(e[i].key);
-		uint32		p = sift_cpoint_pos(h, *nslots);
+		uint32		p = sift_cpoint_pos(h, *nslots, exact);
 		uint64		payload = e[i].val;
 
 		for (j = i + 1; j < n && e[j].key == e[i].key; j++)
@@ -211,7 +213,7 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 		else if (j - i > 1)
 			payload = tid || dense > 0 ? delta_list(&lists, e + i, j - i, tid != NULL) : row_list(&lists, e + i, j - i);
 		while (t[p] != SIFT_CPOINT_EMPTY)
-			p = (p + 1) & (*nslots - 1);
+			p = sift_cpoint_next(p, *nslots);
 		t[p] = tid ? (h & 0xFFFF) << 48 | payload : (h & 0xFFFFFFFF) << 32 | payload;
 	}
 	*words = lists.len / sizeof(uint32);
@@ -225,15 +227,15 @@ point_build(const int64 *key, const uint32 *row, const uint64 *tid, uint32 n, ui
 }
 
 void
-sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
+sift_cpoint_build(const int64 *key, const uint32 *row, uint32 n, uint32 dense, bool exact, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words, uint32 *nrows)
 {
-	point_build(key, row, NULL, n, dense, out, nslots, nkeys, words, nrows);
+	point_build(key, row, NULL, n, dense, exact, out, nslots, nkeys, words, nrows);
 }
 
 void
-sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
+sift_cpoint_build_tids(const int64 *key, const uint64 *tid, uint32 n, bool exact, StringInfo out, uint32 *nslots, uint32 *nkeys, uint32 *words)
 {
 	uint32		nrows;
 
-	point_build(key, NULL, tid, n, 0, out, nslots, nkeys, words, &nrows);
+	point_build(key, NULL, tid, n, 0, exact, out, nslots, nkeys, words, &nrows);
 }
