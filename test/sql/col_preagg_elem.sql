@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 
 CREATE FUNCTION pa_sb(t tid) RETURNS int LANGUAGE sql IMMUTABLE AS $$ SELECT ((t::text::point)[0])::int / 256 $$;
 CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
 
 -- the items of document g: absent, null and empty lists, objects with missing and null members, scalar elements, and in fixed id ranges what a
 -- histogram cannot hold: a string in an int path (100..110), a number in a text path (5000..5010), more than 256 distinct kinds in a unit

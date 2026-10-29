@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 
 CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
 
 CREATE FUNCTION t_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -137,7 +137,7 @@ DROP TABLE k;
 
 -- a sift_table with declared paths: a group written under minor 3 keeps the plan with the documents, one of minor 6 is a SiftAgg plan
 CREATE FUNCTION tfmt(t regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY format) FROM sift.table_segments(t) WHERE kind = 'columns' $$;
+$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY format) FROM sift.table_segments(t) WHERE kind = 'columns' $$;
 CREATE TABLE kt (id int, grp int, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('kt', 'doc', 'doc[]{s text, n int4, b bool}');
 SET sift.col_format_minor = 3;

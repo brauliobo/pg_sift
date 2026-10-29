@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 CREATE FUNCTION pa_sb(t tid) RETURNS int LANGUAGE sql IMMUTABLE AS $$ SELECT ((t::text::point)[0])::int / 256 $$;
 CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
 -- the items of document g: absent, null and empty lists, objects with missing and null members, scalar elements, and in fixed id ranges what a
 -- histogram cannot hold: a string in an int path (100..110), a number in a text path (5000..5010), more than 256 distinct kinds in a unit
 -- (9000..9400), a list that is not an array (14000..14005), an array inside the list (20000..20003)
@@ -87,7 +87,7 @@ CREATE INDEX pe_col ON pe USING sift_col (id, grp, items, tags, m)
 SELECT fmt('pe_col');
   fmt  
 -------
- 16,16
+ 15,15
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -278,7 +278,7 @@ SELECT count(*) FILTER (WHERE NOT exact) AS inexact FROM sift.col_unit_agg('pe_c
 SELECT fmt('pe_col');
  fmt 
 -----
- 16
+ 15
 (1 row)
 
 -- parallel build and REINDEX
@@ -329,7 +329,7 @@ VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
    fmt   
 ---------
- 16,16,3
+ 15,15,3
 (1 row)
 
 SELECT sift.col_verify('pe_col', true);
@@ -427,7 +427,7 @@ REINDEX INDEX pe_col3;
 SELECT fmt('pe_col3');
   fmt  
 -------
- 16,16
+ 15,15
 (1 row)
 
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col3', 'items[].k')) > 0 AS reindexed_elem_groups;

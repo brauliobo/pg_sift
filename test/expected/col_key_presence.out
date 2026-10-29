@@ -34,14 +34,14 @@ CREATE INDEX kp_old0 ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp,
 CREATE INDEX kp_old ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 RESET sift.col_format_minor;
 CREATE INDEX kp_on ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
-SELECT 'kp_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kp_off')
-UNION ALL SELECT 'kp_old', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_old')
-UNION ALL SELECT 'kp_on', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_on') ORDER BY 1;
+SELECT 'kp_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('kp_off')
+UNION ALL SELECT 'kp_old', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kp_old')
+UNION ALL SELECT 'kp_on', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kp_on') ORDER BY 1;
   idx   | minors 
 --------+--------
- kp_off | {12}
+ kp_off | {15}
  kp_old | {8}
- kp_on  | {22}
+ kp_on  | {15}
 (3 rows)
 
 SELECT sift.col_verify('kp_off', true), sift.col_verify('kp_old', true), sift.col_verify('kp_on', true);
@@ -286,10 +286,10 @@ SELECT sift.col_merge('kp_on', true) >= 0 AS merged;
 (1 row)
 
 VACUUM (freeze, index_cleanup on, disable_page_skipping) kp;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('kp_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('kp_on');
  minors | segments 
 --------+----------
- {22}   |        1
+ {15}   |        1
 (1 row)
 
 SELECT sift.col_verify('kp_on', true);

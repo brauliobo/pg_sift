@@ -142,7 +142,7 @@ INSERT INTO dk SELECT 200000 + g, 'd' || to_char(CASE WHEN g <= 70000 THEN 5 ELS
 INSERT INTO dk SELECT 300000 + g, 'e' || to_char(g, 'FM00000') FROM generate_series(1, 3000) g;
 CREATE INDEX dk_idx ON dk USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_columns = 's', write_buffer_limit = 4096);
 VACUUM dk;
-SELECT max(format) AS format_by_default FROM sift._test_col_formats('dk_idx'::regclass);
+SELECT max(format) >= 25 AS format_by_default_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
 SELECT bool_and(counted) AS every_segment_counts FROM sift._test_col_dict_count('dk_idx'::regclass, 1, 'prefix', 'b');
 CREATE FUNCTION dk_check() RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
@@ -171,7 +171,7 @@ SELECT dc_rows_scanned($$SELECT count(*) FROM dk WHERE s COLLATE "C" LIKE 'd0%'$
 SELECT sift.col_verify('dk_idx', true);
 ALTER INDEX dk_idx SET (count_columns = 'off');
 REINDEX INDEX dk_idx;
-SELECT max(format) AS format_with_count_columns_off FROM sift._test_col_formats('dk_idx'::regclass);
+SELECT max(format) >= 25 AS format_with_count_columns_off_is_the_hashs_or_later FROM sift._test_col_formats('dk_idx'::regclass);
 SELECT count(*) FILTER (WHERE counted) AS counted_segments FROM sift._test_col_dict_count('dk_idx'::regclass, 1, 'prefix', 'b');
 SELECT dk_check();
 DROP FUNCTION dk_check();

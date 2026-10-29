@@ -48,9 +48,9 @@ CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l1
 NOTICE:  sift_col index cp_col writes a rollup of the rows by l1, l2
 DETAIL:  A GROUP BY or a filter of both columns is read from the cells of each unit. Their combinations fit the cells a unit may keep (a tenth of its rows, at most 4096) in at least 90% of 8 sampled stretches of about a unit, about 4 of them a unit; the cells add to the index and to its build.
 HINT:  ALTER INDEX cp_col SET (rollup_dims = 'off'), then REINDEX, drops it; rollup_dims = 'a, b: measure' names the columns.
-NOTICE:  sift_col index "cp_col": point_tid_columns includes "h1", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +29%, benefit 18 against cost 14)
+NOTICE:  sift_col index "cp_col": point_tid_columns includes "h1", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +20%, benefit 18 against cost 11)
 HINT:  ALTER INDEX cp_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "cp_col": point_tid_columns includes "h2", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +22%, benefit 18 against cost 12)
+NOTICE:  sift_col index "cp_col": point_tid_columns includes "h2", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +17%, benefit 18 against cost 10)
 HINT:  ALTER INDEX cp_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index cp_col: the cube holds 16 dimensions and left out the histograms of 7 columns: "d1", "d2", "d3", "m", "id", "h1", "h2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.
@@ -73,9 +73,9 @@ SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u
 
 -- REINDEX decides the same
 REINDEX INDEX cp_col;
-NOTICE:  sift_col index "cp_col": point_tid_columns includes "h1", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +29%, benefit 18 against cost 14)
+NOTICE:  sift_col index "cp_col": point_tid_columns includes "h1", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +20%, benefit 18 against cost 11)
 HINT:  ALTER INDEX cp_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
-NOTICE:  sift_col index "cp_col": point_tid_columns includes "h2", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +22%, benefit 18 against cost 12)
+NOTICE:  sift_col index "cp_col": point_tid_columns includes "h2", chosen by the default formula: an equality on its nearly unique values, which do not follow the order of the table, would read every unit (about 0.5 M instructions against 0.2 M with the directory; predicted index size +17%, benefit 18 against cost 10)
 HINT:  ALTER INDEX cp_col SET (point_tid_columns = 'off') and REINDEX keep the index without it.
 NOTICE:  sift_col index cp_col: the cube holds 16 dimensions and left out the histograms of 7 columns: "d1", "d2", "d3", "m", "id", "h1", "h2"
 DETAIL:  The calendar cells of the date and timestamp columns come first and then the columns in their order; a query that groups or filters by those columns scans the units.

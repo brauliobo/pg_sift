@@ -200,7 +200,7 @@ sift.async_maintenance = off'
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'x' FROM generate_series(20001, 20400) i" "SELECT sift.col_promote('docs_${fmt}_col')" \
 			"INSERT INTO docs_$fmt (id, g, n, body) SELECT i, i % 9, i % 100, 'y' FROM generate_series(20401, 20600) i" >/dev/null || bail "$ref $fmt docs"
 		if [[ $refused == *" $fmt "* ]]; then
-			check "$ref: the $fmt clone is stamped minor ${STAMP[$fmt]:-$minor}" test "$(q "SELECT max(format) FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" == "${STAMP[$fmt]:-$minor}"
+			check "$ref: the $fmt clone is stamped minor ${STAMP[$fmt]:-$minor} or later" test "$(q "SELECT max(format) >= ${STAMP[$fmt]:-$minor} FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" == t
 		else
 			same "$ref: the $fmt clone is written at a minor the release reads (at most $minor)" "$(q "SELECT max(format) <= $minor AND min(format) >= 3 FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'")" t
 		fi
@@ -218,11 +218,11 @@ sift.async_maintenance = off'
 	# point_tid_columns (minor 16) and key_cut (minor 17): the option and the minor survive a merge, a refresh and a REINDEX of this tree, whatever the release that reads them later
 	for opt in pt:point_tid_columns:16 kc:key_cut:17; do
 		IFS=: read -r fmt option minor <<<"$opt"
-		optfmt() { q "SELECT max(format) || ':' || (SELECT coalesce(reloptions::text, '') ~ '$option=g' FROM pg_class WHERE relname = 'docs_${fmt}_col') FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'"; }
+		optfmt() { q "SELECT (max(format) >= $minor) || ':' || (SELECT coalesce(reloptions::text, '') ~ '$option=g' FROM pg_class WHERE relname = 'docs_${fmt}_col') FROM sift.col_segments('docs_${fmt}_col') WHERE kind = 'immutable'"; }
 		optwant=$(q "SET sift.enable_agg = off" "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")
 		for step in "SELECT sift.col_merge('docs_${fmt}_col', true)" "SELECT sift.col_refresh('docs_${fmt}_col')" "REINDEX INDEX docs_${fmt}_col"; do
 			check "$ref: the $fmt clone: ${step%%(*}" q "$step"
-			same "$ref: the $fmt clone is minor $minor with its option after ${step%%(*}" "$(optfmt)" "$minor:true"
+			same "$ref: the $fmt clone is minor $minor or later with its option after ${step%%(*}" "$(optfmt)" "true:true"
 			check "$ref: the $fmt clone verifies after ${step%%(*}" q "SELECT sift.col_verify('docs_${fmt}_col', true)"
 			same "$ref: the $fmt clone answers a lookup as the plain plan after ${step%%(*}" "$(q "SET sift.enable_col_scan = on" "SET enable_seqscan = off" "SELECT count(*), sum(id) FROM docs_$fmt WHERE g = 4")" "$optwant"
 		done

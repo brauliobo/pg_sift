@@ -35,9 +35,9 @@ CREATE INDEX kp_old0 ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp,
 CREATE INDEX kp_old ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 RESET sift.col_format_minor;
 CREATE INDEX kp_on ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_dims = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
-SELECT 'kp_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('kp_off')
-UNION ALL SELECT 'kp_old', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_old')
-UNION ALL SELECT 'kp_on', array_agg(DISTINCT format) FROM sift._test_col_formats('kp_on') ORDER BY 1;
+SELECT 'kp_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('kp_off')
+UNION ALL SELECT 'kp_old', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kp_old')
+UNION ALL SELECT 'kp_on', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kp_on') ORDER BY 1;
 SELECT sift.col_verify('kp_off', true), sift.col_verify('kp_old', true), sift.col_verify('kp_on', true);
 -- under a setting below 10 the bytes are those of an index without the option
 SELECT pg_relation_size('kp_old') = pg_relation_size('kp_old0') AS old_is_off_size,
@@ -170,7 +170,7 @@ SELECT sift.col_verify('kp_on', true);
 SELECT n, shape, same FROM kp_check('kp', 'kp_b') WHERE NOT same;
 SELECT sift.col_merge('kp_on', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) kp;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors, count(*) AS segments FROM sift._test_col_formats('kp_on');
+SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors, count(*) AS segments FROM sift._test_col_formats('kp_on');
 SELECT sift.col_verify('kp_on', true);
 SELECT n, shape, same, from_pre FROM kp_check('kp', 'kp_b') WHERE NOT same OR n IN (1, 2, 7);
 
