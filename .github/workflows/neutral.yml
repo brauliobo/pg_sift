@@ -31,3 +31,4 @@ jobs:
           NEUTRAL_PR_BODY: ${{ github.event.pull_request.body }}
           NEUTRAL_VOCAB: ${{ secrets.NEUTRAL_VOCAB }}
         run: scripts/check-neutral.sh
+
