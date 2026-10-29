@@ -1,6 +1,7 @@
 -- A flattened lateral sub-select (agg/flat.c) runs in the scan although the query also looks up the keys of its table in a CTE that reads another
 -- table with a column index: those few probes are not an ordinary plan the flat plan must be set against, and the estimates of the plan as written
--- (the CTE's rows and the rows of each key) are low by two orders of magnitude.
+-- (the CTE's rows and the rows of each key) are low by two orders of magnitude. The same when the planner reads the table of that CTE as an input of a merge join: the join
+-- is priced for the few rows it reads of it, not for its index scan (30,000 members are priced 997 for the scan, over a quarter of the flat plan, and the join 22).
 -- Use default planner costs: the choice between the two forms is the point.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -8,9 +9,9 @@ CREATE TABLE sources (id int PRIMARY KEY, enabled bool);
 INSERT INTO sources SELECT i, i <> 7 FROM generate_series(1, 20) i;
 CREATE TABLE labels (foreign_id int, source_key text, label text);
 INSERT INTO labels SELECT s, k, upper(k) FROM generate_series(1, 20) s, unnest(ARRAY['alpha', 'beta', 'gamma']) k WHERE (s + length(k)) % 3 <> 0;
--- the table the CTE of keys picks from: it has a column index, so the plan that reads it is an ordinary read of an indexed table
+-- the table the CTE of keys picks from: it has a column index, so the plan that reads it is an ordinary read of an indexed table (30,000 rows: only 3,000 of them have entries)
 CREATE TABLE dim_b (id int PRIMARY KEY, kind text);
-INSERT INTO dim_b SELECT i, CASE WHEN i % 7 = 0 THEN 'x' ELSE 'a' END FROM generate_series(1, 3000) i;
+INSERT INTO dim_b SELECT i, CASE WHEN i % 7 = 0 THEN 'x' ELSE 'a' END FROM generate_series(1, 30000) i;
 CREATE INDEX members_col ON dim_b USING sift_col (id, kind);
 CREATE TABLE links (grp int, dim_b_id int);
 INSERT INTO links SELECT 1, i FROM generate_series(1, 100) i;
@@ -24,7 +25,7 @@ CREATE TABLE entries (id serial, dim_b_id int, foreign_id int, day date, metrics
 INSERT INTO entries (dim_b_id, foreign_id, day, metrics_a)
 SELECT m.id, 1 + (m.id * 7 + g) % 20, date '2024-01-01' + (g * 37 + m.id * 11) % 900,
        jsonb_build_object('alpha', (g % 10)::float, 'beta_x', ((g * 3) % 10)::float) || CASE WHEN g % 3 = 0 THEN jsonb_build_object('gamma', (g % 7)::float) ELSE '{}' END
-FROM dim_b m, LATERAL generate_series(1, CASE WHEN m.id <= 100 THEN 1200 ELSE 20 END) g;
+FROM dim_b m, LATERAL generate_series(1, CASE WHEN m.id <= 100 THEN 1200 ELSE 20 END) g WHERE m.id <= 3000;
 CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, foreign_id, day, metrics_a) WITH (key_cut = 'dim_b_id', paths = 'metrics_a.* float8');
 CREATE INDEX entries_member ON entries (dim_b_id);
 VACUUM (FREEZE, ANALYZE) entries;

@@ -617,10 +617,11 @@ shared_work_cost(PlannedStmt *stmt, List *names, double read_rows, double lift, 
 
 /*
  * The ordinary reads of tables that have a column index in the plan, other than through a SiftAgg node, as work: the cost of the scan times the rows
- * of the outer side of the nested loops it is the inner side of.
+ * of the outer side of the nested loops it is the inner side of. A scan that is an input of a merge join is read for as much of it as the join needs
+ * (the join is priced for that part): its work is at most what the join costs over its other input, never less than one tuple.
  */
 static double
-plain_reader(PlannedStmt *stmt, Plan *plan, double loops)
+plain_reader(PlannedStmt *stmt, Plan *plan, double loops, double bound)
 {
 	double		work = 0;
 
@@ -631,22 +632,25 @@ plain_reader(PlannedStmt *stmt, Plan *plan, double loops)
 		RangeTblEntry *rte = rt_fetch(((Scan *) plan)->scanrelid, stmt->rtable);
 
 		if (rte->rtekind == RTE_RELATION && has_column_source(rte->relid))
-			work += plan->total_cost * loops;
+			work += Min(plan->total_cost, bound) * loops;
 	}
 	foreach_ptr(Plan, p, child_plans(plan))
-		work += plain_reader(stmt, p, loops);
-	work += plain_reader(stmt, plan->lefttree, loops);
-	return work + plain_reader(stmt, plan->righttree, IsA(plan, NestLoop) ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops);
+		work += plain_reader(stmt, p, loops, HUGE_VAL);
+	if (IsA(plan, MergeJoin))
+		return work + plain_reader(stmt, plan->lefttree, loops, Max(plan->total_cost - plan->righttree->total_cost, cpu_tuple_cost)) +
+			plain_reader(stmt, plan->righttree, loops, Max(plan->total_cost - plan->lefttree->total_cost, cpu_tuple_cost));
+	work += plain_reader(stmt, plan->lefttree, loops, HUGE_VAL);
+	return work + plain_reader(stmt, plan->righttree, IsA(plan, NestLoop) ? loops * Max(plan->lefttree->plan_rows, 1.0) : loops, HUGE_VAL);
 }
 
 /* does the plan read a table that has a column index other than through a SiftAgg node, for more than the share of its cost? */
 static bool
 plain_reader_stmt(PlannedStmt *stmt, double share)
 {
-	double		work = plain_reader(stmt, stmt->planTree, 1.0);
+	double		work = plain_reader(stmt, stmt->planTree, 1.0, HUGE_VAL);
 
 	foreach_ptr(Plan, p, stmt->subplans)
-		work += plain_reader(stmt, p, 1.0);
+		work += plain_reader(stmt, p, 1.0, HUGE_VAL);
 	return work > share * stmt->planTree->total_cost;
 }
 
