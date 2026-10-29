@@ -89,6 +89,10 @@ focus_regex() {
 		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
 		/^#/ { next }
 		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO/scripts/focus.tsv")
+	# the tests pinned to a file (scripts/focus-pins.tsv): they print numbers of its functions, which a function every test executes (the =hot row) does not name
+	sel+=$'\n'$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); want[p[1]] = 1 } }
+		/^#/ { next }
+		$1 in want { n = split($2, t, " "); for (i = 1; i <= n; i++) print "T " t[i] }' "$REPO/scripts/focus-pins.tsv")
 	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|' -)
 	star+=($(sed -n 's/^H //p' <<<"$sel" | sort -u))
 	{ echo '^(coverage|isolation-emulated)$'
