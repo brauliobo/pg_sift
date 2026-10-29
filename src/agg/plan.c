@@ -999,12 +999,18 @@ row_scan_of(Path *p, AggCtx *c)
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
-	/* a few keys are probes of the btree, which the normal plan prices as they run: the rows the table holds for them are no lost estimate */
+	/*
+	 * a few keys are probes of the btree, which the normal plan prices as they run: the rows the table holds for them are no lost estimate. Keys that are
+	 * sure to be few but leave a handful of units are charged the skew of the key alone (excess): the plan that probes them reads the rows of the key, not
+	 * those the table's filters keep, and a charge for those made the scan win for a key of a few hundred rows
+	 */
 	double		key_rows,
 				excess;
-	bool		few_keys = few_keys_lookup(c, s, &key_rows, &excess);
-	double		f = param_set_ratio(c) * (few_keys ? 1.0 : lookup_set_ratio(c, s, input_rel, false)),
-				rows = few_keys ? Max(input_rows_ratio(c, s, input_rel, key_rows), excess) : input_rows_ratio(c, s, input_rel, c->rel->rows);
+	bool		sure,
+				few_keys = few_keys_lookup(c, s, &key_rows, &excess, &sure);
+	double		f = param_set_ratio(c) * (sure ? 1.0 : lookup_set_ratio(c, s, input_rel, false)),
+				rows = few_keys ? Max(input_rows_ratio(c, s, input_rel, key_rows), excess) :
+					sure ? excess : input_rows_ratio(c, s, input_rel, c->rel->rows);
 
 	if (f <= 1.0 && rows <= 1.0)
 		return;

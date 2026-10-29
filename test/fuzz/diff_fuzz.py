@@ -724,6 +724,26 @@ def render_topn(p):
     return sql, True
 
 
+# ---------- a report over one entity or a few: a CTE of their ids as a literal, a lookup table filtered by a column, an unnest of the metrics, grouping sets ----------
+def gen_oneentity(r, ctx):
+    ids = sorted({r.choice([0, 7, 11, 599, 600, 601]) if r.random() < 0.3 else r.randrange(0, 600) for _ in range(r.choice([1, 1, 1, 2, 4]))})
+    return dict(ids=ids, dimw=r.choice([None, 20, 60]), sets=r.choice(['(r.key)', '(r.key), ()', '(r.key, e.kind), (e.kind)']), distinct=r.random() < 0.6, keys=[], aggs=[], having=[],
+                ordered=True, where=preds(r, 'e', ctx['rows'], EVENTS, r.randrange(0, 3)))
+
+
+def render_oneentity(p):
+    lst = ', '.join(str(i) for i in p['ids'])
+    dim = ' JOIN dims2 d ON d.id = e.grp' + ('' if p['dimw'] is None else f" AND d.w > {p['dimw']}")
+    w = ''.join(f' AND {c}' for c in p['where'])
+    agg = 'count(DISTINCT e.id)' if p['distinct'] else 'count(*)'
+    kind = ', e.kind' if 'e.kind' in p['sets'] else ''
+    sql = (f"WITH ids AS MATERIALIZED (SELECT DISTINCT parent_id AS id FROM events WHERE parent_id IN ({lst})), "
+           f"ev AS (SELECT e.* FROM events e JOIN ids ON ids.id = e.parent_id{dim} WHERE true{w}) "
+           f"SELECT r.key{kind}, {agg} AS n, avg((r.value #>> '{{}}')::float8) AS v, sum((r.value #>> '{{}}')::float8) AS t FROM ev e, jsonb_each(e.metrics) r "
+           f"WHERE r.key <> 'm3' GROUP BY GROUPING SETS ({p['sets']}) ORDER BY 1, 2")
+    return sql, True
+
+
 # ---------- a page of a list endpoint: a literal list of parents, a since date, a cursor, lateral lookups into JSON objects, newest first, LIMIT/OFFSET ----------
 def gen_listpage(r, ctx):
     n = r.choice([0, 1, 1, 5, 30, 200, 600])
@@ -1632,6 +1652,7 @@ FAMILIES = {
     'placeholder': (gen_placeholder, render_placeholder, 3),
     'distinctrows': (gen_distinctrows, render_distinctrows, 3), 'exceptions': (gen_exceptions, render_exceptions, 5),
     'numsum': (gen_numsum, render_preagg, 4), 'colcmp': (gen_colcmp, render_preagg, 4), 'oneleaf': (gen_oneleaf, render_oneleaf, 3), 'setkeys': (gen_setkeys, render_setkeys, 3), 'window': (gen_window, render_window, 4), 'gorder': (gen_gorder, render_gorder, 3), 'widew': (gen_widew, render_preagg, 4), 'distleaf': (gen_distleaf, render_preagg, 4),
+    'oneentity': (gen_oneentity, render_oneentity, 3),
     'listpage': (gen_listpage, render_listpage, 3),
     'flatkeys': (gen_flatkeys, render_flatkeys, 4), 'txnmix': (gen_txnmix, render_txnmix, 3), 'zonekey': (gen_zonekey, render_preagg, 4), 'keytable': (gen_keytable, render_preagg, 4), 'dictcount': (gen_dictcount, render_preagg, 4),
 }

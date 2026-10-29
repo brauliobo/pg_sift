@@ -1929,10 +1929,11 @@ rel_has_param_qual(RelOptInfo *rel)
 
 /*
  * does the lookup that narrows the scan by its key hold a few keys, as PostgreSQL counts them? *rows: the rows of the table those keys own;
- * *excess: how many times the rows of one of them exceed the mean's, which PostgreSQL prices a probe of the key by
+ * *excess: how many times the rows of one of them exceed the mean's, which PostgreSQL prices a probe of the key by; *sure: the keys are
+ * that few whatever the units they leave (a literal list, a lookup with statistics), so the rows PostgreSQL expects of a probe are no lost estimate
  */
 bool
-few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess)
+few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess, bool *sure)
 {
 	double		sel_keys,
 				share,
@@ -1941,7 +1942,8 @@ few_keys_lookup(AggCtx *c, SiftAggSpec *s, double *rows, double *excess)
 
 	kept = join_key_zone(c, s, &n, &sel_keys, &share, excess);
 	*rows = c->rel->rows * Min(share, 1.0);
-	return sel_keys <= AGG_PROBE_KEYS && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
+	*sure = sel_keys <= AGG_PROBE_KEYS;
+	return *sure && (kept >= AGG_CUT_SHARE || kept * Max(c->stats.nunits, 1.0) > AGG_CUT_UNITS);
 }
 
 /*
