@@ -202,7 +202,7 @@ declare -A JOB_WEIGHT=(
 	[installcheck-tbl_key_table]=153 [tap-shell-pg_upgrade]=152 [installcheck-col_preagg_elem]=136 [tap-shell-index_random_crash]=135 [isolation]=126
 	[installcheck-col_lazy_filter]=123 [soak-col]=123 [installcheck-col_sorted_run]=118 [installcheck-agg_preagg_elem]=115
 	[tap-shell-col_run_heads_crash]=114 [tap-006_truncate]=113 [installcheck-agg_trunc_zone]=112 [installcheck-tbl_preagg]=112
-	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [installcheck-parallel_pushdown]=108
+	[tap-shell-col_wbuf_crash]=110 [tap-017_tbl_autodefrag]=108 [plan-gate-table-tuned]=108 [plan-gate-calibrate]=374 [plan-gate-calibrate-tuned]=355 [installcheck-parallel_pushdown]=108
 	[installcheck-index_build_postings]=107 [difftest-col-selftest]=107 [installcheck-agg_preagg_dimfilter]=104 [installcheck-agg_par_arms]=100
 	[tap-shell-pg_upgrade_31]=97 [tap-shell-sb_mask_small]=94 [tap-shell-maint_fanin]=90
 )
@@ -552,7 +552,7 @@ if [[ $MODE == full ]]; then
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --rows 50000 --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --rows 50000 --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --rows 50000 --runs 0
-	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, at 30000 rows (docs/AGG.md); skipped without perf
+	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
@@ -619,6 +619,9 @@ else
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
+	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
+	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
 	job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
 	job coverage coverage 1 "$S/coverage.sh" --check

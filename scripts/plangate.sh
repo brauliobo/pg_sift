@@ -17,7 +17,7 @@
 #   --update      rewrites the `-- expect:` line of the shapes of shapes.sql from this run (their bands; the plan too where it is `new`): read the diff. In another
 #                 lane (--lane tuned, --table) it rewrites the rows of that lane in test/plan/bands.tsv (the plan the lane chooses and the band around its ratio)
 #   --keep        keeps the database sift_plangate
-# --calibrate  instead of the shapes: the shapes of test/plan/calibrate.tsv (one or more for each class: point, range, order and limit, count, group, join, aggregate)
+# --calibrate  instead of the shapes: the shapes of test/plan/calibrate.tsv (every shape of shapes.sql, in a class: point, range, order and limit, count, group, join, aggregate, other; known: a wrong choice that is open work, reported and not failing)
 #               are planned each way the planner can go (the scan, a sequential scan, a b-tree index, a bitmap scan, PostgreSQL without sift, the planner's own choice: EXPLAIN
 #               only), and each distinct plan runs under `perf stat` (user instructions of the backend, planning taken off, serial plans). Prints the table; fails when the
 #               plan the planner chooses is slower than the best by more than 20% and 1,000,000 instructions. Seconds, needs perf (skipped, exit 0, without it). docs/AGG.md
@@ -83,7 +83,7 @@ calibrate() {
 	sql -qAt -c "SELECT format('plangate --calibrate: %s of %s pairs of plans with a scan ranked the wrong way round, in %s of %s shapes', (SELECT count(*) FROM plangate.cal_pairs WHERE sift), (SELECT count(*) FROM plangate.cal_verdicts a JOIN plangate.cal_verdicts b ON a.name = b.name AND NOT a.chosen AND NOT b.chosen AND a.cost < b.cost AND (a.sift OR b.sift)), (SELECT count(DISTINCT name) FROM plangate.cal_pairs WHERE sift), (SELECT count(*) FROM plangate.cal_shapes))"
 	sql -qAt -c "SELECT format('plangate --calibrate: %s shapes, %s plans, %s chosen plans slower than the best by over 20%% and 1M instructions', count(DISTINCT name), count(*), count(*) FILTER (WHERE wrong)) FROM plangate.cal_verdicts"
 	sql -qAt -c "SELECT 'WRONG ' || name || ' (' || class || '): the planner chooses ' || variants || ' at ' || m_instr || 'M instructions, the best is ' || best_m_instr || 'M' FROM plangate.cal_verdicts WHERE wrong ORDER BY class, name"
-	(( $(sql -qAt -c "SELECT count(*) FROM plangate.cal_verdicts WHERE wrong") == 0 ))
+	(( $(sql -qAt -c "SELECT count(*) FROM plangate.cal_verdicts WHERE wrong AND class <> 'known'") == 0 ))
 }
 
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"

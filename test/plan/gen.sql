@@ -23,7 +23,7 @@ INSERT INTO dims SELECT p, CASE WHEN p % 3 = 0 THEN 'tier_a' WHEN p % 3 = 1 THEN
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, skew_id int NOT NULL, ts date NOT NULL, kind text NOT NULL, amount float8 NOT NULL, qty int NOT NULL,
 	deleted_at timestamptz, doc jsonb NOT NULL, memo text NOT NULL) WITH (autovacuum_enabled = false);
 -- parent_id is flat; skew_id is log-uniform (parent 1 owns about one row in six); amount is a multiple of 0.25 (sums are exact), the metric m_a one decimal (sums round)
-INSERT INTO events SELECT i, 1 + (i * 7919) % :np, floor(power(:np + 1.0, (i * 0.6180339887498949) % 1.0))::int,
+INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % :np, floor(power(:np + 1.0, (i * 0.6180339887498949) % 1.0))::int,
 	date '2024-01-01' + (hashint4(i + :seed) & 1023) % 730, 'cat_' || chr(97 + i % 4), 1 + (i % 17) + 0.25 * (i % 4), 1 + i % 9, CASE WHEN i % 37 = 0 THEN now() END,
 	jsonb_build_object(
 		'parts', jsonb_build_array(
