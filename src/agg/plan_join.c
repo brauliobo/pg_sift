@@ -881,13 +881,20 @@ add_agg_path(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *outpu
  * The plans the joins read, as paths that output the columns the spec reads (the columns of the joined rows are positions of that output): the
  * path PostgreSQL chose for the rows of the sub-select, VALUES list or function, projected on them. The scan nodes project any column.
  */
-/* every column of a CTE or VALUES list, in order */
+/* every column of a CTE, VALUES list or sub-select, in order */
 static List *
 child_all_vars(AggCtx *c, JoinCtx *jc)
 {
 	RangeTblEntry *e = rt_fetch(jc->rti, c->root->parse->rtable);
 	List	   *vars = NIL;
 
+	if (e->rtekind == RTE_SUBQUERY)
+	{
+		foreach_node(TargetEntry, tle, e->subquery->targetList)
+			if (!tle->resjunk)
+				vars = lappend(vars, makeVar(jc->rti, tle->resno, exprType((Node *) tle->expr), exprTypmod((Node *) tle->expr), exprCollation((Node *) tle->expr), 0));
+		return vars;
+	}
 	for (int i = 0; i < list_length(e->coltypes); i++)
 		vars = lappend(vars, makeVar(jc->rti, i + 1, list_nth_oid(e->coltypes, i), list_nth_int(e->coltypmods, i),
 									 list_nth_oid(e->colcollations, i), 0));

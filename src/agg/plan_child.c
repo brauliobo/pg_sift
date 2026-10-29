@@ -827,8 +827,10 @@ own_rel_mutator(Node *n, Index *rti)
 
 /*
  * What an uncorrelated child plan is, for the arms of a statement to know theirs are the same: the common table expression (the plan the
- * statement made of it) or the VALUES list, and the conditions the scan keeps on its rows. A sub-select or function keeps no identity: the
- * columns of its plan the arms do not read are NULL.
+ * statement made of it), the VALUES list or a sub-select without a set operation or a volatile function (a CTE read once, which PostgreSQL pulled into
+ * every arm that a UNION ALL of the statement copied: the arms hold equal sub-selects), and the conditions the scan keeps on its rows. The plan of a child
+ * with an identity outputs all its columns (child_all_vars). A function or a set operation keeps no identity: the columns of its plan the arms do not read
+ * are NULL.
  */
 Node *
 plain_child_sig(AggCtx *c, RangeTblEntry *e, Index rti, RelOptInfo *rel)
@@ -840,6 +842,8 @@ plain_child_sig(AggCtx *c, RangeTblEntry *e, Index rti, RelOptInfo *rel)
 		what = (Node *) e->values_lists;
 	else if (e->rtekind == RTE_CTE && (id = cte_plan_id(c->root, e)) > 0)
 		what = (Node *) list_make1(makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(id), false, true));
+	else if (e->rtekind == RTE_SUBQUERY && e->subquery->setOperations == NULL && !contain_volatile_functions((Node *) e->subquery))
+		return sift_agg_child_sig((Node *) list_make2(e->subquery, own_rel_mutator((Node *) extract_actual_clauses(rel->baserestrictinfo, false), &rti)), NIL);
 	else
 		return NULL;
 	return sift_agg_child_sig(own_rel_mutator((Node *) list_make2(what, extract_actual_clauses(rel->baserestrictinfo, false)), &rti), NIL);
