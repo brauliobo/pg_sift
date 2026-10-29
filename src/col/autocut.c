@@ -63,6 +63,7 @@
 #define AUTOCUT_LEAF_BYTES	1.0		/* what a row takes in a leaf that is not read from the sample, and has no statistics */
 #define AUTOCUT_WIDTH_SHARE	0.7		/* the share of its width a value that is not repeated takes in the index (hexadecimal text of a hash: 45 bytes of 65) */
 #define AUTOCUT_KEY_BYTES	2.0		/* what a key takes in the key list of a unit */
+#define AUTOCUT_BLOOM_PASS	0.25	/* the share of the units without the key that the bloom filter of a key column passes (SIFT_CSET_BLOOM_MIN_BITS: about a quarter) */
 /*
  * The default formula decides: B = R * log2(S) / log2(1.05), a gain of 5% being one unit, S the instructions of a lookup
  * (an equality or a range that holds the rows of one unit) without the cut over those with it, R 1 (0.5 for the lane of a range or a network); C = G / 3 + W / 5, G the
@@ -240,10 +241,10 @@ cut_cost(double growth_pct, int nleaves)
 /*
  * The sampled superblocks of a key candidate give the units an equality on its keys reads: the median over AUTOCUT_KEYS keys taken at random rows, and the
  * median of the units their rows fill. fired: the cut would save a lookup what the default formula asks (cut_pays_a_lookup). keyed: the index keeps a key list of
- * the leaf.
+ * the leaf; kept: it keeps the keys of the leaf in some form (a bloom filter where no list fits), not key_columns = 'off'.
  */
 static double
-units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, double *ideal, bool *fired)
+units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed, bool kept, double *ideal, bool *fired)
 {
 	double		f = nsampled / nsb,
 				total = 0,
@@ -275,20 +276,22 @@ units_read(Track *t, int nsampled, double nsb, double rows_per_unit, bool keyed,
 			double		pos = at - seen,
 						cum = 0,
 						mine,
+						zone,
 						others = j - i - 1;
 			int64		e = i;
 
 			while (e < j - 1 && cum + t->cells[e].n <= pos)
 				cum += t->cells[e++].n;
 			mine = t->cells[e].n;
-			/* without a key list a unit is read when its zone holds the key */
-			if (!keyed)
-			{
-				others = 0;
-				for (int u = 0; u < nsampled; u++)
-					others += u != t->cells[e].sb && t->has[u] && t->lo[u] <= t->cells[e].key && t->cells[e].key <= t->hi[u];
-			}
-			reads[nk] = Min(nsb, 1 + others / f);
+			/* a unit is read when its zone holds the key, and then only when its key list holds it or its bloom filter passes it */
+			zone = 0;
+			for (int u = 0; u < nsampled; u++)
+				zone += u != t->cells[e].sb && t->has[u] && t->lo[u] <= t->cells[e].key && t->cells[e].key <= t->hi[u];
+			if (keyed)
+				zone = others;
+			else if (kept)
+				zone = others + AUTOCUT_BLOOM_PASS * Max(zone - others, 0);
+			reads[nk] = Min(nsb, 1 + zone / f);
 			fills[nk] = Max(1, (mine + (rows - mine) / f) / rows_per_unit);
 			nk++;
 			at += step;
@@ -681,7 +684,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				kc_row = 0;
 	double		reads[AUTOCUT_LEAVES],
 				fills[AUTOCUT_LEAVES];
-	bool		blocked[AUTOCUT_LEAVES] = {false};
+	bool		blocked[AUTOCUT_LEAVES] = {false},
+				keys_kept;
 	int			first_open;
 	uint32		cap;
 	int64	   *tmp;
@@ -702,6 +706,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 	if (v->reason != NULL)
 		goto done;
 	v->decided = true;
+	keys_kept = sift_col_options_key_columns(index) == NULL || strcmp(sift_col_options_key_columns(index), "off") != 0;
 	rel = sift_col_rel_private(index, cx);	/* the loop reads catalogs, which reload the cached state */
 	sc = rel->schema;
 	tr = palloc0(sizeof(Track) * AUTOCUT_LEAVES);
@@ -854,7 +859,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 			if (pass == 0)
 				/* the key list of a leaf is kept where it fits the share of the bytes of a unit (SIFT_CSET_PRES_PCT) */
 				u = units_read(&tr[t], samp->nsb, nsb, rows_per_unit,
-							   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row,
+							   AUTOCUT_KEY_BYTES * tr[t].ncells / samp->nsb <= SIFT_CSET_PRES_PCT / 100.0 * rows_per_unit * def_row, keys_kept,
 							   &fill, &fired);
 			else
 				u = ranges_read(&tr[t], samp->n, samp->nsb, nsb, rows_per_unit, &fill, &fired);
@@ -925,8 +930,10 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 		v->maybe = true;
 		goto done;
 	}
-	/* the first that fires and whose benefit is at least its cost is cut by; when every one that fires costs more than it gains, the first is advised */
-	for (int i = 0; i < nfire && v->res != SIFT_AUTOCUT_CUT; i++)
+	/* the first that fires and whose benefit is at least its cost is cut by; when every one that fires costs more than it gains, the first is advised. The exception is a key
+	 * whose rows fit one unit: its key list and bloom filter let an equality read the few units that hold it, so a later candidate whose benefit exceeds its cost by more
+	 * (a scattered time leaf: a window reads every unit without the cut) is cut by instead */
+	for (int i = 0, small = false; i < nfire && (v->res != SIFT_AUTOCUT_CUT || small); i++)
 	{
 		int			pick = fire[i],
 					sec;
@@ -970,6 +977,8 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				v->reason = "a range of the leaf reads many units, but the cost of the cut is above its benefit";
 			continue;
 		}
+		if (v->res == SIFT_AUTOCUT_CUT && (!pays || benefit - cost <= v->benefit - v->cost))
+			continue;
 		if (pays || v->res == SIFT_AUTOCUT_NONE)
 		{
 			strlcpy(v->leaf, cut_name(index, sc, tr[pick].c), sizeof(v->leaf));
@@ -984,6 +993,7 @@ decide_stage(Relation heap, Relation index, bool dry, CutVerdict *v, bool quick)
 				strlcpy(v->second, cut_name(index, sc, tr[sec].c), sizeof(v->second));
 			v->reason = NULL;
 			v->res = pays ? SIFT_AUTOCUT_CUT : SIFT_AUTOCUT_ADVISED;
+			small = !tr[pick].time && fills[i] <= 1.0 && keys_kept;
 		}
 	}
 	if (v->res == SIFT_AUTOCUT_CUT)

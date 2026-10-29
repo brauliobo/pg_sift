@@ -129,6 +129,18 @@ VACUUM (FREEZE, ANALYZE) kd;
 CREATE INDEX kd_i ON kd USING sift_col (d);
 SELECT kopt('kd_i'), growth_pct > 3 AS grows, decision FROM sift.key_cut_decision('kd_i');
 DROP TABLE kd;
+-- a key of about 5 rows is served by its key list and bloom filter (an equality reads the few units that hold it), where a window of a scattered timestamp reads every unit
+-- without the cut: the timestamp is cut by, not the key; a key whose rows fill the units keeps the cut (kt above)
+CREATE TABLE kc (id int, customer int, ts timestamp, a1 int, a2 int, a3 int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
+SELECT setseed(0.5);
+INSERT INTO kc SELECT i, (random() * 25000)::int, '2024-01-01'::timestamp + random() * interval '730 days', i % 7, i % 11, i % 13, repeat('x', 100) FROM generate_series(1, 125000) i;
+VACUUM (FREEZE, ANALYZE) kc;
+CREATE INDEX kc_auto ON kc USING sift_col (customer, ts, a1, a2, a3);
+SELECT kopt('kc_auto'), leaf, decision FROM sift.key_cut_decision('kc_auto');
+SELECT kunits($$SELECT count(*), sum(a1) FROM kc WHERE ts >= '2025-12-01' AND ts < '2025-12-08'$$) AS window_by_time;
+SELECT (SELECT count(*) FROM kc WHERE customer = 123) = (SELECT count(*) FROM kc WHERE customer + 0 = 123) AS key_equality_same;
+SELECT sift.col_verify('kc_auto', true);
+DROP TABLE kc;
 CREATE INDEX kt_off ON kt USING sift_col (tenant, ts, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) WITH (key_cut = 'off');
 SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
 UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kt_off'::regclass);
