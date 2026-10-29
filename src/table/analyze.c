@@ -71,10 +71,7 @@ analyze_start(SiftTblScan *s)
 	}
 	/* a row of a column group costs about 3,000 instructions to materialize and the sampler keeps targrows of the rows it is given: thinning them
 	 * (independently of their values) leaves a uniform sample of the table, with each row kept standing for an_keep, in the counts */
-	if (s->an_v > 0)
-		s->an_keep = Max(1, (uint64) ((double) s->dir->meta.ndocs / s->an_v * Min(s->an_v, s->an_m) / (ANALYZE_ROWS_PER_TARGET * s->an_m)));
-	else
-		s->an_keep = 1;
+	s->an_keep = Max(1, (uint64) ((double) s->dir->meta.ndocs / (ANALYZE_ROWS_PER_TARGET * 300.0 * default_statistics_target)));
 }
 
 /* The vblock number of the n-th vblock of the groups */
