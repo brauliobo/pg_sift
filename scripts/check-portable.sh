@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The portable core (src/portable.list, and src/portable-col.list of the column track) reaches its host only through src/core/host.h: every #include of a listed file is
 # the C library, a compiler intrinsics header, the optional lz4/zstd headers, src/core/host.h or another file of the list. A PostgreSQL, SQLite or other
-# host header there means the core is no longer portable (CONTRIBUTING.md). Needs no PostgreSQL, no SQLite and no build.
+# host header there means the core is no longer portable (CONTRIBUTING.md). Then every listed file is compiled (syntax only) against the SQLite host header
+# (sqlite/host/host.h, which the MariaDB host includes): a PostgreSQL-only type, macro or function that core/host.h gets from the server headers and the portable
+# hosts do not provide fails here, where the SQLite and MariaDB builds would fail only in the CI jobs of those ports. Needs a C compiler; no PostgreSQL, no SQLite library.
 #
 #   scripts/check-portable.sh
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -30,4 +32,13 @@ for f in "${files[@]}"; do
 	done < <(grep -nE '^[[:space:]]*#[[:space:]]*include' "$SRC/$f" || true)
 done
 if ((bad)); then exit 1; fi
+ROOT=$(dirname "$SRC")
+if command -v "${CC:-cc}" >/dev/null; then
+	for f in "${files[@]}"; do
+		[[ $f == *.c ]] || continue
+		"${CC:-cc}" -fsyntax-only -Werror=implicit-function-declaration -Wno-unused-function -D_GNU_SOURCE -DSIFT_HOST_SQLITE -I"$ROOT/sqlite/host" -I"$SRC" -I"$ROOT/sqlite" "$SRC/$f" \
+			|| { echo "$f: does not compile against the portable host (sqlite/host/host.h): a PostgreSQL-only symbol, or one the host must provide"; bad=1; }
+	done
+	if ((bad)); then exit 1; fi
+fi
 echo "check-portable: ok, ${#files[@]} files include only core/host.h, the C library and each other"

@@ -133,6 +133,17 @@ extern MemoryContext TopMemoryContext;
 #define MCXT_ALLOC_HUGE			0x01
 #define MCXT_ALLOC_NO_OOM		0x02
 #define MCXT_ALLOC_ZERO			0x04
+#define MaxAllocSize			((Size) 0x3fffffff)	/* PostgreSQL's limit of one palloc; this host has no NO_OOM: an allocation that fails raises the error */
+
+/* A function a context calls, last registered first, when it is reset or deleted and before its memory is freed (the callback struct lives in the context or outside it) */
+typedef void (*MemoryContextCallbackFunction) (void *arg);
+typedef struct MemoryContextCallback
+{
+	MemoryContextCallbackFunction func;
+	void	   *arg;
+	struct MemoryContextCallback *next;
+} MemoryContextCallback;
+extern void MemoryContextRegisterResetCallback(MemoryContext cx, MemoryContextCallback *cb);
 
 extern MemoryContext AllocSetContextCreate(MemoryContext parent, const char *name, size_t min, size_t init, size_t max);
 extern void MemoryContextDelete(MemoryContext cx);

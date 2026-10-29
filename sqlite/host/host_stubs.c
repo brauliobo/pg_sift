@@ -53,6 +53,31 @@ sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
 	return false;
 }
 
+/* nothing is kept, so the cache has no limit to pass; a dictionary takes what its strings do */
+Size
+sift_cdict_cache_budget(void)
+{
+	return SIZE_MAX / 4;
+}
+
+Size
+sift_cdict_parsed_bytes(Size nbytes, uint32 n)
+{
+	return nbytes;
+}
+
+/* nothing is counted: a dictionary whose hash was tried is parsed at once, as with sift_cseg_dict_asked */
+uint64
+sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add)
+{
+	return UINT64_MAX;
+}
+
+void
+sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent)
+{
+}
+
 /* ---------- segment heads, zone arrays and bisected positions (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
 
 const SegHead *

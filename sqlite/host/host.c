@@ -34,6 +34,7 @@ struct MemoryContextData
 	SqChunk		large;					/* list head of large chunks, and of bump blocks */
 	char	   *bump;
 	char	   *bump_end;
+	MemoryContextCallback *cbs;			/* the reset callbacks, last registered first */
 };
 
 _Thread_local MemoryContext CurrentMemoryContext;
@@ -113,6 +114,25 @@ cx_free_chunks(MemoryContext cx)
 }
 
 void
+MemoryContextRegisterResetCallback(MemoryContext cx, MemoryContextCallback *cb)
+{
+	cb->next = cx->cbs;
+	cx->cbs = cb;
+}
+
+static void
+cx_run_callbacks(MemoryContext cx)
+{
+	while (cx->cbs)
+	{
+		MemoryContextCallback *cb = cx->cbs;
+
+		cx->cbs = cb->next;
+		cb->func(cb->arg);
+	}
+}
+
+void
 MemoryContextResetChildren(MemoryContext cx)
 {
 	while (cx->child)
@@ -123,6 +143,7 @@ void
 MemoryContextReset(MemoryContext cx)
 {
 	MemoryContextResetChildren(cx);
+	cx_run_callbacks(cx);
 	cx_free_chunks(cx);
 }
 
@@ -130,6 +151,7 @@ void
 MemoryContextDelete(MemoryContext cx)
 {
 	MemoryContextResetChildren(cx);
+	cx_run_callbacks(cx);
 	cx_free_chunks(cx);
 	if (cx->parent)
 	{
