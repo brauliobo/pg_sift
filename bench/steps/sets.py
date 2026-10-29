@@ -155,7 +155,7 @@ def run(a):
     have_lut = psql(db, ["select count(*) from pg_settings where name = 'sift.agg_semi_lut'"])[1].strip() == '1'
     group = groups(db)
     cs = [c for c in cells(db, a.ch, have_lut, group) if not a.only or re.search(a.only, c[0] + ' ' + c[1])]
-    version = psql(db, ['select sift.version()'])[1].strip()
+    version = psql(db, ["select extversion from pg_extension where extname = 'pg_sift'"])[1].strip()   # the library's own string can lag the extension
     plans = {(c[0], c[1]): plan_of(db, c[3], c[4]) if c[2] == 'pg' else 'ClickHouse' for c in cs}
     ref = {}
     for size in group:
